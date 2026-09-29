@@ -974,11 +974,11 @@ impl TeamArenaUiMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::common::legacy::runtime::{
-        SourceLocation, UiItemBehavior, UiItemDefinition, UiMenuDefinition, UiModelReference, UiRect, UiScript,
-        UiShaderReference, UiSoundReference, UiWindowDefinition,
+    use crate::ui::common::legacy::menu::{
+        parse_test_menus, UiItemDefinition, UiMenuDefinition, UiModelReference, UiScript, UiShaderReference,
+        UiSoundReference,
     };
-    use qa_core::math::Vec4;
+    use std::collections::HashMap;
 
     fn bad_ui_message(error: ClientError) -> String {
         match error {
@@ -994,111 +994,22 @@ mod tests {
         (memory, log)
     }
 
-    fn test_window() -> UiWindowDefinition {
-        let color = Vec4 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            w: 1.0,
-        };
-        UiWindowDefinition {
-            rect: UiRect::default(),
-            client_rect: UiRect::default(),
-            rect_effects: UiRect::default(),
-            rect_effects2: UiRect::default(),
-            name: None,
-            group: None,
-            cinematic: None,
-            style: 0,
-            border: 0,
-            owner_draw: 0,
-            owner_draw_flags: 0,
-            border_size: 0.0,
-            flags: 0,
-            next_time: 0,
-            offset_time: 0,
-            cinematic_handle: -1,
-            fore_color: color,
-            back_color: color,
-            border_color: color,
-            outline_color: color,
-            background: None,
-            background_handle: None,
-        }
-    }
-
-    fn test_location() -> SourceLocation {
-        SourceLocation {
-            path: "test.menu".to_string(),
-            line: 1,
-            column: 1,
-        }
-    }
-
-    fn test_item(text: &str) -> UiItemDefinition {
-        UiItemDefinition {
-            location: test_location(),
-            allocation_offset: None,
-            window: test_window(),
-            type_code: 1,
-            parent: None,
-            text_rect: UiRect::default(),
-            behavior: UiItemBehavior::Button,
-            alignment: 0,
-            text_alignment: 0,
-            text_align_x: 0.0,
-            text_align_y: 0.0,
-            text_scale: 1.0,
-            text_style: 0,
-            text: Some(text.to_string()),
-            asset: None,
-            asset_handle: None,
-            mouse_enter_text: None,
-            mouse_exit_text: None,
-            mouse_enter: None,
-            mouse_exit: None,
-            action: None,
-            on_focus: None,
-            leave_focus: None,
-            cvar: None,
-            cvar_test: None,
-            cvar_rule: None,
-            cvar_flags: 0,
-            cvar_script: None,
-            focus_sound: None,
-            focus_sound_handle: None,
-            color_ranges: Vec::new(),
-            special: 0.0,
-            cursor_position: 0,
-        }
-    }
-
-    fn test_menu() -> UiMenuDefinition {
-        let color = Vec4 {
-            x: 1.0,
-            y: 1.0,
-            z: 1.0,
-            w: 1.0,
-        };
-        UiMenuDefinition {
-            location: test_location(),
-            source_index: 0,
-            window: test_window(),
-            font: None,
-            full_screen: 1,
-            cursor_item: -1,
-            font_index: 0,
-            fade_cycle: 0,
-            fade_clamp: 0.0,
-            fade_amount: 0.0,
-            on_open: None,
-            on_close: None,
-            on_escape: None,
-            sound_loop: None,
-            focus_color: color,
-            disable_color: color,
-            items: Vec::new(),
-        }
+    /// Parse a one-item fixture menu.
+    fn parsed_fixture() -> (UiMenuDefinition, UiItemDefinition) {
+        let mut files = HashMap::new();
+        files.insert(
+            "ui/menus.txt".to_string(),
+            "loadmenu { \"ui/test.menu\" }\n".to_string(),
+        );
+        files.insert(
+            "ui/test.menu".to_string(),
+            "menuDef {\n  name \"test\"\n  rect 0 0 640 480\n  visible 1\n  itemDef {\n    name \"ok\"\n    type 1\n    rect 10 10 200 24\n    visible 1\n    text \"ok\"\n  }\n}\n"
+                .to_string(),
+        );
+        let definitions = parse_test_menus(files, "ui/menus.txt").unwrap();
+        let menu = definitions.menus.into_iter().next().unwrap();
+        let item = menu.items().unwrap().into_iter().next().unwrap();
+        (menu, item)
     }
 
     #[test]
@@ -1300,13 +1211,17 @@ mod tests {
         allocation.set_script(0, None).unwrap();
         assert!(allocation.get_script(0).unwrap().is_none());
 
-        let item = test_item("ok");
+        let (menu, item) = parsed_fixture();
         allocation.set_item(4, Some(item.clone())).unwrap();
-        assert_eq!(allocation.get_item(4).unwrap(), Some(item));
+        let back = allocation.get_item(4).unwrap().unwrap();
+        assert_eq!(back.window().name().as_deref(), Some("ok"));
+        assert_eq!(back.text().as_deref(), Some("ok"));
+        assert_eq!(back.window().rect().snapshot(), item.window().rect().snapshot());
 
-        let menu = test_menu();
         allocation.set_menu(8, Some(menu.clone())).unwrap();
-        assert_eq!(allocation.get_menu(8).unwrap(), Some(menu));
+        let back = allocation.get_menu(8).unwrap().unwrap();
+        assert_eq!(back.window().name().as_deref(), Some("test"));
+        assert_eq!(back.item_count(), 1);
 
         let error = allocation.get_script(4).unwrap_err();
         assert_eq!(

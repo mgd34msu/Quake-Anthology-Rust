@@ -288,17 +288,14 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use super::super::menu::{
-        UiMenuDefinition, UiMenuDefinitions, UiRect, UiWindowDefinition, UiWindowFlag,
-    };
+    use super::super::menu::{parse_test_menus, UiRect};
     use super::super::runtime::{
-        CommandContext, PcmSound, SceneModel, UiCinematicAsset, UiCinematicInstance, UiCommandBuffer,
-        UiCommandOrigin, UiCvarRegistry, UiCvarValue, UiExternalScriptContext, UiExternalScriptHost, UiHandleKind,
-        UiLocalSound, UiOwnerDrawKeyResult, UiOwnerDrawPaintRequest, UiRuntimeAudio, UiRuntimeBindings,
-        UiRuntimeCinematics, UiRuntimeContext, UiRuntimeFeeder, UiRuntimeFeederItem, UiRuntimeOptions,
-        UiRuntimeOwnerDraw, UiRuntimeResources, UiScriptCursor, UiWidgetAssets,
+        CommandContext, PcmSound, SceneModel, UiCinematicAsset, UiCinematicInstance, UiCommandBuffer, UiCommandOrigin,
+        UiCvarRegistry, UiCvarValue, UiExternalScriptContext, UiExternalScriptHost, UiHandleKind, UiLocalSound,
+        UiOwnerDrawKeyResult, UiOwnerDrawPaintRequest, UiRuntimeAudio, UiRuntimeBindings, UiRuntimeCinematics,
+        UiRuntimeContext, UiRuntimeFeeder, UiRuntimeFeederItem, UiRuntimeOptions, UiRuntimeOwnerDraw,
+        UiRuntimeResources, UiScriptCursor, UiWidgetAssets,
     };
-    use super::super::script::preprocessor::SourceLocation;
 
     /// Shared handle.
     type Shared<T> = Rc<RefCell<T>>;
@@ -571,103 +568,16 @@ mod tests {
         let owner = IdentityOwner::create("seat-test").unwrap();
         let seat = owner.seat(0);
         let cvars: Shared<HashMap<String, UiCvarValue>> = Rc::new(RefCell::new(HashMap::new()));
-        let mut definitions = UiMenuDefinitions::empty();
-        definitions.menus = vec![UiMenuDefinition {
-            location: SourceLocation {
-                path: "test".to_string(),
-                line: 1,
-                column: 1,
-            },
-            source_index: 0,
-            window: UiWindowDefinition {
-                rect: UiRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 640.0,
-                    height: 480.0,
-                },
-                client_rect: UiRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 640.0,
-                    height: 480.0,
-                },
-                rect_effects: UiRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                },
-                rect_effects2: UiRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                },
-                name: Some("main".to_string()),
-                group: None,
-                cinematic: None,
-                style: 0,
-                border: 0,
-                owner_draw: 0,
-                owner_draw_flags: 0,
-                border_size: 1.0,
-                flags: UiWindowFlag::VISIBLE,
-                next_time: 0,
-                offset_time: 0,
-                cinematic_handle: -1,
-                fore_color: qa_core::math::Vec4 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
-                    w: 1.0,
-                },
-                back_color: qa_core::math::Vec4 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                    w: 1.0,
-                },
-                border_color: qa_core::math::Vec4 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 1.0,
-                    w: 1.0,
-                },
-                outline_color: qa_core::math::Vec4 {
-                    x: 0.5,
-                    y: 0.5,
-                    z: 0.5,
-                    w: 1.0,
-                },
-                background: None,
-                background_handle: None,
-            },
-            font: None,
-            full_screen: 0,
-            cursor_item: -1,
-            font_index: 0,
-            fade_cycle: 0,
-            fade_clamp: 0.0,
-            fade_amount: 0.0,
-            on_open: None,
-            on_close: None,
-            on_escape: None,
-            sound_loop: None,
-            focus_color: qa_core::math::Vec4 {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-                w: 1.0,
-            },
-            disable_color: qa_core::math::Vec4 {
-                x: 0.5,
-                y: 0.5,
-                z: 0.5,
-                w: 1.0,
-            },
-            items: Vec::new(),
-        }];
+        let mut files = HashMap::new();
+        files.insert(
+            "ui/menus.txt".to_string(),
+            "loadmenu { \"ui/main.menu\" }\n".to_string(),
+        );
+        files.insert(
+            "ui/main.menu".to_string(),
+            "menuDef {\n  name \"main\"\n  rect 0 0 640 480\n  visible 1\n}\n".to_string(),
+        );
+        let definitions = parse_test_menus(files, "ui/menus.txt").unwrap();
         let options = UiRuntimeOptions {
             definitions,
             source_parser: None,
