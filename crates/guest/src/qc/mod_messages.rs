@@ -126,16 +126,22 @@ pub struct QcLocalMessages<P> {
     view_clients: HashMap<ActorId, ActorId>,
 }
 
-impl<P: Clone> QcLocalMessages<P> {
-    /// Empty state.
-    #[must_use]
-    pub fn new() -> Self {
+impl<P> Default for QcLocalMessages<P> {
+    fn default() -> Self {
         Self {
             baseline: Vec::new(),
             clients: HashMap::new(),
             view_baseline: None,
             view_clients: HashMap::new(),
         }
+    }
+}
+
+impl<P: Clone> QcLocalMessages<P> {
+    /// Empty state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Admit a client stream.
@@ -423,7 +429,7 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
                 )
             })
             .collect();
-        clients.sort_by(|left, right| (left.0.slot, left.0.generation).cmp(&(right.0.slot, right.0.generation)));
+        clients.sort_by_key(|entry| (entry.0.slot, entry.0.generation));
         let mut view_clients: Vec<(SavedActorId, SavedActorId)> = self
             .local
             .view_clients
@@ -450,7 +456,7 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
                 .iter()
                 .map(|(actor, cursor)| (SavedActorId::from(actor), *cursor))
                 .collect();
-            admitted.sort_by(|left, right| (left.0.slot, left.0.generation).cmp(&(right.0.slot, right.0.generation)));
+            admitted.sort_by_key(|entry| (entry.0.slot, entry.0.generation));
             QcQuakeWorldCheckpoint {
                 signon: self
                     .signon

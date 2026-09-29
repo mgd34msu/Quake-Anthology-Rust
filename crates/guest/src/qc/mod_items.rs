@@ -29,6 +29,9 @@ use super::mod_provider::{
 };
 use crate::error::GuestError;
 
+/// Inventory entries plus their backing `(field, word)` pairs.
+type InventoryWords = (Vec<QcInventoryEntry>, Vec<(String, f64)>);
+
 /// Validate item declarations against a program.
 pub fn validate_qc_items(program: &dyn QcProgramView, declaration: &ModCallbackDeclaration) -> Result<(), GuestError> {
     let items = match declaration.items.as_ref() {
@@ -354,6 +357,7 @@ pub trait QcItemDispatch {
     fn invoke(&mut self, call: &ModSourceCall, inputs: &QcModInputs) -> Result<f64, GuestError>;
 }
 
+#[derive(Clone)]
 struct Entry {
     owner: OwnedActor,
     reference: i32,
@@ -439,8 +443,8 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
             }
         }
         // Seed the observation cache.
-        let seeded = self.read_all(reference)?;
-        for (field, value) in seeded {
+        let (_entries, words) = self.read_all(reference)?;
+        for (field, value) in words {
             self.last.insert((actor.clone(), field), value);
         }
         self.entries.insert(actor.clone(), entry);
@@ -476,7 +480,7 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
     }
 
     /// Read all entries plus their backing words.
-    fn read_all(&self, reference: i32) -> Result<(Vec<QcInventoryEntry>, Vec<(String, f64)>), GuestError> {
+    fn read_all(&self, reference: i32) -> Result<InventoryWords, GuestError> {
         let mut entries = Vec::new();
         let mut words = Vec::new();
         for storage in &self.definition.storage {

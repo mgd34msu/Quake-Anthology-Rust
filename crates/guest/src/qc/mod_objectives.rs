@@ -222,9 +222,9 @@ mod tests {
             indirections: vec!["owner".to_string()],
             field: "state".to_string(),
         };
-        let mut seen = Vec::new();
+        let seen = std::cell::RefCell::new(Vec::new());
         let location = resolve_qc_objective_storage(&machine, &storage, &|reference| {
-            seen.push(reference);
+            seen.borrow_mut().push(reference);
             Ok(())
         })
         .unwrap();
@@ -236,7 +236,7 @@ mod tests {
                 name: "state".to_string()
             }
         );
-        assert_eq!(seen, vec![None, Some(5), Some(9)]);
+        assert_eq!(*seen.borrow(), vec![None, Some(5), Some(9)]);
     }
 
     #[test]

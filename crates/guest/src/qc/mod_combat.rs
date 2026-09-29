@@ -69,8 +69,7 @@ pub fn validate_qc_mod_combat(program: &dyn QcProgramView, combat: &ModCombatDec
 /// Validate a points-only armor grant.
 fn validate_empty_armor(item: &str, absorption: f64) -> Result<(), GuestError> {
     if !["q1:item_armor1", "q1:item_armor2", "q1:item_armorInv"].contains(&item)
-        || !absorption.is_finite()
-        || f64::from(absorption as f32) != absorption
+        || !(absorption as f32).is_finite()
         || absorption < 0.0
     {
         return Err(GuestError::invalid(

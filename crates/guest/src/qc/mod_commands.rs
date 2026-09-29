@@ -109,7 +109,13 @@ mod tests {
 
     #[test]
     fn rejects_non_byte_argument_text() {
-        let argv = vec!["give".to_string(), "x".to_string(), "héllo".to_string()];
+        let argv = vec!["give".to_string(), "x".to_string(), "hĀllo".to_string()];
         assert!(qc_console_call(&command(), &argv, "").is_err());
+    }
+
+    #[test]
+    fn accepts_byte_text_argument() {
+        let argv = vec!["give".to_string(), "x".to_string(), "héllo".to_string()];
+        assert!(qc_console_call(&command(), &argv, "").is_ok());
     }
 }

@@ -99,7 +99,7 @@ pub fn qc_protection_regions(
         if let Some((field, mask, values)) = &selection {
             if field == &names[0]
                 || values.is_empty()
-                || values.iter().collect::<HashSet<_>>().len() != values.len()
+                || values.iter().map(|value| value.to_bits()).collect::<HashSet<_>>().len() != values.len()
                 || values
                     .iter()
                     .any(|value| !value.is_finite() || f64::from(*value as f32) != *value)
@@ -389,6 +389,12 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
         })
     }
 
+    /// Owning provider identity.
+    #[must_use]
+    pub fn provider(&self) -> &ProviderId {
+        &self.provider
+    }
+
     /// Resolved region absorbs.
     #[must_use]
     pub fn regions(&self) -> &[QcArmorStageView] {
@@ -520,7 +526,10 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
             }
         };
         let item = item.ok_or_else(|| GuestError::invalid("QC regular armor selection is undeclared"))?;
-        Ok(QcRegularArmor { points, item })
+        Ok(QcRegularArmor {
+            points,
+            item: Some(item),
+        })
     }
 
     /// Read powered protection.

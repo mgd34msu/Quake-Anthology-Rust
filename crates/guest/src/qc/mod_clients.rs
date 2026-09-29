@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn frame_runs_think_and_calls() {
         let mut services = FakeServices::new();
-        let actor = services.join(1);
+        let _actor = services.join(1);
         let mut bindings = QcModClientBindings::new(services, FakeOps::default(), declaration());
         bindings.start().unwrap();
         assert!(bindings.frame(1, &frame()).unwrap());

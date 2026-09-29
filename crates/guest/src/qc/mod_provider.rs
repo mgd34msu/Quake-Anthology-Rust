@@ -450,7 +450,7 @@ pub fn validate_source_match_field(binding: &ModActorBinding) -> Result<(), Gues
     let mut teams = Vec::with_capacity(values.len());
     for entry in values {
         // f64 has no Hash; compare by exact equality instead.
-        if scalars.iter().any(|known: &f64| *known == entry.value) || teams.contains(&entry.team) {
+        if scalars.contains(&entry.value) || teams.contains(&entry.team) {
             return Err(GuestError::invalid(
                 "Team projection requires distinct original values and shared identities",
             ));
@@ -664,9 +664,10 @@ pub enum ProtectionChannel {
 }
 
 /// Protection admission policy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ProtectionAdmission {
     /// Claim the channel.
+    #[default]
     Claim,
     /// Replace the current primary.
     ReplaceCurrentPrimary,
@@ -675,12 +676,6 @@ pub enum ProtectionAdmission {
         /// Owner to replace.
         owner: ProviderId,
     },
-}
-
-impl Default for ProtectionAdmission {
-    fn default() -> Self {
-        Self::Claim
-    }
 }
 
 /// Protection absorb lowering.
@@ -1792,9 +1787,11 @@ fn validate_actor_fields(program: &dyn QcProgramView, declaration: &ModCallbackD
         let count = declaration
             .actor_fields
             .iter()
-            .filter(|field| match (&field.binding, binding) {
-                (ModActorBinding::Team { .. }, "team") | (ModActorBinding::Score, "score") => true,
-                _ => false,
+            .filter(|field| {
+                matches!(
+                    (&field.binding, binding),
+                    (ModActorBinding::Team { .. }, "team") | (ModActorBinding::Score, "score")
+                )
             })
             .count();
         if count > 1 {
@@ -1833,31 +1830,31 @@ fn validate_actor_fields(program: &dyn QcProgramView, declaration: &ModCallbackD
                         "Mod client input fields require declared applications and scalar nonzero updates",
                     ));
                 }
-                if let Some(scale) = scale {
-                    if !scale.is_finite() || *scale == 0.0 || *input == ModClientInput::ViewAngles {
-                        return Err(GuestError::invalid(
-                            "QC input scale requires a finite nonzero scalar encoding",
-                        ));
-                    }
-                }
-            }
-            ModActorBinding::ClientFlags { grounded, private_mask } => {
-                if let Some(mask) = private_mask {
-                    let reserved = 8 | 128 | (if *grounded { 512 } else { 0 });
-                    if *mask < 0 || *mask > 0x7f_ffff || (*mask & reserved) != 0 {
-                        return Err(GuestError::invalid(
-                            "Mod private client flags overlap canonical flags or exceed the source flag word",
-                        ));
-                    }
-                }
-            }
-            ModActorBinding::Userinfo { key } => {
-                if declaration.clients.is_none() || key.is_empty() || key.contains(['\\', '\0']) {
+                if scale.is_some_and(|scale| !scale.is_finite() || scale == 0.0 || *input == ModClientInput::ViewAngles)
+                {
                     return Err(GuestError::invalid(
-                        "Mod userinfo field requires a declared client and valid info key",
+                        "QC input scale requires a finite nonzero scalar encoding",
                     ));
                 }
             }
+            ModActorBinding::ClientFlags { grounded, private_mask } => {
+                let reserved = 8 | 128 | (if *grounded { 512 } else { 0 });
+                let overlaps =
+                    private_mask.is_some_and(|mask| !(0..=0x7f_ffff).contains(&mask) || (mask & reserved) != 0);
+                if overlaps {
+                    return Err(GuestError::invalid(
+                        "Mod private client flags overlap canonical flags or exceed the source flag word",
+                    ));
+                }
+            }
+            ModActorBinding::Userinfo { key }
+                if declaration.clients.is_none() || key.is_empty() || key.contains(['\\', '\0']) =>
+            {
+                return Err(GuestError::invalid(
+                    "Mod userinfo field requires a declared client and valid info key",
+                ));
+            }
+            ModActorBinding::Userinfo { .. } => {}
             _ => {}
         }
         let field = program
@@ -3466,13 +3463,7 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
                 | ModActorBinding::BoundsMin
                 | ModActorBinding::BoundsMax
                 | ModActorBinding::ViewOffset => "vector",
-                ModActorBinding::ClientInput { input, .. } => {
-                    if *input == ModClientInput::ViewAngles {
-                        "vector"
-                    } else {
-                        "float"
-                    }
-                }
+                ModActorBinding::ClientInput { input, .. } if *input == ModClientInput::ViewAngles => "vector",
                 _ => "float",
             };
             layout = layout.field(&field.field, type_name);
@@ -3671,13 +3662,15 @@ mod tests {
         }
     }
 
+    type FakeInvocation = (String, Vec<ModRuntimeValue>, Vec<(String, ModRuntimeValue)>);
+
     struct FakeMachine {
         program: FakeProgram,
         offsets: HashMap<String, i32>,
         slots: Vec<HashMap<i32, SlotWord>>,
         strings: Vec<String>,
         globals: HashMap<String, f32>,
-        invocations: Vec<(String, Vec<ModRuntimeValue>, Vec<(String, ModRuntimeValue)>)>,
+        invocations: Vec<FakeInvocation>,
         result: f64,
     }
 
@@ -4396,6 +4389,10 @@ mod tests {
         declared.client_presentation = Some(QcModClientPresentation {
             hud: QcClientHud::ReplaceVitals,
             view: QcClientView::SetView,
+        });
+        declared.clients = Some(ModClientDeclaration {
+            maximum: 16,
+            ..ModClientDeclaration::default()
         });
         let mut provider = QcModProvider::new(
             machine,
