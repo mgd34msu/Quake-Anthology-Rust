@@ -769,12 +769,12 @@ impl NativeModArmorState {
                         && item.selection.field().record == item.points.record
                         && item.selection.field().offset == item.points.offset
                 });
-        let power_matches = match (&armor.powered, &result.powered) {
-            (PoweredProtection::None, PoweredProtection::None) => true,
-            (PoweredProtection::Screen { .. }, PoweredProtection::Screen { .. })
-            | (PoweredProtection::Shield { .. }, PoweredProtection::Shield { .. }) => true,
-            _ => false,
-        };
+        let power_matches = matches!(
+            (&armor.powered, &result.powered),
+            (PoweredProtection::None, PoweredProtection::None)
+                | (PoweredProtection::Screen { .. }, PoweredProtection::Screen { .. })
+                | (PoweredProtection::Shield { .. }, PoweredProtection::Shield { .. })
+        );
         let regular_item_matches = match (&armor.regular, &result.regular) {
             (RegularArmor::None, RegularArmor::None) => true,
             (

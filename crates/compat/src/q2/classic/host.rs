@@ -1170,9 +1170,8 @@ impl ClassicQ2GuestHost {
                 let index = self.services.resource_index("model", &model);
                 self.models.insert(index, model.clone());
                 self.memory.write_i32(self.memory.offset(record.address, 40)?, index)?;
-                if model.starts_with('*') {
-                    model[1..]
-                        .parse::<usize>()
+                if let Some(rest) = model.strip_prefix('*') {
+                    rest.parse::<usize>()
                         .map_err(|_| ClassicQ2Error::invalid("API 3 inline model name is not numeric"))?;
                     let bounds = self.services.inline_bounds;
                     let mins_at = self.memory.offset(record.address, 188)?;

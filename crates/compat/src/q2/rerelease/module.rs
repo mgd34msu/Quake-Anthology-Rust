@@ -148,6 +148,9 @@ pub struct ModuleWorldSummary {
     pub client_inventory_count: usize,
 }
 
+/// Pmove interceptor around scripted Pmove calls.
+pub type PmoveInterceptor = Box<dyn FnMut(&mut SparseGuestMemory, GuestAddress) -> Result<(), ModuleError>>;
+
 /// Mutable guest state shared with scripted handlers.
 pub struct ModuleState {
     /// Guest memory.
@@ -169,7 +172,7 @@ pub struct ModuleState {
     /// World summary, if selected.
     pub world_summary: Option<ModuleWorldSummary>,
     /// Pmove interceptors around scripted Pmove calls.
-    pub pmove_interceptors: Vec<Box<dyn FnMut(&mut SparseGuestMemory, GuestAddress) -> Result<(), ModuleError>>>,
+    pub pmove_interceptors: Vec<PmoveInterceptor>,
     /// Whether an input owner is bound.
     pub input_bound: bool,
 }
@@ -364,6 +367,9 @@ pub const CGAME_IMPORT_NAMES: &[&str] = &[
     "CL_InAutoDemoLoop",
 ];
 
+/// Host callback dispatching rerelease import calls.
+type ImportHandler = Box<dyn FnMut(&mut ModuleState, &RereleaseImportCall) -> Result<GuestCallResult, ModuleError>>;
+
 /// One interpreter, memory and synchronous runner serve both API tables.
 /// Headless port: scripted handlers answer native calls; imports dispatch
 /// to a host callback.
@@ -374,7 +380,7 @@ pub struct RereleaseGuestModule {
     pub game_layout: GuestLayout,
     /// Cgame export table layout.
     pub cgame_layout: GuestLayout,
-    import_handler: Box<dyn FnMut(&mut ModuleState, &RereleaseImportCall) -> Result<GuestCallResult, ModuleError>>,
+    import_handler: ImportHandler,
 }
 
 impl RereleaseGuestModule {

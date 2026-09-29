@@ -119,7 +119,7 @@ pub fn parse_native_compatibility(value: &JsonValue, execution: &NativeExecution
                 inventory,
                 drop,
                 pickups,
-                world: read_classic_world_profile(&reader.field("world"), digest),
+                world: Box::new(read_classic_world_profile(&reader.field("world"), digest)),
             }
         } else {
             NativePrimaryProfile::Rerelease {
@@ -129,7 +129,7 @@ pub fn parse_native_compatibility(value: &JsonValue, execution: &NativeExecution
                 inventory,
                 drop,
                 pickups,
-                world: read_rerelease_world_profile(&reader.field("world"), digest),
+                world: Box::new(read_rerelease_world_profile(&reader.field("world"), digest)),
             }
         })
     });

@@ -804,12 +804,12 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
         channel: ProtectionChannel,
     ) -> Result<Vec<(GuestAddress, ProtectionField, f64)>, ProtectionError> {
         if channel == ProtectionChannel::Powered {
-            let changed = match (&current.powered, &next.powered) {
-                (PoweredProtection::None, PoweredProtection::None) => false,
-                (PoweredProtection::Screen { .. }, PoweredProtection::Screen { .. })
-                | (PoweredProtection::Shield { .. }, PoweredProtection::Shield { .. }) => false,
-                _ => true,
-            };
+            let changed = !matches!(
+                (&current.powered, &next.powered),
+                (PoweredProtection::None, PoweredProtection::None)
+                    | (PoweredProtection::Screen { .. }, PoweredProtection::Screen { .. })
+                    | (PoweredProtection::Shield { .. }, PoweredProtection::Shield { .. })
+            );
             if changed {
                 return Err(ProtectionError::PowerActivation);
             }

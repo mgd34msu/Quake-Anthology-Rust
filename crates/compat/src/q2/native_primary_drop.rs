@@ -92,6 +92,9 @@ impl ConsumerGate {
 /// Canonical drop action replacing an original callback.
 pub type DropAction = Box<dyn FnOnce()>;
 
+/// Canonical action replacing an original callback.
+pub type DropActionHook = Box<dyn FnMut(NativeActorId, ItemId) -> Option<DropAction>>;
+
 /// Drop hooks owned by the caller.
 pub struct DropHooks {
     /// Canonical rows, or `None` without a canonical inventory.
@@ -105,7 +108,7 @@ pub struct DropHooks {
     /// Consumer continuation approval.
     pub consume: Box<dyn FnMut(NativeActorId, &mut ConsumerGate)>,
     /// Canonical action replacing an original callback.
-    pub action: Box<dyn FnMut(NativeActorId, ItemId) -> Option<DropAction>>,
+    pub action: DropActionHook,
     /// Client print.
     pub print: Box<dyn FnMut(NativeActorId, String)>,
 }

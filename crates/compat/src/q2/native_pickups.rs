@@ -371,12 +371,15 @@ struct PickupFrame {
     supply: Option<SupplyEvaluation>,
 }
 
+/// Weapon-supply ownership hook.
+pub type SupplyOwner = Box<dyn Fn(NativeActorId, &ItemId, NativeActorId) -> bool>;
+
 /// The complete original caller owns eligibility, feedback, targets and item
 /// lifetime. Touch/grant phases are explicit methods; tests emulate originals.
 pub struct NativePrimaryPickups {
     profile: NativePickupProfile,
     consumer_hook: Option<Box<dyn FnMut(NativeActorId, ProtectionChannel)>>,
-    supply_owner: Option<Box<dyn Fn(NativeActorId, &ItemId, NativeActorId) -> bool>>,
+    supply_owner: Option<SupplyOwner>,
     frames: Vec<PickupFrame>,
     closed: bool,
 }
@@ -431,7 +434,7 @@ impl NativePrimaryPickups {
     }
 
     /// Bind the weapon-supply owner; fails when busy, closed or already bound.
-    pub fn bind_supply(&mut self, owner: Box<dyn Fn(NativeActorId, &ItemId, NativeActorId) -> bool>) -> HostResult<()> {
+    pub fn bind_supply(&mut self, owner: SupplyOwner) -> HostResult<()> {
         self.assert_idle()?;
         if self.closed || self.supply_owner.is_some() {
             return Err(NativeHostError::Fault(
@@ -824,14 +827,10 @@ impl NativePrimaryPickups {
             }
             None => Vec::new(),
         };
-        if self.supply_owner.is_some() {
+        if let Some(owner) = self.supply_owner.as_ref() {
             let frame = &self.frames[frame_index];
             let counter = self.counter(host, frame, frame.descriptor)?;
-            let owned = self.supply_owner.as_ref().expect("owner")(
-                frame.offer.recipient,
-                &frame.offer.item,
-                frame.offer.pickup,
-            );
+            let owned = owner(frame.offer.recipient, &frame.offer.item, frame.offer.pickup);
             host.core.memory.write_i32(counter, i32::from(owned))?;
         }
         let evaluation = SupplyEvaluation {

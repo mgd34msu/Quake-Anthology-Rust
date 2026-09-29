@@ -460,6 +460,9 @@ impl NativeModDeferredDamageState {
     }
 
     /// Run the original deferred processor, publishing the source reaction.
+    // Seven parameters mirror the donor `process` signature one-to-one;
+    // bundling them would hide the call-site argument order the donor fixes.
+    #[allow(clippy::too_many_arguments)]
     pub fn process<R>(
         &mut self,
         host: &mut impl DeferredDamageHost,

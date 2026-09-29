@@ -2100,7 +2100,7 @@ pub fn builtin_native_primary(digest: &str, edition: PrimaryEdition) -> Option<N
                 inventory,
                 drop,
                 pickups,
-                world,
+                world: Box::new(world),
             })
         }
     }

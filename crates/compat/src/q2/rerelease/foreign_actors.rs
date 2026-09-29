@@ -387,7 +387,7 @@ impl RereleaseForeignActors {
         if !self.is_live(actor) {
             return Err(ForeignActorError::StaleActor);
         }
-        if self.projections.get(&actor).is_none() {
+        if !self.projections.contains_key(&actor) {
             let slot = self.next_slot;
             self.next_slot += 1;
             let address = self.memory.allocate(&GuestAllocationOptions::bytes(self.stride))?;

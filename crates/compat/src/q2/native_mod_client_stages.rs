@@ -113,11 +113,14 @@ impl InlineRegionHost for SyntheticStageHost {
     }
 }
 
+/// Extra teardown contributed by a stage scope.
+pub type StageExtra = Rc<dyn Fn() -> Box<dyn FnMut()>>;
+
 struct ActiveScope {
     call: StageCall,
     removals: Vec<u64>,
     teardown: Option<Box<dyn FnMut()>>,
-    extra: Option<Rc<dyn Fn() -> Box<dyn FnMut()>>>,
+    extra: Option<StageExtra>,
 }
 
 /// Client call stages: exclusions follow the innermost active original call.
@@ -170,7 +173,7 @@ impl NativeModClientStages {
         host: &mut H,
         call: &StageCall,
         invoke: impl FnOnce(&mut Self, &mut H) -> T,
-        extra: Option<Rc<dyn Fn() -> Box<dyn FnMut()>>>,
+        extra: Option<StageExtra>,
     ) -> T {
         let mut previous = self.active.take();
         if let Some(scope) = previous.as_mut() {

@@ -40,8 +40,8 @@ pub enum Q3ImportError {
         slot: usize,
         /// Service name.
         service: String,
-        /// Call that reached the slot.
-        context: GuestCallContext,
+        /// Call that reached the slot (boxed: call contexts dwarf the error).
+        context: Box<GuestCallContext>,
     },
     /// Engine host reported a game error.
     #[error("{0}")]
@@ -348,7 +348,7 @@ impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
                     Err(Q3ImportError::ServiceUnavailable {
                         slot,
                         service: service.clone(),
-                        context: context.clone(),
+                        context: Box::new(context.clone()),
                     })
                 }),
                 false,

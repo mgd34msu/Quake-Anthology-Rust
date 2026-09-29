@@ -300,6 +300,9 @@ pub struct HostOptions {
     pub native_entries: bool,
 }
 
+/// Import interceptor: returns a scripted result for an (api, name) call.
+type ImportIntercept = Box<dyn FnMut(&str, &str, &[GuestCallValue]) -> Option<GuestCallResult>>;
+
 /// Source bytes back the shared actor authorities. This class owns no
 /// simulation clock. Headless port over a synthetic engine.
 pub struct RereleaseQ2GuestHost {
@@ -340,7 +343,7 @@ pub struct RereleaseQ2GuestHost {
     closed: bool,
     headless_debug: bool,
     foreign_enabled: bool,
-    intercept: Option<Box<dyn FnMut(&str, &str, &[GuestCallValue]) -> Option<GuestCallResult>>>,
+    intercept: Option<ImportIntercept>,
     box_filter: Option<Box<dyn FnMut(u32) -> i32>>,
     scripted_saves: VecDeque<Vec<u8>>,
     edict: GuestLayout,

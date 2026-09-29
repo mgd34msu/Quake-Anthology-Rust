@@ -154,12 +154,15 @@ pub struct DeathDrop {
     pub ammo: i32,
 }
 
+/// Unknown-item give hook; returns true to skip the original path.
+pub type GiveItemHook = Box<dyn FnMut(NativeActorId, &[String]) -> bool>;
+
 /// Command hooks owned by the caller.
 pub struct CommandHooks {
     /// Give-path observation.
     pub give: Box<dyn FnMut(NativeActorId, GiveCategory)>,
     /// Unknown-item give; returns true to skip the original path.
-    pub give_item: Box<dyn FnMut(NativeActorId, &[String]) -> bool>,
+    pub give_item: GiveItemHook,
     /// Observed ammo grant.
     pub give_ammo: Box<dyn FnMut(NativeActorId, ItemId, AmmoChange)>,
     /// Death-drop projection, or `None` to run the original.

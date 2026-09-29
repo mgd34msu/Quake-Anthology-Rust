@@ -726,6 +726,9 @@ fn entry_json(entry: &DeclEntry) -> String {
 }
 
 /// Serialize a declaration canonically through validation.
+// Nested `format!` calls build the JSON sections bottom-up; inlining them
+// into one format string would obscure the section boundaries.
+#[allow(clippy::format_in_format_args)]
 pub fn serialize_native_weapon_declaration(value: &NativeWeaponBehaviorDeclaration) -> String {
     let commands = |commands: &[DeclCommand]| {
         commands
