@@ -568,9 +568,11 @@ mod tests {
     fn probes_and_crossfades() {
         let mut warnings = Vec::new();
         let environments = parse_environments(JSON, &mut |message| warnings.push(message.to_string())).unwrap();
-        let mut selector = EnvironmentReverb::new(environments, Box::new(|_, end, _, _| AudioTrace {
+        let mut selector = EnvironmentReverb::new(environments, Box::new(|start, end, mins, _| AudioTrace {
+            // Probe sweeps hit at the origin (a small room); the floor sweep
+            // reports stone.
             fraction: 0.5,
-            end,
+            end: if mins == [0.0; 3] { start } else { end },
             material: Some("stone".to_string()),
             sky: false,
         }));

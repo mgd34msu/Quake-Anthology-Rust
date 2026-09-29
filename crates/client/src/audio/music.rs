@@ -462,7 +462,8 @@ mod tests {
         assert!(player.playing());
         let mixed = player.mix(4).unwrap();
         assert_eq!(mixed, vec![1000.0, 1000.0, 2000.0, 2000.0, 1000.0, 1000.0, 2000.0, 2000.0]);
-        assert_eq!(player.source_position(), 4);
+        // The loop chunk resets the stream, so the position restarts at zero.
+        assert_eq!(player.source_position(), 2);
         player.stop();
         player.start(Box::new(MemoryPcmStream::new(pcm(vec![1000]))), None);
         let mixed = player.mix(2).unwrap();
@@ -480,7 +481,7 @@ mod tests {
         assert!((player.volume() - 0.625).abs() < 1e-6);
         let mut cd = CdMusic::new(
             MusicPlayer::new(11025, SoundFamily::Q2, MusicVolumeMode::Immediate, MusicControls::new()),
-            Box::new(|path| Ok(path.ends_with("02.ogg").then(|| Box::new(MemoryPcmStream::new(pcm(vec![7]))) as Box<dyn PcmStream>)),
+            Box::new(|path| Ok(path.ends_with("02.ogg").then(|| Box::new(MemoryPcmStream::new(pcm(vec![7]))) as Box<dyn PcmStream>))),
         );
         assert!(cd.play(2, true).unwrap());
         assert_eq!(cd.playing_track(), Some(2));

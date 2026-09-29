@@ -362,7 +362,7 @@ impl RawAudioStream {
                 return Err(AudioError::CheckpointDiscontinuity);
             }
         }
-        let mut stream = Self {
+        let stream = Self {
             segments,
             input_rate: value.input_rate as u32,
             channels,
@@ -465,7 +465,7 @@ impl RawAudioStream {
     }
 
     /// Mix frames with an optional refill.
-    pub fn mix(&mut self, frames: usize, gain: f64, refill: Option<&mut dyn FnMut() -> Result<Option<StreamPcm>, AudioError>>) -> Result<Vec<f64>, AudioError> {
+    pub fn mix(&mut self, frames: usize, gain: f64, mut refill: Option<&mut dyn FnMut() -> Result<Option<StreamPcm>, AudioError>>) -> Result<Vec<f64>, AudioError> {
         let mut output = vec![0.0; frames * 2];
         if self.paused {
             return Ok(output);

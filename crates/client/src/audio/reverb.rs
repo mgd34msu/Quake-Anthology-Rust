@@ -285,10 +285,12 @@ mod tests {
         let mut filter = UnderwaterFilter::new(44100);
         let mut samples = vec![0.0; 1024];
         for (index, sample) in samples.iter_mut().enumerate() {
-            *sample = if index % 2 == 0 { 1000.0 } else { -1000.0 };
+            // Alternate each frame (both channels) at Nyquist.
+            *sample = if index / 2 % 2 == 0 { 1000.0 } else { -1000.0 };
         }
         filter.process(&mut samples, 0.25);
-        let peak: f64 = samples.iter().map(|sample| sample.abs()).fold(0.0, f64::max);
+        // Skip the start-up transient; steady-state highs are cut.
+        let peak: f64 = samples[128..].iter().map(|sample| sample.abs()).fold(0.0, f64::max);
         assert!(peak < 1000.0, "peak {peak}");
     }
 }

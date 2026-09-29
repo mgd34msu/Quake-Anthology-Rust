@@ -40,7 +40,7 @@ pub struct SoundBank<Content: SoundContent> {
 impl<Content: SoundContent> SoundBank<Content> {
     /// Bank over content.
     #[must_use]
-    pub const fn new(content: Content) -> Self {
+    pub fn new(content: Content) -> Self {
         Self {
             content,
             assets: HashMap::new(),

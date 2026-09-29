@@ -32,7 +32,7 @@ pub struct DecodedWav {
 }
 
 fn reject(source: &str, offset: usize, message: impl Into<String>) -> AudioError {
-    AudioError::Binary(BinaryError::new(source, offset, message).to_string())
+    AudioError::Binary(BinaryError::custom(source, offset, message).to_string())
 }
 
 fn four_cc(reader: &mut BinaryReader) -> Result<String, AudioError> {
@@ -474,8 +474,8 @@ mod tests {
         bytes.extend_from_slice(&1u16.to_le_bytes());
         bytes.extend_from_slice(&1u16.to_le_bytes());
         bytes.extend_from_slice(&11025u32.to_le_bytes());
-        bytes.extend_from_slice(&11025u32.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&22050u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
         bytes.extend_from_slice(&16u16.to_le_bytes());
         bytes.extend_from_slice(b"data");
         bytes.extend_from_slice(&8u32.to_le_bytes());

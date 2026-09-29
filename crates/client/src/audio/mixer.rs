@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use qa_core::cvar::CvarRegistry;
-use qa_core::math::{add3, dot3, length3, normalize3, sub3, vec3, Axis, Vec3};
+use qa_core::math::{add3, dot3, length3, sub3, vec3, Axis, Vec3};
 
 use super::error::AudioError;
 use super::paint::{int32, write_linear_blast_stereo16_float};
@@ -244,13 +244,23 @@ enum Notification {
     Stopped,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct PreparedSound {
     doppler_sums: Option<Vec<f64>>,
     sound: SharedPcm,
     step256: f64,
     memory: Option<SharedMixerMemory>,
     output_frames: usize,
+}
+
+impl std::fmt::Debug for PreparedSound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedSound")
+            .field("output_frames", &self.output_frames)
+            .field("step256", &self.step256)
+            .field("memory", &self.memory.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +283,8 @@ struct OneShotVoice {
 struct LoopVoice {
     prepared: PreparedSound,
     entity: i64,
+    /// Frame velocity at update time (donor state; Doppler uses the scales).
+    #[allow(dead_code)]
     velocity: Vec3,
     volume: f64,
     lifetime: LoopLifetime,
@@ -569,7 +581,7 @@ impl AudioMixer {
             sound: asset,
             output_sample: self.painted_time,
             sample_rate: self.output_rate,
-            source_offset_seconds: 0f64.max(self.painted_time - start_sample) as f64 / f64::from(self.output_rate),
+            source_offset_seconds: 0i64.max(self.painted_time - start_sample) as f64 / f64::from(self.output_rate),
         };
         if let Some(observer) = self.voice_observer.as_mut() {
             observer(event);
@@ -900,7 +912,7 @@ impl AudioMixer {
         options: &SourceSoundOptions,
         command: &ChannelCommand,
         policy: VoicePolicy,
-        random: Option<&mut dyn FnMut() -> i64>,
+        mut random: Option<&mut dyn FnMut() -> i64>,
         scheduled: Option<(i64, i64)>,
         asset: Option<SoundAsset>,
     ) -> Result<bool, AudioError> {
@@ -1207,7 +1219,7 @@ impl AudioMixer {
         require_entity(options.entity, self.entity_capacity, None)?;
         require_channel_volume(options.volume.unwrap_or(127))?;
         let prepared = self.prepare(sound)?;
-        if self.prepared_output_frames(&prepared) == 0 {
+        if Self::prepared_output_frames(&prepared) == 0 {
             return Err(AudioError::ZeroLoop);
         }
         let previous = self.loops.get(&options.entity).cloned();
@@ -1269,7 +1281,7 @@ impl AudioMixer {
         require_entity(options.entity, self.entity_capacity, None)?;
         require_channel_volume(options.volume.unwrap_or(90))?;
         let prepared = self.prepare(sound)?;
-        if self.prepared_output_frames(&prepared) == 0 {
+        if Self::prepared_output_frames(&prepared) == 0 {
             return Err(AudioError::ZeroLoop);
         }
         let previous = self.loops.get(&options.entity).cloned();
@@ -1297,7 +1309,7 @@ impl AudioMixer {
         let stale: Vec<i64> = self
             .loops
             .iter()
-            .filter(|(_, loop_voice)| kill_all || loop_voice.lifetime == LoopLifetime::Frame || self.prepared_output_frames(&loop_voice.prepared) == 0)
+            .filter(|(_, loop_voice)| kill_all || loop_voice.lifetime == LoopLifetime::Frame || Self::prepared_output_frames(&loop_voice.prepared) == 0)
             .map(|(entity, _)| *entity)
             .collect();
         for entity in stale {
@@ -1502,7 +1514,7 @@ impl AudioMixer {
         while output_frames > 0 && (((output_frames - 1) as f64 * f64::from(scale)) as f32).trunc() as i64 >= sound.frame_count as i64 {
             output_frames -= 1;
         }
-        while (((output_frames as f64) * f64::from(scale)) as f32).trunc() as i64 < sound.frame_count as i64 {
+        while ((((output_frames as f64) * f64::from(scale)) as f32).trunc() as i64) < sound.frame_count as i64 {
             output_frames += 1;
             if output_frames.abs() >= 9_007_199_254_740_992 {
                 return Err(AudioError::BadRawFrames);
@@ -1587,6 +1599,11 @@ impl AudioMixer {
             memory: None,
             output_frames: output_frames as usize,
         })
+    }
+
+    /// Live output frame count (bank-backed sounds read the bank).
+    fn prepared_output_frames(prepared: &PreparedSound) -> usize {
+        prepared.memory.as_ref().map_or(prepared.output_frames, |memory| memory.borrow().frame_count(&prepared.sound))
     }
 
     /// Read the signed-int allocation clock.
@@ -1859,7 +1876,7 @@ impl AudioMixer {
         }
         let output_frames = loop_mix.prepared.output_frames as i64;
         let scaled_offset = ((source_offset as f32) * loop_mix.old_doppler_scale as f32).trunc() as i64;
-        let chunk_count = output_frames.div_ceil(SND_CHUNK_SIZE as i64).max(1);
+        let chunk_count = ((output_frames + SND_CHUNK_SIZE as i64 - 1) / SND_CHUNK_SIZE as i64).max(1);
         let mut chunk = if scaled_offset < 0 {
             0
         } else {
@@ -1948,9 +1965,10 @@ impl AudioMixer {
 
     /// Add a truncated float contribution to a paint cell.
     fn add_float_paint(paint: &mut [f64], index: usize, contribution: f64) -> Result<(), AudioError> {
+        let length = paint.len();
         let cell = paint.get_mut(index).ok_or_else(|| AudioError::BadPaintIndex {
             index: index.to_string(),
-            length: paint.len().to_string(),
+            length: length.to_string(),
         })?;
         *cell += contribution.trunc();
         Ok(())

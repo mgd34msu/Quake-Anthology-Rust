@@ -211,7 +211,7 @@ impl SourceDmaBuffer<'_> {
 /// Swap raw sample bytes on big-endian hosts (`S_ByteSwapRawSamples`).
 pub fn byte_swap_raw_samples(samples: i32, width: i32, channels: i32, data: &mut [u8], little_endian: bool) -> Result<(), AudioError> {
     if width != 2 || little_endian {
-        return;
+        return Ok(());
     }
     let samples = if channels == 2 { samples.wrapping_shl(1) } else { samples };
     for index in 0..samples.max(0) as usize {
@@ -378,7 +378,7 @@ impl SourceCompressedPainter {
         buffer_offset: usize,
         volume: f64,
     ) -> Result<(), AudioError> {
-        let mut current = sound.sound_data.as_ref().ok_or(AudioError::NullPaintChunk)?;
+        let mut current = sound.sound_data.as_deref().ok_or(AudioError::NullPaintChunk)?;
         while sample_offset >= 2048 {
             current = current.next.as_deref().or(sound.sound_data.as_deref()).ok_or(AudioError::NullPaintChunk)?;
             sample_offset -= 2048;
@@ -389,7 +389,7 @@ impl SourceCompressedPainter {
                 sample_offset += 1;
                 Self::add(paint, buffer_offset + index, i32::from(codec.mu_law_sample(byte)), channel, volume)?;
                 if sample_offset == 2048 {
-                    current = current.next.as_ref().ok_or(AudioError::NullPaintChunk)?;
+                    current = current.next.as_deref().ok_or(AudioError::NullPaintChunk)?;
                     sample_offset = 0;
                 }
             }

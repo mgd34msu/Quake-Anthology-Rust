@@ -22,7 +22,7 @@ use super::output::{audio_output_format, encode_output_pcm, resample_queued_pcm,
 use super::reverb::{StereoReverb, UnderwaterFilter};
 use super::streams::{RawAudioStream, RawCheckpoint};
 use super::types::{AudioAudience, AudioListener, AudioStreamTarget, AudioVoiceClock, AudioVoiceEvent, LoopLifetime, LoopSound, PlaySound, SoundAsset, SoundOrigin, StreamPcm, StreamSamples};
-use crate::audio::{source_sound_channel, ChannelCommand, SoundChannel, SoundFamily};
+use crate::audio::{source_sound_channel, SoundChannel, SoundFamily};
 
 /// Default seat mixer capacity (96 voices).
 const SEAT_MIXER_CAPACITY: usize = 96;
@@ -888,7 +888,7 @@ impl UnifiedAudio {
                         attenuation: request.attenuation,
                     },
                     &command,
-                    Some(&mut **random),
+                    Some(&mut *random),
                     Some(request.sound.clone()),
                 )?,
                 SoundFamily::Q2 => state.mixer.start_q2_sound(
@@ -2008,7 +2008,7 @@ mod tests {
             gain: 1.0,
             audience: AudioAudience::World,
         };
-        audio.restore_stream_checkpoint(target2, Some(checkpoint)).unwrap();
+        audio.restore_stream_checkpoint(target2.clone(), Some(checkpoint)).unwrap();
         audio.restore_stream_checkpoint(
             AudioStreamTarget {
                 id: "noop".to_string(),
@@ -2020,7 +2020,7 @@ mod tests {
         .unwrap();
         assert!(audio.capture_stream_checkpoint("noop").unwrap().is_none());
         assert!(matches!(
-            audio.restore_stream_checkpoint(target, Some(RawCheckpoint {
+            audio.restore_stream_checkpoint(target2.clone(), Some(RawCheckpoint {
                 output_rate: 44100,
                 input_rate: 44100,
                 channels: 2,

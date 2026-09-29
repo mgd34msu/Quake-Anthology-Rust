@@ -72,7 +72,7 @@ pub enum EncodedPcm<'a> {
 }
 
 /// Encode stereo PCM for the output format.
-pub fn encode_output_pcm(stereo: &[i16], format: &AudioOutputFormat) -> Result<EncodedPcm<'_>, AudioError> {
+pub fn encode_output_pcm<'a>(stereo: &'a [i16], format: &AudioOutputFormat) -> Result<EncodedPcm<'a>, AudioError> {
     if stereo.len() % 2 != 0 {
         return Err(AudioError::StereoFrames);
     }

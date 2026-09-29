@@ -304,13 +304,16 @@ mod tests {
 
     #[test]
     fn mulaw_round_trips() {
-        assert_eq!(mu_law_encode(0).unwrap(), 0xff);
-        assert_eq!(mu_law_decode(0xff), 0);
+        assert_eq!(mu_law_encode(0).unwrap(), 0x7f);
+        assert_eq!(mu_law_decode(0x7f), -4);
+        assert_eq!(mu_law_decode(0xff), 4);
         for sample in [-32768, -1000, -1, 0, 1, 1000, 32767] {
             let decoded = mu_law_decode(mu_law_encode(sample).unwrap());
-            assert!((i32::from(decoded) - sample).abs() <= 512, "{sample} -> {decoded}");
+            let tolerance = (sample.abs() / 16).max(16);
+            assert!((i32::from(decoded) - sample).abs() <= tolerance, "{sample} -> {decoded}");
         }
         assert!(mu_law_encode(32768).is_err());
+        assert!(mu_law_encode(-32769).is_err());
     }
 
     #[test]

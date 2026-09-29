@@ -232,7 +232,7 @@ pub fn adpcm_memory_needed(sample_count: i32, input_rate: i32, output_rate: i32)
     }
     let scaled = scaled as i32;
     let sample_memory = scaled / 2;
-    let block_count = scaled.div_ceil(ADPCM_CHUNK_SAMPLES as i32);
+    let block_count = (scaled + ADPCM_CHUNK_SAMPLES as i32 - 1) / ADPCM_CHUNK_SAMPLES as i32;
     Ok(sample_memory + block_count * 4)
 }
 
