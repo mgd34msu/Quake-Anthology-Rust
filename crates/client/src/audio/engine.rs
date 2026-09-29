@@ -315,7 +315,7 @@ fn family_tag(family: SoundFamily) -> &'static str {
     }
 }
 
-fn loop_key(family: SoundFamily, entity: i64, owner: &Option<ProviderId>) -> String {
+fn loop_key(family: SoundFamily, entity: i64, owner: Option<&ProviderId>) -> String {
     match owner {
         None => format!("{}:{entity}", family_tag(family)),
         Some(owner) => format!("{}:{entity}:{}:{}", family_tag(family), owner.namespace, owner.name),
@@ -501,7 +501,10 @@ impl UnifiedAudio {
             output_handoff_pending: false,
             previous_pump_frame: None,
             pump_intervals: Vec::new(),
-            milliseconds: Rc::from(options.milliseconds),
+            milliseconds: {
+                let clock = options.milliseconds;
+                Rc::new(move || clock())
+            },
             random: options.random,
             max_actors: options.max_actors.unwrap_or(DEFAULT_MAX_ACTORS),
             on_sound: options.on_sound,
@@ -943,7 +946,7 @@ impl UnifiedAudio {
                 SoundOrigin::Fixed { position } => *position,
                 SoundOrigin::Actor { .. } => self.positions.get(&entity).copied().ok_or(AudioError::LoopPosition)?,
             };
-            state.loops.insert(loop_key(request.family, entity, &request.owner), request.clone());
+            state.loops.insert(loop_key(request.family, entity, request.owner.as_ref()), request.clone());
             if request.family == SoundFamily::Q3 {
                 let owned = q3_entity.expect("q3 entity");
                 let volume = (request.volume * (if request.lifetime == LoopLifetime::Frame { 127.0 } else { 90.0 })).trunc() as i32;
@@ -984,7 +987,8 @@ impl UnifiedAudio {
 
     /// Push accumulated loops into every seat mixer.
     pub fn end_loop_frame(&mut self) -> Result<(), AudioError> {
-        for index in 0..self.mix.seats.len() {
+        let seats = self.mix.seats.len();
+        for index in 0..seats {
             let listener = self.mix.seats[index].listener.borrow().clone();
             let loops: Vec<LoopSound> = self.mix.seats[index].loops.values().cloned().collect();
             let mut entries = Vec::new();
@@ -1029,7 +1033,7 @@ impl UnifiedAudio {
             }
             let mut removed_q3 = false;
             state.loops.retain(|_, existing| {
-                let hit = existing.actor == *actor && existing.owner == owner.cloned();
+                let hit = existing.actor == *actor && existing.owner.as_ref() == owner;
                 if hit && existing.family == SoundFamily::Q3 {
                     removed_q3 = true;
                 }
@@ -1075,14 +1079,15 @@ impl UnifiedAudio {
         let index = self.seat_index(seat)?;
         let owned = self.entity(actor, owner)?;
         let base = self.entity(actor, None)?;
-        let key = loop_key(SoundFamily::Q3, base, &owner.cloned());
-        let state = &mut self.mix.seats[index];
-        match state.loops.get(&key) {
+        let key = loop_key(SoundFamily::Q3, base, owner);
+        let remove = match self.mix.seats[index].loops.get(&key) {
             Some(existing) if matches!(&existing.audience, AudioAudience::World) => return Ok(()),
-            Some(existing) if matches!(&existing.audience, AudioAudience::Seat { seat: target } if target == seat) => {
-                state.loops.remove(&key);
-            }
-            _ => {}
+            Some(existing) => matches!(&existing.audience, AudioAudience::Seat { seat: target } if target == seat),
+            None => false,
+        };
+        let state = &mut self.mix.seats[index];
+        if remove {
+            state.loops.remove(&key);
         }
         state.mixer.stop_looping_sound(owned)
     }
@@ -1345,7 +1350,7 @@ impl UnifiedAudio {
                     }
                     return Err(error.error);
                 }
-                let mut previous = self.device.take().expect("checked");
+                let previous = self.device.take().expect("checked");
                 let previous_name = previous.device_name();
                 let previous_buffer = previous.buffer_frames();
                 previous.close_box();

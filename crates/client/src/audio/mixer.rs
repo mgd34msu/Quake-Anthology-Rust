@@ -1788,11 +1788,9 @@ impl AudioMixer {
     /// Sample a Doppler loop chunk, stabilizing overrun tails as zero.
     fn doppler_sample(memory: &Option<SharedMixerMemory>, prepared: &PreparedSound, chunk: i64, sample_offset: i64) -> Result<i32, AudioError> {
         let output_frame = chunk * SND_CHUNK_SIZE as i64 + (sample_offset & (SND_CHUNK_SIZE as i64 - 1));
-        if memory.is_some() {
+        if let Some(memory) = memory {
             let frame = usize::try_from(output_frame).map_err(|_| AudioError::NegativeLoopAccess)?;
-            if let Some(memory) = memory {
-                return Ok(memory.borrow().sample(&prepared.sound, frame));
-            }
+            return Ok(memory.borrow().sample(&prepared.sound, frame));
         }
         if output_frame < 0 {
             return Err(AudioError::NegativeLoopAccess);
@@ -1981,15 +1979,15 @@ impl AudioMixer {
             }
             let mut left_volume = volume.left;
             let mut right_volume = volume.right;
-            for later in index + 1..loops.len() {
-                if loops[later].doppler || !Rc::ptr_eq(&loops[later].prepared.sound, &loops[index].prepared.sound) {
+            for candidate in &loops[index + 1..] {
+                if candidate.doppler || !Rc::ptr_eq(&candidate.prepared.sound, &loops[index].prepared.sound) {
                     continue;
                 }
-                merged.insert(loops[later].entity);
-                let position = self.position_for_entity(loops[later].entity)?;
-                let volume = self.spatialize_origin(position, loops[later].volume)?;
+                merged.insert(candidate.entity);
+                let position = self.position_for_entity(candidate.entity)?;
+                let volume = self.spatialize_origin(position, candidate.volume)?;
                 if let (Some(time), Some(memory)) = (time, self.sound_memory.as_ref()) {
-                    memory.borrow_mut().touch(&loops[later].prepared.sound, time);
+                    memory.borrow_mut().touch(&candidate.prepared.sound, time);
                 }
                 left_volume += volume.left;
                 right_volume += volume.right;
@@ -2132,10 +2130,9 @@ impl AudioMixer {
                     Self::paint_effect(&mut paint, output_frame as usize, sample, stereo, effects_gain)?;
                 }
             }
-            for index in 0..self.loop_channels.len() {
+            for loop_mix in &mut self.loop_channels {
                 let skip = self.sound_memory.as_ref().is_some_and(|memory| {
-                    let prepared = &self.loop_channels[index].prepared;
-                    !memory.borrow().has_data(&prepared.sound) || memory.borrow().frame_count(&prepared.sound) == 0
+                    !memory.borrow().has_data(&loop_mix.prepared.sound) || memory.borrow().frame_count(&loop_mix.prepared.sound) == 0
                 });
                 if skip {
                     continue;
@@ -2143,7 +2140,6 @@ impl AudioMixer {
                 let memory = self.sound_memory.clone();
                 let painted_time = self.painted_time;
                 let doppler_enabled = self.doppler_enabled;
-                let loop_mix = &mut self.loop_channels[index];
                 Self::paint_loop(&mut paint, &memory, doppler_enabled, painted_time, count, loop_mix, effects_gain)?;
             }
             if self.diagnostic_setting("s_testsound")? != 0 {
