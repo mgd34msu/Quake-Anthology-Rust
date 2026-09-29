@@ -6,12 +6,10 @@
 //! selections, `src/console/{buffer,field,commands,log,session,metrics,
 //! discovery,dedicated,source-field,draw,llm,llm-batch}.ts`,
 //! `src/settings/{config,restart,server/*}.ts`, `src/llm/*`, and
-//! `src/debug/*`. Bots, persistence, and the interactive menu stay out
-//! until their donor contracts are ported; the loop here is headless
-//! (`NullRenderer` + audio channel pool) and deterministic.
-//!
-//! Out of scope by plan (see `README.md`): `src/platform/*` (native
-//! backends; headless traits already exist).
+//! `src/debug/*`. Bots and the interactive menu complete under their
+//! owning port lanes; the loop here is headless (`NullRenderer` + audio
+//! channel pool) and deterministic until the render/client-rest lanes
+//! land. Native backends live in `qa-platform`.
 
 pub mod application;
 pub mod cli;
