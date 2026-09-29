@@ -556,51 +556,49 @@ where
         let status = self.status_of(&row);
         let rules = status.as_ref().map(|status| &status.rules);
         let rule = |key: &str| rules.and_then(|rules| rules.get(key)).map(String::as_str).unwrap_or("");
-        let text = self.info(
-            &[
-                ("hostname".to_owned(), self.name(&row)?),
-                (
-                    "mapname".to_owned(),
-                    utf16_slice(
-                        &source_command_text(status.as_ref().map(|status| status.map.as_str()).unwrap_or(""))?,
-                        31,
-                    ),
+        let text = self.info(&[
+            ("hostname".to_owned(), self.name(&row)?),
+            (
+                "mapname".to_owned(),
+                utf16_slice(
+                    &source_command_text(status.as_ref().map(|status| status.map.as_str()).unwrap_or(""))?,
+                    31,
                 ),
-                (
-                    "clients".to_owned(),
-                    status.as_ref().map(|status| status.players).unwrap_or(0).to_string(),
-                ),
-                (
-                    "sv_maxclients".to_owned(),
-                    status
-                        .as_ref()
-                        .map(|status| status.max_players)
-                        .unwrap_or(0)
-                        .to_string(),
-                ),
-                ("ping".to_owned(), row.ping.to_string()),
-                ("minping".to_owned(), native_atoi(rule("minping"))?.to_string()),
-                ("maxping".to_owned(), native_atoi(rule("maxping"))?.to_string()),
-                ("game".to_owned(), utf16_slice(&source_command_text(rule("game"))?, 31)),
-                ("gametype".to_owned(), native_atoi(rule("gametype"))?.to_string()),
-                (
-                    "nettype".to_owned(),
-                    if row.address.is_none() {
-                        "0".to_owned()
-                    } else {
-                        "1".to_owned()
-                    },
-                ),
-                (
-                    "addr".to_owned(),
-                    row.address
-                        .as_ref()
-                        .map(|address| address_key(address, true))
-                        .unwrap_or_else(|| "bot".to_owned()),
-                ),
-                ("punkbuster".to_owned(), native_atoi(rule("punkbuster"))?.to_string()),
-            ],
-        )?;
+            ),
+            (
+                "clients".to_owned(),
+                status.as_ref().map(|status| status.players).unwrap_or(0).to_string(),
+            ),
+            (
+                "sv_maxclients".to_owned(),
+                status
+                    .as_ref()
+                    .map(|status| status.max_players)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            ("ping".to_owned(), row.ping.to_string()),
+            ("minping".to_owned(), native_atoi(rule("minping"))?.to_string()),
+            ("maxping".to_owned(), native_atoi(rule("maxping"))?.to_string()),
+            ("game".to_owned(), utf16_slice(&source_command_text(rule("game"))?, 31)),
+            ("gametype".to_owned(), native_atoi(rule("gametype"))?.to_string()),
+            (
+                "nettype".to_owned(),
+                if row.address.is_none() {
+                    "0".to_owned()
+                } else {
+                    "1".to_owned()
+                },
+            ),
+            (
+                "addr".to_owned(),
+                row.address
+                    .as_ref()
+                    .map(|address| address_key(address, true))
+                    .unwrap_or_else(|| "bot".to_owned()),
+            ),
+            ("punkbuster".to_owned(), native_atoi(rule("punkbuster"))?.to_string()),
+        ])?;
         if let Some(write) = write {
             write(&text);
         }
