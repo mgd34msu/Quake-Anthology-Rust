@@ -93,12 +93,12 @@ pub fn console_glyph_metrics(
     let code = character as u32;
     let is_text = (32..=126).contains(&code) || character.is_alphabetic() || character.is_numeric();
     let cap = if is_text { resolved.atlas.cap_ink.as_ref() } else { None };
-    let normalization = cap.map_or(1.0, |cap| if cap.height > 0 { 6.0 / cap.height as f32 } else { 1.0 });
+    let normalization = cap.map_or(1.0, |cap| if cap.height > 0.0 { 6.0 / cap.height } else { 1.0 });
     let natural = resolved.glyph.width as f32 * line_height / resolved.atlas.line_height.max(1) as f32 * normalization;
     let fit = (cell_width / natural.max(1.0)).min(1.0);
     Ok(ConsoleGlyphFit {
         line_height: line_height * normalization * fit,
-        top: cap.map_or(0.0, |cap| cap.top as f32) * line_height / 8.0 * normalization * fit,
+        top: cap.map_or(0.0, |cap| cap.top) * line_height / 8.0 * normalization * fit,
     })
 }
 
