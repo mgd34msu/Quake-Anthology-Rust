@@ -2453,7 +2453,7 @@ mod tests {
         let owner = IdentityOwner::create("test").unwrap();
         let mut audio = engine(FakeFactory::named(&[]));
         let seat = listener(&owner, 0);
-        audio.set_listeners(&[seat.clone()]).unwrap();
+        audio.set_listeners(std::slice::from_ref(&seat)).unwrap();
         audio.set_geometry_transmission(Some(Box::new(|_, _| 0.5))).unwrap();
         audio
             .set_environment(

@@ -284,7 +284,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
             .hooks
             .as_ref()
             .and_then(|hooks| hooks.shape())
-            .unwrap_or_else(|| self.input.fields().shape.clone());
+            .unwrap_or_else(|| self.input.fields().shape);
         match (&source, self.owned_bounds) {
             (TraceShape::Point, _) | (_, None) => source,
             (TraceShape::Box(_), Some(bounds)) => TraceShape::Box(bounds),
@@ -312,7 +312,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
             .hooks
             .as_ref()
             .and_then(|hooks| hooks.shape())
-            .unwrap_or_else(|| self.input.fields().shape.clone());
+            .unwrap_or_else(|| self.input.fields().shape);
         let (TraceShape::Box(_) | TraceShape::Capsule(_)) = source else {
             panic!("A player body output requires a selected collision hull");
         };

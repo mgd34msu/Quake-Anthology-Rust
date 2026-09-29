@@ -272,11 +272,10 @@ impl WeaponStep<'_, '_, '_> {
             }
             _ => {}
         }
-        if self.state.weapon_time <= 0 || self.state.weapon_state != S::FIRING {
-            if self.state.weapon != self.cmd.weapon {
-                let requested = self.cmd.weapon;
-                self.begin_weapon_change(requested);
-            }
+        if (self.state.weapon_time <= 0 || self.state.weapon_state != S::FIRING) && self.state.weapon != self.cmd.weapon
+        {
+            let requested = self.cmd.weapon;
+            self.begin_weapon_change(requested);
         }
         if self.state.weapon_time > 0 {
             return;
@@ -332,20 +331,10 @@ impl WeaponStep<'_, '_, '_> {
                     400
                 }
             }
-            W::PROX_LAUNCHER => {
-                if mission {
-                    800
-                } else {
-                    400
-                }
-            }
-            W::CHAINGUN => {
-                if mission {
-                    30
-                } else {
-                    400
-                }
-            }
+            W::PROX_LAUNCHER if mission => 800,
+            W::PROX_LAUNCHER => 400,
+            W::CHAINGUN if mission => 30,
+            W::CHAINGUN => 400,
             _ => 400,
         };
         let persistent = if mission { self.state.persistent_powerup_tag } else { 0 };
@@ -409,7 +398,9 @@ mod tests {
         }
     }
 
-    fn recorders() -> (Rc<RefCell<Vec<i32>>>, Rc<RefCell<Vec<i32>>>) {
+    type Recorders = (Rc<RefCell<Vec<i32>>>, Rc<RefCell<Vec<i32>>>);
+
+    fn recorders() -> Recorders {
         (Rc::new(RefCell::new(Vec::new())), Rc::new(RefCell::new(Vec::new())))
     }
 

@@ -526,10 +526,10 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         if !contact && state.enemy.is_some() && self.close_enough(actor.id(), goal, distance) {
             return Ok(());
         }
-        if self.services.next_random() & 3 == 1 || !self.step_direction(actor, state.ideal_yaw, distance)? {
-            if self.services.read(actor.id()).is_some() {
-                self.new_chase_direction(actor, goal, distance)?;
-            }
+        if (self.services.next_random() & 3 == 1 || !self.step_direction(actor, state.ideal_yaw, distance)?)
+            && self.services.read(actor.id()).is_some()
+        {
+            self.new_chase_direction(actor, goal, distance)?;
         }
         Ok(())
     }

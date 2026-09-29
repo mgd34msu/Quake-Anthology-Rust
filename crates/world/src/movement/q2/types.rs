@@ -387,6 +387,10 @@ pub struct KexPmoveCmd {
     pub server_frame: i32,
 }
 
+/// Entity trace callback.
+pub type Q2EntityTrace<'a> =
+    Box<dyn FnMut(SrcVec3, SrcVec3, SrcVec3, SrcVec3, Option<MovementEntity>, i32) -> TraceT + 'a>;
+
 /// Rerelease pmove block (`KexPmoveT`).
 pub struct KexPmove<'a> {
     /// State words.
@@ -414,7 +418,7 @@ pub struct KexPmove<'a> {
     /// Moving player.
     pub player: Option<MovementEntity>,
     /// Entity trace callback.
-    pub trace: Box<dyn FnMut(SrcVec3, SrcVec3, SrcVec3, SrcVec3, Option<MovementEntity>, i32) -> TraceT + 'a>,
+    pub trace: Q2EntityTrace<'a>,
     /// World-only clip callback.
     pub clip: Box<dyn FnMut(SrcVec3, SrcVec3, SrcVec3, SrcVec3, i32) -> TraceT + 'a>,
     /// Point-contents callback.
@@ -781,6 +785,7 @@ pub struct Q2RereleasePresentation {
 
 /// Rerelease movement result.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Q2RereleaseMovementResult {
     /// Active result with presentation.
     Active {
@@ -877,6 +882,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn stuck_results_cover_source() {
         assert_ne!(StuckResult::GoodPosition, StuckResult::NoGoodPosition);
         assert_eq!(PM_CONFIG_DEFAULT.airaccel, 0.0);

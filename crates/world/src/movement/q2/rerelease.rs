@@ -399,6 +399,7 @@ impl RereleaseRunner<'_> {
     /// Generic step-slide move over any trace callback. Native
     /// duplicate-plane recovery addresses the shared pml origin even when
     /// the swept origin is a server entity or a temporary probe.
+    #[allow(clippy::too_many_arguments)]
     pub fn step_slide_move_generic(
         &mut self,
         origin: &mut SrcVec3,
@@ -1207,9 +1208,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         if self.pm.cmd.buttons & button::JUMP == 0 && self.pm.cmd.forwardmove <= 0.0 {
             return;
         }
-        if self.pm.waterlevel != water_level::WAIST {
-            return;
-        } else if self.pm.watertype & CONTENTS_NO_WATERJUMP != 0 {
+        if self.pm.waterlevel != water_level::WAIST || self.pm.watertype & CONTENTS_NO_WATERJUMP != 0 {
             return;
         }
         let probe = math.add(origin, math.muls(flatforward, 40.0));

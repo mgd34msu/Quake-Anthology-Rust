@@ -348,8 +348,8 @@ impl ClassicRunner<'_, '_> {
         let mut wishvel = self.math.vec3(0.0, 0.0, 0.0);
         let fmove = self.equipment_speed(self.pm.cmd.forwardmove);
         let smove = self.equipment_speed(self.pm.cmd.sidemove);
-        for i in 0..2 {
-            wishvel[i] = f64::from(self.n.store(self.n.add(
+        for (i, slot) in wishvel.iter_mut().enumerate().take(2) {
+            *slot = f64::from(self.n.store(self.n.add(
                 self.n.mul(self.pml.forward[i], fmove),
                 self.n.mul(self.pml.right[i], smove),
             )));
@@ -694,9 +694,9 @@ impl ClassicRunner<'_, '_> {
             self.n
                 .store(character_height(&self.pm.character_bounds, -24.0, &self.n)),
         );
-        if self.pm.s.pm_type == pm_type::DEAD {
-            self.pm.s.pm_flags |= pm_flags::DUCKED;
-        } else if self.pm.cmd.upmove < 0.0 && self.pm.s.pm_flags & pm_flags::ON_GROUND != 0 {
+        if self.pm.s.pm_type == pm_type::DEAD
+            || self.pm.cmd.upmove < 0.0 && self.pm.s.pm_flags & pm_flags::ON_GROUND != 0
+        {
             self.pm.s.pm_flags |= pm_flags::DUCKED;
         } else if self.pm.s.pm_flags & pm_flags::DUCKED != 0 {
             self.pm.maxs[2] = f64::from(self.n.store(character_height(&self.pm.character_bounds, 32.0, &self.n)));
@@ -824,8 +824,7 @@ impl ClassicRunner<'_, '_> {
         for i in AXES {
             base[i] = self.pm.s.origin[i] as i16;
         }
-        for j in 0..8 {
-            let bits = JITTERBITS[j];
+        for bits in JITTERBITS {
             for i in AXES {
                 self.pm.s.origin[i] = to_short(base[i] as f64);
             }

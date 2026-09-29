@@ -57,7 +57,7 @@ pub fn accept_body_bounds(previous: &Bounds, requested: &Bounds, clear: impl FnO
 
 /// Validate a Q2 usercmd duration byte.
 pub fn command_duration(milliseconds: i32) -> Result<(), MovementError> {
-    if milliseconds < 0 || milliseconds > 255 {
+    if !(0..=255).contains(&milliseconds) {
         return Err(MovementError::Range(
             "Quake II usercmd duration must fit its source byte",
         ));

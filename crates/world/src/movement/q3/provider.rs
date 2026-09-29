@@ -58,13 +58,16 @@ pub struct Q3TracePolicy {
     pub contents_mask: i32,
 }
 
+/// Locomotion diagnostics print callback.
+pub type Q3DiagnosticPrint = Rc<RefCell<dyn FnMut(&str)>>;
+
 /// Locomotion diagnostics sink.
 #[derive(Clone)]
 pub struct Q3Diagnostics {
     /// Print level (zero disables output).
     pub level: i32,
     /// Print callback.
-    pub print: Rc<RefCell<dyn FnMut(&str)>>,
+    pub print: Q3DiagnosticPrint,
 }
 
 /// Null movement hooks: nothing fires, phases pass snapshots through.
@@ -101,6 +104,12 @@ impl Q3MovementHooks for NoQ3Hooks {
     }
 }
 
+/// Character posture selector.
+pub type Q3PosturesFn = Rc<dyn Fn(&Q3MovementInput) -> Q3Postures>;
+
+/// Trace policy selector.
+pub type Q3TracePolicyFn = Rc<dyn Fn(&Q3MovementInput) -> Q3TracePolicy>;
+
 /// Quake III movement provider options.
 #[derive(Clone)]
 pub struct Q3MovementProviderOptions<H = NoQ3Hooks> {
@@ -109,9 +118,9 @@ pub struct Q3MovementProviderOptions<H = NoQ3Hooks> {
     /// Selected arsenal and character adapters.
     pub hooks: H,
     /// Character postures for the step.
-    pub postures: Rc<dyn Fn(&Q3MovementInput) -> Q3Postures>,
+    pub postures: Q3PosturesFn,
     /// Trace policy override (default selects the spectator-aware mask).
-    pub trace_policy: Option<Rc<dyn Fn(&Q3MovementInput) -> Q3TracePolicy>>,
+    pub trace_policy: Option<Q3TracePolicyFn>,
     /// Locomotion diagnostics.
     pub diagnostics: Option<Q3Diagnostics>,
 }
@@ -246,7 +255,7 @@ impl<H: Q3MovementHooks> ProviderDriver<'_, H> {
             motion: motion.clone(),
             state: self.movement_state(motion),
             command: self.command,
-            frame: self.frame.clone(),
+            frame: self.frame,
             arsenal: self.arsenal.clone(),
             animation: self.animation.clone(),
         }
@@ -306,7 +315,7 @@ impl<H: Q3MovementHooks> Q3MotionDriver for ProviderDriver<'_, H> {
         self.frame = FrameContext {
             time: SourceTime::Milliseconds(active_command.server_time),
             elapsed: SourceTime::Milliseconds(msec),
-            ..self.input.fields.frame.clone()
+            ..self.input.fields.frame
         };
         if self.has_application {
             self.application_open = true;
@@ -472,7 +481,7 @@ pub fn move_q3<H: Q3MovementHooks>(
             "The Q3 movement implementation requires binary32 operations",
         ));
     }
-    let environment = input.fields.environment.clone();
+    let environment = input.fields.environment;
     let initial_mode = client_movement_mode(environment.client_outputs.as_ref(), environment.health);
     let multiplier = environment.speed_multiplier.unwrap_or(1.0);
     let source = input.state.clone();
@@ -533,7 +542,7 @@ pub fn move_q3<H: Q3MovementHooks>(
         id: options.id.clone(),
         hooks: options.hooks,
         command: q3_command(&input.command),
-        frame: input.fields.frame.clone(),
+        frame: input.fields.frame,
         source_state: source,
         mode_projected: initial_mode.is_some(),
         arsenal: input.fields.arsenal.clone(),

@@ -57,8 +57,8 @@ fn finish_inner<S: Q1MovementServices, H: Q1MovementHooks>(
         context.input.fields().command_sequence,
         context.input.fields().arsenal.clone(),
         context.input.fields().animation.clone(),
-        context.input.fields().environment.clone(),
-        context.input.frame().clone(),
+        context.input.fields().environment,
+        *context.input.frame(),
     );
     let mut state = context.source_state(state);
     if !matches!(state, Q1State::Netquake(_) | Q1State::Quakeworld(_)) {

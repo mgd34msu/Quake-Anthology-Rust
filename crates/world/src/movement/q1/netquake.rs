@@ -72,7 +72,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
     }
 
     fn apply_client_mode(&mut self) {
-        let environment = self.context.input.environment().clone();
+        let environment = *self.context.input.environment();
         if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health) {
             self.context.project_client_mode();
             self.state.move_type = client_movement_type(MovementDialect::Q1Netquake, mode);
@@ -87,7 +87,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         };
         self.state = state;
         self.apply_client_mode();
-        let environment = self.context.input.environment().clone();
+        let environment = *self.context.input.environment();
         if environment.flight && environment.health > 0.0 && self.state.move_type == Q1_MOVE_WALK {
             self.state.move_type = Q1_MOVE_FLY;
         }
@@ -1128,7 +1128,7 @@ pub fn move_netquake<S: Q1MovementServices, H: Q1MovementHooks>(
         return mover.physics_step();
     }
     let mut current = input.clone();
-    let frame = current.fields.frame.clone();
+    let frame = current.fields.frame;
     let before = services
         .input_application()
         .map(|application| {

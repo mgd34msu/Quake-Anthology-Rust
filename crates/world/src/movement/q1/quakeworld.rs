@@ -58,7 +58,7 @@ pub fn quake_world_command_slices(
 }
 
 fn check_milliseconds(milliseconds: i32) -> Result<(), MovementError> {
-    if milliseconds < 0 || milliseconds > 255 {
+    if !(0..=255).contains(&milliseconds) {
         return Err(MovementError::Range(
             "QuakeWorld command milliseconds must fit its source byte",
         ));
@@ -102,7 +102,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
             ));
         };
         self.state = state;
-        let environment = self.context.input.environment().clone();
+        let environment = *self.context.input.environment();
         if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health) {
             self.context.project_client_mode();
             self.state.spectator = client_movement_type(MovementDialect::Q1Quakeworld, mode);
@@ -624,7 +624,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         wish = self.context.math.vec(
             f64::from(wish.x),
             f64::from(wish.y),
-            n.add(f64::from(wish.z), self.context.speed(f64::from(self.command.up_move))),
+            n.add(f64::from(wish.z), self.context.speed(self.command.up_move)),
         );
         let normalized = self.context.math.normalize(wish);
         let cap = if collide {
@@ -666,7 +666,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         if !authoritative || self.context.services.input_application().is_none() {
             return self.step_physics(command);
         }
-        let mut frame = self.context.input.frame().clone();
+        let mut frame = *self.context.input.frame();
         frame.elapsed = qa_core::time::SourceTime::Milliseconds(command.milliseconds);
         let before = self
             .context
@@ -757,7 +757,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         let axes = self.context.math.angles(self.state.angles);
         self.forward = axes.forward;
         self.right = axes.right;
-        let environment = self.context.input.environment().clone();
+        let environment = *self.context.input.environment();
         if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health) {
             if mode == super::super::types::ModClientMovementMode::Freeze {
                 self.state.velocity = ZERO;

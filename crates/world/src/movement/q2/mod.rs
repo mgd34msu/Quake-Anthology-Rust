@@ -427,7 +427,7 @@ pub fn move_q2_classic<S: Q2MovementServices>(
     if !authoritative || services.input_application().is_none() {
         return move_q2_classic_physics(input, services);
     }
-    let mut frame = input.fields.frame.clone();
+    let mut frame = input.fields.frame;
     frame.elapsed = SourceTime::Milliseconds(input.command.milliseconds);
     let before = services.input_application().expect("input application present").begin(
         UserCommand::Q2Classic(input.command),
@@ -679,7 +679,7 @@ pub fn move_q2_rerelease<S: Q2MovementServices>(
     if !authoritative || services.input_application().is_none() {
         return move_q2_rerelease_physics(input, services, context);
     }
-    let mut frame = input.fields.frame.clone();
+    let mut frame = input.fields.frame;
     frame.elapsed = SourceTime::Milliseconds(input.command.milliseconds);
     let before = services.input_application().expect("input application present").begin(
         UserCommand::Q2Rerelease(input.command),

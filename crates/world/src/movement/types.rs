@@ -604,6 +604,7 @@ pub struct MovementResultFields<T> {
 /// Movement outcome: active state or synchronous removal, mirroring donor
 /// `MovementOutcome`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum MovementOutcome<State, Contact> {
     /// Active result with state to write back.
     Active {

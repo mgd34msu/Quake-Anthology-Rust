@@ -72,7 +72,7 @@ pub fn update_view_angles(motion: &mut Q3Motion, command: &Q3Command) {
 /// QVM each-op angle vectors, mirroring donor `qvmAngleVectors`.
 #[must_use]
 pub fn qvm_angle_vectors(angles: Vec3) -> AngleVectors {
-    let radians = (std::f32::consts::PI * 2.0 / 360.0) as f32;
+    let radians = std::f32::consts::PI * 2.0 / 360.0;
     let yaw = angles.y * radians;
     let pitch = angles.x * radians;
     let roll = angles.z * radians;
@@ -1006,7 +1006,7 @@ pub fn move_player(
     options: &mut Q3MotionOptions<'_>,
 ) -> Result<Q3MotionResult, MovementError> {
     for axis in [command.forwardmove, command.rightmove, command.upmove] {
-        if axis < -128 || axis > 127 {
+        if !(-128..=127).contains(&axis) {
             return Err(MovementError::Range("Command movement must be a signed byte"));
         }
     }
