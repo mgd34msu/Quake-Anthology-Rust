@@ -321,8 +321,7 @@ impl VmRegistry {
 
     /// Reserve `name`, returning the existing registration on re-reserve.
     pub fn reserve(&self, name: &str) -> Result<VmRegistration, GuestError> {
-        let end = name.find('\0').unwrap_or(name.len());
-        let source_name = &name[..end];
+        let source_name = name.split('\0').next().unwrap_or("");
         if source_name.is_empty() {
             return Err(qvm_fatal_error("VM_Create: bad parms"));
         }
@@ -485,6 +484,23 @@ mod tests {
         let fresh = registry.reserve("qagame").unwrap();
         assert_eq!(fresh.binding(), VmBinding::Initializing);
         assert_eq!(registration.binding(), VmBinding::Freed);
+    }
+
+    #[test]
+    fn execution_profiles_validate_trace_levels() {
+        let (registry, _) = registry();
+        let registration = registry.reserve("qagame").unwrap();
+        assert_eq!(registration.execution_profile(), QvmExecutionProfile::Release);
+        assert_eq!(
+            QvmExecutionProfile::debug(2, 7).unwrap(),
+            QvmExecutionProfile::Debug {
+                trace: 2,
+                break_function: 7
+            }
+        );
+        assert!(QvmExecutionProfile::debug(3, 0).is_err());
+        registration.free();
+        assert_eq!(registration.execution_profile(), QvmExecutionProfile::Release);
     }
 
     #[test]

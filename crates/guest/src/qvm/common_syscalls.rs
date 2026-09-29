@@ -590,6 +590,11 @@ mod tests {
         harness.vm.memory().write_bytes(64, b"say x\0").unwrap();
         assert_eq!(run(&mut harness, QvmRole::Cgame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().reliable, vec!["say x".to_string()]);
+
+        let mut harness = harness(QvmRole::Cgame, 72, &[64]);
+        harness.vm.memory().write_bytes(64, b"+attack\0").unwrap();
+        assert_eq!(run(&mut harness, QvmRole::Cgame, None).unwrap(), 0);
+        assert_eq!(harness.services.borrow().removed, vec!["+attack".to_string()]);
     }
 
     #[test]

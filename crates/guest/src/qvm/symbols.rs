@@ -310,8 +310,7 @@ impl QvmSymbols {
     /// Byte offset of `name`, or zero when unknown.
     pub fn symbol_to_value(&self, name: &str) -> Result<i32, GuestError> {
         (self.assert_live)()?;
-        let end = name.find('\0').unwrap_or(name.len());
-        let symbol_name = &name[..end];
+        let symbol_name: String = name.chars().take_while(|character| *character != '\0').collect();
         Ok(self
             .records
             .iter()
@@ -326,9 +325,12 @@ impl QvmSymbols {
         }
         (self.assert_live)()?;
         let mut print = options.print;
-        let end = options.name.find('\0').unwrap_or(options.name.len());
-        let name = &options.name[..end];
-        let base = name.find('.').map_or(name, |dot| &name[..dot]);
+        let name: String = options
+            .name
+            .chars()
+            .take_while(|character| *character != '\0')
+            .collect();
+        let base = name.split('.').next().unwrap_or(&name);
         let requested = format!("vm/{base}.map");
         if requested.len() >= 64 {
             let overflow = requested.len();

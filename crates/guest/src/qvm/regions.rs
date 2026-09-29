@@ -87,7 +87,11 @@ pub fn qualify_qvm_region_evaluation(
     while !pending.is_empty() {
         // Re-fetch the smallest pending path each round: merging mutates the
         // map, so this cannot be a plain iterator loop.
-        let entry = pending.keys().next().copied().ok_or_else(|| GuestError::invalid("Missing QVM region input path"))?;
+        let entry = pending
+            .keys()
+            .next()
+            .copied()
+            .ok_or_else(|| GuestError::invalid("Missing QVM region input path"))?;
         let path = pending
             .remove(&entry)
             .ok_or_else(|| GuestError::invalid("Missing QVM region input path"))?;

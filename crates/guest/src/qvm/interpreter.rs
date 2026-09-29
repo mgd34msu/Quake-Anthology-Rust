@@ -59,7 +59,7 @@ pub type QvmArguments = [i32; 10];
 /// Capability for one live intercepted call, issued and checked by its interpreter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QvmCancellationScope {
-    id: u64,
+    pub(crate) id: u64,
 }
 
 /// Declared evaluation stack reservation.
@@ -1752,7 +1752,9 @@ impl QvmInterpreter {
             ranges: qualification.ranges.clone(),
             remaining: 100_000,
         });
-        let result = self.invoke(host, args, entry, None);
+        // Runs through invoke_inner (not invoke) so nested evaluation from host
+        // code works like the donor; the global counter guards the scope.
+        let result = self.invoke_inner(host, args, entry, None);
         let value = self.core.counter.as_ref().map(|counter| counter.value);
         self.core.counter = None;
         result?;

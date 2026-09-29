@@ -8,12 +8,15 @@
 //! Sync-port notes:
 //!
 //! - The donor is sync-or-async; here everything is synchronous. There is no
-//!   `call_async`.
+//!   `call_async`/`command_async`, and `create` collapses into `new` (UI
+//!   validation runs inline in the constructor).
 //! - The donor routes nested `call`/`command` through a `currentEntry` handle;
 //!   here nested calls from host code use the live `QvmSyscall` /
 //!   `QvmFunctionCall` handles directly, and `call`/`command` while active
 //!   fail (the interpreter reports it). `invoke_source_callback` reenters
-//!   through the passed function-call handle.
+//!   through the passed function-call handle. Hooks are not wrapped with the
+//!   module liveness check (the interpreter guards invocation liveness), and
+//!   `cancel_function` always reports the donor's missing-entry error.
 //! - `evaluate_counter` takes the nested call arguments directly (see the
 //!   interpreter docs).
 //! - Checkpoint and API types reuse `crate::checkpoint` (`GuestCheckpoint::Qvm`,
@@ -36,13 +39,14 @@ use crate::core::contracts::{
 };
 use crate::error::GuestError;
 
+use super::abi::QvmUiExport;
 use super::allocation::QvmAllocationProfile;
 use super::artifacts::ResolvedQvmArtifact;
 use super::guest_memory::QvmGuestMemory;
 use super::image::parse_qvm_restart;
 use super::interpreter::{
-    QvmFunctionCall, QvmFunctionHook, QvmFunctionObserver, QvmFunctionResolver, QvmHookToken, QvmInterpreter,
-    QvmObserverToken, QvmSemantics,
+    QvmArguments, QvmCancellationScope, QvmFunctionCall, QvmFunctionHook, QvmFunctionObserver, QvmFunctionResolver,
+    QvmHookToken, QvmInterpreter, QvmObserverToken, QvmSemantics,
 };
 use super::memory::QvmMemory;
 use super::regions::QvmRegionEvaluation;
@@ -58,18 +62,27 @@ pub fn qvm_numeric_profile() -> NumericProfile {
     Q3_BINARY32_PROFILE
 }
 
-/// API identity for `role` under `profile`. Legacy game/UI modules predate the
-/// Q3 API and report the Q1 game identity, matching the donor.
+/// API identity for `role` under `profile`, matching the donor versions.
 #[must_use]
 pub fn qvm_api(role: QvmRole, profile: QvmAbiProfile) -> GameApi {
     match (role, profile) {
         (QvmRole::Qagame, QvmAbiProfile::Modern) => GameApi::Q3Qagame { version: 8 },
-        (QvmRole::Qagame, QvmAbiProfile::Legacy116n) => GameApi::Q1Qagame { version: 6 },
-        (QvmRole::Cgame, QvmAbiProfile::Modern) => GameApi::Q3Cgame { version: 7 },
-        (QvmRole::Cgame, QvmAbiProfile::Legacy116n) => GameApi::Q3Cgame { version: 6 },
+        (QvmRole::Qagame, QvmAbiProfile::Legacy116n) => GameApi::Q3Qagame { version: 7 },
+        (QvmRole::Cgame, QvmAbiProfile::Modern) => GameApi::Q3Cgame { version: 4 },
+        (QvmRole::Cgame, QvmAbiProfile::Legacy116n) => GameApi::Q3Cgame { version: 3 },
         (QvmRole::Ui, QvmAbiProfile::Modern) => GameApi::Q3Ui { version: 6 },
-        (QvmRole::Ui, QvmAbiProfile::Legacy116n) => GameApi::Q1Qagame { version: 6 },
+        (QvmRole::Ui, QvmAbiProfile::Legacy116n) => GameApi::Q3Ui { version: 4 },
     }
+}
+
+/// Pad `words` to a ten-word guest entry block, rejecting longer slices.
+pub fn qvm_arguments(words: &[i32]) -> Result<QvmArguments, GuestError> {
+    if words.len() > 10 {
+        return Err(GuestError::invalid("QVM entry accepts at most ten argument words"));
+    }
+    let mut padded = [0i32; 10];
+    padded[..words.len()].copy_from_slice(words);
+    Ok(padded)
 }
 
 /// Execution profile for a QVM module.
@@ -117,7 +130,7 @@ pub struct QvmModuleOptions {
     /// Initial command arguments.
     pub command_arguments: Option<Vec<String>>,
     /// Host-owned durable state, if any.
-    pub state: Option<Box<dyn QvmHostState>>,
+    pub host_state: Option<Box<dyn QvmHostState>>,
 }
 
 impl std::fmt::Debug for QvmModuleOptions {
@@ -143,13 +156,14 @@ fn checkpoint_module(module: &ModuleIdentity) -> CheckpointModuleIdentity {
 pub struct QvmModule {
     module: ModuleIdentity,
     role: QvmRole,
+    api: GameApi,
     abi_profile: QvmAbiProfile,
     interpreter: QvmInterpreter,
     guest_memory: QvmGuestMemory,
     system: QvmSystemCall<Box<dyn QvmHost>>,
     commands: Rc<RefCell<Option<Vec<String>>>>,
     registration: Option<VmRegistration>,
-    state: Option<Box<dyn QvmHostState>>,
+    host_state: Option<Box<dyn QvmHostState>>,
     retired: bool,
 }
 
@@ -192,16 +206,18 @@ impl QvmModule {
             Box::new(move || (*captured.borrow()).clone()),
             abi_profile,
         );
+        let api = qvm_api(role, abi_profile);
         let mut module_instance = Self {
             module,
             role,
+            api,
             abi_profile,
             interpreter,
             guest_memory,
             system,
             commands,
             registration: options.registration,
-            state: options.state,
+            host_state: options.host_state,
             retired: false,
         };
         if module_instance.role == QvmRole::Ui {
@@ -236,30 +252,68 @@ impl QvmModule {
     pub fn profile(&self) -> QvmModuleProfile {
         QvmModuleProfile {
             module: self.module.clone(),
-            api: qvm_api(self.role, self.abi_profile),
+            api: self.api.clone(),
             magic: QVM_MAGIC_NUMBER,
             numeric: qvm_numeric_profile(),
         }
     }
 
+    /// Owned interpreter.
+    #[must_use]
+    pub fn interpreter(&self) -> &QvmInterpreter {
+        &self.interpreter
+    }
+
+    /// Interpreter address space.
+    #[must_use]
+    pub fn memory(&self) -> QvmMemory {
+        self.interpreter.memory()
+    }
+
+    /// Executor-facing guest memory.
+    #[must_use]
+    pub fn guest_memory(&self) -> &QvmGuestMemory {
+        &self.guest_memory
+    }
+
+    /// Cancel the current source invocation. Without the donor's suspended
+    /// entry handle this always reports the missing-entry error.
+    pub fn cancel_function(&self, _scope: &QvmCancellationScope) -> Result<i32, GuestError> {
+        self.live()?;
+        Err(GuestError::invalid(
+            "QVM cancellation requires the current source invocation",
+        ))
+    }
+
     fn live(&self) -> Result<(), GuestError> {
+        self.interpreter.memory().assert_not_publishing()?;
+        self.interpreter.memory().assert_live()?;
         if self.retired {
-            return Err(GuestError::invalid("QVM module has been retired"));
+            return Err(GuestError::invalid(format!(
+                "{} QVM module has been retired",
+                self.role.as_str()
+            )));
         }
         Ok(())
     }
 
     fn validate_ui_version(&mut self) -> Result<(), GuestError> {
-        let expected = match qvm_api(self.role, self.abi_profile) {
-            GameApi::Q3Ui { version } => version,
-            _ => 6,
-        };
-        let version = self.call(&[0; 10], 0)?;
-        if version != expected {
+        let mut arguments = [0i32; 10];
+        arguments[0] = QvmUiExport::UiGetapiversion as i32;
+        let version = self.call(&arguments, 0)?;
+        if self.abi_profile != QvmAbiProfile::Modern && version != 4 {
             return Err(GuestError::invalid(format!(
-                "UI version check failed: guest {version} host {expected}"
+                "Legacy User Interface is version {version}, expected 4"
             )));
         }
+        if version != 4 && version != 6 {
+            return Err(GuestError::invalid(format!(
+                "User Interface is version {version}, expected 6"
+            )));
+        }
+        self.api = GameApi::Q3Ui {
+            version: i64::from(version),
+        };
         Ok(())
     }
 
@@ -269,7 +323,14 @@ impl QvmModule {
         if let Some(registration) = self.registration.as_ref() {
             registration.called();
         }
-        self.interpreter.invoke(&self.system, words, entry, None)
+        let padded;
+        let arguments: &[i32] = if entry == 0 || words.len() <= 10 {
+            padded = qvm_arguments(words)?;
+            &padded
+        } else {
+            words
+        };
+        self.interpreter.invoke(&self.system, arguments, entry, None)
     }
 
     /// Direct guest entry with captured command arguments.
@@ -296,12 +357,12 @@ impl QvmModule {
         else {
             return Err(GuestError::invalid("QVM module requires its QVM callback"));
         };
-        if module != &self.module {
+        if module != &self.module || context.module != self.module {
             return Err(GuestError::invalid("QVM callback belongs to another module"));
         }
-        let mut words = [0i32; 10];
-        for (index, arg) in args.iter().take(10).enumerate() {
-            words[index] = self.lower(arg)?;
+        let mut words = Vec::with_capacity(args.len());
+        for arg in args {
+            words.push(self.lower(arg)?);
         }
         let value = self.call(&words, *instruction_index as usize)?;
         Ok(GuestCallResult::Value(GuestCallValue::Int32(value)))
@@ -311,22 +372,26 @@ impl QvmModule {
         match value {
             GuestCallValue::Int32(word) => Ok(*word),
             GuestCallValue::Uint32(word) => Ok(*word as i32),
-            GuestCallValue::Int64(word) => Ok(*word as i32),
-            GuestCallValue::Uint64(word) => Ok(*word as i32),
             GuestCallValue::Float32(word) => Ok(word.to_bits() as i32),
-            GuestCallValue::Float64(word) => Ok((*word as f32).to_bits() as i32),
             GuestCallValue::Pointer(None) => Ok(0),
             GuestCallValue::Pointer(Some(address)) => self.pointer_word(*address),
-            GuestCallValue::Aggregate { .. } => Err(GuestError::invalid("QVM arguments cannot carry aggregates")),
+            GuestCallValue::Int64(_) => Err(GuestError::invalid("QVM callback requires ABI lowering for int64")),
+            GuestCallValue::Uint64(_) => Err(GuestError::invalid("QVM callback requires ABI lowering for uint64")),
+            GuestCallValue::Float64(_) => Err(GuestError::invalid("QVM callback requires ABI lowering for float64")),
+            GuestCallValue::Aggregate { .. } => {
+                Err(GuestError::invalid("QVM callback requires ABI lowering for aggregate"))
+            }
         }
     }
 
     fn pointer_word(&self, address: GuestAddress) -> Result<i32, GuestError> {
         self.guest_memory.borrow(address, 0)?;
         if address.offset == 0 {
-            return Ok(self.interpreter.memory().len() as i32);
+            return i32::try_from(self.interpreter.memory().len())
+                .map_err(|_| GuestError::invalid("QVM memory length exceeds the guest word range"));
         }
-        Ok(address.offset as i32)
+        i32::try_from(address.offset)
+            .map_err(|_| GuestError::invalid("QVM pointer offset exceeds the guest word range"))
     }
 
     /// Run a qualified standalone region in a live intercepted call.
@@ -366,15 +431,16 @@ impl QvmModule {
         if pointer >= 0 {
             return call.invoke(args, pointer as usize, None);
         }
-        if args.len() > 9 {
-            return Err(GuestError::invalid("QVM source callback exceeds nine argument words"));
-        }
-        let scratch = QvmMemory::new(vec![0; 64])?;
-        let words = scratch.data_view(0, 40)?;
+        let scratch_length = ((args.len() + 1) * 4).next_power_of_two();
+        let scratch = QvmMemory::new(vec![0; scratch_length])?;
+        let words = scratch.data_view(0, (args.len() + 1) * 4)?;
         words.set_i32(0, -1 - pointer)?;
         for (index, arg) in args.iter().enumerate() {
             words.set_i32(4 + index * 4, *arg)?;
         }
+        // The donor dispatches inside `call.effect`; the effect holds no guard
+        // during the callback, so running its liveness checks first matches.
+        call.effect(&mut || Ok::<(), GuestError>(()))?;
         let mut syscall = call.reenter_as_syscall(words);
         self.system.dispatch(&mut syscall)
     }
@@ -442,28 +508,23 @@ impl QvmModule {
     pub fn checkpoint(&mut self) -> Result<GuestCheckpoint, GuestError> {
         self.live()?;
         if self.interpreter.is_active() {
-            return Err(GuestError::invalid("Cannot checkpoint an active QVM module"));
+            return Err(GuestError::invalid("QVM checkpoints require a completed source call"));
         }
-        let host = match self.state.as_mut() {
+        let host = match self.host_state.as_mut() {
             Some(state) => state.checkpoint()?,
-            None => QvmHostCheckpoint {
-                state: GuestPrivateState {
-                    module: checkpoint_module(&self.module),
-                    format: "none".to_string(),
-                    bytes: Vec::new(),
-                },
-                random: Vec::new(),
-                callbacks: Vec::new(),
-            },
+            None => return Err(GuestError::invalid("QVM host has not bound checkpoint services")),
         };
+        if host.state.module != checkpoint_module(&self.module) {
+            return Err(GuestError::invalid("QVM host checkpoint belongs to another module"));
+        }
         Ok(GuestCheckpoint::Qvm {
             module: checkpoint_module(&self.module),
             random: host.random,
             callbacks: host.callbacks,
-            api: qvm_api(self.role, self.abi_profile),
+            api: self.api.clone(),
             abi_profile: self.abi_profile.as_str().to_string(),
             data: self.interpreter.memory().snapshot(),
-            instruction_index: -1,
+            instruction_index: 0,
             program_stack: self.interpreter.stack_pointer() as u64,
             operand_stack: Vec::new(),
             host_state: host.state,
@@ -473,40 +534,59 @@ impl QvmModule {
     /// Restore a checkpoint captured by [`Self::checkpoint`].
     pub fn restore(&mut self, checkpoint: &GuestCheckpoint) -> Result<(), GuestError> {
         self.live()?;
+        if self.interpreter.is_active() {
+            return Err(GuestError::invalid("Cannot restore an active QVM"));
+        }
         let GuestCheckpoint::Qvm {
             module,
             random,
             callbacks,
+            api,
+            abi_profile,
             data,
+            instruction_index,
+            program_stack,
+            operand_stack,
             host_state,
-            ..
         } = checkpoint
         else {
-            return Err(GuestError::invalid("QVM module requires its QVM checkpoint"));
+            return Err(GuestError::invalid("QVM checkpoint artifact or API mismatch"));
         };
-        if *module != checkpoint_module(&self.module) {
-            return Err(GuestError::invalid("QVM checkpoint belongs to another module"));
+        let expected = checkpoint_module(&self.module);
+        if abi_profile != self.abi_profile.as_str()
+            || *module != expected
+            || *api != self.api
+            || host_state.module != expected
+        {
+            return Err(GuestError::invalid("QVM checkpoint artifact or API mismatch"));
         }
-        if self.interpreter.is_active() {
-            return Err(GuestError::invalid("Cannot restore an active QVM module"));
+        if *instruction_index != 0
+            || !operand_stack.is_empty()
+            || *program_stack != self.interpreter.memory().len() as u64
+        {
+            return Err(GuestError::invalid(
+                "QVM checkpoint contains a suspended execution stack",
+            ));
         }
+        let Some(state) = self.host_state.as_mut() else {
+            return Err(GuestError::invalid("QVM host has not bound checkpoint services"));
+        };
         self.interpreter.restore_data(data)?;
-        if let Some(state) = self.state.as_mut() {
-            state.restore(QvmHostCheckpoint {
-                state: host_state.clone(),
-                random: random.clone(),
-                callbacks: callbacks.clone(),
-            })?;
-        }
+        state.restore(QvmHostCheckpoint {
+            state: host_state.clone(),
+            random: random.clone(),
+            callbacks: callbacks.clone(),
+        })?;
         Ok(())
     }
 
-    /// Retire the module and free its registration.
+    /// Retire the module, closing its memory and freeing its registration.
     pub fn retire(&mut self) {
+        self.interpreter.memory().close();
+        self.retired = true;
         if let Some(registration) = self.registration.take() {
             registration.free();
         }
-        self.retired = true;
     }
 
     fn own(&self, module: &ModuleIdentity) -> Result<(), GuestError> {
@@ -573,6 +653,31 @@ mod tests {
         }
     }
 
+    struct StubState {
+        module: ModuleIdentity,
+        restored: bool,
+    }
+
+    impl QvmHostState for StubState {
+        fn checkpoint(&mut self) -> Result<QvmHostCheckpoint, GuestError> {
+            Ok(QvmHostCheckpoint {
+                state: GuestPrivateState {
+                    module: checkpoint_module(&self.module),
+                    format: "stub".to_string(),
+                    bytes: vec![9],
+                },
+                random: Vec::new(),
+                callbacks: Vec::new(),
+            })
+        }
+
+        fn restore(&mut self, checkpoint: QvmHostCheckpoint) -> Result<(), GuestError> {
+            assert_eq!(checkpoint.state.bytes, vec![9]);
+            self.restored = true;
+            Ok(())
+        }
+    }
+
     fn options(image: QvmImage, role: QvmRole) -> QvmModuleOptions {
         QvmModuleOptions {
             artifact: ResolvedQvmArtifact::Bytecode {
@@ -586,8 +691,17 @@ mod tests {
             allocation: QvmAllocationProfile::Unaccounted,
             registration: None,
             command_arguments: None,
-            state: None,
+            host_state: None,
         }
+    }
+
+    fn stateful(image: QvmImage, role: QvmRole) -> QvmModuleOptions {
+        let mut owned = options(image, role);
+        owned.host_state = Some(Box::new(StubState {
+            module: test_module(),
+            restored: false,
+        }));
+        owned
     }
 
     #[test]
@@ -647,9 +761,24 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_round_trips_data() {
+    fn checkpoint_requires_bound_host_state() {
         use QvmOpcode as O;
         let mut module = QvmModule::new(options(
+            image(vec![
+                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpConst, QvmOperand::Word(0)),
+                (O::OpLeave, QvmOperand::Word(8)),
+            ]),
+            QvmRole::Qagame,
+        ))
+        .unwrap();
+        assert!(module.checkpoint().is_err());
+    }
+
+    #[test]
+    fn checkpoint_round_trips_data() {
+        use QvmOpcode as O;
+        let mut module = QvmModule::new(stateful(
             image(vec![
                 (O::OpEnter, QvmOperand::Word(8)),
                 (O::OpConst, QvmOperand::Word(0)),
@@ -715,11 +844,83 @@ mod tests {
         assert!(module.checkpoint().is_err());
         assert_eq!(
             qvm_api(QvmRole::Qagame, QvmAbiProfile::Legacy116n),
-            GameApi::Q1Qagame { version: 6 }
+            GameApi::Q3Qagame { version: 7 }
+        );
+        assert_eq!(
+            qvm_api(QvmRole::Cgame, QvmAbiProfile::Modern),
+            GameApi::Q3Cgame { version: 4 }
+        );
+        assert_eq!(
+            qvm_api(QvmRole::Cgame, QvmAbiProfile::Legacy116n),
+            GameApi::Q3Cgame { version: 3 }
         );
         assert_eq!(
             qvm_api(QvmRole::Ui, QvmAbiProfile::Modern),
             GameApi::Q3Ui { version: 6 }
         );
+        assert_eq!(
+            qvm_api(QvmRole::Ui, QvmAbiProfile::Legacy116n),
+            GameApi::Q3Ui { version: 4 }
+        );
+    }
+
+    #[test]
+    fn entry_arguments_pad_and_reject_overlong_blocks() {
+        assert_eq!(qvm_arguments(&[1, 2]).unwrap(), [1, 2, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(qvm_arguments(&[0; 11]).is_err());
+    }
+
+    #[test]
+    fn invoke_rejects_wide_values_and_foreign_owners() {
+        use QvmOpcode as O;
+        let mut module = QvmModule::new(options(
+            image(vec![
+                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpConst, QvmOperand::Word(0)),
+                (O::OpLeave, QvmOperand::Word(8)),
+            ]),
+            QvmRole::Qagame,
+        ))
+        .unwrap();
+        let context = GuestCallContext {
+            module: test_module(),
+            callback: GuestCallbackReference::Qvm {
+                module: test_module(),
+                instruction_index: 0,
+            },
+            parent: None,
+            itself: None,
+            other: None,
+        };
+        assert!(module.invoke(&context, &[GuestCallValue::Int64(1)]).is_err());
+        assert!(module.invoke(&context, &[GuestCallValue::Float64(1.0)]).is_err());
+        let foreign = GuestCallContext {
+            module: ModuleIdentity::new(
+                ProviderId::new("qvm", "other"),
+                "vm/other.qvm",
+                ContentDigest::new("sha256", "def"),
+                "1",
+            ),
+            ..context.clone()
+        };
+        assert!(module.invoke(&foreign, &[]).is_err());
+    }
+
+    #[test]
+    fn cancellation_without_an_entry_reports_the_donor_error() {
+        use QvmOpcode as O;
+        let module = QvmModule::new(options(
+            image(vec![
+                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpConst, QvmOperand::Word(0)),
+                (O::OpLeave, QvmOperand::Word(8)),
+            ]),
+            QvmRole::Qagame,
+        ))
+        .unwrap();
+        let scope = QvmCancellationScope { id: 0 };
+        assert!(module.cancel_function(&scope).is_err());
+        assert_eq!(module.memory().len(), 256);
+        assert_eq!(module.guest_memory().module(), &test_module());
     }
 }
