@@ -396,8 +396,8 @@ impl GuestCpu for X64Cpu {
                         .and_then(|key| self.managed_blocks.get(&key).cloned())
                         .filter(|block| block.revision == revision)
                         .or_else(|| self.form_managed_block(first, revision));
-                    if let Some(prepared) = prepared {
-                        if !prepared.guard.unchanged(&self.memory) {
+                    if let Some(mut prepared) = prepared {
+                        if !prepared.guard.unchanged(&mut self.memory) {
                             if let Some(cached) = self.instructions.get_mut(&first) {
                                 cached.managed_key = None;
                             }
