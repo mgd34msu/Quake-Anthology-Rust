@@ -10,6 +10,7 @@
 pub mod abi;
 pub mod checkpoint;
 pub mod core;
+pub mod x86;
 pub mod error;
 pub mod fields;
 pub mod floating_point;
