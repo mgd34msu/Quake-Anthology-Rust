@@ -833,6 +833,11 @@ impl UiMemoryAllocation {
         self.offset
     }
 
+    /// Whether two spans view the same arena bytes (donor `===` on records).
+    pub(crate) fn same_span(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.arena, &other.arena) && self.offset == other.offset && self.size == other.size
+    }
+
     /// Span length in bytes.
     #[must_use]
     pub fn size(&self) -> usize {
@@ -2697,6 +2702,11 @@ impl UiMenuDefinition {
     #[must_use]
     pub fn location(&self) -> &SourceLocation {
         &self.location
+    }
+
+    /// Whether two views alias the same menu record (donor `===` on menus).
+    pub(crate) fn same_record(&self, other: &Self) -> bool {
+        self.alloc.same_span(&other.alloc)
     }
 
     /// Static menu slot (donor `sourceIndex`).

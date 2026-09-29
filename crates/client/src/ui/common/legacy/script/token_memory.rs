@@ -39,13 +39,13 @@
 //!   path prefix, matching `SaveReader` roots.
 //! * The donor file performs no asynchronous reads, so this port injects no
 //!   callbacks.
-//! * [`ScriptToken`], [`ScriptTokenRecord`], [`SourceLocation`], and
-//!   [`TokenBase`] mirror `src/ui/common/legacy/script/lexer.ts`, whose Rust
-//!   port is in flight; they move to `super::lexer` on integration.
+//! * [`ScriptToken`], [`ScriptTokenRecord`], and [`SourceLocation`] are owned
+//!   by `super::lexer`, matching the donor's imports.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::lexer::{ScriptToken, ScriptTokenRecord, SourceLocation};
 use crate::error::ClientError;
 
 /// Size of one retained `token_t` record, in bytes (donor `SOURCE_TOKEN_BYTES`).
@@ -132,136 +132,10 @@ pub struct SourceTokenContext {
     pub leading_whitespace: String,
 }
 
-/// Source position of a decoded token (donor `SourceLocation`, lexer mirror).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceLocation {
-    /// Source path.
-    pub path: String,
-    /// 1-based line.
-    pub line: i32,
-    /// 1-based column.
-    pub column: i32,
-}
 
-/// Fields shared by every decoded token (donor `TokenBase`, lexer mirror).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenBase {
-    /// Raw token text, including quotes for quoted kinds.
-    pub text: String,
-    /// Position where the token starts.
-    pub location: SourceLocation,
-    /// Whitespace skipped before the token.
-    pub leading_whitespace: String,
-    /// Lines crossed while skipping that whitespace.
-    pub lines_crossed: i32,
-}
 
-/// One decoded script token (donor `ScriptToken`, lexer mirror).
-#[derive(Debug, Clone, PartialEq)]
-pub enum ScriptToken {
-    /// Whitespace-delimited primitive word.
-    Primitive {
-        /// Shared token fields.
-        base: TokenBase,
-        /// Token text.
-        value: String,
-    },
-    /// Double-quoted string.
-    String {
-        /// Shared token fields.
-        base: TokenBase,
-        /// Text without the surrounding quotes.
-        value: String,
-        /// Length of the raw text, in characters.
-        length: usize,
-    },
-    /// Single-quoted literal.
-    Literal {
-        /// Shared token fields.
-        base: TokenBase,
-        /// Text without the surrounding quotes.
-        value: String,
-        /// Length of the raw text, in characters.
-        length: usize,
-    },
-    /// Numeric token.
-    Number {
-        /// Shared token fields.
-        base: TokenBase,
-        /// Numeric subtype flags (donor `NumberFlag` bits).
-        flags: i32,
-        /// Integer interpretation.
-        integer_value: u32,
-        /// Floating-point interpretation.
-        float_value: f64,
-    },
-    /// Identifier.
-    Name {
-        /// Shared token fields.
-        base: TokenBase,
-        /// Token text.
-        value: String,
-        /// Length of the raw text, in characters.
-        length: usize,
-    },
-    /// Punctuation operator.
-    Punctuation {
-        /// Shared token fields.
-        base: TokenBase,
-        /// Token text.
-        value: String,
-        /// Punctuation number (donor `Punctuation`).
-        punctuation: i32,
-    },
-}
 
-impl ScriptToken {
-    /// Donor `kind` discriminant name.
-    #[must_use]
-    pub fn kind_name(&self) -> &'static str {
-        match self {
-            ScriptToken::Primitive { .. } => "primitive",
-            ScriptToken::String { .. } => "string",
-            ScriptToken::Literal { .. } => "literal",
-            ScriptToken::Number { .. } => "number",
-            ScriptToken::Name { .. } => "name",
-            ScriptToken::Punctuation { .. } => "punctuation",
-        }
-    }
 
-    /// Shared token fields.
-    #[must_use]
-    pub fn base(&self) -> &TokenBase {
-        match self {
-            ScriptToken::Primitive { base, .. }
-            | ScriptToken::String { base, .. }
-            | ScriptToken::Literal { base, .. }
-            | ScriptToken::Number { base, .. }
-            | ScriptToken::Name { base, .. }
-            | ScriptToken::Punctuation { base, .. } => base,
-        }
-    }
-
-    /// Raw token text.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.base().text
-    }
-}
-
-/// Decoded token plus its retained numeric words
-/// (donor `ScriptTokenRecord`, lexer mirror).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScriptTokenRecord {
-    /// Decoded token.
-    pub token: ScriptToken,
-    /// Retained subtype word.
-    pub subtype: i32,
-    /// Retained integer value word.
-    pub integer_value: u32,
-    /// Retained float value.
-    pub float_value: f64,
-}
 
 /// Checkpoint of one retained token (donor `captureSaveState` record).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,8 +189,8 @@ fn token_subtype_of(token: &ScriptToken) -> i32 {
         ScriptToken::String { length, .. } | ScriptToken::Literal { length, .. } | ScriptToken::Name { length, .. } => {
             *length as i32
         }
-        ScriptToken::Number { flags, .. } => *flags,
-        ScriptToken::Punctuation { punctuation, .. } => *punctuation,
+        ScriptToken::Number { flags, .. } => *flags as i32,
+        ScriptToken::Punctuation { punctuation, .. } => *punctuation as i32,
     }
 }
 
@@ -692,11 +566,11 @@ impl SourceTokenMemory {
         }
         self.write_string(record.token.text())?;
         self.set_token_type(token_type_of(&record.token))?;
-        self.set_subtype(record.subtype)?;
+        self.set_subtype(record.subtype as i32)?;
         self.set_integer_value(record.integer_value)?;
         self.set_float_value(record.float_value)?;
-        self.set_line(record.token.base().location.line)?;
-        self.set_lines_crossed(record.token.base().lines_crossed)?;
+        self.set_line(record.token.location().line as i32)?;
+        self.set_lines_crossed(record.token.lines_crossed() as i32)?;
         Ok(())
     }
 
@@ -720,7 +594,7 @@ impl SourceTokenMemory {
         };
         let record = ScriptTokenRecord {
             token: token.clone(),
-            subtype: token_subtype_of(token),
+            subtype: token_subtype_of(token) as u32,
             integer_value,
             float_value,
         };
@@ -772,49 +646,64 @@ impl SourceTokenMemory {
                 })?;
             }
         }
-        let base = TokenBase {
-            text: text.clone(),
-            location: SourceLocation {
-                path: context.path.clone(),
-                line: self.line()?,
-                column: context.column,
-            },
-            leading_whitespace: context.leading_whitespace.clone(),
-            lines_crossed: self.lines_crossed()?,
+        let location = SourceLocation {
+            path: context.path.clone(),
+            line: self.line()? as usize,
+            column: context.column as usize,
         };
+        let leading_whitespace = context.leading_whitespace.clone();
+        let lines_crossed = self.lines_crossed()? as usize;
         let subtype = self.subtype()?;
         let integer_value = self.integer_value()?;
         let float_value = self.float_value()?;
         let token = match self.token_type()? {
             0 => ScriptToken::Primitive {
-                base,
+                text: text.clone(),
                 value: text.clone(),
+                location: location.clone(),
+                leading_whitespace: leading_whitespace.clone(),
+                lines_crossed,
             },
             1 => ScriptToken::String {
+                text: text.clone(),
                 value: strip_quotes(&text),
                 length: text.chars().count(),
-                base,
+                location: location.clone(),
+                leading_whitespace: leading_whitespace.clone(),
+                lines_crossed,
             },
             2 => ScriptToken::Literal {
+                text: text.clone(),
                 value: strip_quotes(&text),
                 length: text.chars().count(),
-                base,
+                location: location.clone(),
+                leading_whitespace: leading_whitespace.clone(),
+                lines_crossed,
             },
             3 => ScriptToken::Number {
-                base,
-                flags: subtype,
+                text: text.clone(),
+                flags: subtype as u32,
                 integer_value,
                 float_value,
+                location: location.clone(),
+                leading_whitespace: leading_whitespace.clone(),
+                lines_crossed,
             },
             4 => ScriptToken::Name {
-                base,
+                text: text.clone(),
                 value: text.clone(),
                 length: text.chars().count(),
+                location: location.clone(),
+                leading_whitespace: leading_whitespace.clone(),
+                lines_crossed,
             },
             5 => ScriptToken::Punctuation {
-                base,
+                text: text.clone(),
                 value: text.clone(),
-                punctuation: subtype,
+                punctuation: subtype as u32,
+                location: location.clone(),
+                leading_whitespace: leading_whitespace.clone(),
+                lines_crossed,
             },
             _ => {
                 return Err(ClientError::BadUi("token_t has no completed typed token".to_string()));
@@ -822,7 +711,7 @@ impl SourceTokenMemory {
         };
         let record = ScriptTokenRecord {
             token,
-            subtype,
+            subtype: subtype as u32,
             integer_value,
             float_value,
         };

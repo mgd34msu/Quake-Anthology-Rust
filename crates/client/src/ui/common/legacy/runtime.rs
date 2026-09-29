@@ -651,37 +651,6 @@ pub struct UiItemParent {
 
 impl UiItemDefinition {
 
-    /// Mutably borrow edit data (`editData`).
-    pub fn edit_data_mut(&mut self) -> Option<&mut UiEditFieldDefinition> {
-        match &mut self.behavior() {
-            UiItemBehavior::Text { edit } => edit.as_mut(),
-            UiItemBehavior::EditField { edit }
-            | UiItemBehavior::NumericField { edit }
-            | UiItemBehavior::Slider { edit }
-            | UiItemBehavior::YesNo { edit }
-            | UiItemBehavior::Bind { edit } => Some(edit),
-            _ => None,
-        }
-    }
-
-
-    /// Mutably borrow list data (`listData`).
-    pub fn list_data_mut(&mut self) -> Option<&mut UiListBoxDefinition> {
-        match &mut self.behavior() {
-            UiItemBehavior::ListBox { list } => Some(list),
-            _ => None,
-        }
-    }
-
-
-    /// Mutably borrow model data (`modelData`).
-    pub fn model_data_mut(&mut self) -> Option<&mut UiModelDefinition> {
-        match &mut self.behavior() {
-            UiItemBehavior::Model { model } => model.as_mut(),
-            _ => None,
-        }
-    }
-
 }
 
 
@@ -775,10 +744,7 @@ impl UiMenuDefinitions {
             assets: UiGlobalAssets::empty(),
             loaded_files: Vec::new(),
             diagnostics: Vec::new(),
-            registration: UiMenuRegistrationState {
-                completed: true,
-                events: Vec::new(),
-            },
+            registration: UiMenuRegistrationState::Completed { events: Vec::new() },
             font_registered: false,
         }
     }
@@ -1871,12 +1837,15 @@ impl UiRuntime {
     /// `Promise -> sync`. Moves `options.definitions` into the runtime,
     /// leaving an empty placeholder behind.
     pub fn create(mut options: UiRuntimeOptions) -> Result<Self, ClientError> {
-        let completed = options.definitions.registration.completed;
+        let completed = matches!(
+            options.definitions.registration,
+            UiMenuRegistrationState::Completed { .. }
+        );
         let mut pictures = HashMap::new();
         let mut sounds = HashMap::new();
         let mut models = HashMap::new();
         let mut cinematics = HashMap::new();
-        let events = options.definitions.registration.events().clone();
+        let events = options.definitions.registration.events().to_vec();
         for event in &events {
             Self::resolve_registration(&mut options, completed, event, &mut pictures, &mut sounds, &mut models)?;
         }
@@ -2032,7 +2001,7 @@ impl UiRuntime {
     pub fn publish_menu_asset(&mut self, event: UiMenuAssetPublication) -> Result<(), ClientError> {
         self.opened()?;
         match event {
-            UiMenuAssetPublication::CursorStr => {}
+            UiMenuAssetPublication::CursorStr(_) => {}
             UiMenuAssetPublication::FontRegistered(value) => {
                 self.definitions.font_registered = value;
             }
@@ -2147,7 +2116,10 @@ impl UiRuntime {
     pub fn reload_definitions(&mut self, definitions: UiMenuDefinitions) -> Result<(), ClientError> {
         self.opened()?;
         self.assert_menu_memory(&definitions.memory)?;
-        let completed = definitions.registration.completed;
+        let completed = matches!(
+            definitions.registration,
+            UiMenuRegistrationState::Completed { .. }
+        );
         let mut pictures = std::mem::take(&mut self.pictures);
         let mut sounds = std::mem::take(&mut self.sounds);
         let mut models = std::mem::take(&mut self.models);
@@ -2219,7 +2191,7 @@ impl UiRuntime {
                     }
                 }
             } else {
-                self.definitions.menus[index].window().flags() &= !UiWindowFlag::HAS_FOCUS;
+                self.definitions.menus[index].window().set_flags(                self.definitions.menus[index].window().flags() & (!UiWindowFlag::HAS_FOCUS));
             }
         }
         self.close_cinematics();
@@ -2470,7 +2442,7 @@ impl UiRuntime {
         let Some(index) = menu else {
             return Ok(false);
         };
-        self.definitions.menus[index].window().flags() &= !UiWindowFlag::FORCED;
+        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() & (!UiWindowFlag::FORCED));
         Ok(true)
     }
 
@@ -2478,7 +2450,7 @@ impl UiRuntime {
     pub fn clear_captured_forced(&mut self, handle: UiCapturedMenu) -> Result<(), ClientError> {
         self.opened()?;
         let index = self.captured_menu(handle)?;
-        self.definitions.menus[index].window().flags() &= !UiWindowFlag::FORCED;
+        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() & (!UiWindowFlag::FORCED));
         Ok(())
     }
 
@@ -2522,9 +2494,9 @@ impl UiRuntime {
         self.opened()?;
         if let Some(definition) = item {
             if focused {
-                definition.window().flags() |= UiWindowFlag::MOUSE_OVER;
+                definition.window().set_flags(                definition.window().flags() | (UiWindowFlag::MOUSE_OVER));
             } else {
-                definition.window().flags() &= !UiWindowFlag::MOUSE_OVER;
+                definition.window().set_flags(                definition.window().flags() & (!UiWindowFlag::MOUSE_OVER));
             }
         }
         Ok(())
@@ -2582,8 +2554,8 @@ impl UiRuntime {
         let index = self.captured_menu(handle)?;
         {
             let menu = &mut self.definitions.menus[index];
-            menu.window().rect().x() = f(menu.window().rect().x() + delta_x);
-            menu.window().rect().y() = f(menu.window().rect().y() + delta_y);
+            menu.window().rect().set_x(f(menu.window().rect().x() + delta_x));
+            menu.window().rect().set_y(f(menu.window().rect().y() + delta_y));
         }
         let (mut x, mut y, border, border_size) = {
             let menu = &self.definitions.menus[index];
@@ -2598,7 +2570,7 @@ impl UiRuntime {
             x = f(x + border_size);
             y = f(y + border_size);
         }
-        for item in 0..self.definitions.menus[index].items.len() {
+        for item in 0..self.definitions.menus[index].item_count() as usize {
             set_item_screen_coords(&mut self.definitions.menus[index].items[item], x, y);
         }
         Ok(())
@@ -2656,12 +2628,15 @@ impl UiRuntime {
             return Ok(());
         };
         if index == 0 {
-            let list = self.definitions.menus[menu].items[item].list_data_mut();
+            let list = self.definitions.menus[menu]
+                .item_at(item)
+                .ok_or_else(|| bad_ui("UI menu item index is out of range"))?
+                .list_data();
             let Some(list) = list else {
                 return Err(bad_ui("Menu_SetFeederSelection dereferences NULL list data"));
             };
-            list.cursor_position = 0;
-            list.start_position = 0;
+            list.set_cursor_position(0);
+            list.set_start_position(0);
         }
         self.definitions.menus[menu].items[item].cursor_position = index;
         let special = self.definitions.menus[menu].items[item].special;
@@ -2892,10 +2867,15 @@ impl UiRuntime {
         let Some(parent) = self.item(item)?.parent() else {
             return Ok(None);
         };
-        if parent.source_index() >= self.definitions.menus.len() {
+        let slot = self
+            .definitions
+            .menus
+            .iter()
+            .position(|menu| menu.same_record(&parent));
+        let Some(slot) = slot else {
             return Err(bad_ui("UI item belongs to a missing menu"));
-        }
-        Ok(Some(parent.source_index()))
+        };
+        Ok(Some(slot))
     }
 
     /// Parent menu slot, failing when absent (`menuFor`).
@@ -3073,7 +3053,7 @@ impl UiRuntime {
     ///
     /// `Promise -> sync`.
     fn activate_menu(&mut self, index: usize) -> Result<(), ClientError> {
-        self.definitions.menus[index].window().flags() |= UiWindowFlag::HAS_FOCUS | UiWindowFlag::VISIBLE;
+        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() | (UiWindowFlag::HAS_FOCUS | UiWindowFlag::VISIBLE));
         let on_open = self.definitions.menus[index].on_open().clone();
         if let Some(script) = on_open {
             self.run_script(
@@ -3109,7 +3089,7 @@ impl UiRuntime {
                 )?;
             }
         }
-        self.definitions.menus[index].window().flags() &= !(UiWindowFlag::VISIBLE | UiWindowFlag::HAS_FOCUS);
+        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() & (!(UiWindowFlag::VISIBLE | UiWindowFlag::HAS_FOCUS)));
         Ok(())
     }
 
@@ -3120,7 +3100,7 @@ impl UiRuntime {
             if style == 5 {
                 Self::close_window_cinematic_static(&mut self.options, &mut self.definitions.menus[menu].window());
             }
-            for item in 0..self.definitions.menus[menu].items.len() {
+            for item in 0..self.definitions.menus[menu].item_count() as usize {
                 let style = self.definitions.menus[menu].items[item].window.style;
                 let owner_draw = self.definitions.menus[menu].items[item].window.owner_draw;
                 let is_owner_draw = self.definitions.menus[menu].items[item].behavior.kind() == "owner-draw";
@@ -3141,7 +3121,7 @@ impl UiRuntime {
     fn close_window_cinematic_static(options: &mut UiRuntimeOptions, window: &mut UiWindowDefinition) {
         if window.cinematic_handle() >= 0 {
             options.cinematics.stop(window.cinematic_handle());
-            window.cinematic_handle() = -1;
+            window.set_cinematic_handle(-1);
         }
     }
 
@@ -3275,7 +3255,7 @@ impl UiRuntime {
                 let menu = self.script_menu(owner)?;
                 let context = UiExternalScriptContext {
                     menu_name: menu.and_then(|index| self.menu(index).window().name().clone()),
-                    item_name: owner.item.and_then(|item| self.item(item)?.window().name().clone()),
+                    item_name: owner.item.and_then(|item| self.item(item).ok()?.window().name().clone()),
                 };
                 self.options.external_script.run(&mut cursor, &context);
             }
@@ -3676,7 +3656,7 @@ impl UiRuntime {
             return Ok(None);
         };
         let mut previous = None;
-        for item in 0..self.definitions.menus[menu].items.len() {
+        for item in 0..self.definitions.menus[menu].item_count() as usize {
             if self.definitions.menus[menu].items[item].window.flags & UiWindowFlag::HAS_FOCUS != 0 {
                 previous = Some(ItemState {
                     menu_index: menu,
@@ -3903,13 +3883,18 @@ impl UiRuntime {
     fn update_item_position(&mut self, item: ItemState) -> Result<(), ClientError> {
         let parent = self.item(item)?.parent();
         let Some(parent) = parent else {
-            return;
+            return Ok(());
         };
-        if parent.source_index() >= self.definitions.menus.len() {
-            return;
-        }
+        let Some(slot) = self
+            .definitions
+            .menus
+            .iter()
+            .position(|menu| menu.same_record(&parent))
+        else {
+            return Ok(());
+        };
         let (mut x, mut y, border, border_size) = {
-            let menu = &self.definitions.menus[parent.source_index()];
+            let menu = &self.definitions.menus[slot];
             (
                 menu.window().rect().x(),
                 menu.window().rect().y(),
@@ -3960,7 +3945,7 @@ impl UiRuntime {
         }
         let mut focus_set = false;
         for pass in 0..2 {
-            for item in 0..self.menu(menu).items.len() {
+            for item in 0..self.menu(menu).item_count() as usize {
                 let target = ItemState {
                     menu_index: menu,
                     item_index: item,
@@ -4043,7 +4028,7 @@ impl UiRuntime {
                 }
                 self.definitions.menus[menu].items[item.item_index].window.flags |= UiWindowFlag::MOUSE_OVER;
             }
-            if self.item(item)?.type_code == UiItemTypeCode::ListBox as i32 {
+            if self.item(item)?.item_type() == UiItemTypeCode::ListBox as i32 {
                 self.list_mouse_enter(item, x, y)?;
             }
         }
@@ -4138,7 +4123,7 @@ impl UiRuntime {
             return Err(bad_ui("Item_SetFocus dereferences a NULL parent menu at itemCount"));
         };
         if parent == item.menu_index {
-            self.definitions.menus[parent].cursor_item() = item.item_index as i32;
+            self.definitions.menus[parent].set_cursor_item(item.item_index as i32);
         }
         Ok(true)
     }
@@ -4150,26 +4135,26 @@ impl UiRuntime {
         let original = self.definitions.menus[menu].cursor_item();
         let mut wrapped = false;
         if direction < 0 && self.definitions.menus[menu].cursor_item() < 0 {
-            self.definitions.menus[menu].cursor_item() = self.definitions.menus[menu].items.len() as i32 - 1;
+            self.definitions.menus[menu].set_cursor_item(self.definitions.menus[menu].item_count() - 1);
             wrapped = true;
         } else if direction > 0 && self.definitions.menus[menu].cursor_item() == -1 {
-            self.definitions.menus[menu].cursor_item() = 0;
+            self.definitions.menus[menu].set_cursor_item(0);
             wrapped = true;
         }
         loop {
             let cursor = self.definitions.menus[menu].cursor_item();
-            let count = self.definitions.menus[menu].items.len() as i32;
+            let count = self.definitions.menus[menu].item_count();
             if !(if direction < 0 { cursor > -1 } else { cursor < count }) {
                 break;
             }
-            self.definitions.menus[menu].cursor_item() += direction;
+            self.definitions.menus[menu].set_cursor_item(            self.definitions.menus[menu].cursor_item() + (direction));
             let cursor = self.definitions.menus[menu].cursor_item();
             if (if direction < 0 { cursor < 0 } else { cursor >= count }) && !wrapped {
                 wrapped = true;
-                self.definitions.menus[menu].cursor_item() = if direction < 0 { count - 1 } else { 0 };
+                self.definitions.menus[menu].set_cursor_item(if direction < 0 { count - 1 } else { 0 });
             }
             let cursor = self.definitions.menus[menu].cursor_item();
-            let target = if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].items.len() {
+            let target = if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count() as usize {
                 Some(ItemState {
                     menu_index: menu,
                     item_index: cursor as usize,
@@ -4183,7 +4168,7 @@ impl UiRuntime {
                     let rect = self.item(target)?.window().rect();
                     self.mouse_move_menu(menu, f(rect.x() + 1.0), f(rect.y() + 1.0))?;
                     let cursor = self.definitions.menus[menu].cursor_item();
-                    if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].items.len() {
+                    if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count() as usize {
                         return Ok(Some(ItemState {
                             menu_index: menu,
                             item_index: cursor as usize,
@@ -4193,7 +4178,7 @@ impl UiRuntime {
                 }
             }
         }
-        self.definitions.menus[menu].cursor_item() = original;
+        self.definitions.menus[menu].set_cursor_item(original);
         Ok(None)
     }
 
@@ -4235,7 +4220,7 @@ impl UiRuntime {
             return Ok(true);
         }
         let mut item = None;
-        for index in 0..self.menu(menu).items.len() {
+        for index in 0..self.menu(menu).item_count() as usize {
             if self.menu(menu).items[index].window.flags & UiWindowFlag::HAS_FOCUS != 0 {
                 item = Some(ItemState {
                     menu_index: menu,
@@ -4381,7 +4366,7 @@ impl UiRuntime {
         {
             return Ok(false);
         }
-        for item in 0..self.menu(menu).items.len() {
+        for item in 0..self.menu(menu).item_count() as usize {
             let target = ItemState {
                 menu_index: menu,
                 item_index: item,
@@ -4538,7 +4523,7 @@ impl UiRuntime {
         let Some(cvar) = cvar else {
             return Ok(false);
         };
-        let edit = self.item(item)?.edit_data().copied();
+        let edit = self.item(item)?.edit_data();
         let Some(mut edit) = edit else {
             return Err(bad_ui(
                 "Item_TextField_HandleKey dereferences NULL typeData at maxChars",
@@ -4554,8 +4539,8 @@ impl UiRuntime {
             buffer[length] = (ch as u32 & 255) as u8;
             length += 1;
         }
-        if edit.max_chars != 0 && length as i32 > edit.max_chars {
-            length = edit.max_chars as usize;
+        if edit.max_chars() != 0 && length as i32 > edit.max_chars() {
+            length = edit.max_chars() as usize;
         }
         let mut cursor = self.item(item)?.cursor_position();
         let kind = self.item(item)?.behavior().kind();
@@ -4565,12 +4550,12 @@ impl UiRuntime {
                 if cursor > 0 {
                     edit_move(&mut buffer, cursor - 1, cursor, length as i32 + 1 - cursor)?;
                     cursor -= 1;
-                    if cursor < edit.paint_offset {
-                        edit.paint_offset -= 1;
+                    if cursor < edit.paint_offset() {
+                        edit.set_paint_offset(                        edit.paint_offset() - (1));
                     }
                 }
                 self.publish_edit_buffer(Some(&cvar), &buffer)?;
-                self.write_text_cursor(item, cursor, edit.paint_offset);
+                self.write_text_cursor(item, cursor, edit.paint_offset())?;
                 return Ok(true);
             }
             if key < 32 {
@@ -4581,11 +4566,11 @@ impl UiRuntime {
             }
             let overstrike = self.binding_host("edit overstrike")?.get_overstrike();
             if !overstrike {
-                if length == 255 || (edit.max_chars != 0 && length as i32 >= edit.max_chars) {
+                if length == 255 || (edit.max_chars() != 0 && length as i32 >= edit.max_chars()) {
                     return Ok(true);
                 }
                 edit_move(&mut buffer, cursor + 1, cursor, length as i32 + 1 - cursor)?;
-            } else if edit.max_chars != 0 && cursor >= edit.max_chars {
+            } else if edit.max_chars() != 0 && cursor >= edit.max_chars() {
                 return Ok(true);
             }
             if cursor < 0 || cursor as usize >= buffer.len() {
@@ -4595,11 +4580,11 @@ impl UiRuntime {
             self.publish_edit_buffer(Some(&cvar), &buffer)?;
             if cursor < length as i32 + 1 {
                 cursor += 1;
-                if edit.max_paint_chars != 0 && cursor > edit.max_paint_chars {
-                    edit.paint_offset += 1;
+                if edit.max_paint_chars() != 0 && cursor > edit.max_paint_chars() {
+                    edit.set_paint_offset(                    edit.paint_offset() + (1));
                 }
             }
-            self.write_text_cursor(item, cursor, edit.paint_offset);
+            self.write_text_cursor(item, cursor, edit.paint_offset())?;
         } else if key == KeyCode::Delete as i32 || key == KeyCode::KeypadDelete as i32 {
             if cursor < length as i32 {
                 edit_move(&mut buffer, cursor, cursor + 1, length as i32 - cursor)?;
@@ -4607,35 +4592,35 @@ impl UiRuntime {
             }
             return Ok(true);
         } else if key == KeyCode::Right as i32 || key == KeyCode::KeypadRight as i32 {
-            if edit.max_paint_chars != 0 && cursor >= edit.max_paint_chars && cursor < length as i32 {
+            if edit.max_paint_chars() != 0 && cursor >= edit.max_paint_chars() && cursor < length as i32 {
                 cursor += 1;
-                edit.paint_offset += 1;
-                self.write_text_cursor(item, cursor, edit.paint_offset);
+                edit.set_paint_offset(                edit.paint_offset() + (1));
+                self.write_text_cursor(item, cursor, edit.paint_offset())?;
                 return Ok(true);
             }
             if cursor < length as i32 {
                 cursor += 1;
             }
-            self.write_text_cursor(item, cursor, edit.paint_offset);
+            self.write_text_cursor(item, cursor, edit.paint_offset())?;
             return Ok(true);
         } else if key == KeyCode::Left as i32 || key == KeyCode::KeypadLeft as i32 {
             if cursor > 0 {
                 cursor -= 1;
             }
-            if cursor < edit.paint_offset {
-                edit.paint_offset -= 1;
+            if cursor < edit.paint_offset() {
+                edit.set_paint_offset(                edit.paint_offset() - (1));
             }
-            self.write_text_cursor(item, cursor, edit.paint_offset);
+            self.write_text_cursor(item, cursor, edit.paint_offset())?;
             return Ok(true);
         } else if key == KeyCode::Home as i32 || key == KeyCode::KeypadHome as i32 {
-            self.write_text_cursor(item, 0, 0);
+            self.write_text_cursor(item, 0, 0)?;
             return Ok(true);
         } else if key == KeyCode::End as i32 || key == KeyCode::KeypadEnd as i32 {
             cursor = length as i32;
-            if cursor > edit.max_paint_chars {
-                edit.paint_offset = length as i32 - edit.max_paint_chars;
+            if cursor > edit.max_paint_chars() {
+                edit.set_paint_offset(length as i32 - edit.max_paint_chars());
             }
-            self.write_text_cursor(item, cursor, edit.paint_offset);
+            self.write_text_cursor(item, cursor, edit.paint_offset())?;
             return Ok(true);
         } else if key == KeyCode::Insert as i32 || key == KeyCode::KeypadInsert as i32 {
             let overstrike = self.binding_host("edit overstrike")?.get_overstrike();
@@ -4666,11 +4651,18 @@ impl UiRuntime {
     }
 
     /// Write back edit cursor state.
-    fn write_text_cursor(&mut self, item: ItemState, cursor: i32, paint_offset: i32) {
-        self.definitions.menus[item.menu_index].items[item.item_index].cursor_position = cursor;
-        if let Some(edit) = self.definitions.menus[item.menu_index].items[item.item_index].edit_data_mut() {
-            edit.paint_offset = paint_offset;
+    fn write_text_cursor(
+        &mut self,
+        item: ItemState,
+        cursor: i32,
+        paint_offset: i32,
+    ) -> Result<(), ClientError> {
+        let definition = self.item(item)?;
+        definition.set_cursor_position(cursor);
+        if let Some(edit) = definition.edit_data() {
+            edit.set_paint_offset(paint_offset);
         }
+        Ok(())
     }
 
     /// Maximum list scroll (`listMaximum`).
@@ -4683,15 +4675,15 @@ impl UiRuntime {
                 definition.window().rect(),
             )
         };
-        let list = self.item(item)?.list_data().cloned();
+        let list = self.item(item)?.list_data();
         let Some(list) = list else {
             return Err(bad_ui("Item_ListBox_MaxScroll dereferences NULL list data"));
         };
         let count = self.options.feeder.count(special);
         let element_size = if horizontal {
-            list.element_width
+            list.element_width()
         } else {
-            list.element_height
+            list.element_height()
         };
         let extent = if horizontal { rect.width() } else { rect.height() };
         Ok(0.max(qvm_float_to_int(f(f(f(count as f32) - f(extent / element_size)) + 1.0))))
@@ -4714,15 +4706,15 @@ impl UiRuntime {
         }
         let maximum = self.list_maximum(item)?;
         let horizontal = self.item(item)?.window().flags() & UiWindowFlag::HORIZONTAL != 0;
-        let list = self.item(item)?.list_data().cloned();
+        let list = self.item(item)?.list_data();
         let Some(mut list) = list else {
             return Err(bad_ui("Item_ListBox_HandleKey dereferences NULL list data"));
         };
         let rect = self.item(item)?.window().rect();
         let view = qvm_float_to_int(f(if horizontal {
-            rect.width() / list.element_width
+            rect.width() / list.element_width()
         } else {
-            rect.height() / list.element_height
+            rect.height() / list.element_height()
         }));
         let backward = if horizontal {
             key == KeyCode::Left as i32 || key == KeyCode::KeypadLeft as i32
@@ -4735,47 +4727,47 @@ impl UiRuntime {
             key == KeyCode::Down as i32 || key == KeyCode::KeypadDown as i32
         };
         if backward {
-            if !list.not_selectable {
-                list.cursor_position -= 1;
-                if list.cursor_position < 0 {
-                    list.cursor_position = 0;
+            if !list.not_selectable() {
+                list.set_cursor_position(                list.cursor_position() - (1));
+                if list.cursor_position() < 0 {
+                    list.set_cursor_position(0);
                 }
-                if list.cursor_position < list.start_position {
-                    list.start_position = list.cursor_position;
+                if list.cursor_position() < list.start_position() {
+                    list.set_start_position(list.cursor_position());
                 }
-                if list.cursor_position >= list.start_position + view {
-                    list.start_position = list.cursor_position - view + 1;
+                if list.cursor_position() >= list.start_position() + view {
+                    list.set_start_position(list.cursor_position() - view + 1);
                 }
                 self.write_list(item, &list);
                 self.select_list(item)?;
             } else {
-                list.start_position -= 1;
-                if list.start_position < 0 {
-                    list.start_position = 0;
+                list.set_start_position(                list.start_position() - (1));
+                if list.start_position() < 0 {
+                    list.set_start_position(0);
                 }
                 self.write_list(item, &list);
             }
             return Ok(true);
         }
         if forward {
-            if !list.not_selectable {
-                list.cursor_position += 1;
-                if list.cursor_position < list.start_position {
-                    list.start_position = list.cursor_position;
+            if !list.not_selectable() {
+                list.set_cursor_position(                list.cursor_position() + (1));
+                if list.cursor_position() < list.start_position() {
+                    list.set_start_position(list.cursor_position());
                 }
-                if list.cursor_position >= count {
-                    list.cursor_position = count - 1;
+                if list.cursor_position() >= count {
+                    list.set_cursor_position(count - 1);
                 }
-                if list.cursor_position >= list.start_position + view {
-                    list.start_position = list.cursor_position - view + 1;
+                if list.cursor_position() >= list.start_position() + view {
+                    list.set_start_position(list.cursor_position() - view + 1);
                 }
                 self.write_list(item, &list);
                 self.select_list(item)?;
             } else {
-                list.start_position += 1;
+                list.set_start_position(                list.start_position() + (1));
                 let limit = if horizontal { count - 1 } else { maximum };
-                if list.start_position > limit {
-                    list.start_position = limit;
+                if list.start_position() > limit {
+                    list.set_start_position(limit);
                 }
                 self.write_list(item, &list);
             }
@@ -4784,50 +4776,50 @@ impl UiRuntime {
         if key == KeyCode::Mouse1 as i32 || key == KeyCode::Mouse2 as i32 {
             let flags = self.item(item)?.window().flags();
             if flags & UiWindowFlag::LIST_LEFT_ARROW != 0 {
-                list.start_position -= 1;
-                if list.start_position < 0 {
-                    list.start_position = 0;
+                list.set_start_position(                list.start_position() - (1));
+                if list.start_position() < 0 {
+                    list.set_start_position(0);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_RIGHT_ARROW != 0 {
-                list.start_position += 1;
-                if list.start_position > maximum {
-                    list.start_position = maximum;
+                list.set_start_position(                list.start_position() + (1));
+                if list.start_position() > maximum {
+                    list.set_start_position(maximum);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_PAGE_UP != 0 {
-                list.start_position -= view;
-                if list.start_position < 0 {
-                    list.start_position = 0;
+                list.set_start_position(                list.start_position() - (view));
+                if list.start_position() < 0 {
+                    list.set_start_position(0);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_PAGE_DOWN != 0 {
-                list.start_position += view;
-                if list.start_position > maximum {
-                    list.start_position = maximum;
+                list.set_start_position(                list.start_position() + (view));
+                if list.start_position() > maximum {
+                    list.set_start_position(maximum);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_THUMB == 0 {
                 if self.real_time < self.last_list_box_click_time {
-                    if let Some(script) = list.double_click.clone() {
+                    if let Some(script) = list.double_click().clone() {
                         let menu = self.menu_for(item)?;
                         self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                     }
                 }
                 self.last_list_box_click_time = self.real_time.wrapping_add(DOUBLE_CLICK_DELAY);
-                if self.item(item)?.cursor_position() != list.cursor_position {
+                if self.item(item)?.cursor_position() != list.cursor_position() {
                     self.select_list(item)?;
                 }
             }
             return Ok(true);
         }
         if key == KeyCode::Home as i32 || key == KeyCode::KeypadHome as i32 {
-            list.start_position = 0;
+            list.set_start_position(0);
             self.write_list(item, &list);
             return Ok(true);
         }
         if key == KeyCode::End as i32 || key == KeyCode::KeypadEnd as i32 {
-            list.start_position = maximum;
+            list.set_start_position(maximum);
             self.write_list(item, &list);
             return Ok(true);
         }
@@ -4835,29 +4827,29 @@ impl UiRuntime {
         let page_down = key == KeyCode::PageDown as i32 || key == KeyCode::KeypadPageDown as i32;
         if page_up || page_down {
             let amount = if page_up { -view } else { view };
-            if !list.not_selectable {
-                list.cursor_position += amount;
-                if page_up && list.cursor_position < 0 {
-                    list.cursor_position = 0;
+            if !list.not_selectable() {
+                list.set_cursor_position(                list.cursor_position() + (amount));
+                if page_up && list.cursor_position() < 0 {
+                    list.set_cursor_position(0);
                 }
-                if list.cursor_position < list.start_position {
-                    list.start_position = list.cursor_position;
+                if list.cursor_position() < list.start_position() {
+                    list.set_start_position(list.cursor_position());
                 }
-                if page_down && list.cursor_position >= count {
-                    list.cursor_position = count - 1;
+                if page_down && list.cursor_position() >= count {
+                    list.set_cursor_position(count - 1);
                 }
-                if list.cursor_position >= list.start_position + view {
-                    list.start_position = list.cursor_position - view + 1;
+                if list.cursor_position() >= list.start_position() + view {
+                    list.set_start_position(list.cursor_position() - view + 1);
                 }
                 self.write_list(item, &list);
                 self.select_list(item)?;
             } else {
-                list.start_position += amount;
-                if page_up && list.start_position < 0 {
-                    list.start_position = 0;
+                list.set_start_position(                list.start_position() + (amount));
+                if page_up && list.start_position() < 0 {
+                    list.set_start_position(0);
                 }
-                if page_down && list.start_position > maximum {
-                    list.start_position = maximum;
+                if page_down && list.start_position() > maximum {
+                    list.set_start_position(maximum);
                 }
                 self.write_list(item, &list);
             }
@@ -4882,11 +4874,11 @@ impl UiRuntime {
     fn select_list(&mut self, item: ItemState) -> Result<(), ClientError> {
         let (special, cursor) = {
             let definition = self.item(item)?;
-            let list = definition.list_data().cloned();
+            let list = definition.list_data();
             let Some(list) = list else {
                 return Err(bad_ui("Item_ListBox select dereferences NULL list data"));
             };
-            (definition.special(), list.cursor_position)
+            (definition.special(), list.cursor_position())
         };
         self.definitions.menus[item.menu_index].items[item.item_index].cursor_position = cursor;
         self.options.feeder.select(special, cursor);
@@ -4905,7 +4897,7 @@ impl UiRuntime {
         };
         let _ = special;
         let maximum = self.list_maximum(item)?;
-        let list = self.item(item)?.list_data().cloned();
+        let list = self.item(item)?.list_data();
         let Some(list) = list else {
             return Err(bad_ui("Item_ListBox_ThumbPosition dereferences NULL list data"));
         };
@@ -4918,7 +4910,7 @@ impl UiRuntime {
         };
         let base = if horizontal { rect.x() } else { rect.y() };
         Ok(qvm_float_to_int(f(
-            f(f(base + 1.0) + SCROLLBAR_SIZE) + f(step * f(list.start_position as f32))
+            f(f(base + 1.0) + SCROLLBAR_SIZE) + f(step * f(list.start_position() as f32))
         )))
     }
 
@@ -5047,7 +5039,7 @@ impl UiRuntime {
                 return Ok(());
             }
         }
-        let list = self.item(item)?.list_data().cloned();
+        let list = self.item(item)?.list_data();
         let Some(mut list) = list else {
             return Err(bad_ui("Item_ListBox_MouseEnter dereferences NULL list data"));
         };
@@ -5059,19 +5051,20 @@ impl UiRuntime {
             )
         };
         if horizontal {
-            if list.element_style != 1 {
+            if list.element_style() != 1 {
                 return Ok(());
             }
             let part = UiRect {
                 x: rect.x(),
                 y: rect.y(),
-                width: f(rect.width() - list.draw_padding as f32),
+                width: f(rect.width() - list.draw_padding() as f32),
                 height: f(rect.height() - SCROLLBAR_SIZE),
             };
             if rect_contains(&part, x, y) {
-                list.cursor_position = list
-                    .end_position
-                    .min(qvm_float_to_int(f(f(x - part.x) / list.element_width)) + list.start_position);
+                list.set_cursor_position(
+                    list.end_position()
+                        .min(qvm_float_to_int(f(f(x - part.x) / list.element_width())) + list.start_position()),
+                );
                 self.write_list(item, &list);
             }
         } else {
@@ -5079,12 +5072,15 @@ impl UiRuntime {
                 x: rect.x(),
                 y: rect.y(),
                 width: f(rect.width() - SCROLLBAR_SIZE),
-                height: f(rect.height() - list.draw_padding as f32),
+                height: f(rect.height() - list.draw_padding() as f32),
             };
             if rect_contains(&part, x, y) {
-                list.cursor_position = list
-                    .end_position
-                    .min(qvm_float_to_int(f(f(f(y - 2.0) - part.y) / list.element_height)) + list.start_position);
+                list.set_cursor_position(
+                    list.end_position().min(
+                        qvm_float_to_int(f(f(f(y - 2.0) - part.y) / list.element_height()))
+                            + list.start_position(),
+                    ),
+                );
                 self.write_list(item, &list);
             }
         }
@@ -5094,15 +5090,15 @@ impl UiRuntime {
     /// Slider bar x (`sliderX`).
     fn slider_x(&self, item: ItemState) -> Result<f32, ClientError> {
         let definition = self.item(item)?;
-        match definition.text().as_ref() {
+        Ok(match definition.text().as_ref() {
             None => definition.window().rect().x(),
             Some(_) => f(f(definition.text_rect().x() + definition.text_rect().width()) + 8.0),
-        }
+        })
     }
 
     /// Slider thumb position (`sliderThumbPosition`).
     fn slider_thumb_position(&mut self, item: ItemState) -> Result<f32, ClientError> {
-        let edit = self.item(item)?.edit_data().copied();
+        let edit = self.item(item)?.edit_data();
         let x = self.slider_x(item)?;
         let cvar = self.item(item)?.cvar().clone();
         if edit.is_none() && cvar.is_some() {
@@ -5115,16 +5111,16 @@ impl UiRuntime {
         let Some(edit) = edit else {
             return Err(bad_ui("Item_Slider_ThumbPosition dereferences NULL edit data"));
         };
-        let mut value = value.clamp(edit.minimum, edit.maximum);
-        if edit.minimum > edit.maximum {
-            value = if value < edit.minimum {
-                edit.minimum
+        let mut value = value.clamp(edit.minimum(), edit.maximum());
+        if edit.minimum() > edit.maximum() {
+            value = if value < edit.minimum() {
+                edit.minimum()
             } else {
-                edit.maximum
+                edit.maximum()
             };
         }
-        let range = f(edit.maximum - edit.minimum);
-        value = f(value - edit.minimum);
+        let range = f(edit.maximum() - edit.minimum());
+        value = f(value - edit.minimum());
         value = f(value / range);
         value = f(value * SLIDER_WIDTH);
         Ok(f(x + value))
@@ -5142,7 +5138,7 @@ impl UiRuntime {
                 )
                 && is_activate_key(key)
             {
-                let edit = self.item(item)?.edit_data().copied();
+                let edit = self.item(item)?.edit_data();
                 if let Some(edit) = edit {
                     let x = self.slider_x(item)?;
                     let rect = self.item(item)?.window().rect();
@@ -5153,7 +5149,7 @@ impl UiRuntime {
                     };
                     if rect_contains(&test, self.display_cursor_x, self.display_cursor_y) {
                         let work = f(self.display_cursor_x - x);
-                        let value = f(f(f(work / SLIDER_WIDTH) * f(edit.maximum - edit.minimum)) + edit.minimum);
+                        let value = f(f(f(work / SLIDER_WIDTH) * f(edit.maximum() - edit.minimum())) + edit.minimum());
                         let text = game_format("%f", &[GameFormatArg::Float(value)])?;
                         self.options.cvars.set(&cvar, &text, true);
                         return Ok(true);
@@ -5294,13 +5290,13 @@ impl UiRuntime {
         match capture {
             CaptureState::Idle => return Ok(()),
             CaptureState::SliderThumb { item, .. } => {
-                let edit = self.item(item)?.edit_data().copied();
+                let edit = self.item(item)?.edit_data();
                 let x = self.slider_x(item)?;
                 let cursor = self.display_cursor_x.clamp(x, f(x + SLIDER_WIDTH));
                 let Some(edit) = edit else {
                     return Err(bad_ui("Scroll_Slider_ThumbFunc dereferences NULL edit data"));
                 };
-                let value = f(f(f(f(cursor - x) / SLIDER_WIDTH) * f(edit.maximum - edit.minimum)) + edit.minimum);
+                let value = f(f(f(f(cursor - x) / SLIDER_WIDTH) * f(edit.maximum() - edit.minimum())) + edit.minimum());
                 let text = game_format("%f", &[GameFormatArg::Float(value)])?;
                 let cvar = self.item(item)?.cvar().clone();
                 self.set_cvar(cvar.as_deref(), Some(&text), true);
@@ -5322,11 +5318,11 @@ impl UiRuntime {
                     let start = f(f(rect.x() + SCROLLBAR_SIZE) + 1.0);
                     let maximum = self.list_maximum(item)?;
                     let denominator = f(width - SCROLLBAR_SIZE);
-                    let list = self.item(item)?.list_data().cloned();
+                    let list = self.item(item)?.list_data();
                     let Some(mut list) = list else {
                         return Err(bad_ui("Scroll_ListBox_ThumbFunc dereferences NULL list data"));
                     };
-                    list.start_position = 0.max(maximum.min(qvm_float_to_int(f(f(f(f(
+                    list.start_position() = 0.max(maximum.min(qvm_float_to_int(f(f(f(f(
                         self.display_cursor_x - start
                     ) - SCROLLBAR_SIZE / 2.0)
                         * f(maximum as f32))
@@ -5346,11 +5342,11 @@ impl UiRuntime {
                         let start = f(f(rect.y() + SCROLLBAR_SIZE) + 1.0);
                         let maximum = self.list_maximum(item)?;
                         let denominator = f(height - SCROLLBAR_SIZE);
-                        let list = self.item(item)?.list_data().cloned();
+                        let list = self.item(item)?.list_data();
                         let Some(mut list) = list else {
                             return Err(bad_ui("Scroll_ListBox_ThumbFunc dereferences NULL list data"));
                         };
-                        list.start_position = 0.max(maximum.min(qvm_float_to_int(f(f(f(f(
+                        list.start_position() = 0.max(maximum.min(qvm_float_to_int(f(f(f(f(
                             self.display_cursor_y - start
                         ) - SCROLLBAR_SIZE / 2.0)
                             * f(maximum as f32))
@@ -5394,7 +5390,7 @@ impl UiRuntime {
             return Ok(());
         }
         if force {
-            self.definitions.menus[menu].window().flags() |= UiWindowFlag::FORCED;
+            self.definitions.menus[menu].window().set_flags(            self.definitions.menus[menu].window().flags() | (UiWindowFlag::FORCED));
         }
         if self.menu(menu).full_screen() != 0 {
             let background = self.background_or_zero(&self.menu(menu).window().clone())?;
@@ -5413,7 +5409,7 @@ impl UiRuntime {
             (menu_def.fade_amount(), menu_def.fade_clamp(), menu_def.fade_cycle())
         };
         self.paint_window(menu, None, fade_amount, fade_clamp, fade_cycle, draw)?;
-        for item in 0..self.menu(menu).items.len() {
+        for item in 0..self.menu(menu).item_count() as usize {
             self.paint_item(menu, item, draw)?;
         }
         if self.debug {
@@ -5645,23 +5641,23 @@ impl UiRuntime {
         if window.flags() & (UiWindowFlag::FADING_OUT | UiWindowFlag::FADING_IN) == 0 || real_time <= window.next_time() {
             return;
         }
-        window.next_time() = real_time.wrapping_add(cycle);
+        window.set_next_time(real_time.wrapping_add(cycle));
         let color = if fore {
             &mut window.fore_color()
         } else {
             &mut window.back_color()
         };
         if window.flags() & UiWindowFlag::FADING_OUT != 0 {
-            color.w() = f(color.w() - amount);
+            color.set_w(f(color.w() - amount));
             if clear_flags && color.w() <= 0.0 {
-                window.flags() &= !(UiWindowFlag::FADING_OUT | UiWindowFlag::VISIBLE);
+                window.set_flags(                window.flags() & (!(UiWindowFlag::FADING_OUT | UiWindowFlag::VISIBLE)));
             }
         } else {
-            color.w() = f(color.w() + amount);
+            color.set_w(f(color.w() + amount));
             if color.w() >= clamp {
-                color.w() = f(clamp);
+                color.set_w(f(clamp));
                 if clear_flags {
-                    window.flags() &= !UiWindowFlag::FADING_IN;
+                    window.set_flags(                    window.flags() & (!UiWindowFlag::FADING_IN));
                 }
             }
         }
@@ -6168,7 +6164,7 @@ impl UiRuntime {
 
     /// Paint a text field (`paintTextField`).
     fn paint_text_field(&mut self, item: ItemState, draw: &mut Draw2D) -> Result<(), ClientError> {
-        let edit = self.item(item)?.edit_data().copied();
+        let edit = self.item(item)?.edit_data();
         self.paint_text(item, draw)?;
         let cvar = self.item(item)?.cvar().clone();
         let value = match cvar.as_deref() {
@@ -6192,7 +6188,7 @@ impl UiRuntime {
                 definition.cursor_position(),
             )
         };
-        let visible: String = value.chars().skip(edit.paint_offset.max(0) as usize).collect();
+        let visible: String = value.chars().skip(edit.paint_offset().max(0) as usize).collect();
         let options = TextPaintOptions {
             x: f(f(x + width) + offset),
             y,
@@ -6200,7 +6196,7 @@ impl UiRuntime {
             color,
             text: &visible,
             adjust: 0.0,
-            limit: edit.max_paint_chars,
+            limit: edit.max_paint_chars(),
             style,
         };
         if self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS != 0 && self.editing_item.is_some() {
@@ -6210,7 +6206,7 @@ impl UiRuntime {
                 &self.options.fonts,
                 &options,
                 TextCursor {
-                    position: (cursor_position - edit.paint_offset).max(0) as usize,
+                    position: (cursor_position - edit.paint_offset()).max(0) as usize,
                     character: if overstrike { 95 } else { 124 },
                     time: self.real_time,
                 },
@@ -6438,18 +6434,17 @@ impl UiRuntime {
 
     /// Paint a model (`paintModel`).
     fn paint_model(&mut self, item: ItemState, draw: &mut Draw2D) -> Result<(), ClientError> {
-        let model_data = self.item(item)?.model_data().copied();
-        let Some(mut model_data) = model_data else {
+        let model_data = self.item(item)?.model_data();
+        let Some(model_data) = model_data else {
             return Ok(());
         };
-        if model_data.rotation_speed != 0 && self.real_time > self.item(item)?.window().next_time() {
+        if model_data.rotation_speed() != 0 && self.real_time > self.item(item)?.window().next_time() {
             let real_time = self.real_time;
-            let definition = &mut self.definitions.menus[item.menu_index].items[item.item_index];
-            definition.window.next_time = real_time.wrapping_add(model_data.rotation_speed);
-            model_data.angle = (model_data.angle + 1) % 360;
-            if let Some(owned) = definition.model_data_mut() {
-                owned.angle = model_data.angle;
-            }
+            let definition = self.item(item)?;
+            definition
+                .window()
+                .set_next_time(real_time.wrapping_add(model_data.rotation_speed()));
+            model_data.set_angle((model_data.angle() + 1) % 360);
         }
         let (handle, asset) = {
             let definition = self.item(item)?;
@@ -6486,9 +6481,9 @@ impl UiRuntime {
                 height: f(rect.height() - 2.0),
             },
             time,
-            angle: model_data.angle,
-            field_of_view_x: model_data.field_of_view_x,
-            field_of_view_y: model_data.field_of_view_y,
+            angle: model_data.angle(),
+            field_of_view_x: model_data.field_of_view_x(),
+            field_of_view_y: model_data.field_of_view_y(),
         });
         Ok(())
     }
@@ -6553,7 +6548,7 @@ impl UiRuntime {
         if has_text {
             self.paint_text(item, draw)?;
             let definition = self.item(item)?;
-            rect.x() = f(f(definition.text_rect().x() + definition.text_rect().width()) + if text_len { 8.0 } else { 0.0 });
+            rect.set_x(f(f(definition.text_rect().x() + definition.text_rect().width()) + if text_len { 8.0 } else { 0.0 }));
             text_x = 0.0;
         }
         let definition = self.item(item)?.clone();
@@ -6579,7 +6574,7 @@ impl UiRuntime {
     ///
     /// `Promise -> sync`.
     fn paint_list(&mut self, item: ItemState, draw: &mut Draw2D) -> Result<(), ClientError> {
-        let list = self.item(item)?.list_data().cloned();
+        let list = self.item(item)?.list_data();
         let special = self.item(item)?.special();
         let count = f(self.options.feeder.count(special) as f32);
         let horizontal = self.item(item)?.window().flags() & UiWindowFlag::HORIZONTAL != 0;
@@ -6630,14 +6625,14 @@ impl UiRuntime {
             let Some(list) = list else {
                 return Err(bad_ui("Item_ListBox_Paint dereferences NULL list data"));
             };
-            self.write_list_start(item, list.start_position);
+            self.write_list_start(item, list.start_position())?;
             size = f(rect.width() - 2.0);
-            if list.element_style != 1 {
+            if list.element_style() != 1 {
                 return Ok(());
             }
             let mut x = f(rect.x() + 1.0);
             let y = f(rect.y() + 1.0);
-            let mut row = f(list.start_position as f32);
+            let mut row = f(list.start_position() as f32);
             while row < count {
                 let picture = self.options.feeder.image(special, qvm_float_to_int(row));
                 if let Some(picture) = picture {
@@ -6645,8 +6640,8 @@ impl UiRuntime {
                         Rect {
                             x: f(x + 1.0),
                             y: f(y + 1.0),
-                            width: f(list.element_width - 2.0),
-                            height: f(list.element_height - 2.0),
+                            width: f(list.element_width() - 2.0),
+                            height: f(list.element_height() - 2.0),
                         },
                         picture,
                     );
@@ -6661,20 +6656,20 @@ impl UiRuntime {
                         &UiRect {
                             x,
                             y,
-                            width: f(list.element_width - 1.0),
-                            height: f(list.element_height - 1.0),
+                            width: f(list.element_width() - 1.0),
+                            height: f(list.element_height() - 1.0),
                         },
                         border_size,
                         border_color,
                     );
                 }
-                size = f(size - list.element_width);
-                if size < list.element_width {
-                    self.write_list_padding(item, qvm_float_to_int(size));
+                size = f(size - list.element_width());
+                if size < list.element_width() {
+                    self.write_list_padding(item, qvm_float_to_int(size))?;
                     break;
                 }
-                x = f(x + list.element_width);
-                self.bump_list_end(item);
+                x = f(x + list.element_width());
+                self.bump_list_end(item)?;
                 row = f(row + 1.0);
             }
             return Ok(());
@@ -6694,7 +6689,7 @@ impl UiRuntime {
         let Some(list) = list else {
             return Err(bad_ui("Item_ListBox_Paint dereferences NULL list data"));
         };
-        self.write_list_start(item, list.start_position);
+        self.write_list_start(item, list.start_position())?;
         let mut size = f(rect.height() - SCROLLBAR_SIZE * 2.0);
         draw.draw_handle_pic(
             Rect {
@@ -6728,8 +6723,8 @@ impl UiRuntime {
         size = f(rect.height() - 2.0);
         let x = f(rect.x() + 1.0);
         let mut y = f(rect.y() + 1.0);
-        let image_style = list.element_style == 1;
-        let mut row = f(list.start_position as f32);
+        let image_style = list.element_style() == 1;
+        let mut row = f(list.start_position() as f32);
         while row < count {
             if image_style {
                 let picture = self.options.feeder.image(special, qvm_float_to_int(row));
@@ -6738,8 +6733,8 @@ impl UiRuntime {
                         Rect {
                             x: f(x + 1.0),
                             y: f(y + 1.0),
-                            width: f(list.element_width - 2.0),
-                            height: f(list.element_height - 2.0),
+                            width: f(list.element_width() - 2.0),
+                            height: f(list.element_height() - 2.0),
                         },
                         picture,
                     );
@@ -6754,15 +6749,15 @@ impl UiRuntime {
                         &UiRect {
                             x,
                             y,
-                            width: f(list.element_width - 1.0),
-                            height: f(list.element_height - 1.0),
+                            width: f(list.element_width() - 1.0),
+                            height: f(list.element_height() - 1.0),
                         },
                         border_size,
                         border_color,
                     );
                 }
-                self.bump_list_end(item);
-                size = f(size - list.element_width);
+                self.bump_list_end(item)?;
+                size = f(size - list.element_width());
             } else if !list.columns.is_empty() {
                 for (column_index, column) in list.columns.iter().enumerate() {
                     let entry = self
@@ -6776,7 +6771,7 @@ impl UiRuntime {
                         draw.draw_handle_pic(
                             Rect {
                                 x: f(f(x + 4.0) + f(column.position)),
-                                y: f(f(y - 1.0) + f(list.element_height / 2.0)),
+                                y: f(f(y - 1.0) + f(list.element_height() / 2.0)),
                                 width: f(column.width),
                                 height: f(column.width),
                             },
@@ -6797,7 +6792,7 @@ impl UiRuntime {
                             &self.options.fonts,
                             &TextPaintOptions {
                                 x: f(f(x + 4.0) + f(column.position)),
-                                y: f(y + list.element_height),
+                                y: f(y + list.element_height()),
                                 scale,
                                 color: fore,
                                 text: &text,
@@ -6818,13 +6813,13 @@ impl UiRuntime {
                             x: f(x + 2.0),
                             y: f(y + 2.0),
                             width: f(f(rect.width() - SCROLLBAR_SIZE) - 4.0),
-                            height: list.element_height,
+                            height: list.element_height(),
                         },
                         outline,
                         self.options.widget_assets.white_shader,
                     );
                 }
-                size = f(size - list.element_height);
+                size = f(size - list.element_height());
             } else {
                 let entry = self.options.feeder.item(special, qvm_float_to_int(row), 0);
                 if let Some(entry) = entry {
@@ -6844,7 +6839,7 @@ impl UiRuntime {
                                 &self.options.fonts,
                                 &TextPaintOptions {
                                     x: f(x + 4.0),
-                                    y: f(y + list.element_height),
+                                    y: f(y + list.element_height()),
                                     scale,
                                     color: fore,
                                     text: &text,
@@ -6866,70 +6861,73 @@ impl UiRuntime {
                             x: f(x + 2.0),
                             y: f(y + 2.0),
                             width: f(f(rect.width() - SCROLLBAR_SIZE) - 4.0),
-                            height: list.element_height,
+                            height: list.element_height(),
                         },
                         outline,
                         self.options.widget_assets.white_shader,
                     );
                 }
-                size = f(size - list.element_height);
+                size = f(size - list.element_height());
             }
-            if size < list.element_height {
-                self.write_list_padding(item, qvm_float_to_int(f(list.element_height - size)));
+            if size < list.element_height() {
+                self.write_list_padding(item, qvm_float_to_int(f(list.element_height() - size)))?;
                 break;
             }
             if !image_style {
-                self.bump_list_end(item);
+                self.bump_list_end(item)?;
             }
-            y = f(y + list.element_height);
+            y = f(y + list.element_height());
             row = f(row + 1.0);
         }
         Ok(())
     }
 
     /// Reset a list's painted end to its start.
-    fn write_list_start(&mut self, item: ItemState, start: i32) {
-        if let Some(list) = self.definitions.menus[item.menu_index].items[item.item_index].list_data_mut() {
-            list.end_position = start;
+    fn write_list_start(&mut self, item: ItemState, start: i32) -> Result<(), ClientError> {
+        if let Some(list) = self.item(item)?.list_data() {
+            list.set_end_position(start);
         }
+        Ok(())
     }
 
     /// Increment a list's painted end.
-    fn bump_list_end(&mut self, item: ItemState) {
-        if let Some(list) = self.definitions.menus[item.menu_index].items[item.item_index].list_data_mut() {
-            list.end_position += 1;
+    fn bump_list_end(&mut self, item: ItemState) -> Result<(), ClientError> {
+        if let Some(list) = self.item(item)?.list_data() {
+            list.set_end_position(list.end_position() + 1);
         }
+        Ok(())
     }
 
     /// Write a list's draw padding.
-    fn write_list_padding(&mut self, item: ItemState, padding: i32) {
-        if let Some(list) = self.definitions.menus[item.menu_index].items[item.item_index].list_data_mut() {
-            list.draw_padding = padding;
+    fn write_list_padding(&mut self, item: ItemState, padding: i32) -> Result<(), ClientError> {
+        if let Some(list) = self.item(item)?.list_data() {
+            list.set_draw_padding(padding);
         }
+        Ok(())
     }
 
     /// Item behavior snapshot (`behaviorSnapshot`).
     fn behavior_snapshot(&self, item: ItemState) -> Result<UiRuntimeItemBehaviorSnapshot, ClientError> {
         let definition = self.item(item)?;
         if let UiItemBehavior::ListBox { list } = &definition.behavior() {
-            return UiRuntimeItemBehaviorSnapshot::ListBox {
+            return Ok(UiRuntimeItemBehaviorSnapshot::ListBox {
                 start_position: list.start_position(),
                 end_position: list.end_position(),
                 cursor_position: list.cursor_position(),
                 draw_padding: list.draw_padding(),
-            };
+            });
         }
         if matches!(
             definition.behavior().kind(),
             "edit-field" | "numeric-field" | "slider" | "yes-no" | "bind" | "text"
         ) {
             if let Some(edit) = definition.edit_data() {
-                return UiRuntimeItemBehaviorSnapshot::Edit {
+                return Ok(UiRuntimeItemBehaviorSnapshot::Edit {
                     paint_offset: edit.paint_offset(),
-                };
+                });
             }
         }
-        UiRuntimeItemBehaviorSnapshot::Other
+        Ok(UiRuntimeItemBehaviorSnapshot::Other)
     }
 
     /// Runtime snapshot (`snapshot`).
@@ -6939,7 +6937,7 @@ impl UiRuntime {
         let mut menus = Vec::new();
         for menu in 0..self.active_menu_count {
             let mut items = Vec::new();
-            for item in 0..self.definitions.menus[menu].items.len() {
+            for item in 0..self.definitions.menus[menu].item_count() as usize {
                 let target = ItemState {
                     menu_index: menu,
                     item_index: item,
@@ -6949,11 +6947,11 @@ impl UiRuntime {
                     name: definition.window().name().clone(),
                     group: definition.window().group().clone(),
                     flags: definition.window().flags(),
-                    rect: definition.window().rect(),
-                    client_rect: definition.window().client_rect(),
-                    fore_color: definition.window().fore_color(),
-                    back_color: definition.window().back_color(),
-                    border_color: definition.window().border_color(),
+                    rect: definition.window().rect().snapshot(),
+                    client_rect: definition.window().client_rect().snapshot(),
+                    fore_color: definition.window().fore_color().snapshot(),
+                    back_color: definition.window().back_color().snapshot(),
+                    border_color: definition.window().border_color().snapshot(),
                     background: self.window_picture(&definition.window().clone())?,
                     cursor_position: definition.cursor_position(),
                     special: definition.special(),
@@ -7813,7 +7811,7 @@ mod tests {
         assert!(log.iter().any(|entry| entry.starts_with("sound:")), "{log:?}");
         assert!(log.iter().any(|entry| entry.starts_with("model:")), "{log:?}");
         let snapshot = runtime.snapshot().unwrap();
-        assert!(snapshot.menus[0].items.is_empty());
+        assert!(snapshot.menus[0].item_count() == 0);
         assert_eq!(snapshot.menus.len(), 1);
     }
 
