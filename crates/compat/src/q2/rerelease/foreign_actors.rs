@@ -826,7 +826,10 @@ mod tests {
         let mut actors = test_actors();
         let actor = actors.register_actor(body());
         let address = actors.address(actor).expect("address");
-        let origin = actors.memory.read_f32x3(address).expect("origin");
+        let edict = edict_layout();
+        let origin_offset = field_offset(&edict, "s.origin").expect("s.origin") as i64;
+        let origin_address = actors.memory.offset(address, origin_offset).expect("origin address");
+        let origin = actors.memory.read_f32x3(origin_address).expect("origin");
         assert_eq!(origin.x, 1.0);
         let slot = actors.projections.get(&actor).expect("projection").slot;
         assert_eq!(actors.lookup(slot), Some(Some(actor)));

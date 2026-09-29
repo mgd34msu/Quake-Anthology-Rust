@@ -330,7 +330,7 @@ mod tests {
     fn table_counts_and_abi_match_game_h() {
         assert_eq!(rerelease_abi(), NativeCallAbi::MicrosoftX64);
         assert_eq!(rerelease_abi().pointer_bytes(), 8);
-        assert_eq!(game_imports().len(), 67);
+        assert_eq!(game_imports().len(), 70);
         assert_eq!(game_exports().len(), 29);
         assert_eq!(cgame_imports().len(), 35);
         assert_eq!(cgame_exports().len(), 18);

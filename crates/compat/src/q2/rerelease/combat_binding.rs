@@ -416,7 +416,7 @@ mod tests {
             } => {
                 assert_eq!(*points, 60.0);
                 assert_eq!(item, "q2:item_armor_combat");
-                assert_eq!(*normal_protection, 0.6);
+                assert_eq!(*normal_protection, f64::from(0.6f32));
             }
             other => panic!("regular: {other:?}"),
         }

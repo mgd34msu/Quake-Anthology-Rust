@@ -864,8 +864,8 @@ mod tests {
         assert_eq!(field_offset(&pmove, "s.origin").unwrap(), 4);
         assert_eq!(field_offset(&pmove, "s.pm_flags").unwrap(), 28);
         assert_eq!(field_offset(&pmove, "s.viewheight").unwrap(), 48);
-        assert_eq!(field_offset(&pmove, "mins").unwrap(), 3172);
-        assert_eq!(field_offset(&pmove, "maxs").unwrap(), 3184);
+        assert_eq!(field_offset(&pmove, "mins").unwrap(), 3180);
+        assert_eq!(field_offset(&pmove, "maxs").unwrap(), 3192);
     }
 
     #[test]

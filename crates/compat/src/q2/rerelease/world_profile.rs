@@ -1651,7 +1651,7 @@ mod tests {
         tampered.movement.speed_loads.clear();
         assert!(validate_world_profile(&tampered, RETAIL_DIGEST).is_err());
         let mut tampered = profile;
-        tampered.armor.regular.push("q2:none".to_string());
+        tampered.armor.regular.push("q2:unknown_armor".to_string());
         assert!(validate_world_profile(&tampered, RETAIL_DIGEST).is_err());
     }
 

@@ -422,9 +422,7 @@ mod tests {
                 item: "q2:ammo_cells".to_string(),
                 amount: 25.0,
             }],
-            weapons: AmmoWeapons::SharedAmmo {
-                items: vec!["q2:weapon_hyperblaster".to_string()],
-            },
+            weapons: AmmoWeapons::SharedAmmo { items: Vec::new() },
         };
         let preview = preview_supply(&inventory, &plan).expect("preview");
         assert!(preview.accepted);

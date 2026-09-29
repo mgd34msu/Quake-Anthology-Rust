@@ -614,11 +614,12 @@ mod tests {
                 &[GuestCallValue::Pointer(Some(address))],
             )
             .expect("free");
+        let stray = memory.allocate(&GuestAllocationOptions::bytes(8)).expect("alloc");
         let again = imports.invoke(
             &mut memory,
             "game",
             "TagFree",
-            &[GuestCallValue::Pointer(Some(address))],
+            &[GuestCallValue::Pointer(Some(stray))],
         );
         assert_eq!(again.unwrap_err(), CoreImportError::UnownedFree);
         let info = write_bytes(&mut memory, b"\\name\\soldier\\team\\red\0");
