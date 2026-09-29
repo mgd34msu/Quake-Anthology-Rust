@@ -1,5 +1,7 @@
 //! Shared per-seat HUD overlay.
 
+pub(crate) mod token;
+
 pub mod powerups;
 pub mod q1_wheel;
 pub mod q2_native;
