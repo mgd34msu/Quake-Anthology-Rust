@@ -35,27 +35,12 @@
 //! - Lazy `PictureAsset | (() => PictureAsset)` backgrounds are resolved
 //!   eagerly at paint time; [`Draw2D`] takes owned pictures and no host
 //!   mutation interleaves within a paint call, so output is identical.
-//! - [`UiItemDefinition::parent`] is an [`UiItemParent`] slot index instead of
-//!   a cyclic definition reference.
+//! - Item and window handles are the shared-memory views from [`super::menu`],
+//!   so mutation flows through getters/setters instead of field writes.
 //!
-//! ## Assumed sibling imports
-//!
-//! `super::menu`, `super::script/*`, and `super::team_arena` were still
-//! skeletons when this file was written, so the donor-derived menu,
-//! script-token, and memory types below are defined locally. When the
-//! siblings land, these locals should be replaced by (names chosen to match
-//! the donor exports exactly):
-//!
-//! - `super::menu::{UiWindowFlag, UiRect, UiMutableRect, UiShaderReference,
-//!   UiModelReference, UiSoundReference, UiFontReference, UiScriptToken,
-//!   UiScript, UiWindowDefinition, UiColorRange, UiEditFieldDefinition,
-//!   UiListColumn, UiListBoxDefinition, UiMultiDefinition, UiModelDefinition,
-//!   UiItemBehavior, UiCvarRule, UiItemDefinition, UiMenuDefinition,
-//!   UiGlobalAssets, UiMenuRegistrationEvent, UiMenuAssetPublication,
-//!   UiMenuRegistrationState, UiMenuDefinitions, UiMenuMemory,
-//!   UiMenuMemoryOwnership, MAX_UI_MENUS}`
-//! - `super::script::preprocessor::{SourceLocation, ScriptDiagnostic}`
-//! - `super::team_arena::memory::TeamArenaUiMemory` (see [`UiMenuMemory`])
+//! Menu, script-token, and memory types come from the sibling modules
+//! (`super::menu`, `super::script::preprocessor`, `super::team_arena`);
+//! only runtime-owned hosts, options, and snapshots are defined here.
 //!
 //! All failures surface as [`ClientError::BadUi`].
 
@@ -69,11 +54,10 @@ use qa_core::numeric::qvm_float_to_int;
 
 use super::borders::{draw_cg_rect, draw_cg_sides, draw_cg_top_bottom};
 use super::menu::{
-    UiColorComponent, UiGlobalAssets, UiItemBehavior, UiItemDefinition, UiItemTypeCode,
-    UiListBoxDefinition, UiMenuAssetPublication, UiMenuDefinition, UiMenuDefinitions, UiMenuMemory,
-    UiMenuMemoryOwnership, UiMenuRegistrationEvent, UiMenuRegistrationState, UiMenuResource,
-    UiModelReference, UiRect, UiScript, UiScriptToken, UiShaderReference, UiWindowDefinition,
-    UiWindowFlag,
+    UiColorComponent, UiGlobalAssets, UiItemBehavior, UiItemDefinition, UiItemTypeCode, UiListBoxDefinition,
+    UiMenuAssetPublication, UiMenuDefinition, UiMenuDefinitions, UiMenuMemory, UiMenuMemoryOwnership,
+    UiMenuRegistrationEvent, UiMenuRegistrationState, UiMenuResource, UiRect, UiScript, UiScriptToken,
+    UiShaderReference, UiWindowDefinition, UiWindowFlag,
 };
 use super::script::preprocessor::SourceLocation;
 use crate::input::{KeyCode, KEY_CHAR_FLAG};
@@ -590,15 +574,6 @@ fn game_atoi(text: &str) -> Result<i32, ClientError> {
     Ok(value.wrapping_mul(sign))
 }
 
-
-
-
-
-
-
-
-
-
 impl UiScript {
     /// Build a script from raw text with no eager tokens.
     #[must_use]
@@ -610,49 +585,6 @@ impl UiScript {
         }
     }
 }
-
-
-
-
-
-/// An item asset reference (`UiShaderReference | UiModelReference`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UiAssetReference {
-    /// Shader (picture) asset.
-    Shader(UiShaderReference),
-    /// Model asset.
-    Model(UiModelReference),
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-/// An item's parent menu slot (`UiMenuDefinition` reference in the donor).
-///
-/// The donor holds a cyclic definition reference; owned Rust definitions
-/// name the parent by its menu slot instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UiItemParent {
-    /// Parent menu slot.
-    pub source_index: usize,
-}
-
-
-impl UiItemDefinition {
-
-}
-
-
-
 
 impl UiGlobalAssets {
     /// Empty assets (moved-from placeholder and test seed).
@@ -684,7 +616,6 @@ impl UiGlobalAssets {
     }
 }
 
-
 impl UiMenuRegistrationEvent {
     /// Referenced asset path.
     #[must_use]
@@ -698,12 +629,9 @@ impl UiMenuRegistrationEvent {
     }
 }
 
-
-
-
 /// A script diagnostic (`ScriptDiagnostic`).
 ///
-/// Assumed sibling import: `super::script::preprocessor::ScriptDiagnostic`.
+/// Runtime-visible script diagnostic (sibling `ScriptDiagnostic` equivalent).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiScriptDiagnostic {
     /// Whether this is a warning (`true`) or an error (`false`).
@@ -713,8 +641,6 @@ pub struct UiScriptDiagnostic {
     /// Diagnostic location.
     pub location: SourceLocation,
 }
-
-
 
 impl PartialEq for UiMenuMemoryOwnership {
     /// Kind equality; QVM32 owners compare by identity like the donor.
@@ -730,7 +656,6 @@ impl PartialEq for UiMenuMemoryOwnership {
 }
 
 impl Eq for UiMenuMemoryOwnership {}
-
 
 impl UiMenuDefinitions {
     /// Empty definitions (moved-from placeholder and test seed).
@@ -1642,9 +1567,7 @@ impl UiScriptCursor for RuntimeScriptCursor {
         let text = self.raw_string()?;
         match &self.memory {
             UiMenuMemoryOwnership::Unaccounted => Some(Some(text)),
-            UiMenuMemoryOwnership::Qvm32 { memory } => {
-                Some(memory.string_alloc(Some(text.as_str())).ok()?)
-            }
+            UiMenuMemoryOwnership::Qvm32 { memory } => Some(memory.string_alloc(Some(text.as_str())).ok()?),
         }
     }
 }
@@ -2116,10 +2039,7 @@ impl UiRuntime {
     pub fn reload_definitions(&mut self, definitions: UiMenuDefinitions) -> Result<(), ClientError> {
         self.opened()?;
         self.assert_menu_memory(&definitions.memory)?;
-        let completed = matches!(
-            definitions.registration,
-            UiMenuRegistrationState::Completed { .. }
-        );
+        let completed = matches!(definitions.registration, UiMenuRegistrationState::Completed { .. });
         let mut pictures = std::mem::take(&mut self.pictures);
         let mut sounds = std::mem::take(&mut self.sounds);
         let mut models = std::mem::take(&mut self.models);
@@ -2127,7 +2047,7 @@ impl UiRuntime {
             Self::resolve_registration(
                 &mut self.options,
                 completed,
-                &event,
+                event,
                 &mut pictures,
                 &mut sounds,
                 &mut models,
@@ -2191,7 +2111,9 @@ impl UiRuntime {
                     }
                 }
             } else {
-                self.definitions.menus[index].window().set_flags(                self.definitions.menus[index].window().flags() & (!UiWindowFlag::HAS_FOCUS));
+                self.definitions.menus[index]
+                    .window()
+                    .set_flags(self.definitions.menus[index].window().flags() & (!UiWindowFlag::HAS_FOCUS));
             }
         }
         self.close_cinematics();
@@ -2447,7 +2369,9 @@ impl UiRuntime {
         let Some(index) = menu else {
             return Ok(false);
         };
-        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() & (!UiWindowFlag::FORCED));
+        self.definitions.menus[index]
+            .window()
+            .set_flags(self.definitions.menus[index].window().flags() & (!UiWindowFlag::FORCED));
         Ok(true)
     }
 
@@ -2455,7 +2379,9 @@ impl UiRuntime {
     pub fn clear_captured_forced(&mut self, handle: UiCapturedMenu) -> Result<(), ClientError> {
         self.opened()?;
         let index = self.captured_menu(handle)?;
-        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() & (!UiWindowFlag::FORCED));
+        self.definitions.menus[index]
+            .window()
+            .set_flags(self.definitions.menus[index].window().flags() & (!UiWindowFlag::FORCED));
         Ok(())
     }
 
@@ -2504,9 +2430,13 @@ impl UiRuntime {
         self.opened()?;
         if let Some(definition) = item {
             if focused {
-                definition.window().set_flags(                definition.window().flags() | (UiWindowFlag::MOUSE_OVER));
+                definition
+                    .window()
+                    .set_flags(definition.window().flags() | (UiWindowFlag::MOUSE_OVER));
             } else {
-                definition.window().set_flags(                definition.window().flags() & (!UiWindowFlag::MOUSE_OVER));
+                definition
+                    .window()
+                    .set_flags(definition.window().flags() & (!UiWindowFlag::MOUSE_OVER));
             }
         }
         Ok(())
@@ -2878,7 +2808,8 @@ impl UiRuntime {
         self.definitions.menus[..self.active_menu_count]
             .iter()
             .position(|menu| {
-                menu.window().flags() & UiWindowFlag::HAS_FOCUS != 0 && menu.window().flags() & UiWindowFlag::VISIBLE != 0
+                menu.window().flags() & UiWindowFlag::HAS_FOCUS != 0
+                    && menu.window().flags() & UiWindowFlag::VISIBLE != 0
             })
     }
 
@@ -2914,11 +2845,7 @@ impl UiRuntime {
         let Some(parent) = self.item(item)?.parent() else {
             return Ok(None);
         };
-        let slot = self
-            .definitions
-            .menus
-            .iter()
-            .position(|menu| menu.same_record(&parent));
+        let slot = self.definitions.menus.iter().position(|menu| menu.same_record(&parent));
         let Some(slot) = slot else {
             return Err(bad_ui("UI item belongs to a missing menu"));
         };
@@ -3104,7 +3031,9 @@ impl UiRuntime {
     ///
     /// `Promise -> sync`.
     fn activate_menu(&mut self, index: usize) -> Result<(), ClientError> {
-        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() | (UiWindowFlag::HAS_FOCUS | UiWindowFlag::VISIBLE));
+        self.definitions.menus[index].window().set_flags(
+            self.definitions.menus[index].window().flags() | (UiWindowFlag::HAS_FOCUS | UiWindowFlag::VISIBLE),
+        );
         let on_open = self.definitions.menus[index].on_open();
         if let Some(script) = on_open {
             self.run_script(
@@ -3140,7 +3069,9 @@ impl UiRuntime {
                 )?;
             }
         }
-        self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() & (!(UiWindowFlag::VISIBLE | UiWindowFlag::HAS_FOCUS)));
+        self.definitions.menus[index].window().set_flags(
+            self.definitions.menus[index].window().flags() & (!(UiWindowFlag::VISIBLE | UiWindowFlag::HAS_FOCUS)),
+        );
         Ok(())
     }
 
@@ -3159,10 +3090,7 @@ impl UiRuntime {
                 let owner_draw = definition.window().owner_draw();
                 let is_owner_draw = definition.behavior().kind() == "owner-draw";
                 if style == 5 {
-                    Self::close_window_cinematic_static(
-                        &mut self.options,
-                        &mut definition.window(),
-                    );
+                    Self::close_window_cinematic_static(&mut self.options, &mut definition.window());
                 }
                 if is_owner_draw {
                     self.options.owner_draw.close_cinematic(-owner_draw);
@@ -3448,9 +3376,13 @@ impl UiRuntime {
                 item_index: item,
             };
             if visible {
-                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::VISIBLE);
+                self.menu_item(menu, item)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::VISIBLE);
             } else {
-                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::VISIBLE);
+                self.menu_item(menu, item)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::VISIBLE);
                 self.close_cinematics_for(target);
             }
         }
@@ -3679,7 +3611,9 @@ impl UiRuntime {
             if name == "backcolor" {
                 self.menu_item(menu, item)?.window().set_back_color(&color);
             } else if name == "forecolor" {
-                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::FORE_COLOR_SET);
+                self.menu_item(menu, item)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::FORE_COLOR_SET);
                 self.menu_item(menu, item)?.window().set_fore_color(&color);
             } else if name == "bordercolor" {
                 self.menu_item(menu, item)?.window().set_border_color(&color);
@@ -3714,7 +3648,9 @@ impl UiRuntime {
                     item_index: item,
                 });
             }
-            self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::HAS_FOCUS);
+            self.menu_item(menu, item)?
+                .window()
+                .set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::HAS_FOCUS);
             let leave = self.menu_item(menu, item)?.leave_focus();
             if let Some(script) = leave {
                 self.run_script(
@@ -3764,7 +3700,9 @@ impl UiRuntime {
         }
         let menu_again = self.script_menu(owner)?;
         self.clear_focus(menu_again)?;
-        self.menu_item(menu, found)?.window().set_flags(self.menu_item(menu, found)?.window().flags() | UiWindowFlag::HAS_FOCUS);
+        self.menu_item(menu, found)?
+            .window()
+            .set_flags(self.menu_item(menu, found)?.window().flags() | UiWindowFlag::HAS_FOCUS);
         let on_focus = self.menu_item(menu, found)?.on_focus();
         if let Some(script) = on_focus {
             self.run_script(
@@ -3872,7 +3810,9 @@ impl UiRuntime {
             };
             {
                 let definition = self.menu_item(menu, item)?;
-                definition.window().set_flags(definition.window().flags() | UiWindowFlag::IN_TRANSITION | UiWindowFlag::VISIBLE);
+                definition
+                    .window()
+                    .set_flags(definition.window().flags() | UiWindowFlag::IN_TRANSITION | UiWindowFlag::VISIBLE);
                 definition.window().set_offset_time(game_atoi(&time_text)?);
                 definition.window().set_client_rect(&from);
                 definition.window().set_rect_effects(&to);
@@ -3925,7 +3865,9 @@ impl UiRuntime {
             };
             {
                 let definition = self.menu_item(menu, item)?;
-                definition.window().set_flags(definition.window().flags() | UiWindowFlag::ORBITING | UiWindowFlag::VISIBLE);
+                definition
+                    .window()
+                    .set_flags(definition.window().flags() | UiWindowFlag::ORBITING | UiWindowFlag::VISIBLE);
                 definition.window().set_offset_time(game_atoi(&time)?);
                 definition.window().rect_effects().set_x(game_atof(&cx)?);
                 definition.window().rect_effects().set_y(game_atof(&cy)?);
@@ -3943,12 +3885,7 @@ impl UiRuntime {
         let Some(parent) = parent else {
             return Ok(());
         };
-        let Some(slot) = self
-            .definitions
-            .menus
-            .iter()
-            .position(|menu| menu.same_record(&parent))
-        else {
+        let Some(slot) = self.definitions.menus.iter().position(|menu| menu.same_record(&parent)) else {
             return Ok(());
         };
         let (mut x, mut y, border, border_size) = {
@@ -4033,7 +3970,9 @@ impl UiRuntime {
                     }
                 } else if self.item(target)?.window().flags() & UiWindowFlag::MOUSE_OVER != 0 {
                     self.mouse_leave(menu, target)?;
-                    self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::MOUSE_OVER);
+                    self.menu_item(menu, item)?
+                        .window()
+                        .set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::MOUSE_OVER);
                 }
             }
         }
@@ -4062,14 +4001,18 @@ impl UiRuntime {
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER_TEXT);
+                self.menu_item(menu, item.item_index)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER_TEXT);
             }
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER == 0 {
                 let script = self.item(item)?.mouse_enter();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER);
+                self.menu_item(menu, item.item_index)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER);
             }
         } else {
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER_TEXT != 0 {
@@ -4077,14 +4020,18 @@ impl UiRuntime {
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !UiWindowFlag::MOUSE_OVER_TEXT);
+                self.menu_item(menu, item.item_index)?.window().set_flags(
+                    self.menu_item(menu, item.item_index)?.window().flags() & !UiWindowFlag::MOUSE_OVER_TEXT,
+                );
             }
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER == 0 {
                 let script = self.item(item)?.mouse_enter();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER);
+                self.menu_item(menu, item.item_index)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER);
             }
             if self.item(item)?.item_type() == UiItemTypeCode::ListBox as i32 {
                 self.list_mouse_enter(item, x, y)?;
@@ -4102,13 +4049,18 @@ impl UiRuntime {
             if let Some(script) = script {
                 self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
             }
-            self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !UiWindowFlag::MOUSE_OVER_TEXT);
+            self.menu_item(menu, item.item_index)?
+                .window()
+                .set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !UiWindowFlag::MOUSE_OVER_TEXT);
         }
         let script = self.item(item)?.mouse_exit();
         if let Some(script) = script {
             self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
         }
-        self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !(UiWindowFlag::LIST_RIGHT_ARROW | UiWindowFlag::LIST_LEFT_ARROW));
+        self.menu_item(menu, item.item_index)?.window().set_flags(
+            self.menu_item(menu, item.item_index)?.window().flags()
+                & !(UiWindowFlag::LIST_RIGHT_ARROW | UiWindowFlag::LIST_LEFT_ARROW),
+        );
         Ok(())
     }
 
@@ -4201,14 +4153,15 @@ impl UiRuntime {
             if !(if direction < 0 { cursor > -1 } else { cursor < count }) {
                 break;
             }
-            self.definitions.menus[menu].set_cursor_item(            self.definitions.menus[menu].cursor_item() + (direction));
+            self.definitions.menus[menu].set_cursor_item(self.definitions.menus[menu].cursor_item() + (direction));
             let cursor = self.definitions.menus[menu].cursor_item();
             if (if direction < 0 { cursor < 0 } else { cursor >= count }) && !wrapped {
                 wrapped = true;
                 self.definitions.menus[menu].set_cursor_item(if direction < 0 { count - 1 } else { 0 });
             }
             let cursor = self.definitions.menus[menu].cursor_item();
-            let target = if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count().max(0) as usize {
+            let target = if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count().max(0) as usize
+            {
                 Some(ItemState {
                     menu_index: menu,
                     item_index: cursor as usize,
@@ -4467,7 +4420,8 @@ impl UiRuntime {
                     )
                 };
                 let result = self.options.owner_draw.handle_key(owner_draw, flags, special, key);
-                self.menu_item(item.menu_index, item.item_index)?.set_special(result.special);
+                self.menu_item(item.menu_index, item.item_index)?
+                    .set_special(result.special);
                 Ok(result.handled)
             }
             "bind" => self.handle_bind_key(item, key, down),
@@ -4539,7 +4493,7 @@ impl UiRuntime {
             }
         }
         current += 1;
-        if current < 0 || current >= count as i32 {
+        if current < 0 || current >= count {
             current = 0;
         }
         if multi.string_definition() {
@@ -4605,7 +4559,7 @@ impl UiRuntime {
                     edit_move(&mut buffer, cursor - 1, cursor, length as i32 + 1 - cursor)?;
                     cursor -= 1;
                     if cursor < edit.paint_offset() {
-                        edit.set_paint_offset(                        edit.paint_offset() - (1));
+                        edit.set_paint_offset(edit.paint_offset() - (1));
                     }
                 }
                 self.publish_edit_buffer(Some(&cvar), &buffer)?;
@@ -4635,7 +4589,7 @@ impl UiRuntime {
             if cursor < length as i32 + 1 {
                 cursor += 1;
                 if edit.max_paint_chars() != 0 && cursor > edit.max_paint_chars() {
-                    edit.set_paint_offset(                    edit.paint_offset() + (1));
+                    edit.set_paint_offset(edit.paint_offset() + (1));
                 }
             }
             self.write_text_cursor(item, cursor, edit.paint_offset())?;
@@ -4648,7 +4602,7 @@ impl UiRuntime {
         } else if key == KeyCode::Right as i32 || key == KeyCode::KeypadRight as i32 {
             if edit.max_paint_chars() != 0 && cursor >= edit.max_paint_chars() && cursor < length as i32 {
                 cursor += 1;
-                edit.set_paint_offset(                edit.paint_offset() + (1));
+                edit.set_paint_offset(edit.paint_offset() + (1));
                 self.write_text_cursor(item, cursor, edit.paint_offset())?;
                 return Ok(true);
             }
@@ -4662,7 +4616,7 @@ impl UiRuntime {
                 cursor -= 1;
             }
             if cursor < edit.paint_offset() {
-                edit.set_paint_offset(                edit.paint_offset() - (1));
+                edit.set_paint_offset(edit.paint_offset() - (1));
             }
             self.write_text_cursor(item, cursor, edit.paint_offset())?;
             return Ok(true);
@@ -4705,12 +4659,7 @@ impl UiRuntime {
     }
 
     /// Write back edit cursor state.
-    fn write_text_cursor(
-        &mut self,
-        item: ItemState,
-        cursor: i32,
-        paint_offset: i32,
-    ) -> Result<(), ClientError> {
+    fn write_text_cursor(&mut self, item: ItemState, cursor: i32, paint_offset: i32) -> Result<(), ClientError> {
         let definition = self.item(item)?;
         definition.set_cursor_position(cursor);
         if let Some(edit) = definition.edit_data() {
@@ -4782,7 +4731,7 @@ impl UiRuntime {
         };
         if backward {
             if !list.not_selectable() {
-                list.set_cursor_position(                list.cursor_position() - (1));
+                list.set_cursor_position(list.cursor_position() - (1));
                 if list.cursor_position() < 0 {
                     list.set_cursor_position(0);
                 }
@@ -4795,7 +4744,7 @@ impl UiRuntime {
                 self.write_list(item, &list);
                 self.select_list(item)?;
             } else {
-                list.set_start_position(                list.start_position() - (1));
+                list.set_start_position(list.start_position() - (1));
                 if list.start_position() < 0 {
                     list.set_start_position(0);
                 }
@@ -4805,7 +4754,7 @@ impl UiRuntime {
         }
         if forward {
             if !list.not_selectable() {
-                list.set_cursor_position(                list.cursor_position() + (1));
+                list.set_cursor_position(list.cursor_position() + (1));
                 if list.cursor_position() < list.start_position() {
                     list.set_start_position(list.cursor_position());
                 }
@@ -4818,7 +4767,7 @@ impl UiRuntime {
                 self.write_list(item, &list);
                 self.select_list(item)?;
             } else {
-                list.set_start_position(                list.start_position() + (1));
+                list.set_start_position(list.start_position() + (1));
                 let limit = if horizontal { count - 1 } else { maximum };
                 if list.start_position() > limit {
                     list.set_start_position(limit);
@@ -4830,25 +4779,25 @@ impl UiRuntime {
         if key == KeyCode::Mouse1 as i32 || key == KeyCode::Mouse2 as i32 {
             let flags = self.item(item)?.window().flags();
             if flags & UiWindowFlag::LIST_LEFT_ARROW != 0 {
-                list.set_start_position(                list.start_position() - (1));
+                list.set_start_position(list.start_position() - (1));
                 if list.start_position() < 0 {
                     list.set_start_position(0);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_RIGHT_ARROW != 0 {
-                list.set_start_position(                list.start_position() + (1));
+                list.set_start_position(list.start_position() + (1));
                 if list.start_position() > maximum {
                     list.set_start_position(maximum);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_PAGE_UP != 0 {
-                list.set_start_position(                list.start_position() - (view));
+                list.set_start_position(list.start_position() - (view));
                 if list.start_position() < 0 {
                     list.set_start_position(0);
                 }
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_PAGE_DOWN != 0 {
-                list.set_start_position(                list.start_position() + (view));
+                list.set_start_position(list.start_position() + (view));
                 if list.start_position() > maximum {
                     list.set_start_position(maximum);
                 }
@@ -4882,7 +4831,7 @@ impl UiRuntime {
         if page_up || page_down {
             let amount = if page_up { -view } else { view };
             if !list.not_selectable() {
-                list.set_cursor_position(                list.cursor_position() + (amount));
+                list.set_cursor_position(list.cursor_position() + (amount));
                 if page_up && list.cursor_position() < 0 {
                     list.set_cursor_position(0);
                 }
@@ -4898,7 +4847,7 @@ impl UiRuntime {
                 self.write_list(item, &list);
                 self.select_list(item)?;
             } else {
-                list.set_start_position(                list.start_position() + (amount));
+                list.set_start_position(list.start_position() + (amount));
                 if page_up && list.start_position() < 0 {
                     list.set_start_position(0);
                 }
@@ -4937,7 +4886,8 @@ impl UiRuntime {
             };
             (definition.special(), list.cursor_position())
         };
-        self.menu_item(item.menu_index, item.item_index)?.set_cursor_position(cursor);
+        self.menu_item(item.menu_index, item.item_index)?
+            .set_cursor_position(cursor);
         self.options.feeder.select(special, cursor);
         Ok(())
     }
@@ -5134,8 +5084,7 @@ impl UiRuntime {
             if rect_contains(&part, x, y) {
                 list.set_cursor_position(
                     list.end_position().min(
-                        qvm_float_to_int(f(f(f(y - 2.0) - part.y) / list.element_height()))
-                            + list.start_position(),
+                        qvm_float_to_int(f(f(f(y - 2.0) - part.y) / list.element_height())) + list.start_position(),
                     ),
                 );
                 self.write_list(item, &list);
@@ -5404,8 +5353,9 @@ impl UiRuntime {
                             return Err(bad_ui("Scroll_ListBox_ThumbFunc dereferences NULL list data"));
                         };
                         list.set_start_position(0.max(maximum.min(qvm_float_to_int(f(f(f(f(
-                            self.display_cursor_y - start
-                        ) - SCROLLBAR_SIZE / 2.0)
+                            self.display_cursor_y - start,
+                        ) - SCROLLBAR_SIZE
+                            / 2.0)
                             * f(maximum as f32))
                             / denominator)))));
                         self.write_list(item, &list);
@@ -5442,12 +5392,17 @@ impl UiRuntime {
             return Ok(());
         }
         if self.menu(menu).window().owner_draw_flags() != 0
-            && !self.options.owner_draw.visible(self.menu(menu).window().owner_draw_flags())
+            && !self
+                .options
+                .owner_draw
+                .visible(self.menu(menu).window().owner_draw_flags())
         {
             return Ok(());
         }
         if force {
-            self.definitions.menus[menu].window().set_flags(            self.definitions.menus[menu].window().flags() | (UiWindowFlag::FORCED));
+            self.definitions.menus[menu]
+                .window()
+                .set_flags(self.definitions.menus[menu].window().flags() | (UiWindowFlag::FORCED));
         }
         if self.menu(menu).full_screen() != 0 {
             let background = self.background_or_zero(&self.menu(menu).window())?;
@@ -5536,15 +5491,7 @@ impl UiRuntime {
                     Some(item) => self.menu_item(menu, item)?.window(),
                     None => self.definitions.menus[menu].window(),
                 };
-                Self::fade_window(
-                    real_time,
-                    &mut target,
-                    false,
-                    fade_clamp,
-                    fade_cycle,
-                    true,
-                    fade_amount,
-                );
+                Self::fade_window(real_time, &mut target, false, fade_clamp, fade_cycle, true, fade_amount);
                 let window = match item {
                     Some(item) => self.menu_item(menu, item)?.window(),
                     None => self.definitions.menus[menu].window(),
@@ -5597,7 +5544,12 @@ impl UiRuntime {
                     self.draw_rect(draw, &window.rect().snapshot(), window.border_size(), color);
                 }
             } else {
-                self.draw_rect(draw, &window.rect().snapshot(), window.border_size(), window.border_color().snapshot());
+                self.draw_rect(
+                    draw,
+                    &window.rect().snapshot(),
+                    window.border_size(),
+                    window.border_color().snapshot(),
+                );
             }
         } else if window.border() == 2 {
             draw.set_color(Some(window.border_color().snapshot()));
@@ -5703,7 +5655,8 @@ impl UiRuntime {
         clear_flags: bool,
         amount: f32,
     ) {
-        if window.flags() & (UiWindowFlag::FADING_OUT | UiWindowFlag::FADING_IN) == 0 || real_time <= window.next_time() {
+        if window.flags() & (UiWindowFlag::FADING_OUT | UiWindowFlag::FADING_IN) == 0 || real_time <= window.next_time()
+        {
             return;
         }
         window.set_next_time(real_time.wrapping_add(cycle));
@@ -5715,14 +5668,14 @@ impl UiRuntime {
         if window.flags() & UiWindowFlag::FADING_OUT != 0 {
             color.set_w(f(color.w() - amount));
             if clear_flags && color.w() <= 0.0 {
-                window.set_flags(                window.flags() & (!(UiWindowFlag::FADING_OUT | UiWindowFlag::VISIBLE)));
+                window.set_flags(window.flags() & (!(UiWindowFlag::FADING_OUT | UiWindowFlag::VISIBLE)));
             }
         } else {
             color.set_w(f(color.w() + amount));
             if color.w() >= clamp {
                 color.set_w(f(clamp));
                 if clear_flags {
-                    window.set_flags(                    window.flags() & (!UiWindowFlag::FADING_IN));
+                    window.set_flags(window.flags() & (!UiWindowFlag::FADING_IN));
                 }
             }
         }
@@ -5741,9 +5694,13 @@ impl UiRuntime {
             let flags = self.item(target)?.window().owner_draw_flags();
             let visible = self.options.owner_draw.visible(flags);
             if visible {
-                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::VISIBLE);
+                self.menu_item(menu, item)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::VISIBLE);
             } else {
-                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::VISIBLE);
+                self.menu_item(menu, item)?
+                    .window()
+                    .set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::VISIBLE);
             }
         }
         if !self.item_passes_cvar(target, "show")? || self.item(target)?.window().flags() & UiWindowFlag::VISIBLE == 0 {
@@ -5794,7 +5751,9 @@ impl UiRuntime {
         {
             let real_time = self.real_time;
             let definition = self.menu_item(item.menu_index, item.item_index)?;
-            definition.window().set_next_time(real_time.wrapping_add(definition.window().offset_time()));
+            definition
+                .window()
+                .set_next_time(real_time.wrapping_add(definition.window().offset_time()));
             let half_width = f(definition.window().client_rect().width() / 2.0);
             let half_height = f(definition.window().client_rect().height() / 2.0);
             let rx = f(f(definition.window().client_rect().x() + half_width) - definition.window().rect_effects().x());
@@ -5804,10 +5763,10 @@ impl UiRuntime {
             let cosine = f((f64::from(angle)).cos() as f32);
             let sine = f((f64::from(angle)).sin() as f32);
             definition.window().client_rect().set_x(f(f(
-                f(f(rx * cosine) - f(ry * sine)) + definition.window().rect_effects().x(),
+                f(f(rx * cosine) - f(ry * sine)) + definition.window().rect_effects().x()
             ) - half_width));
             definition.window().client_rect().set_y(f(f(
-                f(f(rx * sine) + f(ry * cosine)) + definition.window().rect_effects().y(),
+                f(f(rx * sine) + f(ry * cosine)) + definition.window().rect_effects().y()
             ) - half_height));
             self.update_item_position(item)?;
         }
@@ -5818,7 +5777,9 @@ impl UiRuntime {
             let mut done = 0;
             {
                 let definition = self.menu_item(item.menu_index, item.item_index)?;
-                definition.window().set_next_time(real_time.wrapping_add(definition.window().offset_time()));
+                definition
+                    .window()
+                    .set_next_time(real_time.wrapping_add(definition.window().offset_time()));
                 for component in 0..4 {
                     let current = match component {
                         0 => definition.window().client_rect().x(),
@@ -6172,8 +6133,12 @@ impl UiRuntime {
                         x = f(x + border_size);
                         baseline = f(baseline + border_size);
                     }
-                    self.menu_item(item.menu_index, item.item_index)?.text_rect().set_x(f(x + rect.x()));
-                    self.menu_item(item.menu_index, item.item_index)?.text_rect().set_y(f(baseline + rect.y()));
+                    self.menu_item(item.menu_index, item.item_index)?
+                        .text_rect()
+                        .set_x(f(x + rect.x()));
+                    self.menu_item(item.menu_index, item.item_index)?
+                        .text_rect()
+                        .set_y(f(baseline + rect.y()));
                     buffer.truncate(line_break);
                     let (paint_x, paint_y) = {
                         let definition = self.item(item)?;
@@ -6296,7 +6261,11 @@ impl UiRuntime {
         }
         let (y, scale, style) = {
             let definition = self.item(item)?;
-            (definition.text_rect().y(), definition.text_scale(), definition.text_style())
+            (
+                definition.text_rect().y(),
+                definition.text_scale(),
+                definition.text_style(),
+            )
         };
         text_paint(
             draw,
@@ -6360,7 +6329,11 @@ impl UiRuntime {
         }
         let (y, scale, style) = {
             let definition = self.item(item)?;
-            (definition.text_rect().y(), definition.text_scale(), definition.text_style())
+            (
+                definition.text_rect().y(),
+                definition.text_scale(),
+                definition.text_style(),
+            )
         };
         text_paint(
             draw,
@@ -6435,7 +6408,11 @@ impl UiRuntime {
         }
         let (y, scale, style) = {
             let definition = self.item(item)?;
-            (definition.text_rect().y(), definition.text_scale(), definition.text_style())
+            (
+                definition.text_rect().y(),
+                definition.text_scale(),
+                definition.text_style(),
+            )
         };
         text_paint(
             draw,
@@ -6612,7 +6589,9 @@ impl UiRuntime {
         if has_text {
             self.paint_text(item, draw)?;
             let definition = self.item(item)?;
-            rect.set_x(f(f(definition.text_rect().x() + definition.text_rect().width()) + if text_len { 8.0 } else { 0.0 }));
+            rect.set_x(f(
+                f(definition.text_rect().x() + definition.text_rect().width()) + if text_len { 8.0 } else { 0.0 }
+            ));
             text_x = 0.0;
         }
         let definition = self.item(item)?;
@@ -6879,7 +6858,10 @@ impl UiRuntime {
                 if row == f(self.item(item)?.cursor_position() as f32) {
                     let (outline, rect) = {
                         let definition = self.item(item)?;
-                        (definition.window().outline_color().snapshot(), definition.window().rect())
+                        (
+                            definition.window().outline_color().snapshot(),
+                            definition.window().rect(),
+                        )
                     };
                     draw.fill_rect(
                         Rect {
@@ -6927,7 +6909,10 @@ impl UiRuntime {
                 if row == f(self.item(item)?.cursor_position() as f32) {
                     let (outline, rect) = {
                         let definition = self.item(item)?;
-                        (definition.window().outline_color().snapshot(), definition.window().rect())
+                        (
+                            definition.window().outline_color().snapshot(),
+                            definition.window().rect(),
+                        )
                     };
                     draw.fill_rect(
                         Rect {
@@ -7125,11 +7110,13 @@ fn edit_move(buffer: &mut [u8; EDIT_BUFFER_LEN], destination: i32, source: i32, 
 
 #[cfg(test)]
 mod tests {
+    use super::super::menu::{parse_test_menus, SharedUiMenuMemory, UiMemoryAllocation, UiStringReference};
     use super::*;
     use crate::text::draw2d::{CoordinateSpace, DrawCommand, ImagePicture, TextCommandSink};
     use crate::text::q3_font::{FontProfile, GlyphMetrics, RegisteredFont, RegisteredGlyph};
     use qa_core::identity::IdentityOwner;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     /// Shared test handle.
     type Shared<T> = Rc<RefCell<T>>;
@@ -7467,8 +7454,24 @@ mod tests {
     struct NullMemory;
 
     impl UiMenuMemory for NullMemory {
-        fn string_alloc(&self, _text: &str) -> Option<String> {
+        fn allocate(&self, _size: usize) -> Option<usize> {
             None
+        }
+
+        fn borrow(&self, _offset: usize, size: usize) -> UiMemoryAllocation {
+            UiMemoryAllocation::zeroed(size)
+        }
+
+        fn menu_record(&self, _index: usize) -> UiMemoryAllocation {
+            UiMemoryAllocation::zeroed(644)
+        }
+
+        fn string_alloc(&self, _text: Option<&str>) -> Result<Option<String>, ClientError> {
+            Ok(None)
+        }
+
+        fn string_alloc_reference(&self, _text: Option<&str>) -> Result<Option<UiStringReference>, ClientError> {
+            Ok(None)
         }
     }
 
@@ -7548,217 +7551,53 @@ mod tests {
         }
     }
 
-    /// Test source location.
-    fn test_location() -> SourceLocation {
-        SourceLocation {
-            path: "test".to_string(),
-            line: 1,
-            column: 1,
+    /// Parse fixture menus (`(menu_name, menu_source)` pairs) into definitions.
+    ///
+    /// Each pair becomes `ui/<name>.menu`, loaded through a generated set file.
+    fn parse_fixture(menus: &[(&str, &str)]) -> UiMenuDefinitions {
+        let mut files = HashMap::new();
+        let mut set = String::new();
+        for (name, source) in menus {
+            set.push_str(&format!("loadmenu {{ \"ui/{name}.menu\" }}\n"));
+            files.insert(format!("ui/{name}.menu"), source.to_string());
         }
+        files.insert("ui/menus.txt".to_string(), set);
+        parse_test_menus(files, "ui/menus.txt").unwrap()
     }
 
-    /// Test window.
-    fn test_window(name: Option<&str>) -> UiWindowDefinition {
-        UiWindowDefinition {
-            rect: UiRect {
-                x: 0.0,
-                y: 0.0,
-                width: 640.0,
-                height: 480.0,
-            },
-            client_rect: UiRect {
-                x: 0.0,
-                y: 0.0,
-                width: 640.0,
-                height: 480.0,
-            },
-            rect_effects: UiRect {
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-            },
-            rect_effects2: UiRect {
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-            },
-            name: name.map(str::to_string),
-            group: None,
-            cinematic: None,
-            style: 0,
-            border: 0,
-            owner_draw: 0,
-            owner_draw_flags: 0,
-            border_size: 1.0,
-            flags: UiWindowFlag::VISIBLE,
-            next_time: 0,
-            offset_time: 0,
-            cinematic_handle: -1,
-            fore_color: Vec4 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-                w: 1.0,
-            },
-            back_color: Vec4 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                w: 1.0,
-            },
-            border_color: Vec4 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-                w: 1.0,
-            },
-            outline_color: Vec4 {
-                x: 0.5,
-                y: 0.5,
-                z: 0.5,
-                w: 1.0,
-            },
-            background: None,
-            background_handle: None,
-        }
+    /// Parse one fixture menu.
+    fn parse_menu(name: &str, source: &str) -> UiMenuDefinition {
+        parse_fixture(&[(name, source)]).menus.into_iter().next().unwrap()
     }
 
-    /// Test item at a vertical offset.
-    fn test_item_at(name: &str, behavior: UiItemBehavior, y: f32) -> UiItemDefinition {
-        let type_code = behavior.type_code();
-        let mut window = test_window(Some(name));
-        window.rect = UiRect {
-            x: 10.0,
-            y,
-            width: 200.0,
-            height: 24.0,
-        };
-        window.client_rect = window.rect;
-        UiItemDefinition {
-            location: test_location(),
-            allocation_offset: None,
-            window,
-            type_code,
-            parent: Some(UiItemParent { source_index: 0 }),
-            text_rect: UiRect {
-                x: 0.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-            },
-            behavior,
-            alignment: 0,
-            text_alignment: 0,
-            text_align_x: 10.0,
-            text_align_y: 10.0,
-            text_scale: 1.0,
-            text_style: 0,
-            text: Some(name.to_string()),
-            asset: None,
-            asset_handle: None,
-            mouse_enter_text: None,
-            mouse_exit_text: None,
-            mouse_enter: None,
-            mouse_exit: None,
-            action: None,
-            on_focus: None,
-            leave_focus: None,
-            cvar: None,
-            cvar_test: None,
-            cvar_rule: None,
-            cvar_flags: 0,
-            cvar_script: None,
-            focus_sound: None,
-            focus_sound_handle: None,
-            color_ranges: Vec::new(),
-            special: 0.0,
-            cursor_position: 0,
-        }
+    /// Empty visible menu source with a fullscreen rect.
+    fn empty_menu(name: &str) -> String {
+        format!("menuDef {{\n  name \"{name}\"\n  rect 0 0 640 480\n  visible 1\n}}\n")
     }
 
-    /// Test item.
-    fn test_item(name: &str, behavior: UiItemBehavior) -> UiItemDefinition {
-        test_item_at(name, behavior, 10.0)
+    /// Menu source with extra header keywords and item sources appended.
+    fn menu_with(name: &str, extra: &str, items: &str) -> String {
+        format!("menuDef {{\n  name \"{name}\"\n  rect 0 0 640 480\n  visible 1\n{extra}{items}}}\n")
     }
 
-    /// Test menu.
-    fn test_menu(name: &str, items: Vec<UiItemDefinition>) -> UiMenuDefinition {
-        UiMenuDefinition {
-            location: test_location(),
-            source_index: 0,
-            window: test_window(Some(name)),
-            font: None,
-            full_screen: 0,
-            cursor_item: -1,
-            font_index: 0,
-            fade_cycle: 0,
-            fade_clamp: 0.0,
-            fade_amount: 0.0,
-            on_open: None,
-            on_close: None,
-            on_escape: None,
-            sound_loop: None,
-            focus_color: Vec4 {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-                w: 1.0,
-            },
-            disable_color: Vec4 {
-                x: 0.5,
-                y: 0.5,
-                z: 0.5,
-                w: 1.0,
-            },
-            items,
-        }
+    /// Item source with the standard test rect at `y` plus extra keywords.
+    fn item_at(name: &str, item_type: i32, y: f32, extra: &str) -> String {
+        format!(
+            "  itemDef {{\n    name \"{name}\"\n    type {item_type}\n    rect 10 {y} 200 24\n    visible 1\n{extra}  }}\n"
+        )
     }
 
-    /// Default edit limits.
-    fn test_edit() -> UiEditFieldDefinition {
-        UiEditFieldDefinition {
-            minimum: 0.0,
-            maximum: 0.0,
-            default_value: 0.0,
-            range: 0.0,
-            max_chars: 0,
-            max_paint_chars: 0,
-            paint_offset: 0,
-        }
-    }
-
-    /// Default list state.
-    fn test_list() -> UiListBoxDefinition {
-        UiListBoxDefinition {
-            start_position: 0,
-            end_position: 0,
-            draw_padding: 0,
-            cursor_position: 0,
-            element_width: 180.0,
-            element_height: 12.0,
-            element_style: 0,
-            columns: Vec::new(),
-            double_click: None,
-            not_selectable: false,
-        }
+    /// Menu source holding the given item sources.
+    fn menu_items(name: &str, items: &[String]) -> String {
+        menu_with(name, "", &items.concat())
     }
 
     /// Build options with shared state.
     fn build_options(
-        mut menus: Vec<UiMenuDefinition>,
+        definitions: UiMenuDefinitions,
         seed: &dyn Fn(&mut FakeResources),
     ) -> (UiRuntimeOptions, TestState) {
-        for (index, menu) in menus.iter_mut().enumerate() {
-            menu.source_index = index;
-            for item in &mut menu.items {
-                item.parent = Some(UiItemParent { source_index: index });
-            }
-        }
         let owner = IdentityOwner::create("runtime-test").unwrap();
-        let mut definitions = UiMenuDefinitions::empty();
-        definitions.menus = menus;
         let cvars: Shared<HashMap<String, UiCvarValue>> = Rc::new(RefCell::new(HashMap::new()));
         let log: Log = Rc::new(RefCell::new(Vec::new()));
         let bindings: Shared<HashMap<i32, String>> = Rc::new(RefCell::new(HashMap::new()));
@@ -7812,8 +7651,8 @@ mod tests {
     }
 
     /// Build a harness.
-    fn harness(menus: Vec<UiMenuDefinition>) -> Harness {
-        let (options, state) = build_options(menus, &|_| {});
+    fn harness(definitions: UiMenuDefinitions) -> Harness {
+        let (options, state) = build_options(definitions, &|_| {});
         let runtime = UiRuntime::create(options).unwrap();
         Harness { runtime, state }
     }
@@ -7842,41 +7681,20 @@ mod tests {
 
     #[test]
     fn create_registers_resources_and_backgrounds() {
-        let mut menu = test_menu("main", vec![]);
-        menu.window.background = Some(UiShaderReference {
-            path: Some("pics/bg".to_string()),
-        });
-        let (mut options, state) = build_options(vec![menu], &|_| {});
-        options.definitions.registration = UiMenuRegistrationState {
-            completed: false,
-            events: vec![
-                UiMenuRegistrationEvent::Font {
-                    reference: UiFontReference {
-                        path: Some("fonts/a".to_string()),
-                        point_size: 12,
-                    },
-                    location: test_location(),
-                },
-                UiMenuRegistrationEvent::Picture {
-                    reference: UiShaderReference {
-                        path: Some("pics/bg".to_string()),
-                    },
-                    location: test_location(),
-                },
-                UiMenuRegistrationEvent::Sound {
-                    reference: UiSoundReference {
-                        path: Some("sounds/b".to_string()),
-                    },
-                    location: test_location(),
-                },
-                UiMenuRegistrationEvent::Model {
-                    reference: UiModelReference {
-                        path: Some("models/c".to_string()),
-                    },
-                    location: test_location(),
-                },
-            ],
-        };
+        let definitions = parse_fixture(&[(
+            "main",
+            &menu_with(
+                "main",
+                "  font \"fonts/a\"\n  background \"pics/bg\"\n",
+                &item_at(
+                    "model",
+                    7,
+                    10.0,
+                    "    asset_model \"models/c\"\n    focussound \"sounds/b\"\n",
+                ),
+            ),
+        )]);
+        let (options, state) = build_options(definitions, &|_| {});
         let runtime = UiRuntime::create(options).unwrap();
         let log = state.log.borrow();
         assert!(log.iter().any(|entry| entry.starts_with("font:")), "{log:?}");
@@ -7884,13 +7702,16 @@ mod tests {
         assert!(log.iter().any(|entry| entry.starts_with("sound:")), "{log:?}");
         assert!(log.iter().any(|entry| entry.starts_with("model:")), "{log:?}");
         let snapshot = runtime.snapshot().unwrap();
-        assert!(snapshot.menus[0].item_count() == 0);
+        assert_eq!(snapshot.menus[0].items.len(), 1);
         assert_eq!(snapshot.menus.len(), 1);
     }
 
     #[test]
     fn activate_show_close_tracks_stack() {
-        let mut fixture = harness(vec![test_menu("main", vec![]), test_menu("other", vec![])]);
+        let mut fixture = harness(parse_fixture(&[
+            ("main", &empty_menu("main")),
+            ("other", &empty_menu("other")),
+        ]));
         assert!(fixture.runtime.show("main").unwrap());
         assert_eq!(fixture.runtime.menu_count().unwrap(), 2);
         assert!(fixture
@@ -7911,7 +7732,7 @@ mod tests {
 
     #[test]
     fn activate_null_clears_focus() {
-        let mut fixture = harness(vec![test_menu("main", vec![])]);
+        let mut fixture = harness(parse_fixture(&[("main", &empty_menu("main"))]));
         assert!(fixture.runtime.show("main").unwrap());
         assert!(!fixture.runtime.activate(UiMenuSelector::Null).unwrap());
         assert_eq!(fixture.runtime.focused_menu_handle().unwrap(), None);
@@ -7919,7 +7740,10 @@ mod tests {
 
     #[test]
     fn reset_definitions_scopes() {
-        let mut fixture = harness(vec![test_menu("main", vec![]), test_menu("other", vec![])]);
+        let mut fixture = harness(parse_fixture(&[
+            ("main", &empty_menu("main")),
+            ("other", &empty_menu("other")),
+        ]));
         fixture.runtime.show("main").unwrap();
         fixture
             .runtime
@@ -7934,34 +7758,49 @@ mod tests {
 
     #[test]
     fn append_reload_guard_memory() {
-        let mut fixture = harness(vec![test_menu("main", vec![])]);
+        let mut fixture = harness(parse_fixture(&[("main", &empty_menu("main"))]));
         fixture
             .runtime
-            .append_menu(test_menu("extra", vec![]), &UiMenuMemoryOwnership::Unaccounted)
+            .append_menu(
+                parse_menu("extra", &empty_menu("extra")),
+                &UiMenuMemoryOwnership::Unaccounted,
+            )
             .unwrap();
         assert_eq!(fixture.runtime.menu_count().unwrap(), 2);
         let other = UiMenuMemoryOwnership::Qvm32 {
-            memory: Rc::new(NullMemory),
+            memory: SharedUiMenuMemory::new(NullMemory),
         };
-        assert!(fixture.runtime.append_menu(test_menu("bad", vec![]), &other).is_err());
+        assert!(fixture
+            .runtime
+            .append_menu(parse_menu("bad", &empty_menu("bad")), &other)
+            .is_err());
         assert!(fixture.runtime.assert_menu_memory(&other).is_err());
         let mut definitions = UiMenuDefinitions::empty();
-        definitions.menus = vec![test_menu("solo", vec![])];
+        definitions.menus = vec![parse_menu("solo", &empty_menu("solo"))];
         fixture.runtime.reload_definitions(definitions).unwrap();
         assert_eq!(fixture.runtime.menu_count().unwrap(), 1);
         let mut foreign = UiMenuDefinitions::empty();
         foreign.memory = other;
-        foreign.menus = vec![test_menu("x", vec![])];
+        foreign.menus = vec![parse_menu("x", &empty_menu("x"))];
         assert!(fixture.runtime.reload_definitions(foreign).is_err());
     }
 
     #[test]
     fn key_navigation_runs_item_action() {
-        let mut first = test_item_at("first", UiItemBehavior::Button, 10.0);
-        first.action = Some(UiScript::from_text("setcvar picked first"));
-        let mut second = test_item_at("second", UiItemBehavior::Button, 40.0);
-        second.action = Some(UiScript::from_text("setcvar picked second"));
-        let mut fixture = harness(vec![test_menu("main", vec![first, second])]);
+        let first = item_at(
+            "first",
+            1,
+            10.0,
+            "    text \"first\"\n    action { setcvar picked first }\n",
+        );
+        let second = item_at(
+            "second",
+            1,
+            40.0,
+            "    text \"second\"\n    action { setcvar picked second }\n",
+        );
+        let items = format!("{first}{second}");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_with("main", "", &items))]));
         fixture.runtime.show("main").unwrap();
         fixture.runtime.set_display_cursor(20.0, 15.0).unwrap();
         fixture.runtime.pointer_move(20.0, 15.0).unwrap();
@@ -8004,7 +7843,7 @@ mod tests {
 
     #[test]
     fn key_validation_rejects_ranges() {
-        let mut fixture = harness(vec![test_menu("main", vec![])]);
+        let mut fixture = harness(parse_fixture(&[("main", &empty_menu("main"))]));
         fixture.runtime.show("main").unwrap();
         assert!(fixture
             .runtime
@@ -8035,9 +7874,8 @@ mod tests {
 
     #[test]
     fn edit_field_types_backspaces_and_escapes() {
-        let mut field = test_item("name", UiItemBehavior::EditField { edit: test_edit() });
-        field.cvar = Some("name".to_string());
-        let mut fixture = harness(vec![test_menu("main", vec![field])]);
+        let field = item_at("name", 4, 10.0, "    cvar \"name\"\n");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[field]))]));
         fixture.runtime.show("main").unwrap();
         fixture.runtime.set_display_cursor(20.0, 15.0).unwrap();
         fixture.runtime.pointer_move(20.0, 15.0).unwrap();
@@ -8107,9 +7945,8 @@ mod tests {
 
     #[test]
     fn yes_no_click_toggles_cvar() {
-        let mut toggle = test_item("toggle", UiItemBehavior::YesNo { edit: test_edit() });
-        toggle.cvar = Some("yn".to_string());
-        let mut fixture = harness(vec![test_menu("main", vec![toggle])]);
+        let toggle = item_at("toggle", 11, 10.0, "    cvar \"yn\"\n");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[toggle]))]));
         fixture.runtime.show("main").unwrap();
         fixture.state.cvars.borrow_mut().insert(
             "yn".to_string(),
@@ -8139,23 +7976,13 @@ mod tests {
 
     #[test]
     fn multi_click_cycles_values() {
-        let mut multi = test_item(
+        let multi = item_at(
             "choice",
-            UiItemBehavior::Multi {
-                multi: Some(UiMultiDefinition {
-                    labels: vec![
-                        Some("low".to_string()),
-                        Some("mid".to_string()),
-                        Some("high".to_string()),
-                    ],
-                    string_values: Vec::new(),
-                    number_values: vec![0.0, 1.0, 2.0],
-                    string_definition: false,
-                }),
-            },
+            12,
+            10.0,
+            "    cvar \"mv\"\n    cvarfloatlist { \"low\" 0 \"mid\" 1 \"high\" 2 }\n",
         );
-        multi.cvar = Some("mv".to_string());
-        let mut fixture = harness(vec![test_menu("main", vec![multi])]);
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[multi]))]));
         fixture.runtime.show("main").unwrap();
         fixture.state.cvars.borrow_mut().insert(
             "mv".to_string(),
@@ -8185,9 +8012,13 @@ mod tests {
 
     #[test]
     fn list_keys_scroll_and_select() {
-        let mut list = test_item("rows", UiItemBehavior::ListBox { list: test_list() });
-        list.special = 3.0;
-        let mut fixture = harness(vec![test_menu("main", vec![list])]);
+        let list = item_at(
+            "rows",
+            6,
+            10.0,
+            "    feeder 3\n    elementwidth 180\n    elementheight 12\n",
+        );
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[list]))]));
         fixture.runtime.show("main").unwrap();
         fixture.runtime.set_display_cursor(20.0, 15.0).unwrap();
         fixture.runtime.pointer_move(20.0, 15.0).unwrap();
@@ -8223,9 +8054,8 @@ mod tests {
 
     #[test]
     fn binding_capture_assigns_key() {
-        let mut bind = test_item("attack", UiItemBehavior::Bind { edit: test_edit() });
-        bind.cvar = Some("+attack".to_string());
-        let mut fixture = harness(vec![test_menu("main", vec![bind])]);
+        let bind = item_at("attack", 13, 10.0, "    cvar \"+attack\"\n");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[bind]))]));
         fixture.runtime.show("main").unwrap();
         fixture.runtime.set_display_cursor(20.0, 15.0).unwrap();
         fixture.runtime.pointer_move(20.0, 15.0).unwrap();
@@ -8261,8 +8091,8 @@ mod tests {
 
     #[test]
     fn menu_scripts_show_hide_and_set() {
-        let panel = test_item_at("panel", UiItemBehavior::Button, 40.0);
-        let mut fixture = harness(vec![test_menu("main", vec![panel])]);
+        let panel = item_at("panel", 1, 40.0, "");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[panel]))]));
         fixture.runtime.show("main").unwrap();
         fixture
             .runtime
@@ -8312,11 +8142,11 @@ mod tests {
 
     #[test]
     fn conditional_open_selects_menu() {
-        let mut fixture = harness(vec![
-            test_menu("main", vec![]),
-            test_menu("first", vec![]),
-            test_menu("second", vec![]),
-        ]);
+        let mut fixture = harness(parse_fixture(&[
+            ("main", &empty_menu("main")),
+            ("first", &empty_menu("first")),
+            ("second", &empty_menu("second")),
+        ]));
         fixture.runtime.show("main").unwrap();
         fixture.state.cvars.borrow_mut().insert(
             "mode".to_string(),
@@ -8352,17 +8182,11 @@ mod tests {
 
     #[test]
     fn frame_paints_to_sink() {
-        let mut menu = test_menu(
-            "main",
-            vec![test_item("label", UiItemBehavior::Text { edit: None }), {
-                let mut list = test_item_at("rows", UiItemBehavior::ListBox { list: test_list() }, 60.0);
-                list.special = 2.0;
-                list.window.rect.height = 100.0;
-                list
-            }],
-        );
-        menu.window.style = 2;
-        let mut fixture = harness(vec![menu]);
+        let label = item_at("label", 0, 10.0, "    text \"label\"\n");
+        let rows = "  itemDef {\n    name \"rows\"\n    type 6\n    rect 10 60 200 100\n    visible 1\n    feeder 2\n    elementwidth 180\n    elementheight 12\n  }\n"
+            .to_string();
+        let items = format!("{label}{rows}");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_with("main", "  style 2\n", &items))]));
         fixture.runtime.show("main").unwrap();
         let mut sink = test_sink();
         let frame = UiRuntimeFrame {
@@ -8378,12 +8202,23 @@ mod tests {
 
     #[test]
     fn snapshot_reports_enable_and_behavior() {
-        let mut gated = test_item("gated", UiItemBehavior::EditField { edit: test_edit() });
-        gated.cvar_flags = 1;
-        gated.cvar_test = Some("mode".to_string());
-        gated.cvar_script = Some(UiScript::from_text("1"));
-        let list = test_item_at("rows", UiItemBehavior::ListBox { list: test_list() }, 40.0);
-        let mut fixture = harness(vec![test_menu("main", vec![gated, list])]);
+        let gated = item_at(
+            "gated",
+            4,
+            10.0,
+            "    cvar \"gated\"\n    cvartest \"mode\"\n    enablecvar { 1 }\n",
+        );
+        let list = item_at(
+            "rows",
+            6,
+            40.0,
+            "    feeder 3\n    elementwidth 180\n    elementheight 12\n",
+        );
+        let definitions = parse_fixture(&[("main", &menu_items("main", &[gated, list]))]);
+        let parsed = definitions.menus[0].items().unwrap();
+        assert_eq!(parsed[0].cvar_rule().unwrap().kind(), "enable");
+        assert_eq!(parsed[0].cvar_test().as_deref(), Some("mode"));
+        let mut fixture = harness(definitions);
         fixture.runtime.show("main").unwrap();
         fixture.state.cvars.borrow_mut().insert(
             "mode".to_string(),
@@ -8416,15 +8251,17 @@ mod tests {
 
     #[test]
     fn out_of_bounds_click_closes() {
-        let mut menu = test_menu("popup", vec![]);
-        menu.window.rect = UiRect {
+        let definitions = parse_fixture(&[("popup", &empty_menu("popup"))]);
+        let menu = &definitions.menus[0];
+        menu.window().set_rect(&UiRect {
             x: 0.0,
             y: 0.0,
             width: 100.0,
             height: 100.0,
-        };
-        menu.window.flags = UiWindowFlag::VISIBLE | UiWindowFlag::HAS_FOCUS | UiWindowFlag::OUT_OF_BOUNDS_CLICK;
-        let mut fixture = harness(vec![menu]);
+        });
+        menu.window()
+            .set_flags(UiWindowFlag::VISIBLE | UiWindowFlag::HAS_FOCUS | UiWindowFlag::OUT_OF_BOUNDS_CLICK);
+        let mut fixture = harness(definitions);
         fixture.runtime.set_display_cursor(500.0, 500.0).unwrap();
         fixture
             .runtime
@@ -8443,19 +8280,8 @@ mod tests {
 
     #[test]
     fn slider_click_sets_cvar() {
-        let mut slider = test_item(
-            "volume",
-            UiItemBehavior::Slider {
-                edit: UiEditFieldDefinition {
-                    minimum: 0.0,
-                    maximum: 10.0,
-                    ..test_edit()
-                },
-            },
-        );
-        slider.cvar = Some("vol".to_string());
-        slider.text = None;
-        let mut fixture = harness(vec![test_menu("main", vec![slider])]);
+        let slider = item_at("volume", 10, 10.0, "    cvarfloat \"vol\" 0 0 10\n");
+        let mut fixture = harness(parse_fixture(&[("main", &menu_items("main", &[slider]))]));
         fixture.runtime.show("main").unwrap();
         fixture.runtime.set_display_cursor(58.0, 15.0).unwrap();
         fixture.runtime.pointer_move(58.0, 15.0).unwrap();
@@ -8478,48 +8304,22 @@ mod tests {
 
     #[test]
     fn model_paint_reports_angle() {
-        let (options, state) = build_options(
-            vec![test_menu(
-                "main",
-                vec![{
-                    let mut model = test_item(
-                        "player",
-                        UiItemBehavior::Model {
-                            model: Some(UiModelDefinition {
-                                angle: 0,
-                                origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-                                field_of_view_x: 0.0,
-                                field_of_view_y: 0.0,
-                                rotation_speed: 10,
-                            }),
-                        },
-                    );
-                    model.asset = Some(UiAssetReference::Model(UiModelReference {
-                        path: Some("models/x".to_string()),
-                    }));
-                    model
-                }],
-            )],
-            &|resources| {
-                resources.models.insert(
-                    "models/x".to_string(),
-                    SceneModel {
-                        path: Some("models/x".to_string()),
-                        handle: 9,
-                    },
-                );
-            },
+        let model = item_at(
+            "player",
+            7,
+            10.0,
+            "    asset_model \"models/x\"\n    model_angle 0\n    model_rotation 10\n",
         );
-        let mut options = options;
-        options.definitions.registration = UiMenuRegistrationState {
-            completed: true,
-            events: vec![UiMenuRegistrationEvent::Model {
-                reference: UiModelReference {
+        let definitions = parse_fixture(&[("main", &menu_items("main", &[model]))]);
+        let (options, state) = build_options(definitions, &|resources| {
+            resources.models.insert(
+                "models/x".to_string(),
+                SceneModel {
                     path: Some("models/x".to_string()),
+                    handle: 9,
                 },
-                location: test_location(),
-            }],
-        };
+            );
+        });
         let mut runtime = UiRuntime::create(options).unwrap();
         runtime.show("main").unwrap();
         let mut sink = test_sink();
@@ -8534,10 +8334,8 @@ mod tests {
 
     #[test]
     fn cinematic_window_plays() {
-        let mut menu = test_menu("movie", vec![]);
-        menu.window.style = 5;
-        menu.window.cinematic = Some("vid.roq".to_string());
-        let mut fixture = harness(vec![menu]);
+        let source = menu_with("movie", "  style 5\n  cinematic \"vid.roq\"\n", "");
+        let mut fixture = harness(parse_fixture(&[("movie", &source)]));
         fixture.runtime.show("movie").unwrap();
         let mut sink = test_sink();
         let frame = UiRuntimeFrame {
@@ -8555,14 +8353,14 @@ mod tests {
 
     #[test]
     fn cursor_type_detects_sizer() {
-        let fixture = harness(vec![test_menu("main", vec![])]);
+        let fixture = harness(parse_fixture(&[("main", &empty_menu("main"))]));
         assert_eq!(fixture.runtime.cursor_type(0.0, 0.0).unwrap(), UiCursorType::Sizer);
         assert_eq!(fixture.runtime.cursor_type(320.0, 240.0).unwrap(), UiCursorType::Arrow);
     }
 
     #[test]
     fn dispose_blocks_operations() {
-        let mut fixture = harness(vec![test_menu("main", vec![])]);
+        let mut fixture = harness(parse_fixture(&[("main", &empty_menu("main"))]));
         fixture.runtime.show("main").unwrap();
         fixture.runtime.dispose();
         assert!(fixture.runtime.snapshot().is_err());
@@ -8606,7 +8404,7 @@ mod tests {
     #[test]
     fn script_cursor_reports_null_allocation() {
         let memory = UiMenuMemoryOwnership::Qvm32 {
-            memory: Rc::new(NullMemory),
+            memory: SharedUiMenuMemory::new(NullMemory),
         };
         let mut cursor = RuntimeScriptCursor::new("show panel", 0, &memory).unwrap();
         assert_eq!(cursor.string(), Some(None));
