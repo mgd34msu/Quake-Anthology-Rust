@@ -14,6 +14,7 @@ pub mod q1_chktbl;
 pub mod q1_net;
 pub mod q1_wide;
 pub mod q2;
+pub mod q2_adapters;
 pub mod q2_net;
 pub mod q2_solid;
 pub mod q2_svc;
