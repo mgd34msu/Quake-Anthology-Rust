@@ -27,22 +27,26 @@ enum MemberType {
 #[derive(Debug, Clone)]
 struct Member {
     /// Member name.
-    name: &'static str,
+    name: String,
     /// Member type.
     kind: MemberType,
     /// Element count.
     count: usize,
 }
 
-fn member(name: &'static str, kind: MemberType, count: usize) -> Member {
-    Member { name, kind, count }
+fn member(name: &str, kind: MemberType, count: usize) -> Member {
+    Member {
+        name: name.to_string(),
+        kind,
+        count,
+    }
 }
 
-fn scalar(name: &'static str, storage: GuestStorage, count: usize) -> Member {
+fn scalar(name: &str, storage: GuestStorage, count: usize) -> Member {
     member(name, MemberType::Storage(storage), count)
 }
 
-fn nested(name: &'static str, layout: GuestLayout, count: usize) -> Member {
+fn nested(name: &str, layout: GuestLayout, count: usize) -> Member {
     member(name, MemberType::Nested(layout), count)
 }
 
@@ -838,7 +842,7 @@ pub fn import_table_layout(kind: &str, names: &[&str]) -> GuestLayout {
         scalar("frame_time_s", GuestStorage::Float32, 1),
         scalar("frame_time_ms", GuestStorage::Uint32, 1),
     ];
-    for name in names {
+    for name in names.iter().copied() {
         members.push(scalar(name, GuestStorage::Pointer, 1));
     }
     structure(&format!("{kind}_import_t"), members)
@@ -848,7 +852,7 @@ pub fn import_table_layout(kind: &str, names: &[&str]) -> GuestLayout {
 #[must_use]
 pub fn export_table_layout(kind: &str, names: &[&str]) -> GuestLayout {
     let mut members = vec![scalar("apiversion", GuestStorage::Int32, 1)];
-    for name in names {
+    for name in names.iter().copied() {
         members.push(scalar(name, GuestStorage::Pointer, 1));
     }
     if kind == "game" {

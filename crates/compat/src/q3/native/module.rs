@@ -9,8 +9,7 @@ use std::collections::HashMap;
 use qa_guest::core::contracts::{
     GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult,
     GuestCallSignature, GuestCallValue, GuestCallbackReference, GuestExportTarget, GuestImage,
-    GuestPermissions, GuestStorage, GuestSymbolName, GuestValueLayout, ModuleIdentity, NativeAbi,
-    NativeCallAbi,
+    GuestPermissions, GuestStorage, GuestSymbolName, GuestValueLayout, NativeAbi, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;

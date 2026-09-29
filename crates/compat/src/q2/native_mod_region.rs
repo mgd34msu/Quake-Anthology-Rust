@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use qa_guest::abi::values::{decode_value, encode_value};
 use qa_guest::core::contracts::{
-    GuestAddress, GuestCallValue, GuestStorage, GuestValueLayout,
+    GuestAccess, GuestAddress, GuestCallValue, GuestStorage, GuestValueLayout,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
@@ -413,11 +413,7 @@ impl NativeModRegionExecution {
             definition.frame.exit,
         ] {
             let address = host.at(rva)?;
-            host.memory.check(
-                address,
-                1,
-                qa_guest::core::contracts::GuestAccess::Execute,
-            )?;
+            host.memory.check(address, 1, GuestAccess::Execute)?;
         }
         Ok(Self {
             definition,
@@ -520,7 +516,7 @@ mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
     use qa_guest::core::contracts::{
-        ContentDigest, GuestAccess, GuestMapOptions, GuestPermissions, ModuleIdentity,
+        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
     };
 
     fn test_host() -> SyntheticRegionHost {
@@ -548,7 +544,6 @@ mod tests {
                 GuestPermissions::ReadWrite,
             ))
             .unwrap();
-        let _ = GuestAccess::Read;
         SyntheticRegionHost::new(memory, image_base, 0x80800)
     }
 
@@ -565,7 +560,7 @@ mod tests {
             inputs: vec![
                 RegionInput {
                     target: RegionLocation::Stack {
-                        offset: 16,
+                        offset: 20,
                         storage: GuestStorage::Int32,
                     },
                     value: GuestCallValue::Int32(41),
@@ -579,7 +574,7 @@ mod tests {
                 },
             ],
             result: RegionLocation::Stack {
-                offset: 20,
+                offset: 24,
                 storage: GuestStorage::Int32,
             },
             call_skips: 0,
@@ -606,7 +601,7 @@ mod tests {
         assert_eq!(host.read_register("eax"), 7);
         execution
             .run_region(&mut host, |host| {
-                let address = host.stack_address(20);
+                let address = host.stack_address(24);
                 host.memory.write(address, &99i32.to_le_bytes()).unwrap();
                 host.registers.insert("eax".to_string(), 0xDEAD);
             })
@@ -617,7 +612,7 @@ mod tests {
             GuestCallValue::Int32(99)
         );
         assert_eq!(host.read_register("eax"), 0);
-        let staged = host.stack_address(16);
+        let staged = host.stack_address(20);
         assert_eq!(host.memory.copy(staged, 4).unwrap(), vec![0, 0, 0, 0]);
         assert!(live.get());
     }
@@ -627,7 +622,7 @@ mod tests {
         let mut overlapping = definition();
         overlapping.inputs.push(RegionInput {
             target: RegionLocation::Stack {
-                offset: 18,
+                offset: 22,
                 storage: GuestStorage::Int32,
             },
             value: GuestCallValue::Int32(1),
