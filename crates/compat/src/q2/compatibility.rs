@@ -6,14 +6,13 @@ use std::collections::HashSet;
 use qa_guest::core::contracts::NativeAbi;
 
 use super::native_primary::{
-    NativePrimaryDeclaration, NativePrimaryProfile, read_classic_world_profile,
-    read_rerelease_world_profile,
+    read_classic_world_profile, read_rerelease_world_profile, NativePrimaryDeclaration, NativePrimaryProfile,
 };
 use super::native_primary_profiles::{
-    read_native_primary_commands, read_native_primary_drop, read_native_primary_inventory,
-    read_native_primary_pickups, read_native_primary_player, read_native_primary_weapons,
+    read_native_primary_commands, read_native_primary_drop, read_native_primary_inventory, read_native_primary_pickups,
+    read_native_primary_player, read_native_primary_weapons,
 };
-use super::native_primary_reader::{JsonValue, Reader, namespaced, parse_json};
+use super::native_primary_reader::{namespaced, parse_json, JsonValue, Reader};
 
 /// Native execution module selecting one compatibility declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,10 +69,7 @@ pub fn read_digest(reader: &Reader) -> String {
 /// Parse a compatibility document, selecting the execution module entry.
 /// Schema violations panic with the document path, mirroring the donor throw;
 /// a document without the selected module yields `None`.
-pub fn parse_native_compatibility(
-    value: &JsonValue,
-    execution: &NativeExecution,
-) -> Option<NativePrimaryProfile> {
+pub fn parse_native_compatibility(value: &JsonValue, execution: &NativeExecution) -> Option<NativePrimaryProfile> {
     let root = Reader::root(value);
     root.field("version").literal_int(1);
     let wanted = normalize_resource_path(&execution.artifact_path).to_lowercase();
@@ -95,16 +91,12 @@ pub fn parse_native_compatibility(
         }
         let reader = entry.field("primary");
         let abi = execution.profile;
-        let weapons =
-            read_native_primary_weapons(&reader.field("weapons"), digest.clone(), abi);
+        let weapons = read_native_primary_weapons(&reader.field("weapons"), digest.clone(), abi);
         let player = read_native_primary_player(&reader.field("player"), digest.clone());
-        let commands =
-            read_native_primary_commands(&reader.field("commands"), digest.clone(), abi);
-        let inventory =
-            read_native_primary_inventory(&reader.field("inventory"), digest.clone(), abi);
+        let commands = read_native_primary_commands(&reader.field("commands"), digest.clone(), abi);
+        let inventory = read_native_primary_inventory(&reader.field("inventory"), digest.clone(), abi);
         let drop = read_native_primary_drop(&reader.field("drop"), digest.clone(), abi);
-        let pickups =
-            read_native_primary_pickups(&reader.field("pickups"), digest.clone(), abi);
+        let pickups = read_native_primary_pickups(&reader.field("pickups"), digest.clone(), abi);
         if weapons.entity.client != inventory.client
             || commands.client.pointer != inventory.client
             || drop.client.pointer != inventory.client
@@ -151,10 +143,9 @@ pub fn read_native_compatibility(
     execution: &NativeExecution,
 ) -> Option<NativePrimaryDeclaration> {
     let opened = mounts.open_native_compatibility(&execution.owner_content)?;
-    let text = String::from_utf8(opened.bytes)
-        .unwrap_or_else(|_| panic!("native-compatibility.json is not valid UTF-8"));
-    let value: JsonValue =
-        parse_json(&text).unwrap_or_else(|error| panic!("native-compatibility.json: {error}"));
+    let text =
+        String::from_utf8(opened.bytes).unwrap_or_else(|_| panic!("native-compatibility.json is not valid UTF-8"));
+    let value: JsonValue = parse_json(&text).unwrap_or_else(|error| panic!("native-compatibility.json: {error}"));
     parse_native_compatibility(&value, execution).map(|profile| NativePrimaryDeclaration {
         declaration: opened.reference,
         profile,
@@ -206,7 +197,8 @@ mod tests {
     }
 
     fn player_json() -> String {
-        r#"{"spawn":201120,"objectives":{"kind":"none"},"commandAngles":3476,"velocity":376,"forward":null}"#.to_string()
+        r#"{"spawn":201120,"objectives":{"kind":"none"},"commandAngles":3476,"velocity":376,"forward":null}"#
+            .to_string()
     }
 
     fn commands_json() -> String {

@@ -4,10 +4,9 @@
 use qa_guest::core::contracts::{GuestRegister, NativeAbi};
 
 use super::native_primary_commands::{
-    AmmoGrant, CommandClient, CommandItems, DropCommand, GiveProfile, GrantKind,
-    ItemAmmo, NativePrimaryCommandProfile,
+    AmmoGrant, CommandClient, CommandItems, DropCommand, GiveProfile, GrantKind, ItemAmmo, NativePrimaryCommandProfile,
 };
-use super::native_primary_reader::{CLASSIC_DIGEST, RETAIL_DIGEST, NativeRegion};
+use super::native_primary_reader::{NativeRegion, CLASSIC_DIGEST, RETAIL_DIGEST};
 
 /// Builtin command profile for a digest, or `None` when unknown.
 #[must_use]
@@ -20,7 +19,10 @@ pub fn native_primary_command_profile(digest: &str) -> Option<NativePrimaryComma
                 entry: 0x3140,
                 weapons: 0x3256,
                 ammo: 0x32af,
-                unknown: NativeRegion { entry: 0x3455, join: 0x3466 },
+                unknown: NativeRegion {
+                    entry: 0x3455,
+                    join: 0x3466,
+                },
                 ammo_grants: vec![
                     AmmoGrant {
                         entry: 0x34ce,
@@ -40,7 +42,10 @@ pub fn native_primary_command_profile(digest: &str) -> Option<NativePrimaryComma
             },
             drop: DropCommand {
                 entry: 0x307c0,
-                eligibility: NativeRegion { entry: 0x307e7, join: 0x3083b },
+                eligibility: NativeRegion {
+                    entry: 0x307e7,
+                    join: 0x3083b,
+                },
             },
             client: CommandClient {
                 pointer: 0x54,
@@ -57,7 +62,10 @@ pub fn native_primary_command_profile(digest: &str) -> Option<NativePrimaryComma
                 weapon_flag: 1,
                 ammunition_flag: 2,
                 icon: 0x24,
-                ammo: ItemAmmo::Name { offset: 0x34, label: 0x28 },
+                ammo: ItemAmmo::Name {
+                    offset: 0x34,
+                    label: 0x28,
+                },
             },
         })
     } else if digest == RETAIL_DIGEST {
@@ -68,7 +76,10 @@ pub fn native_primary_command_profile(digest: &str) -> Option<NativePrimaryComma
                 entry: 0x56de0,
                 weapons: 0x57372,
                 ammo: 0x573f7,
-                unknown: NativeRegion { entry: 0x57091, join: 0x5781d },
+                unknown: NativeRegion {
+                    entry: 0x57091,
+                    join: 0x5781d,
+                },
                 ammo_grants: vec![
                     AmmoGrant {
                         entry: 0x57127,
@@ -88,7 +99,10 @@ pub fn native_primary_command_profile(digest: &str) -> Option<NativePrimaryComma
             },
             drop: DropCommand {
                 entry: 0xd5ec0,
-                eligibility: NativeRegion { entry: 0xd5eed, join: 0xd5f30 },
+                eligibility: NativeRegion {
+                    entry: 0xd5eed,
+                    join: 0xd5f30,
+                },
             },
             client: CommandClient {
                 pointer: 0x78,

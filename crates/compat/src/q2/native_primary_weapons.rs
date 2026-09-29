@@ -5,16 +5,15 @@ use std::collections::HashMap;
 
 use qa_core::math::Vec3;
 use qa_guest::core::contracts::{
-    ContentDigest, GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue,
-    GuestMapOptions, GuestPermissions, GuestRegister, ModuleIdentity, NativeAbi,
+    ContentDigest, GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestMapOptions,
+    GuestPermissions, GuestRegister, ModuleIdentity, NativeAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
 use thiserror::Error;
 
 use super::native_primary_reader::{
-    NativeItemField, NativeItemTest, NativeRegion, NativeScalar, PointerExpectation, RecordKind,
-    TestComparison,
+    NativeItemField, NativeItemTest, NativeRegion, NativeScalar, PointerExpectation, RecordKind, TestComparison,
 };
 use qa_core::identity::ProviderId;
 
@@ -111,12 +110,7 @@ impl HostCore {
             client: Some(client),
             live: true,
         };
-        if let Some((slot, current)) = self
-            .entities
-            .iter_mut()
-            .enumerate()
-            .find(|(_, entity)| !entity.live)
-        {
+        if let Some((slot, current)) = self.entities.iter_mut().enumerate().find(|(_, entity)| !entity.live) {
             *current = record;
             let generation = self.generations[slot];
             return Ok(NativeActorId {
@@ -127,10 +121,7 @@ impl HostCore {
         let slot = self.entities.len() as u32;
         self.entities.push(record);
         self.generations.push(0);
-        Ok(NativeActorId {
-            slot,
-            generation: 0,
-        })
+        Ok(NativeActorId { slot, generation: 0 })
     }
 
     /// Retire an actor; its records stay mapped but no longer resolve.
@@ -153,9 +144,7 @@ impl HostCore {
     /// Entity address for a live actor.
     pub fn entity_of(&self, actor: NativeActorId) -> HostResult<GuestAddress> {
         match self.entities.get(actor.slot as usize) {
-            Some(entity)
-                if entity.live && self.generations[actor.slot as usize] == actor.generation =>
-            {
+            Some(entity) if entity.live && self.generations[actor.slot as usize] == actor.generation => {
                 Ok(entity.address)
             }
             _ => fault("native actor was retired"),
@@ -165,9 +154,7 @@ impl HostCore {
     /// Client address allocated for a live actor, if any.
     pub fn client_of(&self, actor: NativeActorId) -> HostResult<Option<GuestAddress>> {
         match self.entities.get(actor.slot as usize) {
-            Some(entity)
-                if entity.live && self.generations[actor.slot as usize] == actor.generation =>
-            {
+            Some(entity) if entity.live && self.generations[actor.slot as usize] == actor.generation => {
                 Ok(entity.client)
             }
             _ => fault("native actor was retired"),
@@ -188,12 +175,7 @@ impl HostCore {
     }
 
     /// Store the client link inside an entity record.
-    pub fn set_client(
-        &mut self,
-        entity: GuestAddress,
-        offset: u32,
-        client: Option<GuestAddress>,
-    ) -> HostResult<()> {
+    pub fn set_client(&mut self, entity: GuestAddress, offset: u32, client: Option<GuestAddress>) -> HostResult<()> {
         let address = self.memory.offset(entity, i64::from(offset))?;
         Ok(self.memory.write_pointer(address, client)?)
     }
@@ -213,12 +195,7 @@ impl HostCore {
     }
 
     /// Write a null-terminated classic string into a fixed capacity.
-    pub fn write_c_string(
-        &mut self,
-        address: GuestAddress,
-        text: &str,
-        capacity: usize,
-    ) -> HostResult<()> {
+    pub fn write_c_string(&mut self, address: GuestAddress, text: &str, capacity: usize) -> HostResult<()> {
         if text.len() + 1 > capacity || text.contains('\0') {
             return fault("classic string exceeds its guest allocation");
         }
@@ -280,12 +257,7 @@ impl HostCore {
     }
 
     /// Write one scalar encoding from a number.
-    pub fn write_scalar(
-        &mut self,
-        address: GuestAddress,
-        encoding: NativeScalar,
-        value: f64,
-    ) -> HostResult<()> {
+    pub fn write_scalar(&mut self, address: GuestAddress, encoding: NativeScalar, value: f64) -> HostResult<()> {
         if !value.is_finite() {
             return fault("native weapon field requires a finite value");
         }
@@ -335,8 +307,7 @@ impl HostCore {
 }
 
 /// Original routine emulated by a test: reads and writes `HostCore` directly.
-pub type InvokeHandler =
-    Box<dyn FnMut(&mut HostCore, &[GuestCallValue]) -> HostResult<GuestCallResult>>;
+pub type InvokeHandler = Box<dyn FnMut(&mut HostCore, &[GuestCallValue]) -> HostResult<GuestCallResult>>;
 
 /// Recorded entry binding (name plus RVA) for wiring assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,14 +329,8 @@ pub struct SyntheticHost {
 
 impl SyntheticHost {
     /// Build a host emulating `digest` with an `image_bytes` zeroed image.
-    pub fn synthetic(
-        digest: &str,
-        pointer_bytes: usize,
-        image_bytes: usize,
-    ) -> HostResult<Self> {
-        let (algorithm, value) = digest
-            .split_once(':')
-            .unwrap_or(("", digest));
+    pub fn synthetic(digest: &str, pointer_bytes: usize, image_bytes: usize) -> HostResult<Self> {
+        let (algorithm, value) = digest.split_once(':').unwrap_or(("", digest));
         if algorithm.is_empty() || value.is_empty() {
             return fault("synthetic host requires an algorithm:hex digest");
         }
@@ -407,11 +372,7 @@ impl SyntheticHost {
     }
 
     /// Invoke a registered original.
-    pub fn invoke(
-        &mut self,
-        address: GuestAddress,
-        values: &[GuestCallValue],
-    ) -> HostResult<GuestCallResult> {
+    pub fn invoke(&mut self, address: GuestAddress, values: &[GuestCallValue]) -> HostResult<GuestCallResult> {
         let mut handler = match self.handlers.remove(&address.offset) {
             Some(handler) => handler,
             None => return fault("synthetic host has no original at this address"),
@@ -837,32 +798,22 @@ impl NativePrimaryWeapons {
             }
             RecordKind::Client => {
                 let entity = host.core.entity_of(actor)?;
-                let link = host
-                    .core
-                    .memory
-                    .offset(entity, i64::from(self.profile.entity.client))?;
+                let link = host.core.memory.offset(entity, i64::from(self.profile.entity.client))?;
                 let client = host.core.memory.read_pointer(link)?;
                 let client = match client {
                     Some(client) => client,
                     None => return fault("native weapon owner has no source client"),
                 };
-                host.core.memory.check(
-                    client,
-                    self.profile.client.byte_length as usize,
-                    GuestAccess::Read,
-                )?;
+                host.core
+                    .memory
+                    .check(client, self.profile.client.byte_length as usize, GuestAccess::Read)?;
                 Ok(host.core.memory.offset(client, i64::from(offset))?)
             }
         }
     }
 
     /// Read one profile field for an actor.
-    pub fn read(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-        field: NativeItemField,
-    ) -> HostResult<f64> {
+    pub fn read(&self, host: &mut SyntheticHost, actor: NativeActorId, field: NativeItemField) -> HostResult<f64> {
         self.check_host(host)?;
         let address = self.address(host, actor, field.record, field.offset)?;
         host.core.read_scalar(address, field.encoding)
@@ -892,14 +843,8 @@ impl NativePrimaryWeapons {
         let client = &self.profile.client;
         let angles = self.address(host, actor, RecordKind::Client, client.view_angles)?;
         let x = host.core.memory.read_f32(angles)?;
-        let y = host
-            .core
-            .memory
-            .read_f32(host.core.memory.offset(angles, 4)?)?;
-        let z = host
-            .core
-            .memory
-            .read_f32(host.core.memory.offset(angles, 8)?)?;
+        let y = host.core.memory.read_f32(host.core.memory.offset(angles, 4)?)?;
+        let z = host.core.memory.read_f32(host.core.memory.offset(angles, 8)?)?;
         Ok(WeaponInput {
             buttons: self.read(host, actor, client.buttons)?,
             latched_buttons: self.read(host, actor, client.latched_buttons)?,
@@ -924,19 +869,10 @@ impl NativePrimaryWeapons {
     }
 
     /// Evaluate one acceptance test.
-    pub fn matches(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-        test: &NativeItemTest,
-    ) -> HostResult<bool> {
+    pub fn matches(&self, host: &mut SyntheticHost, actor: NativeActorId, test: &NativeItemTest) -> HostResult<bool> {
         self.check_host(host)?;
         match test {
-            NativeItemTest::Pointer {
-                record,
-                offset,
-                value,
-            } => {
+            NativeItemTest::Pointer { record, offset, value } => {
                 let address = self.address(host, actor, *record, *offset)?;
                 let pointer = host.core.memory.read_pointer(address)?;
                 let mut expected = match value {
@@ -1062,11 +998,7 @@ impl NativePrimaryWeapons {
     }
 
     /// Headless equivalent of the delay capture region: sample the flag.
-    pub fn record_delay_sample(
-        &mut self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<()> {
+    pub fn record_delay_sample(&mut self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<()> {
         self.check_host(host)?;
         if !self.current(host, actor) {
             return fault("native weapon owner was retired");
@@ -1077,11 +1009,7 @@ impl NativePrimaryWeapons {
     }
 
     /// Headless equivalent of the damage capture region: sample the factor.
-    pub fn record_damage_sample(
-        &mut self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<()> {
+    pub fn record_damage_sample(&mut self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<()> {
         self.check_host(host)?;
         if !self.current(host, actor) {
             return fault("native weapon owner was retired");
@@ -1108,11 +1036,7 @@ impl NativePrimaryWeapons {
     }
 
     /// Damage factor for an actor: sampled factor or helper result.
-    pub fn damage_factor(
-        &mut self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<f64> {
+    pub fn damage_factor(&mut self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<f64> {
         self.check_host(host)?;
         match &self.profile.damage {
             WeaponDamage::SourceFlag { .. } => {
@@ -1137,11 +1061,7 @@ impl NativePrimaryWeapons {
 
     /// Run the attack animation with its skip regions bound. Returns false
     /// when the weapon is unavailable, mirroring the donor early return.
-    pub fn attack_animation(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<bool> {
+    pub fn attack_animation(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<bool> {
         self.check_host(host)?;
         if !self.available(host, actor)? {
             return Ok(false);
@@ -1166,12 +1086,7 @@ impl NativePrimaryWeapons {
     }
 
     /// Scale firing time by the sampled delay factor.
-    pub fn weapon_delay(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-        milliseconds: f64,
-    ) -> HostResult<f64> {
+    pub fn weapon_delay(&self, host: &mut SyntheticHost, actor: NativeActorId, milliseconds: f64) -> HostResult<f64> {
         self.check_host(host)?;
         let flag = match self.delay_flags.get(&actor) {
             Some(flag) => *flag,
@@ -1188,8 +1103,7 @@ impl NativePrimaryWeapons {
                 projection,
                 writes,
             } => {
-                let mut fields: Vec<NativeItemField> =
-                    projection.iter().map(|write| write.field).collect();
+                let mut fields: Vec<NativeItemField> = projection.iter().map(|write| write.field).collect();
                 fields.extend(writes.iter().copied());
                 fields.push(self.profile.delay.flag);
                 let mut saved = Vec::with_capacity(fields.len());
@@ -1215,8 +1129,7 @@ impl NativePrimaryWeapons {
                         ],
                     )?;
                     Ok::<f64, NativeHostError>(
-                        milliseconds * (host.core.memory.read_i64(result_storage)? as f64)
-                            / *baseline_milliseconds,
+                        milliseconds * (host.core.memory.read_i64(result_storage)? as f64) / *baseline_milliseconds,
                     )
                 })();
                 for (field, value) in saved {
@@ -1316,7 +1229,10 @@ mod tests {
             },
             attack_animation: AttackAnimation {
                 entry: 0x300,
-                skip: vec![NativeRegion { entry: 0x310, join: 0x320 }],
+                skip: vec![NativeRegion {
+                    entry: 0x310,
+                    join: 0x320,
+                }],
             },
             animation: WeaponAnimation {
                 frame: scalar_field(RecordKind::Entity, 56, NativeScalar::Int32),
@@ -1371,8 +1287,7 @@ mod tests {
     #[test]
     fn binds_wiring_and_reads_input() {
         let mut host = fixture_host();
-        let mut service =
-            NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
+        let mut service = NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
         let wiring = service.bind(&mut host).expect("bind");
         assert_eq!(wiring.dispatcher_entry, 0x100);
         assert_eq!(wiring.decision_regions.len(), 1);
@@ -1406,24 +1321,16 @@ mod tests {
     #[test]
     fn samples_delay_and_damage_factors() {
         let mut host = fixture_host();
-        let mut service =
-            NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
+        let mut service = NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
         service.bind(&mut host).expect("bind");
         let actor = spawn_linked(&mut host);
         let flag = host.core.at(0x400).expect("flag");
         host.core.memory.write_i32(flag, 1).expect("write flag");
         let damage = host.core.at(0x404).expect("damage");
         host.core.memory.write_i32(damage, 1).expect("write damage");
-        service
-            .record_delay_sample(&mut host, actor)
-            .expect("delay");
-        service
-            .record_damage_sample(&mut host, actor)
-            .expect("damage");
-        assert_eq!(
-            service.weapon_delay(&mut host, actor, 100.0).expect("delay"),
-            50.0
-        );
+        service.record_delay_sample(&mut host, actor).expect("delay");
+        service.record_damage_sample(&mut host, actor).expect("damage");
+        assert_eq!(service.weapon_delay(&mut host, actor, 100.0).expect("delay"), 50.0);
         assert_eq!(service.damage_factor(&mut host, actor).expect("factor"), 4.0);
         service.release(actor);
         assert!(service.damage_factor(&mut host, actor).is_err());
@@ -1432,17 +1339,13 @@ mod tests {
     #[test]
     fn matches_pointer_tests_through_indirections() {
         let mut host = fixture_host();
-        let service =
-            NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
+        let service = NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
         let actor = spawn_linked(&mut host);
         let target = host.core.at(0x500).expect("target");
         let entity = host.core.entity_of(actor).expect("entity");
         host.core
             .memory
-            .write_pointer(
-                host.core.memory.offset(entity, 64).expect("slot"),
-                Some(target),
-            )
+            .write_pointer(host.core.memory.offset(entity, 64).expect("slot"), Some(target))
             .expect("write pointer");
         let direct = NativeItemTest::Pointer {
             record: RecordKind::Entity,
@@ -1465,8 +1368,7 @@ mod tests {
     fn attack_animation_invokes_with_skip_regions() {
         use std::sync::{Arc, Mutex};
         let mut host = fixture_host();
-        let service =
-            NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
+        let service = NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
         let actor = spawn_linked(&mut host);
         let seen: Arc<Mutex<Vec<GuestCallValue>>> = Arc::new(Mutex::new(Vec::new()));
         let capture = seen.clone();
@@ -1491,10 +1393,8 @@ mod tests {
     #[test]
     fn rejects_foreign_artifacts() {
         let mut host =
-            SyntheticHost::synthetic(super::super::native_primary_reader::RETAIL_DIGEST, 8, 0x1000)
-                .expect("host");
-        let mut service =
-            NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
+            SyntheticHost::synthetic(super::super::native_primary_reader::RETAIL_DIGEST, 8, 0x1000).expect("host");
+        let mut service = NativePrimaryWeapons::new(fixture_profile(), fixture_hooks()).expect("service");
         assert!(service.bind(&mut host).is_err());
     }
 }

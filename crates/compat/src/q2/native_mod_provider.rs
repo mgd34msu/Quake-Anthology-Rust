@@ -161,11 +161,7 @@ pub trait ProviderHost {
     /// View-model index for a 1-based client row.
     fn weapon_model(&self, slot: usize) -> u32;
     /// Invoke a guest entry with lowered arguments.
-    fn invoke_entry(
-        &mut self,
-        address: GuestAddress,
-        values: &[GuestCallValue],
-    ) -> GuestCallResult;
+    fn invoke_entry(&mut self, address: GuestAddress, values: &[GuestCallValue]) -> GuestCallResult;
 }
 
 /// Shared world surface the provider needs.
@@ -816,16 +812,14 @@ fn check_values(
                     || !["point", "direction", "normal", "view-angles"].contains(&input.as_str())
                 {
                     return Err(ProviderError::InvalidDeclaration(
-                        "Native callback input representation differs from its declaration"
-                            .to_string(),
+                        "Native callback input representation differs from its declaration".to_string(),
                     ));
                 }
             }
             ModValueKind::Text { input } => {
                 if !available.contains(input.as_str()) || input != "item" {
                     return Err(ProviderError::InvalidDeclaration(
-                        "Native callback input representation differs from its declaration"
-                            .to_string(),
+                        "Native callback input representation differs from its declaration".to_string(),
                     ));
                 }
             }
@@ -833,12 +827,10 @@ fn check_values(
                 if !available.contains(input.as_str())
                     || ["point", "direction", "normal", "view-angles"].contains(&input.as_str())
                     || input == "item"
-                    || ["self", "other", "activator", "attacker", "inflictor"]
-                        .contains(&input.as_str())
+                    || ["self", "other", "activator", "attacker", "inflictor"].contains(&input.as_str())
                 {
                     return Err(ProviderError::InvalidDeclaration(
-                        "Native callback input representation differs from its declaration"
-                            .to_string(),
+                        "Native callback input representation differs from its declaration".to_string(),
                     ));
                 }
             }
@@ -857,9 +849,7 @@ fn check_call(
     values.extend(call.globals.iter().map(|global| global.value.clone()));
     check_values(&values, available, has_clients, records)?;
     for (index, region) in call.skips.iter().enumerate() {
-        if region.join <= region.entry
-            || call.skips[..index].iter().any(|other| other.entry == region.entry)
-        {
+        if region.join <= region.entry || call.skips[..index].iter().any(|other| other.entry == region.entry) {
             return Err(ProviderError::InvalidDeclaration(
                 "Invalid or repeated native source exclusion".to_string(),
             ));
@@ -873,30 +863,21 @@ fn available(inputs: &[&str]) -> HashSet<&str> {
 }
 
 /// Validate a native mod declaration.
-pub fn validate_native_mod_declaration(
-    declaration: &NativeModDeclaration,
-) -> Result<(), ProviderError> {
+pub fn validate_native_mod_declaration(declaration: &NativeModDeclaration) -> Result<(), ProviderError> {
     let invalid = |message: &str| ProviderError::InvalidDeclaration(message.to_string());
     if declaration.pointer_bytes != 4 && declaration.pointer_bytes != 8 {
         return Err(invalid("pointer width"));
     }
     let owned = declaration.source_actors.as_ref();
     if let Some(owned) = owned {
-        if !owned.frame_seconds.is_finite() || owned.frame_seconds <= 0.0 || owned.clock.is_empty()
-        {
+        if !owned.frame_seconds.is_finite() || owned.frame_seconds <= 0.0 || owned.clock.is_empty() {
             return Err(invalid(
                 "Native owned actors require a positive source frame period and clock",
             ));
         }
     }
-    if owned.is_some_and(|owned| {
-        owned
-            .callbacks_abi
-            .is_some_and(|abi| abi != declaration.api)
-    }) {
-        return Err(invalid(
-            "Native callback ABI differs from the selected module target",
-        ));
+    if owned.is_some_and(|owned| owned.callbacks_abi.is_some_and(|abi| abi != declaration.api)) {
+        return Err(invalid("Native callback ABI differs from the selected module target"));
     }
     if let Some(owned) = owned {
         if let Some(damage) = owned.damage_abi {
@@ -940,9 +921,7 @@ pub fn validate_native_mod_declaration(
             }
             let shared_key = match &field.binding {
                 ModFieldBinding::Inventory { item } => Some(format!("inventory:{item}")),
-                ModFieldBinding::InventoryCapacity { item } => {
-                    Some(format!("inventory-capacity:{item}"))
-                }
+                ModFieldBinding::InventoryCapacity { item } => Some(format!("inventory-capacity:{item}")),
                 ModFieldBinding::Team => Some("team".to_string()),
                 ModFieldBinding::Score => Some("score".to_string()),
                 _ => None,
@@ -974,9 +953,7 @@ pub fn validate_native_mod_declaration(
     }
     let clients = declaration.clients.as_ref();
     if declaration.client_presentation
-        && (clients.is_none()
-            || owned.is_none()
-            || clients.map(|clients| clients.end_frame.len()).unwrap_or(0) == 0)
+        && (clients.is_none() || owned.is_none() || clients.map(|clients| clients.end_frame.len()).unwrap_or(0) == 0)
     {
         return Err(invalid(
             "Native client presentation requires declared original end-frame calls",
@@ -1013,7 +990,9 @@ pub fn validate_native_mod_declaration(
             return Err(invalid("Invalid native component client layout"));
         }
         for id in &clients.records {
-            let record = records.get(id).ok_or_else(|| invalid("Invalid native component client layout"))?;
+            let record = records
+                .get(id)
+                .ok_or_else(|| invalid("Invalid native component client layout"))?;
             if matches!(record.base, ModRecordBase::Entities) || record.capacity < clients.maximum {
                 return Err(invalid(
                     "Native component clients require declared private record arrays",
@@ -1029,37 +1008,35 @@ pub fn validate_native_mod_declaration(
         }
         for call in &clients.admit {
             if call.accepts == CallAccepts::NonZero && call.returns == CallReturns::Void {
-                return Err(invalid(
-                    "Native client admission requires its declared return value",
-                ));
+                return Err(invalid("Native client admission requires its declared return value"));
             }
             if matches!(&call.entry, ModEntryRef::Export(name) if name == "ClientConnect")
                 && call.accepts != CallAccepts::NonZero
             {
-                return Err(invalid(
-                    "Original native ClientConnect rejection cannot be ignored",
-                ));
+                return Err(invalid("Original native ClientConnect rejection cannot be ignored"));
             }
         }
         for record in records.values() {
             if record.capacity < clients.maximum {
-                return Err(invalid(
-                    "Native actor array cannot hold its declared clients",
-                ));
+                return Err(invalid("Native actor array cannot hold its declared clients"));
             }
         }
         // Client outputs need exclusive private storage.
         for output in &clients.outputs {
             let (record_id, offset, length) = match output {
-                ModClientOutput::Scalar { record, offset, encoding } => {
-                    (record, *offset, scalar_size(*encoding, declaration.pointer_bytes))
-                }
+                ModClientOutput::Scalar {
+                    record,
+                    offset,
+                    encoding,
+                } => (record, *offset, scalar_size(*encoding, declaration.pointer_bytes)),
                 ModClientOutput::Vector { record, offset } => (record, *offset, 12),
                 ModClientOutput::BodyShape { .. } => continue,
             };
-            let record = records.get(record_id).ok_or_else(|| invalid("Native client output requires exclusive private client storage"))?;
-            let owned_here = clients.records.contains(&record.id)
-                || Some(&record.id) == declaration.entity_record.as_ref();
+            let record = records
+                .get(record_id)
+                .ok_or_else(|| invalid("Native client output requires exclusive private client storage"))?;
+            let owned_here =
+                clients.records.contains(&record.id) || Some(&record.id) == declaration.entity_record.as_ref();
             let inside_private = record.fields.iter().any(|field| {
                 matches!(field.binding, ModFieldBinding::Private)
                     && field.offset <= offset
@@ -1073,15 +1050,9 @@ pub fn validate_native_mod_declaration(
         }
         for output in &clients.outputs {
             if let ModClientOutput::BodyShape { min, max } = output {
-                for ((record_id, offset), binding) in [
-                    (min, "bounds-min"),
-                    (max, "bounds-max"),
-                ] {
+                for ((record_id, offset), binding) in [(min, "bounds-min"), (max, "bounds-max")] {
                     let record = records.get(record_id);
-                    let bound = matches!(
-                        binding,
-                        "bounds-min"
-                    );
+                    let bound = matches!(binding, "bounds-min");
                     let ok = record.is_some_and(|record| {
                         record.fields.iter().any(|field| {
                             field.offset == *offset
@@ -1093,9 +1064,7 @@ pub fn validate_native_mod_declaration(
                         })
                     });
                     if !ok {
-                        return Err(invalid(
-                            "Client body shape must name its writable source mins/maxs",
-                        ));
+                        return Err(invalid("Client body shape must name its writable source mins/maxs"));
                     }
                 }
             }
@@ -1107,23 +1076,25 @@ pub fn validate_native_mod_declaration(
         let mut ranges: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
         for field in &clients.input_fields {
             let length = value_length(&field.value, declaration.pointer_bytes);
-            let record = records.get(&field.record).ok_or_else(|| invalid("Native input field requires declared private client storage"))?;
-            let owned_here = Some(&record.id) == declaration.entity_record.as_ref()
-                || clients.records.contains(&record.id);
+            let record = records
+                .get(&field.record)
+                .ok_or_else(|| invalid("Native input field requires declared private client storage"))?;
+            let owned_here =
+                Some(&record.id) == declaration.entity_record.as_ref() || clients.records.contains(&record.id);
             let inside_private = record.fields.iter().any(|candidate| {
                 matches!(candidate.binding, ModFieldBinding::Private)
                     && field.offset >= candidate.offset
                     && field.offset + length
-                        <= candidate.offset
-                            + scalar_size(candidate.encoding, declaration.pointer_bytes)
+                        <= candidate.offset + scalar_size(candidate.encoding, declaration.pointer_bytes)
             });
             if !owned_here || field.offset + length > record.stride || !inside_private {
-                return Err(invalid(
-                    "Native input field requires declared private client storage",
-                ));
+                return Err(invalid("Native input field requires declared private client storage"));
             }
             let previous = ranges.entry(field.record.as_str()).or_default();
-            if previous.iter().any(|(start, end)| field.offset < *end && *start < field.offset + length) {
+            if previous
+                .iter()
+                .any(|(start, end)| field.offset < *end && *start < field.offset + length)
+            {
                 return Err(invalid("Overlapping native input fields"));
             }
             previous.push((field.offset, field.offset + length));
@@ -1131,7 +1102,9 @@ pub fn validate_native_mod_declaration(
         if let Some(pose) = &clients.pose {
             for field in [&pose.view_height, &pose.crouched] {
                 let (record_id, offset, encoding) = (&field.0, field.1, field.2);
-                let record = records.get(record_id).ok_or_else(|| invalid("Native client pose requires separate private source fields"))?;
+                let record = records
+                    .get(record_id)
+                    .ok_or_else(|| invalid("Native client pose requires separate private source fields"))?;
                 let length = scalar_size(encoding, declaration.pointer_bytes);
                 let shared_hit = record.fields.iter().any(|field| {
                     matches!(
@@ -1144,9 +1117,7 @@ pub fn validate_native_mod_declaration(
                         && field.offset < offset + length
                 });
                 if offset + length > record.stride || shared_hit {
-                    return Err(invalid(
-                        "Native client pose requires separate private source fields",
-                    ));
+                    return Err(invalid("Native client pose requires separate private source fields"));
                 }
             }
             if pose.crouch_mask < 1 || pose.crouch_mask > 0x7fff_ffff {
@@ -1220,7 +1191,9 @@ pub fn validate_native_mod_declaration(
         for field in &pickup.context {
             check_values(std::slice::from_ref(&field.value), &available, has_clients, &records)?;
             let length = value_length(&field.value, declaration.pointer_bytes);
-            let record = records.get(&field.record).ok_or_else(|| invalid("Native pickup context requires separate declared source storage"))?;
+            let record = records
+                .get(&field.record)
+                .ok_or_else(|| invalid("Native pickup context requires separate declared source storage"))?;
             let client_owned = clients.is_some_and(|clients| clients.records.contains(&record.id));
             let inside = record.fields.iter().any(|candidate| {
                 matches!(
@@ -1231,14 +1204,13 @@ pub fn validate_native_mod_declaration(
                         | ModFieldBinding::ConstantVector(_)
                 ) && candidate.offset <= field.offset
                     && field.offset + length
-                        <= candidate.offset
-                            + scalar_size(candidate.encoding, declaration.pointer_bytes)
+                        <= candidate.offset + scalar_size(candidate.encoding, declaration.pointer_bytes)
             });
-            if client_owned || field.offset + length > record.stride || !inside
+            if client_owned
+                || field.offset + length > record.stride
+                || !inside
                 || ranges.iter().any(|(record_id, start, end)| {
-                    *record_id == field.record.as_str()
-                        && field.offset < *end
-                        && *start < field.offset + length
+                    *record_id == field.record.as_str() && field.offset < *end && *start < field.offset + length
                 })
             {
                 return Err(invalid(
@@ -1252,16 +1224,12 @@ pub fn validate_native_mod_declaration(
                     pointers.extend(lifetime.use_offset);
                     pointers.extend(lifetime.callbacks.iter().copied());
                     if pointers.iter().any(|offset| {
-                        field.offset < offset + declaration.pointer_bytes
-                            && *offset < field.offset + length
+                        field.offset < offset + declaration.pointer_bytes && *offset < field.offset + length
                     }) || field.offset
-                        < lifetime.nextthink.0
-                            + scalar_size(lifetime.nextthink.1, declaration.pointer_bytes)
+                        < lifetime.nextthink.0 + scalar_size(lifetime.nextthink.1, declaration.pointer_bytes)
                         && lifetime.nextthink.0 < field.offset + length
                     {
-                        return Err(invalid(
-                            "Native pickup context overlaps source actor lifetime",
-                        ));
+                        return Err(invalid("Native pickup context overlaps source actor lifetime"));
                     }
                 }
             }
@@ -1288,7 +1256,13 @@ pub fn validate_native_mod_declaration(
                 }
                 check_call(call, &available, has_clients, &records)?;
             }
-            ModAbsorb::SourceRegion { call, frame_entry, entry_rva, join_rva, frame_exit } => {
+            ModAbsorb::SourceRegion {
+                call,
+                frame_entry,
+                entry_rva,
+                join_rva,
+                frame_exit,
+            } => {
                 let boundaries = [*frame_entry, *entry_rva, *join_rva, *frame_exit];
                 let mut sorted = boundaries;
                 sorted.sort_unstable();
@@ -1329,9 +1303,7 @@ pub fn validate_native_mod_declaration(
             check_call(call, &available(&["self", "time"]), has_clients, &records)?;
         }
         if (!clients.frame.is_empty() || !clients.end_frame.is_empty()) && owned.is_none() {
-            return Err(invalid(
-                "Native client frames require the original source actor clock",
-            ));
+            return Err(invalid("Native client frames require the original source actor clock"));
         }
         let available = available(&[
             "self",
@@ -1366,7 +1338,15 @@ pub fn validate_native_mod_declaration(
             available_set.insert("result");
         }
         let extra: &[&str] = match callback.operation.as_str() {
-            "damage" => &["attacker", "inflictor", "amount", "knockback", "direction", "point", "normal"],
+            "damage" => &[
+                "attacker",
+                "inflictor",
+                "amount",
+                "knockback",
+                "direction",
+                "point",
+                "normal",
+            ],
             "inventory.give" | "inventory.consume" => &["item", "amount"],
             "actor.use" => &["other", "activator"],
             "actor.touch" => &["other"],
@@ -1382,11 +1362,7 @@ pub fn validate_native_mod_declaration(
     Ok(())
 }
 
-fn check_scalar_range(
-    value: f64,
-    encoding: GuestStorage,
-    pointer_bytes: usize,
-) -> Result<(), ProviderError> {
+fn check_scalar_range(value: f64, encoding: GuestStorage, pointer_bytes: usize) -> Result<(), ProviderError> {
     if !value.is_finite() {
         return Err(ProviderError::ValueRange(format!("{encoding:?}")));
     }
@@ -1399,10 +1375,7 @@ fn check_scalar_range(
         GuestStorage::Uint8 | GuestStorage::Uint16 | GuestStorage::Uint32 | GuestStorage::Uint64
     );
     let bound = 2f64.powi(bits as i32 - i32::from(!unsigned));
-    if value.trunc() != value
-        || value < if unsigned { 0.0 } else { -bound }
-        || value >= bound
-    {
+    if value.trunc() != value || value < if unsigned { 0.0 } else { -bound } || value >= bound {
         return Err(ProviderError::ValueRange(format!("{encoding:?}")));
     }
     Ok(())
@@ -1429,9 +1402,7 @@ pub enum RuntimeValue {
 
 fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
     match storage {
-        GuestStorage::Float32 => {
-            f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Float32 => f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Float64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -1441,12 +1412,8 @@ fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
         GuestStorage::Uint8 => f64::from(bytes[0]),
         GuestStorage::Int16 => f64::from(i16::from_le_bytes([bytes[0], bytes[1]])),
         GuestStorage::Uint16 => f64::from(u16::from_le_bytes([bytes[0], bytes[1]])),
-        GuestStorage::Int32 => {
-            f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
-        GuestStorage::Uint32 => {
-            f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Int32 => f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        GuestStorage::Uint32 => f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Int64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -1470,12 +1437,8 @@ fn f64_to_scalar(value: f64, storage: GuestStorage, pointer_bytes: usize) -> Vec
         GuestStorage::Float32 => (value as f32).to_le_bytes().to_vec(),
         GuestStorage::Float64 => value.to_le_bytes().to_vec(),
         GuestStorage::Int8 | GuestStorage::Uint8 => vec![value as i64 as u8],
-        GuestStorage::Int16 | GuestStorage::Uint16 => {
-            (value as i64 as i16).to_le_bytes().to_vec()
-        }
-        GuestStorage::Int32 | GuestStorage::Uint32 => {
-            (value as i64 as i32).to_le_bytes().to_vec()
-        }
+        GuestStorage::Int16 | GuestStorage::Uint16 => (value as i64 as i16).to_le_bytes().to_vec(),
+        GuestStorage::Int32 | GuestStorage::Uint32 => (value as i64 as i32).to_le_bytes().to_vec(),
         GuestStorage::Int64 | GuestStorage::Uint64 => (value as i64).to_le_bytes().to_vec(),
         GuestStorage::Pointer => {
             if pointer_bytes == 4 {
@@ -1703,38 +1666,31 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         match &record.base {
             ModRecordBase::Address(address) => {
                 let base = self.resolve(address)?;
-                Ok(self.host.memory().offset(
-                    base,
-                    (record.first_slot * record.stride) as i64,
-                )?)
+                Ok(self
+                    .host
+                    .memory()
+                    .offset(base, (record.first_slot * record.stride) as i64)?)
             }
             ModRecordBase::Clients => Err(ProviderError::InvalidDeclaration(
                 "Native private client rows are addressed through their source edicts".to_string(),
             )),
             ModRecordBase::Entities => {
                 let entities = self.host.entities();
-                if entities.stride != record.stride
-                    || record.first_slot + record.capacity > entities.capacity
-                {
+                if entities.stride != record.stride || record.first_slot + record.capacity > entities.capacity {
                     return Err(ProviderError::InvalidDeclaration(
-                        "Declared native actor layout differs from the source export table"
-                            .to_string(),
+                        "Declared native actor layout differs from the source export table".to_string(),
                     ));
                 }
-                Ok(self.host.memory().offset(
-                    entities.base,
-                    (record.first_slot * record.stride) as i64,
-                )?)
+                Ok(self
+                    .host
+                    .memory()
+                    .offset(entities.base, (record.first_slot * record.stride) as i64)?)
             }
         }
     }
 
     /// Row address for a record and slot.
-    pub fn record_address(
-        &mut self,
-        record_id: &str,
-        slot: usize,
-    ) -> Result<GuestAddress, ProviderError> {
+    pub fn record_address(&mut self, record_id: &str, slot: usize) -> Result<GuestAddress, ProviderError> {
         let record = self
             .records
             .get(record_id)
@@ -1745,30 +1701,20 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         }
         if matches!(record.base, ModRecordBase::Clients) {
             let entities = self.host.entities();
-            return Ok(self.host.memory().offset(
-                entities.base,
-                ((record.first_slot + slot) * record.stride) as i64,
-            )?);
+            return Ok(self
+                .host
+                .memory()
+                .offset(entities.base, ((record.first_slot + slot) * record.stride) as i64)?);
         }
         let base = self.record_base(&record)?;
-        Ok(self
-            .host
-            .memory()
-            .offset(base, (slot * record.stride) as i64)?)
+        Ok(self.host.memory().offset(base, (slot * record.stride) as i64)?)
     }
 
     /// Read a scalar from guest memory.
-    pub fn scalar_read(
-        &mut self,
-        address: GuestAddress,
-        encoding: GuestStorage,
-    ) -> Result<f64, ProviderError> {
+    pub fn scalar_read(&mut self, address: GuestAddress, encoding: GuestStorage) -> Result<f64, ProviderError> {
         let pointer_bytes = self.host.memory().pointer_bytes();
         let width = scalar_size(encoding, pointer_bytes);
-        Ok(scalar_to_f64(
-            &self.host.memory().copy(address, width)?,
-            encoding,
-        ))
+        Ok(scalar_to_f64(&self.host.memory().copy(address, width)?, encoding))
     }
 
     /// Write a scalar into guest memory.
@@ -1816,7 +1762,10 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
     /// Projected actor at a slot.
     #[must_use]
     pub fn actor_at(&self, slot: usize) -> Option<NativeActorId> {
-        self.projections.iter().find(|(_, bound)| **bound == slot).map(|(actor, _)| *actor)
+        self.projections
+            .iter()
+            .find(|(_, bound)| **bound == slot)
+            .map(|(actor, _)| *actor)
     }
 
     // -- Actor projections -------------------------------------------------
@@ -1939,10 +1888,7 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
     }
 
     /// Commit shared-word changes into canonical inventory.
-    pub fn flush(
-        &mut self,
-        committed: &mut dyn FnMut(NativeActorId, &str, f64, f64),
-    ) -> Result<(), ProviderError> {
+    pub fn flush(&mut self, committed: &mut dyn FnMut(NativeActorId, &str, f64, f64)) -> Result<(), ProviderError> {
         let before = self.frames.last().cloned().unwrap_or_default();
         let after = self.observe()?;
         for ((slot, record_id, offset), value) in &after {
@@ -1951,14 +1897,13 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
                 continue;
             }
             let Some(actor) = self.actor_at(*slot) else { continue };
-            let field = self.records.get(record_id).and_then(|record| {
-                record.fields.iter().find(|field| field.offset == *offset)
-            });
+            let field = self
+                .records
+                .get(record_id)
+                .and_then(|record| record.fields.iter().find(|field| field.offset == *offset));
             let Some(field) = field else { continue };
             let item = match &field.binding {
-                ModFieldBinding::Inventory { item } | ModFieldBinding::InventoryCapacity { item } => {
-                    item.clone()
-                }
+                ModFieldBinding::Inventory { item } | ModFieldBinding::InventoryCapacity { item } => item.clone(),
                 _ => continue,
             };
             if self.services.inventory_owns(actor, &item) {
@@ -1989,9 +1934,7 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
                 ))),
             },
             ModValueKind::Actor { input, .. } => match inputs.get(input) {
-                Some(RuntimeValue::Actor(Some(actor))) => {
-                    Ok(GuestCallValue::Pointer(Some(self.address(*actor)?)))
-                }
+                Some(RuntimeValue::Actor(Some(actor))) => Ok(GuestCallValue::Pointer(Some(self.address(*actor)?))),
                 Some(RuntimeValue::Actor(None)) => Ok(GuestCallValue::Pointer(None)),
                 _ => Err(ProviderError::InvalidDeclaration(format!(
                     "Unavailable native callback input {input}"
@@ -1999,11 +1942,7 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
             },
             ModValueKind::Client { input } => match inputs.get(input) {
                 Some(RuntimeValue::Actor(Some(actor))) => {
-                    let slot = self
-                        .client_slots
-                        .get(actor)
-                        .map(|slot| slot.slot as i32)
-                        .unwrap_or(-1);
+                    let slot = self.client_slots.get(actor).map(|slot| slot.slot as i32).unwrap_or(-1);
                     Ok(GuestCallValue::Int32(slot))
                 }
                 _ => Err(ProviderError::InvalidDeclaration(format!(
@@ -2062,7 +2001,8 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         }
         for region in &call.skips {
             let base = self.host.image_base();
-            self.active_skips.push((base.offset + region.entry, base.offset + region.join));
+            self.active_skips
+                .push((base.offset + region.entry, base.offset + region.join));
         }
         let skip_count = call.skips.len();
         let outcome = self.invoke_guarded(address, &values, call, inputs);
@@ -2162,8 +2102,15 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
     // -- Clients -----------------------------------------------------------
 
     fn client_require(&mut self, actor: NativeActorId) -> Result<ClientSlot, ProviderError> {
-        let slot = self.client_slots.get(&actor).cloned().ok_or(ProviderError::IdentityStale)?;
-        let client = self.services.client_for_actor(actor).ok_or(ProviderError::IdentityStale)?;
+        let slot = self
+            .client_slots
+            .get(&actor)
+            .cloned()
+            .ok_or(ProviderError::IdentityStale)?;
+        let client = self
+            .services
+            .client_for_actor(actor)
+            .ok_or(ProviderError::IdentityStale)?;
         if client != slot.client || self.services.client_actor(client) != Some(actor) {
             return Err(ProviderError::IdentityStale);
         }
@@ -2180,7 +2127,12 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         if self.denied.contains(&actor) {
             return Err(ProviderError::IdentityStale);
         }
-        let maximum = self.declaration.clients.as_ref().map(|clients| clients.maximum).unwrap_or(0);
+        let maximum = self
+            .declaration
+            .clients
+            .as_ref()
+            .map(|clients| clients.maximum)
+            .unwrap_or(0);
         let Some(client) = self.services.client_for_actor(actor) else {
             return Ok(None);
         };
@@ -2192,7 +2144,14 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         if slot >= maximum {
             return Err(ProviderError::CapacityExceeded);
         }
-        self.client_slots.insert(actor, ClientSlot { client, slot, admitted: false });
+        self.client_slots.insert(
+            actor,
+            ClientSlot {
+                client,
+                slot,
+                admitted: false,
+            },
+        );
         Ok(Some(slot))
     }
 
@@ -2208,7 +2167,12 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         if slot.admitted {
             return Ok(true);
         }
-        let admit = self.declaration.clients.clone().map(|clients| clients.admit).unwrap_or_default();
+        let admit = self
+            .declaration
+            .clients
+            .clone()
+            .map(|clients| clients.admit)
+            .unwrap_or_default();
         let mut inputs = HashMap::new();
         inputs.insert("self".to_string(), RuntimeValue::Actor(Some(actor)));
         inputs.insert("time".to_string(), RuntimeValue::Float(self.services.time_secs()));
@@ -2235,12 +2199,21 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
 
     /// Run frame calls for a 1-based source row.
     pub fn client_frame(&mut self, slot: usize) -> Result<bool, ProviderError> {
-        let found = self.client_slots.iter().find(|(_, bound)| bound.slot + 1 == slot).map(|(actor, _)| *actor);
+        let found = self
+            .client_slots
+            .iter()
+            .find(|(_, bound)| bound.slot + 1 == slot)
+            .map(|(actor, _)| *actor);
         let Some(actor) = found else {
             return Ok(false);
         };
         if self.client_admitted(actor) {
-            let frame = self.declaration.clients.clone().map(|clients| clients.frame).unwrap_or_default();
+            let frame = self
+                .declaration
+                .clients
+                .clone()
+                .map(|clients| clients.frame)
+                .unwrap_or_default();
             let mut inputs = HashMap::new();
             inputs.insert("self".to_string(), RuntimeValue::Actor(Some(actor)));
             inputs.insert("time".to_string(), RuntimeValue::Float(self.services.time_secs()));
@@ -2259,7 +2232,12 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
 
     /// Run a client command through command calls.
     pub fn invoke_command(&mut self, actor: NativeActorId) -> Result<bool, ProviderError> {
-        let command = self.declaration.clients.clone().map(|clients| clients.command).unwrap_or_default();
+        let command = self
+            .declaration
+            .clients
+            .clone()
+            .map(|clients| clients.command)
+            .unwrap_or_default();
         if command.is_empty() {
             return Ok(false);
         }
@@ -2280,8 +2258,17 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
     /// Stage input fields for one application; returns a session token.
     pub fn open_input(&mut self, application: &InputApplication) -> Result<u64, ProviderError> {
         self.current()?;
-        let slot = self.projections.get(&application.actor).copied().ok_or(ProviderError::MissingClientRow)?;
-        let fields = self.declaration.clients.clone().map(|clients| clients.input_fields).unwrap_or_default();
+        let slot = self
+            .projections
+            .get(&application.actor)
+            .copied()
+            .ok_or(ProviderError::MissingClientRow)?;
+        let fields = self
+            .declaration
+            .clients
+            .clone()
+            .map(|clients| clients.input_fields)
+            .unwrap_or_default();
         let mut stores = Vec::new();
         for field in &fields {
             let address = self.record_address(&field.record, slot)?;
@@ -2305,19 +2292,27 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         match value {
             ModValueKind::Vector { input } => match values.get(input) {
                 Some(RuntimeValue::Vector(vector)) => Ok(vec_to_bytes(*vector).to_vec()),
-                _ => Err(ProviderError::InvalidDeclaration("Native input vector is unavailable".to_string())),
+                _ => Err(ProviderError::InvalidDeclaration(
+                    "Native input vector is unavailable".to_string(),
+                )),
             },
             ModValueKind::Time { input, encoding } => match values.get(input) {
                 Some(RuntimeValue::Float(value)) => {
                     Ok(f64_to_scalar(*value, *encoding, self.host.memory().pointer_bytes()))
                 }
-                _ => Err(ProviderError::InvalidDeclaration(format!("Unavailable native callback input {input}"))),
+                _ => Err(ProviderError::InvalidDeclaration(format!(
+                    "Unavailable native callback input {input}"
+                ))),
             },
             ModValueKind::Float { input } => match values.get(input) {
                 Some(RuntimeValue::Float(value)) => Ok(value.to_le_bytes().to_vec()),
-                _ => Err(ProviderError::InvalidDeclaration(format!("Unavailable native callback input {input}"))),
+                _ => Err(ProviderError::InvalidDeclaration(format!(
+                    "Unavailable native callback input {input}"
+                ))),
             },
-            _ => Err(ProviderError::InvalidDeclaration("Native input field representation differs".to_string())),
+            _ => Err(ProviderError::InvalidDeclaration(
+                "Native input field representation differs".to_string(),
+            )),
         }
     }
 
@@ -2336,7 +2331,12 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
 
     /// Read an objective state word.
     pub fn objective_value(&mut self, id: &str) -> Result<Option<f64>, ProviderError> {
-        let objective = self.declaration.objectives.iter().find(|objective| objective.id == id).cloned();
+        let objective = self
+            .declaration
+            .objectives
+            .iter()
+            .find(|objective| objective.id == id)
+            .cloned();
         let Some(objective) = objective else { return Ok(None) };
         let Some(state) = objective.state else { return Ok(None) };
         let address = self.resolve(&state)?;
@@ -2345,7 +2345,12 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
 
     /// Write an objective state word.
     pub fn set_objective_value(&mut self, id: &str, value: f64) -> Result<(), ProviderError> {
-        let objective = self.declaration.objectives.iter().find(|objective| objective.id == id).cloned();
+        let objective = self
+            .declaration
+            .objectives
+            .iter()
+            .find(|objective| objective.id == id)
+            .cloned();
         let Some(objective) = objective else { return Ok(()) };
         let Some(state) = objective.state else { return Ok(()) };
         let address = self.resolve(&state)?;
@@ -2393,7 +2398,8 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
             let update = self.resolve_entry(&owned.update)?;
             for slot in self.projections.values().copied().collect::<Vec<_>>() {
                 let address = self.address(self.actor_at(slot).ok_or(ProviderError::LostProjection)?)?;
-                self.host.invoke_entry(update, &[GuestCallValue::Pointer(Some(address))]);
+                self.host
+                    .invoke_entry(update, &[GuestCallValue::Pointer(Some(address))]);
             }
             self.owned_next += owned.frame_seconds;
         }
@@ -2456,15 +2462,30 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
             .unwrap_or(0);
         if (!checkpoint.actors.is_empty() && self.declaration.actor_records.is_empty())
             || checkpoint.actors.iter().any(|entry| entry.slot >= capacity)
-            || checkpoint.actors.iter().map(|entry| entry.slot).collect::<HashSet<_>>().len()
+            || checkpoint
+                .actors
+                .iter()
+                .map(|entry| entry.slot)
+                .collect::<HashSet<_>>()
+                .len()
                 != checkpoint.actors.len()
         {
             return Err(ProviderError::BadCheckpoint("actor rows differ".to_string()));
         }
-        let maximum = self.declaration.clients.as_ref().map(|clients| clients.maximum).unwrap_or(0);
+        let maximum = self
+            .declaration
+            .clients
+            .as_ref()
+            .map(|clients| clients.maximum)
+            .unwrap_or(0);
         if checkpoint.clients.len() > maximum
             || checkpoint.clients.iter().any(|entry| entry.slot >= maximum)
-            || checkpoint.clients.iter().map(|entry| entry.slot).collect::<HashSet<_>>().len()
+            || checkpoint
+                .clients
+                .iter()
+                .map(|entry| entry.slot)
+                .collect::<HashSet<_>>()
+                .len()
                 != checkpoint.clients.len()
         {
             return Err(ProviderError::BadCheckpoint("client rows differ".to_string()));
@@ -2488,7 +2509,10 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         self.denied.clear();
         for entry in &checkpoint.actors {
             let id = self.services.actor_reference(entry.actor);
-            let owned = self.services.actor_resolve(id).ok_or_else(|| ProviderError::BadRestore("saved actor is unavailable".to_string()))?;
+            let owned = self
+                .services
+                .actor_resolve(id)
+                .ok_or_else(|| ProviderError::BadRestore("saved actor is unavailable".to_string()))?;
             if owned.owner != self.instance || self.services.actor_source_slot(id) != Some(entry.slot) {
                 return Err(ProviderError::BadRestore("saved actor differs".to_string()));
             }
@@ -2499,16 +2523,33 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         }
         for entry in &checkpoint.clients {
             let id = self.services.actor_reference(entry.actor);
-            let client = self.services.client_for_actor(id).ok_or_else(|| ProviderError::BadRestore("saved client is unavailable".to_string()))?;
-            self.client_slots.insert(id, ClientSlot { client, slot: entry.slot, admitted: entry.admitted });
+            let client = self
+                .services
+                .client_for_actor(id)
+                .ok_or_else(|| ProviderError::BadRestore("saved client is unavailable".to_string()))?;
+            self.client_slots.insert(
+                id,
+                ClientSlot {
+                    client,
+                    slot: entry.slot,
+                    admitted: entry.admitted,
+                },
+            );
         }
         if let Some((next, frame)) = checkpoint.owned {
             self.owned_next = next;
             self.owned_frame = frame;
         }
         for ((slot, record_id, offset), value) in &checkpoint.shared {
-            let record = self.records.get(record_id).ok_or_else(|| ProviderError::BadRestore("saved field record differs".to_string()))?;
-            let field = record.fields.iter().find(|field| field.offset == *offset).ok_or_else(|| ProviderError::BadRestore("saved field differs".to_string()))?;
+            let record = self
+                .records
+                .get(record_id)
+                .ok_or_else(|| ProviderError::BadRestore("saved field record differs".to_string()))?;
+            let field = record
+                .fields
+                .iter()
+                .find(|field| field.offset == *offset)
+                .ok_or_else(|| ProviderError::BadRestore("saved field differs".to_string()))?;
             let address = self.record_address(record_id, *slot)?;
             self.scalar_write(address, *value, field.encoding)?;
         }
@@ -2578,11 +2619,7 @@ pub struct SyntheticProviderHost {
 
 impl SyntheticProviderHost {
     /// Build a host over mapped memory.
-    pub fn new(
-        memory: SparseGuestMemory,
-        image_base: GuestAddress,
-        entities: EntityTable,
-    ) -> Self {
+    pub fn new(memory: SparseGuestMemory, image_base: GuestAddress, entities: EntityTable) -> Self {
         Self {
             memory,
             image_base,
@@ -2629,11 +2666,7 @@ impl ProviderHost for SyntheticProviderHost {
         slot as u32
     }
 
-    fn invoke_entry(
-        &mut self,
-        address: GuestAddress,
-        values: &[GuestCallValue],
-    ) -> GuestCallResult {
+    fn invoke_entry(&mut self, address: GuestAddress, values: &[GuestCallValue]) -> GuestCallResult {
         self.invoked.push(address.offset);
         if let Some(handler) = self.handlers.get(&address.offset).cloned() {
             return handler(self, values);
@@ -2695,8 +2728,14 @@ impl ProviderServices for SyntheticProviderServices {
 
     fn allocate_actor(&mut self, slot: usize, label: &str) -> OwnedActor {
         let _ = label;
-        let id = NativeActorId { slot: slot as u32, generation: 1 };
-        let owned = OwnedActor { id, owner: "test:mod".to_string() };
+        let id = NativeActorId {
+            slot: slot as u32,
+            generation: 1,
+        };
+        let owned = OwnedActor {
+            id,
+            owner: "test:mod".to_string(),
+        };
         self.actors.insert(id, owned.clone());
         self.slots.insert(id, slot);
         owned
@@ -2711,7 +2750,10 @@ impl ProviderServices for SyntheticProviderServices {
     }
 
     fn actor_reference(&mut self, saved: SavedActorId) -> NativeActorId {
-        NativeActorId { slot: saved.slot, generation: saved.generation }
+        NativeActorId {
+            slot: saved.slot,
+            generation: saved.generation,
+        }
     }
 
     fn actor_resolve(&self, actor: NativeActorId) -> Option<OwnedActor> {
@@ -2731,7 +2773,10 @@ impl ProviderServices for SyntheticProviderServices {
     }
 
     fn client_actor(&self, client: NativeClientId) -> Option<NativeActorId> {
-        self.clients.iter().find(|(_, bound)| **bound == client).map(|(actor, _)| *actor)
+        self.clients
+            .iter()
+            .find(|(_, bound)| **bound == client)
+            .map(|(actor, _)| *actor)
     }
 
     fn client_list(&self) -> Vec<(NativeActorId, NativeClientId)> {
@@ -2768,9 +2813,7 @@ impl ProviderServices for SyntheticProviderServices {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
 
     fn actor(slot: u32) -> NativeActorId {
         NativeActorId { slot, generation: 1 }
@@ -2852,7 +2895,10 @@ mod tests {
             pickups: Vec::new(),
             objectives: vec![ModObjectiveDecl {
                 id: "fraglimit".to_string(),
-                state: Some(ModAddress { rva: 0x500, indirections: Vec::new() }),
+                state: Some(ModAddress {
+                    rva: 0x500,
+                    indirections: Vec::new(),
+                }),
                 carrier: None,
                 target: None,
                 owned: false,
@@ -2914,13 +2960,19 @@ mod tests {
             ModProtectionDecl {
                 id: "a".to_string(),
                 channel: ProtectionChannel::Regular,
-                absorb: ModAbsorb::Native { entry: ModEntryRef::Rva(0x100), sparks: None },
+                absorb: ModAbsorb::Native {
+                    entry: ModEntryRef::Rva(0x100),
+                    sparks: None,
+                },
                 flags_abi: ApiKind::Classic,
             },
             ModProtectionDecl {
                 id: "b".to_string(),
                 channel: ProtectionChannel::Regular,
-                absorb: ModAbsorb::Native { entry: ModEntryRef::Rva(0x200), sparks: None },
+                absorb: ModAbsorb::Native {
+                    entry: ModEntryRef::Rva(0x200),
+                    sparks: None,
+                },
                 flags_abi: ApiKind::Classic,
             },
         ];
@@ -2946,9 +2998,7 @@ mod tests {
             .unwrap();
         assert_eq!(constant, 7.0);
         // Guest writes publish through refresh + flush.
-        provider
-            .scalar_write(address, 30.0, GuestStorage::Int32)
-            .unwrap();
+        provider.scalar_write(address, 30.0, GuestStorage::Int32).unwrap();
         provider.refresh().unwrap();
         // Flush commits the observed delta.
         provider.frames.push(TransferFrame::default());
@@ -2967,7 +3017,10 @@ mod tests {
     #[test]
     fn source_calls_save_globals_and_stage_userinfo() {
         let mut provider = fixture();
-        let global = ModAddress { rva: 0x600, indirections: Vec::new() };
+        let global = ModAddress {
+            rva: 0x600,
+            indirections: Vec::new(),
+        };
         let address = provider.resolve(&global).unwrap();
         provider.scalar_write(address, 11.0, GuestStorage::Int32).unwrap();
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -2983,12 +3036,19 @@ mod tests {
             entry: ModEntryRef::Rva(0x1000),
             accepts: CallAccepts::Always,
             returns: CallReturns::Int32,
-            skips: vec![ModSkip { entry: 0x10, join: 0x20 }],
-            arguments: vec![ModValueKind::Float { input: "time".to_string() }],
+            skips: vec![ModSkip {
+                entry: 0x10,
+                join: 0x20,
+            }],
+            arguments: vec![ModValueKind::Float {
+                input: "time".to_string(),
+            }],
             globals: vec![ModGlobal {
                 address: global,
                 encoding: GuestStorage::Int32,
-                value: ModValueKind::Float { input: "amount".to_string() },
+                value: ModValueKind::Float {
+                    input: "amount".to_string(),
+                },
             }],
         };
         let mut inputs = HashMap::new();
@@ -3001,10 +3061,7 @@ mod tests {
         assert!(provider.active_skips.is_empty());
         let restored = provider.scalar_read(address, GuestStorage::Int32).unwrap();
         assert_eq!(restored, 11.0);
-        assert_eq!(
-            provider.services.client_userinfo(client(1)),
-            "\\name\\b\\".to_string()
-        );
+        assert_eq!(provider.services.client_userinfo(client(1)), "\\name\\b\\".to_string());
     }
 
     #[test]

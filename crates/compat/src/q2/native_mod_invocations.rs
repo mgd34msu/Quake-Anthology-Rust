@@ -165,9 +165,7 @@ impl NativeModInvocations {
             return Err(InvocationError::Retired(authority.token));
         }
         match invoke(self) {
-            Err(InvocationError::Retired(token))
-                if token == authority.token && !authority.is_current() =>
-            {
+            Err(InvocationError::Retired(token)) if token == authority.token && !authority.is_current() => {
                 Err(InvocationError::Retired(token))
             }
             outcome => {
@@ -186,26 +184,29 @@ mod tests {
     #[test]
     fn completed_run_preserves_state_and_retired_run_restores_it() {
         let mut invocations = NativeModInvocations::new(0xAAAA);
-        let completed = invocations.run(|| true, |tracker| {
-            tracker.set_state(0xBBBB);
-            Ok::<_, InvocationError>(7)
-        });
-        assert_eq!(
-            completed,
-            Ok(NativeModInvocationResult::Completed(7))
+        let completed = invocations.run(
+            || true,
+            |tracker| {
+                tracker.set_state(0xBBBB);
+                Ok::<_, InvocationError>(7)
+            },
         );
+        assert_eq!(completed, Ok(NativeModInvocationResult::Completed(7)));
         assert_eq!(invocations.state(), 0xBBBB);
 
         let live = Rc::new(Cell::new(true));
         let probe = live.clone();
         let authority = RegionAuthority::new(3, move || probe.get());
-        let retired = invocations.run(|| true, |tracker| {
-            tracker.set_state(0xCCCC);
-            tracker.guard(&authority, |_| {
-                live.set(false);
-                Err::<(), _>(InvocationError::Retired(3))
-            })
-        });
+        let retired = invocations.run(
+            || true,
+            |tracker| {
+                tracker.set_state(0xCCCC);
+                tracker.guard(&authority, |_| {
+                    live.set(false);
+                    Err::<(), _>(InvocationError::Retired(3))
+                })
+            },
+        );
         assert_eq!(retired, Ok(NativeModInvocationResult::Retired));
         assert_eq!(invocations.state(), 0xBBBB);
     }
@@ -216,16 +217,22 @@ mod tests {
         let live = Rc::new(Cell::new(true));
         let probe = live.clone();
         let authority = RegionAuthority::new(9, move || probe.get());
-        let outer = invocations.run(|| true, |tracker| {
-            let inner = tracker.run(|| false, |tracker| {
-                tracker.guard(&authority, |_| {
-                    live.set(false);
-                    Err::<u32, _>(InvocationError::Retired(9))
-                })
-            })?;
-            assert_eq!(inner, NativeModInvocationResult::Retired);
-            Ok::<_, InvocationError>(11u32)
-        });
+        let outer = invocations.run(
+            || true,
+            |tracker| {
+                let inner = tracker.run(
+                    || false,
+                    |tracker| {
+                        tracker.guard(&authority, |_| {
+                            live.set(false);
+                            Err::<u32, _>(InvocationError::Retired(9))
+                        })
+                    },
+                )?;
+                assert_eq!(inner, NativeModInvocationResult::Retired);
+                Ok::<_, InvocationError>(11u32)
+            },
+        );
         assert_eq!(outer, Ok(NativeModInvocationResult::Completed(11)));
     }
 
@@ -238,13 +245,13 @@ mod tests {
         let live = Rc::new(Cell::new(true));
         let probe = live.clone();
         let stale = RegionAuthority::new(2, move || probe.get());
-        let outcome: Result<NativeModInvocationResult<()>, _> =
-            invocations.run(|| true, |tracker| {
-                tracker.guard(&stale, |_| {
-                    Err(InvocationError::Failed("boom".to_string()))
-                })?;
+        let outcome: Result<NativeModInvocationResult<()>, _> = invocations.run(
+            || true,
+            |tracker| {
+                tracker.guard(&stale, |_| Err(InvocationError::Failed("boom".to_string())))?;
                 Ok(())
-            });
+            },
+        );
         assert!(matches!(outcome, Err(InvocationError::Failed(_))));
     }
 }

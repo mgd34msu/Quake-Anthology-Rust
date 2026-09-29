@@ -149,8 +149,7 @@ pub fn validate_native_mod_pickups(
     let mut ids = HashSet::new();
     let mut offered = HashSet::new();
     for rule in definitions {
-        if !has_clients || !ids.insert(rule.id.clone()) || rule.id.is_empty() || rule.offered.is_empty()
-        {
+        if !has_clients || !ids.insert(rule.id.clone()) || rule.id.is_empty() || rule.offered.is_empty() {
             return Err(PickupError::BadRules);
         }
         for item in &rule.offered {
@@ -181,10 +180,12 @@ pub fn validate_native_mod_pickups(
                     return Err(PickupError::MissingDecision);
                 }
             }
-            PickupOperation::GateThenGrant { gate, grant, grant_accepts } => {
-                if !gate.returns_value
-                    || (*grant_accepts == GrantAccepts::NonZero && !grant.returns_value)
-                {
+            PickupOperation::GateThenGrant {
+                gate,
+                grant,
+                grant_accepts,
+            } => {
+                if !gate.returns_value || (*grant_accepts == GrantAccepts::NonZero && !grant.returns_value) {
                     return Err(PickupError::MissingDecision);
                 }
             }
@@ -369,17 +370,13 @@ impl<O: PickupOperations> NativeModPickups<O> {
     }
 
     /// Rules writing one protection channel for an actor.
-    pub fn protection(
-        &mut self,
-        actor: NativeActorId,
-        channel: ProtectionChannel,
-    ) -> Vec<PickupRule> {
+    pub fn protection(&mut self, actor: NativeActorId, channel: ProtectionChannel) -> Vec<PickupRule> {
         self.actor_rules(actor)
             .into_iter()
             .filter(|rule| {
-                rule.writes.iter().any(|write| {
-                    matches!(write, PickupWrite::Protection { channel: bound } if *bound == channel)
-                })
+                rule.writes
+                    .iter()
+                    .any(|write| matches!(write, PickupWrite::Protection { channel: bound } if *bound == channel))
             })
             .collect()
     }
@@ -414,8 +411,7 @@ impl<O: PickupOperations> NativeModPickups<O> {
 
     /// Bind inventory delegates for one actor.
     pub fn bind_actor(&mut self, actor: NativeActorId) -> Result<(), PickupError> {
-        if !self.active || !self.operations.is_eligible(actor) || self.delegates.contains_key(&actor)
-        {
+        if !self.active || !self.operations.is_eligible(actor) || self.delegates.contains_key(&actor) {
             return Ok(());
         }
         if !self.operations.is_live(actor) {
@@ -485,7 +481,11 @@ impl<O: PickupOperations> NativeModPickups<O> {
             operations.observe(actor, execution, |operations| {
                 let operation = definition.operation.clone();
                 match operation {
-                    PickupOperation::GateThenGrant { gate, grant, grant_accepts } => {
+                    PickupOperation::GateThenGrant {
+                        gate,
+                        grant,
+                        grant_accepts,
+                    } => {
                         let gate = operations.invoke(&gate, &inputs);
                         if gate.is_none_or(|value| value == 0)
                             || !is_current(operations, execution, active, actor, offer.pickup)
@@ -493,9 +493,7 @@ impl<O: PickupOperations> NativeModPickups<O> {
                             return PickupDecision::Refused;
                         }
                         let result = operations.invoke(&grant, &inputs);
-                        if result.is_none()
-                            || !is_current(operations, execution, active, actor, offer.pickup)
-                        {
+                        if result.is_none() || !is_current(operations, execution, active, actor, offer.pickup) {
                             return PickupDecision::Refused;
                         }
                         if grant_accepts == GrantAccepts::Always || result != Some(0) {
@@ -506,9 +504,7 @@ impl<O: PickupOperations> NativeModPickups<O> {
                     }
                     PickupOperation::BooleanGrant { grant } => {
                         let result = operations.invoke(&grant, &inputs);
-                        if result.is_none()
-                            || !is_current(operations, execution, active, actor, offer.pickup)
-                        {
+                        if result.is_none() || !is_current(operations, execution, active, actor, offer.pickup) {
                             return PickupDecision::Refused;
                         }
                         if result != Some(0) {
@@ -586,8 +582,14 @@ mod tests {
                 fields: PickupFields::Count,
             }],
             operation: PickupOperation::GateThenGrant {
-                gate: PickupCall { id: "gate".to_string(), returns_value: true },
-                grant: PickupCall { id: "grant".to_string(), returns_value: true },
+                gate: PickupCall {
+                    id: "gate".to_string(),
+                    returns_value: true,
+                },
+                grant: PickupCall {
+                    id: "grant".to_string(),
+                    returns_value: true,
+                },
                 grant_accepts: GrantAccepts::NonZero,
             },
         }
@@ -723,20 +725,14 @@ mod tests {
         assert_eq!(bridge.operations().bindings.len(), 1);
         let decision = bridge.take(actor(1), "health", &offer(), &execution()).unwrap();
         assert_eq!(decision, PickupDecision::Accepted);
-        assert_eq!(bridge.operations().invoked, vec!["gate".to_string(), "grant".to_string()]);
+        assert_eq!(
+            bridge.operations().invoked,
+            vec!["gate".to_string(), "grant".to_string()]
+        );
         let inputs = &bridge.operations().seen_inputs[0];
-        assert_eq!(
-            inputs.get("pickup-count"),
-            Some(&RuntimeValue::Float(25.0))
-        );
-        assert_eq!(
-            inputs.get("pickup-dropped"),
-            Some(&RuntimeValue::Float(1.0))
-        );
-        assert_eq!(
-            inputs.get("item"),
-            Some(&RuntimeValue::Text("q2:health".to_string()))
-        );
+        assert_eq!(inputs.get("pickup-count"), Some(&RuntimeValue::Float(25.0)));
+        assert_eq!(inputs.get("pickup-dropped"), Some(&RuntimeValue::Float(1.0)));
+        assert_eq!(inputs.get("item"), Some(&RuntimeValue::Text("q2:health".to_string())));
 
         bridge.operations_mut().results.insert("gate".to_string(), Some(0));
         let refused = bridge.take(actor(1), "health", &offer(), &execution()).unwrap();
@@ -773,14 +769,7 @@ mod tests {
 
     #[test]
     fn declaration_validation_catches_bad_rules() {
-        assert!(validate_native_mod_pickups(
-            &[gate_definition()],
-            true,
-            &[],
-            &["q2:health".to_string()],
-            &[],
-        )
-        .is_ok());
+        assert!(validate_native_mod_pickups(&[gate_definition()], true, &[], &["q2:health".to_string()], &[],).is_ok());
         let mut duplicated = gate_definition();
         duplicated.id = String::new();
         assert_eq!(
@@ -788,14 +777,19 @@ mod tests {
             Err(PickupError::BadRules)
         );
         let mut unowned = gate_definition();
-        unowned.writes = vec![PickupWrite::Protection { channel: ProtectionChannel::Powered }];
+        unowned.writes = vec![PickupWrite::Protection {
+            channel: ProtectionChannel::Powered,
+        }];
         assert_eq!(
             validate_native_mod_pickups(&[unowned], true, &[ProtectionChannel::Regular], &[], &[],),
             Err(PickupError::MissingProtection)
         );
         let mut void_grant = gate_definition();
         void_grant.operation = PickupOperation::BooleanGrant {
-            grant: PickupCall { id: "grant".to_string(), returns_value: false },
+            grant: PickupCall {
+                id: "grant".to_string(),
+                returns_value: false,
+            },
         };
         assert_eq!(
             validate_native_mod_pickups(&[void_grant], true, &[], &["q2:health".to_string()], &[],),

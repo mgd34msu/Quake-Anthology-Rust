@@ -87,9 +87,8 @@ pub const RERELEASE_COMMAND_BYTES: usize = 28;
 /// Read a rerelease user command from 28 bytes.
 #[must_use]
 pub fn read_rerelease_user_command(bytes: &[u8]) -> RereleaseUserCommand {
-    let float = |offset: usize| {
-        f32::from_le_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]])
-    };
+    let float =
+        |offset: usize| f32::from_le_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]);
     RereleaseUserCommand {
         milliseconds: bytes[0],
         buttons: bytes[1],
@@ -389,11 +388,7 @@ impl NativeInputBinding {
         match command {
             NativeCommand::Classic(command) => {
                 let short = |offset: usize| i16::from_le_bytes([state[offset], state[offset + 1]]);
-                classic_aim(
-                    command.angle_shorts,
-                    [short(20), short(22), short(24)],
-                    state[16],
-                )
+                classic_aim(command.angle_shorts, [short(20), short(22), short(24)], state[16])
             }
             NativeCommand::Rerelease(command) => {
                 let float = |offset: usize| {
@@ -600,15 +595,31 @@ impl NativeInputBinding {
         };
         let (origin, velocity, grounded, crouched) = if table.classic {
             (
-                Vec3 { x: short(4), y: short(6), z: short(8) },
-                Vec3 { x: short(10), y: short(12), z: short(14) },
+                Vec3 {
+                    x: short(4),
+                    y: short(6),
+                    z: short(8),
+                },
+                Vec3 {
+                    x: short(10),
+                    y: short(12),
+                    z: short(14),
+                },
                 state[16] & 4 != 0,
                 state[16] & 1 != 0,
             )
         } else {
             (
-                Vec3 { x: float(4), y: float(8), z: float(12) },
-                Vec3 { x: float(16), y: float(20), z: float(24) },
+                Vec3 {
+                    x: float(4),
+                    y: float(8),
+                    z: float(12),
+                },
+                Vec3 {
+                    x: float(16),
+                    y: float(20),
+                    z: float(24),
+                },
                 u16::from_le_bytes([state[28], state[29]]) & 4 != 0,
                 u16::from_le_bytes([state[28], state[29]]) & 1 != 0,
             )
@@ -722,11 +733,22 @@ mod tests {
         let pitch = classic_aim([20000, 0, 0], [0, 0, 0], 0);
         assert_eq!(pitch.x, 89.0);
         let modern = rerelease_aim(
-            Vec3 { x: 10.0, y: 20.0, z: 0.0 },
+            Vec3 {
+                x: 10.0,
+                y: 20.0,
+                z: 0.0,
+            },
             Vec3 { x: 1.0, y: 2.0, z: 0.0 },
             0,
         );
-        assert_eq!(modern, Vec3 { x: 11.0, y: 22.0, z: 0.0 });
+        assert_eq!(
+            modern,
+            Vec3 {
+                x: 11.0,
+                y: 22.0,
+                z: 0.0
+            }
+        );
     }
 
     #[test]
@@ -746,13 +768,9 @@ mod tests {
         let mut bytes = [0u8; 16];
         write_classic_user_command(&mut bytes, &command);
         table.commands[0].copy_from_slice(&bytes);
-        let outcome = binding
-            .dispatch_think(&mut table, 0, || Ok(()))
-            .expect("think");
+        let outcome = binding.dispatch_think(&mut table, 0, || Ok(())).expect("think");
         assert_eq!(outcome, DispatchOutcome::Ran);
-        let passed = binding
-            .dispatch_think(&mut table, 1, || Ok(()))
-            .expect("think");
+        let passed = binding.dispatch_think(&mut table, 1, || Ok(())).expect("think");
         assert_eq!(passed, DispatchOutcome::PassedThrough);
     }
 
@@ -760,9 +778,7 @@ mod tests {
     fn swallows_retired_actors() {
         let mut binding = NativeInputBinding::new(services(false));
         let mut table = SyntheticInputTable::table(1, 64, true);
-        let outcome = binding
-            .dispatch_think(&mut table, 0, || Ok(()))
-            .expect("think");
+        let outcome = binding.dispatch_think(&mut table, 0, || Ok(())).expect("think");
         assert_eq!(outcome, DispatchOutcome::Swallowed);
         binding.release(NativeActorId { slot: 3, generation: 0 });
     }

@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 
 use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult,
-    GuestCallSignature, GuestCallValue, GuestCallbackReference, GuestExportTarget, GuestImage,
-    GuestPermissions, GuestStorage, GuestSymbolName, GuestValueLayout, NativeAbi, NativeCallAbi,
+    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallSignature,
+    GuestCallValue, GuestCallbackReference, GuestExportTarget, GuestImage, GuestPermissions, GuestStorage,
+    GuestSymbolName, GuestValueLayout, NativeAbi, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
@@ -84,14 +84,15 @@ pub fn native_q3_signature(
 /// Address of the named image export, or `None` when missing or forwarded.
 #[must_use]
 pub fn native_q3_export(image: &GuestImage, name: &str) -> Option<GuestAddress> {
-    image.exports.iter().find_map(|export| match (&export.symbol, &export.target) {
-        (GuestSymbolName::Name { name: symbol, .. }, GuestExportTarget::Address(address))
-            if symbol == name =>
-        {
-            Some(*address)
-        }
-        _ => None,
-    })
+    image
+        .exports
+        .iter()
+        .find_map(|export| match (&export.symbol, &export.target) {
+            (GuestSymbolName::Name { name: symbol, .. }, GuestExportTarget::Address(address)) if symbol == name => {
+                Some(*address)
+            }
+            _ => None,
+        })
 }
 
 /// Read guest integer argument `index` (any int32/uint32/int64/uint64 lane).
@@ -102,31 +103,21 @@ pub fn call_integer(args: &[GuestCallValue], index: usize) -> Result<i64, GuestE
         Some(GuestCallValue::Int64(value)) => Ok(*value),
         Some(GuestCallValue::Uint64(value)) => Ok(*value as i64),
         Some(_) => Err(GuestError::invalid("Guest integer required")),
-        None => Err(GuestError::invalid(format!(
-            "Guest argument {index} is missing"
-        ))),
+        None => Err(GuestError::invalid(format!("Guest argument {index} is missing"))),
     }
 }
 
 /// Read guest pointer argument `index` (null stays null).
-pub fn call_pointer(
-    args: &[GuestCallValue],
-    index: usize,
-) -> Result<Option<GuestAddress>, GuestError> {
+pub fn call_pointer(args: &[GuestCallValue], index: usize) -> Result<Option<GuestAddress>, GuestError> {
     match args.get(index) {
         Some(GuestCallValue::Pointer(address)) => Ok(*address),
         Some(_) => Err(GuestError::invalid("Guest pointer required")),
-        None => Err(GuestError::invalid(format!(
-            "Guest argument {index} is missing"
-        ))),
+        None => Err(GuestError::invalid(format!("Guest argument {index} is missing"))),
     }
 }
 
 /// Read guest pointer argument `index`, rejecting null.
-pub fn call_required_pointer(
-    args: &[GuestCallValue],
-    index: usize,
-) -> Result<GuestAddress, GuestError> {
+pub fn call_required_pointer(args: &[GuestCallValue], index: usize) -> Result<GuestAddress, GuestError> {
     match call_pointer(args, index)? {
         Some(address) => Ok(address),
         None => Err(GuestError::invalid("Nonnull guest pointer required")),
@@ -135,8 +126,7 @@ pub fn call_required_pointer(
 
 /// Scripted native entry: inspects call arguments and may read or write guest
 /// memory, standing in for real machine code in headless tests.
-pub type NativeHandler =
-    Box<dyn Fn(&[GuestCallValue], &mut SparseGuestMemory) -> Result<GuestCallResult, GuestError>>;
+pub type NativeHandler = Box<dyn Fn(&[GuestCallValue], &mut SparseGuestMemory) -> Result<GuestCallResult, GuestError>>;
 
 /// One recorded synthetic native call.
 #[derive(Debug, Clone, PartialEq)]
@@ -194,8 +184,7 @@ impl SyntheticNativeRunner {
     pub fn on_call(
         &mut self,
         target: GuestAddress,
-        handler: impl Fn(&[GuestCallValue], &mut SparseGuestMemory) -> Result<GuestCallResult, GuestError>
-        + 'static,
+        handler: impl Fn(&[GuestCallValue], &mut SparseGuestMemory) -> Result<GuestCallResult, GuestError> + 'static,
     ) {
         self.handlers.insert(target.offset, Box::new(handler));
     }
@@ -383,9 +372,7 @@ impl QuakeLiveGameModule {
         args: &[GuestCallValue],
     ) -> Result<GuestCallResult, Q3ModuleError> {
         let pointer_bytes = runner.memory().pointer_bytes();
-        let slot_address = runner
-            .memory()
-            .offset(self.exports, (slot * pointer_bytes) as i64)?;
+        let slot_address = runner.memory().offset(self.exports, (slot * pointer_bytes) as i64)?;
         let target = runner.memory_mut().read_pointer(slot_address)?;
         let Some(target) = target else {
             return Err(Q3ModuleError::MissingExportSlot(slot));
@@ -423,11 +410,7 @@ impl QuakeLiveGameModule {
     }
 
     /// Export slot 0: shut down, optionally for a restart.
-    pub fn shutdown(
-        &self,
-        runner: &mut SyntheticNativeRunner,
-        restart: bool,
-    ) -> Result<(), Q3ModuleError> {
+    pub fn shutdown(&self, runner: &mut SyntheticNativeRunner, restart: bool) -> Result<(), Q3ModuleError> {
         self.call_slot(
             runner,
             0,
@@ -439,26 +422,13 @@ impl QuakeLiveGameModule {
     }
 
     /// Export slot 1: run one server frame.
-    pub fn run_frame(
-        &self,
-        runner: &mut SyntheticNativeRunner,
-        time: i32,
-    ) -> Result<(), Q3ModuleError> {
-        self.call_slot(
-            runner,
-            1,
-            &[GuestStorage::Int32],
-            None,
-            &[GuestCallValue::Int32(time)],
-        )?;
+    pub fn run_frame(&self, runner: &mut SyntheticNativeRunner, time: i32) -> Result<(), Q3ModuleError> {
+        self.call_slot(runner, 1, &[GuestStorage::Int32], None, &[GuestCallValue::Int32(time)])?;
         Ok(())
     }
 
     /// Export slot 4: run a console command; nonzero means handled.
-    pub fn console_command(
-        &self,
-        runner: &mut SyntheticNativeRunner,
-    ) -> Result<bool, Q3ModuleError> {
+    pub fn console_command(&self, runner: &mut SyntheticNativeRunner) -> Result<bool, Q3ModuleError> {
         let result = self.call_slot(runner, 4, &[], Some(GuestStorage::Int32), &[])?;
         match result {
             GuestCallResult::Value(GuestCallValue::Int32(value)) => Ok(value != 0),
@@ -520,9 +490,7 @@ impl Quake3VmModule {
         let entry = native_q3_export(&options.image, "dllEntry");
         let main = native_q3_export(&options.image, "vmMain");
         let (Some(entry), Some(main)) = (entry, main) else {
-            return Err(Q3ModuleError::MissingExport(
-                "dllEntry and vmMain".to_string(),
-            ));
+            return Err(Q3ModuleError::MissingExport("dllEntry and vmMain".to_string()));
         };
         let signature = native_q3_signature(options.image.abi, &[GuestStorage::Pointer], None, false);
         runner.invoke(
@@ -532,10 +500,7 @@ impl Quake3VmModule {
             &options.context,
             options.instruction_budget,
         )?;
-        Ok(Self {
-            options,
-            vm_main: main,
-        })
+        Ok(Self { options, vm_main: main })
     }
 
     /// Bound `vmMain` address.
@@ -563,8 +528,7 @@ impl Quake3VmModule {
             args.push(GuestCallValue::Int32(0));
         }
         let parameters = vec![GuestStorage::Int32; 1 + Q3_VM_MAIN_ARGUMENTS];
-        let signature =
-            native_q3_signature(self.options.image.abi, &parameters, Some(GuestStorage::Int32), false);
+        let signature = native_q3_signature(self.options.image.abi, &parameters, Some(GuestStorage::Int32), false);
         let context = GuestCallContext {
             callback: GuestCallbackReference::NativeGuest {
                 module: self.options.image.module.clone(),
@@ -654,8 +618,7 @@ mod tests {
         let entry = GuestAddress::new(space, 0x20000);
         let register = GuestAddress::new(space, 0x20010);
         let table_base = 0x30000;
-        let mut table_options =
-            GuestMapOptions::new(table_base, 0x1000, GuestPermissions::ReadWrite);
+        let mut table_options = GuestMapOptions::new(table_base, 0x1000, GuestPermissions::ReadWrite);
         table_options.label = "synthetic export table".to_string();
         runner.memory_mut().map(&table_options).expect("map table");
         let table = GuestAddress::new(space, table_base);
@@ -689,10 +652,7 @@ mod tests {
         let module = QuakeLiveGameModule::new(options, &mut runner, imports).expect("bind module");
         assert_eq!(module.api_version(), QL_GAME_API_VERSION);
         assert_eq!(module.exports(), table);
-        let slot = runner
-            .memory()
-            .offset(table, 2 * 8)
-            .expect("slot address");
+        let slot = runner.memory().offset(table, 2 * 8).expect("slot address");
         runner
             .memory_mut()
             .write_pointer(slot, Some(register))

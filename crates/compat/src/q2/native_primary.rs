@@ -4,30 +4,28 @@
 use std::collections::HashSet;
 
 use qa_guest::core::contracts::{
-    GuestCallSignature, GuestFieldLayout, GuestLayout, GuestRegister, GuestStorage, GuestValueLayout,
-    NativeAbi, NativeCallAbi,
+    GuestCallSignature, GuestFieldLayout, GuestLayout, GuestRegister, GuestStorage, GuestValueLayout, NativeAbi,
+    NativeCallAbi,
 };
 use qa_world::combat::ItemId;
 
 use super::native_combat_call::{
-    CombatOperation, NativeCombatCall, read_native_combat_call, stock_native_combat_call,
-    validate_native_combat_call,
+    read_native_combat_call, stock_native_combat_call, validate_native_combat_call, CombatOperation, NativeCombatCall,
 };
 use super::native_primary_command_profile::native_primary_command_profile;
 use super::native_primary_commands::NativePrimaryCommandProfile;
-use super::native_primary_drop_profile::native_primary_drop_profile;
 use super::native_primary_drop::NativePrimaryDropProfile;
-use super::native_primary_inventory_profile::native_primary_inventory_profile;
+use super::native_primary_drop_profile::native_primary_drop_profile;
 use super::native_primary_inventory::NativePrimaryInventoryProfile;
+use super::native_primary_inventory_profile::native_primary_inventory_profile;
 use super::native_primary_pickups::{
-    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems,
-    PickupResource, PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
+    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
+    PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
 };
-use super::native_primary_player_profile::native_primary_player_profile;
 use super::native_primary_player::NativePrimaryPlayerProfile;
+use super::native_primary_player_profile::native_primary_player_profile;
 use super::native_primary_reader::{
-    CLASSIC_DIGEST, RETAIL_DIGEST, NativeRegion, Reader, native_offset, namespaced,
-    read_guest_layout,
+    namespaced, native_offset, read_guest_layout, NativeRegion, Reader, CLASSIC_DIGEST, RETAIL_DIGEST,
 };
 use super::native_primary_weapon_profile::native_primary_weapon_profile;
 use super::native_primary_weapons::NativePrimaryWeaponProfile;
@@ -389,8 +387,7 @@ pub fn validate_classic_combat(profile: &ClassicPrimaryWorldProfile) -> Result<(
     validate_native_combat_call(&profile.calls.damage, CombatOperation::Damage, abi)?;
     validate_native_combat_call(&profile.calls.regular_armor, CombatOperation::RegularArmor, abi)?;
     validate_native_combat_call(&profile.calls.power_armor, CombatOperation::PowerArmor, abi)?;
-    if profile.entity_bytes < 260 || profile.globals.item_bytes < 4 || profile.client.inventory_count < 1
-    {
+    if profile.entity_bytes < 260 || profile.globals.item_bytes < 4 || profile.client.inventory_count < 1 {
         return Err("classic combat source record sizes are invalid".to_string());
     }
     for (offset, extra) in [
@@ -439,10 +436,7 @@ pub fn validate_classic_combat(profile: &ClassicPrimaryWorldProfile) -> Result<(
         || profile.armor.regular.iter().collect::<HashSet<_>>().len() != profile.armor.regular.len()
         || !profile.armor.regular.contains(&profile.armor.empty)
     {
-        return Err(
-            "classic regular armor requires distinct source priorities and an admitted empty tier"
-                .to_string(),
-        );
+        return Err("classic regular armor requires distinct source priorities and an admitted empty tier".to_string());
     }
     for index in [
         profile.items.jacket,
@@ -457,9 +451,7 @@ pub fn validate_classic_combat(profile: &ClassicPrimaryWorldProfile) -> Result<(
     .chain(profile.armor.regular.iter().copied())
     {
         if index < 1 || index >= profile.client.inventory_count {
-            return Err(
-                "classic combat inventory index exceeds its declared source storage".to_string(),
-            );
+            return Err("classic combat inventory index exceeds its declared source storage".to_string());
         }
     }
     Ok(())
@@ -491,16 +483,8 @@ pub fn read_classic_world_profile(reader: &Reader, digest: String) -> ClassicPri
             pain: read_native_combat_call(&calls.field("pain"), CombatOperation::Pain, abi),
             death: read_native_combat_call(&calls.field("death"), CombatOperation::Death, abi),
             damage: read_native_combat_call(&calls.field("damage"), CombatOperation::Damage, abi),
-            regular_armor: read_native_combat_call(
-                &calls.field("regularArmor"),
-                CombatOperation::RegularArmor,
-                abi,
-            ),
-            power_armor: read_native_combat_call(
-                &calls.field("powerArmor"),
-                CombatOperation::PowerArmor,
-                abi,
-            ),
+            regular_armor: read_native_combat_call(&calls.field("regularArmor"), CombatOperation::RegularArmor, abi),
+            power_armor: read_native_combat_call(&calls.field("powerArmor"), CombatOperation::PowerArmor, abi),
         },
         digest,
         game,
@@ -922,24 +906,88 @@ pub struct RereleasePrimaryWorldProfile {
 
 /// Retail `g_items.cpp` item list classnames in table order.
 const RETAIL_CLASSNAMES: [&str; 82] = [
-    "item_armor_body", "item_armor_combat", "item_armor_jacket", "item_armor_shard",
-    "item_power_screen", "item_power_shield", "weapon_grapple", "weapon_blaster",
-    "weapon_chainfist", "weapon_shotgun", "weapon_supershotgun", "weapon_machinegun",
-    "weapon_etf_rifle", "weapon_chaingun", "ammo_grenades", "ammo_trap", "ammo_tesla",
-    "weapon_grenadelauncher", "weapon_proxlauncher", "weapon_rocketlauncher",
-    "weapon_hyperblaster", "weapon_boomer", "weapon_plasmabeam", "weapon_railgun",
-    "weapon_phalanx", "weapon_bfg", "weapon_disintegrator", "ammo_shells", "ammo_bullets",
-    "ammo_cells", "ammo_rockets", "ammo_slugs", "ammo_magslug", "ammo_flechettes", "ammo_prox",
-    "ammo_nuke", "ammo_disruptor", "item_quad", "item_quadfire", "item_invulnerability",
-    "item_invisibility", "item_silencer", "item_breather", "item_enviro", "item_ancient_head",
-    "item_legacy_head", "item_adrenaline", "item_bandolier", "item_pack", "item_ir_goggles",
-    "item_double", "item_sphere_vengeance", "item_sphere_hunter", "item_sphere_defender",
-    "item_doppleganger", "key_data_cd", "key_power_cube", "key_explosive_charges",
-    "key_yellow_key", "key_power_core", "key_pyramid", "key_data_spinner", "key_pass",
-    "key_blue_key", "key_red_key", "key_green_key", "key_commander_head", "key_airstrike_target",
-    "key_nuke_container", "key_nuke", "item_health_small", "item_health", "item_health_large",
-    "item_health_mega", "item_flag_team1", "item_flag_team2", "item_tech1", "item_tech2",
-    "item_tech3", "item_tech4", "item_flashlight", "item_compass",
+    "item_armor_body",
+    "item_armor_combat",
+    "item_armor_jacket",
+    "item_armor_shard",
+    "item_power_screen",
+    "item_power_shield",
+    "weapon_grapple",
+    "weapon_blaster",
+    "weapon_chainfist",
+    "weapon_shotgun",
+    "weapon_supershotgun",
+    "weapon_machinegun",
+    "weapon_etf_rifle",
+    "weapon_chaingun",
+    "ammo_grenades",
+    "ammo_trap",
+    "ammo_tesla",
+    "weapon_grenadelauncher",
+    "weapon_proxlauncher",
+    "weapon_rocketlauncher",
+    "weapon_hyperblaster",
+    "weapon_boomer",
+    "weapon_plasmabeam",
+    "weapon_railgun",
+    "weapon_phalanx",
+    "weapon_bfg",
+    "weapon_disintegrator",
+    "ammo_shells",
+    "ammo_bullets",
+    "ammo_cells",
+    "ammo_rockets",
+    "ammo_slugs",
+    "ammo_magslug",
+    "ammo_flechettes",
+    "ammo_prox",
+    "ammo_nuke",
+    "ammo_disruptor",
+    "item_quad",
+    "item_quadfire",
+    "item_invulnerability",
+    "item_invisibility",
+    "item_silencer",
+    "item_breather",
+    "item_enviro",
+    "item_ancient_head",
+    "item_legacy_head",
+    "item_adrenaline",
+    "item_bandolier",
+    "item_pack",
+    "item_ir_goggles",
+    "item_double",
+    "item_sphere_vengeance",
+    "item_sphere_hunter",
+    "item_sphere_defender",
+    "item_doppleganger",
+    "key_data_cd",
+    "key_power_cube",
+    "key_explosive_charges",
+    "key_yellow_key",
+    "key_power_core",
+    "key_pyramid",
+    "key_data_spinner",
+    "key_pass",
+    "key_blue_key",
+    "key_red_key",
+    "key_green_key",
+    "key_commander_head",
+    "key_airstrike_target",
+    "key_nuke_container",
+    "key_nuke",
+    "item_health_small",
+    "item_health",
+    "item_health_large",
+    "item_health_mega",
+    "item_flag_team1",
+    "item_flag_team2",
+    "item_tech1",
+    "item_tech2",
+    "item_tech3",
+    "item_tech4",
+    "item_flashlight",
+    "item_compass",
 ];
 
 /// Retail ammo slot per classname.
@@ -1047,9 +1095,7 @@ pub fn rerelease_primary_world_profile(digest: &str) -> Option<RereleasePrimaryW
     for name in RETAIL_CLASSNAMES {
         inventory.push(RereleaseInventoryRow {
             item: format!("q2:{name}"),
-            source: InventorySource::Classname {
-                name: name.to_string(),
-            },
+            source: InventorySource::Classname { name: name.to_string() },
             capacity: match retail_ammo_slot(name) {
                 Some(source_index) => InventoryCapacity::Ammo { source_index },
                 None => InventoryCapacity::Fixed { count: 0x7fff_ffff },
@@ -1084,7 +1130,10 @@ pub fn rerelease_primary_world_profile(digest: &str) -> Option<RereleasePrimaryW
             power_armor: 0x5c100,
             process_pain: 0x76e20,
             time: 0x241b28,
-            regular_armor: NativeRegion { entry: 0x5d022, join: 0x5d154 },
+            regular_armor: NativeRegion {
+                entry: 0x5d022,
+                join: 0x5d154,
+            },
         },
         regular_armor: RereleaseRegularArmor {
             target: RereleaseWorldLocation::Register {
@@ -1163,12 +1212,30 @@ pub fn rerelease_primary_world_profile(digest: &str) -> Option<RereleasePrimaryW
             game_api: 0x6bcd0,
             pmove: 0xea560,
             speed_loads: vec![
-                SpeedLoad { next: 0xe8293, register: 0 },
-                SpeedLoad { next: 0xe889c, register: 1 },
-                SpeedLoad { next: 0xe88ce, register: 0 },
-                SpeedLoad { next: 0xe8b15, register: 1 },
-                SpeedLoad { next: 0xe8b1f, register: 1 },
-                SpeedLoad { next: 0xe9e3e, register: 10 },
+                SpeedLoad {
+                    next: 0xe8293,
+                    register: 0,
+                },
+                SpeedLoad {
+                    next: 0xe889c,
+                    register: 1,
+                },
+                SpeedLoad {
+                    next: 0xe88ce,
+                    register: 0,
+                },
+                SpeedLoad {
+                    next: 0xe8b15,
+                    register: 1,
+                },
+                SpeedLoad {
+                    next: 0xe8b1f,
+                    register: 1,
+                },
+                SpeedLoad {
+                    next: 0xe9e3e,
+                    register: 10,
+                },
             ],
         },
     })
@@ -1186,7 +1253,9 @@ fn validate_layout_shape(layout: &GuestLayout) -> Result<(), String> {
             return Err("overlapping or empty native source fields".to_string());
         }
         if end > layout.byte_length
-            || ranges.iter().any(|(start, stop)| field.byte_offset < *stop && end > *start)
+            || ranges
+                .iter()
+                .any(|(start, stop)| field.byte_offset < *stop && end > *start)
         {
             return Err("overlapping or empty native source fields".to_string());
         }
@@ -1195,12 +1264,7 @@ fn validate_layout_shape(layout: &GuestLayout) -> Result<(), String> {
     Ok(())
 }
 
-fn require_client_field(
-    layout: &GuestLayout,
-    name: &str,
-    storage: GuestStorage,
-    count: usize,
-) -> Result<(), String> {
+fn require_client_field(layout: &GuestLayout, name: &str, storage: GuestStorage, count: usize) -> Result<(), String> {
     match layout.fields.iter().find(|field| field.name == name) {
         Some(field) if field.storage == storage && field.count == count => Ok(()),
         _ => Err(format!("missing typed source client field {name}")),
@@ -1281,10 +1345,13 @@ pub fn validate_rerelease_world(profile: &RereleasePrimaryWorldProfile) -> Resul
         profile.regular_armor.flags,
         profile.regular_armor.result,
     ];
-    for location in locations
-        .into_iter()
-        .chain(profile.regular_armor.repair.iter().flat_map(|repair| [repair.source, repair.target]))
-    {
+    for location in locations.into_iter().chain(
+        profile
+            .regular_armor
+            .repair
+            .iter()
+            .flat_map(|repair| [repair.source, repair.target]),
+    ) {
         if let RereleaseWorldLocation::Stack { offset, storage } = location {
             if offset > 1_048_576 - storage.width() {
                 return Err("source world metadata is outside its declared range".to_string());
@@ -1320,20 +1387,45 @@ pub fn validate_rerelease_world(profile: &RereleasePrimaryWorldProfile) -> Resul
             return Err("source monster accumulator exceeds its edict".to_string());
         }
     }
-    for location in [profile.regular_armor.target, profile.regular_armor.point, profile.regular_armor.normal] {
-        if !matches!(location, RereleaseWorldLocation::Register { storage: LocationStorage::Pointer, .. } | RereleaseWorldLocation::Stack { storage: LocationStorage::Pointer, .. }) {
+    for location in [
+        profile.regular_armor.target,
+        profile.regular_armor.point,
+        profile.regular_armor.normal,
+    ] {
+        if !matches!(
+            location,
+            RereleaseWorldLocation::Register {
+                storage: LocationStorage::Pointer,
+                ..
+            } | RereleaseWorldLocation::Stack {
+                storage: LocationStorage::Pointer,
+                ..
+            }
+        ) {
             return Err("source armor geometry requires pointer locations".to_string());
         }
     }
-    for location in [profile.regular_armor.amount, profile.regular_armor.flags, profile.regular_armor.result] {
-        if !matches!(location, RereleaseWorldLocation::Register { storage: LocationStorage::Int32, .. } | RereleaseWorldLocation::Stack { storage: LocationStorage::Int32, .. }) {
+    for location in [
+        profile.regular_armor.amount,
+        profile.regular_armor.flags,
+        profile.regular_armor.result,
+    ] {
+        if !matches!(
+            location,
+            RereleaseWorldLocation::Register {
+                storage: LocationStorage::Int32,
+                ..
+            } | RereleaseWorldLocation::Stack {
+                storage: LocationStorage::Int32,
+                ..
+            }
+        ) {
             return Err("source armor values require int32 locations".to_string());
         }
     }
     for repair in &profile.regular_armor.repair {
         let storage = |location: RereleaseWorldLocation| match location {
-            RereleaseWorldLocation::Register { storage, .. }
-            | RereleaseWorldLocation::Stack { storage, .. } => storage,
+            RereleaseWorldLocation::Register { storage, .. } | RereleaseWorldLocation::Stack { storage, .. } => storage,
         };
         if storage(repair.source) != storage(repair.target) {
             return Err("source armor repair changes scalar representation".to_string());
@@ -1365,9 +1457,7 @@ pub fn validate_rerelease_world(profile: &RereleasePrimaryWorldProfile) -> Resul
             _ => {}
         }
         match &row.capacity {
-            InventoryCapacity::Ammo { source_index }
-                if *source_index >= profile.client.ammo_count =>
-            {
+            InventoryCapacity::Ammo { source_index } if *source_index >= profile.client.ammo_count => {
                 return Err("source inventory mapping exceeds its private storage".to_string());
             }
             InventoryCapacity::Fixed { count } if *count > 0x7fff_ffff => {
@@ -1379,17 +1469,19 @@ pub fn validate_rerelease_world(profile: &RereleasePrimaryWorldProfile) -> Resul
     if profile.armor.regular.iter().collect::<HashSet<_>>().len() != profile.armor.regular.len()
         || !profile.armor.regular.contains(&profile.armor.empty)
         || profile.armor.cells_index >= profile.client.inventory_count
-        || [&profile.armor.empty, &profile.armor.screen, &profile.armor.shield, &profile.armor.cells]
-            .into_iter()
-            .chain(profile.armor.regular.iter())
-            .any(|item| !items.contains(item))
+        || [
+            &profile.armor.empty,
+            &profile.armor.screen,
+            &profile.armor.shield,
+            &profile.armor.cells,
+        ]
+        .into_iter()
+        .chain(profile.armor.regular.iter())
+        .any(|item| !items.contains(item))
     {
         return Err("source armor metadata has no declared inventory item".to_string());
     }
-    if profile.armor.normal + 4 > 65536
-        || profile.armor.energy + 4 > 65536
-        || profile.movement.speed_loads.is_empty()
-    {
+    if profile.armor.normal + 4 > 65536 || profile.armor.energy + 4 > 65536 || profile.movement.speed_loads.is_empty() {
         return Err("invalid source armor or movement metadata".to_string());
     }
     Ok(())
@@ -1461,17 +1553,9 @@ pub fn read_rerelease_world_profile(reader: &Reader, digest: String) -> Rereleas
         calls: RereleaseWorldCalls {
             pain: read_native_combat_call(&calls.field("pain"), CombatOperation::Pain, abi),
             death: read_native_combat_call(&calls.field("death"), CombatOperation::Death, abi),
-            process_pain: read_native_combat_call(
-                &calls.field("processPain"),
-                CombatOperation::DeferredReaction,
-                abi,
-            ),
+            process_pain: read_native_combat_call(&calls.field("processPain"), CombatOperation::DeferredReaction, abi),
             damage: read_native_combat_call(&calls.field("damage"), CombatOperation::Damage, abi),
-            power_armor: read_native_combat_call(
-                &calls.field("powerArmor"),
-                CombatOperation::PowerArmor,
-                abi,
-            ),
+            power_armor: read_native_combat_call(&calls.field("powerArmor"), CombatOperation::PowerArmor, abi),
         },
         digest: digest.clone(),
         edict: read_guest_layout(&reader.field("edict")),
@@ -1635,21 +1719,24 @@ pub fn classic_pickup_profile(digest: &str) -> Option<NativePickupProfile> {
             vec![pointer_layout(), pointer_layout(), pointer_layout(), pointer_layout()],
             None,
         ),
-        grant_signature: cdecl_signature(
-            vec![pointer_layout(), pointer_layout()],
-            Some(int_layout()),
-        ),
+        grant_signature: cdecl_signature(vec![pointer_layout(), pointer_layout()], Some(int_layout())),
         grants: vec![
             NativePickupGrant {
                 entry: 0xa780,
-                recipient: NativeRegion { entry: 0xa795, join: 0xa8cb },
+                recipient: NativeRegion {
+                    entry: 0xa795,
+                    join: 0xa8cb,
+                },
                 resource: PickupResource::Regular,
                 consumers: vec![],
                 supply: None,
             },
             NativePickupGrant {
                 entry: 0xa3e0,
-                recipient: NativeRegion { entry: 0xa3e4, join: 0xa4b8 },
+                recipient: NativeRegion {
+                    entry: 0xa3e4,
+                    join: 0xa4b8,
+                },
                 resource: PickupResource::Inventory,
                 consumers: vec![],
                 supply: Some(PickupSupply::Ammo {
@@ -1659,25 +1746,37 @@ pub fn classic_pickup_profile(digest: &str) -> Option<NativePickupProfile> {
             },
             NativePickupGrant {
                 entry: 0x35ff0,
-                recipient: NativeRegion { entry: 0x36064, join: 0x36077 },
+                recipient: NativeRegion {
+                    entry: 0x36064,
+                    join: 0x36077,
+                },
                 resource: PickupResource::Inventory,
                 consumers: vec![],
                 supply: Some(PickupSupply::Weapon {
                     ammo_return: 0x360dc,
                     settle: 0x360e5,
-                    autoswitch: NativeRegion { entry: 0x3614a, join: 0x3619b },
+                    autoswitch: NativeRegion {
+                        entry: 0x3614a,
+                        join: 0x3619b,
+                    },
                 }),
             },
             NativePickupGrant {
                 entry: 0x9960,
-                recipient: NativeRegion { entry: 0x996b, join: 0x9a72 },
+                recipient: NativeRegion {
+                    entry: 0x996b,
+                    join: 0x9a72,
+                },
                 resource: PickupResource::Inventory,
                 consumers: vec![],
                 supply: None,
             },
             NativePickupGrant {
                 entry: 0x9ac0,
-                recipient: NativeRegion { entry: 0x9acb, join: 0x9d98 },
+                recipient: NativeRegion {
+                    entry: 0x9acb,
+                    join: 0x9d98,
+                },
                 resource: PickupResource::Inventory,
                 consumers: vec![],
                 supply: None,
@@ -1746,21 +1845,24 @@ pub fn rerelease_pickup_profile(digest: &str) -> Option<NativePickupProfile> {
             vec![pointer_layout(), pointer_layout(), pointer_layout(), bool_layout()],
             None,
         ),
-        grant_signature: x64_signature(
-            vec![pointer_layout(), pointer_layout()],
-            Some(bool_layout()),
-        ),
+        grant_signature: x64_signature(vec![pointer_layout(), pointer_layout()], Some(bool_layout())),
         grants: vec![
             NativePickupGrant {
                 entry: 0x67740,
-                recipient: NativeRegion { entry: 0x677d4, join: 0x678e8 },
+                recipient: NativeRegion {
+                    entry: 0x677d4,
+                    join: 0x678e8,
+                },
                 resource: PickupResource::Regular,
                 consumers: vec![],
                 supply: None,
             },
             NativePickupGrant {
                 entry: 0x671e0,
-                recipient: NativeRegion { entry: 0x67209, join: 0x67357 },
+                recipient: NativeRegion {
+                    entry: 0x67209,
+                    join: 0x67357,
+                },
                 resource: PickupResource::Inventory,
                 consumers: consumers.clone(),
                 supply: Some(PickupSupply::Ammo {
@@ -1770,25 +1872,37 @@ pub fn rerelease_pickup_profile(digest: &str) -> Option<NativePickupProfile> {
             },
             NativePickupGrant {
                 entry: 0xefd80,
-                recipient: NativeRegion { entry: 0xefe19, join: 0xefe31 },
+                recipient: NativeRegion {
+                    entry: 0xefe19,
+                    join: 0xefe31,
+                },
                 resource: PickupResource::Inventory,
                 consumers: consumers.clone(),
                 supply: Some(PickupSupply::Weapon {
                     ammo_return: 0xefeac,
                     settle: 0xefeb3,
-                    autoswitch: NativeRegion { entry: 0xeff20, join: 0xeff33 },
+                    autoswitch: NativeRegion {
+                        entry: 0xeff20,
+                        join: 0xeff33,
+                    },
                 }),
             },
             NativePickupGrant {
                 entry: 0x667b0,
-                recipient: NativeRegion { entry: 0x667c4, join: 0x66918 },
+                recipient: NativeRegion {
+                    entry: 0x667c4,
+                    join: 0x66918,
+                },
                 resource: PickupResource::Inventory,
                 consumers: consumers.clone(),
                 supply: None,
             },
             NativePickupGrant {
                 entry: 0x66960,
-                recipient: NativeRegion { entry: 0x66974, join: 0x66ce4 },
+                recipient: NativeRegion {
+                    entry: 0x66974,
+                    join: 0x66ce4,
+                },
                 resource: PickupResource::Inventory,
                 consumers,
                 supply: None,
@@ -2019,8 +2133,7 @@ mod tests {
 
     #[test]
     fn assembles_retail_builtins() {
-        let profile =
-            builtin_native_primary(RETAIL_DIGEST, PrimaryEdition::Rerelease).expect("retail");
+        let profile = builtin_native_primary(RETAIL_DIGEST, PrimaryEdition::Rerelease).expect("retail");
         assert_eq!(profile.edition(), PrimaryEdition::Rerelease);
         assert_eq!(profile.inventory().client, 120);
         assert_eq!(profile.pickups().entity.inuse, 1376);
@@ -2071,4 +2184,3 @@ mod tests {
         assert_eq!(world.inventory_table.unnamed.len(), 1);
     }
 }
-

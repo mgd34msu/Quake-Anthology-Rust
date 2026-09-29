@@ -5,9 +5,7 @@ use qa_guest::core::contracts::{GuestAddress, GuestCallValue, NativeAbi};
 use qa_world::combat::ItemId;
 
 use super::native_primary_commands::CommandItem;
-use super::native_primary_inventory::{
-    ItemNameMatch, NativeInventoryRow, source_item_named,
-};
+use super::native_primary_inventory::{source_item_named, ItemNameMatch, NativeInventoryRow};
 use super::native_primary_reader::NativeRegion;
 use super::native_primary_weapons::{HostResult, NativeActorId, NativeHostError, SyntheticHost};
 
@@ -166,11 +164,7 @@ pub struct NativePrimaryDrop {
 
 impl NativePrimaryDrop {
     /// Build the service over a snapshot of the command item table.
-    pub fn new(
-        profile: NativePrimaryDropProfile,
-        command_items: Vec<CommandItem>,
-        hooks: DropHooks,
-    ) -> Self {
+    pub fn new(profile: NativePrimaryDropProfile, command_items: Vec<CommandItem>, hooks: DropHooks) -> Self {
         Self {
             profile,
             command_items,
@@ -261,10 +255,7 @@ impl NativePrimaryDrop {
             Some(ItemNameMatch::Ambiguous(items)) => {
                 if original.is_none() {
                     let names: Vec<&str> = items.iter().map(|row| row.item.as_str()).collect();
-                    (self.hooks.print)(
-                        actor,
-                        format!("Ambiguous item \"{text}\"; use {}\n", names.join(", ")),
-                    );
+                    (self.hooks.print)(actor, format!("Ambiguous item \"{text}\"; use {}\n", names.join(", ")));
                 }
                 Ok(FindOutcome::PassThrough)
             }
@@ -288,11 +279,10 @@ impl NativePrimaryDrop {
             _ => return Ok(()),
         };
         let chosen = (self.hooks.selected)(actor);
-        let row = (self.hooks.rows)(actor)
-            .and_then(|rows| {
-                rows.into_iter()
-                    .find(|row| Some(&row.item) == chosen.as_ref() && row.selected)
-            });
+        let row = (self.hooks.rows)(actor).and_then(|rows| {
+            rows.into_iter()
+                .find(|row| Some(&row.item) == chosen.as_ref() && row.selected)
+        });
         if let Some(row) = row {
             self.project(host, actor, &row, true)?;
         }
@@ -323,9 +313,7 @@ impl NativePrimaryDrop {
     pub fn callback_region(&mut self, host: &mut SyntheticHost) -> HostResult<bool> {
         self.check_host(host)?;
         let (actor, item) = match self.frames.last() {
-            Some(frame)
-                if frame.row.is_some() && frame.actor.is_some_and(|actor| self.current(host, actor)) =>
-            {
+            Some(frame) if frame.row.is_some() && frame.actor.is_some_and(|actor| self.current(host, actor)) => {
                 (frame.actor.expect("actor"), frame.row.clone().expect("row").item)
             }
             _ => return Ok(false),
@@ -467,36 +455,28 @@ impl NativePrimaryDrop {
             .iter()
             .find(|row| row.item == projection.source)
             .cloned()
-            .ok_or_else(|| {
-                NativeHostError::Fault("selected drop has no source item or client".to_string())
-            })?;
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("selected drop has no source item or client".to_string())
-        })?;
+            .ok_or_else(|| NativeHostError::Fault("selected drop has no source item or client".to_string()))?;
+        let entity = host
+            .core
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("selected drop has no source item or client".to_string()))?;
         let client = host.core.memory.read_pointer(
             host.core
                 .memory
                 .offset(entity, i64::from(self.profile.client.pointer))?,
         )?;
-        let client = client.ok_or_else(|| {
-            NativeHostError::Fault("selected drop has no source item or client".to_string())
-        })?;
+        let client =
+            client.ok_or_else(|| NativeHostError::Fault("selected drop has no source item or client".to_string()))?;
         let counter = host.core.memory.offset(
             client,
             i64::from(self.profile.client.inventory) + i64::from(descriptor.index) * 4,
         )?;
-        let weapon = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.client.weapon))?;
+        let weapon = host.core.memory.offset(client, i64::from(self.profile.client.weapon))?;
         let pending = host
             .core
             .memory
             .offset(client, i64::from(self.profile.client.pending))?;
-        let selection = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.client.cursor))?;
+        let selection = host.core.memory.offset(client, i64::from(self.profile.client.cursor))?;
         let mut saved = vec![
             (counter, host.core.memory.copy(counter, 4)?),
             (weapon, host.core.memory.copy(weapon, host.core.pointer_bytes())?),
@@ -555,14 +535,26 @@ mod tests {
                 pending: 0x88,
             },
             named: 0x100,
-            inventory: InventoryDrop { entry: 0x110, admitted: 0x120 },
+            inventory: InventoryDrop {
+                entry: 0x110,
+                admitted: 0x120,
+            },
             find: 0x130,
             lookup_return: 0x140,
             allocate: 0x150,
             free: 0x160,
-            consumer: Some(NativeRegion { entry: 0x170, join: 0x180 }),
-            callbacks: vec![NativeRegion { entry: 0x190, join: 0x1A0 }],
-            debits: vec![NativeRegion { entry: 0x1B0, join: 0x1C0 }],
+            consumer: Some(NativeRegion {
+                entry: 0x170,
+                join: 0x180,
+            }),
+            callbacks: vec![NativeRegion {
+                entry: 0x190,
+                join: 0x1A0,
+            }],
+            debits: vec![NativeRegion {
+                entry: 0x1B0,
+                join: 0x1C0,
+            }],
         }
     }
 
@@ -676,7 +668,8 @@ mod tests {
         drop.begin(Some(actor), DropKind::Inventory);
         drop.observe_admitted(&mut host).expect("admitted");
         let pickup_entity = host.core.entity_of(pickup).expect("entity");
-        drop.note_allocate(&mut host, Some(actor), Some(pickup_entity)).expect("allocate");
+        drop.note_allocate(&mut host, Some(actor), Some(pickup_entity))
+            .expect("allocate");
         let entity = host.core.entity_of(actor).expect("entity");
         let client = host
             .core
@@ -693,9 +686,7 @@ mod tests {
             })
             .expect("debit");
         assert_eq!(debit, DebitState::Accepted);
-        let ran = drop
-            .consumer_region(&mut host, |_| Ok(()))
-            .expect("consumer");
+        let ran = drop.consumer_region(&mut host, |_| Ok(())).expect("consumer");
         assert!(ran);
         drop.end(&mut host).expect("end");
     }
@@ -724,7 +715,8 @@ mod tests {
         drop.begin(Some(actor), DropKind::Inventory);
         drop.observe_admitted(&mut host).expect("admitted");
         let pickup_entity = host.core.entity_of(pickup).expect("entity");
-        drop.note_allocate(&mut host, Some(actor), Some(pickup_entity)).expect("allocate");
+        drop.note_allocate(&mut host, Some(actor), Some(pickup_entity))
+            .expect("allocate");
         let debit = drop
             .debit_region(&mut host, |host| {
                 let entity = host.core.entity_of(actor).expect("entity");
@@ -741,9 +733,7 @@ mod tests {
             .expect("debit");
         assert_eq!(debit, DebitState::Refused);
         assert_eq!(freed.lock().expect("lock").len(), 1);
-        let ran = drop
-            .consumer_region(&mut host, |_| Ok(()))
-            .expect("consumer");
+        let ran = drop.consumer_region(&mut host, |_| Ok(())).expect("consumer");
         assert!(!ran);
         drop.close(&mut host).expect("close");
     }

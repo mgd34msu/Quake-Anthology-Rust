@@ -266,12 +266,7 @@ impl NativePrimaryCommands {
         !self.closed && host.core.is_live(actor)
     }
 
-    fn read_string_at(
-        &self,
-        host: &mut SyntheticHost,
-        base: GuestAddress,
-        offset: u32,
-    ) -> HostResult<String> {
+    fn read_string_at(&self, host: &mut SyntheticHost, base: GuestAddress, offset: u32) -> HostResult<String> {
         let slot = host.core.memory.offset(base, i64::from(offset))?;
         match host.core.memory.read_pointer(slot)? {
             Some(address) => host.core.read_c_string(address, 65536),
@@ -293,9 +288,8 @@ impl NativePrimaryCommands {
         let mut source = Vec::with_capacity(table.count as usize);
         for index in 0..table.count {
             let base = u64::from(table.table) + u64::from(index) * u64::from(table.stride);
-            let base = u32::try_from(base).map_err(|_| {
-                NativeHostError::Fault("original item table exceeds its image".to_string())
-            })?;
+            let base = u32::try_from(base)
+                .map_err(|_| NativeHostError::Fault("original item table exceeds its image".to_string()))?;
             let address = self.at(host, base)?;
             let classname = self.read_string_at(host, address, table.classname)?;
             let item = if is_item_name(&classname) {
@@ -346,10 +340,7 @@ impl NativePrimaryCommands {
                 let ammo_field = match table.ammo {
                     ItemAmmo::Name { offset, .. } | ItemAmmo::Index { offset } => offset,
                 };
-                let slot = host
-                    .core
-                    .memory
-                    .offset(row.address, i64::from(ammo_field))?;
+                let slot = host.core.memory.offset(row.address, i64::from(ammo_field))?;
                 match table.ammo {
                     ItemAmmo::Name { .. } => {
                         let name = match host.core.memory.read_pointer(slot)? {
@@ -357,9 +348,7 @@ impl NativePrimaryCommands {
                             None => String::new(),
                         };
                         if !name.is_empty() {
-                            let found = source
-                                .iter()
-                                .find(|row| row.label.eq_ignore_ascii_case(&name));
+                            let found = source.iter().find(|row| row.label.eq_ignore_ascii_case(&name));
                             match found.and_then(|row| row.item.clone()) {
                                 Some(item) => ammo = Some(item),
                                 None => {
@@ -373,9 +362,7 @@ impl NativePrimaryCommands {
                     ItemAmmo::Index { .. } => {
                         let index = host.core.memory.read_i32(slot)?;
                         if index != 0 {
-                            let found = usize::try_from(index)
-                                .ok()
-                                .and_then(|index| source.get(index));
+                            let found = usize::try_from(index).ok().and_then(|index| source.get(index));
                             match found.and_then(|row| row.item.clone()) {
                                 Some(item) => ammo = Some(item),
                                 None => {
@@ -494,9 +481,12 @@ impl NativePrimaryCommands {
             Some(actor) if self.current(host, actor) => actor,
             _ => return execute(&mut *host),
         };
-        let grant = self.profile.give.ammo_grants.get(grant_index).ok_or_else(|| {
-            NativeHostError::Fault("unknown original ammo grant".to_string())
-        })?;
+        let grant = self
+            .profile
+            .give
+            .ammo_grants
+            .get(grant_index)
+            .ok_or_else(|| NativeHostError::Fault("unknown original ammo grant".to_string()))?;
         let descriptor = host.core.register_read(grant.descriptor);
         let descriptor = if host.core.pointer_bytes() == 4 {
             descriptor & 0xFFFF_FFFF
@@ -514,20 +504,18 @@ impl NativePrimaryCommands {
                 };
                 offset == descriptor
             })
-            .ok_or_else(|| {
-                NativeHostError::Fault("original ammo command lacks its source item".to_string())
-            })?;
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("original ammo command lacks its source item".to_string())
-        })?;
+            .ok_or_else(|| NativeHostError::Fault("original ammo command lacks its source item".to_string()))?;
+        let entity = host
+            .core
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("original ammo command lacks its source item".to_string()))?;
         let client = host.core.memory.read_pointer(
             host.core
                 .memory
                 .offset(entity, i64::from(self.profile.client.pointer))?,
         )?;
-        let client = client.ok_or_else(|| {
-            NativeHostError::Fault("original ammo command lost its client".to_string())
-        })?;
+        let client =
+            client.ok_or_else(|| NativeHostError::Fault("original ammo command lost its client".to_string()))?;
         let counter = host.core.memory.offset(
             client,
             i64::from(self.profile.client.inventory) + i64::from(row.index) * 4,
@@ -573,48 +561,34 @@ impl NativePrimaryCommands {
                 return Ok(false);
             }
         };
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("original death drop lost its actor".to_string())
-        })?;
+        let entity = host
+            .core
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("original death drop lost its actor".to_string()))?;
         let client = host.core.memory.read_pointer(
             host.core
                 .memory
                 .offset(entity, i64::from(self.profile.client.pointer))?,
         )?;
-        let client = client.ok_or_else(|| {
-            NativeHostError::Fault("original death drop lost its client".to_string())
-        })?;
+        let client = client.ok_or_else(|| NativeHostError::Fault("original death drop lost its client".to_string()))?;
         let item = match &projection.item {
             None => None,
             Some(item) => match self.items.iter().find(|row| &row.item == item && row.weapon) {
                 Some(row) => Some(row.clone()),
                 None => {
                     return Err(NativeHostError::Fault(
-                        "selected death drop lacks an original weapon or int32 ammunition"
-                            .to_string(),
+                        "selected death drop lacks an original weapon or int32 ammunition".to_string(),
                     ));
                 }
             },
         };
         let ammo = match item.as_ref().and_then(|row| row.ammo.clone()) {
             None => None,
-            Some(ammo) => Some(
-                self.items
-                    .iter()
-                    .find(|row| row.item == ammo)
-                    .cloned()
-                    .ok_or_else(|| {
-                        NativeHostError::Fault(
-                            "selected death drop lacks an original weapon or int32 ammunition"
-                                .to_string(),
-                        )
-                    })?,
-            ),
+            Some(ammo) => Some(self.items.iter().find(|row| row.item == ammo).cloned().ok_or_else(|| {
+                NativeHostError::Fault("selected death drop lacks an original weapon or int32 ammunition".to_string())
+            })?),
         };
-        let weapon = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.client.weapon))?;
+        let weapon = host.core.memory.offset(client, i64::from(self.profile.client.weapon))?;
         let mut words = Vec::new();
         if let Some(offset) = self.profile.client.ammo_index {
             let address = host.core.memory.offset(client, i64::from(offset))?;
@@ -632,14 +606,14 @@ impl NativePrimaryCommands {
         for (address, _) in &words {
             saved_words.push((*address, host.core.memory.copy(*address, 4)?));
         }
-        host.core.memory.write_pointer(weapon, item.as_ref().map(|row| row.address))?;
+        host.core
+            .memory
+            .write_pointer(weapon, item.as_ref().map(|row| row.address))?;
         for (address, value) in &words {
             host.core.memory.write_i32(*address, *value)?;
         }
         let outcome = execute(&mut *host);
-        if self.current(host, actor)
-            && host.core.entity_of(actor).map_or(false, |current| current == entity)
-        {
+        if self.current(host, actor) && host.core.entity_of(actor).map_or(false, |current| current == entity) {
             for (address, bytes) in saved_words.into_iter().rev() {
                 host.core.memory.write(address, &bytes)?;
             }
@@ -670,30 +644,23 @@ impl NativePrimaryCommands {
             .items
             .iter()
             .find(|row| &row.item == item && row.weapon)
-            .ok_or_else(|| {
-                NativeHostError::Fault("selected weapon has no original descriptor".to_string())
-            })?;
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("selected weapon has no original descriptor".to_string())
-        })?;
+            .ok_or_else(|| NativeHostError::Fault("selected weapon has no original descriptor".to_string()))?;
+        let entity = host
+            .core
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("selected weapon has no original descriptor".to_string()))?;
         let client = host.core.memory.read_pointer(
             host.core
                 .memory
                 .offset(entity, i64::from(self.profile.client.pointer))?,
         )?;
-        let client = client.ok_or_else(|| {
-            NativeHostError::Fault("original weapon projection lost its client".to_string())
-        })?;
-        let address = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.client.weapon))?;
+        let client =
+            client.ok_or_else(|| NativeHostError::Fault("original weapon projection lost its client".to_string()))?;
+        let address = host.core.memory.offset(client, i64::from(self.profile.client.weapon))?;
         let previous = host.core.memory.read_pointer(address)?;
         host.core.memory.write_pointer(address, Some(descriptor.address))?;
         let outcome = run(&mut *host);
-        if self.current(host, actor)
-            && host.core.entity_of(actor).map_or(false, |current| current == entity)
-        {
+        if self.current(host, actor) && host.core.entity_of(actor).map_or(false, |current| current == entity) {
             host.core.memory.write_pointer(address, previous)?;
         }
         outcome
@@ -726,11 +693,7 @@ impl NativePrimaryCommands {
         }
         let mut arguments = Vec::with_capacity(count.max(1) as usize - 1);
         for index in 1..count {
-            let value = self.imported(
-                host,
-                self.profile.give.argv,
-                &[GuestCallValue::Int32(index)],
-            )?;
+            let value = self.imported(host, self.profile.give.argv, &[GuestCallValue::Int32(index)])?;
             match value {
                 GuestCallResult::Value(GuestCallValue::Pointer(Some(address))) => {
                     arguments.push(host.core.read_c_string(address, 65536)?);
@@ -762,7 +725,10 @@ mod tests {
                 entry: 0x100,
                 weapons: 0x110,
                 ammo: 0x120,
-                unknown: NativeRegion { entry: 0x130, join: 0x140 },
+                unknown: NativeRegion {
+                    entry: 0x130,
+                    join: 0x140,
+                },
                 ammo_grants: vec![AmmoGrant {
                     entry: 0x150,
                     join: 0x160,
@@ -774,7 +740,10 @@ mod tests {
             },
             drop: DropCommand {
                 entry: 0x200,
-                eligibility: NativeRegion { entry: 0x210, join: 0x220 },
+                eligibility: NativeRegion {
+                    entry: 0x210,
+                    join: 0x220,
+                },
             },
             client: CommandClient {
                 pointer: 84,
@@ -815,7 +784,10 @@ mod tests {
         ammo_name: &str,
         label: &str,
     ) {
-        let base = host.core.at(profile.items.table + index * profile.items.stride).expect("row");
+        let base = host
+            .core
+            .at(profile.items.table + index * profile.items.stride)
+            .expect("row");
         let name = host.core.allocate_string(classname).expect("name");
         let icon = host.core.allocate_string(icon).expect("icon");
         let ammo = host.core.allocate_string(ammo_name).expect("ammo");
@@ -842,7 +814,16 @@ mod tests {
     fn table_host(profile: &NativePrimaryCommandProfile) -> SyntheticHost {
         let mut host = SyntheticHost::synthetic(CLASSIC_DIGEST, 4, 0x2000).expect("host");
         write_row(&mut host, profile, 0, "", 0, "", "", "");
-        write_row(&mut host, profile, 1, "weapon_blaster", 1, "w_blaster", "Shells", "Blaster");
+        write_row(
+            &mut host,
+            profile,
+            1,
+            "weapon_blaster",
+            1,
+            "w_blaster",
+            "Shells",
+            "Blaster",
+        );
         write_row(&mut host, profile, 2, "ammo_shells", 2, "a_shells", "", "Shells");
         host
     }
@@ -865,10 +846,7 @@ mod tests {
         assert_eq!(blaster.index, 1);
         assert_eq!(blaster.ammo.as_deref(), Some("q2:ammo_shells"));
         assert_eq!(commands.weapons().len(), 1);
-        assert_eq!(
-            commands.item_at(blaster.address).as_deref(),
-            Some("q2:weapon_blaster")
-        );
+        assert_eq!(commands.item_at(blaster.address).as_deref(), Some("q2:weapon_blaster"));
     }
 
     #[test]
@@ -884,10 +862,12 @@ mod tests {
             give_ammo: Box::new(move |_, _, change| capture.lock().expect("lock").push(change)),
             drop: Box::new(|_| None),
         };
-        let mut commands =
-            NativePrimaryCommands::new(&mut host, profile, commands_hooks).expect("commands");
+        let mut commands = NativePrimaryCommands::new(&mut host, profile, commands_hooks).expect("commands");
         let actor = linked(&mut host);
-        let shells = commands.source_item(&"q2:ammo_shells".to_string()).expect("shells").clone();
+        let shells = commands
+            .source_item(&"q2:ammo_shells".to_string())
+            .expect("shells")
+            .clone();
         host.core.register_write(GuestRegister::Rsi, shells.address.offset);
         commands.begin_give(Some(actor));
         commands
@@ -911,7 +891,13 @@ mod tests {
             .expect("grant");
         commands.end_give();
         let seen = seen.lock().expect("lock").clone();
-        assert_eq!(seen, vec![AmmoChange { kind: GrantKind::Add, amount: 10 }]);
+        assert_eq!(
+            seen,
+            vec![AmmoChange {
+                kind: GrantKind::Add,
+                amount: 10
+            }]
+        );
     }
 
     #[test]
@@ -929,8 +915,7 @@ mod tests {
                 })
             }),
         };
-        let mut commands =
-            NativePrimaryCommands::new(&mut host, profile, commands_hooks).expect("commands");
+        let mut commands = NativePrimaryCommands::new(&mut host, profile, commands_hooks).expect("commands");
         let actor = linked(&mut host);
         let blaster = "q2:weapon_blaster".to_string();
         let entity = host.core.entity_of(actor).expect("entity");
@@ -954,11 +939,7 @@ mod tests {
             .death_drop(&mut host, |host| {
                 let current = host.core.memory.read_pointer(weapon_slot).expect("read");
                 assert!(current.is_some());
-                let ammo_counter = host
-                    .core
-                    .memory
-                    .offset(client, 0x100 + 2 * 4)
-                    .expect("ammo");
+                let ammo_counter = host.core.memory.offset(client, 0x100 + 2 * 4).expect("ammo");
                 assert_eq!(host.core.memory.read_i32(ammo_counter).expect("count"), 5);
                 let ammo_index = host.core.memory.offset(client, 0x84).expect("index");
                 assert_eq!(host.core.memory.read_i32(ammo_index).expect("index"), 2);
@@ -981,7 +962,10 @@ mod tests {
         let argv_impl = host.core.at(0x910).expect("impl");
         host.core.memory.write_pointer(argc, Some(argc_impl)).expect("write");
         host.core.memory.write_pointer(argv, Some(argv_impl)).expect("write");
-        host.on_invoke(argc_impl, Box::new(|_, _| Ok(GuestCallResult::Value(GuestCallValue::Int32(2)))));
+        host.on_invoke(
+            argc_impl,
+            Box::new(|_, _| Ok(GuestCallResult::Value(GuestCallValue::Int32(2)))),
+        );
         host.on_invoke(
             argv_impl,
             Box::new(move |_, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(first))))),

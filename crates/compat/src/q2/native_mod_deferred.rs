@@ -171,21 +171,11 @@ pub trait DeferredDamageHost {
     /// Read a scalar field.
     fn read_scalar(&mut self, slot: usize, field: &ScalarField) -> Result<f64, DeferredError>;
     /// Write a scalar field.
-    fn write_scalar(
-        &mut self,
-        slot: usize,
-        field: &ScalarField,
-        value: f64,
-    ) -> Result<(), DeferredError>;
+    fn write_scalar(&mut self, slot: usize, field: &ScalarField, value: f64) -> Result<(), DeferredError>;
     /// Read a pointer field as a table slot.
     fn pointer_slot(&mut self, slot: usize, offset: usize) -> Result<Option<usize>, DeferredError>;
     /// Write a pointer field from a table slot.
-    fn write_pointer_slot(
-        &mut self,
-        slot: usize,
-        offset: usize,
-        target: Option<usize>,
-    ) -> Result<(), DeferredError>;
+    fn write_pointer_slot(&mut self, slot: usize, offset: usize, target: Option<usize>) -> Result<(), DeferredError>;
     /// Read the impact point vector.
     fn read_point(&mut self, slot: usize, definition: &DeferredDamageDefinition) -> Result<Vec3, DeferredError>;
     /// Write the impact point vector.
@@ -196,11 +186,7 @@ pub trait DeferredDamageHost {
         point: Vec3,
     ) -> Result<(), DeferredError>;
     /// Read the three-byte cause record.
-    fn read_cause(
-        &mut self,
-        slot: usize,
-        definition: &DeferredDamageDefinition,
-    ) -> Result<[u8; 3], DeferredError>;
+    fn read_cause(&mut self, slot: usize, definition: &DeferredDamageDefinition) -> Result<[u8; 3], DeferredError>;
     /// Write the three-byte cause record.
     fn write_cause(
         &mut self,
@@ -209,11 +195,7 @@ pub trait DeferredDamageHost {
         cause: &[u8; 3],
     ) -> Result<(), DeferredError>;
     /// Read current health for reaction classification.
-    fn read_health(
-        &mut self,
-        slot: usize,
-        health: &ScalarField,
-    ) -> Result<f64, DeferredError> {
+    fn read_health(&mut self, slot: usize, health: &ScalarField) -> Result<f64, DeferredError> {
         self.read_scalar(slot, health)
     }
 }
@@ -281,12 +263,7 @@ pub struct SyntheticDeferredHost {
 
 impl SyntheticDeferredHost {
     /// Build a host over a mapped table region.
-    pub fn new(
-        memory: SparseGuestMemory,
-        table_base: GuestAddress,
-        stride: usize,
-        count: usize,
-    ) -> Self {
+    pub fn new(memory: SparseGuestMemory, table_base: GuestAddress, stride: usize, count: usize) -> Self {
         Self {
             memory,
             table_base,
@@ -304,9 +281,7 @@ impl SyntheticDeferredHost {
     }
 
     fn at(&self, slot: usize, offset: usize) -> Result<GuestAddress, DeferredError> {
-        let base = self
-            .memory
-            .offset(self.table_base, (slot * self.stride) as i64)?;
+        let base = self.memory.offset(self.table_base, (slot * self.stride) as i64)?;
         Ok(self.memory.offset(base, offset as i64)?)
     }
 }
@@ -316,10 +291,7 @@ impl DeferredDamageHost for SyntheticDeferredHost {
         if slot >= self.count {
             return Err(DeferredError::PointerOutsideTable);
         }
-        Ok(self.memory.offset(
-            self.table_base,
-            (slot * self.stride) as i64,
-        )?)
+        Ok(self.memory.offset(self.table_base, (slot * self.stride) as i64)?)
     }
 
     fn entity_count(&self) -> usize {
@@ -351,12 +323,7 @@ impl DeferredDamageHost for SyntheticDeferredHost {
         Ok(scalar_to_f64(&self.memory.copy(address, width)?, field.storage))
     }
 
-    fn write_scalar(
-        &mut self,
-        slot: usize,
-        field: &ScalarField,
-        value: f64,
-    ) -> Result<(), DeferredError> {
+    fn write_scalar(&mut self, slot: usize, field: &ScalarField, value: f64) -> Result<(), DeferredError> {
         let address = self.at(slot, field.offset)?;
         let bytes = f64_to_scalar(value, field.storage, self.memory.pointer_bytes());
         Ok(self.memory.write(address, &bytes)?)
@@ -371,35 +338,22 @@ impl DeferredDamageHost for SyntheticDeferredHost {
             return Err(DeferredError::PointerOutsideTable);
         }
         let relative = target.offset - self.table_base.offset;
-        if relative % self.stride as u64 != 0 || relative / self.stride as u64 >= self.count as u64
-        {
+        if relative % self.stride as u64 != 0 || relative / self.stride as u64 >= self.count as u64 {
             return Err(DeferredError::PointerOutsideTable);
         }
         Ok(Some((relative / self.stride as u64) as usize))
     }
 
-    fn write_pointer_slot(
-        &mut self,
-        slot: usize,
-        offset: usize,
-        target: Option<usize>,
-    ) -> Result<(), DeferredError> {
+    fn write_pointer_slot(&mut self, slot: usize, offset: usize, target: Option<usize>) -> Result<(), DeferredError> {
         let address = self.at(slot, offset)?;
         let resolved = match target {
             None => None,
-            Some(slot) => Some(
-                self.memory
-                    .offset(self.table_base, (slot * self.stride) as i64)?,
-            ),
+            Some(slot) => Some(self.memory.offset(self.table_base, (slot * self.stride) as i64)?),
         };
         Ok(self.memory.write_pointer(address, resolved)?)
     }
 
-    fn read_point(
-        &mut self,
-        slot: usize,
-        definition: &DeferredDamageDefinition,
-    ) -> Result<Vec3, DeferredError> {
+    fn read_point(&mut self, slot: usize, definition: &DeferredDamageDefinition) -> Result<Vec3, DeferredError> {
         Ok(self.memory.read_f32x3(self.at(slot, definition.point)?)?)
     }
 
@@ -417,11 +371,7 @@ impl DeferredDamageHost for SyntheticDeferredHost {
         Ok(self.memory.write(address, &bytes)?)
     }
 
-    fn read_cause(
-        &mut self,
-        slot: usize,
-        definition: &DeferredDamageDefinition,
-    ) -> Result<[u8; 3], DeferredError> {
+    fn read_cause(&mut self, slot: usize, definition: &DeferredDamageDefinition) -> Result<[u8; 3], DeferredError> {
         let bytes = self.memory.copy(self.at(slot, definition.mod_offset)?, 3)?;
         Ok([bytes[0], bytes[1], bytes[2]])
     }
@@ -483,13 +433,10 @@ impl NativeModDeferredDamageState {
         let actor = host.owner(slot);
         let Some(actor) = actor else { return Ok(()) };
         let hits = |offset: usize, bytes: usize| {
-            range.byte_offset < offset + bytes
-                && offset < range.byte_offset + range.byte_length
+            range.byte_offset < offset + bytes && offset < range.byte_offset + range.byte_length
         };
         let pointer_bytes = host.pointer_bytes();
-        if hits(definition.receipt, 1)
-            && host.read_scalar(slot, &definition.blood)? != 0.0
-        {
+        if hits(definition.receipt, 1) && host.read_scalar(slot, &definition.blood)? != 0.0 {
             let Some(request) = current else {
                 return Err(DeferredError::MissingProvenance);
             };
@@ -498,10 +445,8 @@ impl NativeModDeferredDamageState {
             }
             self.pending.insert(actor, request.clone());
         }
-        if hits(
-            definition.blood.offset,
-            definition.blood.width(pointer_bytes),
-        ) && host.read_scalar(slot, &definition.blood)? == 0.0
+        if hits(definition.blood.offset, definition.blood.width(pointer_bytes))
+            && host.read_scalar(slot, &definition.blood)? == 0.0
         {
             self.pending.remove(&actor);
         }
@@ -511,9 +456,7 @@ impl NativeModDeferredDamageState {
     /// Request currently processed for an actor, if any.
     #[must_use]
     pub fn attack(&self, actor: NativeActorId) -> Option<&DamageRequest> {
-        self.processing
-            .last()
-            .filter(|request| request.target == actor)
+        self.processing.last().filter(|request| request.target == actor)
     }
 
     /// Run the original deferred processor, publishing the source reaction.
@@ -528,8 +471,7 @@ impl NativeModDeferredDamageState {
         original: impl FnOnce() -> R,
     ) -> Result<R, DeferredError> {
         let pending = self.pending.get(&actor).cloned();
-        let (Some(stored), blood) = (pending, host.read_scalar(slot, &definition.blood)?)
-        else {
+        let (Some(stored), blood) = (pending, host.read_scalar(slot, &definition.blood)?) else {
             return Ok(original());
         };
         if blood == 0.0 {
@@ -672,13 +614,22 @@ mod tests {
         let definition = DeferredDamageDefinition {
             attacker: 0,
             inflictor: 4,
-            blood: ScalarField { offset: 8, storage: GuestStorage::Int32 },
-            knockback: ScalarField { offset: 12, storage: GuestStorage::Int32 },
+            blood: ScalarField {
+                offset: 8,
+                storage: GuestStorage::Int32,
+            },
+            knockback: ScalarField {
+                offset: 12,
+                storage: GuestStorage::Int32,
+            },
             point: 16,
             mod_offset: 28,
             receipt: 31,
         };
-        let health = ScalarField { offset: 32, storage: GuestStorage::Int32 };
+        let health = ScalarField {
+            offset: 32,
+            storage: GuestStorage::Int32,
+        };
         (host, definition, health)
     }
 
@@ -709,7 +660,10 @@ mod tests {
                 &mut host,
                 &definition,
                 2,
-                EntityWriteRange { byte_offset: 31, byte_length: 1 },
+                EntityWriteRange {
+                    byte_offset: 31,
+                    byte_length: 1,
+                },
                 Some(&incoming),
             )
             .unwrap();
@@ -734,7 +688,10 @@ mod tests {
                 &mut host,
                 &definition,
                 2,
-                EntityWriteRange { byte_offset: 8, byte_length: 4 },
+                EntityWriteRange {
+                    byte_offset: 8,
+                    byte_length: 4,
+                },
                 None,
             )
             .unwrap();
@@ -749,7 +706,10 @@ mod tests {
             &mut host,
             &definition,
             2,
-            EntityWriteRange { byte_offset: 31, byte_length: 1 },
+            EntityWriteRange {
+                byte_offset: 31,
+                byte_length: 1,
+            },
             None,
         );
         assert_eq!(missing, Err(DeferredError::MissingProvenance));
@@ -760,7 +720,10 @@ mod tests {
                 &mut host,
                 &definition,
                 2,
-                EntityWriteRange { byte_offset: 31, byte_length: 1 },
+                EntityWriteRange {
+                    byte_offset: 31,
+                    byte_length: 1,
+                },
                 Some(&incoming),
             )
             .unwrap();

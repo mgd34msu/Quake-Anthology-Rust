@@ -282,8 +282,7 @@ impl NativeModArmorState {
         for (index, field) in fields.iter().enumerate() {
             for previous in &fields[..index] {
                 if field.record == previous.record
-                    && field.offset
-                        < previous.offset + previous.width(pointer_bytes)
+                    && field.offset < previous.offset + previous.width(pointer_bytes)
                     && previous.offset < field.offset + field.width(pointer_bytes)
                     && (field.offset != previous.offset || field.storage != previous.storage)
                 {
@@ -414,10 +413,7 @@ impl NativeModArmorState {
             GuestCallValue::Float64(value)
         } else if matches!(
             field.storage,
-            GuestStorage::Uint8
-                | GuestStorage::Uint16
-                | GuestStorage::Uint32
-                | GuestStorage::Uint64
+            GuestStorage::Uint8 | GuestStorage::Uint16 | GuestStorage::Uint32 | GuestStorage::Uint64
         ) {
             GuestCallValue::Uint64(value as u64)
         } else {
@@ -425,11 +421,7 @@ impl NativeModArmorState {
         };
         let layout = GuestValueLayout::Scalar(field.storage);
         let bytes = encode_value(&layout, &stored, memory)?;
-        memory.check(
-            address,
-            bytes.len(),
-            qa_guest::core::contracts::GuestAccess::Write,
-        )?;
+        memory.check(address, bytes.len(), qa_guest::core::contracts::GuestAccess::Write)?;
         Ok(memory.write(address, &bytes)?)
     }
 
@@ -488,9 +480,8 @@ impl NativeModArmorState {
                 powered: PoweredProtection::None,
             });
         }
-        let mut required = |field: &ArmorField| -> Result<f64, ArmorError> {
-            read(field)?.ok_or(ArmorError::MissingStorage)
-        };
+        let mut required =
+            |field: &ArmorField| -> Result<f64, ArmorError> { read(field)?.ok_or(ArmorError::MissingStorage) };
         let regular = match &self.definition {
             ArmorDefinition::Q2 { regular, .. } => {
                 let mut found = None;
@@ -635,9 +626,7 @@ impl NativeModArmorState {
         armor: &ArmorState,
     ) -> Result<Vec<(GuestAddress, ArmorField, f64)>, ArmorError> {
         if matches!(self.definition, ArmorDefinition::None) {
-            if !matches!(armor.regular, RegularArmor::None)
-                || !matches!(armor.powered, PoweredProtection::None)
-            {
+            if !matches!(armor.regular, RegularArmor::None) || !matches!(armor.powered, PoweredProtection::None) {
                 return Err(ArmorError::Unrepresentable);
             }
             return Ok(Vec::new());
@@ -666,12 +655,16 @@ impl NativeModArmorState {
         if requested_item.is_some() && regular.is_none() {
             return Err(ArmorError::Unrepresentable);
         }
-        if let (RegularArmor::Q2 { normal_protection, energy_protection, .. }, Some(declared)) =
-            (&armor.regular, regular)
+        if let (
+            RegularArmor::Q2 {
+                normal_protection,
+                energy_protection,
+                ..
+            },
+            Some(declared),
+        ) = (&armor.regular, regular)
         {
-            if declared.normal_protection != *normal_protection
-                || declared.energy_protection != *energy_protection
-            {
+            if declared.normal_protection != *normal_protection || declared.energy_protection != *energy_protection {
                 return Err(ArmorError::Unrepresentable);
             }
         }
@@ -680,12 +673,8 @@ impl NativeModArmorState {
             PoweredProtection::Screen { .. } => Some(PowerKind::Screen),
             PoweredProtection::Shield { .. } => Some(PowerKind::Shield),
         };
-        let power = requested_power.and_then(|kind| {
-            self.definition
-                .power()
-                .iter()
-                .find(|candidate| candidate.kind == kind)
-        });
+        let power =
+            requested_power.and_then(|kind| self.definition.power().iter().find(|candidate| candidate.kind == kind));
         if requested_power.is_some() && power.is_none() {
             return Err(ArmorError::Unrepresentable);
         }
@@ -696,26 +685,15 @@ impl NativeModArmorState {
         if matches!(armor.regular, RegularArmor::None) {
             let mut current = None;
             for item in self.definition.regular() {
-                let value = Self::pending_value(
-                    memory,
-                    base_for,
-                    self,
-                    slot,
-                    &stores,
-                    item.selection.field(),
-                )?;
+                let value = Self::pending_value(memory, base_for, self, slot, &stores, item.selection.field())?;
                 if item.selection.is_selected(value) {
                     current = Some(item);
                     break;
                 }
             }
             if let Some(item) = current {
-                Self::select_store(
-                    memory, base_for, self, slot, &mut stores, &item.selection, false,
-                )?;
-                Self::field_store(
-                    memory, base_for, self, slot, &mut stores, &item.points, 0.0,
-                )?;
+                Self::select_store(memory, base_for, self, slot, &mut stores, &item.selection, false)?;
+                Self::field_store(memory, base_for, self, slot, &mut stores, &item.points, 0.0)?;
             }
         }
         let current_power = self.read(memory, base_for, slot)?.powered;
@@ -726,9 +704,7 @@ impl NativeModArmorState {
         };
         if current_power_kind != requested_power {
             for item in self.definition.power() {
-                Self::enable_store(
-                    memory, base_for, self, slot, &mut stores, item, false,
-                )?;
+                Self::enable_store(memory, base_for, self, slot, &mut stores, item, false)?;
             }
         }
         if let (Some(item), RegularArmor::Q2 { points, .. } | RegularArmor::Source { points, .. }) =
@@ -739,18 +715,14 @@ impl NativeModArmorState {
         }
         if let Some(item) = power {
             let cells = match &armor.powered {
-                PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => {
-                    f64::from(*cells)
-                }
+                PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => f64::from(*cells),
                 PoweredProtection::None => 0.0,
             };
             if current_power_kind != requested_power {
                 Self::enable_store(memory, base_for, self, slot, &mut stores, item, true)?;
             }
             let current_cells = match &current_power {
-                PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => {
-                    f64::from(*cells)
-                }
+                PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => f64::from(*cells),
                 PoweredProtection::None => 0.0,
             };
             if current_power_kind != requested_power || current_cells != cells {
@@ -773,10 +745,7 @@ impl NativeModArmorState {
             _ => 0.0,
         };
         let requested_cells = match (&armor.powered, power) {
-            (
-                PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells },
-                Some(item),
-            ) => {
+            (PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells }, Some(item)) => {
                 let cells = f64::from(*cells);
                 if item.cells.storage == GuestStorage::Float32 {
                     f64::from(cells as f32)
@@ -791,9 +760,7 @@ impl NativeModArmorState {
             _ => 0.0,
         };
         let actual_cells = match &result.powered {
-            PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => {
-                f64::from(*cells)
-            }
+            PoweredProtection::Screen { cells } | PoweredProtection::Shield { cells } => f64::from(*cells),
             PoweredProtection::None => 0.0,
         };
         let empty_regular = matches!(armor.regular, RegularArmor::None)
@@ -913,15 +880,7 @@ impl NativeModArmorState {
         active: bool,
     ) -> Result<(), ArmorError> {
         let Some(mask) = &item.enabled else {
-            return Self::select_store(
-                memory,
-                base_for,
-                this,
-                slot,
-                stores,
-                &item.selection,
-                active,
-            );
+            return Self::select_store(memory, base_for, this, slot, stores, &item.selection, active);
         };
         let base = base_for(slot, &mask.field.record);
         let current = match base {
@@ -1003,8 +962,7 @@ impl NativeModArmorState {
                         let absolute = start + range.byte_offset;
                         if watched.iter().any(|field| {
                             let width = field.width(width_bytes);
-                            absolute < field.offset + width
-                                && field.offset < absolute + range.byte_length
+                            absolute < field.offset + width && field.offset < absolute + range.byte_length
                         }) {
                             *flag.borrow_mut() = true;
                             break;
@@ -1062,11 +1020,7 @@ impl ArmorWatch {
 }
 
 /// Old power-only views fabricated regular armor using this source-owned item.
-pub fn normalize_legacy_power_only_armor(
-    legacy: &ArmorState,
-    current: &ArmorState,
-    placeholder: &str,
-) -> ArmorState {
+pub fn normalize_legacy_power_only_armor(legacy: &ArmorState, current: &ArmorState, placeholder: &str) -> ArmorState {
     let regular = &legacy.regular;
     let matches = matches!(current.regular, RegularArmor::None)
         && matches!(
@@ -1076,14 +1030,9 @@ pub fn normalize_legacy_power_only_armor(
         )
         && match (&legacy.powered, &current.powered) {
             (
-                PoweredProtection::Screen { cells: left }
-                | PoweredProtection::Shield { cells: left },
-                PoweredProtection::Screen { cells: right }
-                | PoweredProtection::Shield { cells: right },
-            ) => {
-                std::mem::discriminant(&legacy.powered) == std::mem::discriminant(&current.powered)
-                    && left == right
-            }
+                PoweredProtection::Screen { cells: left } | PoweredProtection::Shield { cells: left },
+                PoweredProtection::Screen { cells: right } | PoweredProtection::Shield { cells: right },
+            ) => std::mem::discriminant(&legacy.powered) == std::mem::discriminant(&current.powered) && left == right,
             _ => false,
         };
     if matches {
@@ -1208,10 +1157,7 @@ mod tests {
             )
             .unwrap();
         let stored = armor.read(&mut memory, &base_for, 0).unwrap();
-        assert!(matches!(
-            stored.regular,
-            RegularArmor::Q2 { points: 50.0, .. }
-        ));
+        assert!(matches!(stored.regular, RegularArmor::Q2 { points: 50.0, .. }));
         assert_eq!(stored.powered, PoweredProtection::Screen { cells: 30 });
         armor
             .write(
@@ -1261,11 +1207,19 @@ mod tests {
             })
             .unwrap();
         assert!(!watch.poll(&armor, &mut memory, &base_for, 0).unwrap());
-        armor.write_count(&mut memory, &base_for, 0, &ArmorField {
-            record: "client".to_string(),
-            offset: 0,
-            storage: GuestStorage::Int32,
-        }, 25.0).unwrap();
+        armor
+            .write_count(
+                &mut memory,
+                &base_for,
+                0,
+                &ArmorField {
+                    record: "client".to_string(),
+                    offset: 0,
+                    storage: GuestStorage::Int32,
+                },
+                25.0,
+            )
+            .unwrap();
         assert!(watch.poll(&armor, &mut memory, &base_for, 0).unwrap());
         assert!(!watch.poll(&armor, &mut memory, &base_for, 0).unwrap());
         assert_eq!(events.borrow().len(), 1);

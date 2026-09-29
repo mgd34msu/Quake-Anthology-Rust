@@ -23,8 +23,7 @@ pub enum EntryError {
 /// Original guest body behind an entry.
 pub type OriginalFn = dyn Fn(&[GuestCallValue]) -> GuestCallResult;
 /// Interceptor: receives the call plus a handle to the bypassed original.
-pub type InterceptFn =
-    dyn Fn(&[GuestCallValue], &dyn Fn(&[GuestCallValue]) -> GuestCallResult) -> GuestCallResult;
+pub type InterceptFn = dyn Fn(&[GuestCallValue], &dyn Fn(&[GuestCallValue]) -> GuestCallResult) -> GuestCallResult;
 
 struct BindingSlot {
     id: String,
@@ -77,11 +76,7 @@ impl SyntheticEntryHost {
     }
 
     /// Invoke an entry, running its interceptor unless bypassed or declined.
-    pub fn invoke(
-        &self,
-        address: GuestAddress,
-        values: &[GuestCallValue],
-    ) -> Result<GuestCallResult, EntryError> {
+    pub fn invoke(&self, address: GuestAddress, values: &[GuestCallValue]) -> Result<GuestCallResult, EntryError> {
         let (execute, bypassed) = {
             let mut inner = self.inner.borrow_mut();
             if inner.bypass.last() == Some(&address.offset) {
@@ -89,9 +84,7 @@ impl SyntheticEntryHost {
                 (None, true)
             } else {
                 let slot = inner.bindings.get(&address.offset);
-                let intercept = slot
-                    .map(|slot| slot.active && (slot.accepts)())
-                    .unwrap_or(false);
+                let intercept = slot.map(|slot| slot.active && (slot.accepts)()).unwrap_or(false);
                 let execute = if intercept {
                     slot.map(|slot| slot.execute.clone())
                 } else {
@@ -113,11 +106,7 @@ impl SyntheticEntryHost {
         self.run_original(address, values)
     }
 
-    fn run_original(
-        &self,
-        address: GuestAddress,
-        values: &[GuestCallValue],
-    ) -> Result<GuestCallResult, EntryError> {
+    fn run_original(&self, address: GuestAddress, values: &[GuestCallValue]) -> Result<GuestCallResult, EntryError> {
         let original = self
             .inner
             .borrow()
@@ -165,10 +154,7 @@ pub struct NativeModEntryBinding {
 
 impl NativeModEntryBinding {
     /// Call the original body, bypassing exactly this frame.
-    pub fn original(
-        &self,
-        values: &[GuestCallValue],
-    ) -> Result<GuestCallResult, EntryError> {
+    pub fn original(&self, values: &[GuestCallValue]) -> Result<GuestCallResult, EntryError> {
         self.host.invoke_original_bypassed(self.address, values)
     }
 
@@ -183,8 +169,7 @@ pub fn bind_native_mod_entry(
     host: &SyntheticEntryHost,
     address: GuestAddress,
     id: &str,
-    execute: impl Fn(&[GuestCallValue], &dyn Fn(&[GuestCallValue]) -> GuestCallResult) -> GuestCallResult
-    + 'static,
+    execute: impl Fn(&[GuestCallValue], &dyn Fn(&[GuestCallValue]) -> GuestCallResult) -> GuestCallResult + 'static,
     accepts: impl Fn() -> bool + 'static,
 ) -> Result<NativeModEntryBinding, EntryError> {
     if !host.inner.borrow().originals.contains_key(&address.offset) {
@@ -218,9 +203,7 @@ mod tests {
     #[test]
     fn intercept_wraps_original_and_close_restores_it() {
         let host = SyntheticEntryHost::new();
-        host.register_original(addr(0x100), |_| {
-            GuestCallResult::Value(GuestCallValue::Int32(1))
-        });
+        host.register_original(addr(0x100), |_| GuestCallResult::Value(GuestCallValue::Int32(1)));
         let intercepted = Rc::new(Cell::new(0));
         let seen = intercepted.clone();
         let binding = bind_native_mod_entry(
@@ -230,33 +213,21 @@ mod tests {
             move |values, original| {
                 seen.set(seen.get() + 1);
                 let result = original(values);
-                assert!(matches!(
-                    result,
-                    GuestCallResult::Value(GuestCallValue::Int32(1))
-                ));
+                assert!(matches!(result, GuestCallResult::Value(GuestCallValue::Int32(1))));
                 GuestCallResult::Value(GuestCallValue::Int32(11))
             },
             || true,
         )
         .unwrap();
         let result = host.invoke(addr(0x100), &[]).unwrap();
-        assert!(matches!(
-            result,
-            GuestCallResult::Value(GuestCallValue::Int32(11))
-        ));
+        assert!(matches!(result, GuestCallResult::Value(GuestCallValue::Int32(11))));
         assert_eq!(intercepted.get(), 1);
         let direct = binding.original(&[]).unwrap();
-        assert!(matches!(
-            direct,
-            GuestCallResult::Value(GuestCallValue::Int32(1))
-        ));
+        assert!(matches!(direct, GuestCallResult::Value(GuestCallValue::Int32(1))));
         assert_eq!(intercepted.get(), 1);
         binding.close();
         let restored = host.invoke(addr(0x100), &[]).unwrap();
-        assert!(matches!(
-            restored,
-            GuestCallResult::Value(GuestCallValue::Int32(1))
-        ));
+        assert!(matches!(restored, GuestCallResult::Value(GuestCallValue::Int32(1))));
         assert_eq!(intercepted.get(), 1);
     }
 
@@ -269,10 +240,7 @@ mod tests {
         host.register_original(addr(0x200), move |_| {
             if flag.replace(false) {
                 let nested = inner.invoke(addr(0x200), &[]).unwrap();
-                assert!(matches!(
-                    nested,
-                    GuestCallResult::Value(GuestCallValue::Int32(5))
-                ));
+                assert!(matches!(nested, GuestCallResult::Value(GuestCallValue::Int32(5))));
             }
             GuestCallResult::Value(GuestCallValue::Int32(5))
         });
@@ -290,10 +258,7 @@ mod tests {
         )
         .unwrap();
         let result = host.invoke(addr(0x200), &[]).unwrap();
-        assert!(matches!(
-            result,
-            GuestCallResult::Value(GuestCallValue::Int32(5))
-        ));
+        assert!(matches!(result, GuestCallResult::Value(GuestCallValue::Int32(5))));
         assert_eq!(intercepted.get(), 2);
     }
 
@@ -301,14 +266,15 @@ mod tests {
     fn declined_or_missing_entries_fall_through_or_fail() {
         let host = SyntheticEntryHost::new();
         host.register_original(addr(0x300), |_| GuestCallResult::Void);
-        bind_native_mod_entry(&host, addr(0x300), "mod:declined", |_, _| {
-            GuestCallResult::Value(GuestCallValue::Int32(9))
-        }, || false)
+        bind_native_mod_entry(
+            &host,
+            addr(0x300),
+            "mod:declined",
+            |_, _| GuestCallResult::Value(GuestCallValue::Int32(9)),
+            || false,
+        )
         .unwrap();
         assert!(matches!(host.invoke(addr(0x300), &[]).unwrap(), GuestCallResult::Void));
-        assert_eq!(
-            host.invoke(addr(0x999), &[]),
-            Err(EntryError::UnknownEntry(0x999))
-        );
+        assert_eq!(host.invoke(addr(0x999), &[]), Err(EntryError::UnknownEntry(0x999)));
     }
 }

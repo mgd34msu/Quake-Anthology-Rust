@@ -364,8 +364,7 @@ impl SyntheticActorHost {
             return Err(ActorError::OutsideTable);
         }
         let relative = address.offset - self.table_base.offset;
-        if relative % self.stride as u64 != 0 || relative / self.stride as u64 >= self.count as u64
-        {
+        if relative % self.stride as u64 != 0 || relative / self.stride as u64 >= self.count as u64 {
             return Err(ActorError::OutsideTable);
         }
         Ok((relative / self.stride as u64) as usize)
@@ -417,12 +416,8 @@ fn f64_to_scalar(value: f64, storage: GuestStorage, pointer_bytes: usize) -> Vec
         GuestStorage::Float32 => (value as f32).to_le_bytes().to_vec(),
         GuestStorage::Float64 => value.to_le_bytes().to_vec(),
         GuestStorage::Int8 | GuestStorage::Uint8 => vec![value as i64 as u8],
-        GuestStorage::Int16 | GuestStorage::Uint16 => {
-            (value as i64 as i16).to_le_bytes().to_vec()
-        }
-        GuestStorage::Int32 | GuestStorage::Uint32 => {
-            (value as i64 as i32).to_le_bytes().to_vec()
-        }
+        GuestStorage::Int16 | GuestStorage::Uint16 => (value as i64 as i16).to_le_bytes().to_vec(),
+        GuestStorage::Int32 | GuestStorage::Uint32 => (value as i64 as i32).to_le_bytes().to_vec(),
         GuestStorage::Int64 | GuestStorage::Uint64 => (value as i64).to_le_bytes().to_vec(),
         GuestStorage::Pointer => {
             if pointer_bytes == 4 {
@@ -564,9 +559,8 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
         if slot == 0 {
             return true;
         }
-        self.entity_record.is_some_and(|(first, capacity)| {
-            slot >= first && slot < first + capacity
-        })
+        self.entity_record
+            .is_some_and(|(first, capacity)| slot >= first && slot < first + capacity)
     }
 
     fn at(host: &SyntheticActorHost, slot: usize, offset: usize) -> Result<GuestAddress, ActorError> {
@@ -575,15 +569,8 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
     }
 
     /// Live owned actor at a slot, if any.
-    pub fn actor_at(
-        &self,
-        store: &impl ActorStore,
-        slot: usize,
-    ) -> Option<OwnedActor> {
-        self.slots
-            .get(&slot)
-            .filter(|actor| store.is_live(actor.id))
-            .cloned()
+    pub fn actor_at(&self, store: &impl ActorStore, slot: usize) -> Option<OwnedActor> {
+        self.slots.get(&slot).filter(|actor| store.is_live(actor.id)).cloned()
     }
 
     /// Source slot of an actor, if adopted.
@@ -624,12 +611,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
         Ok(Some(actor))
     }
 
-    fn bind(
-        &mut self,
-        bodies: &mut impl BodyTable,
-        slot: usize,
-        actor: OwnedActor,
-    ) -> Result<(), ActorError> {
+    fn bind(&mut self, bodies: &mut impl BodyTable, slot: usize, actor: OwnedActor) -> Result<(), ActorError> {
         bodies.rebind(actor.id, slot);
         self.behavior.bind(slot, actor);
         Ok(())
@@ -672,16 +654,16 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
         state: &BodyState,
     ) -> Result<(), ActorError> {
         let fields = &self.definition.fields;
-        host.memory.write(Self::at(host, slot, 4)?, &vec_to_bytes(state.origin))?;
-        host.memory.write(Self::at(host, slot, 16)?, &vec_to_bytes(state.angles))?;
+        host.memory
+            .write(Self::at(host, slot, 4)?, &vec_to_bytes(state.origin))?;
+        host.memory
+            .write(Self::at(host, slot, 16)?, &vec_to_bytes(state.angles))?;
         host.memory
             .write(Self::at(host, slot, 188)?, &vec_to_bytes(state.bounds_min))?;
         host.memory
             .write(Self::at(host, slot, 200)?, &vec_to_bytes(state.bounds_max))?;
-        host.memory.write(
-            Self::at(host, slot, fields.velocity)?,
-            &vec_to_bytes(state.velocity),
-        )?;
+        host.memory
+            .write(Self::at(host, slot, fields.velocity)?, &vec_to_bytes(state.velocity))?;
         let ground = state.ground.and_then(address_of);
         host.memory
             .write_pointer(Self::at(host, slot, fields.ground)?, ground)?;
@@ -727,10 +709,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
             (fields.velocity, 12),
             (fields.ground, pointer_bytes),
             (fields.think, pointer_bytes),
-            (
-                fields.nextthink.offset,
-                fields.nextthink.width(pointer_bytes),
-            ),
+            (fields.nextthink.offset, fields.nextthink.width(pointer_bytes)),
         ];
         if let Some(use_offset) = fields.use_offset {
             checks.push((use_offset, pointer_bytes));
@@ -747,11 +726,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
     }
 
     /// Drain externally released actors into the pending set.
-    pub fn note_released(
-        &mut self,
-        host: &mut SyntheticActorHost,
-        store: &mut impl ActorStore,
-    ) {
+    pub fn note_released(&mut self, host: &mut SyntheticActorHost, store: &mut impl ActorStore) {
         for actor in store.take_released() {
             if let Some(slot) = self.actor_slots.get(&actor) {
                 self.pending.insert(*slot);
@@ -805,10 +780,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
         for slot in std::mem::take(&mut self.pending) {
             if host.is_active(slot) {
                 let address = host.entity_address(slot)?;
-                host.invoke_entry(
-                    release,
-                    &[GuestCallValue::Pointer(Some(address))],
-                )?;
+                host.invoke_entry(release, &[GuestCallValue::Pointer(Some(address))])?;
                 host.release_events.clear();
             }
             if !self.closing && host.is_active(slot) {
@@ -899,11 +871,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
     }
 
     /// Capture owned-actor state.
-    pub fn checkpoint(
-        &self,
-        store: &impl ActorStore,
-        bodies: &impl BodyTable,
-    ) -> SavedNativeActors {
+    pub fn checkpoint(&self, store: &impl ActorStore, bodies: &impl BodyTable) -> SavedNativeActors {
         SavedNativeActors {
             next_frame: self.next_frame,
             frame: self.frame,
@@ -933,10 +901,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
             .map(|entry| {
                 let id = store.reference_saved(entry.actor);
                 let actor = store.resolve_owned(id).ok_or_else(|| {
-                    ActorError::SaveMismatch(format!(
-                        "{}/{}",
-                        entry.actor.slot, entry.actor.generation
-                    ))
+                    ActorError::SaveMismatch(format!("{}/{}", entry.actor.slot, entry.actor.generation))
                 })?;
                 if actor.owner != self.instance
                     || self.reserved(entry.slot)
@@ -1017,9 +982,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1260,9 +1223,7 @@ mod tests {
             bound: Vec::new(),
             hits: Vec::new(),
         };
-        let actors =
-            NativeModActors::new(definition(), Some((1, 2)), "test:mod", &mut host, calls, behavior)
-                .unwrap();
+        let actors = NativeModActors::new(definition(), Some((1, 2)), "test:mod", &mut host, calls, behavior).unwrap();
         Fixture {
             actors,
             host,
@@ -1285,9 +1246,7 @@ mod tests {
     fn allocate_adopts_and_advance_ticks_update() {
         let mut fixture = fixture();
         fixture.actors.validate(&mut fixture.host).unwrap();
-        let alloc =
-            NativeModActors::<TestCalls, TestBehavior>::entry(&fixture.host, &EntryRef::Rva(ALLOC))
-                .unwrap();
+        let alloc = NativeModActors::<TestCalls, TestBehavior>::entry(&fixture.host, &EntryRef::Rva(ALLOC)).unwrap();
         // Slot 1 is reserved (entity record rows); allocate twice for slot 2.
         fixture.host.invoke_entry(alloc, &[]).unwrap();
         fixture
@@ -1305,15 +1264,31 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1, 3);
 
-        fixture.host.memory.write(
-            SyntheticActorHost::entity_address(&fixture.host, 3).unwrap(),
-            &vec![0u8; STRIDE],
-        ).ok();
+        fixture
+            .host
+            .memory
+            .write(
+                SyntheticActorHost::entity_address(&fixture.host, 3).unwrap(),
+                &vec![0u8; STRIDE],
+            )
+            .ok();
         let state = BodyState {
             origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
-            angles: Vec3 { x: 0.0, y: 90.0, z: 0.0 },
-            bounds_min: Vec3 { x: -16.0, y: -16.0, z: -24.0 },
-            bounds_max: Vec3 { x: 16.0, y: 16.0, z: 32.0 },
+            angles: Vec3 {
+                x: 0.0,
+                y: 90.0,
+                z: 0.0,
+            },
+            bounds_min: Vec3 {
+                x: -16.0,
+                y: -16.0,
+                z: -24.0,
+            },
+            bounds_max: Vec3 {
+                x: 16.0,
+                y: 16.0,
+                z: 32.0,
+            },
             velocity: Vec3 { x: 5.0, y: 0.0, z: 0.0 },
             ground: None,
         };
@@ -1321,10 +1296,7 @@ mod tests {
             .actors
             .write_body(&mut fixture.host, 3, &|_| None, &state)
             .unwrap();
-        let roundtrip = fixture
-            .actors
-            .read_body(&mut fixture.host, 3, &|_| None)
-            .unwrap();
+        let roundtrip = fixture.actors.read_body(&mut fixture.host, 3, &|_| None).unwrap();
         assert_eq!(roundtrip, state);
 
         *fixture.now.borrow_mut() = 1.25;
@@ -1339,9 +1311,7 @@ mod tests {
     #[test]
     fn release_drains_and_checkpoint_roundtrips() {
         let mut fixture = fixture();
-        let alloc =
-            NativeModActors::<TestCalls, TestBehavior>::entry(&fixture.host, &EntryRef::Rva(ALLOC))
-                .unwrap();
+        let alloc = NativeModActors::<TestCalls, TestBehavior>::entry(&fixture.host, &EntryRef::Rva(ALLOC)).unwrap();
         for _ in 0..4 {
             fixture.host.invoke_entry(alloc, &[]).unwrap();
         }
@@ -1367,7 +1337,13 @@ mod tests {
         let validated = fixture.actors.validate_saved(&mut fixture.store, &saved).unwrap();
         fixture
             .actors
-            .restore(&mut fixture.host, &mut fixture.store, &mut fixture.bodies, &saved, &validated)
+            .restore(
+                &mut fixture.host,
+                &mut fixture.store,
+                &mut fixture.bodies,
+                &saved,
+                &validated,
+            )
             .unwrap();
         assert_eq!(fixture.actors.entries(&fixture.store).len(), 2);
         assert!(fixture.bodies.linked(actor(3)));
@@ -1394,16 +1370,10 @@ mod tests {
             bound: Vec::new(),
             hits: Vec::new(),
         };
-        let mut actors =
-            NativeModActors::new(bad, None, "test:mod", &mut fixture.host, calls, behavior).unwrap();
-        assert_eq!(
-            actors.validate(&mut fixture.host),
-            Err(ActorError::FieldRange)
-        );
+        let mut actors = NativeModActors::new(bad, None, "test:mod", &mut fixture.host, calls, behavior).unwrap();
+        assert_eq!(actors.validate(&mut fixture.host), Err(ActorError::FieldRange));
 
-        let alloc =
-            NativeModActors::<TestCalls, TestBehavior>::entry(&fixture.host, &EntryRef::Rva(ALLOC))
-                .unwrap();
+        let alloc = NativeModActors::<TestCalls, TestBehavior>::entry(&fixture.host, &EntryRef::Rva(ALLOC)).unwrap();
         for _ in 0..3 {
             fixture.host.invoke_entry(alloc, &[]).unwrap();
         }
@@ -1414,11 +1384,9 @@ mod tests {
         // Stubborn release body keeps the slot active.
         fixture.host.register_body(RELEASE, |_, _| GuestCallResult::Void);
         fixture.store.released.push(actor(3));
-        let refused = fixture.actors.drain_releases(
-            &mut fixture.host,
-            &mut fixture.store,
-            &mut fixture.bodies,
-        );
+        let refused = fixture
+            .actors
+            .drain_releases(&mut fixture.host, &mut fixture.store, &mut fixture.bodies);
         assert_eq!(refused, Err(ActorError::RefusedRelease));
     }
 }

@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use qa_guest::core::contracts::{
-    GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
-    GuestStorage, GuestValueLayout, NativeAbi,
+    GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue, GuestStorage,
+    GuestValueLayout, NativeAbi,
 };
 use qa_guest::error::GuestError;
 use thiserror::Error;
@@ -47,8 +47,7 @@ pub enum Q3SyscallError {
 
 /// Headless service behind one syscall code. Pointer arguments stay guest
 /// pointers; float-carrying slots arrive as int32 bits.
-pub type SyscallHandler =
-    Box<dyn Fn(&GuestCallContext, &[GuestCallValue]) -> Result<i32, Q3SyscallError>>;
+pub type SyscallHandler = Box<dyn Fn(&GuestCallContext, &[GuestCallValue]) -> Result<i32, Q3SyscallError>>;
 
 /// One bound Q3 native syscall.
 pub struct NativeQ3SyscallBinding {
@@ -196,13 +195,12 @@ impl NativeQ3Syscalls {
         if fixed.is_empty() {
             return Err(Q3SyscallError::MissingCode);
         }
-        let code = i32::try_from(call_integer(fixed, 0).map_err(|_| {
-            Q3SyscallError::BadArgument("Q3 syscall code must be an integer".to_string())
-        })?)
+        let code = i32::try_from(
+            call_integer(fixed, 0)
+                .map_err(|_| Q3SyscallError::BadArgument("Q3 syscall code must be an integer".to_string()))?,
+        )
         .map_err(|_| Q3SyscallError::BadArgument("Q3 syscall code exceeds int32 range".to_string()))?;
-        self.services
-            .get(&code)
-            .ok_or(Q3SyscallError::UnboundSyscall(code))
+        self.services.get(&code).ok_or(Q3SyscallError::UnboundSyscall(code))
     }
 
     /// Run the shared entry: decode the code, then hand the tail to the
@@ -265,19 +263,12 @@ mod tests {
     }
 
     fn print_binding() -> NativeQ3SyscallBinding {
-        NativeQ3SyscallBinding::new(
-            1,
-            "G_Printf",
-            vec![GuestStorage::Pointer],
-            |_context, args| {
-                if args.len() != 1 {
-                    return Err(Q3SyscallError::BadArgument(
-                        "G_Printf expects one argument".to_string(),
-                    ));
-                }
-                Ok(7)
-            },
-        )
+        NativeQ3SyscallBinding::new(1, "G_Printf", vec![GuestStorage::Pointer], |_context, args| {
+            if args.len() != 1 {
+                return Err(Q3SyscallError::BadArgument("G_Printf expects one argument".to_string()));
+            }
+            Ok(7)
+        })
     }
 
     #[test]
@@ -296,17 +287,17 @@ mod tests {
         assert_eq!(syscalls.callback_id(), "q3-native-syscall:game");
         let signature = syscalls.entry_signature();
         assert!(signature.variadic);
-        assert_eq!(signature.parameters, vec![GuestValueLayout::Scalar(GuestStorage::Int32)]);
+        assert_eq!(
+            signature.parameters,
+            vec![GuestValueLayout::Scalar(GuestStorage::Int32)]
+        );
 
         let context = test_context();
         let target = GuestAddress::new(11, 0x5000);
         let result = syscalls
             .dispatch(
                 &context,
-                &[
-                    GuestCallValue::Int32(1),
-                    GuestCallValue::Pointer(Some(target)),
-                ],
+                &[GuestCallValue::Int32(1), GuestCallValue::Pointer(Some(target))],
             )
             .expect("dispatch print");
         assert_eq!(result, GuestCallResult::Value(GuestCallValue::Int32(7)));
@@ -344,20 +335,12 @@ mod tests {
             Err(Q3SyscallError::DuplicateSyscall(1))
         ));
         assert!(matches!(
-            NativeQ3Syscalls::new(
-                &mut allocator,
-                NativeAbi::LinuxX86_64,
-                vec![print_binding()],
-            ),
+            NativeQ3Syscalls::new(&mut allocator, NativeAbi::LinuxX86_64, vec![print_binding()],),
             Err(Q3SyscallError::UnsupportedAbi)
         ));
-        let names = NativeQ3Syscalls::new(
-            &mut allocator,
-            NativeAbi::LinuxI386,
-            vec![print_binding()],
-        )
-        .expect("bind")
-        .service_names();
+        let names = NativeQ3Syscalls::new(&mut allocator, NativeAbi::LinuxI386, vec![print_binding()])
+            .expect("bind")
+            .service_names();
         assert_eq!(names.get(&1), Some(&"G_Printf"));
     }
 }

@@ -2,7 +2,7 @@
 //! Bridges original pickup touch/grant/supply calls over synthetic entities.
 
 use qa_guest::core::contracts::{
-    GuestAddress, GuestCallResult, GuestCallValue, GuestCallSignature, GuestRegister, NativeAbi,
+    GuestAddress, GuestCallResult, GuestCallSignature, GuestCallValue, GuestRegister, NativeAbi,
 };
 use qa_world::combat::ItemId;
 
@@ -387,8 +387,7 @@ impl NativePrimaryPickups {
         profile: NativePickupProfile,
         consumer_hook: Option<Box<dyn FnMut(NativeActorId, ProtectionChannel)>>,
     ) -> HostResult<Self> {
-        if profile.grants.iter().any(|grant| !grant.consumers.is_empty()) && consumer_hook.is_none()
-        {
+        if profile.grants.iter().any(|grant| !grant.consumers.is_empty()) && consumer_hook.is_none() {
             return Err(NativeHostError::Fault(
                 "native pickup consumer has no protection owner binding".to_string(),
             ));
@@ -432,10 +431,7 @@ impl NativePrimaryPickups {
     }
 
     /// Bind the weapon-supply owner; fails when busy, closed or already bound.
-    pub fn bind_supply(
-        &mut self,
-        owner: Box<dyn Fn(NativeActorId, &ItemId, NativeActorId) -> bool>,
-    ) -> HostResult<()> {
+    pub fn bind_supply(&mut self, owner: Box<dyn Fn(NativeActorId, &ItemId, NativeActorId) -> bool>) -> HostResult<()> {
         self.assert_idle()?;
         if self.closed || self.supply_owner.is_some() {
             return Err(NativeHostError::Fault(
@@ -469,7 +465,10 @@ impl NativePrimaryPickups {
 
     fn item_name(&self, host: &mut SyntheticHost, descriptor: GuestAddress) -> HostResult<ItemId> {
         self.item_index(host, descriptor)?;
-        let slot = host.core.memory.offset(descriptor, i64::from(self.profile.items.classname))?;
+        let slot = host
+            .core
+            .memory
+            .offset(descriptor, i64::from(self.profile.items.classname))?;
         let name = host.core.memory.read_pointer(slot)?;
         match name {
             Some(name) => {
@@ -483,10 +482,14 @@ impl NativePrimaryPickups {
     }
 
     fn client(&self, host: &mut SyntheticHost, recipient: GuestAddress) -> HostResult<GuestAddress> {
-        let slot = host.core.memory.offset(recipient, i64::from(self.profile.supply.client))?;
-        host.core.memory.read_pointer(slot)?.ok_or_else(|| {
-            NativeHostError::Fault("native pickup recipient has no original client".to_string())
-        })
+        let slot = host
+            .core
+            .memory
+            .offset(recipient, i64::from(self.profile.supply.client))?;
+        host.core
+            .memory
+            .read_pointer(slot)?
+            .ok_or_else(|| NativeHostError::Fault("native pickup recipient has no original client".to_string()))
     }
 
     fn counter(
@@ -497,17 +500,14 @@ impl NativePrimaryPickups {
     ) -> HostResult<GuestAddress> {
         let client = self.client(host, frame.recipient)?;
         let index = self.item_index(host, descriptor)?;
-        Ok(host.core.memory.offset(
-            client,
-            i64::from(self.profile.supply.inventory) + i64::from(index) * 4,
-        )?)
+        Ok(host
+            .core
+            .memory
+            .offset(client, i64::from(self.profile.supply.inventory) + i64::from(index) * 4)?)
     }
 
     fn live(&self, host: &mut SyntheticHost, record: GuestAddress) -> HostResult<bool> {
-        let address = host
-            .core
-            .memory
-            .offset(record, i64::from(self.profile.entity.inuse))?;
+        let address = host.core.memory.offset(record, i64::from(self.profile.entity.inuse))?;
         match self.profile.entity.inuse_bytes {
             1 => Ok(host.core.memory.read_u8(address)? != 0),
             _ => Ok(host.core.memory.read_i32(address)? != 0),
@@ -561,29 +561,29 @@ impl NativePrimaryPickups {
                 .offset(descriptor, i64::from(self.profile.items.pickup))?,
         )?;
         let grant_index = match entry {
-            Some(entry) => self.profile.grants.iter().position(|grant| {
-                host.core.at(grant.entry).map_or(false, |address| address == entry)
-            }),
+            Some(entry) => self
+                .profile
+                .grants
+                .iter()
+                .position(|grant| host.core.at(grant.entry).map_or(false, |address| address == entry)),
             None => None,
         };
         let grant_index = match grant_index {
             Some(index) => index,
             None => return Ok(TouchDescribe::PassThrough),
         };
-        let (pickup_actor, recipient_actor) =
-            match (host.core.actor_for(pickup), host.core.actor_for(recipient)) {
-                (Some(pickup), Some(recipient)) => (pickup, recipient),
-                _ => return Ok(TouchDescribe::Stale),
-            };
+        let (pickup_actor, recipient_actor) = match (host.core.actor_for(pickup), host.core.actor_for(recipient)) {
+            (Some(pickup), Some(recipient)) => (pickup, recipient),
+            _ => return Ok(TouchDescribe::Stale),
+        };
         if !self.live(host, pickup)? || !self.live(host, recipient)? {
             return Ok(TouchDescribe::Stale);
         }
         let item = self.item_name(host, descriptor)?;
-        let count = host.core.memory.read_i32(
-            host.core
-                .memory
-                .offset(pickup, i64::from(self.profile.entity.count))?,
-        )?;
+        let count = host
+            .core
+            .memory
+            .read_i32(host.core.memory.offset(pickup, i64::from(self.profile.entity.count))?)?;
         let time = match self.profile.time.storage {
             TimeStorage::FloatSeconds => {
                 let address = host.core.at(self.profile.time.address)?;
@@ -663,9 +663,10 @@ impl NativePrimaryPickups {
     ) -> HostResult<GrantOutcome> {
         self.check_host(host)?;
         let frame_index = self.frames.len().wrapping_sub(1);
-        let frame = self.frames.get(frame_index).ok_or_else(|| {
-            NativeHostError::Fault("native pickup grant has no owning caller".to_string())
-        })?;
+        let frame = self
+            .frames
+            .get(frame_index)
+            .ok_or_else(|| NativeHostError::Fault("native pickup grant has no owning caller".to_string()))?;
         if !self.frame_current(host, frame)? {
             return Ok(GrantOutcome::Cancelled);
         }
@@ -690,7 +691,10 @@ impl NativePrimaryPickups {
                 if !current() {
                     return Ok(GrantOutcome::Cancelled);
                 }
-                if self.profile.grants[self.frames[frame_index].grant_index].supply.is_some() {
+                if self.profile.grants[self.frames[frame_index].grant_index]
+                    .supply
+                    .is_some()
+                {
                     return Err(NativeHostError::Fault(
                         "native supply grants settle through the supply path".to_string(),
                     ));
@@ -712,7 +716,9 @@ impl NativePrimaryPickups {
         grant: &mut dyn FnMut() -> PickupOutcome,
         consume: bool,
     ) -> HostResult<PickupOutcome> {
-        let consumers = self.profile.grants[self.frames[frame_index].grant_index].consumers.clone();
+        let consumers = self.profile.grants[self.frames[frame_index].grant_index]
+            .consumers
+            .clone();
         let decision = grant();
         if !self.frame_current(host, &self.frames[frame_index])? {
             return Ok(PickupOutcome::Stale);
@@ -738,9 +744,7 @@ impl NativePrimaryPickups {
     pub fn note_targets(&mut self, host: &mut SyntheticHost) -> HostResult<bool> {
         self.check_host(host)?;
         match self.frames.last() {
-            Some(frame) if frame.kind != SelectionKind::Original => {
-                Ok(self.frame_current(host, frame)?)
-            }
+            Some(frame) if frame.kind != SelectionKind::Original => Ok(self.frame_current(host, frame)?),
             _ => Ok(true),
         }
     }
@@ -748,25 +752,23 @@ impl NativePrimaryPickups {
     /// Read the held supply evaluation.
     pub fn supply(&mut self, host: &mut SyntheticHost) -> HostResult<SupplyEvaluation> {
         self.check_host(host)?;
-        let frame = self.frames.last().ok_or_else(|| {
-            NativeHostError::Fault("native pickup supply requires its held source grant".to_string())
-        })?;
+        let frame = self
+            .frames
+            .last()
+            .ok_or_else(|| NativeHostError::Fault("native pickup supply requires its held source grant".to_string()))?;
         if !self.frame_current(host, frame)? {
             return Err(NativeHostError::Fault(
                 "native pickup supply requires its held source grant".to_string(),
             ));
         }
-        frame.supply.clone().ok_or_else(|| {
-            NativeHostError::Fault("native pickup supply requires its held source grant".to_string())
-        })
+        frame
+            .supply
+            .clone()
+            .ok_or_else(|| NativeHostError::Fault("native pickup supply requires its held source grant".to_string()))
     }
 
     /// Prepare an ammo-supply evaluation for the current frame.
-    pub fn prepare_supply_ammo(
-        &mut self,
-        host: &mut SyntheticHost,
-        amount: i32,
-    ) -> HostResult<SupplyEvaluation> {
+    pub fn prepare_supply_ammo(&mut self, host: &mut SyntheticHost, amount: i32) -> HostResult<SupplyEvaluation> {
         self.check_host(host)?;
         let frame_index = self.frames.len().wrapping_sub(1);
         if self.frames.get(frame_index).is_none() {
@@ -788,7 +790,10 @@ impl NativePrimaryPickups {
                 weapon: item.clone(),
             }
         } else {
-            SupplyOffer::Ammo { item: item.clone(), amount }
+            SupplyOffer::Ammo {
+                item: item.clone(),
+                amount,
+            }
         };
         let evaluation = SupplyEvaluation {
             offer,
@@ -848,25 +853,23 @@ impl NativePrimaryPickups {
     ) -> HostResult<PickupQuantity> {
         self.check_host(host)?;
         let frame_index = self.frames.len().wrapping_sub(1);
-        let frame = self.frames.get(frame_index).ok_or_else(|| {
-            NativeHostError::Fault("native pickup quantity has expired".to_string())
-        })?;
+        let frame = self
+            .frames
+            .get(frame_index)
+            .ok_or_else(|| NativeHostError::Fault("native pickup quantity has expired".to_string()))?;
         if !self.frame_current(host, frame)? || frame.supply.is_none() {
             return Err(NativeHostError::Fault("native pickup quantity has expired".to_string()));
         }
         let ammo = &self.profile.supply.ammo;
-        let tag = host.core.memory.read_i32(
-            host.core
-                .memory
-                .offset(descriptor, i64::from(ammo.tag))?,
-        )?;
+        let tag = host
+            .core
+            .memory
+            .read_i32(host.core.memory.offset(descriptor, i64::from(ammo.tag))?)?;
         let capacity_offset = usize::try_from(tag)
             .ok()
             .and_then(|tag| ammo.capacities.get(tag))
             .copied()
-            .ok_or_else(|| {
-                NativeHostError::Fault("native pickup ammo has no source capacity".to_string())
-            })?;
+            .ok_or_else(|| NativeHostError::Fault("native pickup ammo has no source capacity".to_string()))?;
         let capacity_limit = if ammo.capacity_bytes == 2 { 0x7FFF } else { i32::MAX };
         if capacity < 0 || capacity > capacity_limit {
             return Err(NativeHostError::Fault(
@@ -1001,7 +1004,10 @@ mod tests {
             grants: vec![
                 NativePickupGrant {
                     entry: 0x200,
-                    recipient: NativeRegion { entry: 0x210, join: 0x220 },
+                    recipient: NativeRegion {
+                        entry: 0x210,
+                        join: 0x220,
+                    },
                     resource: PickupResource::Inventory,
                     consumers: vec![],
                     supply: Some(PickupSupply::Ammo {
@@ -1011,7 +1017,10 @@ mod tests {
                 },
                 NativePickupGrant {
                     entry: 0x300,
-                    recipient: NativeRegion { entry: 0x310, join: 0x320 },
+                    recipient: NativeRegion {
+                        entry: 0x310,
+                        join: 0x320,
+                    },
                     resource: PickupResource::Regular,
                     consumers: vec![],
                     supply: None,
@@ -1032,7 +1041,10 @@ mod tests {
                 inuse_bytes: 4,
                 generation: None,
             },
-            time: PickupTime { address: 0x500, storage: TimeStorage::FloatSeconds },
+            time: PickupTime {
+                address: 0x500,
+                storage: TimeStorage::FloatSeconds,
+            },
             supply: PickupSupplyProfile {
                 client: 84,
                 inventory: 0x100,
@@ -1051,7 +1063,10 @@ mod tests {
     }
 
     fn live(host: &mut SyntheticHost, entity: GuestAddress) {
-        host.core.memory.write_i32(host.core.memory.offset(entity, 0x4C).expect("inuse"), 1).expect("live");
+        host.core
+            .memory
+            .write_i32(host.core.memory.offset(entity, 0x4C).expect("inuse"), 1)
+            .expect("live");
     }
 
     fn fixture() -> (SyntheticHost, GuestAddress, GuestAddress, GuestAddress) {
@@ -1065,9 +1080,18 @@ mod tests {
             .memory
             .write_pointer(host.core.memory.offset(descriptor, 8).expect("fn"), Some(pickup_fn))
             .expect("fn");
-        host.core.memory.write_u32(host.core.memory.offset(descriptor, 16).expect("flags"), 0).expect("flags");
-        host.core.memory.write_i32(host.core.memory.offset(descriptor, 20).expect("tag"), 0).expect("tag");
-        host.core.memory.write_f32(host.core.at(0x500).expect("time"), 12.0).expect("time");
+        host.core
+            .memory
+            .write_u32(host.core.memory.offset(descriptor, 16).expect("flags"), 0)
+            .expect("flags");
+        host.core
+            .memory
+            .write_i32(host.core.memory.offset(descriptor, 20).expect("tag"), 0)
+            .expect("tag");
+        host.core
+            .memory
+            .write_f32(host.core.at(0x500).expect("time"), 12.0)
+            .expect("time");
         let pickup_actor = host.core.spawn_actor(896, 512).expect("pickup");
         let recipient_actor = host.core.spawn_actor(896, 512).expect("recipient");
         let pickup = host.core.entity_of(pickup_actor).expect("pickup");
@@ -1080,7 +1104,10 @@ mod tests {
             .memory
             .write_pointer(host.core.memory.offset(pickup, 0x40).expect("item"), Some(descriptor))
             .expect("item");
-        host.core.memory.write_i32(host.core.memory.offset(pickup, 0x44).expect("count"), 5).expect("count");
+        host.core
+            .memory
+            .write_i32(host.core.memory.offset(pickup, 0x44).expect("count"), 5)
+            .expect("count");
         let _ = profile;
         (host, pickup, recipient, descriptor)
     }
@@ -1122,7 +1149,9 @@ mod tests {
         ));
         let mut selection = PickupSelection::Blocked;
         assert_eq!(
-            service.grant(&mut host, pickup, recipient, &mut selection).expect("grant"),
+            service
+                .grant(&mut host, pickup, recipient, &mut selection)
+                .expect("grant"),
             GrantOutcome::Refused
         );
         service.end_touch();
@@ -1144,7 +1173,10 @@ mod tests {
                     GuestCallValue::Int32(amount) => amount,
                     _ => return Err(NativeHostError::Fault("bad amount".to_string())),
                 };
-                let client = core.memory.read_pointer(core.memory.offset(recipient, 84)?)?.expect("client");
+                let client = core
+                    .memory
+                    .read_pointer(core.memory.offset(recipient, 84)?)?
+                    .expect("client");
                 let counter = core.memory.offset(client, 0x100)?;
                 let count = core.memory.read_i32(counter)?;
                 core.memory.write_i32(counter, count + amount.min(3))?;
@@ -1163,14 +1195,24 @@ mod tests {
         assert!(matches!(evaluation.offer, SupplyOffer::Ammo { amount: 5, .. }));
         let held = service.supply(&mut host).expect("supply");
         assert_eq!(held, evaluation);
-        let quantity = service.project_quantity(&mut host, descriptor, 5, 0, 200).expect("quantity");
-        assert_eq!(quantity, PickupQuantity { amount: 3, accepted: true });
+        let quantity = service
+            .project_quantity(&mut host, descriptor, 5, 0, 200)
+            .expect("quantity");
+        assert_eq!(
+            quantity,
+            PickupQuantity {
+                amount: 3,
+                accepted: true
+            }
+        );
         let mut selection = PickupSelection::Replacement {
             grant: Box::new(|| PickupOutcome::Accepted),
             current: Box::new(|| true),
         };
         assert_eq!(
-            service.settle_supply(&mut host, &mut selection, quantity.accepted).expect("settle"),
+            service
+                .settle_supply(&mut host, &mut selection, quantity.accepted)
+                .expect("settle"),
             GrantOutcome::Accepted
         );
         assert!(service.supply(&mut host).is_err());
@@ -1198,7 +1240,8 @@ mod tests {
             signature: signature(),
             protection: ProtectionChannel::Powered,
         });
-        host.on_rva(0x700, Box::new(|_, _| Ok(GuestCallResult::Void))).expect("consumer");
+        host.on_rva(0x700, Box::new(|_, _| Ok(GuestCallResult::Void)))
+            .expect("consumer");
         let mut service = NativePrimaryPickups::new(profile, Some(Box::new(|_, _| {}))).expect("service");
         assert!(matches!(
             service.begin_touch(&mut host, pickup, recipient).expect("touch"),
@@ -1209,7 +1252,9 @@ mod tests {
             current: Box::new(|| true),
         };
         assert_eq!(
-            service.grant(&mut host, pickup, recipient, &mut selection).expect("grant"),
+            service
+                .grant(&mut host, pickup, recipient, &mut selection)
+                .expect("grant"),
             GrantOutcome::Accepted
         );
         service.end_touch();

@@ -4,31 +4,26 @@
 use qa_guest::core::contracts::NativeAbi;
 
 use super::native_primary_commands::{
-    AmmoGrant, CommandClient, CommandItems, DropCommand, GiveProfile, GrantKind, ItemAmmo,
-    NativePrimaryCommandProfile,
+    AmmoGrant, CommandClient, CommandItems, DropCommand, GiveProfile, GrantKind, ItemAmmo, NativePrimaryCommandProfile,
 };
-use super::native_primary_drop::{
-    DropClient, InventoryDrop, NativePrimaryDropProfile,
-};
+use super::native_primary_drop::{DropClient, InventoryDrop, NativePrimaryDropProfile};
 use super::native_primary_inventory::{
-    InventoryPrototypes, NamedUseProfile, NativePrimaryInventoryProfile, NextProfile,
-    PreviousProfile, SelectionWrite, UseProfile, ValidateProfile,
+    InventoryPrototypes, NamedUseProfile, NativePrimaryInventoryProfile, NextProfile, PreviousProfile, SelectionWrite,
+    UseProfile, ValidateProfile,
 };
 use super::native_primary_pickups::{
-    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems,
-    PickupResource, PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
+    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
+    PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
 };
-use super::native_primary_player::{
-    NativePrimaryPlayerProfile, PlayerObjectives, SourcePrimaryMatch, SourceTeam,
-};
+use super::native_primary_player::{NativePrimaryPlayerProfile, PlayerObjectives, SourcePrimaryMatch, SourceTeam};
 use super::native_primary_reader::{
-    Reader, RecordKind, native_field, native_offset, native_register, native_scalar,
-    native_signature, native_test, namespaced,
+    namespaced, native_field, native_offset, native_register, native_scalar, native_signature, native_test, Reader,
+    RecordKind,
 };
 use super::native_primary_weapons::{
-    AttackAnimation, DamageResult, DecisionField, DelayEvaluate, EquipmentContext,
-    NativePrimaryWeaponProfile, ProjectionWrite, SpawnGate, WeaponAnimation, WeaponClient,
-    WeaponDamage, WeaponDecision, WeaponDelay, WeaponDispatcher, WeaponEntity, WeaponTime,
+    AttackAnimation, DamageResult, DecisionField, DelayEvaluate, EquipmentContext, NativePrimaryWeaponProfile,
+    ProjectionWrite, SpawnGate, WeaponAnimation, WeaponClient, WeaponDamage, WeaponDecision, WeaponDelay,
+    WeaponDispatcher, WeaponEntity, WeaponTime,
 };
 
 /// Read a score-storage match declaration bounded by `u32`.
@@ -44,11 +39,7 @@ pub fn read_source_primary_match(reader: &Reader) -> SourcePrimaryMatch {
 }
 
 /// Read a weapon profile subtree.
-pub fn read_native_primary_weapons(
-    reader: &Reader,
-    digest: String,
-    abi: NativeAbi,
-) -> NativePrimaryWeaponProfile {
+pub fn read_native_primary_weapons(reader: &Reader, digest: String, abi: NativeAbi) -> NativePrimaryWeaponProfile {
     let dispatcher = reader.field("dispatcher");
     let spawn = reader.field("spawn");
     let time = reader.field("time");
@@ -77,7 +68,9 @@ pub fn read_native_primary_weapons(
     let mut providers = std::collections::HashSet::new();
     for context in &equipment_contexts {
         if !providers.insert(context.provider.clone()) {
-            reader.field("equipmentContexts").fail("duplicate equipment source context");
+            reader
+                .field("equipmentContexts")
+                .fail("duplicate equipment source context");
         }
     }
     NativePrimaryWeaponProfile {
@@ -106,12 +99,8 @@ pub fn read_native_primary_weapons(
             accepted: spawn.field("accepted").list(native_test),
         },
         active: reader.field("active").list(native_test),
-        committed_input: reader
-            .field("committedInput")
-            .list(|value| value.list(native_test)),
-        continuations: reader
-            .field("continuations")
-            .list(|value| value.list(native_test)),
+        committed_input: reader.field("committedInput").list(|value| value.list(native_test)),
+        continuations: reader.field("continuations").list(|value| value.list(native_test)),
         time: WeaponTime {
             address: native_offset(&time.field("address")),
             encoding: native_scalar(&time.field("encoding")),
@@ -131,9 +120,7 @@ pub fn read_native_primary_weapons(
         },
         attack_animation: AttackAnimation {
             entry: native_offset(&attack.field("entry")),
-            skip: attack
-                .field("skip")
-                .list(super::native_primary_reader::native_region),
+            skip: attack.field("skip").list(super::native_primary_reader::native_region),
         },
         animation: WeaponAnimation {
             frame: native_field(&animation.field("frame")),
@@ -145,7 +132,11 @@ pub fn read_native_primary_weapons(
         delay: WeaponDelay {
             flag: native_field(&delay.field("flag")),
             region: super::native_primary_reader::native_region(&delay.field("region")),
-            evaluate: if evaluate.field("kind").choice_index(&["source-flag", "source-animation"]) == 0 {
+            evaluate: if evaluate
+                .field("kind")
+                .choice_index(&["source-flag", "source-animation"])
+                == 0
+            {
                 DelayEvaluate::SourceFlag {
                     factors: evaluate.field("factors").list(|value| value.finite()),
                 }
@@ -203,11 +194,7 @@ pub fn read_native_primary_player(reader: &Reader, digest: String) -> NativePrim
 }
 
 /// Read a command profile subtree.
-pub fn read_native_primary_commands(
-    reader: &Reader,
-    digest: String,
-    abi: NativeAbi,
-) -> NativePrimaryCommandProfile {
+pub fn read_native_primary_commands(reader: &Reader, digest: String, abi: NativeAbi) -> NativePrimaryCommandProfile {
     let give = reader.field("give");
     let drop = reader.field("drop");
     let client = reader.field("client");
@@ -275,11 +262,7 @@ fn integer_i32(reader: &Reader, min: i64) -> i32 {
 }
 
 /// Read an inventory profile subtree.
-pub fn read_native_primary_inventory(
-    reader: &Reader,
-    digest: String,
-    abi: NativeAbi,
-) -> NativePrimaryInventoryProfile {
+pub fn read_native_primary_inventory(reader: &Reader, digest: String, abi: NativeAbi) -> NativePrimaryInventoryProfile {
     let prototypes = reader.field("prototypes");
     let next = reader.field("next");
     let previous = reader.field("previous");
@@ -343,11 +326,7 @@ pub fn read_native_primary_inventory(
 }
 
 /// Read a drop profile subtree.
-pub fn read_native_primary_drop(
-    reader: &Reader,
-    digest: String,
-    abi: NativeAbi,
-) -> NativePrimaryDropProfile {
+pub fn read_native_primary_drop(reader: &Reader, digest: String, abi: NativeAbi) -> NativePrimaryDropProfile {
     let client = reader.field("client");
     let inventory = reader.field("inventory");
     NativePrimaryDropProfile {
@@ -372,9 +351,7 @@ pub fn read_native_primary_drop(
         callbacks: reader
             .field("callbacks")
             .list(super::native_primary_reader::native_region),
-        debits: reader
-            .field("debits")
-            .list(super::native_primary_reader::native_region),
+        debits: reader.field("debits").list(super::native_primary_reader::native_region),
         consumer: reader
             .field("consumer")
             .nullable(super::native_primary_reader::native_region),
@@ -382,11 +359,7 @@ pub fn read_native_primary_drop(
 }
 
 /// Read a pickup profile subtree.
-pub fn read_native_primary_pickups(
-    reader: &Reader,
-    digest: String,
-    abi: NativeAbi,
-) -> NativePickupProfile {
+pub fn read_native_primary_pickups(reader: &Reader, digest: String, abi: NativeAbi) -> NativePickupProfile {
     let items = reader.field("items");
     let entity = reader.field("entity");
     let time = reader.field("time");
@@ -435,9 +408,7 @@ pub fn read_native_primary_pickups(
                         PickupSupply::Weapon {
                             ammo_return: native_offset(&supply.field("ammoReturn")),
                             settle: native_offset(&supply.field("settle")),
-                            autoswitch: super::native_primary_reader::native_region(
-                                &supply.field("autoswitch"),
-                            ),
+                            autoswitch: super::native_primary_reader::native_region(&supply.field("autoswitch")),
                         }
                     }
                 }),
@@ -460,7 +431,10 @@ pub fn read_native_primary_pickups(
         },
         time: PickupTime {
             address: native_offset(&time.field("address")),
-            storage: match time.field("storage").choice_index(&["float32-seconds", "int64-milliseconds"]) {
+            storage: match time
+                .field("storage")
+                .choice_index(&["float32-seconds", "int64-milliseconds"])
+            {
                 0 => TimeStorage::FloatSeconds,
                 _ => TimeStorage::Int64Milliseconds,
             },
@@ -484,7 +458,7 @@ pub fn read_native_primary_pickups(
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_primary_reader::{CLASSIC_DIGEST, parse_json};
+    use super::super::native_primary_reader::{parse_json, CLASSIC_DIGEST};
     use super::*;
 
     const ABI: &str = r#"{"kind":"windows-i386","image":"pe32","call":"cdecl","pointerBytes":4}"#;
@@ -520,11 +494,7 @@ mod tests {
         );
         let value = parse_json(&text).expect("valid json");
         let root = Reader::root(&value);
-        let profile = read_native_primary_weapons(
-            &root,
-            CLASSIC_DIGEST.to_string(),
-            NativeAbi::WindowsI386,
-        );
+        let profile = read_native_primary_weapons(&root, CLASSIC_DIGEST.to_string(), NativeAbi::WindowsI386);
         assert_eq!(profile.dispatcher.entry_rva, 222000);
         assert_eq!(profile.client.byte_length, 3832);
         assert!(matches!(
@@ -562,11 +532,7 @@ mod tests {
         )
         .expect("valid json");
         let root = Reader::root(&value);
-        let profile = read_native_primary_inventory(
-            &root,
-            CLASSIC_DIGEST.to_string(),
-            NativeAbi::WindowsI386,
-        );
+        let profile = read_native_primary_inventory(&root, CLASSIC_DIGEST.to_string(), NativeAbi::WindowsI386);
         assert_eq!(profile.count, 256);
         assert_eq!(profile.empty, -1);
         assert!(!profile.next.menu_argument);
@@ -577,11 +543,7 @@ mod tests {
         )
         .expect("valid json");
         let root = Reader::root(&value);
-        let profile = read_native_primary_drop(
-            &root,
-            CLASSIC_DIGEST.to_string(),
-            NativeAbi::WindowsI386,
-        );
+        let profile = read_native_primary_drop(&root, CLASSIC_DIGEST.to_string(), NativeAbi::WindowsI386);
         assert_eq!(profile.find, 38288);
         assert_eq!(profile.consumer, None);
     }
@@ -603,11 +565,7 @@ mod tests {
         );
         let value = parse_json(&text).expect("valid json");
         let root = Reader::root(&value);
-        let profile = read_native_primary_pickups(
-            &root,
-            CLASSIC_DIGEST.to_string(),
-            NativeAbi::WindowsI386,
-        );
+        let profile = read_native_primary_pickups(&root, CLASSIC_DIGEST.to_string(), NativeAbi::WindowsI386);
         assert_eq!(profile.grants.len(), 1);
         assert_eq!(profile.entity.inuse_bytes, 4);
         assert_eq!(profile.supply.ammo.capacity_bytes, 4);

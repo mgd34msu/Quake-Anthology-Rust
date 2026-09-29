@@ -235,10 +235,7 @@ pub enum UserCommand {
 }
 
 /// Encode a user command into a caller-provided buffer.
-pub fn write_native_user_command(
-    bytes: &mut [u8],
-    command: &UserCommand,
-) -> Result<(), StageError> {
+pub fn write_native_user_command(bytes: &mut [u8], command: &UserCommand) -> Result<(), StageError> {
     match command {
         UserCommand::Rerelease(command) => {
             if bytes.len() < 28 {
@@ -259,10 +256,9 @@ pub fn write_native_user_command(
             bytes[1] = command.buttons;
             bytes[2] = 0;
             bytes[3] = 0;
-            for (index, component) in
-                [command.angles.x, command.angles.y, command.angles.z]
-                    .iter()
-                    .enumerate()
+            for (index, component) in [command.angles.x, command.angles.y, command.angles.z]
+                .iter()
+                .enumerate()
             {
                 bytes[4 + index * 4..8 + index * 4].copy_from_slice(&component.to_le_bytes());
             }
@@ -374,11 +370,7 @@ pub fn native_mod_user_command(
             ],
             forward_move: to_move(forward)?,
             side_move: to_move(side)?,
-            up_move: to_move(if application.jump != 0.0 {
-                up.max(200.0)
-            } else {
-                up
-            })?,
+            up_move: to_move(if application.jump != 0.0 { up.max(200.0) } else { up })?,
             impulse: application.impulse.trunc().rem_euclid(256.0) as u8,
             light_level: 0,
         })
@@ -397,7 +389,11 @@ mod tests {
     fn application() -> ModClientApplication {
         ModClientApplication {
             elapsed_secs: 0.05,
-            aim: Vec3 { x: 90.0, y: 0.0, z: 0.0 },
+            aim: Vec3 {
+                x: 90.0,
+                y: 0.0,
+                z: 0.0,
+            },
             attack: 1.0,
             jump: 0.0,
             impulse: 0.0,
@@ -413,11 +409,17 @@ mod tests {
         let mut stages = NativeModClientStages::new();
         let outer = StageCall {
             id: "outer".to_string(),
-            skips: vec![SkipRegion { entry: 0x100, join: 0x180 }],
+            skips: vec![SkipRegion {
+                entry: 0x100,
+                join: 0x180,
+            }],
         };
         let inner = StageCall {
             id: "inner".to_string(),
-            skips: vec![SkipRegion { entry: 0x200, join: 0x280 }],
+            skips: vec![SkipRegion {
+                entry: 0x200,
+                join: 0x280,
+            }],
         };
         let setups = Rc::new(RefCell::new(0u32));
         let teardowns = Rc::new(RefCell::new(0u32));
@@ -483,17 +485,11 @@ mod tests {
         assert_eq!(bytes[0], 50);
         assert_eq!(bytes[1], 1);
         assert_eq!(f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 90.0);
-        assert_eq!(
-            i32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]),
-            41
-        );
+        assert_eq!(i32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]), 41);
 
         let mut slow = application();
         slow.elapsed_secs = 2.0;
-        assert_eq!(
-            native_mod_user_command(&slow, false, 0),
-            Err(StageError::IntervalRange)
-        );
+        assert_eq!(native_mod_user_command(&slow, false, 0), Err(StageError::IntervalRange));
         let mut wild = application();
         wild.forward_move = f64::INFINITY;
         assert!(matches!(

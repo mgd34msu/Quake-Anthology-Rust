@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_core::math::Vec3;
-use qa_guest::core::contracts::{
-    GuestAddress, GuestCallResult, GuestCallValue, GuestLayout, GuestStorage,
-};
+use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue, GuestLayout, GuestStorage};
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
 use thiserror::Error;
@@ -422,12 +420,7 @@ pub trait CombatCalls {
     /// Read a scalar at a record base.
     fn scalar(&self, base: GuestAddress, field: &ScalarField) -> Result<f64, CombatError>;
     /// Write a scalar at a record base.
-    fn write_scalar(
-        &self,
-        base: GuestAddress,
-        field: &ScalarField,
-        value: f64,
-    ) -> Result<(), CombatError>;
+    fn write_scalar(&self, base: GuestAddress, field: &ScalarField, value: f64) -> Result<(), CombatError>;
     /// Run a closure inside a transfer frame.
     fn transfer<R>(&self, invoke: impl FnOnce() -> R) -> R;
     /// Run a closure as source execution for an actor.
@@ -449,23 +442,11 @@ pub trait SharedActorCallbacks {
         proceed: impl FnOnce(NativeActorId, Option<NativeActorId>, Option<NativeActorId>),
     );
     /// Route a guest touch callback through shared state.
-    fn source_touch(
-        &mut self,
-        contact: TouchContact,
-        proceed: impl FnOnce(TouchContact),
-    );
+    fn source_touch(&mut self, contact: TouchContact, proceed: impl FnOnce(TouchContact));
     /// Route a guest pain callback through shared state.
-    fn source_pain(
-        &mut self,
-        reaction: PainReaction,
-        proceed: impl FnOnce(PainReaction),
-    );
+    fn source_pain(&mut self, reaction: PainReaction, proceed: impl FnOnce(PainReaction));
     /// Route a guest die callback through shared state.
-    fn source_die(
-        &mut self,
-        reaction: DeathReaction,
-        proceed: impl FnOnce(DeathReaction),
-    );
+    fn source_die(&mut self, reaction: DeathReaction, proceed: impl FnOnce(DeathReaction));
 }
 
 /// Guest body invoked by the synthetic host.
@@ -488,12 +469,7 @@ pub struct SyntheticCombatHost {
 
 impl SyntheticCombatHost {
     /// Build a host over a mapped entity table.
-    pub fn new(
-        memory: SparseGuestMemory,
-        table_base: GuestAddress,
-        stride: usize,
-        count: usize,
-    ) -> Self {
+    pub fn new(memory: SparseGuestMemory, table_base: GuestAddress, stride: usize, count: usize) -> Self {
         Self {
             inner: Rc::new(RefCell::new(CombatInner {
                 memory,
@@ -519,10 +495,7 @@ impl SyntheticCombatHost {
         offset: u64,
         body: impl Fn(&SyntheticCombatHost, &[GuestCallValue]) -> GuestCallResult + 'static,
     ) {
-        self.inner
-            .borrow_mut()
-            .bodies
-            .insert(offset, Rc::new(body));
+        self.inner.borrow_mut().bodies.insert(offset, Rc::new(body));
     }
 
     /// Run a closure against guest memory.
@@ -548,12 +521,7 @@ impl SyntheticCombatHost {
 
     /// Whether a slot is active.
     pub fn is_active(&self, slot: usize) -> bool {
-        self.inner
-            .borrow()
-            .active
-            .get(slot)
-            .copied()
-            .unwrap_or(false)
+        self.inner.borrow().active.get(slot).copied().unwrap_or(false)
     }
 
     /// Base address of one entity slot.
@@ -562,9 +530,7 @@ impl SyntheticCombatHost {
         if slot >= inner.count {
             return Err(CombatError::ActorOutsideTable);
         }
-        Ok(inner
-            .memory
-            .offset(inner.table_base, (slot * inner.stride) as i64)?)
+        Ok(inner.memory.offset(inner.table_base, (slot * inner.stride) as i64)?)
     }
 
     /// Table slot for an entity address.
@@ -574,20 +540,14 @@ impl SyntheticCombatHost {
             return Err(CombatError::ActorOutsideTable);
         }
         let relative = address.offset - inner.table_base.offset;
-        if relative % inner.stride as u64 != 0
-            || relative / inner.stride as u64 >= inner.count as u64
-        {
+        if relative % inner.stride as u64 != 0 || relative / inner.stride as u64 >= inner.count as u64 {
             return Err(CombatError::ActorOutsideTable);
         }
         Ok((relative / inner.stride as u64) as usize)
     }
 
     /// Invoke a registered guest body.
-    pub fn invoke_body(
-        &self,
-        offset: u64,
-        values: &[GuestCallValue],
-    ) -> Result<GuestCallResult, CombatError> {
+    pub fn invoke_body(&self, offset: u64, values: &[GuestCallValue]) -> Result<GuestCallResult, CombatError> {
         let body = self
             .inner
             .borrow()
@@ -601,9 +561,7 @@ impl SyntheticCombatHost {
 
 fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
     match storage {
-        GuestStorage::Float32 => {
-            f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Float32 => f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Float64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -613,12 +571,8 @@ fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
         GuestStorage::Uint8 => f64::from(bytes[0]),
         GuestStorage::Int16 => f64::from(i16::from_le_bytes([bytes[0], bytes[1]])),
         GuestStorage::Uint16 => f64::from(u16::from_le_bytes([bytes[0], bytes[1]])),
-        GuestStorage::Int32 => {
-            f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
-        GuestStorage::Uint32 => {
-            f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Int32 => f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        GuestStorage::Uint32 => f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Int64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -800,9 +754,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
 
     fn at(&self, slot: usize, offset: usize) -> Result<GuestAddress, CombatError> {
         let base = self.host.entity_address(slot)?;
-        Ok(self
-            .host
-            .with_memory(|memory| memory.offset(base, offset as i64))?)
+        Ok(self.host.with_memory(|memory| memory.offset(base, offset as i64))?)
     }
 
     fn read_scalar_at(&self, slot: usize, field: &ScalarField) -> Result<f64, CombatError> {
@@ -810,12 +762,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         self.calls.scalar(base, field)
     }
 
-    fn write_scalar_at(
-        &self,
-        slot: usize,
-        field: &ScalarField,
-        value: f64,
-    ) -> Result<(), CombatError> {
+    fn write_scalar_at(&self, slot: usize, field: &ScalarField, value: f64) -> Result<(), CombatError> {
         let base = self.host.entity_address(slot)?;
         self.calls.write_scalar(base, field, value)
     }
@@ -850,9 +797,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         let Some(GuestCallValue::Pointer(address)) = value else {
             return Err(CombatError::BadActorArgument);
         };
-        (*address)
-            .map(|address| self.calls.actor_at(address))
-            .transpose()
+        (*address).map(|address| self.calls.actor_at(address)).transpose()
     }
 
     fn pointer_arg(&self, actor: Option<NativeActorId>) -> Result<GuestCallValue, CombatError> {
@@ -889,11 +834,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
     }
 
     /// Lazily bind the callback entry stored at a slot, if any.
-    pub fn ensure(
-        &mut self,
-        kind: CallbackKind,
-        slot: usize,
-    ) -> Result<Option<u64>, CombatError> {
+    pub fn ensure(&mut self, kind: CallbackKind, slot: usize) -> Result<Option<u64>, CombatError> {
         let Some(offset) = self.offset(kind) else {
             return Ok(None);
         };
@@ -921,13 +862,10 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         if self.suspended || self.calls.owner(slot).is_none() {
             return Ok(());
         }
-        if let (Some(blood), Some(receipt)) = (
-            self.definition.deferred_blood.clone(),
-            self.definition.deferred_receipt,
-        ) {
+        if let (Some(blood), Some(receipt)) = (self.definition.deferred_blood.clone(), self.definition.deferred_receipt)
+        {
             let pointer_bytes = self.host.pointer_bytes();
-            let hits_receipt =
-                byte_offset < receipt + 1 && receipt < byte_offset + byte_length;
+            let hits_receipt = byte_offset < receipt + 1 && receipt < byte_offset + byte_length;
             if hits_receipt && self.read_scalar_at(slot, &blood)? != 0.0 {
                 let Some(request) = current else {
                     return Err(CombatError::MissingProvenance);
@@ -935,8 +873,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
                 self.pending_deferred.insert(request.target, request.clone());
             }
             let width = blood.width(pointer_bytes);
-            let hits_blood = byte_offset < blood.offset + width
-                && blood.offset < byte_offset + byte_length;
+            let hits_blood = byte_offset < blood.offset + width && blood.offset < byte_offset + byte_length;
             if hits_blood && self.read_scalar_at(slot, &blood)? == 0.0 {
                 if let Some(owner) = self.calls.owner(slot) {
                     self.pending_deferred.remove(&owner);
@@ -1023,15 +960,18 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
 
     fn cause_value(&self, cause: NativeCause) -> Result<GuestCallValue, CombatError> {
         match (self.definition.damage_abi, cause) {
-            (DamageAbi::Classic, NativeCause::Classic(value)) => {
-                Ok(GuestCallValue::Int32(value))
-            }
-            (DamageAbi::Rerelease, NativeCause::Rerelease { id, friendly_fire, no_point_loss }) => {
-                Ok(GuestCallValue::Aggregate {
-                    layout: mod_layout(self.host.pointer_bytes()),
-                    bytes: vec![id, u8::from(friendly_fire), u8::from(no_point_loss)],
-                })
-            }
+            (DamageAbi::Classic, NativeCause::Classic(value)) => Ok(GuestCallValue::Int32(value)),
+            (
+                DamageAbi::Rerelease,
+                NativeCause::Rerelease {
+                    id,
+                    friendly_fire,
+                    no_point_loss,
+                },
+            ) => Ok(GuestCallValue::Aggregate {
+                layout: mod_layout(self.host.pointer_bytes()),
+                bytes: vec![id, u8::from(friendly_fire), u8::from(no_point_loss)],
+            }),
             _ => Err(CombatError::MissingMod),
         }
     }
@@ -1111,8 +1051,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         });
         let args = self.marshal_damage(request)?;
         let host = self.host.clone();
-        self.calls
-            .transfer(|| host.invoke_body(damage, &args))?;
+        self.calls.transfer(|| host.invoke_body(damage, &args))?;
         self.release_scratch();
         let frame = self.frames.pop().unwrap_or(DamageFrame {
             request: request.clone(),
@@ -1150,10 +1089,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         } else {
             Reaction::None
         };
-        Ok(DamageOutcome {
-            reaction,
-            applied,
-        })
+        Ok(DamageOutcome { reaction, applied })
     }
 
     fn marshal_damage(&mut self, request: &DamageRequest) -> Result<Vec<GuestCallValue>, CombatError> {
@@ -1183,12 +1119,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
     }
 
     /// Record a source reaction for the innermost matching frame.
-    pub fn note_source_reaction(
-        &mut self,
-        target: NativeActorId,
-        reaction: Reaction,
-        applied: f64,
-    ) {
+    pub fn note_source_reaction(&mut self, target: NativeActorId, reaction: Reaction, applied: f64) {
         if let Some(frame) = self.frames.last_mut() {
             if frame.request.target == target && frame.result.is_none() {
                 frame.result = Some(DamageOutcome { reaction, applied });
@@ -1273,11 +1204,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
             let address = self.calls.address_of(reaction.source)?;
             self.host.slot_of(address)?
         };
-        if !self.eligible_all(&[
-            Some(reaction.source),
-            reaction.attacker,
-            reaction.inflictor,
-        ]) {
+        if !self.eligible_all(&[Some(reaction.source), reaction.attacker, reaction.inflictor]) {
             return Ok(());
         }
         let Some(entry) = self.ensure(CallbackKind::Die, slot)? else {
@@ -1300,9 +1227,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         bytes: &[u8],
     ) -> Result<GuestAddress, CombatError> {
         let address = host.with_memory(|memory| {
-            memory.allocate(&qa_guest::core::contracts::GuestAllocationOptions::bytes(
-                bytes.len(),
-            ))
+            memory.allocate(&qa_guest::core::contracts::GuestAllocationOptions::bytes(bytes.len()))
         })?;
         host.with_memory(|memory| memory.write(address, bytes))?;
         scratch.push((address, bytes.len()));
@@ -1439,7 +1364,12 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
     }
 
     fn mod_pointer(&mut self, cause: NativeCause) -> Result<GuestCallValue, CombatError> {
-        let NativeCause::Rerelease { id, friendly_fire, no_point_loss } = cause else {
+        let NativeCause::Rerelease {
+            id,
+            friendly_fire,
+            no_point_loss,
+        } = cause
+        else {
             return Err(CombatError::MissingMod);
         };
         let address = self.alloc_scratch(&[id, u8::from(friendly_fire), u8::from(no_point_loss)])?;
@@ -1447,11 +1377,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
     }
 
     /// Parse a guest touch call into a contact.
-    pub fn parse_touch(
-        &self,
-        source: NativeActorId,
-        args: &[GuestCallValue],
-    ) -> Result<TouchContact, CombatError> {
+    pub fn parse_touch(&self, source: NativeActorId, args: &[GuestCallValue]) -> Result<TouchContact, CombatError> {
         let other = self.nullable(args.get(1))?.ok_or(CombatError::BadActorArgument)?;
         if self.definition.callback_rerelease {
             let Some(GuestCallValue::Pointer(Some(address))) = args.get(2) else {
@@ -1469,13 +1395,10 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
             let surface = if surface_raw == 0 {
                 None
             } else {
-                let address =
-                    GuestAddress::new(self.host.address_space(), u64::from(surface_raw));
+                let address = GuestAddress::new(self.host.address_space(), u64::from(surface_raw));
                 let blob = self.host.with_memory(|memory| memory.copy(address, 60))?;
                 Some(ContactSurface {
-                    name: String::from_utf8_lossy(&blob[..32])
-                        .trim_end_matches('\0')
-                        .to_string(),
+                    name: String::from_utf8_lossy(&blob[..32]).trim_end_matches('\0').to_string(),
                     flags: i32::from_le_bytes([blob[32], blob[33], blob[34], blob[35]]),
                     value: i32::from_le_bytes([blob[36], blob[37], blob[38], blob[39]]),
                 })
@@ -1528,9 +1451,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
             GuestCallValue::Pointer(Some(address)) => {
                 let bytes = self.host.with_memory(|memory| memory.copy(*address, 24))?;
                 Some(ContactSurface {
-                    name: String::from_utf8_lossy(&bytes[..16])
-                        .trim_end_matches('\0')
-                        .to_string(),
+                    name: String::from_utf8_lossy(&bytes[..16]).trim_end_matches('\0').to_string(),
                     flags: i32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
                     value: i32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]),
                 })
@@ -1558,29 +1479,30 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         let mut result = GuestCallResult::Void;
         let mut outcome: Result<(), CombatError> = Ok(());
         let calls = &self.calls;
-        self.shared.source_use(source, other, activator, |actor, next_other, next_activator| {
-            if actor != source {
-                outcome = Err(CombatError::Retargeted);
-                return;
-            }
-            if ![Some(actor), next_other, next_activator]
-                .iter()
-                .all(|actor| actor.is_none_or(|actor| calls.eligible(actor)))
-            {
-                return;
-            }
-            calls.synchronize();
-            result = if next_other == other && next_activator == activator {
-                original(args)
-            } else {
-                let rebuilt = [
-                    GuestCallValue::Pointer(calls.address_of(actor).ok()),
-                    GuestCallValue::Pointer(next_other.and_then(|actor| calls.address_of(actor).ok())),
-                    GuestCallValue::Pointer(next_activator.and_then(|actor| calls.address_of(actor).ok())),
-                ];
-                original(&rebuilt)
-            };
-        });
+        self.shared
+            .source_use(source, other, activator, |actor, next_other, next_activator| {
+                if actor != source {
+                    outcome = Err(CombatError::Retargeted);
+                    return;
+                }
+                if ![Some(actor), next_other, next_activator]
+                    .iter()
+                    .all(|actor| actor.is_none_or(|actor| calls.eligible(actor)))
+                {
+                    return;
+                }
+                calls.synchronize();
+                result = if next_other == other && next_activator == activator {
+                    original(args)
+                } else {
+                    let rebuilt = [
+                        GuestCallValue::Pointer(calls.address_of(actor).ok()),
+                        GuestCallValue::Pointer(next_other.and_then(|actor| calls.address_of(actor).ok())),
+                        GuestCallValue::Pointer(next_activator.and_then(|actor| calls.address_of(actor).ok())),
+                    ];
+                    original(&rebuilt)
+                };
+            });
         outcome?;
         Ok(result)
     }
@@ -1765,10 +1687,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
     }
 
     /// Restore deferred batches after ownership checks.
-    pub fn restore_deferred(
-        &mut self,
-        records: &[SavedCombatDeferred],
-    ) -> Result<(), CombatError> {
+    pub fn restore_deferred(&mut self, records: &[SavedCombatDeferred]) -> Result<(), CombatError> {
         for record in records {
             let target = NativeActorId {
                 slot: record.target.slot,
@@ -1810,9 +1729,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
     use std::collections::HashSet;
 
     const STRIDE: usize = 128;
@@ -1914,16 +1831,11 @@ mod tests {
             Ok(scalar_to_f64(&bytes, field.storage))
         }
 
-        fn write_scalar(
-            &self,
-            base: GuestAddress,
-            field: &ScalarField,
-            value: f64,
-        ) -> Result<(), CombatError> {
+        fn write_scalar(&self, base: GuestAddress, field: &ScalarField, value: f64) -> Result<(), CombatError> {
             let bytes = Self::scalar_bytes(value, field.storage);
-            Ok(self.host.with_memory(|memory| {
-                memory.write(memory.offset(base, field.offset as i64)?, &bytes)
-            })?)
+            Ok(self
+                .host
+                .with_memory(|memory| memory.write(memory.offset(base, field.offset as i64)?, &bytes))?)
         }
 
         fn transfer<R>(&self, invoke: impl FnOnce() -> R) -> R {
@@ -1960,36 +1872,18 @@ mod tests {
             proceed(source, other, activator);
         }
 
-        fn source_touch(
-            &mut self,
-            contact: TouchContact,
-            proceed: impl FnOnce(TouchContact),
-        ) {
-            self.routed
-                .borrow_mut()
-                .push(format!("touch:{}", contact.source.slot));
+        fn source_touch(&mut self, contact: TouchContact, proceed: impl FnOnce(TouchContact)) {
+            self.routed.borrow_mut().push(format!("touch:{}", contact.source.slot));
             proceed(contact);
         }
 
-        fn source_pain(
-            &mut self,
-            reaction: PainReaction,
-            proceed: impl FnOnce(PainReaction),
-        ) {
-            self.routed
-                .borrow_mut()
-                .push(format!("pain:{}", reaction.source.slot));
+        fn source_pain(&mut self, reaction: PainReaction, proceed: impl FnOnce(PainReaction)) {
+            self.routed.borrow_mut().push(format!("pain:{}", reaction.source.slot));
             proceed(reaction);
         }
 
-        fn source_die(
-            &mut self,
-            reaction: DeathReaction,
-            proceed: impl FnOnce(DeathReaction),
-        ) {
-            self.routed
-                .borrow_mut()
-                .push(format!("die:{}", reaction.source.slot));
+        fn source_die(&mut self, reaction: DeathReaction, proceed: impl FnOnce(DeathReaction)) {
+            self.routed.borrow_mut().push(format!("die:{}", reaction.source.slot));
             proceed(reaction);
         }
     }
@@ -2195,26 +2089,28 @@ mod tests {
         let mut bad = definition();
         bad.health = field(200);
         assert_eq!(
-            NativeModCombat::new(bad, fixture.host.clone(), TestCalls {
-                host: fixture.host.clone(),
-                owners: HashMap::new(),
-                eligible: HashSet::new(),
-                owned: HashSet::new(),
-                synchronizes: Rc::new(RefCell::new(0)),
-            }, TestShared {
-                foreign: Rc::new(RefCell::new(Vec::new())),
-                routed: Rc::new(RefCell::new(Vec::new())),
-            })
+            NativeModCombat::new(
+                bad,
+                fixture.host.clone(),
+                TestCalls {
+                    host: fixture.host.clone(),
+                    owners: HashMap::new(),
+                    eligible: HashSet::new(),
+                    owned: HashSet::new(),
+                    synchronizes: Rc::new(RefCell::new(0)),
+                },
+                TestShared {
+                    foreign: Rc::new(RefCell::new(Vec::new())),
+                    routed: Rc::new(RefCell::new(Vec::new())),
+                }
+            )
             .map(|_| ()),
             Err(CombatError::CombatFieldRange)
         );
 
         write_i32(&fixture.host, 1, 20, 15);
         let request = damage_request(actor(1));
-        fixture
-            .combat
-            .note_writes(1, 28, 1, Some(&request))
-            .unwrap();
+        fixture.combat.note_writes(1, 28, 1, Some(&request)).unwrap();
         let saved = fixture.combat.checkpoint_deferred().unwrap();
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].blood, 15.0);

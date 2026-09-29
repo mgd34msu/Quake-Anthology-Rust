@@ -300,7 +300,12 @@ pub fn validate_native_mod_items(
     if !has_clients || definition.definitions.is_empty() {
         return Err(ItemError::MissingClients);
     }
-    let stride = |id: &str| records.iter().find(|(record, _)| record == id).map(|(_, stride)| *stride);
+    let stride = |id: &str| {
+        records
+            .iter()
+            .find(|(record, _)| record == id)
+            .map(|(_, stride)| *stride)
+    };
     let mut defined = HashSet::new();
     for item in &definition.definitions {
         if !defined.insert(item.item.clone()) {
@@ -317,9 +322,7 @@ pub fn validate_native_mod_items(
         let Some(stride) = stride(record) else {
             return Err(ItemError::FieldRange);
         };
-        if !client_records.iter().any(|id| id == record)
-            || offset + length > stride
-        {
+        if !client_records.iter().any(|id| id == record) || offset + length > stride {
             return Err(ItemError::FieldRange);
         }
         if exclusive {
@@ -340,7 +343,11 @@ pub fn validate_native_mod_items(
         let field = storage.field();
         check_field(&field.record, field.offset, field.width(pointer_bytes), true, None)?;
         match storage {
-            ItemStorage::Counter { item, capacity, field: _ } => {
+            ItemStorage::Counter {
+                item,
+                capacity,
+                field: _,
+            } => {
                 if let ItemCapacity::Field(capacity) = capacity {
                     check_field(
                         &capacity.record,
@@ -359,7 +366,11 @@ pub fn validate_native_mod_items(
                     }
                 }
             }
-            ItemStorage::Packed { field, items, private_mask } => {
+            ItemStorage::Packed {
+                field,
+                items,
+                private_mask,
+            } => {
                 if !matches!(
                     field.storage,
                     GuestStorage::Int8
@@ -468,12 +479,7 @@ pub trait ItemOperations {
     /// Read a scalar.
     fn read(&mut self, address: GuestAddress, storage: GuestStorage) -> Result<f64, ItemError>;
     /// Write a scalar.
-    fn write(
-        &mut self,
-        address: GuestAddress,
-        storage: GuestStorage,
-        value: f64,
-    ) -> Result<(), ItemError>;
+    fn write(&mut self, address: GuestAddress, storage: GuestStorage, value: f64) -> Result<(), ItemError>;
     /// Invoke a source call for an actor.
     fn invoke(&mut self, actor: NativeActorId, call: &ItemCall);
     /// Declared inventory writes of the active pickup, if any.
@@ -616,20 +622,12 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
         &mut self.operations
     }
 
-    fn address(
-        &mut self,
-        actor: NativeActorId,
-        field: &ItemField,
-    ) -> Result<GuestAddress, ItemError> {
+    fn address(&mut self, actor: NativeActorId, field: &ItemField) -> Result<GuestAddress, ItemError> {
         let base = self.operations.pointer(actor, &field.record)?;
         Ok(self.operations.memory().offset(base, field.offset as i64)?)
     }
 
-    fn capacity(
-        &mut self,
-        actor: NativeActorId,
-        capacity: &ItemCapacity,
-    ) -> Result<f64, ItemError> {
+    fn capacity(&mut self, actor: NativeActorId, capacity: &ItemCapacity) -> Result<f64, ItemError> {
         match capacity {
             ItemCapacity::Constant(value) => Ok(*value),
             ItemCapacity::Field(field) => {
@@ -644,11 +642,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
         }
     }
 
-    fn read_storage(
-        &mut self,
-        actor: NativeActorId,
-        storage: &ItemStorage,
-    ) -> Result<Vec<InventoryEntry>, ItemError> {
+    fn read_storage(&mut self, actor: NativeActorId, storage: &ItemStorage) -> Result<Vec<InventoryEntry>, ItemError> {
         let pointer_bytes = self.operations.memory().pointer_bytes();
         let field = storage.field().clone();
         let address = self.address(actor, &field)?;
@@ -667,7 +661,11 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
                     count_policy: Some(CountPolicy::SourceCounter(arithmetic)),
                 }])
             }
-            ItemStorage::Packed { field, items, private_mask } => {
+            ItemStorage::Packed {
+                field,
+                items,
+                private_mask,
+            } => {
                 let width = field.width(pointer_bytes);
                 let mask = items.iter().fold(*private_mask, |mask, bit| mask | bit.mask);
                 let packed = (count as i64 as u32)
@@ -700,8 +698,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
             return false;
         }
         for (record, address) in &entry.addresses {
-            if !matches!(self.operations.pointer(actor, record), Ok(base) if base.offset == *address)
-            {
+            if !matches!(self.operations.pointer(actor, record), Ok(base) if base.offset == *address) {
                 return false;
             }
         }
@@ -709,11 +706,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
     }
 
     /// Write one canonical inventory entry into source words.
-    pub fn write(
-        &mut self,
-        actor: NativeActorId,
-        value: &InventoryEntry,
-    ) -> Result<(), ItemError> {
+    pub fn write(&mut self, actor: NativeActorId, value: &InventoryEntry) -> Result<(), ItemError> {
         let index = self.by_item.get(&value.item).copied().ok_or(ItemError::LostLease)?;
         let storage = self
             .definition
@@ -741,9 +734,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
         let pointer_bytes = self.operations.memory().pointer_bytes();
         match storage {
             ItemStorage::Counter { field, capacity, .. } => {
-                if !matches!(capacity, ItemCapacity::Field(_))
-                    && value.capacity != self.capacity(actor, capacity)?
-                {
+                if !matches!(capacity, ItemCapacity::Field(_)) && value.capacity != self.capacity(actor, capacity)? {
                     return Err(ItemError::ForeignCapacity);
                 }
                 validate_counter(value.count, field, pointer_bytes)?;
@@ -889,19 +880,14 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
         for (index, storage) in self.definition.storage.clone().iter().enumerate() {
             let watched: Vec<(GuestAddress, usize)> = match storage {
                 ItemStorage::Counter { field, capacity, .. } => {
-                    let mut watched = vec![(
-                        self.address(actor, field)?,
-                        field.width(pointer_bytes),
-                    )];
+                    let mut watched = vec![(self.address(actor, field)?, field.width(pointer_bytes))];
                     match capacity {
-                        ItemCapacity::Field(extra) => watched.push((
-                            self.address(actor, extra)?,
-                            extra.width(pointer_bytes),
-                        )),
-                        ItemCapacity::Source { address, storage } => watched.push((
-                            self.operations.resolve(address)?,
-                            storage.byte_length(pointer_bytes),
-                        )),
+                        ItemCapacity::Field(extra) => {
+                            watched.push((self.address(actor, extra)?, extra.width(pointer_bytes)))
+                        }
+                        ItemCapacity::Source { address, storage } => {
+                            watched.push((self.operations.resolve(address)?, storage.byte_length(pointer_bytes)))
+                        }
                         ItemCapacity::Constant(_) => {}
                     }
                     watched
@@ -953,9 +939,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
             .filter(|(dirty, _)| *dirty == actor)
             .map(|(_, index)| *index)
             .collect();
-        self.dirty
-            .borrow_mut()
-            .retain(|(dirty, _)| *dirty != actor);
+        self.dirty.borrow_mut().retain(|(dirty, _)| *dirty != actor);
         if !indexes.is_empty() {
             self.changed(actor, &indexes, None)?;
         }
@@ -968,9 +952,10 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
             Some(stage) => stage.pending(actor).or_else(|| stage.active(actor)),
             None => None,
         };
-        let drifted = self.entries.get(&actor).is_some_and(|entry| {
-            selection.is_some() && selection != entry.source_selection
-        });
+        let drifted = self
+            .entries
+            .get(&actor)
+            .is_some_and(|entry| selection.is_some() && selection != entry.source_selection);
         if let Some(entry) = self.entries.get_mut(&actor) {
             entry.source_selection = selection.clone();
         }
@@ -981,20 +966,13 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
     }
 
     /// Invoke a source item action.
-    pub fn invoke_action(
-        &mut self,
-        actor: NativeActorId,
-        item: &ItemId,
-        action: &str,
-    ) -> Result<(), ItemError> {
+    pub fn invoke_action(&mut self, actor: NativeActorId, item: &ItemId, action: &str) -> Result<(), ItemError> {
         let call = self
             .definition
             .definitions
             .iter()
             .find(|definition| &definition.item == item)
-            .and_then(|definition| {
-                definition.actions.iter().find(|candidate| candidate.action == action)
-            })
+            .and_then(|definition| definition.actions.iter().find(|candidate| candidate.action == action))
             .map(|action| action.call.clone())
             .ok_or(ItemError::ActionGone)?;
         if !self.is_current(actor) {
@@ -1048,10 +1026,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
     }
 
     /// Read the weapon presentation for an actor.
-    pub fn weapon_read(
-        &mut self,
-        actor: NativeActorId,
-    ) -> Result<WeaponPresentation, ItemError> {
+    pub fn weapon_read(&mut self, actor: NativeActorId) -> Result<WeaponPresentation, ItemError> {
         if !self.weapon_current(actor) {
             return Err(ItemError::PresentationGone);
         }
@@ -1068,8 +1043,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
         if !self.is_current(actor) || self.stage.is_none() {
             return Ok(false);
         }
-        let Some(values) = self.definition.weapons.as_ref().map(|weapons| &weapons.selection_items)
-        else {
+        let Some(values) = self.definition.weapons.as_ref().map(|weapons| &weapons.selection_items) else {
             return Ok(false);
         };
         Ok(values.contains(item))
@@ -1103,11 +1077,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
     }
 
     /// Request (or resume) a weapon selection for an actor.
-    pub fn weapon_resume(
-        &mut self,
-        actor: NativeActorId,
-        item: Option<ItemId>,
-    ) -> Result<RequestStatus, ItemError> {
+    pub fn weapon_resume(&mut self, actor: NativeActorId, item: Option<ItemId>) -> Result<RequestStatus, ItemError> {
         if !self.is_current(actor) {
             return Err(ItemError::RequestGone);
         }
@@ -1132,10 +1102,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
         } else if let Some(item) = item {
             self.requesting.insert(actor);
             let accepted = self.weapon_accepts(actor, &item)?
-                && self
-                    .stage
-                    .as_mut()
-                    .is_some_and(|stage| stage.request(actor, &item));
+                && self.stage.as_mut().is_some_and(|stage| stage.request(actor, &item));
             self.requesting.remove(&actor);
             if !accepted {
                 request.status = RequestStatus::Refused;
@@ -1168,11 +1135,7 @@ impl<O: ItemOperations, W: ItemWeaponStage> NativeModItems<O, W> {
     ) -> Result<RequestStatus, ItemError> {
         let request = self.entries.get(&actor).and_then(|entry| entry.request.clone());
         match request {
-            Some(request)
-                if self.is_current(actor) && request.id == id && request.item == item =>
-            {
-                Ok(request.status)
-            }
+            Some(request) if self.is_current(actor) && request.id == id && request.item == item => Ok(request.status),
             _ => Err(ItemError::SavedRequestMismatch),
         }
     }
@@ -1350,9 +1313,7 @@ impl SyntheticItemOperations {
 
 fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
     match storage {
-        GuestStorage::Float32 => {
-            f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Float32 => f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Float64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -1362,12 +1323,8 @@ fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
         GuestStorage::Uint8 => f64::from(bytes[0]),
         GuestStorage::Int16 => f64::from(i16::from_le_bytes([bytes[0], bytes[1]])),
         GuestStorage::Uint16 => f64::from(u16::from_le_bytes([bytes[0], bytes[1]])),
-        GuestStorage::Int32 => {
-            f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
-        GuestStorage::Uint32 => {
-            f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Int32 => f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        GuestStorage::Uint32 => f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Int64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -1391,9 +1348,7 @@ fn f64_to_scalar(value: f64, storage: GuestStorage) -> Vec<u8> {
         GuestStorage::Float32 => (value as f32).to_le_bytes().to_vec(),
         GuestStorage::Float64 => value.to_le_bytes().to_vec(),
         GuestStorage::Int8 | GuestStorage::Uint8 => vec![value as i64 as u8],
-        GuestStorage::Int16 | GuestStorage::Uint16 => {
-            (value as i64 as i16).to_le_bytes().to_vec()
-        }
+        GuestStorage::Int16 | GuestStorage::Uint16 => (value as i64 as i16).to_le_bytes().to_vec(),
         GuestStorage::Int32 | GuestStorage::Uint32 | GuestStorage::Pointer => {
             (value as i64 as i32).to_le_bytes().to_vec()
         }
@@ -1415,11 +1370,7 @@ impl ItemOperations for SyntheticItemOperations {
 
     fn resolve(&self, address: &AddressRef) -> Result<GuestAddress, ItemError> {
         match address {
-            AddressRef::Export(name) => self
-                .exports
-                .get(name)
-                .copied()
-                .ok_or(ItemError::LostLease),
+            AddressRef::Export(name) => self.exports.get(name).copied().ok_or(ItemError::LostLease),
             AddressRef::Rva(rva) => Ok(self
                 .memory
                 .offset(self.image_base, i64::try_from(*rva).unwrap_or(i64::MAX))?),
@@ -1435,12 +1386,7 @@ impl ItemOperations for SyntheticItemOperations {
         Ok(scalar_to_f64(&self.memory.copy(address, width)?, storage))
     }
 
-    fn write(
-        &mut self,
-        address: GuestAddress,
-        storage: GuestStorage,
-        value: f64,
-    ) -> Result<(), ItemError> {
+    fn write(&mut self, address: GuestAddress, storage: GuestStorage, value: f64) -> Result<(), ItemError> {
         Ok(self.memory.write(address, &f64_to_scalar(value, storage))?)
     }
 
@@ -1452,11 +1398,7 @@ impl ItemOperations for SyntheticItemOperations {
         self.cover.clone()
     }
 
-    fn publish_stores(
-        &mut self,
-        actor: NativeActorId,
-        changes: &[(InventoryEntry, InventoryEntry)],
-    ) {
+    fn publish_stores(&mut self, actor: NativeActorId, changes: &[(InventoryEntry, InventoryEntry)]) {
         self.published.push((actor, changes.to_vec()));
     }
 
@@ -1477,9 +1419,7 @@ impl ItemOperations for SyntheticItemOperations {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
     use qa_world::combat::item_id;
 
     fn actor(slot: u32) -> NativeActorId {
@@ -1507,7 +1447,9 @@ mod tests {
                     ammo: None,
                     actions: vec![ItemAction {
                         action: "use".to_string(),
-                        call: ItemCall { id: "use-shells".to_string() },
+                        call: ItemCall {
+                            id: "use-shells".to_string(),
+                        },
                     }],
                 },
                 ItemDefinition {
@@ -1701,10 +1643,7 @@ mod tests {
         let holstered = bridge.weapon_is_holstered(actor(1)).unwrap();
         assert!(!holstered);
         bridge.invoke_action(actor(1), &item_id("q2", "shells"), "use").unwrap();
-        assert_eq!(
-            bridge.operations().invokes,
-            vec![(actor(1), "use-shells".to_string())]
-        );
+        assert_eq!(bridge.operations().invokes, vec![(actor(1), "use-shells".to_string())]);
         bridge.clear();
     }
 }

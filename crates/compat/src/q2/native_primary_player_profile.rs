@@ -1,9 +1,7 @@
 //! Port of `src/compat/q2/native-primary-player-profile.ts`.
 //! Bridges builtin player profiles: Xatrix classic and retail rerelease tables.
 
-use super::native_primary_player::{
-    NativePrimaryPlayerProfile, PlayerObjectives, SourcePrimaryMatch, SourceTeam,
-};
+use super::native_primary_player::{NativePrimaryPlayerProfile, PlayerObjectives, SourcePrimaryMatch, SourceTeam};
 use super::native_primary_reader::{CLASSIC_DIGEST, RETAIL_DIGEST};
 
 /// Builtin player profile for a digest, or `None` when unknown.
@@ -61,10 +59,7 @@ mod tests {
         assert_eq!(profile.spawn, 0x312a0);
         assert_eq!(profile.objectives, PlayerObjectives::None);
         assert_eq!(profile.forward, None);
-        assert_eq!(
-            profile.match_profile.expect("match").score,
-            0xd88
-        );
+        assert_eq!(profile.match_profile.expect("match").score, 0xd88);
     }
 
     #[test]

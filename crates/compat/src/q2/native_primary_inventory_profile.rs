@@ -4,10 +4,10 @@
 use qa_guest::core::contracts::NativeAbi;
 
 use super::native_primary_inventory::{
-    InventoryPrototypes, NamedUseProfile, NativePrimaryInventoryProfile, NextProfile,
-    PreviousProfile, SelectionWrite, UseProfile, ValidateProfile,
+    InventoryPrototypes, NamedUseProfile, NativePrimaryInventoryProfile, NextProfile, PreviousProfile, SelectionWrite,
+    UseProfile, ValidateProfile,
 };
-use super::native_primary_reader::{CLASSIC_DIGEST, RETAIL_DIGEST, NativeRegion};
+use super::native_primary_reader::{NativeRegion, CLASSIC_DIGEST, RETAIL_DIGEST};
 
 fn prototypes() -> InventoryPrototypes {
     InventoryPrototypes {
@@ -33,7 +33,10 @@ pub fn native_primary_inventory_profile(digest: &str) -> Option<NativePrimaryInv
             cursor: 0x2e0,
             empty: -1,
             prototypes: prototypes(),
-            selection_writes: vec![SelectionWrite { offset: 0x2e0, bytes: 4 }],
+            selection_writes: vec![SelectionWrite {
+                offset: 0x2e0,
+                bytes: 4,
+            }],
             next: NextProfile {
                 entry: 0x2fe0,
                 scan: 0x3003,
@@ -45,7 +48,10 @@ pub fn native_primary_inventory_profile(digest: &str) -> Option<NativePrimaryInv
                 scan: 0x3093,
                 join: 0x30ff,
             },
-            validate: ValidateProfile { entry: 0x3110, scan: None },
+            validate: ValidateProfile {
+                entry: 0x3110,
+                scan: None,
+            },
             use_profile: UseProfile {
                 entry: 0x3a60,
                 call: 0x3abc,
@@ -70,9 +76,18 @@ pub fn native_primary_inventory_profile(digest: &str) -> Option<NativePrimaryInv
             empty: 0,
             prototypes: prototypes(),
             selection_writes: vec![
-                SelectionWrite { offset: 0xa70, bytes: 4 },
-                SelectionWrite { offset: 0xa78, bytes: 8 },
-                SelectionWrite { offset: 0x10c, bytes: 2 },
+                SelectionWrite {
+                    offset: 0xa70,
+                    bytes: 4,
+                },
+                SelectionWrite {
+                    offset: 0xa78,
+                    bytes: 8,
+                },
+                SelectionWrite {
+                    offset: 0x10c,
+                    bytes: 2,
+                },
             ],
             next: NextProfile {
                 entry: 0x56a40,
@@ -87,7 +102,10 @@ pub fn native_primary_inventory_profile(digest: &str) -> Option<NativePrimaryInv
             },
             validate: ValidateProfile {
                 entry: 0x56c90,
-                scan: Some(NativeRegion { entry: 0x56ca6, join: 0x56d14 }),
+                scan: Some(NativeRegion {
+                    entry: 0x56ca6,
+                    join: 0x56d14,
+                }),
             },
             use_profile: UseProfile {
                 entry: 0x58670,

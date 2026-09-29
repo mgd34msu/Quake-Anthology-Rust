@@ -3,7 +3,7 @@
 
 use std::fmt::{Display, Formatter};
 
-use qa_world::combat::{ArmorDamageFlags, DamageCause, Delivery, attack_damage_flags};
+use qa_world::combat::{attack_damage_flags, ArmorDamageFlags, DamageCause, Delivery};
 
 /// Native cause edition selecting the obituary roster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,10 +69,7 @@ impl RemovedNativeDamage {
 
 impl Display for RemovedNativeDamage {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "native damage target was removed during armor protection"
-        )
+        write!(formatter, "native damage target was removed during armor protection")
     }
 }
 
@@ -132,9 +129,7 @@ pub fn q2_native_damage_arguments(
                 && (profile.edition != CauseEdition::Classic || stored.game == profile.game)
         });
         let native = match captured {
-            Some(stored)
-                if same_source && canonical_cause_from_native(stored) == request.means_of_death =>
-            {
+            Some(stored) if same_source && canonical_cause_from_native(stored) == request.means_of_death => {
                 stored.clone()
             }
             _ => native_cause_from_canonical(profile, request.means_of_death),

@@ -4,13 +4,13 @@
 use qa_guest::core::contracts::NativeAbi;
 
 use super::native_primary_reader::{
-    CLASSIC_DIGEST, RETAIL_DIGEST, NativeItemField, NativeItemTest, NativeRegion, NativeScalar,
-    RecordKind, TestComparison,
+    NativeItemField, NativeItemTest, NativeRegion, NativeScalar, RecordKind, TestComparison, CLASSIC_DIGEST,
+    RETAIL_DIGEST,
 };
 use super::native_primary_weapons::{
     AttackAnimation, DamageResult, DecisionField, DelayEvaluate, EquipmentContext, NativePrimaryWeaponProfile,
-    ProjectionWrite, SpawnGate, WeaponAnimation, WeaponClient, WeaponDamage, WeaponDecision,
-    WeaponDelay, WeaponDispatcher, WeaponEntity, WeaponTime,
+    ProjectionWrite, SpawnGate, WeaponAnimation, WeaponClient, WeaponDamage, WeaponDecision, WeaponDelay,
+    WeaponDispatcher, WeaponEntity, WeaponTime,
 };
 
 fn field(record: RecordKind, offset: u32, encoding: NativeScalar) -> NativeItemField {
@@ -36,10 +36,7 @@ fn decided(entry: u32, join: u32, fields: Vec<NativeItemField>) -> WeaponDecisio
         join,
         fields: fields
             .into_iter()
-            .map(|field| DecisionField {
-                field,
-                clear_mask: 1,
-            })
+            .map(|field| DecisionField { field, clear_mask: 1 })
             .collect(),
     }
 }
@@ -79,12 +76,7 @@ fn xatrix_profile() -> NativePrimaryWeaponProfile {
             scalar_test(RecordKind::Client, 0xd98, NativeScalar::Int32, 0.0),
             scalar_test(RecordKind::Entity, 0x1ec, NativeScalar::Int32, 0.0),
         ],
-        continuations: vec![vec![scalar_test(
-            RecordKind::Client,
-            0xe00,
-            NativeScalar::Int32,
-            3.0,
-        )]],
+        continuations: vec![vec![scalar_test(RecordKind::Client, 0xe00, NativeScalar::Int32, 3.0)]],
         time: WeaponTime {
             address: 0x76804,
             encoding: NativeScalar::Float32,
@@ -105,9 +97,18 @@ fn xatrix_profile() -> NativePrimaryWeaponProfile {
         attack_animation: AttackAnimation {
             entry: 0x36b60,
             skip: vec![
-                NativeRegion { entry: 0x36b6b, join: 0x36be5 },
-                NativeRegion { entry: 0x36bea, join: 0x36de6 },
-                NativeRegion { entry: 0x36d31, join: 0x36dcc },
+                NativeRegion {
+                    entry: 0x36b6b,
+                    join: 0x36be5,
+                },
+                NativeRegion {
+                    entry: 0x36bea,
+                    join: 0x36de6,
+                },
+                NativeRegion {
+                    entry: 0x36d31,
+                    join: 0x36dcc,
+                },
             ],
         },
         animation: WeaponAnimation {
@@ -119,7 +120,10 @@ fn xatrix_profile() -> NativePrimaryWeaponProfile {
         },
         delay: WeaponDelay {
             flag: field(RecordKind::Image, 0x6b694, NativeScalar::Int32),
-            region: NativeRegion { entry: 0x3676f, join: 0x36793 },
+            region: NativeRegion {
+                entry: 0x3676f,
+                join: 0x36793,
+            },
             evaluate: DelayEvaluate::SourceFlag {
                 factors: vec![1.0, 0.5],
             },
@@ -128,7 +132,10 @@ fn xatrix_profile() -> NativePrimaryWeaponProfile {
             address: 0x6b690,
             encoding: NativeScalar::Int32,
             factors: vec![1.0, 4.0],
-            region: NativeRegion { entry: 0x36748, join: 0x3676f },
+            region: NativeRegion {
+                entry: 0x36748,
+                join: 0x3676f,
+            },
         },
     }
 }
@@ -162,20 +169,10 @@ fn retail_profile() -> NativePrimaryWeaponProfile {
             decided(0x119873, 0x11987a, vec![buttons]),
             decided(0x119cd9, 0x119ce0, vec![buttons]),
         ],
-        committed_input: vec![vec![scalar_test(
-            RecordKind::Client,
-            0x1890,
-            NativeScalar::Uint8,
-            1.0,
-        )]],
+        committed_input: vec![vec![scalar_test(RecordKind::Client, 0x1890, NativeScalar::Uint8, 1.0)]],
         spawn: SpawnGate {
             entry: 0xda4b0,
-            accepted: vec![scalar_test(
-                RecordKind::Client,
-                0x1c54,
-                NativeScalar::Uint8,
-                0.0,
-            )],
+            accepted: vec![scalar_test(RecordKind::Client, 0x1c54, NativeScalar::Uint8, 0.0)],
         },
         active: vec![
             scalar_test(RecordKind::Image, 0x241c30, NativeScalar::Int64, 0.0),
@@ -206,7 +203,10 @@ fn retail_profile() -> NativePrimaryWeaponProfile {
         },
         attack_animation: AttackAnimation {
             entry: 0xf1180,
-            skip: vec![NativeRegion { entry: 0xf11c3, join: 0xf12d8 }],
+            skip: vec![NativeRegion {
+                entry: 0xf11c3,
+                join: 0xf12d8,
+            }],
         },
         animation: WeaponAnimation {
             frame: field(RecordKind::Entity, 56, NativeScalar::Int32),
@@ -217,7 +217,10 @@ fn retail_profile() -> NativePrimaryWeaponProfile {
         },
         delay: WeaponDelay {
             flag: field(RecordKind::Image, 0x1d634d, NativeScalar::Uint8),
-            region: NativeRegion { entry: 0xeff75, join: 0xeff8a },
+            region: NativeRegion {
+                entry: 0xeff75,
+                join: 0xeff8a,
+            },
             evaluate: DelayEvaluate::SourceAnimation {
                 entry: 0xf04f0,
                 baseline_milliseconds: 100.0,
@@ -276,10 +279,17 @@ mod tests {
         assert_eq!(profile.client.byte_length, 7344);
         assert!(matches!(
             profile.damage,
-            WeaponDamage::SourceResult { result: DamageResult::Uint8, .. }
+            WeaponDamage::SourceResult {
+                result: DamageResult::Uint8,
+                ..
+            }
         ));
         match &profile.delay.evaluate {
-            DelayEvaluate::SourceAnimation { baseline_milliseconds, projection, .. } => {
+            DelayEvaluate::SourceAnimation {
+                baseline_milliseconds,
+                projection,
+                ..
+            } => {
                 assert_eq!(*baseline_milliseconds, 100.0);
                 assert_eq!(projection.len(), 2);
             }

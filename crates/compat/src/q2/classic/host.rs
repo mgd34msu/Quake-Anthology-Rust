@@ -653,7 +653,9 @@ impl ClassicQ2GuestHost {
             host.call_with_budget("SpawnEntities", &pointers, host.instruction_budget.saturating_mul(10))?;
             Ok(())
         });
-        self.spawn_instructions = self.instructions_executed - before;
+        if result.is_ok() {
+            self.spawn_instructions = self.instructions_executed - before;
+        }
         result
     }
 
@@ -803,19 +805,22 @@ impl ClassicQ2GuestHost {
                 GuestCallValue::Pointer(Some(record.address)),
                 GuestCallValue::Pointer(Some(buffer)),
             ],
-        )?;
-        let GuestCallResult::Value(GuestCallValue::Int32(value)) = result else {
-            self.memory.unmap(buffer, 516)?;
-            return Err(ClassicQ2Error::invalid(
+        );
+        let outcome = match result {
+            Ok(GuestCallResult::Value(GuestCallValue::Int32(value))) => {
+                let userinfo = read_classic_string(&mut self.memory, Some(buffer), 512)?;
+                Ok(ClientConnectOutcome {
+                    allowed: value != 0,
+                    userinfo,
+                })
+            }
+            Ok(_) => Err(ClassicQ2Error::invalid(
                 "API 3 ClientConnect returned a non-integer result",
-            ));
+            )),
+            Err(error) => Err(error),
         };
-        let userinfo = read_classic_string(&mut self.memory, Some(buffer), 512)?;
         self.memory.unmap(buffer, 516)?;
-        Ok(ClientConnectOutcome {
-            allowed: value != 0,
-            userinfo,
-        })
+        outcome
     }
 
     /// Run a client lifecycle event.
@@ -841,16 +846,16 @@ impl ClassicQ2GuestHost {
             .as_mut()
             .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut self.memory, slot)?;
-        self.call(
+        let result = self.call(
             "ClientUserinfoChanged",
             &[
                 GuestCallValue::Pointer(Some(record.address)),
                 GuestCallValue::Pointer(Some(buffer)),
             ],
-        )?;
-        let userinfo = read_classic_string(&mut self.memory, Some(buffer), 512)?;
+        );
+        let outcome = result.and_then(|_| read_classic_string(&mut self.memory, Some(buffer), 512));
         self.memory.unmap(buffer, 516)?;
-        Ok(userinfo)
+        outcome
     }
 
     /// Run a client think over 16 source command bytes.
@@ -1864,7 +1869,7 @@ mod tests {
         assert_eq!(index, int_result(1));
         host.services.box_edict_slots = vec![0];
         let mins = allocate_classic_string(&mut host.memory, "mmmmmmmmmmmm").unwrap();
-        let out = host.memory.allocate(&GuestAllocationOptions::bytes(16)).unwrap();
+        let out = host.memory.allocate(&GuestAllocationOptions::bytes(32)).unwrap();
         write_classic_vector(
             &mut host.memory,
             mins,

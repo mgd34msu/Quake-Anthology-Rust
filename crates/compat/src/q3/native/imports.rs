@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult,
-    GuestCallSignature, GuestCallValue, GuestPermissions, GuestStorage, NativeAbi,
+    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallSignature,
+    GuestCallValue, GuestPermissions, GuestStorage, NativeAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
@@ -193,9 +193,7 @@ impl SyntheticQ3Host {
     }
 
     fn integer(value: &str) -> i32 {
-        value
-            .parse::<i32>()
-            .unwrap_or_else(|_| Self::numeric(value) as i32)
+        value.parse::<i32>().unwrap_or_else(|_| Self::numeric(value) as i32)
     }
 }
 
@@ -317,11 +315,7 @@ pub struct QuakeLiveGameImports<H: Q3EngineServices> {
 
 impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
     /// Allocate the import table and bind every implemented service.
-    pub fn new(
-        mut memory: SparseGuestMemory,
-        abi: NativeAbi,
-        host: H,
-    ) -> Result<Self, Q3ImportError> {
+    pub fn new(mut memory: SparseGuestMemory, abi: NativeAbi, host: H) -> Result<Self, Q3ImportError> {
         if memory.pointer_bytes() != abi.pointer_bytes() {
             return Err(Q3ImportError::Game(
                 "Quake Live import table ABI width differs from guest memory width".to_string(),
@@ -625,7 +619,9 @@ impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
         if slot >= self.slots.len() {
             return Err(Q3ImportError::SlotOutOfRange(slot));
         }
-        let Self { slots, memory, host, .. } = self;
+        let Self {
+            slots, memory, host, ..
+        } = self;
         let record = &mut slots[slot];
         record.reached += 1;
         (record.handler)(context, args, memory, host)
@@ -660,9 +656,9 @@ impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
     /// Call signature bound for `slot`, or `None` when out of range.
     #[must_use]
     pub fn slot_signature(&self, slot: usize) -> Option<GuestCallSignature> {
-        self.slots.get(slot).map(|record| {
-            native_q3_signature(self.abi, &record.parameters, record.result, false)
-        })
+        self.slots
+            .get(slot)
+            .map(|record| native_q3_signature(self.abi, &record.parameters, record.result, false))
     }
 
     /// Trap address written into the table for `slot`.
@@ -715,10 +711,7 @@ impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
         Ok(())
     }
 
-    fn read_string(
-        memory: &mut SparseGuestMemory,
-        address: GuestAddress,
-    ) -> Result<String, Q3ImportError> {
+    fn read_string(memory: &mut SparseGuestMemory, address: GuestAddress) -> Result<String, Q3ImportError> {
         let length = memory.find_zero(address, GUEST_STRING_LIMIT)?;
         if length < 0 {
             return Err(Q3ImportError::UnterminatedString);
@@ -727,11 +720,7 @@ impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
         Ok(bytes.iter().map(|byte| *byte as char).collect())
     }
 
-    fn update_cvar(
-        memory: &mut SparseGuestMemory,
-        host: &mut H,
-        address: GuestAddress,
-    ) -> Result<(), Q3ImportError> {
+    fn update_cvar(memory: &mut SparseGuestMemory, host: &mut H, address: GuestAddress) -> Result<(), Q3ImportError> {
         let handle = memory.read_i32(address)?;
         let cached = memory.read_i32(memory.offset(address, 4)?)?;
         let Some(value) = host.cvar_read_vm(handle) else {
@@ -762,9 +751,7 @@ impl<H: Q3EngineServices> QuakeLiveGameImports<H> {
 #[cfg(test)]
 mod tests {
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        CallbackId, ContentDigest, GuestCallbackReference, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{CallbackId, ContentDigest, GuestCallbackReference, ModuleIdentity};
 
     use super::*;
 
@@ -826,8 +813,7 @@ mod tests {
     fn console_and_print_services_reach_host() {
         let memory = SparseGuestMemory::new(test_identity(), 8, 0x10000).expect("memory");
         let host = SyntheticQ3Host::new(vec!["q3".to_string(), "+map".to_string()]);
-        let mut imports =
-            QuakeLiveGameImports::new(memory, NativeAbi::LinuxX86_64, host).expect("imports");
+        let mut imports = QuakeLiveGameImports::new(memory, NativeAbi::LinuxX86_64, host).expect("imports");
         let context = test_context();
         let message = write_cstring(imports.memory_mut(), "fragged");
         let args = [GuestCallValue::Pointer(Some(message))];
@@ -869,8 +855,7 @@ mod tests {
     fn cvar_register_update_and_query_roundtrip() {
         let memory = SparseGuestMemory::new(test_identity(), 8, 0x10000).expect("memory");
         let host = SyntheticQ3Host::new(Vec::new()).with_cvar("g_gravity", "800");
-        let mut imports =
-            QuakeLiveGameImports::new(memory, NativeAbi::LinuxX86_64, host).expect("imports");
+        let mut imports = QuakeLiveGameImports::new(memory, NativeAbi::LinuxX86_64, host).expect("imports");
         let context = test_context();
         let state = allocate_bytes(imports.memory_mut(), VM_CVAR_STATE_BYTES);
         let name = write_cstring(imports.memory_mut(), "g_gravity");
@@ -965,8 +950,7 @@ mod tests {
     fn argv_configstring_userinfo_and_client_services() {
         let memory = SparseGuestMemory::new(test_identity(), 8, 0x10000).expect("memory");
         let host = SyntheticQ3Host::new(vec!["q3".to_string(), "+connect".to_string()]);
-        let mut imports =
-            QuakeLiveGameImports::new(memory, NativeAbi::LinuxX86_64, host).expect("imports");
+        let mut imports = QuakeLiveGameImports::new(memory, NativeAbi::LinuxX86_64, host).expect("imports");
         let context = test_context();
         assert_eq!(
             imports.invoke_slot(&context, 20, &[]).expect("argc"),
@@ -1056,13 +1040,7 @@ mod tests {
                 &[GuestCallValue::Int32(-1), GuestCallValue::Pointer(Some(reason))],
             )
             .expect("server command");
-        assert_eq!(
-            imports.host().dropped_clients,
-            vec![(3, "kicked".to_string())]
-        );
-        assert_eq!(
-            imports.host().server_commands,
-            vec![(-1, "kicked".to_string())]
-        );
+        assert_eq!(imports.host().dropped_clients, vec![(3, "kicked".to_string())]);
+        assert_eq!(imports.host().server_commands, vec![(-1, "kicked".to_string())]);
     }
 }

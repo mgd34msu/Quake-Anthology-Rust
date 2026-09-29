@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_guest::abi::values::{decode_value, encode_value};
-use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestCallValue, GuestStorage, GuestValueLayout,
-};
+use qa_guest::core::contracts::{GuestAccess, GuestAddress, GuestCallValue, GuestStorage, GuestValueLayout};
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
 use thiserror::Error;
@@ -106,9 +104,7 @@ pub enum RegionLocation {
 impl RegionLocation {
     fn storage(&self) -> GuestStorage {
         match self {
-            Self::Register { storage, .. }
-            | Self::Simd { storage, .. }
-            | Self::Stack { storage, .. } => *storage,
+            Self::Register { storage, .. } | Self::Simd { storage, .. } | Self::Stack { storage, .. } => *storage,
         }
     }
 }
@@ -165,17 +161,11 @@ enum ExtentBank {
     Stack,
 }
 
-fn extent(
-    location: &RegionLocation,
-    frame: &RegionFrame,
-    pointer_bytes: usize,
-) -> Result<Extent, RegionError> {
+fn extent(location: &RegionLocation, frame: &RegionFrame, pointer_bytes: usize) -> Result<Extent, RegionError> {
     let length = location.storage().byte_length(pointer_bytes);
     match location {
         RegionLocation::Register { register, .. } => {
-            if pointer_bytes == 4
-                && (length > 4 || is_extended_register(register))
-            {
+            if pointer_bytes == 4 && (length > 4 || is_extended_register(register)) {
                 return Err(RegionError::BadLocation(register.clone()));
             }
             Ok(Extent {
@@ -201,8 +191,7 @@ fn extent(
                 .saturating_add(pointer_bytes)
                 .saturating_add(frame.argument_bytes);
             if offset.saturating_add(length) > frame_end
-                || (*offset < frame.stack_bytes + pointer_bytes
-                    && offset.saturating_add(length) > frame.stack_bytes)
+                || (*offset < frame.stack_bytes + pointer_bytes && offset.saturating_add(length) > frame.stack_bytes)
             {
                 return Err(RegionError::BadLocation(format!("stack+{offset}")));
             }
@@ -217,26 +206,15 @@ fn extent(
 
 fn is_extended_register(name: &str) -> bool {
     let rest = name.strip_prefix('r').unwrap_or("");
-    matches!(
-        rest,
-        "8" | "9" | "10" | "11" | "12" | "13" | "14" | "15"
-    )
+    matches!(rest, "8" | "9" | "10" | "11" | "12" | "13" | "14" | "15")
 }
 
 /// Validate a standalone region declaration against a pointer width.
-pub fn validate_native_mod_region(
-    region: &ProtectionRegion,
-    pointer_bytes: usize,
-) -> Result<(), RegionError> {
+pub fn validate_native_mod_region(region: &ProtectionRegion, pointer_bytes: usize) -> Result<(), RegionError> {
     if pointer_bytes != 4 && pointer_bytes != 8 {
         return Err(RegionError::InvalidFrame("pointer width".to_string()));
     }
-    let boundaries = [
-        region.frame.entry,
-        region.entry,
-        region.join,
-        region.frame.exit,
-    ];
+    let boundaries = [region.frame.entry, region.entry, region.join, region.frame.exit];
     let distinct = {
         let mut sorted = boundaries;
         sorted.sort_unstable();
@@ -313,10 +291,7 @@ impl SyntheticRegionHost {
     }
 
     fn stack_address(&self, offset: usize) -> GuestAddress {
-        GuestAddress::new(
-            self.memory.address_space(),
-            self.rsp.wrapping_add(offset as u64),
-        )
+        GuestAddress::new(self.memory.address_space(), self.rsp.wrapping_add(offset as u64))
     }
 
     fn read_location(&mut self, location: &RegionLocation) -> Result<Vec<u8>, RegionError> {
@@ -360,8 +335,7 @@ impl SyntheticRegionHost {
             RegionLocation::Register { register, .. } => {
                 let mut raw = [0u8; 8];
                 raw[..bytes.len()].copy_from_slice(&bytes);
-                self.registers
-                    .insert(register.clone(), u64::from_le_bytes(raw));
+                self.registers.insert(register.clone(), u64::from_le_bytes(raw));
             }
         }
         Ok(())
@@ -435,9 +409,8 @@ impl NativeModRegionExecution {
     }
 
     fn in_frame(&self, host: &SyntheticRegionHost) -> bool {
-        self.entry_stack.is_some_and(|entry| {
-            host.stack_pointer() == entry.wrapping_sub(self.definition.frame.stack_bytes as u64)
-        })
+        self.entry_stack
+            .is_some_and(|entry| host.stack_pointer() == entry.wrapping_sub(self.definition.frame.stack_bytes as u64))
     }
 
     /// Observe target entry: records the entry stack once.
@@ -515,9 +488,7 @@ impl NativeModRegionExecution {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
 
     fn test_host() -> SyntheticRegionHost {
         let module = ModuleIdentity::new(
@@ -538,11 +509,7 @@ mod tests {
             ))
             .unwrap();
         memory
-            .map(&GuestMapOptions::new(
-                0x80000,
-                0x1000,
-                GuestPermissions::ReadWrite,
-            ))
+            .map(&GuestMapOptions::new(0x80000, 0x1000, GuestPermissions::ReadWrite))
             .unwrap();
         SyntheticRegionHost::new(memory, image_base, 0x80800)
     }
@@ -607,10 +574,7 @@ mod tests {
             })
             .unwrap();
         execution.run_epilogue(&host).unwrap();
-        assert_eq!(
-            execution.result().unwrap(),
-            GuestCallValue::Int32(99)
-        );
+        assert_eq!(execution.result().unwrap(), GuestCallValue::Int32(99));
         assert_eq!(host.read_register("eax"), 0);
         let staged = host.stack_address(20);
         assert_eq!(host.memory.copy(staged, 4).unwrap(), vec![0, 0, 0, 0]);
@@ -647,9 +611,6 @@ mod tests {
         )
         .unwrap();
         execution.observe_entry(&host);
-        assert_eq!(
-            execution.run_prologue(&mut host),
-            Err(RegionError::Retired)
-        );
+        assert_eq!(execution.run_prologue(&mut host), Err(RegionError::Retired));
     }
 }

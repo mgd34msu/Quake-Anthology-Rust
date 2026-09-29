@@ -568,9 +568,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
         let mut items = Vec::new();
         for counter in &self.counters {
             if let Some(inventory) = &counter.inventory {
-                if channel.is_none_or(|channel| counter.channel == channel)
-                    && !items.contains(inventory)
-                {
+                if channel.is_none_or(|channel| counter.channel == channel) && !items.contains(inventory) {
                     items.push(inventory.clone());
                 }
             }
@@ -599,8 +597,13 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
                     self.operations.memory().check(target, 1, GuestAccess::Execute)?;
                 }
             }
-            if let AbsorbDecl::SourceRegion { frame_entry, entry_rva, join_rva, frame_exit, .. } =
-                &definition.absorb
+            if let AbsorbDecl::SourceRegion {
+                frame_entry,
+                entry_rva,
+                join_rva,
+                frame_exit,
+                ..
+            } = &definition.absorb
             {
                 for rva in [frame_entry, entry_rva, join_rva, frame_exit] {
                     let base = self.operations.image_base();
@@ -632,9 +635,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
             return Ok(());
         }
         let client = self.operations.client_of(actor).ok_or(ProtectionError::NoLiveClient)?;
-        if !self.operations.is_live(actor)
-            || self.operations.actor_of_client(client) != Some(actor)
-        {
+        if !self.operations.is_live(actor) || self.operations.actor_of_client(client) != Some(actor) {
             return Err(ProtectionError::NoLiveClient);
         }
         for item in self.inventory_items(None) {
@@ -642,8 +643,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
                 return Err(ProtectionError::NoLiveClient);
             }
         }
-        let channels: Vec<ProtectionChannel> =
-            self.definitions.iter().map(|definition| definition.channel).collect();
+        let channels: Vec<ProtectionChannel> = self.definitions.iter().map(|definition| definition.channel).collect();
         self.entries.insert(
             actor,
             ProtectionEntry {
@@ -682,24 +682,15 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
         Ok(slot)
     }
 
-    fn field_value(
-        &mut self,
-        slot: usize,
-        field: &ProtectionField,
-    ) -> Result<Option<f64>, ProtectionError> {
+    fn field_value(&mut self, slot: usize, field: &ProtectionField) -> Result<Option<f64>, ProtectionError> {
         let Some(base) = self.operations.record_base(slot, &field.record) else {
             return Ok(None);
         };
         Ok(Some(self.operations.scalar(base, field, None)?))
     }
 
-    fn required_value(
-        &mut self,
-        slot: usize,
-        field: &ProtectionField,
-    ) -> Result<f64, ProtectionError> {
-        self.field_value(slot, field)?
-            .ok_or(ProtectionError::MissingStorage)
+    fn required_value(&mut self, slot: usize, field: &ProtectionField) -> Result<f64, ProtectionError> {
+        self.field_value(slot, field)?.ok_or(ProtectionError::MissingStorage)
     }
 
     fn storage_read(&mut self, slot: usize) -> Result<ArmorState, ProtectionError> {
@@ -799,11 +790,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
     }
 
     /// Read one counter field.
-    pub fn read_count(
-        &mut self,
-        actor: NativeActorId,
-        field: &ProtectionField,
-    ) -> Result<f64, ProtectionError> {
+    pub fn read_count(&mut self, actor: NativeActorId, field: &ProtectionField) -> Result<f64, ProtectionError> {
         let slot = self.source_slot(actor)?;
         self.required_value(slot, field)
     }
@@ -828,21 +815,21 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
             }
         }
         let mut stores = Vec::new();
-        let mut store = |operations: &mut O,
-                         slot: usize,
-                         field: &ProtectionField,
-                         value: f64|
-         -> Result<(), ProtectionError> {
-            let Some(base) = operations.record_base(slot, &field.record) else {
-                return Err(ProtectionError::NoClientRecord);
+        let mut store =
+            |operations: &mut O, slot: usize, field: &ProtectionField, value: f64| -> Result<(), ProtectionError> {
+                let Some(base) = operations.record_base(slot, &field.record) else {
+                    return Err(ProtectionError::NoClientRecord);
+                };
+                stores.push((base, field.clone(), value));
+                Ok(())
             };
-            stores.push((base, field.clone(), value));
-            Ok(())
-        };
         if channel == ProtectionChannel::Regular {
             let target = match &next.regular {
                 RegularArmor::None => None,
-                RegularArmor::Source { item: Some(item), points } => Some((item.clone(), *points)),
+                RegularArmor::Source {
+                    item: Some(item),
+                    points,
+                } => Some((item.clone(), *points)),
                 _ => return Err(ProtectionError::Unrepresentable),
             };
             // Deselect anything currently selected first.
@@ -902,12 +889,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
                         }
                         if let Some((field, mask)) = &item.enabled {
                             let current_value = self.required_value(slot, field)? as i64;
-                            store(
-                                &mut self.operations,
-                                slot,
-                                field,
-                                (current_value & !mask) as f64,
-                            )?;
+                            store(&mut self.operations, slot, field, (current_value & !mask) as f64)?;
                         }
                     }
                 }
@@ -1094,10 +1076,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
             .cloned()
             .ok_or(ProtectionError::BadDeclaration)?;
         let scale = input.regular_protection_scale;
-        if definition.channel == ProtectionChannel::Regular
-            && scale != 1.0
-            && !definition.declares_scale_input
-        {
+        if definition.channel == ProtectionChannel::Regular && scale != 1.0 && !definition.declares_scale_input {
             return Err(ProtectionError::ScaleInputMissing);
         }
         let mut values = HashMap::new();
@@ -1107,10 +1086,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
             "damage-flags".to_string(),
             RuntimeValue::Float(f64::from(self.damage_flags(definition.channel, input))),
         );
-        values.insert(
-            "regular-protection-scale".to_string(),
-            RuntimeValue::Float(scale),
-        );
+        values.insert("regular-protection-scale".to_string(), RuntimeValue::Float(scale));
         values.insert("point".to_string(), RuntimeValue::Vector(input.point));
         values.insert("normal".to_string(), RuntimeValue::Vector(input.normal));
         values.insert("direction".to_string(), RuntimeValue::Vector(input.direction));
@@ -1119,7 +1095,13 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
         let inputs = ProtectionInputs { values };
         let (call, region) = match &definition.absorb {
             AbsorbDecl::SourceCall { call } => (call.clone(), None),
-            AbsorbDecl::SourceRegion { call, frame_entry, entry_rva, join_rva, frame_exit } => (
+            AbsorbDecl::SourceRegion {
+                call,
+                frame_entry,
+                entry_rva,
+                join_rva,
+                frame_exit,
+            } => (
                 call.clone(),
                 Some(RegionRef {
                     frame_entry: *frame_entry,
@@ -1235,8 +1217,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
                             .operations
                             .record_base(slot, &counter.field.record)
                             .ok_or(ProtectionError::NoClientRecord)?;
-                        let outcome =
-                            self.operations.scalar(base, &counter.field, Some(change.after));
+                        let outcome = self.operations.scalar(base, &counter.field, Some(change.after));
                         for stage in &mut self.stages {
                             stage.suppressed -= 1;
                         }
@@ -1336,9 +1317,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
 
     fn actor(slot: u32) -> NativeActorId {
         NativeActorId { slot, generation: 1 }
@@ -1362,7 +1341,9 @@ mod tests {
                 id: "regular".to_string(),
                 channel: ProtectionChannel::Regular,
                 absorb: AbsorbDecl::SourceCall {
-                    call: ProtectionCall { id: "absorb-regular".to_string() },
+                    call: ProtectionCall {
+                        id: "absorb-regular".to_string(),
+                    },
                 },
                 regular: vec![RegularStorage {
                     item: "q2:jacket".to_string(),
@@ -1380,7 +1361,9 @@ mod tests {
                 id: "powered".to_string(),
                 channel: ProtectionChannel::Powered,
                 absorb: AbsorbDecl::SourceCall {
-                    call: ProtectionCall { id: "absorb-power".to_string() },
+                    call: ProtectionCall {
+                        id: "absorb-power".to_string(),
+                    },
                 },
                 regular: Vec::new(),
                 power: vec![PowerStorage {
@@ -1443,7 +1426,10 @@ mod tests {
         }
 
         fn actor_of_client(&self, client: NativeClientId) -> Option<NativeActorId> {
-            self.clients.iter().find(|(_, bound)| **bound == client).map(|(actor, _)| *actor)
+            self.clients
+                .iter()
+                .find(|(_, bound)| **bound == client)
+                .map(|(actor, _)| *actor)
         }
 
         fn client_actors(&self) -> Vec<NativeActorId> {
@@ -1585,7 +1571,10 @@ mod tests {
     }
 
     struct Recorder {
-        events: Vec<(Option<(RegularArmor, RegularArmor)>, Option<(PoweredProtection, PoweredProtection)>)>,
+        events: Vec<(
+            Option<(RegularArmor, RegularArmor)>,
+            Option<(PoweredProtection, PoweredProtection)>,
+        )>,
     }
 
     impl ProtectionObserver for Recorder {
@@ -1635,7 +1624,10 @@ mod tests {
         assert_eq!(recorder.events.len(), 1);
         assert!(matches!(
             &recorder.events[0].0,
-            Some((RegularArmor::Source { points: 100.0, .. }, RegularArmor::Source { points: 70.0, .. }))
+            Some((
+                RegularArmor::Source { points: 100.0, .. },
+                RegularArmor::Source { points: 70.0, .. }
+            ))
         ));
 
         // Power activation without its source operation is rejected.
@@ -1658,8 +1650,16 @@ mod tests {
         fixture.protection.activate().unwrap();
         // Seed screen storage directly, then flush a canonical change.
         let base = fixture.protection.operations_mut().record_base(1, "client").unwrap();
-        fixture.protection.operations_mut().scalar(base, &field(8), Some(1.0)).unwrap();
-        fixture.protection.operations_mut().scalar(base, &field(12), Some(50.0)).unwrap();
+        fixture
+            .protection
+            .operations_mut()
+            .scalar(base, &field(8), Some(1.0))
+            .unwrap();
+        fixture
+            .protection
+            .operations_mut()
+            .scalar(base, &field(12), Some(50.0))
+            .unwrap();
         fixture.protection.operations_mut().flushed.push(InventoryChange {
             actor: actor(1),
             item: "q2:cells".to_string(),
@@ -1671,7 +1671,11 @@ mod tests {
             .protection
             .absorb(actor(1), "powered", &input(), &mut recorder)
             .unwrap();
-        let cells = fixture.protection.operations_mut().scalar(base, &field(12), None).unwrap();
+        let cells = fixture
+            .protection
+            .operations_mut()
+            .scalar(base, &field(12), None)
+            .unwrap();
         assert_eq!(cells, 40.0);
 
         fixture

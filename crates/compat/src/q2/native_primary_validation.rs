@@ -45,10 +45,7 @@ pub fn layout_field_offset(layout: &GuestLayout, name: &str) -> Option<u32> {
 
 /// Admission checks the exact source records and executable addresses before
 /// init can run.
-pub fn validate_native_primary(
-    profile: &NativePrimaryProfile,
-    pe: &SyntheticPeImage,
-) -> Result<(), String> {
+pub fn validate_native_primary(profile: &NativePrimaryProfile, pe: &SyntheticPeImage) -> Result<(), String> {
     let weapons = profile.weapons();
     let player = profile.player();
     let commands = profile.commands();
@@ -73,8 +70,7 @@ pub fn validate_native_primary(
         bound(offset, bytes, pe.image_size)?;
         let covered = pe.sections.iter().any(|section| {
             u64::from(offset) >= u64::from(section.rva)
-                && u64::from(offset) + u64::from(bytes)
-                    <= u64::from(section.rva) + u64::from(section.mapped_size)
+                && u64::from(offset) + u64::from(bytes) <= u64::from(section.rva) + u64::from(section.mapped_size)
                 && (!execute || section.executable)
         });
         if covered {
@@ -95,9 +91,7 @@ pub fn validate_native_primary(
     };
     let test = |value: &NativeItemTest| -> Result<(), String> {
         match value {
-            NativeItemTest::Scalar {
-                field: item_field, ..
-            } => field(item_field),
+            NativeItemTest::Scalar { field: item_field, .. } => field(item_field),
             NativeItemTest::Pointer {
                 record: kind,
                 offset,
@@ -125,7 +119,11 @@ pub fn validate_native_primary(
         .filter_map(|argument| match argument {
             CombatArgument::Address(Some(address)) => {
                 let base = u64::from(address.rva) + u64::from(address.indirections.first().copied().unwrap_or(0));
-                let bytes = if address.indirections.is_empty() { 1 } else { pointer_bytes };
+                let bytes = if address.indirections.is_empty() {
+                    1
+                } else {
+                    pointer_bytes
+                };
                 u32::try_from(base).ok().map(|base| (base, bytes))
             }
             _ => None,
@@ -143,7 +141,11 @@ pub fn validate_native_primary(
         .filter_map(|argument| match argument {
             CombatArgument::Address(Some(address)) => {
                 let base = u64::from(address.rva) + u64::from(address.indirections.first().copied().unwrap_or(0));
-                let bytes = if address.indirections.is_empty() { 1 } else { pointer_bytes };
+                let bytes = if address.indirections.is_empty() {
+                    1
+                } else {
+                    pointer_bytes
+                };
                 u32::try_from(base).ok().map(|base| (base, bytes))
             }
             _ => None,
@@ -325,8 +327,7 @@ pub fn validate_native_primary(
         test(value)?;
     }
     if weapons.entity.max_health.record != RecordKind::Entity
-        || weapons.entity.max_health.encoding
-            != super::native_primary_reader::NativeScalar::Int32
+        || weapons.entity.max_health.encoding != super::native_primary_reader::NativeScalar::Int32
     {
         return Err("native source max health requires its declared int32 entity field".to_string());
     }
@@ -381,13 +382,21 @@ pub fn validate_native_primary(
     image(weapons.time.address, weapons.time.encoding.width() as u32, false)?;
     image(
         pickups.time.address,
-        if pickups.time.storage == TimeStorage::FloatSeconds { 4 } else { 8 },
+        if pickups.time.storage == TimeStorage::FloatSeconds {
+            4
+        } else {
+            8
+        },
         false,
     )?;
     bound(pickups.entity.count, 4, entity_bytes)?;
     bound(pickups.entity.spawnflags, 4, entity_bytes)?;
     bound(pickups.entity.item, pointer_bytes, entity_bytes)?;
-    bound(pickups.entity.inuse, u32::from(pickups.entity.inuse_bytes), entity_bytes)?;
+    bound(
+        pickups.entity.inuse,
+        u32::from(pickups.entity.inuse_bytes),
+        entity_bytes,
+    )?;
     if let Some(generation) = pickups.entity.generation {
         bound(generation, 4, entity_bytes)?;
     }
@@ -435,12 +444,9 @@ pub fn validate_native_primary(
         NativePrimaryProfile::Rerelease { world, .. } => {
             if world.client.layout.byte_length as u32 != client_bytes
                 || world.client.inventory_count != inventory.count
-                || layout_field_offset(&world.client.layout, "pers.inventory")
-                    != Some(inventory.inventory)
-                || layout_field_offset(&world.client.layout, "pers.weapon")
-                    != Some(commands.client.weapon)
-                || layout_field_offset(&world.client.layout, "pers.selected_item")
-                    != Some(inventory.cursor)
+                || layout_field_offset(&world.client.layout, "pers.inventory") != Some(inventory.inventory)
+                || layout_field_offset(&world.client.layout, "pers.weapon") != Some(commands.client.weapon)
+                || layout_field_offset(&world.client.layout, "pers.selected_item") != Some(inventory.cursor)
             {
                 return Err("rerelease source world and item interfaces disagree".to_string());
             }
@@ -451,9 +457,7 @@ pub fn validate_native_primary(
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_primary::{
-        PrimaryEdition, builtin_native_primary,
-    };
+    use super::super::native_primary::{builtin_native_primary, PrimaryEdition};
     use super::super::native_primary_reader::{CLASSIC_DIGEST, RETAIL_DIGEST};
     use super::*;
 
@@ -483,22 +487,19 @@ mod tests {
 
     #[test]
     fn admits_classic_builtins() {
-        let profile =
-            builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("classic");
+        let profile = builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("classic");
         validate_native_primary(&profile, &classic_image()).expect("valid");
     }
 
     #[test]
     fn admits_retail_builtins() {
-        let profile =
-            builtin_native_primary(RETAIL_DIGEST, PrimaryEdition::Rerelease).expect("retail");
+        let profile = builtin_native_primary(RETAIL_DIGEST, PrimaryEdition::Rerelease).expect("retail");
         validate_native_primary(&profile, &retail_image()).expect("valid");
     }
 
     #[test]
     fn rejects_addresses_outside_executable_sections() {
-        let mut profile =
-            builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("classic");
+        let mut profile = builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("classic");
         match &mut profile {
             NativePrimaryProfile::Classic { commands, .. } => {
                 commands.give.entry = 0x90000;
@@ -506,8 +507,7 @@ mod tests {
             NativePrimaryProfile::Rerelease { .. } => panic!("expected classic"),
         }
         assert!(validate_native_primary(&profile, &classic_image()).is_err());
-        let profile =
-            builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("classic");
+        let profile = builtin_native_primary(CLASSIC_DIGEST, PrimaryEdition::Classic).expect("classic");
         let data_only = SyntheticPeImage {
             image_size: 0x80000,
             pointer_bytes: 4,

@@ -232,11 +232,7 @@ pub enum ItemNameMatch {
 
 /// Resolve a typed name against canonical rows: exact id first, then the
 /// original descriptor fallback, then unique label match.
-pub fn source_item_named(
-    rows: &[NativeInventoryRow],
-    text: &str,
-    original: Option<&ItemId>,
-) -> Option<ItemNameMatch> {
+pub fn source_item_named(rows: &[NativeInventoryRow], text: &str, original: Option<&ItemId>) -> Option<ItemNameMatch> {
     let requested: String = text
         .chars()
         .filter(|char| *char != ' ')
@@ -271,10 +267,10 @@ pub fn source_item_named(
     if matches.len() > 1 {
         Some(ItemNameMatch::Ambiguous(matches))
     } else {
-        matches.into_iter().next().map(|row| ItemNameMatch::Match {
-            row,
-            exact: false,
-        })
+        matches
+            .into_iter()
+            .next()
+            .map(|row| ItemNameMatch::Match { row, exact: false })
     }
 }
 
@@ -324,9 +320,7 @@ impl NativePrimaryInventory {
 
     fn check_host(&self, host: &SyntheticHost) -> HostResult<()> {
         if self.closed {
-            return Err(NativeHostError::Fault(
-                "native inventory service is closed".to_string(),
-            ));
+            return Err(NativeHostError::Fault("native inventory service is closed".to_string()));
         }
         if host.core.digest != self.profile.digest {
             return Err(NativeHostError::Fault(
@@ -349,17 +343,15 @@ impl NativePrimaryInventory {
     }
 
     fn client(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<GuestAddress> {
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("native inventory actor has no source client".to_string())
-        })?;
-        let client = host.core.memory.read_pointer(
-            host.core
-                .memory
-                .offset(entity, i64::from(self.profile.client))?,
-        )?;
-        client.ok_or_else(|| {
-            NativeHostError::Fault("native inventory actor has no source client".to_string())
-        })
+        let entity = host
+            .core
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("native inventory actor has no source client".to_string()))?;
+        let client = host
+            .core
+            .memory
+            .read_pointer(host.core.memory.offset(entity, i64::from(self.profile.client))?)?;
+        client.ok_or_else(|| NativeHostError::Fault("native inventory actor has no source client".to_string()))
     }
 
     /// Resolve the cursor to its canonical row, tracking selections.
@@ -371,10 +363,7 @@ impl NativePrimaryInventory {
     ) -> HostResult<Option<NativeInventoryRow>> {
         self.check_host(host)?;
         let client = self.client(host, actor)?;
-        let cursor = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.cursor))?;
+        let cursor = host.core.memory.offset(client, i64::from(self.profile.cursor))?;
         let index = host.core.memory.read_i32(cursor)?;
         if let Some((item, slot)) = self.selected.get(&actor) {
             if *slot as i32 == index {
@@ -477,7 +466,7 @@ impl NativePrimaryInventory {
         rows: &[NativeInventoryRow],
         direction: i32,
         flags: i32,
-        ) -> HostResult<()> {
+    ) -> HostResult<()> {
         let chosen = self.cursor(host, actor, rows)?;
         let start = match &chosen {
             None => {
@@ -495,9 +484,9 @@ impl NativePrimaryInventory {
         let mut refused: HashMap<u32, Vec<i32>> = HashMap::new();
         for step in 1..=rows.len() {
             let index = (start + direction * step as i32).rem_euclid(rows.len() as i32) as usize;
-            let row = rows.get(index).ok_or_else(|| {
-                NativeHostError::Fault("native inventory traversal lost its row".to_string())
-            })?;
+            let row = rows
+                .get(index)
+                .ok_or_else(|| NativeHostError::Fault("native inventory traversal lost its row".to_string()))?;
             if row.count == 0
                 || refused
                     .get(&row.source_index)
@@ -515,10 +504,7 @@ impl NativePrimaryInventory {
                 .push(Self::source_count(row));
         }
         let client = self.client(host, actor)?;
-        let cursor = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.cursor))?;
+        let cursor = host.core.memory.offset(client, i64::from(self.profile.cursor))?;
         host.core.memory.write_i32(cursor, self.profile.empty)?;
         self.selected.remove(&actor);
         Ok(())
@@ -533,48 +519,33 @@ impl NativePrimaryInventory {
         flags: i32,
     ) -> HostResult<bool> {
         let client = self.client(host, actor)?;
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("native inventory actor has no source client".to_string())
-        })?;
+        let entity = host
+            .core
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("native inventory actor has no source client".to_string()))?;
         if row.source_index == 0 || row.source_index >= self.profile.count {
             return Err(NativeHostError::Fault(
                 "canonical inventory row has no valid original item slot".to_string(),
             ));
         }
-        let inventory = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.inventory))?;
-        let saved_inventory = host
-            .core
-            .memory
-            .copy(inventory, self.profile.count as usize * 4)?;
+        let inventory = host.core.memory.offset(client, i64::from(self.profile.inventory))?;
+        let saved_inventory = host.core.memory.copy(inventory, self.profile.count as usize * 4)?;
         let mut saved_selection = Vec::with_capacity(self.profile.selection_writes.len());
         for span in &self.profile.selection_writes {
-            let address = host
-                .core
-                .memory
-                .offset(client, i64::from(span.offset))?;
+            let address = host.core.memory.offset(client, i64::from(span.offset))?;
             saved_selection.push((address, host.core.memory.copy(address, span.bytes as usize)?));
         }
         self.evaluating += 1;
         let accepted = (|| {
             host.core.memory.write(inventory, &vec![0u8; saved_inventory.len()])?;
             host.core.memory.write_i32(
-                host.core.memory.offset(
-                    inventory,
-                    i64::from(row.source_index) * 4,
-                )?,
+                host.core.memory.offset(inventory, i64::from(row.source_index) * 4)?,
                 Self::source_count(row),
             )?;
-            host.core.memory.write_i32(
-                host.core.memory.offset(client, i64::from(self.profile.cursor))?,
-                0,
-            )?;
-            let mut values = vec![
-                GuestCallValue::Pointer(Some(entity)),
-                GuestCallValue::Int32(flags),
-            ];
+            host.core
+                .memory
+                .write_i32(host.core.memory.offset(client, i64::from(self.profile.cursor))?, 0)?;
+            let mut values = vec![GuestCallValue::Pointer(Some(entity)), GuestCallValue::Int32(flags)];
             if direction > 0 && self.profile.next.menu_argument {
                 values.push(GuestCallValue::Uint32(0));
             }
@@ -585,9 +556,10 @@ impl NativePrimaryInventory {
             };
             host.invoke(host.core.at(entry)?, &values)?;
             Ok::<bool, NativeHostError>(
-                host.core.memory.read_i32(
-                    host.core.memory.offset(client, i64::from(self.profile.cursor))?,
-                )? == row.source_index as i32,
+                host.core
+                    .memory
+                    .read_i32(host.core.memory.offset(client, i64::from(self.profile.cursor))?)?
+                    == row.source_index as i32,
             )
         })();
         self.evaluating -= 1;
@@ -659,10 +631,7 @@ impl NativePrimaryInventory {
             Some(ItemNameMatch::Ambiguous(items)) => {
                 if original.is_none() {
                     let names: Vec<&str> = items.iter().map(|row| row.item.as_str()).collect();
-                    (self.hooks.print)(
-                        actor,
-                        format!("Ambiguous item \"{text}\"; use {}\n", names.join(", ")),
-                    );
+                    (self.hooks.print)(actor, format!("Ambiguous item \"{text}\"; use {}\n", names.join(", ")));
                 }
                 Ok(LookupOutcome::PassThrough)
             }
@@ -701,10 +670,7 @@ impl NativePrimaryInventory {
             None => {
                 if let Some((_, index)) = self.selected.remove(&actor) {
                     let client = self.client(host, actor)?;
-                    let cursor = host
-                        .core
-                        .memory
-                        .offset(client, i64::from(self.profile.cursor))?;
+                    let cursor = host.core.memory.offset(client, i64::from(self.profile.cursor))?;
                     if host.core.memory.read_i32(cursor)? == index as i32 {
                         host.core.memory.write_i32(cursor, self.profile.empty)?;
                     }
@@ -729,19 +695,11 @@ impl NativePrimaryInventory {
     }
 
     /// Restore a saved cursor.
-    pub fn restore(
-        &mut self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-        item: Option<&ItemId>,
-    ) -> HostResult<()> {
+    pub fn restore(&mut self, host: &mut SyntheticHost, actor: NativeActorId, item: Option<&ItemId>) -> HostResult<()> {
         self.check_host(host)?;
         self.selected.remove(&actor);
         let client = self.client(host, actor)?;
-        let cursor = host
-            .core
-            .memory
-            .offset(client, i64::from(self.profile.cursor))?;
+        let cursor = host.core.memory.offset(client, i64::from(self.profile.cursor))?;
         match item {
             None => {
                 host.core.memory.write_i32(cursor, self.profile.empty)?;
@@ -752,8 +710,7 @@ impl NativePrimaryInventory {
                     .and_then(|rows| rows.into_iter().find(|row| &row.item == item))
                     .ok_or_else(|| {
                         NativeHostError::Fault(
-                            "saved native inventory cursor is absent from its canonical rows"
-                                .to_string(),
+                            "saved native inventory cursor is absent from its canonical rows".to_string(),
                         )
                     })?;
                 host.core.memory.write_i32(cursor, row.source_index as i32)?;
@@ -799,10 +756,26 @@ mod tests {
                 undroppable: item("weapon_blaster"),
             },
             selection_writes: vec![SelectionWrite { offset: 0xF0, bytes: 4 }],
-            next: NextProfile { entry: 0x100, scan: 0x110, join: 0x120, menu_argument: false },
-            previous: PreviousProfile { entry: 0x130, scan: 0x140, join: 0x150 },
-            validate: ValidateProfile { entry: 0x160, scan: None },
-            use_profile: UseProfile { entry: 0x170, call: 0x180, join: 0x190 },
+            next: NextProfile {
+                entry: 0x100,
+                scan: 0x110,
+                join: 0x120,
+                menu_argument: false,
+            },
+            previous: PreviousProfile {
+                entry: 0x130,
+                scan: 0x140,
+                join: 0x150,
+            },
+            validate: ValidateProfile {
+                entry: 0x160,
+                scan: None,
+            },
+            use_profile: UseProfile {
+                entry: 0x170,
+                call: 0x180,
+                join: 0x190,
+            },
             named_use: NamedUseProfile {
                 entry: 0x1A0,
                 lookup_call: 0x1B0,
@@ -865,10 +838,10 @@ mod tests {
                         .read_pointer(core.memory.offset(entity, 84)?)?
                         .expect("client");
                     for slot in 1..count {
-                        let counter =
-                            core.memory.offset(client, i64::from(inventory) + i64::from(slot) * 4)?;
+                        let counter = core.memory.offset(client, i64::from(inventory) + i64::from(slot) * 4)?;
                         if core.memory.read_i32(counter)? != 0 {
-                            core.memory.write_i32(core.memory.offset(client, i64::from(cursor))?, slot as i32)?;
+                            core.memory
+                                .write_i32(core.memory.offset(client, i64::from(cursor))?, slot as i32)?;
                             return Ok(qa_guest::core::contracts::GuestCallResult::Void);
                         }
                     }
@@ -915,14 +888,19 @@ mod tests {
         let hooks = InventoryHooks {
             rows: Box::new(move |_| Some(moved.clone())),
             use_item: Box::new(|_, _| {}),
-            descriptor: Box::new(|index| GuestAddress { space: 1, offset: u64::from(index) * 32 }),
+            descriptor: Box::new(|index| GuestAddress {
+                space: 1,
+                offset: u64::from(index) * 32,
+            }),
             item_at: Box::new(|_| None),
             print: Box::new(move |_, text| capture.lock().expect("lock").push(text)),
         };
         let mut inventory = NativePrimaryInventory::new(profile, hooks);
         let actor = linked(&mut host);
         inventory.enter(Some(actor), 0, true);
-        let outcome = inventory.named_lookup(&mut host, actor, "blaster", None).expect("lookup");
+        let outcome = inventory
+            .named_lookup(&mut host, actor, "blaster", None)
+            .expect("lookup");
         match outcome {
             LookupOutcome::Project { row, descriptor } => {
                 assert_eq!(row.item, "q2:weapon_blaster");
@@ -957,9 +935,16 @@ mod tests {
         };
         let mut inventory = NativePrimaryInventory::new(profile, hooks);
         let actor = linked(&mut host);
-        inventory.restore(&mut host, actor, Some(&"q2:weapon_blaster".to_string())).expect("restore");
+        inventory
+            .restore(&mut host, actor, Some(&"q2:weapon_blaster".to_string()))
+            .expect("restore");
         let entity = host.core.entity_of(actor).expect("entity");
-        let client = host.core.memory.read_pointer(host.core.memory.offset(entity, 84).expect("link")).expect("read").expect("client");
+        let client = host
+            .core
+            .memory
+            .read_pointer(host.core.memory.offset(entity, 84).expect("link"))
+            .expect("read")
+            .expect("client");
         let counter = host.core.memory.offset(client, 0x100 + 4).expect("counter");
         host.core.memory.write_i32(counter, 0).expect("zero");
         inventory
@@ -983,10 +968,7 @@ mod tests {
         let label = source_item_named(&table, "shells", None).expect("label");
         assert!(matches!(label, ItemNameMatch::Match { exact: false, .. }));
         assert!(source_item_named(&table, "nope", None).is_none());
-        let doubled = vec![
-            row("a_one", "Same", 1, 1, false),
-            row("a_two", "Same", 1, 2, false),
-        ];
+        let doubled = vec![row("a_one", "Same", 1, 1, false), row("a_two", "Same", 1, 2, false)];
         assert!(matches!(
             source_item_named(&doubled, "same", None),
             Some(ItemNameMatch::Ambiguous(_))

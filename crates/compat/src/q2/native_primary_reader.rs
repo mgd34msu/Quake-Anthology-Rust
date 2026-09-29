@@ -2,16 +2,14 @@
 //! Bridges native-primary profile JSON into typed offsets, fields, tests and call signatures.
 
 use qa_guest::core::contracts::{
-    GuestCallSignature, GuestFieldLayout, GuestLayout, GuestRegister, GuestStorage, GuestValueLayout,
-    NativeAbi, NativeCallAbi,
+    GuestCallSignature, GuestFieldLayout, GuestLayout, GuestRegister, GuestStorage, GuestValueLayout, NativeAbi,
+    NativeCallAbi,
 };
 
 /// Classic (Xatrix PE) native artifact digest shared by every primary profile.
-pub const CLASSIC_DIGEST: &str =
-    "sha256:8187df3fd5b4d435d8227434d3351aad2b47e546236403e52adcd4d275810c45";
+pub const CLASSIC_DIGEST: &str = "sha256:8187df3fd5b4d435d8227434d3351aad2b47e546236403e52adcd4d275810c45";
 /// Rerelease (retail PE) native artifact digest shared by every primary profile.
-pub const RETAIL_DIGEST: &str =
-    "sha256:045d49c53722d9b922caf14f168dd28a97d4c514a6e443a3140560f8668baccd";
+pub const RETAIL_DIGEST: &str = "sha256:045d49c53722d9b922caf14f168dd28a97d4c514a6e443a3140560f8668baccd";
 
 /// Minimal JSON value for native-primary profile documents.
 #[derive(Debug, Clone, PartialEq)]
@@ -151,8 +149,7 @@ impl JsonParser<'_> {
                 let low = self.hex4()?;
                 if (0xdc00..0xe000).contains(&low) {
                     let scalar = 0x1_0000 + ((code - 0xd800) << 10) + (low - 0xdc00);
-                    return char::from_u32(scalar)
-                        .ok_or_else(|| format!("invalid scalar at offset {}", self.cursor));
+                    return char::from_u32(scalar).ok_or_else(|| format!("invalid scalar at offset {}", self.cursor));
                 }
             }
             return Err(format!("lone surrogate at offset {}", self.cursor));
@@ -361,9 +358,7 @@ impl<'a> Reader<'a> {
     pub fn integer(&self, min: i64) -> i64 {
         let value = match self.value {
             JsonValue::Int(value) => *value,
-            JsonValue::Float(value) if value.fract() == 0.0 && *value >= -9.0e15 && *value <= 9.0e15 => {
-                *value as i64
-            }
+            JsonValue::Float(value) if value.fract() == 0.0 && *value >= -9.0e15 && *value <= 9.0e15 => *value as i64,
             _ => self.fail("expected integer"),
         };
         if value < min {
@@ -512,7 +507,7 @@ impl NativeScalar {
 
     /// Decode a profile label.
     #[must_use]
-    pub const fn from_label(label: &str) -> Option<Self> {
+    pub fn from_label(label: &str) -> Option<Self> {
         match label {
             "int8" => Some(Self::Int8),
             "uint8" => Some(Self::Uint8),
@@ -570,7 +565,7 @@ impl RecordKind {
 
     /// Decode a profile label.
     #[must_use]
-    pub const fn from_label(label: &str) -> Option<Self> {
+    pub fn from_label(label: &str) -> Option<Self> {
         match label {
             "entity" => Some(Self::Entity),
             "client" => Some(Self::Client),
@@ -716,8 +711,7 @@ pub fn native_test(reader: &Reader) -> NativeItemTest {
     if reader.field("kind").choice_index(&["scalar", "pointer"]) == 1 {
         let field = reader.field("field");
         let record = field.field("record").string();
-        let record =
-            RecordKind::from_label(&record).unwrap_or_else(|| reader.fail("unknown record"));
+        let record = RecordKind::from_label(&record).unwrap_or_else(|| reader.fail("unknown record"));
         return NativeItemTest::Pointer {
             record,
             offset: native_offset(&field.field("offset")),
@@ -762,8 +756,7 @@ fn scalar_layout(reader: &Reader) -> GuestValueLayout {
     if storage == "pointer" {
         GuestValueLayout::Scalar(GuestStorage::Pointer)
     } else {
-        let scalar =
-            NativeScalar::from_label(&storage).unwrap_or_else(|| reader.fail("unknown storage"));
+        let scalar = NativeScalar::from_label(&storage).unwrap_or_else(|| reader.fail("unknown storage"));
         GuestValueLayout::Scalar(scalar.storage())
     }
 }
@@ -812,13 +805,7 @@ pub fn read_guest_layout(reader: &Reader) -> GuestLayout {
             count: field.field("count").integer(1) as usize,
         }
     });
-    GuestLayout::new(
-        &id,
-        byte_length,
-        alignment,
-        pointer_bytes as usize,
-        fields,
-    )
+    GuestLayout::new(&id, byte_length, alignment, pointer_bytes as usize, fields)
 }
 
 /// Read a `namespace:name` item reference.

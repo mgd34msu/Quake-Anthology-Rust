@@ -539,11 +539,8 @@ impl<O: ClientOperations> NativeModClientsBinding<O> {
         if self.operations.declaration().end_frame.is_empty() {
             return Ok(());
         }
-        let mut actors: Vec<(usize, NativeActorId)> = self
-            .entries
-            .iter()
-            .map(|(actor, entry)| (entry.slot, *actor))
-            .collect();
+        let mut actors: Vec<(usize, NativeActorId)> =
+            self.entries.iter().map(|(actor, entry)| (entry.slot, *actor)).collect();
         actors.sort_unstable();
         for (_, actor) in actors {
             let directory = self.operations.directory();
@@ -747,7 +744,10 @@ mod tests {
         }
 
         fn actor_of(&self, client: NativeClientId) -> Option<NativeActorId> {
-            self.actors.iter().find(|(_, bound)| **bound == client).map(|(actor, _)| *actor)
+            self.actors
+                .iter()
+                .find(|(_, bound)| **bound == client)
+                .map(|(actor, _)| *actor)
         }
 
         fn clients(&self) -> Vec<(NativeActorId, NativeClientId)> {
@@ -886,20 +886,21 @@ mod tests {
         assert!(binding.frame(slot + 1).unwrap());
         assert!(!binding.frame(99).unwrap());
         binding.end_frame().unwrap();
-        let kinds: Vec<&str> = binding
-            .operations()
-            .invokes
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect();
+        let kinds: Vec<&str> = binding.operations().invokes.iter().map(|(id, _)| id.as_str()).collect();
         assert!(kinds.contains(&"admit"));
         assert!(kinds.contains(&"frame"));
         assert!(kinds.contains(&"end-frame"));
 
         binding
             .dispatch_input(
-                &InputBindingDecl { id: "move".to_string(), calls: Vec::new() },
-                &ClientApplication { actor: actor(1), client: client(1) },
+                &InputBindingDecl {
+                    id: "move".to_string(),
+                    calls: Vec::new(),
+                },
+                &ClientApplication {
+                    actor: actor(1),
+                    client: client(1),
+                },
                 &call("input", CallAccepts::Always),
             )
             .unwrap();
@@ -908,7 +909,11 @@ mod tests {
             vec!["open:1".to_string(), "input:1".to_string(), "close:7".to_string()]
         );
 
-        binding.operations_mut().directory.events.push(ClientEvent::Removed { actor: actor(1) });
+        binding
+            .operations_mut()
+            .directory
+            .events
+            .push(ClientEvent::Removed { actor: actor(1) });
         binding.poll().unwrap();
         assert!(!binding.has(actor(1)));
         assert!(binding.operations().releases.contains(&actor(1)));
@@ -918,10 +923,7 @@ mod tests {
     #[test]
     fn nonzero_rejection_drops_and_blocks_checkpoint() {
         let mut binding = fixture();
-        binding
-            .operations_mut()
-            .results
-            .insert("admit".to_string(), Some(0));
+        binding.operations_mut().results.insert("admit".to_string(), Some(0));
         binding
             .operations_mut()
             .directory
@@ -937,7 +939,11 @@ mod tests {
         // Rejected but still connected (re-queued event keeps the row denied).
         binding.operations_mut().directory.actors.insert(actor(1), client(1));
         assert_eq!(binding.checkpoint(), Err(ClientError::PendingRejection));
-        binding.operations_mut().directory.events.push(ClientEvent::Removed { actor: actor(1) });
+        binding
+            .operations_mut()
+            .directory
+            .events
+            .push(ClientEvent::Removed { actor: actor(1) });
         binding.poll().unwrap();
         assert!(!binding.rejects(actor(1)));
         assert!(!binding.has(actor(1)));
@@ -947,9 +953,11 @@ mod tests {
     fn capacity_commands_and_checkpoint_roundtrip() {
         let mut tight = fixture();
         tight.operations_mut().declaration.maximum = 0;
-        tight.operations_mut().directory.events.push(ClientEvent::Admitted {
-            actor: actor(1),
-        });
+        tight
+            .operations_mut()
+            .directory
+            .events
+            .push(ClientEvent::Admitted { actor: actor(1) });
         assert_eq!(tight.poll(), Err(ClientError::CapacityExceeded));
 
         let mut solo = fixture();

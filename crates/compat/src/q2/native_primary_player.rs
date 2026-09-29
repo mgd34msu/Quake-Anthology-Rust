@@ -2,7 +2,9 @@
 //! Bridges source spawn selection, scores and private client pose.
 
 use qa_core::math::Vec3;
-use qa_guest::core::contracts::{GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, NativeAbi};
+use qa_guest::core::contracts::{
+    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, NativeAbi,
+};
 
 use super::native_primary_weapons::{
     HostResult, NativeActorId, NativeHostError, NativePrimaryWeaponProfile, SyntheticHost,
@@ -84,14 +86,9 @@ pub struct NativePrimaryPlayer {
 
 impl NativePrimaryPlayer {
     /// Build the service, checking score bounds and profile digests.
-    pub fn new(
-        weapon: NativePrimaryWeaponProfile,
-        profile: NativePrimaryPlayerProfile,
-    ) -> HostResult<Self> {
+    pub fn new(weapon: NativePrimaryWeaponProfile, profile: NativePrimaryPlayerProfile) -> HostResult<Self> {
         if let Some(match_profile) = &profile.match_profile {
-            if match_profile.score % 4 != 0
-                || match_profile.score.saturating_add(4) > weapon.client.byte_length
-            {
+            if match_profile.score % 4 != 0 || match_profile.score.saturating_add(4) > weapon.client.byte_length {
                 return Err(NativeHostError::Fault(
                     "native score exceeds the declared client record".to_string(),
                 ));
@@ -120,27 +117,19 @@ impl NativePrimaryPlayer {
         Ok(())
     }
 
-    fn current(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<(GuestAddress, GuestAddress)> {
+    fn current(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<(GuestAddress, GuestAddress)> {
         self.check_host(host)?;
-        let entity = host.core.entity_of(actor).map_err(|_| {
-            NativeHostError::Fault("native player service has no current actor".to_string())
-        })?;
-        let link = host
+        let entity = host
             .core
-            .memory
-            .offset(entity, i64::from(self.weapon.entity.client))?;
+            .entity_of(actor)
+            .map_err(|_| NativeHostError::Fault("native player service has no current actor".to_string()))?;
+        let link = host.core.memory.offset(entity, i64::from(self.weapon.entity.client))?;
         let client = host.core.memory.read_pointer(link)?;
         match client {
             Some(client) => {
-                host.core.memory.check(
-                    client,
-                    self.weapon.client.byte_length as usize,
-                    GuestAccess::Read,
-                )?;
+                host.core
+                    .memory
+                    .check(client, self.weapon.client.byte_length as usize, GuestAccess::Read)?;
                 Ok((entity, client))
             }
             None => Err(NativeHostError::Fault(
@@ -161,68 +150,47 @@ impl NativePrimaryPlayer {
     /// Read the actor score.
     pub fn score(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<i32> {
         let (_, client) = self.current(host, actor)?;
-        let address = host
-            .core
-            .memory
-            .offset(client, i64::from(self.match_score()?))?;
+        let address = host.core.memory.offset(client, i64::from(self.match_score()?))?;
         Ok(host.core.memory.read_i32(address)?)
     }
 
     /// Write the actor score. Values must already be int32, mirroring
     /// the donor `sourceScore` gate.
-    pub fn set_score(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-        score: i64,
-    ) -> HostResult<()> {
-        let score = i32::try_from(score).map_err(|_| {
-            NativeHostError::Fault("original score requires an int32 value".to_string())
-        })?;
+    pub fn set_score(&self, host: &mut SyntheticHost, actor: NativeActorId, score: i64) -> HostResult<()> {
+        let score = i32::try_from(score)
+            .map_err(|_| NativeHostError::Fault("original score requires an int32 value".to_string()))?;
         let (_, client) = self.current(host, actor)?;
-        let address = host
-            .core
-            .memory
-            .offset(client, i64::from(self.match_score()?))?;
+        let address = host.core.memory.offset(client, i64::from(self.match_score()?))?;
         Ok(host.core.memory.write_i32(address, score)?)
     }
 
     /// Read max health from the entity record.
     pub fn max_health(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<i32> {
         let (entity, _) = self.current(host, actor)?;
-        let address = host.core.memory.offset(
-            entity,
-            i64::from(self.weapon.entity.max_health.offset),
-        )?;
+        let address = host
+            .core
+            .memory
+            .offset(entity, i64::from(self.weapon.entity.max_health.offset))?;
         Ok(host.core.memory.read_i32(address)?)
     }
 
     /// Write max health; requires a positive int32.
-    pub fn set_max_health(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-        value: i64,
-    ) -> HostResult<()> {
+    pub fn set_max_health(&self, host: &mut SyntheticHost, actor: NativeActorId, value: i64) -> HostResult<()> {
         if value <= 0 || value > i64::from(i32::MAX) {
             return Err(NativeHostError::Fault(
                 "native player max health requires a positive int32".to_string(),
             ));
         }
         let (entity, _) = self.current(host, actor)?;
-        let address = host.core.memory.offset(
-            entity,
-            i64::from(self.weapon.entity.max_health.offset),
-        )?;
+        let address = host
+            .core
+            .memory
+            .offset(entity, i64::from(self.weapon.entity.max_health.offset))?;
         Ok(host.core.memory.write_i32(address, value as i32)?)
     }
 
     /// Drop objectives through the declared entry, if any.
-    pub fn drop_objectives(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<()> {
+    pub fn drop_objectives(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<()> {
         let (entity, _) = self.current(host, actor)?;
         let entry = match self.profile.objectives {
             PlayerObjectives::None => return Ok(()),
@@ -235,11 +203,7 @@ impl NativePrimaryPlayer {
     }
 
     /// Run the source spawn selector into scratch memory.
-    pub fn spawn_point(
-        &self,
-        host: &mut SyntheticHost,
-        actor: NativeActorId,
-    ) -> HostResult<(Vec3, Vec3)> {
+    pub fn spawn_point(&self, host: &mut SyntheticHost, actor: NativeActorId) -> HostResult<(Vec3, Vec3)> {
         let (entity, _) = self.current(host, actor)?;
         let mut options = GuestAllocationOptions::bytes(32);
         options.alignment = 8;
@@ -358,31 +322,28 @@ impl NativePrimaryPlayer {
         }
         for (axis, value) in [angles.x, angles.y, angles.z].into_iter().enumerate() {
             let stored = host.core.memory.read_f32(
-                host.core.memory.offset(
-                    client,
-                    i64::from(self.profile.command_angles) + axis as i64 * 4,
-                )?,
+                host.core
+                    .memory
+                    .offset(client, i64::from(self.profile.command_angles) + axis as i64 * 4)?,
             )?;
             let delta = (value - stored) as f32;
             if classic {
                 let scaled = (f64::from(delta) * (65536.0 / 360.0)) as f32;
                 let address = host.core.memory.offset(client, 20 + axis as i64 * 2)?;
-                host.core
-                    .memory
-                    .write_i16(address, wrap_i16(scaled.trunc() as i32))?;
+                host.core.memory.write_i16(address, wrap_i16(scaled.trunc() as i32))?;
             } else {
                 let address = host.core.memory.offset(client, 36 + axis as i64 * 4)?;
                 host.core.memory.write_f32(address, delta)?;
             }
-            let state = host.core.memory.offset(
-                client,
-                i64::from(if classic { 28 } else { 52 }) + axis as i64 * 4,
-            )?;
+            let state = host
+                .core
+                .memory
+                .offset(client, i64::from(if classic { 28 } else { 52 }) + axis as i64 * 4)?;
             host.core.memory.write_f32(state, value)?;
-            let view = host.core.memory.offset(
-                client,
-                i64::from(self.weapon.client.view_angles) + axis as i64 * 4,
-            )?;
+            let view = host
+                .core
+                .memory
+                .offset(client, i64::from(self.weapon.client.view_angles) + axis as i64 * 4)?;
             host.core.memory.write_f32(view, value)?;
         }
         if let Some(forward) = self.profile.forward {
@@ -395,10 +356,10 @@ impl NativePrimaryPlayer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_primary_reader::{CLASSIC_DIGEST, NativeItemField, NativeScalar, RecordKind};
+    use super::super::native_primary_reader::{NativeItemField, NativeScalar, RecordKind, CLASSIC_DIGEST};
     use super::super::native_primary_weapons::{
-        AttackAnimation, DelayEvaluate, EquipmentContext, SpawnGate, WeaponAnimation, WeaponClient,
-        WeaponDamage, WeaponDelay, WeaponDispatcher, WeaponEntity, WeaponTime,
+        AttackAnimation, DelayEvaluate, EquipmentContext, SpawnGate, WeaponAnimation, WeaponClient, WeaponDamage,
+        WeaponDelay, WeaponDispatcher, WeaponEntity, WeaponTime,
     };
     use super::*;
 
@@ -445,10 +406,7 @@ mod tests {
                 buttons: field(8),
                 latched_buttons: field(12),
             },
-            attack_animation: AttackAnimation {
-                entry: 4,
-                skip: vec![],
-            },
+            attack_animation: AttackAnimation { entry: 4, skip: vec![] },
             animation: WeaponAnimation {
                 frame: field(56),
                 end: field(48),
@@ -512,9 +470,17 @@ mod tests {
         let mut host = SyntheticHost::synthetic(CLASSIC_DIGEST, 4, 0x2000).expect("host");
         let player = NativePrimaryPlayer::new(weapon(), profile()).expect("player");
         let actor = linked(&mut host);
-        let origin = Vec3 { x: 8.0, y: -4.0, z: 1.0 };
+        let origin = Vec3 {
+            x: 8.0,
+            y: -4.0,
+            z: 1.0,
+        };
         let velocity = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-        let angles = Vec3 { x: 0.0, y: 90.0, z: 0.0 };
+        let angles = Vec3 {
+            x: 0.0,
+            y: 90.0,
+            z: 0.0,
+        };
         player
             .teleport(&mut host, actor, origin, velocity, angles, 16.0)
             .expect("teleport");

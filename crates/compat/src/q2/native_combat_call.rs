@@ -2,13 +2,11 @@
 //! Bridges native combat declarations: field layouts, signatures and argument lowering.
 
 use qa_guest::core::contracts::{
-    GuestAddress, GuestCallSignature, GuestCallValue, GuestFieldLayout, GuestLayout, GuestStorage,
-    GuestValueLayout, NativeAbi, NativeCallAbi,
+    GuestAddress, GuestCallSignature, GuestCallValue, GuestFieldLayout, GuestLayout, GuestStorage, GuestValueLayout,
+    NativeAbi, NativeCallAbi,
 };
 
-use super::native_primary_reader::{
-    NativeModAddress, Reader, native_offset, native_scalar, read_guest_layout,
-};
+use super::native_primary_reader::{native_offset, native_scalar, read_guest_layout, NativeModAddress, Reader};
 use super::native_primary_weapons::{HostResult, NativeHostError, SyntheticHost};
 
 /// Semantic combat argument slot.
@@ -62,7 +60,7 @@ impl CombatField {
 
     /// Decode a profile label.
     #[must_use]
-    pub const fn from_label(label: &str) -> Option<Self> {
+    pub fn from_label(label: &str) -> Option<Self> {
         match label {
             "target" => Some(Self::Target),
             "inflictor" => Some(Self::Inflictor),
@@ -127,7 +125,7 @@ impl CombatConvention {
 
     /// Decode a profile label.
     #[must_use]
-    pub const fn from_label(label: &str) -> Option<Self> {
+    pub fn from_label(label: &str) -> Option<Self> {
         match label {
             "cdecl" => Some(Self::Cdecl),
             "stdcall" => Some(Self::Stdcall),
@@ -242,10 +240,7 @@ pub fn required_fields(operation: CombatOperation, pointer_bytes: usize) -> Vec<
 
 /// Stock declaration: every required slot in order under the ABI convention.
 #[must_use]
-pub fn stock_native_combat_call(
-    operation: CombatOperation,
-    abi: Option<NativeAbi>,
-) -> NativeCombatCall {
+pub fn stock_native_combat_call(operation: CombatOperation, abi: Option<NativeAbi>) -> NativeCombatCall {
     let pointer_bytes = abi.map_or(4, NativeAbi::pointer_bytes);
     NativeCombatCall {
         convention: if pointer_bytes == 8 {
@@ -266,9 +261,7 @@ fn field_layout(field: CombatField, pointer_bytes: usize) -> GuestValueLayout {
         F::Target | F::Inflictor | F::Attacker | F::Direction | F::Point | F::Normal => {
             GuestValueLayout::Scalar(GuestStorage::Pointer)
         }
-        F::Amount | F::Knockback | F::Flags | F::Sparks => {
-            GuestValueLayout::Scalar(GuestStorage::Int32)
-        }
+        F::Amount | F::Knockback | F::Flags | F::Sparks => GuestValueLayout::Scalar(GuestStorage::Int32),
         F::Kick => GuestValueLayout::Scalar(GuestStorage::Float32),
         F::Cause if pointer_bytes == 4 => GuestValueLayout::Scalar(GuestStorage::Int32),
         F::Cause => GuestValueLayout::Aggregate(native_rerelease_mod_layout()),
@@ -282,11 +275,7 @@ pub fn native_combat_signature(
     abi: NativeAbi,
 ) -> Result<GuestCallSignature, String> {
     let source = match (abi, call.convention) {
-        (NativeAbi::WindowsI386, convention)
-            if convention != CombatConvention::MicrosoftX64 =>
-        {
-            convention.call_abi()
-        }
+        (NativeAbi::WindowsI386, convention) if convention != CombatConvention::MicrosoftX64 => convention.call_abi(),
         (NativeAbi::WindowsX86_64, CombatConvention::MicrosoftX64) => NativeCallAbi::MicrosoftX64,
         _ => return Err("native combat convention does not match its source architecture".to_string()),
     };
@@ -333,9 +322,7 @@ fn validate_layout(layout: &GuestValueLayout, pointer_bytes: usize) -> Result<()
         }
         GuestValueLayout::Aggregate(layout) => {
             if layout.fields.iter().any(|field| field.storage == GuestStorage::Pointer) {
-                return Err(
-                    "native combat pointer defaults require an image-relative address".to_string(),
-                );
+                return Err("native combat pointer defaults require an image-relative address".to_string());
             }
             for field in &layout.fields {
                 if field.count == 0 {
@@ -375,9 +362,7 @@ pub fn validate_native_combat_call(
             CombatArgument::Value { layout, bytes } => {
                 validate_layout(layout, abi.pointer_bytes())?;
                 if bytes.len() != value_bytes(layout, abi.pointer_bytes()) {
-                    return Err(
-                        "native combat default bytes do not match their source argument".to_string()
-                    );
+                    return Err("native combat default bytes do not match their source argument".to_string());
                 }
             }
         }
@@ -389,14 +374,10 @@ pub fn validate_native_combat_call(
 }
 
 /// Read a declaration from a profile subtree and validate it.
-pub fn read_native_combat_call(
-    reader: &Reader,
-    operation: CombatOperation,
-    abi: NativeAbi,
-) -> NativeCombatCall {
+pub fn read_native_combat_call(reader: &Reader, operation: CombatOperation, abi: NativeAbi) -> NativeCombatCall {
     let convention = reader.field("convention").string();
-    let convention = CombatConvention::from_label(&convention)
-        .unwrap_or_else(|| reader.fail("unknown combat convention"));
+    let convention =
+        CombatConvention::from_label(&convention).unwrap_or_else(|| reader.fail("unknown combat convention"));
     let arguments = reader.field("arguments").list(|value| {
         match value.field("kind").choice_index(&["field", "value", "address"]) {
             0 => {
@@ -416,24 +397,17 @@ pub fn read_native_combat_call(
                     .field("bytes")
                     .list(|byte| byte.integer(0))
                     .into_iter()
-                    .map(|byte| {
-                        u8::try_from(byte).unwrap_or_else(|_| value.fail("byte exceeds uint8"))
-                    })
+                    .map(|byte| u8::try_from(byte).unwrap_or_else(|_| value.fail("byte exceeds uint8")))
                     .collect();
                 CombatArgument::Value { layout, bytes }
             }
-            _ => CombatArgument::Address(value.field("address").nullable(|address| {
-                NativeModAddress {
-                    rva: native_offset(&address.field("rva")),
-                    indirections: address.field("indirections").list(native_offset),
-                }
+            _ => CombatArgument::Address(value.field("address").nullable(|address| NativeModAddress {
+                rva: native_offset(&address.field("rva")),
+                indirections: address.field("indirections").list(native_offset),
             })),
         }
     });
-    let call = NativeCombatCall {
-        convention,
-        arguments,
-    };
+    let call = NativeCombatCall { convention, arguments };
     if let Err(message) = validate_native_combat_call(&call, operation, abi) {
         reader.fail(&message);
     }
@@ -498,10 +472,7 @@ fn decode_value(
             match storage {
                 GuestStorage::Int8 => Ok(GuestCallValue::Int32(i32::from(word(0) as i8))),
                 GuestStorage::Uint8 => Ok(GuestCallValue::Uint32(u32::from(word(0)))),
-                GuestStorage::Int16 => Ok(GuestCallValue::Int32(i32::from(i16::from_le_bytes([
-                    word(0),
-                    word(1),
-                ])))),
+                GuestStorage::Int16 => Ok(GuestCallValue::Int32(i32::from(i16::from_le_bytes([word(0), word(1)])))),
                 GuestStorage::Uint16 => Ok(GuestCallValue::Uint32(u32::from(u16::from_le_bytes([
                     word(0),
                     word(1),
@@ -538,9 +509,7 @@ fn decode_value(
                     raw.copy_from_slice(bytes);
                     Ok(GuestCallValue::Float64(f64::from_le_bytes(raw)))
                 }
-                GuestStorage::Pointer => Err(fail(
-                    "native combat pointer defaults require an image-relative address",
-                )),
+                GuestStorage::Pointer => Err(fail("native combat pointer defaults require an image-relative address")),
             }
         }
         GuestValueLayout::Aggregate(layout) => {
@@ -567,9 +536,7 @@ pub fn lower_native_combat_arguments(
     original: Option<&[GuestCallValue]>,
 ) -> HostResult<Vec<GuestCallValue>> {
     let semantic = required_fields(operation, host.core.pointer_bytes());
-    if values.len() != semantic.len()
-        || original.is_some_and(|captured| captured.len() != call.arguments.len())
-    {
+    if values.len() != semantic.len() || original.is_some_and(|captured| captured.len() != call.arguments.len()) {
         return Err(NativeHostError::Fault(
             "native combat continuation changed its argument extent".to_string(),
         ));
@@ -577,50 +544,44 @@ pub fn lower_native_combat_arguments(
     call.arguments
         .iter()
         .enumerate()
-        .map(|(index, argument)| {
-            match argument {
-                CombatArgument::Field(field) => {
-                    let slot = semantic
-                        .iter()
-                        .position(|slot| slot == field)
-                        .expect("validated semantic slot");
-                    values.get(slot).cloned().ok_or_else(|| {
-                        NativeHostError::Fault("missing native combat field".to_string())
-                    })
+        .map(|(index, argument)| match argument {
+            CombatArgument::Field(field) => {
+                let slot = semantic
+                    .iter()
+                    .position(|slot| slot == field)
+                    .expect("validated semantic slot");
+                values
+                    .get(slot)
+                    .cloned()
+                    .ok_or_else(|| NativeHostError::Fault("missing native combat field".to_string()))
+            }
+            _ if let Some(captured) = original => captured
+                .get(index)
+                .cloned()
+                .ok_or_else(|| NativeHostError::Fault("missing captured native combat argument".to_string())),
+            CombatArgument::Value { layout, bytes } => decode_value(layout, bytes, host.core.pointer_bytes()),
+            CombatArgument::Address(address) => {
+                if address.is_some() && image.is_none() {
+                    return Err(NativeHostError::Fault(
+                        "native combat address default requires its source image base".to_string(),
+                    ));
                 }
-                _ if let Some(captured) = original => captured.get(index).cloned().ok_or_else(|| {
-                    NativeHostError::Fault("missing captured native combat argument".to_string())
-                }),
-                CombatArgument::Value { layout, bytes } => {
-                    decode_value(layout, bytes, host.core.pointer_bytes())
-                }
-                CombatArgument::Address(address) => {
-                    if address.is_some() && image.is_none() {
-                        return Err(NativeHostError::Fault(
-                            "native combat address default requires its source image base"
-                                .to_string(),
-                        ));
+                let mut resolved = match (address, image) {
+                    (Some(address), Some(image)) => Some(host.core.memory.offset(image, i64::from(address.rva))?),
+                    _ => None,
+                };
+                if let Some(address) = address {
+                    for displacement in &address.indirections {
+                        let current = resolved.ok_or_else(|| {
+                            NativeHostError::Fault("native combat default address dereferences null".to_string())
+                        })?;
+                        resolved = host
+                            .core
+                            .memory
+                            .read_pointer(host.core.memory.offset(current, i64::from(*displacement))?)?;
                     }
-                    let mut resolved = match (address, image) {
-                        (Some(address), Some(image)) => {
-                            Some(host.core.memory.offset(image, i64::from(address.rva))?)
-                        }
-                        _ => None,
-                    };
-                    if let Some(address) = address {
-                        for displacement in &address.indirections {
-                            let current = resolved.ok_or_else(|| {
-                                NativeHostError::Fault(
-                                    "native combat default address dereferences null".to_string(),
-                                )
-                            })?;
-                            resolved = host.core.memory.read_pointer(
-                                host.core.memory.offset(current, i64::from(*displacement))?,
-                            )?;
-                        }
-                    }
-                    Ok(GuestCallValue::Pointer(resolved))
                 }
+                Ok(GuestCallValue::Pointer(resolved))
             }
         })
         .collect()
@@ -628,7 +589,7 @@ pub fn lower_native_combat_arguments(
 
 #[cfg(test)]
 mod tests {
-    use super::super::native_primary_reader::{CLASSIC_DIGEST, parse_json};
+    use super::super::native_primary_reader::{parse_json, CLASSIC_DIGEST};
     use super::*;
 
     #[test]
@@ -643,13 +604,9 @@ mod tests {
         ] {
             let call = stock_native_combat_call(operation, Some(NativeAbi::WindowsI386));
             validate_native_combat_call(&call, operation, NativeAbi::WindowsI386).expect("valid");
-            let signature =
-                native_combat_signature(&call, operation, NativeAbi::WindowsI386).expect("signature");
+            let signature = native_combat_signature(&call, operation, NativeAbi::WindowsI386).expect("signature");
             assert_eq!(signature.parameters.len(), call.arguments.len());
-            let armored = matches!(
-                operation,
-                CombatOperation::RegularArmor | CombatOperation::PowerArmor
-            );
+            let armored = matches!(operation, CombatOperation::RegularArmor | CombatOperation::PowerArmor);
             assert_eq!(signature.result.is_some(), armored);
         }
         let wide = stock_native_combat_call(CombatOperation::Pain, Some(NativeAbi::WindowsX86_64));
@@ -679,8 +636,7 @@ mod tests {
         let entity = host.core.at(0x100).expect("entity");
         let values = vec![GuestCallValue::Pointer(Some(entity))];
         let semantic =
-            read_native_combat_arguments(&call, CombatOperation::DeferredReaction, &values, 4)
-                .expect("project");
+            read_native_combat_arguments(&call, CombatOperation::DeferredReaction, &values, 4).expect("project");
         assert_eq!(semantic, values);
         assert_eq!(
             combat_argument_for_field(&call, &values, CombatField::Target).expect("slot"),
@@ -716,8 +672,7 @@ mod tests {
                 })),
             ],
         };
-        validate_native_combat_call(&call, CombatOperation::DeferredReaction, NativeAbi::WindowsI386)
-            .expect("valid");
+        validate_native_combat_call(&call, CombatOperation::DeferredReaction, NativeAbi::WindowsI386).expect("valid");
         let entity = host.core.at(0x100).expect("entity");
         let lowered = lower_native_combat_arguments(
             &call,
@@ -744,12 +699,9 @@ mod tests {
                 CombatArgument::Field(CombatField::Target),
             ],
         };
-        assert!(validate_native_combat_call(
-            &duplicate,
-            CombatOperation::DeferredReaction,
-            NativeAbi::WindowsI386
-        )
-        .is_err());
+        assert!(
+            validate_native_combat_call(&duplicate, CombatOperation::DeferredReaction, NativeAbi::WindowsI386).is_err()
+        );
         let call = stock_native_combat_call(CombatOperation::Damage, None);
         assert!(read_native_combat_arguments(&call, CombatOperation::Damage, &[], 4).is_err());
     }

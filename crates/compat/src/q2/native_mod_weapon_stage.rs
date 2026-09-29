@@ -200,37 +200,21 @@ pub struct WeaponStageDefinition {
 /// Weapon operations: actor resolution plus source scalar access.
 pub trait NativeWeaponOperations {
     /// Actor owning a record address, if bound.
-    fn actor_for(
-        &mut self,
-        record: &str,
-        address: GuestAddress,
-    ) -> Option<NativeActorId>;
+    fn actor_for(&mut self, record: &str, address: GuestAddress) -> Option<NativeActorId>;
     /// Whether an actor is current.
     fn is_current(&self, actor: NativeActorId) -> bool;
     /// Whether an actor holds weapon selection.
     fn is_selected(&self, actor: NativeActorId) -> bool;
     /// Pointer field address for an actor.
-    fn pointer(
-        &mut self,
-        actor: NativeActorId,
-        field: &ItemPointer,
-    ) -> Result<GuestAddress, WeaponError>;
+    fn pointer(&mut self, actor: NativeActorId, field: &ItemPointer) -> Result<GuestAddress, WeaponError>;
     /// Resolve a declared address.
     fn resolve(&self, address: &AddressRef) -> Result<GuestAddress, WeaponError>;
     /// Read a scalar field for an actor.
     fn read(&mut self, actor: NativeActorId, field: &ItemField) -> Result<f64, WeaponError>;
     /// Write a scalar field for an actor.
-    fn write(
-        &mut self,
-        actor: NativeActorId,
-        field: &ItemField,
-        value: f64,
-    ) -> Result<(), WeaponError>;
+    fn write(&mut self, actor: NativeActorId, field: &ItemField, value: f64) -> Result<(), WeaponError>;
     /// Read a pointer value.
-    fn read_pointer(
-        &mut self,
-        address: GuestAddress,
-    ) -> Result<Option<GuestAddress>, WeaponError>;
+    fn read_pointer(&mut self, address: GuestAddress) -> Result<Option<GuestAddress>, WeaponError>;
     /// Invoke a source call for an actor.
     fn invoke(&mut self, actor: NativeActorId, call: &WeaponCall);
     /// Record dispatch completion.
@@ -260,10 +244,7 @@ impl NativeWeaponDispatcher {
     /// Build the dispatcher, validating the actor ABI declaration.
     pub fn new(definition: &WeaponStageDefinition) -> Result<Self, WeaponError> {
         let dispatcher = &definition.dispatcher;
-        if dispatcher.arguments < 1
-            || dispatcher.arguments > 16
-            || dispatcher.argument >= dispatcher.arguments
-        {
+        if dispatcher.arguments < 1 || dispatcher.arguments > 16 || dispatcher.argument >= dispatcher.arguments {
             return Err(WeaponError::BadDispatcher);
         }
         for region in &definition.decisions {
@@ -385,8 +366,7 @@ impl NativeWeaponDispatcher {
         // unrelated bits defensively.
         for (value, original) in &projected {
             let current = operations.read(actor, &value.field)?;
-            let restored = (current as i64 & !(value.clear_mask as i64))
-                | (*original as i64 & value.clear_mask as i64);
+            let restored = (current as i64 & !(value.clear_mask as i64)) | (*original as i64 & value.clear_mask as i64);
             operations.write(actor, &value.field, restored as f64)?;
         }
         Ok(result)
@@ -484,9 +464,7 @@ impl SyntheticWeaponOperations {
 
 fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
     match storage {
-        GuestStorage::Float32 => {
-            f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Float32 => f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Float64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -496,12 +474,8 @@ fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
         GuestStorage::Uint8 => f64::from(bytes[0]),
         GuestStorage::Int16 => f64::from(i16::from_le_bytes([bytes[0], bytes[1]])),
         GuestStorage::Uint16 => f64::from(u16::from_le_bytes([bytes[0], bytes[1]])),
-        GuestStorage::Int32 => {
-            f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
-        GuestStorage::Uint32 => {
-            f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
+        GuestStorage::Int32 => f64::from(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        GuestStorage::Uint32 => f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
         GuestStorage::Int64 => {
             let mut word = [0u8; 8];
             word.copy_from_slice(&bytes[..8]);
@@ -525,9 +499,7 @@ fn f64_to_scalar(value: f64, storage: GuestStorage) -> Vec<u8> {
         GuestStorage::Float32 => (value as f32).to_le_bytes().to_vec(),
         GuestStorage::Float64 => value.to_le_bytes().to_vec(),
         GuestStorage::Int8 | GuestStorage::Uint8 => vec![value as i64 as u8],
-        GuestStorage::Int16 | GuestStorage::Uint16 => {
-            (value as i64 as i16).to_le_bytes().to_vec()
-        }
+        GuestStorage::Int16 | GuestStorage::Uint16 => (value as i64 as i16).to_le_bytes().to_vec(),
         GuestStorage::Int32 | GuestStorage::Uint32 | GuestStorage::Pointer => {
             (value as i64 as i32).to_le_bytes().to_vec()
         }
@@ -536,17 +508,14 @@ fn f64_to_scalar(value: f64, storage: GuestStorage) -> Vec<u8> {
 }
 
 impl NativeWeaponOperations for SyntheticWeaponOperations {
-    fn actor_for(
-        &mut self,
-        record: &str,
-        address: GuestAddress,
-    ) -> Option<NativeActorId> {
-        self.record_bases.iter().find(|((bound, _), base)| {
-            bound == record && **base == address
-        }).map(|((_, slot), _)| NativeActorId {
-            slot: *slot,
-            generation: 1,
-        })
+    fn actor_for(&mut self, record: &str, address: GuestAddress) -> Option<NativeActorId> {
+        self.record_bases
+            .iter()
+            .find(|((bound, _), base)| bound == record && **base == address)
+            .map(|((_, slot), _)| NativeActorId {
+                slot: *slot,
+                generation: 1,
+            })
     }
 
     fn is_current(&self, actor: NativeActorId) -> bool {
@@ -557,11 +526,7 @@ impl NativeWeaponOperations for SyntheticWeaponOperations {
         self.selected.contains(&actor)
     }
 
-    fn pointer(
-        &mut self,
-        actor: NativeActorId,
-        field: &ItemPointer,
-    ) -> Result<GuestAddress, WeaponError> {
+    fn pointer(&mut self, actor: NativeActorId, field: &ItemPointer) -> Result<GuestAddress, WeaponError> {
         let base = self.base(actor, &field.record)?;
         Ok(self.memory.offset(base, field.offset as i64)?)
     }
@@ -586,21 +551,13 @@ impl NativeWeaponOperations for SyntheticWeaponOperations {
         Ok(scalar_to_f64(&self.memory.copy(address, width)?, field.storage))
     }
 
-    fn write(
-        &mut self,
-        actor: NativeActorId,
-        field: &ItemField,
-        value: f64,
-    ) -> Result<(), WeaponError> {
+    fn write(&mut self, actor: NativeActorId, field: &ItemField, value: f64) -> Result<(), WeaponError> {
         let base = self.base(actor, &field.record)?;
         let address = self.memory.offset(base, field.offset as i64)?;
         Ok(self.memory.write(address, &f64_to_scalar(value, field.storage))?)
     }
 
-    fn read_pointer(
-        &mut self,
-        address: GuestAddress,
-    ) -> Result<Option<GuestAddress>, WeaponError> {
+    fn read_pointer(&mut self, address: GuestAddress) -> Result<Option<GuestAddress>, WeaponError> {
         Ok(self.memory.read_pointer(address)?)
     }
 
@@ -672,7 +629,12 @@ impl<O: NativeWeaponOperations> NativeModWeaponStage<O> {
                     .map(|pointer| pointer.offset);
                 Ok(current == expected)
             }
-            ItemTest::Scalar { field, comparison, value, mask } => {
+            ItemTest::Scalar {
+                field,
+                comparison,
+                value,
+                mask,
+            } => {
                 if !value.is_finite() {
                     return Err(WeaponError::BadTestValue);
                 }
@@ -754,11 +716,7 @@ impl<O: NativeWeaponOperations> NativeModWeaponStage<O> {
         Ok(false)
     }
 
-    fn selected(
-        &mut self,
-        actor: NativeActorId,
-        field: &ItemPointer,
-    ) -> Result<Option<String>, WeaponError> {
+    fn selected(&mut self, actor: NativeActorId, field: &ItemPointer) -> Result<Option<String>, WeaponError> {
         let address = self.operations.pointer(actor, field)?;
         let Some(current) = self.operations.read_pointer(address)? else {
             return Ok(None);
@@ -802,8 +760,7 @@ impl<O: NativeWeaponOperations> NativeModWeaponStage<O> {
         }
         self.operations.invoke(actor, &value.request);
         Ok(self.operations.is_current(actor)
-            && (self.active(actor)? == Some(item.to_string())
-                || self.pending(actor)? == Some(item.to_string())))
+            && (self.active(actor)? == Some(item.to_string()) || self.pending(actor)? == Some(item.to_string())))
     }
 
     /// Run the dispatcher body for a record address.
@@ -823,13 +780,8 @@ impl<O: NativeWeaponOperations> NativeModWeaponStage<O> {
         };
         // Re-resolve inside the dispatcher frame for one shared code path.
         let record = record.to_string();
-        self.dispatcher.dispatch(
-            &mut self.operations,
-            &record,
-            address,
-            |_| committed,
-            body,
-        )
+        self.dispatcher
+            .dispatch(&mut self.operations, &record, address, |_| committed, body)
     }
 
     /// Run a decision region with input projection.
@@ -859,9 +811,7 @@ impl<O: NativeWeaponOperations> NativeModWeaponStage<O> {
             }
             Err(error) => {
                 self.dispatcher.abort_frame();
-                if self.operations.cancellation_accepts(actor)
-                    && self.operations.is_current(actor)
-                {
+                if self.operations.cancellation_accepts(actor) && self.operations.is_current(actor) {
                     self.operations.restore_token(token);
                     Ok(None)
                 } else {
@@ -881,9 +831,7 @@ impl<O: NativeWeaponOperations> NativeModWeaponStage<O> {
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestMapOptions, GuestPermissions, ModuleIdentity};
 
     fn actor(slot: u32) -> NativeActorId {
         NativeActorId { slot, generation: 1 }
@@ -940,12 +888,16 @@ mod tests {
                     SelectionValue {
                         item: "q2:blaster".to_string(),
                         address: AddressRef::Rva(0xA00),
-                        request: WeaponCall { id: "use-blaster".to_string() },
+                        request: WeaponCall {
+                            id: "use-blaster".to_string(),
+                        },
                     },
                     SelectionValue {
                         item: "q2:shotgun".to_string(),
                         address: AddressRef::Rva(0xA40),
-                        request: WeaponCall { id: "use-shotgun".to_string() },
+                        request: WeaponCall {
+                            id: "use-shotgun".to_string(),
+                        },
                     },
                 ],
             },
@@ -978,7 +930,10 @@ mod tests {
     #[test]
     fn decision_masks_input_for_unselected_actors_only() {
         let mut stage = fixture();
-        stage.operations_mut().write(actor(1), &field("player", 0), 3.0).unwrap();
+        stage
+            .operations_mut()
+            .write(actor(1), &field("player", 0), 3.0)
+            .unwrap();
         // An address that names no record base runs guest-direct, frameless.
         let field_address = stage.operations_mut().pointer(actor(1), &pointer("player", 0)).unwrap();
         let direct = stage
@@ -999,10 +954,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(seen, 1.0);
-        assert_eq!(
-            stage.operations_mut().read(actor(1), &field("player", 0)).unwrap(),
-            3.0
-        );
+        assert_eq!(stage.operations_mut().read(actor(1), &field("player", 0)).unwrap(), 3.0);
         assert_eq!(stage.operations().completions, vec![(actor(1), true)]);
 
         // Selected actor: no projection is applied.
@@ -1024,29 +976,34 @@ mod tests {
         assert_eq!(stage.active(actor(1)).unwrap(), None);
         assert_eq!(stage.pending(actor(1)).unwrap(), None);
         assert!(!stage.settled(actor(1)).unwrap());
-        stage.operations_mut().write(actor(1), &field("player", 4), 1.0).unwrap();
+        stage
+            .operations_mut()
+            .write(actor(1), &field("player", 4), 1.0)
+            .unwrap();
         assert!(stage.settled(actor(1)).unwrap());
         assert!(!stage.continuing(actor(1)).unwrap());
 
         // Point the active slot at the blaster and request it.
         let blaster = stage.operations().resolve(&AddressRef::Rva(0xA00)).unwrap();
         let active = stage.operations_mut().pointer(actor(1), &pointer("player", 8)).unwrap();
-        stage.operations_mut().memory.write_pointer(active, Some(blaster)).unwrap();
+        stage
+            .operations_mut()
+            .memory
+            .write_pointer(active, Some(blaster))
+            .unwrap();
         assert_eq!(stage.active(actor(1)).unwrap(), Some("q2:blaster".to_string()));
         assert!(stage.request(actor(1), "q2:blaster").unwrap());
-        assert_eq!(
-            stage.operations().invokes,
-            vec![(actor(1), "use-blaster".to_string())]
-        );
+        assert_eq!(stage.operations().invokes, vec![(actor(1), "use-blaster".to_string())]);
         assert!(!stage.request(actor(1), "q2:railgun").unwrap());
 
         let shotgun = stage.operations().resolve(&AddressRef::Rva(0xA40)).unwrap();
         let other = GuestAddress::new(shotgun.space, shotgun.offset + 4);
-        stage.operations_mut().memory.write_pointer(active, Some(other)).unwrap();
-        assert_eq!(
-            stage.active(actor(1)),
-            Err(WeaponError::UndeclaredWeapon)
-        );
+        stage
+            .operations_mut()
+            .memory
+            .write_pointer(active, Some(other))
+            .unwrap();
+        assert_eq!(stage.active(actor(1)), Err(WeaponError::UndeclaredWeapon));
     }
 
     #[test]
@@ -1068,10 +1025,7 @@ mod tests {
         let failed = stage.dispatch("player", Some(base), |_| {
             Err::<(), _>(WeaponError::Dispatch("boom".to_string()))
         });
-        assert_eq!(
-            failed,
-            Err(WeaponError::Dispatch("boom".to_string()))
-        );
+        assert_eq!(failed, Err(WeaponError::Dispatch("boom".to_string())));
         stage.close();
     }
 }
