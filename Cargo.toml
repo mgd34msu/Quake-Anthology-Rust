@@ -17,6 +17,7 @@ edition = "2021"
 license = "GPL-2.0-or-later"
 
 [workspace.dependencies]
+flate2 = "1"
 thiserror = "2"
 qa-core = { path = "crates/core" }
 qa-content = { path = "crates/content" }

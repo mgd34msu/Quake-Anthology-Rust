@@ -852,6 +852,8 @@ pub mod q2 {
     pub const U_SOUND: u32 = 1 << 26;
     /// Entity bits: solid.
     pub const U_SOLID: u32 = 1 << 27;
+    /// Entity bits: fifth header byte follows (rerelease/KEX wide bits).
+    pub const U_MOREBITS4: u32 = 1 << 31;
 
     /// Player-state bits: move type.
     pub const PS_M_TYPE: u32 = 1 << 0;
