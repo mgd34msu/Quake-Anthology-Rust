@@ -642,15 +642,9 @@ mod tests {
             combat_argument_for_field(&call, &values, CombatField::Target).expect("slot"),
             &values[0]
         );
-        let lowered = lower_native_combat_arguments(
-            &call,
-            CombatOperation::DeferredReaction,
-            &semantic,
-            &mut host,
-            Some(host.core.image),
-            None,
-        )
-        .expect("lower");
+        let image = host.core.image;
+        let lowered = lower_native_combat_arguments(&call, CombatOperation::DeferredReaction, &semantic, &mut host, Some(image), None)
+            .expect("lower");
         assert_eq!(lowered, values);
     }
 

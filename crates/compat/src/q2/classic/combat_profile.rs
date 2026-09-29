@@ -317,7 +317,7 @@ pub fn lower_native_combat_arguments(
     original: Option<&[GuestCallValue]>,
 ) -> ClassicResult<Vec<GuestCallValue>> {
     let semantic = operation.fields();
-    if values.len() != semantic.len() || original.map_or(false, |captured| captured.len() != call.arguments.len()) {
+    if values.len() != semantic.len() || original.is_some_and(|captured| captured.len() != call.arguments.len()) {
         return Err(ClassicQ2Error::invalid(
             "Native combat continuation changed its argument extent",
         ));
@@ -355,7 +355,7 @@ pub fn lower_native_combat_arguments(
                                 "Native combat default address dereferences null",
                             ));
                         };
-                        address = memory.read_pointer(memory.offset(current, i64::from(*offset)?)?)?;
+                        address = memory.read_pointer(memory.offset(current, i64::from(*offset))?)?;
                     }
                 }
                 result.push(GuestCallValue::Pointer(address));
@@ -893,7 +893,7 @@ mod tests {
         assert!(validate_classic_combat_profile(&profile).is_err());
         profile = xatrix_combat_profile();
         profile.calls.damage.arguments.pop();
-        assert!(validate_classic_combat_call(&profile.calls.damage, ClassicCombatOperation::Damage).is_err());
+        assert!(validate_native_combat_call(&profile.calls.damage, ClassicCombatOperation::Damage).is_err());
         assert!(validate_classic_combat_profile(&profile).is_err());
     }
 }

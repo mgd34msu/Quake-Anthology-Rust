@@ -338,7 +338,7 @@ impl DeferredDamageHost for SyntheticDeferredHost {
             return Err(DeferredError::PointerOutsideTable);
         }
         let relative = target.offset - self.table_base.offset;
-        if relative % self.stride as u64 != 0 || relative / self.stride as u64 >= self.count as u64 {
+        if !relative.is_multiple_of(self.stride as u64) || relative / self.stride as u64 >= self.count as u64 {
             return Err(DeferredError::PointerOutsideTable);
         }
         Ok(Some((relative / self.stride as u64) as usize))

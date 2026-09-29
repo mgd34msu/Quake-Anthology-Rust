@@ -243,7 +243,7 @@ impl ClassicQ2Edicts {
             ));
         }
         let difference = address.offset - descriptor.base.offset;
-        if difference % descriptor.stride as u64 != 0 {
+        if !difference.is_multiple_of(descriptor.stride as u64) {
             return Err(ClassicQ2Error::invalid(
                 "Pointer does not identify the start of an API 3 edict",
             ));

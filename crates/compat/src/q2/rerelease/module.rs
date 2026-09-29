@@ -599,7 +599,7 @@ impl RereleaseGuestModule {
                 .memory
                 .read_pointer(self.state.memory.offset(table, offset)?)?;
             if slot == Some(target) {
-                return Ok((*name).to_string());
+                return Ok(Some((*name).to_string()));
             }
         }
         Ok(None)
@@ -611,7 +611,7 @@ impl RereleaseGuestModule {
             (GuestApi::Cgame, self.state.cgame_import_table, CGAME_IMPORT_NAMES),
         ] {
             let layout =
-                super::layouts::import_table_layout(if api == GuestApi::Game { "game" } else { "cgame" }, &names);
+                super::layouts::import_table_layout(if api == GuestApi::Game { "game" } else { "cgame" }, names);
             for name in names {
                 let offset = field_offset(&layout, name)
                     .map_err(|_| ModuleError::MissingImport("table".to_string(), (*name).to_string()))?
@@ -621,7 +621,7 @@ impl RereleaseGuestModule {
                     .memory
                     .read_pointer(self.state.memory.offset(table, offset)?)?;
                 if slot == Some(target) {
-                    return Ok((api, (*name).to_string()));
+                    return Ok(Some((api, (*name).to_string())));
                 }
             }
         }
@@ -832,10 +832,14 @@ impl RereleaseGuestModule {
                 .and_then(|offset| state.memory.offset(table, offset as i64).map_err(ModuleError::from))
         };
         let edict_layout = edict_layout();
-        let base = self.state.memory.read_pointer(read_field(&mut self.state, "edicts")?)?;
-        let stride = self.state.memory.read_u64(read_field(&mut self.state, "edict_size")?)?;
-        let count = self.state.memory.read_u32(read_field(&mut self.state, "num_edicts")?)?;
-        let capacity = self.state.memory.read_u32(read_field(&mut self.state, "max_edicts")?)?;
+        let edicts_addr = read_field(&mut self.state, "edicts")?;
+        let size_addr = read_field(&mut self.state, "edict_size")?;
+        let num_addr = read_field(&mut self.state, "num_edicts")?;
+        let max_addr = read_field(&mut self.state, "max_edicts")?;
+        let base = self.state.memory.read_pointer(edicts_addr)?;
+        let stride = self.state.memory.read_u64(size_addr)?;
+        let count = self.state.memory.read_u32(num_addr)?;
+        let capacity = self.state.memory.read_u32(max_addr)?;
         let Some(base) = base else {
             return Err(ModuleError::NoEdicts);
         };
@@ -888,7 +892,7 @@ impl RereleaseGuestModule {
             return Err(ModuleError::BadEdictTable);
         }
         if address.offset < base.offset
-            || (address.offset - base.offset) % stride != 0
+            || !(address.offset - base.offset).is_multiple_of(stride)
             || (address.offset - base.offset) / stride >= u64::from(capacity)
         {
             return Err(ModuleError::NotAnEdict);

@@ -858,7 +858,7 @@ fn check_call(
     Ok(())
 }
 
-fn available(inputs: &[&str]) -> HashSet<&str> {
+fn available<'a>(inputs: &[&'a str]) -> HashSet<&'a str> {
     inputs.iter().copied().collect()
 }
 
@@ -2443,7 +2443,7 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
                 .declaration
                 .source_actors
                 .is_some()
-                .then(|| (self.owned_next, self.owned_frame)),
+                .then_some((self.owned_next, self.owned_frame)),
             shared: self.observe()?,
         })
     }
@@ -2541,17 +2541,20 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
             self.owned_frame = frame;
         }
         for ((slot, record_id, offset), value) in &checkpoint.shared {
-            let record = self
-                .records
-                .get(record_id)
-                .ok_or_else(|| ProviderError::BadRestore("saved field record differs".to_string()))?;
-            let field = record
-                .fields
-                .iter()
-                .find(|field| field.offset == *offset)
-                .ok_or_else(|| ProviderError::BadRestore("saved field differs".to_string()))?;
+            let encoding = {
+                let record = self
+                    .records
+                    .get(record_id)
+                    .ok_or_else(|| ProviderError::BadRestore("saved field record differs".to_string()))?;
+                record
+                    .fields
+                    .iter()
+                    .find(|field| field.offset == *offset)
+                    .ok_or_else(|| ProviderError::BadRestore("saved field differs".to_string()))?
+                    .encoding
+            };
             let address = self.record_address(record_id, *slot)?;
-            self.scalar_write(address, *value, field.encoding)?;
+            self.scalar_write(address, *value, encoding)?;
         }
         self.refresh()
     }
@@ -2993,9 +2996,8 @@ mod tests {
         assert_eq!(provider.slot_of(owned.id), Some(1));
         // Seeded constant is present.
         let address = provider.record_address("edicts", 1).unwrap();
-        let constant = provider
-            .scalar_read(provider.host.memory().offset(address, 8).unwrap(), GuestStorage::Int32)
-            .unwrap();
+        let field = provider.host.memory().offset(address, 8).unwrap();
+        let constant = provider.scalar_read(field, GuestStorage::Int32).unwrap();
         assert_eq!(constant, 7.0);
         // Guest writes publish through refresh + flush.
         provider.scalar_write(address, 30.0, GuestStorage::Int32).unwrap();
@@ -3077,13 +3079,11 @@ mod tests {
         assert_eq!(checkpoint.clients.len(), 1);
         provider.validate_checkpoint(&checkpoint).unwrap();
         // Mutate, then restore.
-        provider
-            .scalar_write(provider.address(actor(1)).unwrap(), 99.0, GuestStorage::Int32)
-            .unwrap();
+        let target = provider.address(actor(1)).unwrap();
+        provider.scalar_write(target, 99.0, GuestStorage::Int32).unwrap();
         provider.restore(&checkpoint).unwrap();
-        let restored = provider
-            .scalar_read(provider.address(actor(1)).unwrap(), GuestStorage::Int32)
-            .unwrap();
+        let target = provider.address(actor(1)).unwrap();
+        let restored = provider.scalar_read(target, GuestStorage::Int32).unwrap();
         assert_eq!(restored, 0.0);
         // Objectives roundtrip.
         assert_eq!(provider.objective_value("fraglimit").unwrap(), Some(0.0));

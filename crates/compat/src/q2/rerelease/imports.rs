@@ -144,7 +144,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
             strings: HashMap::new(),
             cvars: HashMap::new(),
             last_cvar: None,
-            cvars_registry: cvars_registry,
+            cvars_registry,
             services,
         }
     }
@@ -364,7 +364,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
             }
             "TagMalloc" => {
                 let raw = integer(0);
-                if raw < 0 || raw > 0x1000_0000 {
+                if !(0..=0x1000_0000).contains(&raw) {
                     return Err(CoreImportError::OversizeAlloc);
                 }
                 let size = (raw as usize).max(1);
@@ -434,7 +434,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
                 .find('\\')
                 .map(|at| at + separator + 1)
                 .unwrap_or(value.len());
-            if &value[cursor..separator] == key {
+            if value[cursor..separator] == key {
                 found = &value[separator + 1..end];
                 break;
             }

@@ -404,7 +404,7 @@ impl RereleaseDebugShapeImports {
                 _ => 0,
             }
         };
-        let mut vector = |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec3, DebugShapeError> {
+        let vector = |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec3, DebugShapeError> {
             let address = pointer(index).ok_or(DebugShapeError::NonFinite)?;
             Ok(memory.read_f32x3(address)?)
         };
@@ -414,9 +414,9 @@ impl RereleaseDebugShapeImports {
                 _ => Err(DebugShapeError::NonFinite),
             }
         };
-        let mut color = |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec4, DebugShapeError> {
+        let color = |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec4, DebugShapeError> {
             let address = pointer(index).ok_or(DebugShapeError::NonFinite)?;
-            let byte = |offset: i64| -> Result<f32, DebugShapeError> {
+            let mut byte = |offset: i64| -> Result<f32, DebugShapeError> {
                 Ok(f32::from(memory.read_u8(memory.offset(address, offset)?)?) / 255.0)
             };
             Ok(Vec4 {

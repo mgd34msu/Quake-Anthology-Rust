@@ -172,7 +172,7 @@ impl RereleaseWorldTextImports {
             }
             text.push(byte as char);
         }
-        let channel = |index: i64| -> Result<f32, WorldTextError> {
+        let mut channel = |index: i64| -> Result<f32, WorldTextError> {
             Ok(f32::from(memory.read_u8(memory.offset(color_address, index)?)?) / 255.0)
         };
         let color = Vec4 {

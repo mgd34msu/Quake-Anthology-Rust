@@ -3,7 +3,7 @@
 //! Donor: `src/compat/q2/rerelease/native-weapon-declaration.ts` — bridges
 //! evidence-backed weapon declarations into validated trajectory profiles.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -116,7 +116,7 @@ impl<'a> DeclReader<'a> {
     /// Read a list.
     pub fn list<T>(
         &self,
-        read: impl Fn(&DeclReader<'a>) -> Result<T, DeclarationError>,
+        mut read: impl FnMut(&DeclReader<'a>) -> Result<T, DeclarationError>,
     ) -> Result<Vec<T>, DeclarationError> {
         match self.value {
             DeclValue::List(values) => values
@@ -417,7 +417,7 @@ impl FieldRecord {
         let start = uint(&field, 0)? as usize;
         let end = start + width;
         let align = if width == 12 { 4 } else { width.min(8) };
-        if end > self.byte_length || start % align != 0 {
+        if end > self.byte_length || !start.is_multiple_of(align) {
             return Err(DeclarationError {
                 path: field.path.clone(),
                 message: "field exceeds record or violates its storage alignment".to_string(),

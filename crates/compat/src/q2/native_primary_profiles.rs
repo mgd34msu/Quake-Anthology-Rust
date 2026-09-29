@@ -11,7 +11,7 @@ use super::native_primary_inventory::{
     InventoryPrototypes, NamedUseProfile, NativePrimaryInventoryProfile, NextProfile, PreviousProfile, SelectionWrite,
     UseProfile, ValidateProfile,
 };
-use super::native_primary_pickups::{
+use super::native_pickups::{
     AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
     PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
 };

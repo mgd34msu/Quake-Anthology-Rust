@@ -326,7 +326,7 @@ impl NativePrimaryPlayer {
                     .memory
                     .offset(client, i64::from(self.profile.command_angles) + axis as i64 * 4)?,
             )?;
-            let delta = (value - stored) as f32;
+            let delta = value - stored;
             if classic {
                 let scaled = (f64::from(delta) * (65536.0 / 360.0)) as f32;
                 let address = host.core.memory.offset(client, 20 + axis as i64 * 2)?;

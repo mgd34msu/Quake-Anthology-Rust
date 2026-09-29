@@ -30,10 +30,8 @@ use super::layout::{
     CLASSIC_Q2_IMPORT_BYTES,
 };
 use super::pickup_profile::{classic_pickup_profile, ClassicPickupProfile};
-use super::pmove::{
-    run_classic_guest_pmove, ClassicGuestPmoveOptions, ClassicMovementBody, MovementEntity, PmoveEntities, PmoveTrace,
-    SrcVec3,
-};
+use super::pmove::{run_classic_guest_pmove, ClassicGuestPmoveOptions, ClassicMovementBody, PmoveEntities, PmoveTrace};
+use qa_world::movement::q2::types::{MovementEntity, SrcVec3};
 use super::printf::{classic_printf, classic_printf_layouts};
 use super::records::{
     allocate_classic_string, classic_string_allocation_bytes, read_classic_string, read_classic_vector,
@@ -724,7 +722,7 @@ impl ClassicQ2GuestHost {
 
     /// Rename a model index (`MAX_MODELS` bounds, empty clears).
     pub fn set_model_name(&mut self, index: i32, name: &str) -> ClassicResult<()> {
-        if index < 1 || index >= 256 {
+        if !(1..256).contains(&index) {
             return Err(ClassicQ2Error::invalid("API 3 model index outside MAX_MODELS"));
         }
         if name.is_empty() {
@@ -896,8 +894,8 @@ impl ClassicQ2GuestHost {
         } else {
             0
         };
-        let format = read_classic_string(&mut self.memory, arg_required(fixed, index)?, 65536)?;
-        Ok(classic_printf_layouts(&format)?)
+        let format = read_classic_string(&mut self.memory, Some(arg_required(fixed, index)?), 65536)?;
+        classic_printf_layouts(&format)
     }
 
     /// Bind the single input-movement owner.
@@ -1462,7 +1460,7 @@ impl ClassicQ2GuestHost {
         let maxs = read_classic_vector(&mut self.memory, maxs_at)?;
         let solid = self.memory.read_i32(self.memory.offset(address, 248)?)?;
         let flags = self.memory.read_i32(self.memory.offset(address, 184)?)?;
-        if solid < 0 || solid > 3 {
+        if !(0..=3).contains(&solid) {
             return Err(ClassicQ2Error::invalid("Invalid API 3 solid_t"));
         }
         let clamp = |value: f32, maximum: i32| -> i32 { (value.trunc() as i32).clamp(1, maximum) };
@@ -1528,7 +1526,7 @@ impl ClassicQ2GuestHost {
             },
         )?;
         let link = self.services.world_link.clone();
-        let clustered = link.clusters.as_ref().map_or(false, |clusters| clusters.len() <= 16);
+        let clustered = link.clusters.as_ref().is_some_and(|clusters| clusters.len() <= 16);
         self.memory.write_i32(
             self.memory.offset(address, 104)?,
             link.clusters
@@ -1554,7 +1552,7 @@ impl ClassicQ2GuestHost {
         let model_index = self.memory.read_i32(self.memory.offset(address, 40)?)?;
         let model_name = self.models.get(&model_index).cloned();
         if solid == 3
-            && model_name.as_ref().map_or(true, |name| {
+            && model_name.as_ref().is_none_or(|name| {
                 !name.starts_with('*') || name.len() < 2 || !name[1..].bytes().all(|byte| byte.is_ascii_digit())
             })
         {

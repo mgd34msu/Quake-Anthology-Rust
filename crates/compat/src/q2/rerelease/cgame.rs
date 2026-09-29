@@ -9,7 +9,7 @@ use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::GuestError;
 use thiserror::Error;
 
-use super::layouts::{cgame_server_data_layout, field_offset, player_state_layout};
+use super::layouts::{cgame_server_data_layout, player_state_layout};
 
 /// Maximum split-screen players (`MAX_SPLIT_PLAYERS`).
 pub const MAX_SPLIT_PLAYERS: usize = 8;
@@ -100,7 +100,7 @@ impl CgameExport {
 }
 
 /// Minimal player snapshot for cgame calls (guest blob passthrough).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CgamePlayer {
     /// Serialized `player_state_t` bytes.
     pub bytes: Vec<u8>,

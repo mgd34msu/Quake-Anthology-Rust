@@ -467,6 +467,15 @@ impl<S: NavigationServices> RereleaseNavigationImports<S> {
                     }
                 })
         };
+        let finite = |memory: &mut SparseGuestMemory, address: GuestAddress| {
+            memory.read_f32(address).map_err(NavigationError::from).and_then(|value| {
+                if value.is_finite() {
+                    Ok(value)
+                } else {
+                    Err(NavigationError::NonFiniteParameter)
+                }
+            })
+        };
         if name == "Bot_FollowActor" {
             let actor = actor_of(required(0)?);
             let target = actor_of(required(1)?);
@@ -493,22 +502,9 @@ impl<S: NavigationServices> RereleaseNavigationImports<S> {
         let output = required(1)?;
         memory.check(request, 80, qa_guest::core::contracts::GuestAccess::Read)?;
         memory.check(output, 40, qa_guest::core::contracts::GuestAccess::Write)?;
-        let at = |offset: i64| memory.offset(request, offset);
-        let finite = |offset: i64| {
-            memory
-                .read_f32(at(offset)?)
-                .map_err(NavigationError::from)
-                .and_then(|value| {
-                    if value.is_finite() {
-                        Ok(value)
-                    } else {
-                        Err(NavigationError::NonFiniteParameter)
-                    }
-                })
-        };
-        let buffer = memory.read_pointer(at(64)?)?;
-        let count = memory.read_i64(at(72)?)?;
-        if count < 0 || count > 0x7fff_ffff || (count > 0 && buffer.is_none()) {
+        let buffer = memory.read_pointer(memory.offset(request, 64)?)?;
+        let count = memory.read_i64(memory.offset(request, 72)?)?;
+        if !(0..=0x7fff_ffff).contains(&count) || (count > 0 && buffer.is_none()) {
             return Err(NavigationError::BadBuffer);
         }
         if let Some(buffer) = buffer {
@@ -522,15 +518,15 @@ impl<S: NavigationServices> RereleaseNavigationImports<S> {
             self.services.runtime(),
             &PathRequest {
                 start: vector(memory, request)?,
-                goal: vector(memory, at(12)?)?,
-                flags: memory.read_u32(at(24)?)?,
-                move_distance: finite(28)?,
-                ignore_node_flags: memory.read_u8(at(36)?)? != 0,
-                min_height: finite(40)?,
-                max_height: finite(44)?,
-                radius: finite(48)?,
-                drop_height: finite(52)?,
-                jump_height: finite(56)?,
+                goal: vector(memory, memory.offset(request, 12)?)?,
+                flags: memory.read_u32(memory.offset(request, 24)?)?,
+                move_distance: finite(memory, memory.offset(request, 28)?)?,
+                ignore_node_flags: memory.read_u8(memory.offset(request, 36)?)? != 0,
+                min_height: finite(memory, memory.offset(request, 40)?)?,
+                max_height: finite(memory, memory.offset(request, 44)?)?,
+                radius: finite(memory, memory.offset(request, 48)?)?,
+                drop_height: finite(memory, memory.offset(request, 52)?)?,
+                jump_height: finite(memory, memory.offset(request, 56)?)?,
             },
         );
         let write_vec = |memory: &mut SparseGuestMemory, address: GuestAddress, point: Vec3| {

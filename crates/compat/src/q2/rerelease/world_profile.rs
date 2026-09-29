@@ -1191,7 +1191,7 @@ pub fn validate_world_profile(profile: &RereleasePrimaryWorldProfile, digest: &s
     }
     let regular: std::collections::HashSet<&str> = profile.armor.regular.iter().map(String::as_str).collect();
     if regular.len() != profile.armor.regular.len()
-        || !profile.armor.regular.iter().any(|item| *item == profile.armor.empty)
+        || !profile.armor.regular.contains(&profile.armor.empty)
         || profile.armor.cells_index >= profile.client.inventory_count
         || [
             profile.armor.screen.as_str(),

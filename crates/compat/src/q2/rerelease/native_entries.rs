@@ -194,7 +194,7 @@ pub fn rerelease_entries(
     let data = |memory: &mut SparseGuestMemory, rva: u64, bytes: usize| {
         let address = memory.offset(image_base, rva as i64)?;
         memory.check(address, bytes, GuestAccess::Read)?;
-        Ok(address)
+        Ok::<_, NativeEntryError>(address)
     };
     Ok(RereleaseNativeEntries {
         spawn: entry(memory, profile.spawn)?,

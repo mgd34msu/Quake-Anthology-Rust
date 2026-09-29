@@ -338,9 +338,9 @@ mod tests {
             NativeQ3Syscalls::new(&mut allocator, NativeAbi::LinuxX86_64, vec![print_binding()],),
             Err(Q3SyscallError::UnsupportedAbi)
         ));
-        let names = NativeQ3Syscalls::new(&mut allocator, NativeAbi::LinuxI386, vec![print_binding()])
-            .expect("bind")
-            .service_names();
+        let bound = NativeQ3Syscalls::new(&mut allocator, NativeAbi::LinuxI386, vec![print_binding()])
+            .expect("bind");
+        let names = bound.service_names();
         assert_eq!(names.get(&1), Some(&"G_Printf"));
     }
 }

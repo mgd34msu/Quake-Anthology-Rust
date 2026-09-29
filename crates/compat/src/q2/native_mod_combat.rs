@@ -540,7 +540,7 @@ impl SyntheticCombatHost {
             return Err(CombatError::ActorOutsideTable);
         }
         let relative = address.offset - inner.table_base.offset;
-        if relative % inner.stride as u64 != 0 || relative / inner.stride as u64 >= inner.count as u64 {
+        if !relative.is_multiple_of(inner.stride as u64) || relative / inner.stride as u64 >= inner.count as u64 {
             return Err(CombatError::ActorOutsideTable);
         }
         Ok((relative / inner.stride as u64) as usize)
@@ -559,6 +559,7 @@ impl SyntheticCombatHost {
     }
 }
 
+#[cfg(test)]
 fn scalar_to_f64(bytes: &[u8], storage: GuestStorage) -> f64 {
     match storage {
         GuestStorage::Float32 => f64::from(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
@@ -675,7 +676,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         calls: C,
         shared: S,
     ) -> Result<Self, CombatError> {
-        let mut bridge = Self {
+        let bridge = Self {
             definition,
             host,
             calls,
@@ -986,7 +987,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
 
     /// Parse guest damage arguments into a canonical request.
     pub fn parse_request(&self, args: &[GuestCallValue]) -> Result<DamageRequest, CombatError> {
-        let target = self.nullable(args.get(0))?.ok_or(CombatError::BadActorArgument)?;
+        let target = self.nullable(args.first())?.ok_or(CombatError::BadActorArgument)?;
         let inflictor = self.nullable(args.get(1))?;
         let attacker = self.nullable(args.get(2))?;
         let flags = as_i32(args.get(8))?;

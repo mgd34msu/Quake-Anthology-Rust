@@ -82,7 +82,7 @@ impl<'a> ProfileReader<'a> {
     pub fn integer(&self, minimum: i64) -> ClassicResult<i64> {
         let value = match self.value {
             ProfileValue::Int(value) => *value,
-            ProfileValue::Float(value) if value.fract() == 0.0 && value.abs() < 9.007_199_254_740_992.0 => {
+            ProfileValue::Float(value) if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 => {
                 *value as i64
             }
             _ => return self.fail("expected an integer in range"),

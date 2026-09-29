@@ -3,6 +3,7 @@
 //! into canonical armor while the original damage body owns absorption.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use qa_guest::abi::values::{decode_value, encode_value};
 use qa_guest::core::contracts::{GuestAddress, GuestCallValue, GuestStorage, GuestValueLayout};
@@ -480,8 +481,6 @@ impl NativeModArmorState {
                 powered: PoweredProtection::None,
             });
         }
-        let mut required =
-            |field: &ArmorField| -> Result<f64, ArmorError> { read(field)?.ok_or(ArmorError::MissingStorage) };
         let regular = match &self.definition {
             ArmorDefinition::Q2 { regular, .. } => {
                 let mut found = None;
@@ -494,7 +493,7 @@ impl NativeModArmorState {
                 match found {
                     None => RegularArmor::None,
                     Some(item) => RegularArmor::Q2 {
-                        points: required(&item.points)?,
+                        points: read(&item.points)?.ok_or(ArmorError::MissingStorage)?,
                         normal_protection: item.normal_protection,
                         energy_protection: item.energy_protection,
                         item: item.item.clone(),
@@ -512,7 +511,7 @@ impl NativeModArmorState {
                 match found {
                     None => RegularArmor::None,
                     Some(item) => RegularArmor::Source {
-                        points: required(&item.points)?,
+                        points: read(&item.points)?.ok_or(ArmorError::MissingStorage)?,
                         item: Some(item.item.clone()),
                     },
                 }
@@ -524,7 +523,7 @@ impl NativeModArmorState {
             let selected = item.selection.is_selected(read(item.selection.field())?);
             let enabled = match &item.enabled {
                 None => true,
-                Some(mask) => required(&mask.field)? as i64 & mask.mask != 0,
+                Some(mask) => read(&mask.field)?.ok_or(ArmorError::MissingStorage)? as i64 & mask.mask != 0,
             };
             if selected && enabled {
                 power_found = Some(item);
@@ -534,7 +533,7 @@ impl NativeModArmorState {
         let powered = match power_found {
             None => PoweredProtection::None,
             Some(item) => {
-                let cells = required(&item.cells)? as i32;
+                let cells = read(&item.cells)?.ok_or(ArmorError::MissingStorage)? as i32;
                 match item.kind {
                     PowerKind::Screen => PoweredProtection::Screen { cells },
                     PowerKind::Shield => PoweredProtection::Shield { cells },

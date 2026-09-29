@@ -32,6 +32,7 @@ struct BindingSlot {
     active: bool,
 }
 
+#[derive(Default)]
 struct Inner {
     originals: HashMap<u64, Rc<OriginalFn>>,
     bindings: HashMap<u64, BindingSlot>,
@@ -40,21 +41,22 @@ struct Inner {
     bypass: Vec<u64>,
 }
 
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inner")
+            .field("originals", &self.originals.len())
+            .field("bindings", &self.bindings.len())
+            .field("bypass", &self.bypass)
+            .finish()
+    }
+}
+
 /// Headless native-entry host: registered original bodies plus interceptors.
 #[derive(Debug, Clone, Default)]
 pub struct SyntheticEntryHost {
     inner: Rc<RefCell<Inner>>,
 }
 
-impl Default for Inner {
-    fn default() -> Self {
-        Self {
-            originals: HashMap::new(),
-            bindings: HashMap::new(),
-            bypass: Vec::new(),
-        }
-    }
-}
 
 impl SyntheticEntryHost {
     /// Build an empty host.

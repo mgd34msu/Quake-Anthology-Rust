@@ -61,11 +61,21 @@ pub trait InlineRegionHost {
 }
 
 /// Headless stage host recording active inline regions.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SyntheticStageHost {
     image_base: GuestAddress,
     next_id: u64,
     active: HashMap<u64, (u64, u64)>,
+}
+
+impl Default for SyntheticStageHost {
+    fn default() -> Self {
+        Self {
+            image_base: GuestAddress::new(0, 0),
+            next_id: 1,
+            active: HashMap::new(),
+        }
+    }
 }
 
 impl SyntheticStageHost {

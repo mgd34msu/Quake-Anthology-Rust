@@ -6,7 +6,7 @@
 use qa_guest::core::contracts::{GuestCallSignature, GuestLayout, GuestStorage, GuestValueLayout, NativeCallAbi};
 
 use super::layouts::{
-    export_table_layout, field_offset, import_table_layout, rectangle_layout, trace_layout, vec2_layout,
+    export_table_layout, import_table_layout, rectangle_layout, trace_layout, vec2_layout,
 };
 
 /// Rerelease native ABI: 64-bit Windows PE+ with Microsoft x64 calls.
@@ -334,10 +334,12 @@ mod tests {
         assert_eq!(game_exports().len(), 29);
         assert_eq!(cgame_imports().len(), 35);
         assert_eq!(cgame_exports().len(), 18);
-        let trace = find_entry(&game_imports(), "trace").unwrap();
+        let game = game_imports();
+        let trace = find_entry(&game, "trace").unwrap();
         assert_eq!(trace.signature.parameters.len(), 6);
         assert!(matches!(trace.signature.result, Some(GuestValueLayout::Aggregate(_))));
-        let draw = find_entry(&cgame_exports(), "DrawHUD").unwrap();
+        let cgame = cgame_exports();
+        let draw = find_entry(&cgame, "DrawHUD").unwrap();
         assert_eq!(draw.signature.parameters.len(), 7);
         assert!(draw.signature.result.is_none());
         let get_api = get_api_signature();

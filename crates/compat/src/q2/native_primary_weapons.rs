@@ -1291,7 +1291,7 @@ mod tests {
         let wiring = service.bind(&mut host).expect("bind");
         assert_eq!(wiring.dispatcher_entry, 0x100);
         assert_eq!(wiring.decision_regions.len(), 1);
-        assert_eq!(wiring.damage_region.is_some(), true);
+        assert!(wiring.damage_region.is_some());
         assert!(host.bound_entries().iter().any(|entry| entry.rva == 0x300));
         let actor = spawn_linked(&mut host);
         service

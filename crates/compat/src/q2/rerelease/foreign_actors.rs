@@ -620,11 +620,10 @@ impl RereleaseForeignActors {
             if !has {
                 continue;
             }
-            if channel == ProtectionChannel::Powered {
-                if !self.is_live(target) {
+            if channel == ProtectionChannel::Powered
+                && !self.is_live(target) {
                     return Err(ForeignActorError::StaleActor);
                 }
-            }
             let saved = {
                 let binding = self.armor_bindings.get_mut(&target).expect("binding");
                 let intercept = match channel {
@@ -853,7 +852,8 @@ mod tests {
         let other = actors.register_actor(body());
         actors.address(target).expect("target");
         actors.address(other).expect("other");
-        let slot_of = |actor: u32| actors.projections.get(&actor).expect("slot").slot;
+        let target_slot = actors.projections.get(&target).expect("slot").slot;
+        let other_slot = actors.projections.get(&other).expect("slot").slot;
         let token = actors
             .bind_armor_stage(
                 target,
@@ -866,9 +866,9 @@ mod tests {
             .is_err());
         actors
             .incoming_damage(&ForeignDamageArgs {
-                target_slot: slot_of(target),
-                attacker_slot: slot_of(other),
-                inflictor_slot: slot_of(other),
+                target_slot,
+                attacker_slot: other_slot,
+                inflictor_slot: other_slot,
                 direction: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
                 point: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
                 normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },

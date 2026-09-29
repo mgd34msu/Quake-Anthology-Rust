@@ -874,27 +874,12 @@ mod tests {
             .expect("register");
         let handle = imports.memory_mut().read_i32(state).expect("handle");
         assert!(handle >= 1);
-        assert_eq!(
-            imports
-                .memory_mut()
-                .read_i32(imports.memory().offset(state, 4).expect("modcount"))
-                .expect("modcount"),
-            0
-        );
-        assert_eq!(
-            imports
-                .memory_mut()
-                .read_f32(imports.memory().offset(state, 8).expect("numeric"))
-                .expect("numeric"),
-            800.0
-        );
-        assert_eq!(
-            imports
-                .memory_mut()
-                .read_i32(imports.memory().offset(state, 12).expect("integer"))
-                .expect("integer"),
-            800
-        );
+        let modcount_at = imports.memory().offset(state, 4).expect("modcount");
+        assert_eq!(imports.memory_mut().read_i32(modcount_at).expect("modcount"), 0);
+        let numeric_at = imports.memory().offset(state, 8).expect("numeric");
+        assert_eq!(imports.memory_mut().read_f32(numeric_at).expect("numeric"), 800.0);
+        let integer_at = imports.memory().offset(state, 12).expect("integer");
+        assert_eq!(imports.memory_mut().read_i32(integer_at).expect("integer"), 800);
         let text_at = imports.memory().offset(state, 16).expect("text");
         assert_eq!(read_cstring(imports.memory_mut(), text_at, 256), "800");
 
@@ -907,13 +892,8 @@ mod tests {
         imports
             .invoke_slot(&context, 12, &[GuestCallValue::Pointer(Some(state))])
             .expect("update");
-        assert_eq!(
-            imports
-                .memory_mut()
-                .read_i32(imports.memory().offset(state, 4).expect("modcount"))
-                .expect("modcount"),
-            1
-        );
+        let modcount_at = imports.memory().offset(state, 4).expect("modcount");
+        assert_eq!(imports.memory_mut().read_i32(modcount_at).expect("modcount"), 1);
         let text_at = imports.memory().offset(state, 16).expect("text");
         assert_eq!(read_cstring(imports.memory_mut(), text_at, 256), "100");
 

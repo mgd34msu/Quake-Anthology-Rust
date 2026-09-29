@@ -364,7 +364,7 @@ impl SyntheticActorHost {
             return Err(ActorError::OutsideTable);
         }
         let relative = address.offset - self.table_base.offset;
-        if relative % self.stride as u64 != 0 || relative / self.stride as u64 >= self.count as u64 {
+        if !relative.is_multiple_of(self.stride as u64) || relative / self.stride as u64 >= self.count as u64 {
             return Err(ActorError::OutsideTable);
         }
         Ok((relative / self.stride as u64) as usize)
@@ -925,7 +925,7 @@ impl<C: SourceActorCalls, B: ActorBehavior> NativeModActors<C, B> {
     pub fn restore(
         &mut self,
         host: &mut SyntheticActorHost,
-        store: &mut impl ActorStore,
+        _store: &mut impl ActorStore,
         bodies: &mut impl BodyTable,
         saved: &SavedNativeActors,
         actors: &[ValidatedActor],

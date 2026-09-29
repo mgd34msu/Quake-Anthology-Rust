@@ -207,7 +207,7 @@ pub enum AddressRef {
 }
 
 /// Absorption declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AbsorbDecl {
     /// Plain source call.
     SourceCall {
@@ -610,7 +610,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
                     let address = self
                         .operations
                         .memory()
-                        .offset(base, i64::try_from(**rva).unwrap_or(i64::MAX))?;
+                        .offset(base, i64::try_from(*rva).unwrap_or(i64::MAX))?;
                     self.operations.memory().check(address, 1, GuestAccess::Execute)?;
                 }
             }
@@ -1179,7 +1179,7 @@ impl<O: ProtectionOperations> NativeModProtection<O> {
                 .max()
                 .unwrap_or(0);
             let address = self.operations.memory().offset(*base, start as i64)?;
-            let watched = fields.clone();
+            let _watched = fields.clone();
             let flag = dirty.clone();
             let id = self.operations.memory().observe_writes(
                 address,

@@ -98,7 +98,7 @@ pub fn canonical_cause_from_native(id: u8, friendly_fire: bool) -> Option<i32> {
 /// Convert a canonical cause back to a rerelease native ordinal.
 #[must_use]
 pub fn native_cause_from_canonical(canonical: i32) -> Option<(u8, bool)> {
-    if canonical < 0 || canonical > CAUSE_FRIENDLY_FIRE + 58 {
+    if !(0..=CAUSE_FRIENDLY_FIRE + 58).contains(&canonical) {
         return None;
     }
     let friendly = (canonical & CAUSE_FRIENDLY_FIRE) != 0;

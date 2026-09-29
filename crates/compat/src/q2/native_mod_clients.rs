@@ -39,7 +39,7 @@ pub enum ClientError {
 }
 
 /// Generational actor handle local to the client bridge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NativeActorId {
     /// Registry slot.
     pub slot: u32,

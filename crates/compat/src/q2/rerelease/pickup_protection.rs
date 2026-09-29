@@ -21,7 +21,7 @@ pub enum ProtectionError {
 }
 
 /// Protection channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProtectionChannel {
     /// Regular armor.
     Regular,
@@ -228,10 +228,10 @@ mod tests {
             .expect("run");
         assert!(engine.published_powered.is_empty());
         let mut engine = FakeEngine::new();
-        assert_eq!(
-            ProtectionScope::open(&mut engine, None, ProtectionChannel::Regular).unwrap_err(),
-            ProtectionError::NoRecipient
-        );
+        assert!(matches!(
+            ProtectionScope::open(&mut engine, None, ProtectionChannel::Regular),
+            Err(ProtectionError::NoRecipient)
+        ));
         let mut engine = FakeEngine::new();
         engine.observing.push(5);
         engine.armor.insert(5, armor());

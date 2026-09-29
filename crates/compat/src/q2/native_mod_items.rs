@@ -380,7 +380,6 @@ pub fn validate_native_mod_items(
                         | GuestStorage::Int32
                         | GuestStorage::Uint32
                 ) || items.is_empty()
-                    || *private_mask > 0xffff_ffff
                 {
                     return Err(ItemError::BadPacked);
                 }
@@ -1411,7 +1410,7 @@ impl ItemOperations for SyntheticItemOperations {
     }
 
     fn weapon_model(&self, actor: NativeActorId) -> u32 {
-        u32::from(actor.slot)
+        actor.slot
     }
 }
 

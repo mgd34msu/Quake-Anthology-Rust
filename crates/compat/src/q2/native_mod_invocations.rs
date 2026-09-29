@@ -64,9 +64,24 @@ struct Scope {
     current: Rc<dyn Fn() -> bool>,
 }
 
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scope").field("current", &(self.current)()).finish()
+    }
+}
+
 struct Retirement {
     authority_current: Rc<dyn Fn() -> bool>,
     scope: usize,
+}
+
+impl std::fmt::Debug for Retirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Retirement")
+            .field("authority_current", &(self.authority_current)())
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 /// Tracks nested source invocations over a synthetic processor snapshot word.

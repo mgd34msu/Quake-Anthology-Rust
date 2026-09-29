@@ -6,7 +6,7 @@ use qa_guest::core::contracts::GuestLayout;
 use super::native_combat_call::CombatArgument;
 use super::native_primary::{NativePrimaryProfile, PrimaryEdition};
 use super::native_primary_commands::ItemAmmo;
-use super::native_primary_pickups::{PickupSupply, TimeStorage};
+use super::native_pickups::{PickupSupply, TimeStorage};
 use super::native_primary_reader::{NativeItemField, NativeItemTest, NativeRegion, RecordKind};
 use super::native_primary_weapons::{DelayEvaluate, WeaponDamage};
 

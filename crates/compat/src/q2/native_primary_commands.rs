@@ -613,7 +613,7 @@ impl NativePrimaryCommands {
             host.core.memory.write_i32(*address, *value)?;
         }
         let outcome = execute(&mut *host);
-        if self.current(host, actor) && host.core.entity_of(actor).map_or(false, |current| current == entity) {
+        if self.current(host, actor) && (host.core.entity_of(actor) == Ok(entity)) {
             for (address, bytes) in saved_words.into_iter().rev() {
                 host.core.memory.write(address, &bytes)?;
             }
@@ -660,7 +660,7 @@ impl NativePrimaryCommands {
         let previous = host.core.memory.read_pointer(address)?;
         host.core.memory.write_pointer(address, Some(descriptor.address))?;
         let outcome = run(&mut *host);
-        if self.current(host, actor) && host.core.entity_of(actor).map_or(false, |current| current == entity) {
+        if self.current(host, actor) && (host.core.entity_of(actor) == Ok(entity)) {
             host.core.memory.write_pointer(address, previous)?;
         }
         outcome
@@ -688,7 +688,7 @@ impl NativePrimaryCommands {
                 return Err(NativeHostError::Fault("original command argc is invalid".to_string()));
             }
         };
-        if count < 0 || count > 1024 {
+        if !(0..=1024).contains(&count) {
             return Err(NativeHostError::Fault("original command argc is invalid".to_string()));
         }
         let mut arguments = Vec::with_capacity(count.max(1) as usize - 1);

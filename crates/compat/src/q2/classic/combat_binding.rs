@@ -26,7 +26,7 @@ use super::combat_profile::{
     validate_classic_combat_profile, ClassicCombatOperation, ClassicCombatProfile, ClassicGame,
 };
 use super::host::ClassicQ2GuestHost;
-use super::layout::{classic_signature, q2_int, q2_pointer, ClassicQ2Error, ClassicResult};
+use super::layout::{classic_signature, q2_pointer, ClassicQ2Error, ClassicResult};
 use super::records::{read_classic_string, read_classic_vector, write_classic_vector};
 
 /// Friendly-fire bit in classic native causes.
@@ -80,7 +80,7 @@ fn valid_classic(game: ClassicGame, id: i64) -> bool {
 /// Canonicalize a classic native cause, rejecting unknown guest causes.
 pub fn canonical_cause_from_native(game: ClassicGame, value: i32) -> Option<i32> {
     let value = i64::from(value);
-    if value < 0 || value > FRIENDLY_FIRE + 55 {
+    if !(0..=FRIENDLY_FIRE + 55).contains(&value) {
         return None;
     }
     let friendly = value & FRIENDLY_FIRE != 0;
@@ -99,7 +99,7 @@ pub fn canonical_cause_from_native(game: ClassicGame, value: i32) -> Option<i32>
 /// Lower a canonical cause to a classic native value.
 pub fn native_cause_from_canonical(game: ClassicGame, canonical: i32) -> Option<i32> {
     let canonical = i64::from(canonical);
-    if canonical < 0 || canonical > FRIENDLY_FIRE + 58 {
+    if !(0..=FRIENDLY_FIRE + 58).contains(&canonical) {
         return None;
     }
     let friendly = canonical & FRIENDLY_FIRE != 0;

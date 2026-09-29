@@ -18,7 +18,7 @@ use super::native_primary_drop::NativePrimaryDropProfile;
 use super::native_primary_drop_profile::native_primary_drop_profile;
 use super::native_primary_inventory::NativePrimaryInventoryProfile;
 use super::native_primary_inventory_profile::native_primary_inventory_profile;
-use super::native_primary_pickups::{
+use super::native_pickups::{
     AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
     PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
 };
@@ -424,7 +424,7 @@ pub fn validate_classic_combat(profile: &ClassicPrimaryWorldProfile) -> Result<(
             return Err("classic armor item field exceeds its original item record".to_string());
         }
     }
-    if profile.armor_info.normal_protection % 4 != 0 || profile.armor_info.energy_protection % 4 != 0 {
+    if !profile.armor_info.normal_protection.is_multiple_of(4) || !profile.armor_info.energy_protection.is_multiple_of(4) {
         return Err("classic armor information is unaligned".to_string());
     }
     if profile.armor_info.normal_protection == profile.armor_info.energy_protection
@@ -1977,8 +1977,8 @@ pub enum NativePrimaryProfile {
         drop: NativePrimaryDropProfile,
         /// Pickup service profile.
         pickups: NativePickupProfile,
-        /// Classic world profile.
-        world: ClassicPrimaryWorldProfile,
+        /// Classic world profile (boxed: the world tables dwarf the services).
+        world: Box<ClassicPrimaryWorldProfile>,
     },
     /// Rerelease services and world.
     Rerelease {
@@ -1994,8 +1994,8 @@ pub enum NativePrimaryProfile {
         drop: NativePrimaryDropProfile,
         /// Pickup service profile.
         pickups: NativePickupProfile,
-        /// Rerelease world profile.
-        world: RereleasePrimaryWorldProfile,
+        /// Rerelease world profile (boxed: the world tables dwarf the services).
+        world: Box<RereleasePrimaryWorldProfile>,
     },
 }
 
@@ -2087,7 +2087,7 @@ pub fn builtin_native_primary(digest: &str, edition: PrimaryEdition) -> Option<N
                 inventory,
                 drop,
                 pickups,
-                world,
+                world: Box::new(world),
             })
         }
         PrimaryEdition::Rerelease => {

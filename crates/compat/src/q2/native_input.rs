@@ -166,7 +166,7 @@ pub fn client_command_from(command: &NativeCommand) -> ClientCommand {
 fn clamp_pitch(pitch: f64) -> f64 {
     if pitch > 89.0 && pitch < 180.0 {
         89.0
-    } else if pitch < 271.0 && pitch >= 180.0 {
+    } else if (180.0..271.0).contains(&pitch) {
         271.0
     } else {
         pitch
@@ -250,7 +250,7 @@ pub struct ApplicationRequest {
 }
 
 /// Client movement outputs projected into a movement slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClientMovement {
     /// Projected pmove type, when overridden.
     pub mode: Option<i32>,

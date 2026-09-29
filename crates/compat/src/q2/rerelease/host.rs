@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use qa_core::math::{Bounds, Vec3};
 use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestLayout,
+    GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestLayout,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::GuestError;
@@ -601,7 +601,7 @@ impl RereleaseQ2GuestHost {
         {
             return Ok(Some(actor));
         }
-        Ok(self.actor(self.slot_for_address(address)?)?)
+        self.actor(self.slot_for_address(address)?)
     }
 
     /// Slot for a guest address.
@@ -610,7 +610,7 @@ impl RereleaseQ2GuestHost {
             return Err(HostError::SlotOutOfRange);
         }
         let delta = address.offset - self.entity_base.offset;
-        if delta % self.entity_stride as u64 != 0
+        if !delta.is_multiple_of(self.entity_stride as u64)
             || delta / self.entity_stride as u64 >= u64::from(self.entity_capacity)
         {
             return Err(HostError::SlotOutOfRange);
@@ -669,9 +669,7 @@ impl RereleaseQ2GuestHost {
             native,
             deferred: Vec::new(),
             projections: if kind == "level" {
-                self.foreign
-                    .iter()
-                    .map(|(actor, _)| ProjectionSave { slot: 0, actor: *actor })
+                self.foreign.keys().map(|actor| ProjectionSave { slot: 0, actor: *actor })
                     .collect()
             } else {
                 vec![]
@@ -1108,7 +1106,7 @@ impl RereleaseQ2GuestHost {
     }
 
     fn core_import(&mut self, api: &str, name: &str, args: &[GuestCallValue]) -> Result<GuestCallResult, HostError> {
-        let text_arg = |index: usize| {
+        let mut text_arg = |index: usize| {
             Self::pointer_arg(args, index)
                 .map(|address| {
                     self.memory

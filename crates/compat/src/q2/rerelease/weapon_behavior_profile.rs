@@ -822,7 +822,7 @@ mod tests {
     fn profile_gates_artifacts_and_drives_chains() {
         let none = RereleaseWeaponProfile::new("sha256:other", "q2eaks/game.dll", None).expect("none");
         assert!(none.is_none());
-        let mut profile = RereleaseWeaponProfile::new(Q2EAKS_WEAPON_DIGEST, "q2eaks/game.dll", None)
+        let profile = RereleaseWeaponProfile::new(Q2EAKS_WEAPON_DIGEST, "q2eaks/game.dll", None)
             .expect("profile")
             .expect("built-in");
         assert_eq!(profile.declaration.role, "rocket");

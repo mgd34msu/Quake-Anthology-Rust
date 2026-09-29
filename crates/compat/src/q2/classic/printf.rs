@@ -233,7 +233,7 @@ pub fn classic_printf(
             None => None,
         };
         let precision = precision_input.filter(|value| *value >= 0).map(|value| value as usize);
-        if width.abs() > 65536 || precision.map_or(false, |value| value > 100) {
+        if width.abs() > 65536 || precision.is_some_and(|value| value > 100) {
             return Err(ClassicQ2Error::invalid(
                 "API 3 printf width or precision exceeds supported buffer",
             ));
@@ -413,7 +413,7 @@ mod tests {
                 int(6),
                 int(7),
                 int(3),
-                GuestCallValue::Float64(2.71828),
+                GuestCallValue::Float64(2.718_281_828_459_045),
                 int(9),
                 int(9),
                 int(255),

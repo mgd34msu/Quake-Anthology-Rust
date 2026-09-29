@@ -565,7 +565,7 @@ impl NativePrimaryPickups {
                 .profile
                 .grants
                 .iter()
-                .position(|grant| host.core.at(grant.entry).map_or(false, |address| address == entry)),
+                .position(|grant| host.core.at(grant.entry) == Ok(entry)),
             None => None,
         };
         let grant_index = match grant_index {

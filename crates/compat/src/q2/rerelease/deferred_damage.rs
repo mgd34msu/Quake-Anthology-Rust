@@ -607,16 +607,14 @@ impl RereleaseDeferredDamage {
                 request.attack.attacker,
                 request.attack.inflictor,
                 request.attack.originating_projectile,
-            ] {
-                if let Some(party) = party {
-                    references.push((
-                        SavedActorId {
-                            slot: party,
-                            generation: 0,
-                        },
-                        self.save_actor(party),
-                    ));
-                }
+            ].into_iter().flatten() {
+                references.push((
+                    SavedActorId {
+                        slot: party,
+                        generation: 0,
+                    },
+                    self.save_actor(party),
+                ));
             }
             let blood = self.memory.read_i32(self.at(actor, self.accumulator.blood)?)?;
             let acc_knockback = self.memory.read_i32(self.at(actor, self.accumulator.knockback)?)?;

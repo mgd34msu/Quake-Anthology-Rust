@@ -209,11 +209,11 @@ impl NativePrimaryDrop {
         });
     }
 
-    fn restore_frame(&self, host: &mut SyntheticHost, frame: &mut DropFrame) -> HostResult<()> {
+    fn restore_frame(host: &mut SyntheticHost, frame: &mut DropFrame, closed: bool) -> HostResult<()> {
         if let Some(saved) = frame.restore.take() {
             frame.counter = None;
             if let Some(actor) = frame.actor {
-                if self.current(host, actor) {
+                if !closed && host.core.is_live(actor) {
                     for (address, bytes) in saved {
                         host.core.memory.write(address, &bytes)?;
                     }
@@ -226,7 +226,7 @@ impl NativePrimaryDrop {
     /// Leave a drop scope, restoring any projection.
     pub fn end(&mut self, host: &mut SyntheticHost) -> HostResult<()> {
         if let Some(mut frame) = self.frames.pop() {
-            self.restore_frame(host, &mut frame)?;
+            Self::restore_frame(host, &mut frame, self.closed)?;
         }
         Ok(())
     }
@@ -321,7 +321,7 @@ impl NativePrimaryDrop {
         match (self.hooks.action)(actor, item) {
             Some(action) => {
                 if let Some(frame) = self.frames.last_mut() {
-                    self.restore_frame(host, frame)?;
+                    Self::restore_frame(host, frame, self.closed)?;
                 }
                 action();
                 Ok(true)
@@ -358,7 +358,7 @@ impl NativePrimaryDrop {
         execute(&mut *host)?;
         let after = host.core.memory.read_i32(counter)?;
         if let Some(frame) = self.frames.last_mut() {
-            self.restore_frame(host, frame)?;
+            Self::restore_frame(host, frame, self.closed)?;
         }
         let count = before - after;
         let pickup = self.frames.last().and_then(|frame| frame.pickup);
@@ -511,7 +511,7 @@ impl NativePrimaryDrop {
     /// Close the service, restoring every frame.
     pub fn close(&mut self, host: &mut SyntheticHost) -> HostResult<()> {
         while let Some(mut frame) = self.frames.pop() {
-            self.restore_frame(host, &mut frame)?;
+            Self::restore_frame(host, &mut frame, self.closed)?;
         }
         self.closed = true;
         Ok(())
