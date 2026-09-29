@@ -1,16 +1,46 @@
-//! Renderer abstraction: headless scene submission.
+//! Renderer: scene submission plus the CPU and GL backends.
 //!
 //! Donor provenance: `src/contracts/scene.ts` (`SceneEntity`,
 //! `SceneLight`, `SceneLightProfile`, `SceneParticle`),
-//! `src/contracts/render.ts` (`SceneCamera`, `RendererBackend`),
+//! `src/contracts/render.ts` (ordered backend contract),
 //! `src/content/q3/presentation/ref-entity.ts` (`RF_*`),
 //! `src/content/q3/presentation/marks.ts` (`ImpactMarkRequest`,
 //! `MAX_MARK_*`), `src/render/scene/submissions.ts`
-//! (`sourceDrawGroup` field limits) and
-//! `src/render/scene/source-sort.ts` (`packSourceDrawSort`).
+//! (`sourceDrawGroup` field limits),
+//! `src/render/scene/source-sort.ts` (`packSourceDrawSort`), and the full
+//! `src/render/*` tree (commands, CPU rasterizer, GL backend, scene graph,
+//! worker transport).
 //!
-//! Trait plus headless implementation only; CPU/GL backends and the
-//! platform layer stay out of this crate.
+//! This module keeps the headless scene-submission trait
+//! ([`RendererBackend`]) with its recording implementation
+//! ([`NullRenderer`]); the default backend is the real CPU rasterizer
+//! ([`cpu::CpuRenderer`]). The ordered command-stream contract lives in
+//! [`types`], consumed synchronously by the CPU (`cpu`) and GL (`gl`)
+//! implementations. Scene-graph preparation lives in `scene`; the former
+//! worker thread is a headless-compatible synchronous driver (`driver`)
+//! with identical ordering semantics.
+
+pub mod cpu;
+pub mod debug_graph;
+pub mod driver;
+pub mod dynamic_texture;
+pub mod error;
+pub mod execution;
+pub mod frame;
+pub mod gl;
+pub mod image_journal;
+pub mod material2d;
+pub mod output_gamma;
+pub mod q3_hardware;
+pub mod scene;
+pub mod types;
+pub mod worker;
+pub mod worker_entry;
+pub mod worker_protocol;
+pub mod worker_runtime;
+pub mod worker_transport;
+
+pub use error::RenderError;
 
 use qa_core::math::{Vec3, Vec4};
 
@@ -323,6 +353,12 @@ impl RendererBackend for NullRenderer {
             lights: self.lights.len(),
         }
     }
+}
+
+/// Build the default backend: the real CPU rasterizer.
+#[must_use]
+pub fn default_backend(width: u32, height: u32, session: qa_core::identity::SessionId) -> cpu::CpuRenderer {
+    cpu::CpuRenderer::new(width, height, session)
 }
 
 #[cfg(test)]
