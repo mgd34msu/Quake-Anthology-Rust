@@ -31,6 +31,8 @@ pub mod q3_client_authorization;
 pub mod q3_content;
 pub mod q3_net;
 pub mod q3_pak_references;
+pub mod q3_recording;
+pub mod q3_visibility;
 pub mod qw;
 pub mod services;
 pub mod unified;

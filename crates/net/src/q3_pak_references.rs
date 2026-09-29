@@ -448,7 +448,7 @@ impl PakReferences {
             if info.nonempty() {
                 info.append(" ");
             }
-            info.append(&format!("{}/{}", state.pack.game, state.pack.basename));
+            info.append(&state.pack.basename);
         }
         info.result()
     }
@@ -667,7 +667,7 @@ mod tests {
         refs.record_packed_open(&third, "models/y.md3").unwrap();
         assert_eq!(refs.referenced_pak_names(), "mod1/a.pk3  mod2/c.pk3");
         assert_eq!(refs.referenced_pak_checksums(), "1 3 ");
-        assert_eq!(refs.loaded_pak_names(), "mod1/a.pk3 baseq3/b.pk3 mod2/c.pk3");
+        assert_eq!(refs.loaded_pak_names(), "a.pk3 b.pk3 c.pk3");
     }
 
     #[test]
