@@ -16,6 +16,7 @@ pub mod q1_wide;
 pub mod q2;
 pub mod q2_adapters;
 pub mod q2_net;
+pub mod q2_prediction;
 pub mod q2_solid;
 pub mod q2_svc;
 pub mod q2_variants;
