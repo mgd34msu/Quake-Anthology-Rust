@@ -14,6 +14,7 @@ pub mod bsp;
 pub mod bsp2;
 pub mod bsp3;
 pub mod common;
+pub mod contract;
 pub mod images;
 pub mod lod;
 pub mod md2;
