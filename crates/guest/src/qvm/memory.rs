@@ -483,9 +483,9 @@ impl QvmMemory {
 
     /// Span of `len` bytes at masked `word` plus `relative_offset`.
     pub fn span(&self, word: i32, len: usize, relative_offset: i64) -> Result<QvmSpan, GuestError> {
-        let pointer = self.pointer(word)?.ok_or_else(|| {
-            GuestError::invalid("QVM memory span requires a nonnull pointer")
-        })?;
+        let pointer = self
+            .pointer(word)?
+            .ok_or_else(|| GuestError::invalid("QVM memory span requires a nonnull pointer"))?;
         let start = pointer.start as i64 + relative_offset;
         span_error(start, len, self.len())?;
         Ok(QvmSpan {
@@ -502,12 +502,12 @@ impl QvmMemory {
 
     /// Read a NUL-terminated Latin-1 string at masked `word`.
     pub fn read_string(&self, word: i32) -> Result<String, GuestError> {
-        let pointer = self.pointer(word)?.ok_or_else(|| {
-            GuestError::invalid("QVM string requires a nonnull pointer")
-        })?;
-        let end = pointer.index_of(0).ok_or_else(|| {
-            GuestError::invalid("QVM string has no terminator before the allocation ends")
-        })?;
+        let pointer = self
+            .pointer(word)?
+            .ok_or_else(|| GuestError::invalid("QVM string requires a nonnull pointer"))?;
+        let end = pointer
+            .index_of(0)
+            .ok_or_else(|| GuestError::invalid("QVM string has no terminator before the allocation ends"))?;
         let bytes = pointer.subspan(0, end)?.to_vec();
         Ok(bytes.iter().map(|byte| *byte as char).collect())
     }
@@ -793,7 +793,10 @@ mod tests {
         let events_clone = Rc::clone(&events);
         memory
             .observe_writes(
-                &[QvmWriteRange { byte_offset: 0, byte_length: 16 }],
+                &[QvmWriteRange {
+                    byte_offset: 0,
+                    byte_length: 16,
+                }],
                 Box::new(move |_| {
                     *events_clone.borrow_mut() += 1;
                     Ok(())

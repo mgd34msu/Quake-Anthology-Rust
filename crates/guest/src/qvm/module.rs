@@ -32,8 +32,7 @@ use crate::checkpoint::{
     ModuleIdentity as CheckpointModuleIdentity,
 };
 use crate::core::contracts::{
-    GuestAddress, GuestCallContext, GuestCallResult, GuestCallValue, GuestCallbackReference,
-    ModuleIdentity,
+    GuestAddress, GuestCallContext, GuestCallResult, GuestCallValue, GuestCallbackReference, ModuleIdentity,
 };
 use crate::error::GuestError;
 
@@ -42,8 +41,8 @@ use super::artifacts::ResolvedQvmArtifact;
 use super::guest_memory::QvmGuestMemory;
 use super::image::parse_qvm_restart;
 use super::interpreter::{
-    QvmFunctionCall, QvmFunctionHook, QvmFunctionObserver, QvmFunctionResolver, QvmHookToken,
-    QvmInterpreter, QvmObserverToken, QvmSemantics,
+    QvmFunctionCall, QvmFunctionHook, QvmFunctionObserver, QvmFunctionResolver, QvmHookToken, QvmInterpreter,
+    QvmObserverToken, QvmSemantics,
 };
 use super::memory::QvmMemory;
 use super::regions::QvmRegionEvaluation;
@@ -168,7 +167,13 @@ impl QvmModule {
     /// Create a module over a resolved bytecode artifact (replacements are
     /// native modules, handled by the caller). Validates the UI API version.
     pub fn new(options: QvmModuleOptions) -> Result<Self, GuestError> {
-        let ResolvedQvmArtifact::Bytecode { module, role, image, abi_profile, .. } = options.artifact
+        let ResolvedQvmArtifact::Bytecode {
+            module,
+            role,
+            image,
+            abi_profile,
+            ..
+        } = options.artifact
         else {
             return Err(GuestError::invalid("QVM replacement artifacts are native modules"));
         };
@@ -184,7 +189,7 @@ impl QvmModule {
         let system = create_qvm_system_call(
             role,
             options.host,
-            Box::new(move || captured.borrow().clone()),
+            Box::new(move || (*captured.borrow()).clone()),
             abi_profile,
         );
         let mut module_instance = Self {
@@ -284,7 +289,11 @@ impl QvmModule {
         args: &[GuestCallValue],
     ) -> Result<GuestCallResult, GuestError> {
         self.live()?;
-        let GuestCallbackReference::Qvm { module, instruction_index } = &context.callback else {
+        let GuestCallbackReference::Qvm {
+            module,
+            instruction_index,
+        } = &context.callback
+        else {
             return Err(GuestError::invalid("QVM module requires its QVM callback"));
         };
         if module != &self.module {
@@ -308,9 +317,7 @@ impl QvmModule {
             GuestCallValue::Float64(word) => Ok((*word as f32).to_bits() as i32),
             GuestCallValue::Pointer(None) => Ok(0),
             GuestCallValue::Pointer(Some(address)) => self.pointer_word(*address),
-            GuestCallValue::Aggregate { .. } => {
-                Err(GuestError::invalid("QVM arguments cannot carry aggregates"))
-            }
+            GuestCallValue::Aggregate { .. } => Err(GuestError::invalid("QVM arguments cannot carry aggregates")),
         }
     }
 
@@ -466,7 +473,14 @@ impl QvmModule {
     /// Restore a checkpoint captured by [`Self::checkpoint`].
     pub fn restore(&mut self, checkpoint: &GuestCheckpoint) -> Result<(), GuestError> {
         self.live()?;
-        let GuestCheckpoint::Qvm { module, random, callbacks, data, host_state, .. } = checkpoint
+        let GuestCheckpoint::Qvm {
+            module,
+            random,
+            callbacks,
+            data,
+            host_state,
+            ..
+        } = checkpoint
         else {
             return Err(GuestError::invalid("QVM module requires its QVM checkpoint"));
         };
@@ -505,7 +519,10 @@ impl QvmModule {
 
 fn qvm_reference(reference: &GuestCallbackReference) -> Result<(&ModuleIdentity, u32), GuestError> {
     match reference {
-        GuestCallbackReference::Qvm { module, instruction_index } => Ok((module, *instruction_index)),
+        GuestCallbackReference::Qvm {
+            module,
+            instruction_index,
+        } => Ok((module, *instruction_index)),
         _ => Err(GuestError::invalid("QVM module requires its QVM callback")),
     }
 }
@@ -533,7 +550,11 @@ mod tests {
         let instructions = program
             .into_iter()
             .map(|(opcode, operand)| {
-                let instruction = QvmInstruction { byte_offset: offset, opcode, operand };
+                let instruction = QvmInstruction {
+                    byte_offset: offset,
+                    opcode,
+                    operand,
+                };
                 offset += 1 + opcode.operand_width();
                 instruction
             })
@@ -561,9 +582,7 @@ mod tests {
                 image,
                 abi_profile: QvmAbiProfile::Modern,
             },
-            host: Box::new(|_call: &mut QvmHostCall<'_, '_, '_>| -> Result<i32, GuestError> {
-                Ok(0)
-            }),
+            host: Box::new(|_call: &mut QvmHostCall<'_, '_, '_>| -> Result<i32, GuestError> { Ok(0) }),
             allocation: QvmAllocationProfile::Unaccounted,
             registration: None,
             command_arguments: None,
@@ -644,11 +663,16 @@ mod tests {
         module.interpreter.memory().write_bytes(32, &[0, 0, 0, 0]).unwrap();
         module.restore(&checkpoint).unwrap();
         assert_eq!(module.interpreter.memory().read_bytes(32, 4).unwrap(), vec![4, 5, 6, 7]);
-        let GuestCheckpoint::Qvm { abi_profile, program_stack, .. } = &checkpoint else {
-            panic!("expected a QVM checkpoint");
-        };
-        assert_eq!(abi_profile, "q3-modern");
-        assert_eq!(*program_stack, 256);
+        assert!(matches!(&checkpoint, GuestCheckpoint::Qvm { .. }));
+        if let GuestCheckpoint::Qvm {
+            abi_profile,
+            program_stack,
+            ..
+        } = &checkpoint
+        {
+            assert_eq!(abi_profile, "q3-modern");
+            assert_eq!(*program_stack, 256);
+        }
     }
 
     #[test]
@@ -689,7 +713,13 @@ mod tests {
         module.retire();
         assert!(module.call(&[0; 10], 0).is_err());
         assert!(module.checkpoint().is_err());
-        assert_eq!(qvm_api(QvmRole::Qagame, QvmAbiProfile::Legacy116n), GameApi::Q1Qagame { version: 6 });
-        assert_eq!(qvm_api(QvmRole::Ui, QvmAbiProfile::Modern), GameApi::Q3Ui { version: 6 });
+        assert_eq!(
+            qvm_api(QvmRole::Qagame, QvmAbiProfile::Legacy116n),
+            GameApi::Q1Qagame { version: 6 }
+        );
+        assert_eq!(
+            qvm_api(QvmRole::Ui, QvmAbiProfile::Modern),
+            GameApi::Q3Ui { version: 6 }
+        );
     }
 }

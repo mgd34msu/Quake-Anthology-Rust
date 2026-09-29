@@ -71,9 +71,7 @@ impl QvmGuestMemory {
         if address.space != self.space {
             return Err(GuestError::invalid("QVM pointer belongs to another module instance"));
         }
-        if address.offset > self.memory.len() as u64
-            || byte_length as u64 > self.memory.len() as u64 - address.offset
-        {
+        if address.offset > self.memory.len() as u64 || byte_length as u64 > self.memory.len() as u64 - address.offset {
             return Err(GuestError::memory_fault(
                 "out-of-bounds",
                 address.offset,

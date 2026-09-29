@@ -1308,9 +1308,15 @@ mod tests {
         assert_eq!(decode_qvm_game_import(46), None);
         assert_eq!(decode_qvm_game_import(99), None);
         assert_eq!(decode_qvm_game_import(200), Some(QvmGameImport::BotlibSetup));
-        assert_eq!(decode_qvm_game_import(318), Some(QvmGameImport::BotlibAasPredictClientMovement));
+        assert_eq!(
+            decode_qvm_game_import(318),
+            Some(QvmGameImport::BotlibAasPredictClientMovement)
+        );
         assert_eq!(decode_qvm_game_import(319), None);
-        assert_eq!(decode_qvm_game_import(581), Some(QvmGameImport::BotlibPcSourceFileAndLine));
+        assert_eq!(
+            decode_qvm_game_import(581),
+            Some(QvmGameImport::BotlibPcSourceFileAndLine)
+        );
         assert_eq!(decode_qvm_game_import(582), None);
         assert_eq!(QvmGameImport::GPrint as i32, 0);
         assert_eq!(QvmGameExport::BotaiStartFrame as i32, 10);

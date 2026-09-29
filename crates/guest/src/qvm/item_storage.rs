@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use qa_world::combat::ItemId;
 use qa_world::inventory::{CountArithmetic, CountPolicy, InventoryEntry};
 
-use super::game_data::{namespaced_id, ProfileReader, ProfileValue, QvmImage, QvmOpcode};
+use super::game_data::{namespaced_id, ProfileReader, QvmImage, QvmOpcode};
 use super::mod_actors::{QvmModInputPointer, QvmModInputPointerBase, QvmModSourceCall};
 use super::mod_presentation::HeldWeaponDeclaration;
 use crate::error::GuestError;
@@ -52,7 +52,7 @@ pub struct QvmItemTest {
     /// Comparison.
     pub comparison: QvmItemTestComparison,
     /// Compared value.
-    pub value: i32,
+    pub value: i64,
 }
 
 /// Capacity selector comparison.
@@ -72,7 +72,7 @@ pub struct QvmCapacityOverride {
     /// Comparison.
     pub comparison: QvmCapacityComparison,
     /// Compared value.
-    pub value: i32,
+    pub value: i64,
     /// Constant instruction selected on match.
     pub instruction: usize,
 }
@@ -153,7 +153,7 @@ pub struct QvmWeaponPredicate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QvmSelectionValue {
     /// Source value.
-    pub value: i32,
+    pub value: i64,
     /// Item id.
     pub item: ItemId,
 }
@@ -175,9 +175,9 @@ pub struct QvmProjection {
     /// Projection byte length.
     pub byte_length: usize,
     /// Minimum value.
-    pub minimum: i32,
+    pub minimum: i64,
     /// Maximum value.
-    pub maximum: i32,
+    pub maximum: i64,
     /// View-height field.
     pub view_height: QvmItemField,
     /// Ground field.
@@ -367,7 +367,11 @@ fn parse_field(reader: &ProfileReader<'_>) -> Result<QvmItemField, GuestError> {
 }
 
 fn parse_test(reader: &ProfileReader<'_>) -> Result<QvmItemTest, GuestError> {
-    let mask = reader.field("mask")?.nullable(|value| value.integer(0))?.map(|mask| mask as u32);
+    let mask = reader.field("mask")?.nullable(|value| value.integer(0))?;
+    let mask = match mask {
+        None => None,
+        Some(mask) => Some(u32::try_from(mask).map_err(|_| GuestError::invalid("test mask exceeds 32 bits"))?),
+    };
     let comparison = reader.field("comparison")?.choice(&["equals", "at-most"])?;
     Ok(QvmItemTest {
         field: parse_field(&reader.field("field")?)?,
@@ -377,14 +381,7 @@ fn parse_test(reader: &ProfileReader<'_>) -> Result<QvmItemTest, GuestError> {
         } else {
             QvmItemTestComparison::AtMost
         },
-        value: parse_i32(&reader.field("value")?)?,
-    })
-}
-
-fn parse_i32(reader: &ProfileReader<'_>) -> Result<i32, GuestError> {
-    let value = reader.integer(i64::from(i32::MIN))?;
-    i32::try_from(value).map_err(|_| {
-        GuestError::invalid(format!("{}: expected a signed 32-bit word", reader.path_debug()))
+        value: reader.field("value")?.integer(i64::MIN)?,
     })
 }
 
@@ -423,9 +420,9 @@ fn parse_actor(reader: &ProfileReader<'_>) -> Result<QvmWeaponActor, GuestError>
 fn parse_capacity(reader: &ProfileReader<'_>) -> Result<QvmItemCapacity, GuestError> {
     let kind = reader.field("kind")?.choice(&["constant", "field", "source"])?;
     if kind == "constant" {
-        return Ok(QvmItemCapacity::Constant {
-            value: reader.field("value")?.integer(0)? as i32,
-        });
+        let value = reader.field("value")?.integer(0)?;
+        let value = i32::try_from(value).map_err(|_| GuestError::invalid("capacity exceeds the signed source ABI"))?;
+        return Ok(QvmItemCapacity::Constant { value });
     }
     if kind == "field" {
         return Ok(QvmItemCapacity::Field {
@@ -443,7 +440,7 @@ fn parse_capacity(reader: &ProfileReader<'_>) -> Result<QvmItemCapacity, GuestEr
                 } else {
                     QvmCapacityComparison::NotEquals
                 },
-                value: parse_i32(&value.field("value")?)?,
+                value: value.field("value")?.integer(i64::MIN)?,
                 instruction: value.field("instruction")?.integer(0)? as usize,
             })
         })?,
@@ -461,15 +458,13 @@ pub fn parse_qvm_item_storage(reader: &ProfileReader<'_>) -> Result<QvmItemStora
         });
     }
     let private_mask = reader.field("privateMask")?.integer(0)?;
-    let private_mask = u32::try_from(private_mask)
-        .map_err(|_| GuestError::invalid("privateMask exceeds 32 bits"))?;
+    let private_mask = u32::try_from(private_mask).map_err(|_| GuestError::invalid("privateMask exceeds 32 bits"))?;
     Ok(QvmItemStorage::Bits {
         field,
         private_mask,
         items: reader.field("items")?.list(|entry| {
             let mask = entry.field("mask")?.integer(1)?;
-            let mask =
-                u32::try_from(mask).map_err(|_| GuestError::invalid("item mask exceeds 32 bits"))?;
+            let mask = u32::try_from(mask).map_err(|_| GuestError::invalid("item mask exceeds 32 bits"))?;
             Ok(QvmPackedItem {
                 item: namespaced_id(&entry.field("item")?)?,
                 mask,
@@ -597,7 +592,7 @@ pub fn parse_qvm_mod_items(
                     field: parse_field(&selection.field("field")?)?,
                     values: selection.field("values")?.list(|value| {
                         Ok(QvmSelectionValue {
-                            value: parse_i32(&value.field("value")?)?,
+                            value: value.field("value")?.integer(i64::MIN)?,
                             item: namespaced_id(&value.field("item")?)?,
                         })
                     })?,
@@ -617,8 +612,8 @@ pub fn parse_qvm_mod_items(
                     projection: QvmProjection {
                         movement: parse_pointer(&projection.field("movement")?)?,
                         byte_length: projection.field("byteLength")?.integer(1)? as usize,
-                        minimum: parse_i32(&projection.field("minimum")?)?,
-                        maximum: parse_i32(&projection.field("maximum")?)?,
+                        minimum: projection.field("minimum")?.integer(0)?,
+                        maximum: projection.field("maximum")?.integer(0)?,
                         view_height: parse_field(&projection.field("viewHeight")?)?,
                         ground: parse_field(&projection.field("ground")?)?,
                     },
@@ -671,7 +666,11 @@ pub fn validate_qvm_item_storage(
     };
     for storage in storage_values {
         match storage {
-            QvmItemStorage::Counter { field: counter, item, capacity } => {
+            QvmItemStorage::Counter {
+                field: counter,
+                item,
+                capacity,
+            } => {
                 field(counter, QvmItemFieldUsage::Storage)?;
                 bind(item)?;
                 match capacity {
@@ -680,9 +679,7 @@ pub fn validate_qvm_item_storage(
                     }
                     QvmItemCapacity::Constant { value } => {
                         if *value < 0 {
-                            return Err(GuestError::invalid(
-                                "QVM item capacity exceeds its source ABI",
-                            ));
+                            return Err(GuestError::invalid("QVM item capacity exceeds its source ABI"));
                         }
                     }
                     QvmItemCapacity::Source { instruction, overrides } => {
@@ -690,8 +687,7 @@ pub fn validate_qvm_item_storage(
                         for value in overrides {
                             capacity_constant(image, value.instruction)?;
                             if value.address % 4 != 0
-                                || value.address + 4
-                                    > image.initialized_data.len() + image.bss_length
+                                || value.address + 4 > image.initialized_data.len() + image.bss_length
                             {
                                 return Err(GuestError::invalid(
                                     "QVM capacity selector exceeds original source storage",
@@ -701,7 +697,11 @@ pub fn validate_qvm_item_storage(
                     }
                 }
             }
-            QvmItemStorage::Bits { field: bits, private_mask, items: packed } => {
+            QvmItemStorage::Bits {
+                field: bits,
+                private_mask,
+                items: packed,
+            } => {
                 field(bits, QvmItemFieldUsage::Storage)?;
                 if packed.is_empty() {
                     return Err(GuestError::invalid("Invalid QVM private inventory mask"));
@@ -748,7 +748,7 @@ pub fn qvm_item_capacity(
         QvmItemCapacity::Field { field } => access.read(field),
         QvmItemCapacity::Source { instruction, overrides } => {
             for value in overrides {
-                let matches = access.global(value.address)? == value.value;
+                let matches = i64::from(access.global(value.address)?) == value.value;
                 if (value.comparison == QvmCapacityComparison::Equals) == matches {
                     return capacity_constant(image, value.instruction);
                 }
@@ -764,12 +764,10 @@ pub fn read_qvm_item_storage(
     storage: &QvmItemStorage,
     access: &dyn QvmItemStorageAccess,
 ) -> Result<Vec<InventoryEntry>, GuestError> {
-    let (field, count) = match storage {
-        QvmItemStorage::Counter { field, .. } | QvmItemStorage::Bits { field, .. } => {
-            (field, access.read(field)?)
-        }
+    let field = match storage {
+        QvmItemStorage::Counter { field, .. } | QvmItemStorage::Bits { field, .. } => field,
     };
-    let _ = field;
+    let count = access.read(field)?;
     match storage {
         QvmItemStorage::Counter { item, capacity, .. } => Ok(vec![InventoryEntry {
             item: item.clone(),
@@ -777,7 +775,9 @@ pub fn read_qvm_item_storage(
             capacity: f64::from(qvm_item_capacity(image, capacity, access)?),
             count_policy: Some(CountPolicy::SourceCounter(CountArithmetic::Int32)),
         }]),
-        QvmItemStorage::Bits { private_mask, items, .. } => {
+        QvmItemStorage::Bits {
+            private_mask, items, ..
+        } => {
             let mask = items.iter().fold(*private_mask, |mask, value| mask | value.mask);
             if (count as u32) & !mask != 0 {
                 return Err(GuestError::invalid("Original QVM inventory contains undeclared bits"));
@@ -811,9 +811,7 @@ pub fn write_qvm_item_storage(
                 || entry.capacity < 0.0
                 || entry.capacity > f64::from(i32::MAX)
             {
-                return Err(GuestError::invalid(
-                    "QVM item exceeds its signed source representation",
-                ));
+                return Err(GuestError::invalid("QVM item exceeds its signed source representation"));
             }
             if !matches!(capacity, QvmItemCapacity::Field { .. })
                 && entry.capacity != f64::from(qvm_item_capacity(image, capacity, access)?)
@@ -849,8 +847,11 @@ pub fn write_qvm_item_storage(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
     use super::super::game_data::{ProfileValue, QvmInstruction};
+    use super::*;
 
     struct FixtureAccess {
         fields: RefCell<HashMap<(String, usize), i32>>,
@@ -859,7 +860,11 @@ mod tests {
 
     impl QvmItemStorageAccess for FixtureAccess {
         fn read(&self, field: &QvmItemField) -> Result<i32, GuestError> {
-            Ok(*self.fields.borrow().get(&(field.record.clone(), field.offset)).unwrap_or(&0))
+            Ok(*self
+                .fields
+                .borrow()
+                .get(&(field.record.clone(), field.offset))
+                .unwrap_or(&0))
         }
 
         fn global(&self, address: usize) -> Result<i32, GuestError> {
@@ -867,7 +872,9 @@ mod tests {
         }
 
         fn write(&self, field: &QvmItemField, value: i32) -> Result<(), GuestError> {
-            self.fields.borrow_mut().insert((field.record.clone(), field.offset), value);
+            self.fields
+                .borrow_mut()
+                .insert((field.record.clone(), field.offset), value);
             Ok(())
         }
     }
@@ -928,8 +935,9 @@ mod tests {
 
     #[test]
     fn validation_binds_distinct_storage_and_masks() {
-        let items: HashSet<ItemId> =
-            ["q3:rockets".to_string(), "q3:shotgun".to_string()].into_iter().collect();
+        let items: HashSet<ItemId> = ["q3:rockets".to_string(), "q3:shotgun".to_string()]
+            .into_iter()
+            .collect();
         let storage = vec![
             QvmItemStorage::Counter {
                 field: QvmItemField {

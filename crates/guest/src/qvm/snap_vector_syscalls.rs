@@ -16,17 +16,23 @@ use super::syscalls::QvmSyscallRole;
 
 /// Snap one component: round half to even in binary64, saturate out-of-range
 /// integers to `INT_MIN`, and normalize zero to `+0`.
+// Exact float comparisons mirror the donor x87 profile bit for bit.
+#[allow(clippy::float_cmp)]
 fn snap_component(value: f64) -> i32 {
     let lower = value.floor();
     let fraction = value - lower;
-    let integer = if fraction < 0.5 {
-        lower
-    } else if fraction > 0.5 {
-        lower + 1.0
-    } else if lower % 2.0 == 0.0 {
-        lower
-    } else {
-        lower + 1.0
+    // NaN fractions (infinite inputs) fall into the parity branch exactly like
+    // the donor's chained comparisons, then saturate below.
+    let integer = match fraction.partial_cmp(&0.5) {
+        Some(std::cmp::Ordering::Less) => lower,
+        Some(std::cmp::Ordering::Greater) => lower + 1.0,
+        _ => {
+            if lower % 2.0 == 0.0 {
+                lower
+            } else {
+                lower + 1.0
+            }
+        }
     };
     if !integer.is_finite() || integer < f64::from(i32::MIN) || integer > f64::from(i32::MAX) {
         return i32::MIN;
@@ -51,9 +57,9 @@ pub fn qvm_snap_vector_syscall(
     if words.get_i32(0)? != trap {
         return Ok(None);
     }
-    let pointer = memory.pointer(words.get_i32(4)?)?.ok_or_else(|| {
-        GuestError::invalid("QVM SnapVector requires a nonnull pointer")
-    })?;
+    let pointer = memory
+        .pointer(words.get_i32(4)?)?
+        .ok_or_else(|| GuestError::invalid("QVM SnapVector requires a nonnull pointer"))?;
     let vector = pointer.view();
     // Mask only the base; publish each component before reaching the next read.
     for offset in (0..12).step_by(4) {
@@ -77,7 +83,11 @@ mod tests {
 
     fn read_triple(memory: &QvmMemory, at: i32) -> [f32; 3] {
         let view = memory.view(at, 12, 0).unwrap();
-        [view.get_f32(0).unwrap(), view.get_f32(4).unwrap(), view.get_f32(8).unwrap()]
+        [
+            view.get_f32(0).unwrap(),
+            view.get_f32(4).unwrap(),
+            view.get_f32(8).unwrap(),
+        ]
     }
 
     #[test]

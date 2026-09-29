@@ -48,7 +48,14 @@ pub fn validate_qc_mod_combat(program: &dyn QcProgramView, combat: &ModCombatDec
             return Err(GuestError::invalid("QC damage scale requires a valid source region"));
         }
     }
-    for name in ["health", "takedamage", "flags", "invincible_finished", "armorvalue", "armortype"] {
+    for name in [
+        "health",
+        "takedamage",
+        "flags",
+        "invincible_finished",
+        "armorvalue",
+        "armortype",
+    ] {
         if program.field_type(name) != Some(QcValueType::Float) {
             return Err(GuestError::invalid(format!("QC combat requires float field {name}")));
         }
@@ -241,7 +248,10 @@ pub struct Id1CombatLayout {
 /// Original id1 combat layout value.
 #[must_use]
 pub fn id1_combat_layout() -> Id1CombatLayout {
-    Id1CombatLayout { armor_field: "items".to_string(), armor_masks: [8192, 16384, 32768] }
+    Id1CombatLayout {
+        armor_field: "items".to_string(),
+        armor_masks: [8192, 16384, 32768],
+    }
 }
 
 /// Machine surface for combat words.
@@ -300,9 +310,18 @@ pub trait QcCombatDispatch {
 #[must_use]
 pub fn qc_damage_inputs(request: &DamageRequest, seconds: f64) -> QcModInputs {
     let mut inputs = QcModInputs::new();
-    inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(request.target.clone())));
-    inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(request.attacker.clone()));
-    inputs.insert(ModCallbackInput::Inflictor, ModRuntimeValue::Actor(request.inflictor.clone()));
+    inputs.insert(
+        ModCallbackInput::Self_,
+        ModRuntimeValue::Actor(Some(request.target.clone())),
+    );
+    inputs.insert(
+        ModCallbackInput::Attacker,
+        ModRuntimeValue::Actor(request.attacker.clone()),
+    );
+    inputs.insert(
+        ModCallbackInput::Inflictor,
+        ModRuntimeValue::Actor(request.inflictor.clone()),
+    );
     inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(request.amount));
     inputs.insert(ModCallbackInput::Knockback, ModRuntimeValue::Float(request.knockback));
     inputs.insert(ModCallbackInput::Point, ModRuntimeValue::Vector(request.point));
@@ -316,6 +335,21 @@ struct IncomingDamage {
     request: DamageRequest,
     entered: bool,
     outcome: Option<DamageOutcome>,
+}
+
+/// Combat lowering configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QcCombatConfig {
+    /// Combat declaration.
+    pub declaration: ModCombatDeclaration,
+    /// Module identifier.
+    pub module: String,
+    /// Owning provider.
+    pub provider: ProviderId,
+    /// Combat field layout.
+    pub layout: Id1CombatLayout,
+    /// Whether the program pins original id1 behavior.
+    pub pinned_id1: bool,
 }
 
 /// Combat lowering over original bytecode fields.
@@ -332,20 +366,26 @@ pub struct QcModCombat<S, M, D> {
 }
 
 impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S, M, D> {
-    /// Build over a combat declaration.
+    /// Build over a combat configuration.
     pub fn new(
-        declaration: ModCombatDeclaration,
-        module: String,
-        provider: ProviderId,
-        layout: Id1CombatLayout,
-        pinned_id1: bool,
+        config: QcCombatConfig,
         program: &dyn QcProgramView,
         services: S,
         machine: M,
         dispatch: D,
     ) -> Result<Self, GuestError> {
-        validate_qc_mod_combat(program, &declaration)?;
-        Ok(Self { declaration, module, provider, layout, pinned_id1, services, machine, dispatch, incoming: Vec::new() })
+        validate_qc_mod_combat(program, &config.declaration)?;
+        Ok(Self {
+            declaration: config.declaration,
+            module: config.module,
+            provider: config.provider,
+            layout: config.layout,
+            pinned_id1: config.pinned_id1,
+            services,
+            machine,
+            dispatch,
+            incoming: Vec::new(),
+        })
     }
 
     /// Module identifier.
@@ -448,7 +488,11 @@ impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S
         let mask = green | yellow | red;
         let (points, absorption, bit) = match &armor.regular {
             QcCombatRegular::None => (0.0, 0.0, 0),
-            QcCombatRegular::Q1 { points, absorption, item } => {
+            QcCombatRegular::Q1 {
+                points,
+                absorption,
+                item,
+            } => {
                 let bit = if item == "q1:item_armorInv" {
                     red
                 } else if item == "q1:item_armor2" {
@@ -465,30 +509,47 @@ impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S
         self.machine.set_float_for(reference, "armortype", absorption as f32)?;
         let field = self.layout.armor_field.clone();
         let current = self.machine.float_for(reference, &field)? as i32;
-        self.machine.set_float_for(reference, &field, ((current & !mask) | bit) as f32)?;
+        self.machine
+            .set_float_for(reference, &field, ((current & !mask) | bit) as f32)?;
         Ok(())
     }
 
     /// Points-only armor grant.
     #[must_use]
     pub fn empty_armor_grant(&self, points: f64) -> Option<QcCombatRegular> {
-        let source = self.declaration.empty_armor.as_ref().map(|empty| (empty.item.clone(), empty.absorption)).or_else(|| {
-            self.pinned_id1.then(|| ("q1:item_armorInv".to_string(), 0.8))
-        })?;
-        Some(QcCombatRegular::Q1 { points, absorption: f64::from(source.1 as f32), item: source.0 })
+        let source = self
+            .declaration
+            .empty_armor
+            .as_ref()
+            .map(|empty| (empty.item.clone(), empty.absorption))
+            .or_else(|| self.pinned_id1.then(|| ("q1:item_armorInv".to_string(), 0.8)))?;
+        Some(QcCombatRegular::Q1 {
+            points,
+            absorption: f64::from(source.1 as f32),
+            item: source.0,
+        })
     }
 
     /// Apply canonical damage through the declared damage call.
     pub fn apply(&mut self, request: &DamageRequest) -> Result<DamageOutcome, GuestError> {
-        self.incoming.push(IncomingDamage { request: request.clone(), entered: false, outcome: None });
+        self.incoming.push(IncomingDamage {
+            request: request.clone(),
+            entered: false,
+            outcome: None,
+        });
         let inputs = qc_damage_inputs(request, self.seconds());
         let call = self.declaration.damage.clone();
         let result = self.dispatch.invoke(&call, &inputs);
         let outcome = self.machine.take_damage_outcome();
-        let mut entry = self.incoming.pop().ok_or_else(|| GuestError::invalid("QC damage boundary is unbalanced"))?;
+        let mut entry = self
+            .incoming
+            .pop()
+            .ok_or_else(|| GuestError::invalid("QC damage boundary is unbalanced"))?;
         entry.outcome = outcome;
         result?;
-        entry.outcome.ok_or_else(|| GuestError::invalid("QC damage did not complete its shared authority boundary"))
+        entry
+            .outcome
+            .ok_or_else(|| GuestError::invalid("QC damage did not complete its shared authority boundary"))
     }
 
     /// Build a request for authored source damage.
@@ -505,7 +566,10 @@ impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S
                 return Ok(entry.request.clone());
             }
         }
-        let context = self.services.damage_context().ok_or_else(|| GuestError::invalid("Authored QC damage requires canonical attack provenance"))?;
+        let context = self
+            .services
+            .damage_context()
+            .ok_or_else(|| GuestError::invalid("Authored QC damage requires canonical attack provenance"))?;
         let reference = self.reference(Some(target))?;
         let death_type = if self.machine.program().field_type("deathtype").is_some() {
             let index = self.machine.int_for(reference, "deathtype")?;
@@ -519,7 +583,10 @@ impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S
             knockback: 0.0,
             direction: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-            point: self.services.body_origin(target).unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 }),
+            point: self
+                .services
+                .body_origin(target)
+                .unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 }),
             delivery: DamageDelivery::Direct,
             attacker: attacker.cloned(),
             inflictor: inflictor.cloned(),
@@ -539,15 +606,31 @@ impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S
     ) -> Result<ReactionEffect, GuestError> {
         let owner = self.services.resolve_owned(&request.target);
         let Some(owner) = owner else {
-            return Ok(ReactionEffect { execute: false, attacker: None, damage: applied });
+            return Ok(ReactionEffect {
+                execute: false,
+                attacker: None,
+                damage: applied,
+            });
         };
         match reaction {
             DamageReaction::Pain => {
-                let pain =
-                    QcCombatPain { target: owner, attacker: request.attacker.clone(), damage: applied, kick: request.knockback };
+                let pain = QcCombatPain {
+                    target: owner,
+                    attacker: request.attacker.clone(),
+                    damage: applied,
+                    kick: request.knockback,
+                };
                 match self.dispatch.pain_callback(&pain)? {
-                    Some((attacker, damage)) => Ok(ReactionEffect { execute: true, attacker, damage }),
-                    None => Ok(ReactionEffect { execute: false, attacker: None, damage: applied }),
+                    Some((attacker, damage)) => Ok(ReactionEffect {
+                        execute: true,
+                        attacker,
+                        damage,
+                    }),
+                    None => Ok(ReactionEffect {
+                        execute: false,
+                        attacker: None,
+                        damage: applied,
+                    }),
                 }
             }
             DamageReaction::Death => {
@@ -612,17 +695,17 @@ impl<S: QcCombatServices, M: QcCombatMachine, D: QcCombatDispatch> QcModCombat<S
         inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(self.seconds()));
         let call = ModSourceCall {
             function: name,
-            arguments: args.iter().map(|name| super::mod_provider::ModCallbackValue::Input(*name)).collect(),
-            globals: [
-                (ModCallbackInput::Self_, "self"),
-                (ModCallbackInput::Time, "time"),
-            ]
-            .into_iter()
-            .map(|(input, name)| super::mod_provider::ModSourceGlobal {
-                name: name.to_string(),
-                value: super::mod_provider::ModCallbackValue::Input(input),
-            })
-            .collect(),
+            arguments: args
+                .iter()
+                .map(|name| super::mod_provider::ModCallbackValue::Input(*name))
+                .collect(),
+            globals: [(ModCallbackInput::Self_, "self"), (ModCallbackInput::Time, "time")]
+                .into_iter()
+                .map(|(input, name)| super::mod_provider::ModSourceGlobal {
+                    name: name.to_string(),
+                    value: super::mod_provider::ModCallbackValue::Input(input),
+                })
+                .collect(),
         };
         self.dispatch.invoke(&call, &inputs).map(|_| ())
     }
@@ -691,7 +774,10 @@ mod tests {
         }
 
         fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
-            self.live.iter().find(|live| *live == actor).and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
+            self.live
+                .iter()
+                .find(|live| *live == actor)
+                .and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
         }
 
         fn source_of(&self, actor: &ActorId) -> Option<(ProviderId, u32)> {
@@ -743,7 +829,10 @@ mod tests {
         }
 
         fn strings_get(&self, index: i32) -> Result<String, GuestError> {
-            self.strings.get(index as usize).cloned().ok_or_else(|| GuestError::invalid("String index is out of range"))
+            self.strings
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid("String index is out of range"))
         }
 
         fn global_float(&self, name: &str) -> Result<f64, GuestError> {
@@ -782,7 +871,17 @@ mod tests {
 
     fn program() -> FakeProgram {
         let mut fields = HashMap::new();
-        for name in ["health", "takedamage", "flags", "invincible_finished", "armorvalue", "armortype", "items", "th_pain", "th_die"] {
+        for name in [
+            "health",
+            "takedamage",
+            "flags",
+            "invincible_finished",
+            "armorvalue",
+            "armortype",
+            "items",
+            "th_pain",
+            "th_die",
+        ] {
             fields.insert(name.to_string(), QcValueType::Float);
         }
         let damage = QcFunctionView {
@@ -802,7 +901,11 @@ mod tests {
 
     fn declaration() -> ModCombatDeclaration {
         ModCombatDeclaration {
-            damage: ModSourceCall { function: "T_Damage".to_string(), arguments: Vec::new(), globals: Vec::new() },
+            damage: ModSourceCall {
+                function: "T_Damage".to_string(),
+                arguments: Vec::new(),
+                globals: Vec::new(),
+            },
             damage_scale: None,
             armor_stage: None,
             empty_armor: None,
@@ -811,11 +914,13 @@ mod tests {
 
     fn fixture() -> QcModCombat<FakeServices, FakeMachine, FakeDispatch> {
         QcModCombat::new(
-            declaration(),
-            "test:mod".to_string(),
-            ProviderId::new("mod", "test"),
-            id1_combat_layout(),
-            true,
+            QcCombatConfig {
+                declaration: declaration(),
+                module: "test:mod".to_string(),
+                provider: ProviderId::new("mod", "test"),
+                layout: id1_combat_layout(),
+                pinned_id1: true,
+            },
             &program(),
             FakeServices {
                 owner: IdentityOwner::create("combat").unwrap(),
@@ -831,7 +936,11 @@ mod tests {
                 time: 7.0,
                 outcome: None,
             },
-            FakeDispatch { calls: Vec::new(), pain: None, die: false },
+            FakeDispatch {
+                calls: Vec::new(),
+                pain: None,
+                die: false,
+            },
         )
         .unwrap()
     }
@@ -839,7 +948,10 @@ mod tests {
     fn join(combat: &mut QcModCombat<FakeServices, FakeMachine, FakeDispatch>) -> OwnedActor {
         let actor = combat.services.owner.actor(2, 1);
         combat.services.live.push(actor.clone());
-        combat.services.sources.insert(actor.clone(), (ProviderId::new("mod", "test"), 2));
+        combat
+            .services
+            .sources
+            .insert(actor.clone(), (ProviderId::new("mod", "test"), 2));
         combat.services.resolve_owned(&actor).unwrap()
     }
 
@@ -867,7 +979,10 @@ mod tests {
         sparse.fields.remove("health");
         assert!(validate_qc_mod_combat(&sparse, &declaration()).is_err());
         let mut bad = declaration();
-        bad.empty_armor = Some(ModQcEmptyArmor { item: "q1:item_shells".to_string(), absorption: 0.5 });
+        bad.empty_armor = Some(ModQcEmptyArmor {
+            item: "q1:item_shells".to_string(),
+            absorption: 0.5,
+        });
         assert!(validate_qc_mod_combat(&program(), &bad).is_err());
     }
 
@@ -879,18 +994,36 @@ mod tests {
         assert_eq!(combat.module(), "test:mod");
         combat.write_health(owned.id(), 80.0).unwrap();
         combat
-            .write_armor(owned.id(), &QcCombatArmor {
-                regular: QcCombatRegular::Q1 { points: 60.0, absorption: 0.6, item: "q1:item_armor2".to_string() },
-                powered: PoweredKind::None,
-            })
+            .write_armor(
+                owned.id(),
+                &QcCombatArmor {
+                    regular: QcCombatRegular::Q1 {
+                        points: 60.0,
+                        absorption: 0.6,
+                        item: "q1:item_armor2".to_string(),
+                    },
+                    powered: PoweredKind::None,
+                },
+            )
             .unwrap();
         let state = combat.read_state(owned.id()).unwrap();
         assert_eq!(state.health, 80.0);
         assert_eq!(state.mass, 200.0);
         assert!(matches!(state.armor.regular, QcCombatRegular::Q1 { .. }));
         assert_eq!(combat.machine.floats.get(&(2, "items".to_string())), Some(&16384.0));
-        combat.write_armor(owned.id(), &QcCombatArmor { regular: QcCombatRegular::None, powered: PoweredKind::None }).unwrap();
-        assert!(matches!(combat.read_state(owned.id()).unwrap().armor.regular, QcCombatRegular::None));
+        combat
+            .write_armor(
+                owned.id(),
+                &QcCombatArmor {
+                    regular: QcCombatRegular::None,
+                    powered: PoweredKind::None,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            combat.read_state(owned.id()).unwrap().armor.regular,
+            QcCombatRegular::None
+        ));
     }
 
     #[test]
@@ -899,13 +1032,26 @@ mod tests {
         let owned = join(&mut combat);
         combat.admit(&owned).unwrap();
         assert!(combat
-            .write_armor(owned.id(), &QcCombatArmor { regular: QcCombatRegular::None, powered: PoweredKind::Screen })
+            .write_armor(
+                owned.id(),
+                &QcCombatArmor {
+                    regular: QcCombatRegular::None,
+                    powered: PoweredKind::Screen
+                }
+            )
             .is_err());
         assert!(combat
-            .write_armor(owned.id(), &QcCombatArmor {
-                regular: QcCombatRegular::Q1 { points: 10.0, absorption: 0.3, item: "q1:item_shells".to_string() },
-                powered: PoweredKind::None,
-            })
+            .write_armor(
+                owned.id(),
+                &QcCombatArmor {
+                    regular: QcCombatRegular::Q1 {
+                        points: 10.0,
+                        absorption: 0.3,
+                        item: "q1:item_shells".to_string()
+                    },
+                    powered: PoweredKind::None,
+                }
+            )
             .is_err());
     }
 
@@ -915,13 +1061,18 @@ mod tests {
         let grant = combat.empty_armor_grant(100.0).unwrap();
         assert!(matches!(grant, QcCombatRegular::Q1 { ref item, .. } if item == "q1:item_armorInv"));
         let mut declared = declaration();
-        declared.empty_armor = Some(ModQcEmptyArmor { item: "q1:item_armor1".to_string(), absorption: 0.3 });
+        declared.empty_armor = Some(ModQcEmptyArmor {
+            item: "q1:item_armor1".to_string(),
+            absorption: 0.3,
+        });
         let pinned = QcModCombat::new(
-            declared,
-            "test:mod".to_string(),
-            ProviderId::new("mod", "test"),
-            id1_combat_layout(),
-            false,
+            QcCombatConfig {
+                declaration: declared,
+                module: "test:mod".to_string(),
+                provider: ProviderId::new("mod", "test"),
+                layout: id1_combat_layout(),
+                pinned_id1: false,
+            },
             &program(),
             FakeServices {
                 owner: IdentityOwner::create("c2").unwrap(),
@@ -929,11 +1080,24 @@ mod tests {
                 sources: HashMap::new(),
                 context: None,
             },
-            FakeMachine { program: program(), floats: HashMap::new(), ints: HashMap::new(), strings: vec![], time: 0.0, outcome: None },
-            FakeDispatch { calls: Vec::new(), pain: None, die: false },
+            FakeMachine {
+                program: program(),
+                floats: HashMap::new(),
+                ints: HashMap::new(),
+                strings: vec![],
+                time: 0.0,
+                outcome: None,
+            },
+            FakeDispatch {
+                calls: Vec::new(),
+                pain: None,
+                die: false,
+            },
         )
         .unwrap();
-        assert!(matches!(pinned.empty_armor_grant(50.0).unwrap(), QcCombatRegular::Q1 { ref item, .. } if item == "q1:item_armor1"));
+        assert!(
+            matches!(pinned.empty_armor_grant(50.0).unwrap(), QcCombatRegular::Q1 { ref item, .. } if item == "q1:item_armor1")
+        );
     }
 
     #[test]
@@ -943,14 +1107,20 @@ mod tests {
         let call_request = request(owned.id());
         assert!(combat.apply(&call_request).is_err());
         combat.machine.outcome = Some(DamageOutcome::Committed {
-            decision: DamageDecision { applied_damage: 20.0, reaction: DamageReaction::Pain },
+            decision: DamageDecision {
+                applied_damage: 20.0,
+                reaction: DamageReaction::Pain,
+            },
             survived: true,
         });
         let outcome = combat.apply(&call_request).unwrap();
         assert!(matches!(outcome, DamageOutcome::Committed { .. }));
         assert_eq!(combat.dispatch.calls.last().unwrap().0, "T_Damage");
         let inputs = &combat.dispatch.calls.last().unwrap().1;
-        assert_eq!(inputs.get(&ModCallbackInput::Amount), Some(&ModRuntimeValue::Float(25.0)));
+        assert_eq!(
+            inputs.get(&ModCallbackInput::Amount),
+            Some(&ModRuntimeValue::Float(25.0))
+        );
     }
 
     #[test]
@@ -972,13 +1142,24 @@ mod tests {
         combat.dispatch.pain = Some((None, 18.0));
         combat.dispatch.die = true;
         let call_request = request(owned.id());
-        let pain = combat.react(&call_request, 18.0, DamageReaction::Pain, vec3(0.0, 0.0, 0.0)).unwrap();
+        let pain = combat
+            .react(&call_request, 18.0, DamageReaction::Pain, vec3(0.0, 0.0, 0.0))
+            .unwrap();
         assert!(pain.execute);
-        let death = combat.react(&call_request, 100.0, DamageReaction::Death, vec3(0.0, 0.0, 0.0)).unwrap();
+        let death = combat
+            .react(&call_request, 100.0, DamageReaction::Death, vec3(0.0, 0.0, 0.0))
+            .unwrap();
         assert!(death.execute);
-        assert!(combat.react(&call_request, 0.0, DamageReaction::None, vec3(0.0, 0.0, 0.0)).is_err());
+        assert!(combat
+            .react(&call_request, 0.0, DamageReaction::None, vec3(0.0, 0.0, 0.0))
+            .is_err());
         combat.dispatch.pain = None;
-        assert!(!combat.react(&call_request, 5.0, DamageReaction::Pain, vec3(0.0, 0.0, 0.0)).unwrap().execute);
+        assert!(
+            !combat
+                .react(&call_request, 5.0, DamageReaction::Pain, vec3(0.0, 0.0, 0.0))
+                .unwrap()
+                .execute
+        );
     }
 
     #[test]
@@ -987,18 +1168,24 @@ mod tests {
         let owned = join(&mut combat);
         combat.machine.ints.insert((2, "th_pain".to_string()), 3);
         combat
-            .pain(&QcCombatPain { target: owned.clone(), attacker: None, damage: 9.0, kick: 1.0 })
+            .pain(&QcCombatPain {
+                target: owned.clone(),
+                attacker: None,
+                damage: 9.0,
+                kick: 1.0,
+            })
             .unwrap();
         assert_eq!(combat.dispatch.calls.last().unwrap().0, "T_Damage");
-        combat.die(&QcCombatDeath {
-            target: owned,
-            attacker: None,
-            inflictor: None,
-            damage: 99.0,
-            kick: 0.0,
-            point: vec3(0.0, 0.0, 0.0),
-        })
-        .unwrap();
+        combat
+            .die(&QcCombatDeath {
+                target: owned,
+                attacker: None,
+                inflictor: None,
+                damage: 99.0,
+                kick: 0.0,
+                point: vec3(0.0, 0.0, 0.0),
+            })
+            .unwrap();
         // th_die is zero, so no second call.
         assert_eq!(combat.dispatch.calls.len(), 1);
     }

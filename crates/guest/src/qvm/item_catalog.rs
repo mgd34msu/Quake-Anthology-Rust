@@ -75,7 +75,9 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
     let offset = |name: &str| -> Result<usize, GuestError> {
         let value = fields.field(name)?.integer(0)? as usize;
         if value % 4 != 0 || value + 4 > stride {
-            return fields.field(name)?.fail("item field exceeds its record or is unaligned");
+            return fields
+                .field(name)?
+                .fail("item field exceeds its record or is unaligned");
         }
         Ok(value)
     };
@@ -124,13 +126,11 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
         QvmItemCount::Direct(_) => true,
         QvmItemCount::Global { global, .. } => global % 4 == 0,
     };
-    if address_word % 4 != 0 || !count_aligned || stride % 4 != 0 || layout.weapon_type == layout.ammo_type
-    {
+    if address_word % 4 != 0 || !count_aligned || stride % 4 != 0 || layout.weapon_type == layout.ammo_type {
         return reader.fail("invalid item table layout");
     }
     if !live_source
-        && (!matches!(layout.address, QvmItemAddress::Direct(_))
-            || !matches!(layout.count, QvmItemCount::Direct(_)))
+        && (!matches!(layout.address, QvmItemAddress::Direct(_)) || !matches!(layout.count, QvmItemCount::Direct(_)))
     {
         return reader.fail("runtime item table locations require live source storage");
     }
@@ -169,7 +169,9 @@ pub struct QvmCatalogRecord {
 
 fn read_word(data: &[u8], address: usize) -> Result<i32, GuestError> {
     if address + 4 > data.len() {
-        return Err(GuestError::invalid("QVM item table exceeds initialized or live module data"));
+        return Err(GuestError::invalid(
+            "QVM item table exceeds initialized or live module data",
+        ));
     }
     let mut word = [0u8; 4];
     word.copy_from_slice(&data[address..address + 4]);
@@ -189,7 +191,7 @@ pub fn read_qvm_item_records(
         }
     };
     let mut range = range.as_deref_mut();
-    let global = |address: usize, range: &mut Option<&mut dyn FnMut(usize, usize)>| -> Result<i32, GuestError> {
+    let read_global = |address: usize, range: &mut Option<&mut dyn FnMut(usize, usize)>| -> Result<i32, GuestError> {
         if address % 4 != 0 || address + 4 > data.len() {
             return Err(GuestError::invalid("QVM item table locator exceeds module data"));
         }
@@ -198,13 +200,11 @@ pub fn read_qvm_item_records(
     };
     let table = match layout.address {
         QvmItemAddress::Direct(address) => address as i64,
-        QvmItemAddress::Global(global_address) => global(global_address, &mut range)? as i64,
+        QvmItemAddress::Global(global_address) => read_global(global_address, &mut range)? as i64,
     };
     let (count, maximum) = match layout.count {
         QvmItemCount::Direct(count) => (count as i64, None),
-        QvmItemCount::Global { global, maximum } => {
-            (global(global, &mut range)? as i64, Some(maximum as i64))
-        }
+        QvmItemCount::Global { global, maximum } => (read_global(global, &mut range)? as i64, Some(maximum as i64)),
     };
     if count < 0
         || maximum.is_some_and(|maximum| count > maximum)
@@ -223,7 +223,9 @@ pub fn read_qvm_item_records(
     }
     let string = |pointer: i32, range: &mut Option<&mut dyn FnMut(usize, usize)>| -> Result<String, GuestError> {
         if pointer <= 0 || pointer as usize >= data.len() {
-            return Err(GuestError::invalid("QVM item string is outside initialized module data"));
+            return Err(GuestError::invalid(
+                "QVM item string is outside initialized module data",
+            ));
         }
         let pointer = pointer as usize;
         let end = data[pointer..]
@@ -382,8 +384,8 @@ impl QvmSourceItemCatalog {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::game_data::ProfileValue;
+    use super::*;
 
     fn layout() -> QvmItemLayout {
         QvmItemLayout {

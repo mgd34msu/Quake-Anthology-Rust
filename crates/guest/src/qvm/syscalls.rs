@@ -24,8 +24,7 @@ use std::ops::{Deref, DerefMut};
 use crate::error::GuestError;
 
 use super::abi::{
-    decode_qvm_cgame_import, decode_qvm_game_import, decode_qvm_ui_import, QvmCgameImport,
-    QvmGameImport, QvmUiImport,
+    decode_qvm_cgame_import, decode_qvm_game_import, decode_qvm_ui_import, QvmCgameImport, QvmGameImport, QvmUiImport,
 };
 use super::interpreter::{QvmSyscall, QvmSystemCallHandler};
 use super::math_syscalls::qvm_math_syscall;
@@ -188,7 +187,7 @@ where
     }
 }
 
-impl QvmHost for Box<dyn QvmHost + '_> {
+impl<'h> QvmHost for Box<dyn QvmHost + 'h> {
     fn handle_syscall(&self, call: &mut QvmHostCall<'_, '_, '_>) -> Result<i32, GuestError> {
         (**self).handle_syscall(call)
     }
@@ -445,7 +444,12 @@ pub fn create_qvm_system_call<H: QvmHost>(
     command_arguments: Box<dyn Fn() -> Option<Vec<String>>>,
     abi_profile: QvmAbiProfile,
 ) -> QvmSystemCall<H> {
-    QvmSystemCall { role, host, command_arguments, abi_profile }
+    QvmSystemCall {
+        role,
+        host,
+        command_arguments,
+        abi_profile,
+    }
 }
 
 impl<H: QvmHost> QvmSystemCall<H> {
@@ -463,12 +467,11 @@ impl<H: QvmHost> QvmSystemCall<H> {
         }
         let guest: QvmMemory = call.guest.clone();
         let source_role = self.role.syscall_role();
-        let math_role =
-            if self.abi_profile != QvmAbiProfile::Modern && self.role == QvmRole::Ui {
-                QvmSyscallRole::Game
-            } else {
-                source_role
-            };
+        let math_role = if self.abi_profile != QvmAbiProfile::Modern && self.role == QvmRole::Ui {
+            QvmSyscallRole::Game
+        } else {
+            source_role
+        };
         if let Some(value) = qvm_memory_syscall(source_role, &call.words, &guest)? {
             return Ok(value);
         }
@@ -507,7 +510,11 @@ mod tests {
         let instructions = program
             .into_iter()
             .map(|(opcode, operand)| {
-                let instruction = QvmInstruction { byte_offset: offset, opcode, operand };
+                let instruction = QvmInstruction {
+                    byte_offset: offset,
+                    opcode,
+                    operand,
+                };
                 offset += 1 + opcode.operand_width();
                 instruction
             })
@@ -530,7 +537,7 @@ mod tests {
     fn intrinsics_run_before_the_host() {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
-            image(vec![
+            &image(vec![
                 (O::OpEnter, QvmOperand::Word(8)),
                 (O::OpConst, QvmOperand::Word(64)),
                 (O::OpArg, QvmOperand::Byte(8)),
@@ -567,7 +574,7 @@ mod tests {
     fn engine_traps_reach_the_host_classified() {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
-            image(vec![
+            &image(vec![
                 (O::OpEnter, QvmOperand::Word(8)),
                 (O::OpConst, QvmOperand::Word(64)),
                 (O::OpArg, QvmOperand::Byte(8)),
@@ -602,7 +609,7 @@ mod tests {
     fn unknown_traps_classify_as_extensions() {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
-            image(vec![
+            &image(vec![
                 (O::OpEnter, QvmOperand::Word(8)),
                 (O::OpConst, QvmOperand::Word(-1000)),
                 (O::OpCall, QvmOperand::None),
@@ -630,7 +637,7 @@ mod tests {
     fn legacy_profile_rejects_unimplemented_services() {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
-            image(vec![
+            &image(vec![
                 (O::OpEnter, QvmOperand::Word(8)),
                 (O::OpConst, QvmOperand::Word(-100)),
                 (O::OpCall, QvmOperand::None),
@@ -659,7 +666,10 @@ mod tests {
         assert_eq!(decode_legacy_qvm_game_import(41), None);
         assert_eq!(decode_legacy_qvm_game_import(407), Some(QvmGameImport::BotlibEaCommand));
         assert_eq!(decode_legacy_qvm_game_import(402), None);
-        assert_eq!(decode_legacy_qvm_game_import(572), Some(QvmGameImport::BotlibAiPredictVisiblePosition));
+        assert_eq!(
+            decode_legacy_qvm_game_import(572),
+            Some(QvmGameImport::BotlibAiPredictVisiblePosition)
+        );
         assert_eq!(decode_legacy_qvm_game_import(573), None);
     }
 
@@ -668,13 +678,20 @@ mod tests {
         assert_eq!(QvmRole::Qagame.as_str(), "qagame");
         assert_eq!(QvmRole::Qagame.syscall_role(), QvmSyscallRole::Game);
         assert_eq!(QvmAbiProfile::parse("q3-modern").unwrap(), QvmAbiProfile::Modern);
-        assert_eq!(QvmAbiProfile::parse("q3-1.16n-base").unwrap(), QvmAbiProfile::Legacy116n);
+        assert_eq!(
+            QvmAbiProfile::parse("q3-1.16n-base").unwrap(),
+            QvmAbiProfile::Legacy116n
+        );
         assert!(QvmAbiProfile::parse("q9").is_err());
     }
 
     #[test]
     fn unbound_syscalls_report_role_and_code() {
-        let error = QvmUnboundSyscall { role: QvmRole::Ui, code: 4242 }.into_error();
+        let error = QvmUnboundSyscall {
+            role: QvmRole::Ui,
+            code: 4242,
+        }
+        .into_error();
         assert_eq!(error.to_string(), "Unbound ui QVM syscall 4242");
     }
 }

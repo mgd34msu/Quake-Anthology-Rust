@@ -70,8 +70,16 @@ impl VmBinding {
 #[derive(Debug, Clone)]
 enum SlotRecord {
     Empty,
-    Initializing { data_length: usize, table_length: usize, code_length: usize },
-    Interpreted { data_length: usize, table_length: usize, code_length: usize },
+    Initializing {
+        data_length: usize,
+        table_length: usize,
+        code_length: usize,
+    },
+    Interpreted {
+        data_length: usize,
+        table_length: usize,
+        code_length: usize,
+    },
     TypeScript,
 }
 
@@ -84,7 +92,11 @@ struct Slot {
 
 impl Slot {
     fn empty() -> Self {
-        Self { name: None, generation: 0, record: SlotRecord::Empty }
+        Self {
+            name: None,
+            generation: 0,
+            record: SlotRecord::Empty,
+        }
     }
 
     fn binding(&self) -> VmBinding {
@@ -290,10 +302,7 @@ impl Default for VmRegistry {
 
 impl VmRegistry {
     /// Fresh registry with `print` and `execution_profile` sinks.
-    pub fn new(
-        print: Box<dyn FnMut(&str)>,
-        execution_profile: Box<dyn FnMut() -> QvmExecutionProfile>,
-    ) -> Self {
+    pub fn new(print: Box<dyn FnMut(&str)>, execution_profile: Box<dyn FnMut() -> QvmExecutionProfile>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(RegistryInner {
                 slots: [Slot::empty(), Slot::empty(), Slot::empty()],
@@ -345,7 +354,12 @@ impl VmRegistry {
             table_length: 0,
             data_length: 1,
         };
-        Ok(VmRegistration { inner, slot, generation, name: short })
+        Ok(VmRegistration {
+            inner,
+            slot,
+            generation,
+            name: short,
+        })
     }
 
     /// Free every slot.
@@ -401,24 +415,23 @@ impl VmRegistry {
 
     fn code_length(cell: &Slot) -> usize {
         match &cell.record {
-            SlotRecord::Interpreted { code_length, .. }
-            | SlotRecord::Initializing { code_length, .. } => *code_length,
+            SlotRecord::Interpreted { code_length, .. } | SlotRecord::Initializing { code_length, .. } => *code_length,
             _ => 0,
         }
     }
 
     fn table_length(cell: &Slot) -> usize {
         match &cell.record {
-            SlotRecord::Interpreted { table_length, .. }
-            | SlotRecord::Initializing { table_length, .. } => *table_length,
+            SlotRecord::Interpreted { table_length, .. } | SlotRecord::Initializing { table_length, .. } => {
+                *table_length
+            }
             _ => 0,
         }
     }
 
     fn data_length(cell: &Slot) -> usize {
         match &cell.record {
-            SlotRecord::Interpreted { data_length, .. }
-            | SlotRecord::Initializing { data_length, .. } => *data_length,
+            SlotRecord::Interpreted { data_length, .. } | SlotRecord::Initializing { data_length, .. } => *data_length,
             _ => 1,
         }
     }
@@ -510,7 +523,11 @@ mod tests {
         let output = Rc::new(RefCell::new(Vec::new()));
         let output_clone = Rc::clone(&output);
         registry
-            .print_profile(&mut move |text| output_clone.borrow_mut().push(text.to_string()), &mut symbols, false)
+            .print_profile(
+                &mut move |text| output_clone.borrow_mut().push(text.to_string()),
+                &mut symbols,
+                false,
+            )
             .unwrap();
         assert!(output.borrow().is_empty());
         registry.clear();

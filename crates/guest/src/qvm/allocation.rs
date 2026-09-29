@@ -109,12 +109,7 @@ impl Default for QvmAllocationProfile {
 
 impl QvmAllocationProfile {
     /// Issue one storage block for `purpose`/`resource` with `byte_length` bytes.
-    pub fn allocate(
-        &mut self,
-        purpose: &str,
-        resource: &str,
-        byte_length: usize,
-    ) -> Result<QvmAllocation, GuestError> {
+    pub fn allocate(&mut self, purpose: &str, resource: &str, byte_length: usize) -> Result<QvmAllocation, GuestError> {
         match self {
             Self::Unaccounted => Ok(QvmAllocation::new(byte_length)),
             Self::Accounted(allocate) => allocate(&QvmAllocationRequest {

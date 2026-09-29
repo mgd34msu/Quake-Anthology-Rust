@@ -60,9 +60,9 @@ pub fn qvm_memory_syscall(
         memory.write_bytes(offset, &bytes)?;
         return Ok(Some(0));
     }
-    let source = memory.pointer(source_word)?.ok_or_else(|| {
-        GuestError::invalid("QVM strncpy requires a nonnull source pointer")
-    })?;
+    let source = memory
+        .pointer(source_word)?
+        .ok_or_else(|| GuestError::invalid("QVM strncpy requires a nonnull source pointer"))?;
     let head = source.subspan(0, count.min(source.len()))?;
     let terminator = head.index_of(0);
     let copied_length = terminator.unwrap_or(count);
@@ -95,7 +95,10 @@ mod tests {
     #[test]
     fn memset_fills_and_returns_zero() {
         let (memory, words) = fixture(100, 16, 0xAB, 8);
-        assert_eq!(qvm_memory_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(), Some(0));
+        assert_eq!(
+            qvm_memory_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_bytes(16, 8).unwrap(), vec![0xAB; 8]);
     }
 
@@ -112,7 +115,10 @@ mod tests {
         words.set_i32(4, 64).unwrap();
         words.set_i32(8, 16).unwrap();
         words.set_i32(12, 8).unwrap();
-        assert_eq!(qvm_memory_syscall(QvmSyscallRole::Ui, &words, &memory).unwrap(), Some(0));
+        assert_eq!(
+            qvm_memory_syscall(QvmSyscallRole::Ui, &words, &memory).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_bytes(64, 8).unwrap(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
@@ -125,7 +131,10 @@ mod tests {
         words.set_i32(4, 64).unwrap();
         words.set_i32(8, 16).unwrap();
         words.set_i32(12, 6).unwrap();
-        assert_eq!(qvm_memory_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(), Some(64));
+        assert_eq!(
+            qvm_memory_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(),
+            Some(64)
+        );
         assert_eq!(memory.read_bytes(64, 6).unwrap(), vec![b'h', b'i', 0, 0, 0, 0]);
     }
 

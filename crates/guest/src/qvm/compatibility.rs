@@ -51,13 +51,14 @@ impl Default for QvmCompatibilityDeclaration {
 /// paths, NUL bytes, drive prefixes, and empty/dot/dot-dot segments fail.
 pub fn normalize_resource_path(path: &str) -> Result<String, GuestError> {
     let normalized = path.replace('\\', "/");
-    let drive = normalized.len() >= 2
-        && normalized.as_bytes()[0].is_ascii_alphabetic()
-        && normalized.as_bytes()[1] == b':';
+    let drive =
+        normalized.len() >= 2 && normalized.as_bytes()[0].is_ascii_alphabetic() && normalized.as_bytes()[1] == b':';
     if normalized.is_empty()
         || normalized.contains('\0')
         || drive
-        || normalized.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err(GuestError::invalid(format!("Invalid relative resource path: {path}")));
     }
@@ -95,11 +96,16 @@ pub fn parse_qvm_compatibility_declaration(
         .list(|entry| Ok::<_, GuestError>(entry))
         .map_err(GuestError::from)?;
     for entry in entries {
-        let entry_role = entry.field("role").choice_str(&["qagame", "cgame", "ui"]).map_err(GuestError::from)?;
+        let entry_role = entry
+            .field("role")
+            .choice_str(&["qagame", "cgame", "ui"])
+            .map_err(GuestError::from)?;
         let path = normalize_resource_path(&entry.field("artifactPath").string().map_err(GuestError::from)?)?;
         let key = format!("{entry_role}/{}", path.to_lowercase());
         if !seen.insert(key) {
-            return Err(GuestError::from(entry.fail("duplicate module compatibility declaration")));
+            return Err(GuestError::from(
+                entry.fail("duplicate module compatibility declaration"),
+            ));
         }
         let entry_digest = entry.field("artifactDigest").string().map_err(GuestError::from)?;
         if !is_digest(&entry_digest) {
@@ -112,10 +118,14 @@ pub fn parse_qvm_compatibility_declaration(
         let primary = entry.field("primary");
         let equipment = entry.field("equipmentPresentation");
         if primary.value.is_some() && entry_role != "qagame" {
-            return Err(GuestError::from(primary.fail("primary player interfaces belong to qagame")));
+            return Err(GuestError::from(
+                primary.fail("primary player interfaces belong to qagame"),
+            ));
         }
         if equipment.value.is_some() && entry_role != "cgame" {
-            return Err(GuestError::from(equipment.fail("equipment presentation belongs to cgame")));
+            return Err(GuestError::from(
+                equipment.fail("equipment presentation belongs to cgame"),
+            ));
         }
         if role_from(&entry_role) != Some(role) || path.to_lowercase() != artifact_path.to_lowercase() {
             continue;
@@ -180,8 +190,7 @@ pub fn read_qvm_compatibility(
     digest: &str,
     role: QvmRole,
 ) -> Result<QvmAbiProfile, GuestError> {
-    read_qvm_compatibility_declaration(mounts, artifact_path, digest, role)
-        .map(|(declaration, _)| declaration.profile)
+    read_qvm_compatibility_declaration(mounts, artifact_path, digest, role).map(|(declaration, _)| declaration.profile)
 }
 
 #[cfg(test)]
@@ -214,14 +223,11 @@ mod tests {
             entry("qagame", "vm/qagame.qvm", DIGEST, "q3-1.16n-base"),
         ]);
         let declaration =
-            parse_qvm_compatibility_declaration(&value, "vm/qagame.qvm", DIGEST, QvmRole::Qagame)
-                .unwrap();
+            parse_qvm_compatibility_declaration(&value, "vm/qagame.qvm", DIGEST, QvmRole::Qagame).unwrap();
         assert_eq!(declaration.profile, QvmAbiProfile::Legacy116n);
-        let profile =
-            parse_qvm_compatibility(&value, "vm/cgame.qvm", DIGEST, QvmRole::Cgame).unwrap();
+        let profile = parse_qvm_compatibility(&value, "vm/cgame.qvm", DIGEST, QvmRole::Cgame).unwrap();
         assert_eq!(profile, QvmAbiProfile::Modern);
-        let missing =
-            parse_qvm_compatibility(&value, "vm/other.qvm", DIGEST, QvmRole::Qagame).unwrap();
+        let missing = parse_qvm_compatibility(&value, "vm/other.qvm", DIGEST, QvmRole::Qagame).unwrap();
         assert_eq!(missing, QvmAbiProfile::Modern);
     }
 
@@ -272,8 +278,7 @@ mod tests {
             ),
         ]);
         let declaration =
-            parse_qvm_compatibility_declaration(&value, "vm/qagame.qvm", DIGEST, QvmRole::Qagame)
-                .unwrap();
+            parse_qvm_compatibility_declaration(&value, "vm/qagame.qvm", DIGEST, QvmRole::Qagame).unwrap();
         assert_eq!(declaration.primary, Some(SaveJson::Number(7.0)));
         assert_eq!(declaration.equipment_presentation, None);
     }
@@ -293,8 +298,7 @@ mod tests {
     fn missing_files_default_to_modern() {
         let mounts = MapMounts { file: None };
         let (declaration, reference) =
-            read_qvm_compatibility_declaration(&mounts, "vm/qagame.qvm", DIGEST, QvmRole::Qagame)
-                .unwrap();
+            read_qvm_compatibility_declaration(&mounts, "vm/qagame.qvm", DIGEST, QvmRole::Qagame).unwrap();
         assert_eq!(declaration.profile, QvmAbiProfile::Modern);
         assert_eq!(reference, None);
         let profile = read_qvm_compatibility(&mounts, "vm/qagame.qvm", DIGEST, QvmRole::Qagame).unwrap();

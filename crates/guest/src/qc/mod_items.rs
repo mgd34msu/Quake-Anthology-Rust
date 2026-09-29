@@ -36,7 +36,9 @@ pub fn validate_qc_items(program: &dyn QcProgramView, declaration: &ModCallbackD
         None => return Ok(()),
     };
     if declaration.clients.is_none() || items.definitions.is_empty() {
-        return Err(GuestError::invalid("QC source items require canonical clients and definitions"));
+        return Err(GuestError::invalid(
+            "QC source items require canonical clients and definitions",
+        ));
     }
     let mut definitions = HashMap::new();
     for definition in &items.definitions {
@@ -51,7 +53,9 @@ pub fn validate_qc_items(program: &dyn QcProgramView, declaration: &ModCallbackD
                     || (input && matches!(field.binding, ModActorBinding::ClientInput { .. })))
         });
         if program.field_type(name) != Some(expected) || !bound {
-            return Err(GuestError::invalid(format!("QC item storage {name} requires declared original storage")));
+            return Err(GuestError::invalid(format!(
+                "QC item storage {name} requires declared original storage"
+            )));
         }
         Ok(())
     };
@@ -59,13 +63,19 @@ pub fn validate_qc_items(program: &dyn QcProgramView, declaration: &ModCallbackD
     let mut words: HashMap<&str, &str> = HashMap::new();
     for storage in &items.storage {
         match storage {
-            ModItemStorage::Counter { field: name, item, capacity } => {
+            ModItemStorage::Counter {
+                field: name,
+                item,
+                capacity,
+            } => {
                 field(name, QcValueType::Float, false)?;
                 if words.insert(name.as_str(), "count").is_some() {
                     return Err(GuestError::invalid("QC item storage fields overlap"));
                 }
                 if !definitions.contains_key(item) || !bound.insert(item.clone()) {
-                    return Err(GuestError::invalid(format!("QC item {item} lacks distinct declared storage")));
+                    return Err(GuestError::invalid(format!(
+                        "QC item {item} lacks distinct declared storage"
+                    )));
                 }
                 match capacity {
                     ModItemCapacity::Field { field: capacity } => {
@@ -82,22 +92,36 @@ pub fn validate_qc_items(program: &dyn QcProgramView, declaration: &ModCallbackD
                     }
                 }
             }
-            ModItemStorage::Bits { field: name, private_mask, items: packed } => {
+            ModItemStorage::Bits {
+                field: name,
+                private_mask,
+                items: packed,
+            } => {
                 field(name, QcValueType::Float, false)?;
                 if words.insert(name.as_str(), "count").is_some() {
                     return Err(GuestError::invalid("QC item storage fields overlap"));
                 }
                 if *private_mask < 0 || *private_mask > 0xff_ffff || packed.is_empty() {
-                    return Err(GuestError::invalid("QC packed inventory requires an exact binary32 mask"));
+                    return Err(GuestError::invalid(
+                        "QC packed inventory requires an exact binary32 mask",
+                    ));
                 }
                 let mut mask = *private_mask;
                 for entry in packed {
                     if !definitions.contains_key(&entry.item) || !bound.insert(entry.item.clone()) {
-                        return Err(GuestError::invalid(format!("QC item {} lacks distinct declared storage", entry.item)));
+                        return Err(GuestError::invalid(format!(
+                            "QC item {} lacks distinct declared storage",
+                            entry.item
+                        )));
                     }
-                    if entry.mask < 1 || entry.mask > 0x80_0000 || (entry.mask & (entry.mask - 1)) != 0 || (mask & entry.mask) != 0
+                    if entry.mask < 1
+                        || entry.mask > 0x80_0000
+                        || (entry.mask & (entry.mask - 1)) != 0
+                        || (mask & entry.mask) != 0
                     {
-                        return Err(GuestError::invalid("QC packed inventory masks overlap or exceed source precision"));
+                        return Err(GuestError::invalid(
+                            "QC packed inventory masks overlap or exceed source precision",
+                        ));
                     }
                     mask |= entry.mask;
                 }
@@ -107,20 +131,26 @@ pub fn validate_qc_items(program: &dyn QcProgramView, declaration: &ModCallbackD
     if bound.len() != definitions.len() {
         return Err(GuestError::invalid("QC item definition has no source storage"));
     }
-    let weapons: Vec<_> =
-        items.definitions.iter().filter(|definition| matches!(definition.kind, ModItemKind::Weapon { .. })).collect();
+    let weapons: Vec<_> = items
+        .definitions
+        .iter()
+        .filter(|definition| matches!(definition.kind, ModItemKind::Weapon { .. }))
+        .collect();
     if weapons.is_empty() != items.weapons.is_none() {
-        return Err(GuestError::invalid("QC weapon definitions require their original source consumer"));
+        return Err(GuestError::invalid(
+            "QC weapon definitions require their original source consumer",
+        ));
     }
     if let Some(consumer) = items.weapons.as_ref() {
         validate_weapon_stage(program, &consumer.stage)?;
         for name in ["think", "nextthink"] {
-            let bound = declaration
-                .actor_fields
-                .iter()
-                .any(|field| field.field == name && matches!(&field.binding, ModActorBinding::Think | ModActorBinding::Nextthink));
+            let bound = declaration.actor_fields.iter().any(|field| {
+                field.field == name && matches!(&field.binding, ModActorBinding::Think | ModActorBinding::Nextthink)
+            });
             if !bound {
-                return Err(GuestError::invalid("QC weapons require continuing source think ownership"));
+                return Err(GuestError::invalid(
+                    "QC weapons require continuing source think ownership",
+                ));
             }
         }
         field(&consumer.selected.field, QcValueType::Float, false)?;
@@ -178,7 +208,9 @@ pub fn validate_weapon_stage(program: &dyn QcProgramView, stage: &QcWeaponStageD
     }
     for continuation in &stage.continuations {
         if program.function_named(continuation).is_none() {
-            return Err(GuestError::invalid("QC weapon stage requires its declared continuations"));
+            return Err(GuestError::invalid(
+                "QC weapon stage requires its declared continuations",
+            ));
         }
     }
     for repeat in &stage.repeats {
@@ -352,7 +384,9 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
         media: QcModMedia,
     ) -> Result<Self, GuestError> {
         if definition.weapons.is_some() && !services.has_weapon_service() {
-            return Err(GuestError::invalid("QC weapons require the destination weapon slot service"));
+            return Err(GuestError::invalid(
+                "QC weapons require the destination weapon slot service",
+            ));
         }
         Ok(Self {
             definition,
@@ -371,22 +405,30 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
         if self.entries.contains_key(actor) {
             return Ok(());
         }
-        let owner = self.services.resolve_owned(actor);
+        let owned = self.services.resolve_owned(actor);
         let client = self.services.client_for_actor(actor);
-        let live = match (&owner, &client) {
-            (Some(_), Some(client)) => self.services.actor_for_client(client).as_ref() == Some(actor),
-            _ => false,
+        let (Some(owner), Some(client)) = (owned, client) else {
+            return Err(GuestError::invalid("QC items require a live canonical client"));
         };
-        if !live {
+        if self.services.actor_for_client(&client).as_ref() != Some(actor) {
             return Err(GuestError::invalid("QC items require a live canonical client"));
         }
-        let (owner, _) = (owner.unwrap(), client.unwrap());
         let reference = self
             .services
             .reference_for_actor(actor)
             .ok_or_else(|| GuestError::invalid("QC items require a live canonical client"))?;
-        let lease = self.services.bind_items(&owner, &self.provider, &self.definition.definitions, &self.media.content)?;
-        let mut entry = Entry { owner, reference, lease, weapon: None };
+        let lease = self.services.bind_items(
+            &owner,
+            &self.provider,
+            &self.definition.definitions,
+            &self.media.content,
+        )?;
+        let mut entry = Entry {
+            owner,
+            reference,
+            lease,
+            weapon: None,
+        };
         if self.definition.weapons.is_some() {
             match self.services.weapon_bind(&entry.owner) {
                 Ok(binding) => entry.weapon = Some(binding),
@@ -408,14 +450,20 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
     /// Whether an entry is current.
     fn current(&self, actor: &ActorId, entry: &Entry) -> bool {
         self.services.resolve_owned(actor).as_ref() == Some(&entry.owner)
-            && self.entries.get(actor).is_some_and(|stored| stored.lease == entry.lease)
+            && self
+                .entries
+                .get(actor)
+                .is_some_and(|stored| stored.lease == entry.lease)
             && self.services.lease_current(entry.lease)
             && self.services.reference_for_actor(actor) == Some(entry.reference)
     }
 
     /// Require a current entry.
     fn require(&self, actor: &ActorId) -> Result<&Entry, GuestError> {
-        let entry = self.entries.get(actor).ok_or_else(|| GuestError::invalid("QC source items are no longer current"))?;
+        let entry = self
+            .entries
+            .get(actor)
+            .ok_or_else(|| GuestError::invalid("QC source items are no longer current"))?;
         if !self.current(actor, entry) {
             return Err(GuestError::invalid("QC source items are no longer current"));
         }
@@ -444,9 +492,18 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
                             value
                         }
                     };
-                    entries.push(QcInventoryEntry { item: item.clone(), count, capacity: limit, count_policy: QcCountPolicy::SourceCounterBinary32 });
+                    entries.push(QcInventoryEntry {
+                        item: item.clone(),
+                        count,
+                        capacity: limit,
+                        count_policy: QcCountPolicy::SourceCounterBinary32,
+                    });
                 }
-                ModItemStorage::Bits { field, private_mask, items } => {
+                ModItemStorage::Bits {
+                    field,
+                    private_mask,
+                    items,
+                } => {
                     let value = self.word(reference, field)?;
                     words.push((field.clone(), value));
                     let mask = items.iter().fold(*private_mask, |mask, entry| mask | entry.mask);
@@ -478,7 +535,11 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
         let entry = self.require(actor)?;
         for storage in &self.definition.storage {
             match storage {
-                ModItemStorage::Counter { field, item: stored, capacity } if stored == item => {
+                ModItemStorage::Counter {
+                    field,
+                    item: stored,
+                    capacity,
+                } if stored == item => {
                     let count = self.word(entry.reference, field)?;
                     let limit = match capacity {
                         super::mod_provider::ModItemCapacity::Constant { value } => *value,
@@ -510,7 +571,11 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
 
     /// Write one entry.
     pub fn write(&mut self, actor: &ActorId, next: &QcInventoryEntry) -> Result<(), GuestError> {
-        let entry = self.entries.get(actor).cloned().ok_or_else(|| GuestError::invalid("QC source items are no longer current"))?;
+        let entry = self
+            .entries
+            .get(actor)
+            .cloned()
+            .ok_or_else(|| GuestError::invalid("QC source items are no longer current"))?;
         if !self.current(actor, &entry) {
             return Err(GuestError::invalid("QC source items are no longer current"));
         }
@@ -529,7 +594,8 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
                     let capacity = capacity.clone();
                     self.machine.set_float_for(entry.reference, &field, next.count as f32)?;
                     if let super::mod_provider::ModItemCapacity::Field { field } = capacity {
-                        self.machine.set_float_for(entry.reference, &field, next.capacity as f32)?;
+                        self.machine
+                            .set_float_for(entry.reference, &field, next.capacity as f32)?;
                     }
                     self.last.insert((actor.clone(), field), next.count);
                     return Ok(());
@@ -564,8 +630,17 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
     }
 
     /// Invoke an item action.
-    pub fn invoke_action(&mut self, actor: &ActorId, item: &str, action: super::mod_provider::SourceItemAction) -> Result<(), GuestError> {
-        let entry = self.entries.get(actor).cloned().ok_or_else(|| GuestError::invalid("Source item action is no longer admitted"))?;
+    pub fn invoke_action(
+        &mut self,
+        actor: &ActorId,
+        item: &str,
+        action: super::mod_provider::SourceItemAction,
+    ) -> Result<(), GuestError> {
+        let entry = self
+            .entries
+            .get(actor)
+            .cloned()
+            .ok_or_else(|| GuestError::invalid("Source item action is no longer admitted"))?;
         if !self.current(actor, &entry) {
             return Err(GuestError::invalid("Source item action is no longer admitted"));
         }
@@ -582,16 +657,28 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
             .ok_or_else(|| GuestError::invalid("Source item action is no longer admitted"))?;
         let mut inputs = QcModInputs::new();
         inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
-        inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(self.services.now().as_seconds_f64()));
+        inputs.insert(
+            ModCallbackInput::Time,
+            ModRuntimeValue::Float(self.services.now().as_seconds_f64()),
+        );
         self.dispatch.invoke(&call, &inputs).map(|_| ())
     }
 
     /// Active weapon.
     pub fn active(&self, actor: &ActorId) -> Result<Option<ItemId>, GuestError> {
         let entry = self.require(actor)?;
-        let weapons = self.definition.weapons.as_ref().ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
+        let weapons = self
+            .definition
+            .weapons
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
         let value = self.word(entry.reference, &weapons.selected.field)?;
-        let item = weapons.selected.values.iter().find(|entry| entry.value == value).map(|entry| entry.item.clone());
+        let item = weapons
+            .selected
+            .values
+            .iter()
+            .find(|entry| entry.value == value)
+            .map(|entry| entry.item.clone());
         if item.is_none() && value != 0.0 {
             return Err(GuestError::invalid("Original QC selected an undeclared source weapon"));
         }
@@ -601,8 +688,13 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
     /// Whether the selection accepts an item.
     pub fn weapon_accepts(&self, actor: &ActorId, item: &str) -> Result<bool, GuestError> {
         self.require(actor)?;
-        let weapons = self.definition.weapons.as_ref().ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
-        Ok(weapons.selected.values.iter().any(|value| value.item == item) && self.services.inventory_count(actor, item) > 0.0)
+        let weapons = self
+            .definition
+            .weapons
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
+        Ok(weapons.selected.values.iter().any(|value| value.item == item)
+            && self.services.inventory_count(actor, item) > 0.0)
     }
 
     /// Select a weapon.
@@ -610,19 +702,32 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
         if !self.weapon_accepts(actor, item)? {
             return Ok(false);
         }
-        let weapons = self.definition.weapons.clone().ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
+        let weapons = self
+            .definition
+            .weapons
+            .clone()
+            .ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
         let value = weapons.select.values.iter().find(|value| value.item == item);
         let Some(value) = value else {
             return Ok(false);
         };
         let value = value.value;
         let entry = self.require(actor)?;
-        let previous = Entry { owner: entry.owner.clone(), reference: entry.reference, lease: entry.lease, weapon: entry.weapon };
+        let previous = Entry {
+            owner: entry.owner.clone(),
+            reference: entry.reference,
+            lease: entry.lease,
+            weapon: entry.weapon,
+        };
         let reference = entry.reference;
-        self.machine.set_float_for(reference, &weapons.select.field, value as f32)?;
+        self.machine
+            .set_float_for(reference, &weapons.select.field, value as f32)?;
         let mut inputs = QcModInputs::new();
         inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
-        inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(self.services.now().as_seconds_f64()));
+        inputs.insert(
+            ModCallbackInput::Time,
+            ModRuntimeValue::Float(self.services.now().as_seconds_f64()),
+        );
         self.dispatch.invoke(&weapons.select.call, &inputs)?;
         if !self.current(actor, &previous) {
             return Ok(false);
@@ -638,7 +743,11 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
     /// Whether the selection is settled (no requested weapon differs from active).
     pub fn weapon_settled(&self, actor: &ActorId) -> Result<bool, GuestError> {
         let entry = self.require(actor)?;
-        let weapons = self.definition.weapons.as_ref().ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
+        let weapons = self
+            .definition
+            .weapons
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
         let requested = self.word(entry.reference, &weapons.select.field)?;
         let selected = self.word(entry.reference, &weapons.selected.field)?;
         Ok(requested == 0.0 || requested_selected_match(&weapons.select, &weapons.selected, requested, selected))
@@ -650,14 +759,21 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
         if let Some(item) = item {
             return self.weapon_select(actor, item);
         }
-        let weapons = self.definition.weapons.clone().ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
+        let weapons = self
+            .definition
+            .weapons
+            .clone()
+            .ok_or_else(|| GuestError::invalid("Missing qualified QC weapon consumer"))?;
         for call in &weapons.resume {
             if self.require(actor).is_err() {
                 return Err(GuestError::invalid("QC source weapon retired while resuming"));
             }
             let mut inputs = QcModInputs::new();
             inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
-            inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(self.services.now().as_seconds_f64()));
+            inputs.insert(
+                ModCallbackInput::Time,
+                ModRuntimeValue::Float(self.services.now().as_seconds_f64()),
+            );
             self.dispatch.invoke(call, &inputs)?;
         }
         Ok(self.require(actor).is_ok())
@@ -666,19 +782,28 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
     /// Weapon presentation.
     pub fn weapon_presentation(&self, actor: &ActorId) -> Result<QcWeaponPresentation, GuestError> {
         let entry = self.require(actor)?;
-        let weapons = self.definition.weapons.as_ref().ok_or_else(|| GuestError::invalid("QC source has no weapon presentation"))?;
+        let weapons = self
+            .definition
+            .weapons
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("QC source has no weapon presentation"))?;
         let index = self.machine.int_for(entry.reference, &weapons.model.field)?;
         let path = self.machine.strings_get(index)?;
         let asset = self.media.resources.get(&path);
         if !path.is_empty() && asset.is_none() {
-            return Err(GuestError::invalid(format!("Original QC weapon model was not prepared: {path}")));
+            return Err(GuestError::invalid(format!(
+                "Original QC weapon model was not prepared: {path}"
+            )));
         }
         let frame = self.word(entry.reference, &weapons.model.frame)?;
         Ok(QcWeaponPresentation {
             provider: self.provider.clone(),
             content: self.media.content.clone(),
             active: self.active(actor)?,
-            model: asset.map(|asset| QcWeaponModel { requested_path: asset.requested_path.clone(), frame }),
+            model: asset.map(|asset| QcWeaponModel {
+                requested_path: asset.requested_path.clone(),
+                frame,
+            }),
             items: self.definition.definitions.clone(),
         })
     }
@@ -704,16 +829,31 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
                     let count = self.last.get(&(actor.clone(), field.clone())).copied();
                     let limit = match capacity {
                         super::mod_provider::ModItemCapacity::Constant { value } => Some(*value),
-                        super::mod_provider::ModItemCapacity::Field { field } => self.last.get(&(actor.clone(), field.clone())).copied(),
+                        super::mod_provider::ModItemCapacity::Field { field } => {
+                            self.last.get(&(actor.clone(), field.clone())).copied()
+                        }
                     };
                     if let (Some(count), Some(limit)) = (count, limit) {
-                        before_entries.push(QcInventoryEntry { item: item.clone(), count, capacity: limit, count_policy: QcCountPolicy::SourceCounterBinary32 });
+                        before_entries.push(QcInventoryEntry {
+                            item: item.clone(),
+                            count,
+                            capacity: limit,
+                            count_policy: QcCountPolicy::SourceCounterBinary32,
+                        });
                     }
                 }
-                ModItemStorage::Bits { field, private_mask, items } => {
+                ModItemStorage::Bits {
+                    field,
+                    private_mask,
+                    items,
+                } => {
                     if let Some(value) = self.last.get(&(actor.clone(), field.clone())).copied() {
                         let mask = items.iter().fold(*private_mask, |mask, entry| mask | entry.mask);
-                        if value.fract() == 0.0 && value >= 0.0 && value <= 0xff_ffff as f64 && (value as i32 & !mask) == 0 {
+                        if value.fract() == 0.0
+                            && value >= 0.0
+                            && value <= 0xff_ffff as f64
+                            && (value as i32 & !mask) == 0
+                        {
                             for item in items {
                                 before_entries.push(QcInventoryEntry {
                                     item: item.item.clone(),
@@ -752,7 +892,10 @@ impl<S: QcItemServices, M: QcItemMachine, D: QcItemDispatch> QcModItems<S, M, D>
                     return Err(GuestError::invalid("Original pickup changed an undeclared source item"));
                 }
             }
-            changes.push(QcItemStore { before: previous.clone(), after: value.clone() });
+            changes.push(QcItemStore {
+                before: previous.clone(),
+                after: value.clone(),
+            });
         }
         if !changes.is_empty() {
             self.services.notify_stored(entry.lease, &changes);
@@ -791,8 +934,16 @@ fn requested_selected_match(
     requested: f64,
     current: f64,
 ) -> bool {
-    let requested_item = select.values.iter().find(|value| value.value == requested).map(|value| &value.item);
-    let current_item = selected.values.iter().find(|value| value.value == current).map(|value| &value.item);
+    let requested_item = select
+        .values
+        .iter()
+        .find(|value| value.value == requested)
+        .map(|value| &value.item);
+    let current_item = selected
+        .values
+        .iter()
+        .find(|value| value.value == current)
+        .map(|value| &value.item);
     requested_item == current_item
 }
 
@@ -808,8 +959,8 @@ mod tests {
 
     use super::super::mod_provider::{
         ItemAdmission, ModClientDeclaration, ModItemActions, ModItemCapacity, ModItemIconDeclaration, ModPackedItem,
-        ModWeaponModel, ModWeaponSelect, ModWeaponSelector, ModWeaponSelectorValue, ModWeapons, PickupFields, PickupWrite,
-        QcApiKind, QcFunctionView, QcWeaponStageDeclaration, SourceItemAction,
+        ModWeaponModel, ModWeaponSelect, ModWeaponSelector, ModWeaponSelectorValue, ModWeapons, PickupFields,
+        PickupWrite, QcApiKind, QcFunctionView, QcWeaponStageDeclaration, SourceItemAction,
     };
 
     struct FakeProgram {
@@ -875,7 +1026,10 @@ mod tests {
         }
 
         fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
-            self.live.iter().find(|live| *live == actor).and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
+            self.live
+                .iter()
+                .find(|live| *live == actor)
+                .and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
         }
 
         fn client_for_actor(&self, actor: &ActorId) -> Option<ClientId> {
@@ -883,7 +1037,10 @@ mod tests {
         }
 
         fn actor_for_client(&self, client: &ClientId) -> Option<ActorId> {
-            self.clients.iter().find(|(_, bound)| *bound == client).map(|(actor, _)| actor.clone())
+            self.clients
+                .iter()
+                .find(|(_, bound)| *bound == client)
+                .map(|(actor, _)| actor.clone())
         }
 
         fn reference_for_actor(&self, actor: &ActorId) -> Option<i32> {
@@ -924,7 +1081,10 @@ mod tests {
         }
 
         fn inventory_count(&self, actor: &ActorId, item: &str) -> f64 {
-            self.counts.get(&(actor.clone(), item.to_string())).copied().unwrap_or(0.0)
+            self.counts
+                .get(&(actor.clone(), item.to_string()))
+                .copied()
+                .unwrap_or(0.0)
         }
 
         fn weapon_bind(&mut self, _owner: &OwnedActor) -> Result<u64, GuestError> {
@@ -958,7 +1118,10 @@ mod tests {
         }
 
         fn strings_get(&self, index: i32) -> Result<String, GuestError> {
-            self.strings.get(index as usize).cloned().ok_or_else(|| GuestError::invalid("String index is out of range"))
+            self.strings
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid("String index is out of range"))
         }
     }
 
@@ -975,7 +1138,11 @@ mod tests {
     }
 
     fn call(name: &str) -> ModSourceCall {
-        ModSourceCall { function: name.to_string(), arguments: Vec::new(), globals: Vec::new() }
+        ModSourceCall {
+            function: name.to_string(),
+            arguments: Vec::new(),
+            globals: Vec::new(),
+        }
     }
 
     fn items_definition() -> ModQcItems {
@@ -994,8 +1161,13 @@ mod tests {
                     label: "Shotgun".to_string(),
                     icon: Some(None),
                     admission: ItemAdmission::Add,
-                    kind: super::super::mod_provider::ModItemKind::Weapon { ammo: Some("q1:item_shells".to_string()) },
-                    actions: Some(ModItemActions { use_call: Some(call("use_shotgun")), drop_call: None }),
+                    kind: super::super::mod_provider::ModItemKind::Weapon {
+                        ammo: Some("q1:item_shells".to_string()),
+                    },
+                    actions: Some(ModItemActions {
+                        use_call: Some(call("use_shotgun")),
+                        drop_call: None,
+                    }),
                 },
             ],
             storage: vec![
@@ -1007,44 +1179,69 @@ mod tests {
                 ModItemStorage::Bits {
                     field: "items".to_string(),
                     private_mask: 0,
-                    items: vec![ModPackedItem { item: "q1:weapon_shotgun".to_string(), mask: 1 }],
+                    items: vec![ModPackedItem {
+                        item: "q1:weapon_shotgun".to_string(),
+                        mask: 1,
+                    }],
                 },
             ],
             weapons: Some(ModWeapons {
-                stage: QcWeaponStageDeclaration { dispatcher: "W_Attack".to_string(), continuations: Vec::new(), repeats: Vec::new() },
+                stage: QcWeaponStageDeclaration {
+                    dispatcher: "W_Attack".to_string(),
+                    continuations: Vec::new(),
+                    repeats: Vec::new(),
+                },
                 selected: ModWeaponSelector {
                     field: "weapon".to_string(),
-                    values: vec![ModWeaponSelectorValue { value: 1.0, item: "q1:weapon_shotgun".to_string() }],
+                    values: vec![ModWeaponSelectorValue {
+                        value: 1.0,
+                        item: "q1:weapon_shotgun".to_string(),
+                    }],
                 },
                 select: ModWeaponSelect {
                     field: "weaponmodel".to_string(),
-                    values: vec![ModWeaponSelectorValue { value: 1.0, item: "q1:weapon_shotgun".to_string() }],
+                    values: vec![ModWeaponSelectorValue {
+                        value: 1.0,
+                        item: "q1:weapon_shotgun".to_string(),
+                    }],
                     call: call("select_weapon"),
                 },
                 resume: vec![call("resume_weapon")],
-                model: ModWeaponModel { field: "weaponmodel_str".to_string(), frame: "weaponframe".to_string() },
+                model: ModWeaponModel {
+                    field: "weaponmodel_str".to_string(),
+                    frame: "weaponframe".to_string(),
+                },
             }),
         }
     }
 
     fn declaration() -> ModCallbackDeclaration {
         ModCallbackDeclaration {
-            actor_fields: ["ammo_shells", "items", "weapon", "weaponmodel", "weaponmodel_str", "weaponframe", "think", "nextthink"]
-                .into_iter()
-                .map(|field| super::super::mod_provider::ModActorField {
-                    field: field.to_string(),
-                    binding: match field {
-                        "think" => ModActorBinding::Think,
-                        "nextthink" => ModActorBinding::Nextthink,
-                        "weaponmodel" => super::super::mod_provider::ModActorBinding::ClientInput {
-                            input: super::super::mod_provider::ModClientInput::Impulse,
-                            update: super::super::mod_provider::ClientInputUpdate::Always,
-                            scale: None,
-                        },
-                        _ => ModActorBinding::Private,
+            actor_fields: [
+                "ammo_shells",
+                "items",
+                "weapon",
+                "weaponmodel",
+                "weaponmodel_str",
+                "weaponframe",
+                "think",
+                "nextthink",
+            ]
+            .into_iter()
+            .map(|field| super::super::mod_provider::ModActorField {
+                field: field.to_string(),
+                binding: match field {
+                    "think" => ModActorBinding::Think,
+                    "nextthink" => ModActorBinding::Nextthink,
+                    "weaponmodel" => super::super::mod_provider::ModActorBinding::ClientInput {
+                        input: super::super::mod_provider::ModClientInput::Impulse,
+                        update: super::super::mod_provider::ClientInputUpdate::Always,
+                        scale: None,
                     },
-                })
-                .collect(),
+                    _ => ModActorBinding::Private,
+                },
+            })
+            .collect(),
             clients: Some(ModClientDeclaration {
                 maximum: 4,
                 input: vec![super::super::mod_provider::ModClientInputBinding {
@@ -1062,18 +1259,35 @@ mod tests {
 
     fn program() -> FakeProgram {
         let mut fields = HashMap::new();
-        for name in ["ammo_shells", "items", "weapon", "weaponmodel", "weaponframe", "think", "nextthink"] {
+        for name in [
+            "ammo_shells",
+            "items",
+            "weapon",
+            "weaponmodel",
+            "weaponframe",
+            "think",
+            "nextthink",
+        ] {
             fields.insert(name.to_string(), QcValueType::Float);
         }
         fields.insert("weaponmodel_str".to_string(), QcValueType::String);
-        FakeProgram { fields, functions: ["W_Attack".to_string()].into_iter().collect() }
+        FakeProgram {
+            fields,
+            functions: ["W_Attack".to_string()].into_iter().collect(),
+        }
     }
 
     fn media() -> QcModMedia {
-        let mut media = QcModMedia { content: "test-content".to_string(), resources: HashMap::new() };
+        let mut media = QcModMedia {
+            content: "test-content".to_string(),
+            resources: HashMap::new(),
+        };
         media.resources.insert(
             "progs/shotgun.mdl".to_string(),
-            super::super::mod_provider::QcMediaResource { requested_path: "progs/shotgun.mdl".to_string(), model_bounds: None },
+            super::super::mod_provider::QcMediaResource {
+                requested_path: "progs/shotgun.mdl".to_string(),
+                model_bounds: None,
+            },
         );
         media
     }
@@ -1092,7 +1306,11 @@ mod tests {
                 weapons: true,
                 next: 1,
             },
-            FakeMachine { floats: HashMap::new(), ints: HashMap::new(), strings: vec![String::new()] },
+            FakeMachine {
+                floats: HashMap::new(),
+                ints: HashMap::new(),
+                strings: vec![String::new()],
+            },
             FakeDispatch::default(),
             media(),
         )
@@ -1127,18 +1345,40 @@ mod tests {
         items.machine.floats.insert((2, "ammo_shells".to_string()), 25.0);
         items.machine.floats.insert((2, "items".to_string()), 1.0);
         let entries = items.read(&actor).unwrap();
-        assert!(entries.iter().any(|entry| entry.item == "q1:item_shells" && entry.count == 25.0 && entry.capacity == 100.0));
-        assert!(entries.iter().any(|entry| entry.item == "q1:weapon_shotgun" && entry.count == 1.0));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.item == "q1:item_shells" && entry.count == 25.0 && entry.capacity == 100.0));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.item == "q1:weapon_shotgun" && entry.count == 1.0));
         items
-            .write(&actor, &QcInventoryEntry { item: "q1:item_shells".to_string(), count: 30.0, capacity: 100.0, count_policy: QcCountPolicy::SourceCounterBinary32 })
+            .write(
+                &actor,
+                &QcInventoryEntry {
+                    item: "q1:item_shells".to_string(),
+                    count: 30.0,
+                    capacity: 100.0,
+                    count_policy: QcCountPolicy::SourceCounterBinary32,
+                },
+            )
             .unwrap();
         assert_eq!(items.entry(&actor, "q1:item_shells").unwrap().unwrap().count, 30.0);
         items
-            .write(&actor, &QcInventoryEntry { item: "q1:weapon_shotgun".to_string(), count: 0.0, capacity: 1.0, count_policy: QcCountPolicy::Stack })
+            .write(
+                &actor,
+                &QcInventoryEntry {
+                    item: "q1:weapon_shotgun".to_string(),
+                    count: 0.0,
+                    capacity: 1.0,
+                    count_policy: QcCountPolicy::Stack,
+                },
+            )
             .unwrap();
         assert_eq!(items.entry(&actor, "q1:weapon_shotgun").unwrap().unwrap().count, 0.0);
         assert!(!items.mutable_capacity("q1:item_shells"));
-        items.invoke_action(&actor, "q1:weapon_shotgun", SourceItemAction::Use).unwrap();
+        items
+            .invoke_action(&actor, "q1:weapon_shotgun", SourceItemAction::Use)
+            .unwrap();
         assert_eq!(items.dispatch.calls, vec!["use_shotgun".to_string()]);
         items.release(&actor).unwrap();
         assert!(items.read(&actor).is_err());
@@ -1150,13 +1390,37 @@ mod tests {
         let actor = join(&mut items);
         items.admit(&actor).unwrap();
         assert!(items
-            .write(&actor, &QcInventoryEntry { item: "q1:item_shells".to_string(), count: 1.0, capacity: 50.0, count_policy: QcCountPolicy::SourceCounterBinary32 })
+            .write(
+                &actor,
+                &QcInventoryEntry {
+                    item: "q1:item_shells".to_string(),
+                    count: 1.0,
+                    capacity: 50.0,
+                    count_policy: QcCountPolicy::SourceCounterBinary32
+                }
+            )
             .is_err());
         assert!(items
-            .write(&actor, &QcInventoryEntry { item: "q1:weapon_shotgun".to_string(), count: 2.0, capacity: 1.0, count_policy: QcCountPolicy::Stack })
+            .write(
+                &actor,
+                &QcInventoryEntry {
+                    item: "q1:weapon_shotgun".to_string(),
+                    count: 2.0,
+                    capacity: 1.0,
+                    count_policy: QcCountPolicy::Stack
+                }
+            )
             .is_err());
         assert!(items
-            .write(&actor, &QcInventoryEntry { item: "q1:item_nails".to_string(), count: 1.0, capacity: 1.0, count_policy: QcCountPolicy::Stack })
+            .write(
+                &actor,
+                &QcInventoryEntry {
+                    item: "q1:item_nails".to_string(),
+                    count: 1.0,
+                    capacity: 1.0,
+                    count_policy: QcCountPolicy::Stack
+                }
+            )
             .is_err());
     }
 
@@ -1165,7 +1429,10 @@ mod tests {
         let mut items = fixture();
         let actor = join(&mut items);
         items.admit(&actor).unwrap();
-        items.services.counts.insert((actor.clone(), "q1:weapon_shotgun".to_string()), 1.0);
+        items
+            .services
+            .counts
+            .insert((actor.clone(), "q1:weapon_shotgun".to_string()), 1.0);
         items.machine.floats.insert((2, "weapon".to_string()), 1.0);
         assert_eq!(items.active(&actor).unwrap(), Some("q1:weapon_shotgun".to_string()));
         // Fake dispatch does not run source; mirror the select effect on the words.
@@ -1187,7 +1454,10 @@ mod tests {
         let mut items = fixture();
         let actor = join(&mut items);
         items.admit(&actor).unwrap();
-        items.services.counts.insert((actor.clone(), "q1:weapon_shotgun".to_string()), 1.0);
+        items
+            .services
+            .counts
+            .insert((actor.clone(), "q1:weapon_shotgun".to_string()), 1.0);
         items.machine.floats.insert((2, "weapon".to_string()), 1.0);
         assert!(items.weapon_select(&actor, "q1:weapon_shotgun").unwrap());
         assert_eq!(items.machine.floats.get(&(2, "weaponmodel".to_string())), Some(&1.0));
@@ -1213,7 +1483,10 @@ mod tests {
         items.machine.floats.insert((2, "ammo_shells".to_string()), 20.0);
         let pickup = QcPickupObservation {
             actor: actor.clone(),
-            writes: vec![PickupWrite::Inventory { item: "q1:item_shells".to_string(), fields: PickupFields::Count }],
+            writes: vec![PickupWrite::Inventory {
+                item: "q1:item_shells".to_string(),
+                fields: PickupFields::Count,
+            }],
         };
         items.observe(2, Some(&pickup)).unwrap();
         items.machine.floats.insert((2, "items".to_string()), 1.0);
@@ -1223,9 +1496,14 @@ mod tests {
 
     #[test]
     fn icon_and_action_helpers() {
-        let icon = ModItemIconDeclaration::Image { path: "gfx/shotgun.lmp".to_string() };
+        let icon = ModItemIconDeclaration::Image {
+            path: "gfx/shotgun.lmp".to_string(),
+        };
         assert!(matches!(icon, ModItemIconDeclaration::Image { .. }));
-        let actions = ModItemActions { use_call: Some(call("use")), drop_call: Some(call("drop")) };
+        let actions = ModItemActions {
+            use_call: Some(call("use")),
+            drop_call: Some(call("drop")),
+        };
         assert_eq!(
             super::super::mod_provider::source_item_action_names(&actions),
             vec![SourceItemAction::Use, SourceItemAction::Drop]

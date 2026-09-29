@@ -55,19 +55,29 @@ pub fn qc_protection_regions(
     let mut regions = Vec::new();
     for definition in &declaration.protection {
         if declaration.clients.is_none() || !channels.insert(definition.channel) {
-            return Err(GuestError::invalid("QC protection requires clients and one declaration per channel"));
+            return Err(GuestError::invalid(
+                "QC protection requires clients and one declaration per channel",
+            ));
         }
         let (count, selection) = match (&definition.channel, &definition.regular, &definition.powered) {
             (ProtectionChannel::Regular, Some(storage), _) => (
                 storage.points.clone(),
                 storage.selection.as_ref().map(|selection| {
-                    (selection.field.clone(), selection.mask, selection.values.iter().map(|value| value.value).collect::<Vec<_>>())
+                    (
+                        selection.field.clone(),
+                        selection.mask,
+                        selection.values.iter().map(|value| value.value).collect::<Vec<_>>(),
+                    )
                 }),
             ),
             (ProtectionChannel::Powered, _, Some(storage)) => (
                 storage.cells.clone(),
                 storage.selection.as_ref().map(|selection| {
-                    (selection.field.clone(), selection.mask, selection.values.iter().map(|value| value.value).collect::<Vec<_>>())
+                    (
+                        selection.field.clone(),
+                        selection.mask,
+                        selection.values.iter().map(|value| value.value).collect::<Vec<_>>(),
+                    )
                 }),
             ),
             _ => return Err(GuestError::invalid("QC protection requires storage for its channel")),
@@ -77,26 +87,31 @@ pub fn qc_protection_regions(
             names.push(field.clone());
         }
         for name in &names {
-            let bound = declaration
-                .actor_fields
-                .iter()
-                .any(|field| field.field == *name && matches!(field.binding, super::mod_provider::ModActorBinding::Private));
+            let bound = declaration.actor_fields.iter().any(|field| {
+                field.field == *name && matches!(field.binding, super::mod_provider::ModActorBinding::Private)
+            });
             if program.field_type(name) != Some(QcValueType::Float) || !bound {
-                return Err(GuestError::invalid(format!("QC protection requires private float storage {name}")));
+                return Err(GuestError::invalid(format!(
+                    "QC protection requires private float storage {name}"
+                )));
             }
         }
         if let Some((field, mask, values)) = &selection {
             if field == &names[0]
                 || values.is_empty()
                 || values.iter().collect::<HashSet<_>>().len() != values.len()
-                || values.iter().any(|value| !value.is_finite() || f64::from(*value as f32) != *value)
+                || values
+                    .iter()
+                    .any(|value| !value.is_finite() || f64::from(*value as f32) != *value)
             {
                 return Err(GuestError::invalid("QC protection selection is not representable"));
             }
             if let Some(mask) = mask {
                 if *mask <= 0
                     || *mask > 0x7f_ffff
-                    || values.iter().any(|value| value.fract() != 0.0 || (*value as i32 & *mask) != *value as i32)
+                    || values
+                        .iter()
+                        .any(|value| value.fract() != 0.0 || (*value as i32 & *mask) != *value as i32)
                 {
                     return Err(GuestError::invalid("QC protection selection mask is invalid"));
                 }
@@ -110,12 +125,16 @@ pub fn qc_protection_regions(
             definition.flags.radius,
         ];
         if flags.iter().any(|mask| *mask < 0 || *mask > 0x7f_ffff) {
-            return Err(GuestError::invalid("QC protection flags exceed source integer precision"));
+            return Err(GuestError::invalid(
+                "QC protection flags exceed source integer precision",
+            ));
         }
         if let ModProtectionAbsorb::Region { call, stage } = &definition.absorb {
             let region = resolve_armor_stage(program, stage)?;
             if call.function != region.function {
-                return Err(GuestError::invalid("QC donor region lacks a qualified standalone frame"));
+                return Err(GuestError::invalid(
+                    "QC donor region lacks a qualified standalone frame",
+                ));
             }
             let target = program
                 .function_named(&region.function)
@@ -128,7 +147,10 @@ pub fn qc_protection_regions(
                 }
                 word += *size;
             }
-            let mut required = vec![(region.target, ModCallbackInput::Self_), (region.damage, ModCallbackInput::Amount)];
+            let mut required = vec![
+                (region.target, ModCallbackInput::Self_),
+                (region.damage, ModCallbackInput::Amount),
+            ];
             if let Some(flags_word) = region.flags_word {
                 required.push((flags_word, ModCallbackInput::DamageFlags));
             }
@@ -156,18 +178,28 @@ fn resolve_armor_stage(program: &dyn QcProgramView, stage: &ModQcArmorStage) -> 
         || stage.saved < 0
         || stage.statements.is_empty()
     {
-        return Err(GuestError::invalid("QC donor region lacks a qualified standalone frame"));
+        return Err(GuestError::invalid(
+            "QC donor region lacks a qualified standalone frame",
+        ));
     }
     let flags_word = match stage.flags {
         ModQcArmorStageFlags::None => None,
         ModQcArmorStageFlags::Bits { word, .. } => {
             if word < 0 {
-                return Err(GuestError::invalid("QC donor region lacks a qualified standalone frame"));
+                return Err(GuestError::invalid(
+                    "QC donor region lacks a qualified standalone frame",
+                ));
             }
             Some(word)
         }
     };
-    Ok(QcArmorStageView { function: stage.function.clone(), entry: stage.entry, target: stage.target, damage: stage.damage, flags_word })
+    Ok(QcArmorStageView {
+        function: stage.function.clone(),
+        entry: stage.entry,
+        target: stage.target,
+        damage: stage.damage,
+        flags_word,
+    })
 }
 
 /// Entity-word surface for protection storage.
@@ -345,7 +377,16 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
         dispatch: D,
     ) -> Result<Self, GuestError> {
         let regions = qc_protection_regions(program, &declaration)?;
-        Ok(Self { declaration, provider, services, machine, dispatch, regions, entries: HashMap::new(), stages: Vec::new() })
+        Ok(Self {
+            declaration,
+            provider,
+            services,
+            machine,
+            dispatch,
+            regions,
+            entries: HashMap::new(),
+            stages: Vec::new(),
+        })
     }
 
     /// Resolved region absorbs.
@@ -360,20 +401,22 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
             self.require(actor)?;
             return Ok(());
         }
-        let owner = self.services.resolve_owned(actor);
+        let owned = self.services.resolve_owned(actor);
         let client = self.services.client_for_actor(actor);
-        let live = match (&owner, &client) {
-            (Some(_), Some(client)) => self.services.actor_for_client(client).as_ref() == Some(actor),
-            _ => false,
+        let (Some(owner), Some(client)) = (owned, client) else {
+            return Err(GuestError::invalid("QC protection requires a live canonical client"));
         };
-        if !live {
+        if self.services.actor_for_client(&client).as_ref() != Some(actor) {
             return Err(GuestError::invalid("QC protection requires a live canonical client"));
         }
-        let (owner, client) = (owner.unwrap(), client.unwrap());
         let mut lanes = Vec::new();
         for definition in &self.declaration.protection {
             match self.services.reserve(&owner, definition.channel, &definition.id) {
-                Ok(reservation) => lanes.push(ProtectionLane { channel: definition.channel, definition: definition.clone(), reservation }),
+                Ok(reservation) => lanes.push(ProtectionLane {
+                    channel: definition.channel,
+                    definition: definition.clone(),
+                    reservation,
+                }),
                 Err(error) => {
                     for lane in &lanes {
                         let _ = self.services.release_reservation(lane.reservation);
@@ -382,13 +425,23 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
                 }
             }
         }
-        self.entries.insert(actor.clone(), Entry { client, lanes, bound: false });
+        self.entries.insert(
+            actor.clone(),
+            Entry {
+                client,
+                lanes,
+                bound: false,
+            },
+        );
         Ok(())
     }
 
     /// Require a live entry.
     fn require(&self, actor: &ActorId) -> Result<&Entry, GuestError> {
-        let entry = self.entries.get(actor).ok_or_else(|| GuestError::invalid("QC protection client is retired"))?;
+        let entry = self
+            .entries
+            .get(actor)
+            .ok_or_else(|| GuestError::invalid("QC protection client is retired"))?;
         if !self.services.is_live(actor)
             || self.services.client_for_actor(actor).as_ref() != Some(&entry.client)
             || self.services.actor_for_client(&entry.client).as_ref() != Some(actor)
@@ -451,13 +504,19 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
     /// Read regular armor.
     pub fn read_regular(&mut self, actor: &ActorId) -> Result<QcRegularArmor, GuestError> {
         let definition = self.lane(actor, ProtectionChannel::Regular)?;
-        let storage = definition.regular.ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
+        let storage = definition
+            .regular
+            .ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
         let points = self.count(actor, &storage.points, None)?;
         let item = match storage.selection.as_ref() {
             None => storage.item,
             Some(selection) => {
                 let selected = self.selected(actor, &selection.field, selection.mask)?;
-                selection.values.iter().find(|value| value.value == selected).and_then(|value| value.item.clone())
+                selection
+                    .values
+                    .iter()
+                    .find(|value| value.value == selected)
+                    .and_then(|value| value.item.clone())
             }
         };
         let item = item.ok_or_else(|| GuestError::invalid("QC regular armor selection is undeclared"))?;
@@ -467,26 +526,43 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
     /// Read powered protection.
     pub fn read_powered(&mut self, actor: &ActorId) -> Result<QcPoweredArmor, GuestError> {
         let definition = self.lane(actor, ProtectionChannel::Powered)?;
-        let storage = definition.powered.ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
+        let storage = definition
+            .powered
+            .ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
         let kind = match storage.selection.as_ref() {
             None => storage.kind,
             Some(selection) => {
                 let selected = self.selected(actor, &selection.field, selection.mask)?;
-                selection.values.iter().find(|value| value.value == selected).map(|value| value.kind)
+                selection
+                    .values
+                    .iter()
+                    .find(|value| value.value == selected)
+                    .map(|value| value.kind)
                     .ok_or_else(|| GuestError::invalid("QC powered armor selection is undeclared"))?
             }
         };
         if kind == PoweredKind::None {
             Ok(QcPoweredArmor { kind, cells: 0.0 })
         } else {
-            Ok(QcPoweredArmor { kind, cells: self.count(actor, &storage.cells, None)? })
+            Ok(QcPoweredArmor {
+                kind,
+                cells: self.count(actor, &storage.cells, None)?,
+            })
         }
     }
 
     /// Validate a regular armor write.
-    fn validate_regular(&self, actor: &ActorId, definition: &ModQcProtection, next: &QcRegularArmor) -> Result<(), GuestError> {
+    fn validate_regular(
+        &self,
+        actor: &ActorId,
+        definition: &ModQcProtection,
+        next: &QcRegularArmor,
+    ) -> Result<(), GuestError> {
         self.require(actor)?;
-        let storage = definition.regular.as_ref().ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
+        let storage = definition
+            .regular
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
         valid_count(next.points)?;
         match storage.selection.as_ref() {
             None => {
@@ -504,10 +580,22 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
     }
 
     /// Validate a powered protection write.
-    fn validate_powered(&self, actor: &ActorId, definition: &ModQcProtection, next: &QcPoweredArmor) -> Result<(), GuestError> {
+    fn validate_powered(
+        &self,
+        actor: &ActorId,
+        definition: &ModQcProtection,
+        next: &QcPoweredArmor,
+    ) -> Result<(), GuestError> {
         self.require(actor)?;
-        valid_count(if next.kind == PoweredKind::None { 0.0 } else { next.cells })?;
-        let storage = definition.powered.as_ref().ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
+        valid_count(if next.kind == PoweredKind::None {
+            0.0
+        } else {
+            next.cells
+        })?;
+        let storage = definition
+            .powered
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
         match storage.selection.as_ref() {
             None => {
                 if storage.kind != next.kind {
@@ -527,7 +615,9 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
     pub fn write_regular(&mut self, actor: &ActorId, next: &QcRegularArmor) -> Result<(), GuestError> {
         let definition = self.lane(actor, ProtectionChannel::Regular)?;
         self.validate_regular(actor, &definition, next)?;
-        let storage = definition.regular.ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
+        let storage = definition
+            .regular
+            .ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
         if let Some(selection) = storage.selection.as_ref() {
             let selected = selection
                 .values
@@ -545,7 +635,9 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
     pub fn write_powered(&mut self, actor: &ActorId, next: &QcPoweredArmor) -> Result<(), GuestError> {
         let definition = self.lane(actor, ProtectionChannel::Powered)?;
         self.validate_powered(actor, &definition, next)?;
-        let storage = definition.powered.ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
+        let storage = definition
+            .powered
+            .ok_or_else(|| GuestError::invalid("QC protection requires storage for its channel"))?;
         if let Some(selection) = storage.selection.as_ref() {
             let selected = selection
                 .values
@@ -554,7 +646,15 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
                 .ok_or_else(|| GuestError::invalid("Missing validated QC power selection"))?;
             self.select(actor, &selection.field, selection.mask, selected.value)?;
         }
-        self.count(actor, &storage.cells, Some(if next.kind == PoweredKind::None { 0.0 } else { next.cells }))?;
+        self.count(
+            actor,
+            &storage.cells,
+            Some(if next.kind == PoweredKind::None {
+                0.0
+            } else {
+                next.cells
+            }),
+        )?;
         self.rebase(actor)?;
         Ok(())
     }
@@ -620,9 +720,18 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
             Some(actor) => actor,
             None => return Ok(()),
         };
-        let matching: Vec<usize> =
-            self.stages.iter().enumerate().filter(|(_, stage)| stage.actor == actor).map(|(index, _)| index).collect();
-        let after = if matching.is_empty() { ProtectionProjection::default() } else { self.projection(&actor)? };
+        let matching: Vec<usize> = self
+            .stages
+            .iter()
+            .enumerate()
+            .filter(|(_, stage)| stage.actor == actor)
+            .map(|(index, _)| index)
+            .collect();
+        let after = if matching.is_empty() {
+            ProtectionProjection::default()
+        } else {
+            self.projection(&actor)?
+        };
         let current = matching.last().copied();
         for index in matching {
             let before = std::mem::replace(&mut self.stages[index].before, after.clone());
@@ -656,7 +765,11 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
             return run(self);
         }
         let before = self.projection(actor)?;
-        self.stages.push(Stage { actor: actor.clone(), observer, before });
+        self.stages.push(Stage {
+            actor: actor.clone(),
+            observer,
+            before,
+        });
         let result = run(self);
         self.stages.pop();
         result
@@ -680,22 +793,45 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
                 .chain(call.globals.iter().map(|global| &global.value))
                 .any(|value| matches!(value, super::mod_provider::ModCallbackValue::Input(name) if *name == ModCallbackInput::RegularProtectionScale));
             if !mentions {
-                return Err(GuestError::invalid("QC regular protection scale requires an explicit source input"));
+                return Err(GuestError::invalid(
+                    "QC regular protection scale requires an explicit source input",
+                ));
             }
         }
         let flags = definition.flags;
         let damage_flags = (if input.flags.no_armor { flags.no_armor } else { 0 })
-            | (if input.flags.no_power_armor { flags.no_power_armor } else { 0 })
-            | (if input.flags.no_regular_armor { flags.no_regular_armor } else { 0 })
+            | (if input.flags.no_power_armor {
+                flags.no_power_armor
+            } else {
+                0
+            })
+            | (if input.flags.no_regular_armor {
+                flags.no_regular_armor
+            } else {
+                0
+            })
             | (if input.flags.energy { flags.energy } else { 0 })
-            | (if input.delivery == DamageDelivery::Radius { flags.radius } else { 0 });
+            | (if input.delivery == DamageDelivery::Radius {
+                flags.radius
+            } else {
+                0
+            });
         let now = self.services.now().as_seconds_f64();
         let mut inputs = QcModInputs::new();
         inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
-        inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(input.attacker.clone()));
-        inputs.insert(ModCallbackInput::Inflictor, ModRuntimeValue::Actor(input.inflictor.clone()));
+        inputs.insert(
+            ModCallbackInput::Attacker,
+            ModRuntimeValue::Actor(input.attacker.clone()),
+        );
+        inputs.insert(
+            ModCallbackInput::Inflictor,
+            ModRuntimeValue::Actor(input.inflictor.clone()),
+        );
         inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(input.amount));
-        inputs.insert(ModCallbackInput::DamageFlags, ModRuntimeValue::Float(f64::from(damage_flags)));
+        inputs.insert(
+            ModCallbackInput::DamageFlags,
+            ModRuntimeValue::Float(f64::from(damage_flags)),
+        );
         inputs.insert(ModCallbackInput::Knockback, ModRuntimeValue::Float(input.knockback));
         inputs.insert(ModCallbackInput::Direction, ModRuntimeValue::Vector(input.direction));
         inputs.insert(ModCallbackInput::RegularProtectionScale, ModRuntimeValue::Float(scale));
@@ -703,7 +839,9 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
         inputs.insert(ModCallbackInput::Normal, ModRuntimeValue::Vector(input.normal));
         inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(now));
         let region = match &definition.absorb {
-            ModProtectionAbsorb::Region { stage, .. } => self.regions.iter().find(|region| region.entry == stage.entry).cloned(),
+            ModProtectionAbsorb::Region { stage, .. } => {
+                self.regions.iter().find(|region| region.entry == stage.entry).cloned()
+            }
             ModProtectionAbsorb::Function { .. } => None,
         };
         let call = definition.absorb.call().clone();
@@ -732,7 +870,10 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(GuestError::Callback(format!("QC protection release failed: {}", errors.join("; "))))
+            Err(GuestError::Callback(format!(
+                "QC protection release failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 
@@ -748,7 +889,10 @@ impl<S: QcProtectionServices, M: QcProtectionMachine, D: QcProtectionDispatch> Q
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(GuestError::Callback(format!("QC protection close failed: {}", errors.join("; "))))
+            Err(GuestError::Callback(format!(
+                "QC protection close failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 
@@ -833,7 +977,10 @@ mod tests {
         }
 
         fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
-            self.live.iter().find(|live| *live == actor).and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
+            self.live
+                .iter()
+                .find(|live| *live == actor)
+                .and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
         }
 
         fn client_for_actor(&self, actor: &ActorId) -> Option<ClientId> {
@@ -841,7 +988,10 @@ mod tests {
         }
 
         fn actor_for_client(&self, client: &ClientId) -> Option<ActorId> {
-            self.clients.iter().find(|(_, bound)| *bound == client).map(|(actor, _)| actor.clone())
+            self.clients
+                .iter()
+                .find(|(_, bound)| *bound == client)
+                .map(|(actor, _)| actor.clone())
         }
 
         fn reference_for_actor(&self, actor: &ActorId) -> Option<i32> {
@@ -860,7 +1010,9 @@ mod tests {
         }
 
         fn release_reservation(&mut self, reservation: u64) -> Result<(), GuestError> {
-            self.reservations.remove(&reservation).ok_or_else(|| GuestError::invalid("Unknown reservation"))?;
+            self.reservations
+                .remove(&reservation)
+                .ok_or_else(|| GuestError::invalid("Unknown reservation"))?;
             Ok(())
         }
     }
@@ -888,8 +1040,14 @@ mod tests {
     }
 
     impl QcProtectionDispatch for FakeDispatch {
-        fn invoke(&mut self, call: &ModSourceCall, inputs: &QcModInputs, region: Option<&QcArmorStageView>) -> Result<f64, GuestError> {
-            self.calls.push((call.function.clone(), inputs.clone(), region.cloned()));
+        fn invoke(
+            &mut self,
+            call: &ModSourceCall,
+            inputs: &QcModInputs,
+            region: Option<&QcArmorStageView>,
+        ) -> Result<f64, GuestError> {
+            self.calls
+                .push((call.function.clone(), inputs.clone(), region.cloned()));
             Ok(self.saved)
         }
     }
@@ -901,16 +1059,29 @@ mod tests {
     }
 
     fn absorb_call() -> ModSourceCall {
-        ModSourceCall { function: "absorb".to_string(), arguments: vec![ModCallbackValue::Input(ModCallbackInput::Amount)], globals: vec![] }
+        ModSourceCall {
+            function: "absorb".to_string(),
+            arguments: vec![ModCallbackValue::Input(ModCallbackInput::Amount)],
+            globals: vec![],
+        }
     }
 
     fn declaration() -> ModCallbackDeclaration {
         ModCallbackDeclaration {
             actor_fields: vec![
-                ModActorField { field: "armorvalue".to_string(), binding: ModActorBinding::Private },
-                ModActorField { field: "cells".to_string(), binding: ModActorBinding::Private },
+                ModActorField {
+                    field: "armorvalue".to_string(),
+                    binding: ModActorBinding::Private,
+                },
+                ModActorField {
+                    field: "cells".to_string(),
+                    binding: ModActorBinding::Private,
+                },
             ],
-            clients: Some(ModClientDeclaration { maximum: 4, ..ModClientDeclaration::default() }),
+            clients: Some(ModClientDeclaration {
+                maximum: 4,
+                ..ModClientDeclaration::default()
+            }),
             protection: vec![
                 ModQcProtection {
                     id: "regular".to_string(),
@@ -923,16 +1094,32 @@ mod tests {
                     }),
                     powered: None,
                     absorb: ModProtectionAbsorb::Function { call: absorb_call() },
-                    flags: ModProtectionFlags { no_armor: 1, no_power_armor: 2, no_regular_armor: 4, energy: 8, radius: 16 },
+                    flags: ModProtectionFlags {
+                        no_armor: 1,
+                        no_power_armor: 2,
+                        no_regular_armor: 4,
+                        energy: 8,
+                        radius: 16,
+                    },
                 },
                 ModQcProtection {
                     id: "powered".to_string(),
                     admission: ProtectionAdmission::Claim,
                     channel: ProtectionChannel::Powered,
                     regular: None,
-                    powered: Some(ModPoweredStorage { cells: "cells".to_string(), kind: PoweredKind::Screen, selection: None }),
+                    powered: Some(ModPoweredStorage {
+                        cells: "cells".to_string(),
+                        kind: PoweredKind::Screen,
+                        selection: None,
+                    }),
                     absorb: ModProtectionAbsorb::Function { call: absorb_call() },
-                    flags: ModProtectionFlags { no_armor: 1, no_power_armor: 2, no_regular_armor: 4, energy: 8, radius: 16 },
+                    flags: ModProtectionFlags {
+                        no_armor: 1,
+                        no_power_armor: 2,
+                        no_regular_armor: 4,
+                        energy: 8,
+                        radius: 16,
+                    },
                 },
             ],
             ..ModCallbackDeclaration::default()
@@ -941,9 +1128,12 @@ mod tests {
 
     fn program() -> FakeProgram {
         FakeProgram {
-            fields: [("armorvalue".to_string(), QcValueType::Float), ("cells".to_string(), QcValueType::Float)]
-                .into_iter()
-                .collect(),
+            fields: [
+                ("armorvalue".to_string(), QcValueType::Float),
+                ("cells".to_string(), QcValueType::Float),
+            ]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -980,7 +1170,13 @@ mod tests {
             amount: 30.0,
             knockback: 0.0,
             delivery: DamageDelivery::Radius,
-            flags: ArmorDamageFlags { no_armor: true, no_power_armor: false, no_regular_armor: false, energy: false, regular_protection_scale: None },
+            flags: ArmorDamageFlags {
+                no_armor: true,
+                no_power_armor: false,
+                no_regular_armor: false,
+                energy: false,
+                regular_protection_scale: None,
+            },
             direction: vec3(0.0, 0.0, 1.0),
             point: vec3(1.0, 2.0, 3.0),
             normal: vec3(0.0, 0.0, 1.0),
@@ -1005,10 +1201,32 @@ mod tests {
         assert!(protection.reservation(&actor, ProtectionChannel::Regular).is_ok());
         protection.machine.words.insert((2, "armorvalue".to_string()), 50.0);
         let regular = protection.read_regular(&actor).unwrap();
-        assert_eq!(regular, QcRegularArmor { points: 50.0, item: Some("q1:item_armor2".to_string()) });
-        protection.write_regular(&actor, &QcRegularArmor { points: 40.0, item: Some("q1:item_armor2".to_string()) }).unwrap();
+        assert_eq!(
+            regular,
+            QcRegularArmor {
+                points: 50.0,
+                item: Some("q1:item_armor2".to_string())
+            }
+        );
+        protection
+            .write_regular(
+                &actor,
+                &QcRegularArmor {
+                    points: 40.0,
+                    item: Some("q1:item_armor2".to_string()),
+                },
+            )
+            .unwrap();
         assert_eq!(protection.read_regular(&actor).unwrap().points, 40.0);
-        protection.write_powered(&actor, &QcPoweredArmor { kind: PoweredKind::Screen, cells: 10.0 }).unwrap();
+        protection
+            .write_powered(
+                &actor,
+                &QcPoweredArmor {
+                    kind: PoweredKind::Screen,
+                    cells: 10.0,
+                },
+            )
+            .unwrap();
         assert_eq!(protection.read_powered(&actor).unwrap().cells, 10.0);
         protection.release(&actor).unwrap();
         assert!(protection.services.reservations.is_empty());
@@ -1020,9 +1238,33 @@ mod tests {
         let actor = join(&mut protection);
         protection.reserve(&actor).unwrap();
         protection.activate(&actor).unwrap();
-        assert!(protection.write_regular(&actor, &QcRegularArmor { points: 10.0, item: Some("q1:item_armor1".to_string()) }).is_err());
-        assert!(protection.write_regular(&actor, &QcRegularArmor { points: -1.0, item: Some("q1:item_armor2".to_string()) }).is_err());
-        assert!(protection.write_powered(&actor, &QcPoweredArmor { kind: PoweredKind::Shield, cells: 5.0 }).is_err());
+        assert!(protection
+            .write_regular(
+                &actor,
+                &QcRegularArmor {
+                    points: 10.0,
+                    item: Some("q1:item_armor1".to_string())
+                }
+            )
+            .is_err());
+        assert!(protection
+            .write_regular(
+                &actor,
+                &QcRegularArmor {
+                    points: -1.0,
+                    item: Some("q1:item_armor2".to_string())
+                }
+            )
+            .is_err());
+        assert!(protection
+            .write_powered(
+                &actor,
+                &QcPoweredArmor {
+                    kind: PoweredKind::Shield,
+                    cells: 5.0
+                }
+            )
+            .is_err());
     }
 
     #[test]
@@ -1032,12 +1274,20 @@ mod tests {
         protection.reserve(&actor).unwrap();
         protection.activate(&actor).unwrap();
         protection.dispatch.saved = 12.0;
-        let saved = protection.absorb(&actor, ProtectionChannel::Regular, &absorb_input(), Box::new(Discard)).unwrap();
+        let saved = protection
+            .absorb(&actor, ProtectionChannel::Regular, &absorb_input(), Box::new(Discard))
+            .unwrap();
         assert_eq!(saved, 12.0);
         let (_, inputs, region) = protection.dispatch.calls.last().unwrap();
         assert!(region.is_none());
-        assert_eq!(inputs.get(&ModCallbackInput::DamageFlags), Some(&ModRuntimeValue::Float(17.0)));
-        assert_eq!(inputs.get(&ModCallbackInput::Amount), Some(&ModRuntimeValue::Float(30.0)));
+        assert_eq!(
+            inputs.get(&ModCallbackInput::DamageFlags),
+            Some(&ModRuntimeValue::Float(17.0))
+        );
+        assert_eq!(
+            inputs.get(&ModCallbackInput::Amount),
+            Some(&ModRuntimeValue::Float(30.0))
+        );
         protection.assert_idle().unwrap();
     }
 
@@ -1049,7 +1299,9 @@ mod tests {
         protection.activate(&actor).unwrap();
         let mut input = absorb_input();
         input.flags.regular_protection_scale = Some(0.5);
-        assert!(protection.absorb(&actor, ProtectionChannel::Regular, &input, Box::new(Discard)).is_err());
+        assert!(protection
+            .absorb(&actor, ProtectionChannel::Regular, &input, Box::new(Discard))
+            .is_err());
     }
 
     #[test]
@@ -1072,12 +1324,18 @@ mod tests {
         }
         let actor_clone = actor.clone();
         protection
-            .watch(&actor, Box::new(Shared { changes: changes.clone() }), |protection| {
-                assert!(protection.assert_idle().is_err());
-                protection.machine.set_float_for(2, "armorvalue", 20.0).unwrap();
-                protection.observe(2).unwrap();
-                Ok(())
-            })
+            .watch(
+                &actor,
+                Box::new(Shared {
+                    changes: changes.clone(),
+                }),
+                |protection| {
+                    assert!(protection.assert_idle().is_err());
+                    protection.machine.set_float_for(2, "armorvalue", 20.0).unwrap();
+                    protection.observe(2).unwrap();
+                    Ok(())
+                },
+            )
             .unwrap();
         let changes = changes.borrow();
         assert_eq!(changes.len(), 1);
@@ -1087,4 +1345,3 @@ mod tests {
         protection.close().unwrap();
     }
 }
-

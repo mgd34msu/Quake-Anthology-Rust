@@ -65,8 +65,8 @@ pub fn qualify_qvm_region_evaluation(
     access: QvmRegionAccess,
 ) -> Result<i32, GuestError> {
     let frame = qualify_qvm_region(instructions, owner, region.entry, region.join)?;
-    let frame_size = usize::try_from(frame)
-        .map_err(|_| GuestError::invalid("QVM region frame exceeds its address range"))?;
+    let frame_size =
+        usize::try_from(frame).map_err(|_| GuestError::invalid("QVM region frame exceeds its address range"))?;
     let valid = |offset: usize| offset >= 8 && offset % 4 == 0 && offset + 4 <= frame_size;
     if region.inputs.iter().any(|offset| !valid(*offset))
         || BTreeSet::from_iter(region.inputs.iter().copied()).len() != region.inputs.len()
@@ -84,8 +84,13 @@ pub fn qualify_qvm_region_evaluation(
             initialized: region.inputs.iter().copied().collect(),
         },
     );
-    while let Some(entry) = pending.iter().next().map(|(pc, _)| *pc) {
-        let path = pending.remove(&entry).ok_or_else(|| GuestError::invalid("Missing QVM region input path"))?;
+    while !pending.is_empty() {
+        // Re-fetch the smallest pending path each round: merging mutates the
+        // map, so this cannot be a plain iterator loop.
+        let entry = pending.keys().next().copied().ok_or_else(|| GuestError::invalid("Missing QVM region input path"))?;
+        let path = pending
+            .remove(&entry)
+            .ok_or_else(|| GuestError::invalid("Missing QVM region input path"))?;
         if entry == region.join {
             if let Some(result) = region.result {
                 if !path.initialized.contains(&result) {
@@ -96,7 +101,9 @@ pub fn qualify_qvm_region_evaluation(
             }
             continue;
         }
-        let instruction = instructions.get(entry).ok_or_else(|| GuestError::invalid("Missing QVM region instruction"))?;
+        let instruction = instructions
+            .get(entry)
+            .ok_or_else(|| GuestError::invalid("Missing QVM region instruction"))?;
         let mut stack = path.stack;
         let mut initialized = path.initialized;
         let opcode = instruction.opcode;
@@ -111,7 +118,9 @@ pub fn qualify_qvm_region_evaluation(
             ));
         }
         let mut pop = |stack: &mut Vec<Operand>| -> Result<Operand, GuestError> {
-            stack.pop().ok_or_else(|| GuestError::invalid("Invalid QVM region operand proof"))
+            stack
+                .pop()
+                .ok_or_else(|| GuestError::invalid("Invalid QVM region operand proof"))
         };
         let mut jump: Option<usize> = None;
         match opcode {
@@ -194,9 +203,7 @@ pub fn qualify_qvm_region_evaluation(
                     let mut delta = 0;
                     while delta < count {
                         if !initialized.contains(&(offset + delta as usize)) {
-                            return Err(GuestError::invalid(
-                                "QVM region copies an undeclared source local",
-                            ));
+                            return Err(GuestError::invalid("QVM region copies an undeclared source local"));
                         }
                         delta += 4;
                     }
@@ -276,12 +283,7 @@ pub fn qualify_qvm_region_evaluation(
     Ok(frame)
 }
 
-fn merge(
-    pending: &mut BTreeMap<usize, Path>,
-    pc: usize,
-    stack: &[Operand],
-    initialized: &BTreeSet<usize>,
-) {
+fn merge(pending: &mut BTreeMap<usize, Path>, pc: usize, stack: &[Operand], initialized: &BTreeSet<usize>) {
     if let Some(previous) = pending.remove(&pc) {
         let merged_stack = stack
             .iter()
@@ -289,7 +291,8 @@ fn merge(
             .map(|(index, value)| {
                 let before = previous.stack.get(index);
                 let same_local = matches!((value, before), (Operand::Local(a), Some(Operand::Local(b))) if a == b);
-                let same_constant = matches!((value, before), (Operand::Constant(a), Some(Operand::Constant(b))) if a == b);
+                let same_constant =
+                    matches!((value, before), (Operand::Constant(a), Some(Operand::Constant(b))) if a == b);
                 if same_local || same_constant {
                     value.clone()
                 } else if is_local(value) || before.is_some_and(is_local) {
@@ -354,7 +357,9 @@ pub fn qualify_qvm_region(
     entry: usize,
     join: usize,
 ) -> Result<i32, GuestError> {
-    let first = instructions.get(owner).ok_or_else(|| GuestError::invalid("QVM region owner is not a function"))?;
+    let first = instructions
+        .get(owner)
+        .ok_or_else(|| GuestError::invalid("QVM region owner is not a function"))?;
     if first.opcode != QvmOpcode::OpEnter {
         return Err(GuestError::invalid("QVM region owner is not a function"));
     }
@@ -386,44 +391,44 @@ pub fn qualify_qvm_region(
             joined = true;
             continue;
         }
-        let instruction = instructions.get(pc).ok_or_else(|| GuestError::invalid("QVM region has no original instruction"))?;
+        let instruction = instructions
+            .get(pc)
+            .ok_or_else(|| GuestError::invalid("QVM region has no original instruction"))?;
         let opcode = instruction.opcode;
-        let (required, change): (usize, isize) = if matches!(
-            opcode,
-            QvmOpcode::OpConst | QvmOpcode::OpLocal | QvmOpcode::OpPush
-        ) {
-            (0, 1)
-        } else if matches!(opcode, QvmOpcode::OpPop | QvmOpcode::OpArg | QvmOpcode::OpJump) {
-            (1, -1)
-        } else if matches!(
-            opcode,
-            QvmOpcode::OpStore1 | QvmOpcode::OpStore2 | QvmOpcode::OpStore4 | QvmOpcode::OpBlockCopy
-        ) {
-            (2, -2)
-        } else if opcode.is_branch() {
-            (2, -2)
-        } else if matches!(opcode as u8, 38..=52) || matches!(opcode as u8, 54..=57) {
-            // OP_ADD..OP_RSHU and OP_ADDF..OP_MULF; BCOM keeps its operand.
-            if opcode == QvmOpcode::OpBcom {
+        let (required, change): (usize, isize) =
+            if matches!(opcode, QvmOpcode::OpConst | QvmOpcode::OpLocal | QvmOpcode::OpPush) {
+                (0, 1)
+            } else if matches!(opcode, QvmOpcode::OpPop | QvmOpcode::OpArg | QvmOpcode::OpJump) {
+                (1, -1)
+            } else if matches!(
+                opcode,
+                QvmOpcode::OpStore1 | QvmOpcode::OpStore2 | QvmOpcode::OpStore4 | QvmOpcode::OpBlockCopy
+            ) {
+                (2, -2)
+            } else if opcode.is_branch() {
+                (2, -2)
+            } else if matches!(opcode as u8, 38..=52) || matches!(opcode as u8, 54..=57) {
+                // OP_ADD..OP_RSHU and OP_ADDF..OP_MULF; BCOM keeps its operand.
+                if opcode == QvmOpcode::OpBcom {
+                    (1, 0)
+                } else {
+                    (2, -1)
+                }
+            } else if opcode == QvmOpcode::OpCall
+                || matches!(opcode as u8, 27..=29)
+                || matches!(opcode as u8, 35..=37)
+                || opcode == QvmOpcode::OpNegf
+                || opcode == QvmOpcode::OpCvif
+                || opcode == QvmOpcode::OpCvfi
+            {
                 (1, 0)
+            } else if matches!(opcode, QvmOpcode::OpIgnore | QvmOpcode::OpBreak) {
+                (0, 0)
             } else {
-                (2, -1)
-            }
-        } else if opcode == QvmOpcode::OpCall
-            || matches!(opcode as u8, 27..=29)
-            || matches!(opcode as u8, 35..=37)
-            || opcode == QvmOpcode::OpNegf
-            || opcode == QvmOpcode::OpCvif
-            || opcode == QvmOpcode::OpCvfi
-        {
-            (1, 0)
-        } else if matches!(opcode, QvmOpcode::OpIgnore | QvmOpcode::OpBreak) {
-            (0, 0)
-        } else {
-            return Err(GuestError::invalid(
-                "QVM region contains a frame or unsupported instruction",
-            ));
-        };
+                return Err(GuestError::invalid(
+                    "QVM region contains a frame or unsupported instruction",
+                ));
+            };
         if count < required {
             return Err(GuestError::invalid(
                 "QVM region requires operands from outside its boundary",
@@ -448,8 +453,8 @@ pub fn qualify_qvm_region(
             let QvmOperand::Word(destination) = target.operand else {
                 return Err(GuestError::invalid("QVM region has an indirect jump"));
             };
-            let destination = usize::try_from(destination)
-                .map_err(|_| GuestError::invalid("QVM region has an indirect jump"))?;
+            let destination =
+                usize::try_from(destination).map_err(|_| GuestError::invalid("QVM region has an indirect jump"))?;
             edge(pc, destination, result)?;
         } else {
             edge(pc, pc + 1, result)?;
@@ -496,7 +501,11 @@ mod tests {
     use super::*;
 
     fn instruction(byte_offset: usize, opcode: QvmOpcode, operand: QvmOperand) -> QvmInstruction {
-        QvmInstruction { byte_offset, opcode, operand }
+        QvmInstruction {
+            byte_offset,
+            opcode,
+            operand,
+        }
     }
 
     /// ENTER 16; CONST 1; CONST 2; ADD; POP; LEAVE 16
@@ -535,12 +544,22 @@ mod tests {
             instruction(11, QvmOpcode::OpPop, QvmOperand::None),
             instruction(12, QvmOpcode::OpLeave, QvmOperand::Word(16)),
         ];
-        let region = QvmRegionEvaluation { entry: 1, join: 4, inputs: vec![8], result: None };
+        let region = QvmRegionEvaluation {
+            entry: 1,
+            join: 4,
+            inputs: vec![8],
+            result: None,
+        };
         assert_eq!(
             qualify_qvm_region_evaluation(&program, 0, &region, QvmRegionAccess::Source).unwrap(),
             16
         );
-        let missing = QvmRegionEvaluation { entry: 1, join: 4, inputs: vec![], result: None };
+        let missing = QvmRegionEvaluation {
+            entry: 1,
+            join: 4,
+            inputs: vec![],
+            result: None,
+        };
         assert!(qualify_qvm_region_evaluation(&program, 0, &missing, QvmRegionAccess::Source).is_err());
     }
 
@@ -553,7 +572,12 @@ mod tests {
             instruction(10, QvmOpcode::OpCall, QvmOperand::None),
             instruction(11, QvmOpcode::OpLeave, QvmOperand::Word(16)),
         ];
-        let region = QvmRegionEvaluation { entry: 1, join: 3, inputs: vec![], result: None };
+        let region = QvmRegionEvaluation {
+            entry: 1,
+            join: 3,
+            inputs: vec![],
+            result: None,
+        };
         assert!(qualify_qvm_region_evaluation(&program, 0, &region, QvmRegionAccess::ReadOnly).is_err());
         assert!(qualify_qvm_region_evaluation(&program, 0, &region, QvmRegionAccess::Source).is_ok());
     }

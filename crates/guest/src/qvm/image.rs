@@ -491,15 +491,19 @@ fn decode_instruction(
     if *cursor >= code_end {
         return Err(bad(source, *cursor, "QVM instruction exceeds code section"));
     }
-    let opcode = QvmOpcode::from_u8(bytes[*cursor]).map_err(|_| {
-        bad(source, *cursor, &format!("unknown QVM opcode {}", bytes[*cursor]))
-    })?;
+    let opcode = QvmOpcode::from_u8(bytes[*cursor])
+        .map_err(|_| bad(source, *cursor, &format!("unknown QVM opcode {}", bytes[*cursor])))?;
     *cursor += 1;
     if opcode.is_branch() {
         if *cursor > code_end || 4 > code_end - *cursor {
             return Err(bad(source, *cursor, "QVM word operand exceeds code section"));
         }
-        let operand = i32::from_le_bytes([bytes[*cursor], bytes[*cursor + 1], bytes[*cursor + 2], bytes[*cursor + 3]]);
+        let operand = i32::from_le_bytes([
+            bytes[*cursor],
+            bytes[*cursor + 1],
+            bytes[*cursor + 2],
+            bytes[*cursor + 3],
+        ]);
         // Source preparation rewrites these indices to byte offsets. Keep indices
         // here; CALL/JUMP get their dynamic indices from the operand stack instead.
         if operand < 0 || operand as usize >= instruction_count {

@@ -15,10 +15,7 @@ use super::memory::QvmWritableView;
 use super::syscalls::QvmSyscallRole;
 
 /// Handle scalar traps 103-111. Returns `None` when another service owns `trap`.
-pub fn qvm_math_syscall(
-    role: QvmSyscallRole,
-    words: &QvmWritableView,
-) -> Result<Option<i32>, GuestError> {
+pub fn qvm_math_syscall(role: QvmSyscallRole, words: &QvmWritableView) -> Result<Option<i32>, GuestError> {
     let trap = words.get_i32(0)?;
     // Transcendentals evaluate in binary64, then round once to binary32,
     // matching the donor's Math.* + fround composition.

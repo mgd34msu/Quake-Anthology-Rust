@@ -46,14 +46,10 @@ use std::rc::Rc;
 use crate::error::GuestError;
 
 use super::allocation::{QvmAllocation, QvmAllocationProfile};
-use super::image::{
-    QvmDataImage, QvmImage, QvmInstruction, QvmOpcode, QvmOperand, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
-};
+use super::image::{QvmDataImage, QvmImage, QvmInstruction, QvmOpcode, QvmOperand, QVM_MAX_PRIVATE_ARGUMENT_WORDS};
 use super::memory::{QvmMemory, QvmSpan, QvmWritableView};
 use super::operations::{evaluate_binary, evaluate_branch, evaluate_unary};
-use super::regions::{
-    qualify_qvm_region, qualify_qvm_region_evaluation, QvmRegionAccess, QvmRegionEvaluation,
-};
+use super::regions::{qualify_qvm_region, qualify_qvm_region_evaluation, QvmRegionAccess, QvmRegionEvaluation};
 use super::registry::{QvmExecutionProfile, VmRegistration};
 use super::symbols::{QvmSymbolLoadOptions, QvmSymbols};
 
@@ -135,19 +131,16 @@ where
 }
 
 /// Function replacement or wrapper hook.
-pub type QvmFunctionHook =
-    Rc<dyn for<'a, 'c, 'o> Fn(&mut QvmFunctionCall<'a, 'c, 'o>) -> Result<i32, GuestError>>;
+pub type QvmFunctionHook = Rc<dyn for<'a, 'c, 'o> Fn(&mut QvmFunctionCall<'a, 'c, 'o>) -> Result<i32, GuestError>>;
 
 /// Function entry observer.
-pub type QvmFunctionObserver =
-    Rc<dyn for<'a, 'c> Fn(&mut QvmFunctionObservation<'a, 'c>) -> Result<(), GuestError>>;
+pub type QvmFunctionObserver = Rc<dyn for<'a, 'c> Fn(&mut QvmFunctionObservation<'a, 'c>) -> Result<(), GuestError>>;
 
 /// Resolver for live guest callback pointers.
 pub type QvmFunctionResolver = Rc<dyn Fn(usize, i32, &[i32]) -> Option<QvmFunctionHook>>;
 
 /// Conditional-branch decision override.
-pub type QvmBranchDecide =
-    Rc<dyn Fn(bool, &mut dyn FnMut(&QvmCancellationScope) -> GuestError) -> bool>;
+pub type QvmBranchDecide = Rc<dyn Fn(bool, &mut dyn FnMut(&QvmCancellationScope) -> GuestError) -> bool>;
 
 /// Region execution decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,13 +152,10 @@ pub enum QvmRegionDecision {
 }
 
 /// Region entry handler.
-pub type QvmRegionRun = Rc<
-    dyn for<'a, 'c> Fn(&mut QvmRegionControl<'a, 'c>) -> Result<QvmRegionDecision, GuestError>,
->;
+pub type QvmRegionRun = Rc<dyn for<'a, 'c> Fn(&mut QvmRegionControl<'a, 'c>) -> Result<QvmRegionDecision, GuestError>>;
 
 /// Region completion handler.
-pub type QvmRegionCompleted =
-    Rc<dyn for<'a, 'c> Fn(&mut QvmRegionControl<'a, 'c>) -> Result<(), GuestError>>;
+pub type QvmRegionCompleted = Rc<dyn for<'a, 'c> Fn(&mut QvmRegionControl<'a, 'c>) -> Result<(), GuestError>>;
 
 /// Original conditional decision binding for one invocation.
 pub struct QvmBranchBinding {
@@ -399,17 +389,21 @@ impl<'a, 'c> HostControl<'a, 'c> {
     }
 
     fn cancel_inner(&mut self, scope: &QvmCancellationScope) -> Result<GuestError, GuestError> {
-        let target = *self.ctx.core.scopes.get(&scope.id).ok_or_else(|| {
-            GuestError::invalid("QVM cancellation scope belongs to another interpreter")
-        })?;
+        let target = *self
+            .ctx
+            .core
+            .scopes
+            .get(&scope.id)
+            .ok_or_else(|| GuestError::invalid("QVM cancellation scope belongs to another interpreter"))?;
         let position = find_call(&self.ctx.core.calls, target)
             .ok_or_else(|| GuestError::invalid("QVM cancellation scope has expired"))?;
         if !self.ctx.core.calls[position].active {
             return Err(GuestError::invalid("QVM cancellation scope has expired"));
         }
-        let cancellation = self.ctx.core.calls[position].cancellation.as_ref().ok_or_else(|| {
-            GuestError::invalid("QVM cancellation scope has already been used")
-        })?;
+        let cancellation = self.ctx.core.calls[position]
+            .cancellation
+            .as_ref()
+            .ok_or_else(|| GuestError::invalid("QVM cancellation scope has already been used"))?;
         if cancellation.requested {
             return Err(GuestError::invalid("QVM cancellation scope has already been used"));
         }
@@ -420,9 +414,8 @@ impl<'a, 'c> HostControl<'a, 'c> {
                     "QVM cancellation scope is not an ancestor of this call",
                 ));
             };
-            let position = find_call(&self.ctx.core.calls, id).ok_or_else(|| {
-                GuestError::invalid("QVM cancellation scope is not an ancestor of this call")
-            })?;
+            let position = find_call(&self.ctx.core.calls, id)
+                .ok_or_else(|| GuestError::invalid("QVM cancellation scope is not an ancestor of this call"))?;
             current = self.ctx.core.calls[position].parent;
         }
         self.check_cancellation()?;
@@ -588,7 +581,8 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
             None => {
                 let mut end = entry + 1;
                 while end < self.control.ctx.program.instruction_pointers.len()
-                    && code_word(self.control.ctx.program, target_pc(self.control.ctx.program, end)?)? != QvmOpcode::OpEnter as i32
+                    && code_word(self.control.ctx.program, target_pc(self.control.ctx.program, end)?)?
+                        != QvmOpcode::OpEnter as i32
                 {
                     end += 1;
                 }
@@ -603,10 +597,7 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
             }
             let pc = target_pc(self.control.ctx.program, binding.instruction_index)?;
             let opcode = code_word(self.control.ctx.program, pc)?;
-            if opcode < QvmOpcode::OpEq as i32
-                || opcode > QvmOpcode::OpGef as i32
-                || branches.contains_key(&pc)
-            {
+            if opcode < QvmOpcode::OpEq as i32 || opcode > QvmOpcode::OpGef as i32 || branches.contains_key(&pc) {
                 return Err(GuestError::invalid(
                     "QVM branch requires a distinct original conditional instruction",
                 ));
@@ -675,11 +666,7 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
     }
 
     /// Run a qualified standalone region in this function's frame.
-    pub fn evaluate_region(
-        &mut self,
-        region: &QvmRegionEvaluation,
-        inputs: &[i32],
-    ) -> Result<i32, GuestError> {
+    pub fn evaluate_region(&mut self, region: &QvmRegionEvaluation, inputs: &[i32]) -> Result<i32, GuestError> {
         self.begin()?;
         let key = RegionEvalKey {
             instruction: self.instruction_index,
@@ -702,7 +689,9 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
             }
         };
         if inputs.len() != region.inputs.len() {
-            return Err(GuestError::invalid("QVM region live-ins differ from its qualified frame"));
+            return Err(GuestError::invalid(
+                "QVM region live-ins differ from its qualified frame",
+            ));
         }
         let position = find_call(&self.control.ctx.core.calls, self.call_id)
             .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
@@ -729,10 +718,7 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
     }
 
     /// Deliver a synchronous host effect under this live source invocation.
-    pub fn effect(
-        &mut self,
-        perform: &mut dyn FnMut() -> Result<(), GuestError>,
-    ) -> Result<(), GuestError> {
+    pub fn effect(&mut self, perform: &mut dyn FnMut() -> Result<(), GuestError>) -> Result<(), GuestError> {
         self.control.ctx.core.live()?;
         check_chain(&self.control.ctx.core.calls, Some(self.call_id))?;
         perform()
@@ -860,7 +846,9 @@ pub struct OperandStack {
 
 impl std::fmt::Debug for OperandStack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OperandStack").field("depth", &self.depth).finish_non_exhaustive()
+        f.debug_struct("OperandStack")
+            .field("depth", &self.depth)
+            .finish_non_exhaustive()
     }
 }
 
@@ -970,18 +958,25 @@ impl OperandStack {
 }
 
 fn target_pc(program: &QvmProgram, index: usize) -> Result<i32, GuestError> {
-    program.instruction_pointers.get(index).copied().ok_or_else(|| {
-        GuestError::invalid(format!("{}: invalid QVM instruction index {index}", program.source))
-    })
+    program
+        .instruction_pointers
+        .get(index)
+        .copied()
+        .ok_or_else(|| GuestError::invalid(format!("{}: invalid QVM instruction index {index}", program.source)))
 }
 
 fn code_word(program: &QvmProgram, pc: i32) -> Result<i32, GuestError> {
     if pc < 0 {
-        return Err(GuestError::invalid(format!("{}: invalid QVM byte PC {pc}", program.source)));
+        return Err(GuestError::invalid(format!(
+            "{}: invalid QVM byte PC {pc}",
+            program.source
+        )));
     }
-    program.code.get(pc as usize).copied().ok_or_else(|| {
-        GuestError::invalid(format!("{}: invalid QVM byte PC {pc}", program.source))
-    })
+    program
+        .code
+        .get(pc as usize)
+        .copied()
+        .ok_or_else(|| GuestError::invalid(format!("{}: invalid QVM byte PC {pc}", program.source)))
 }
 
 fn source_instruction(program: &QvmProgram, pc: i32) -> Result<usize, GuestError> {
@@ -999,7 +994,10 @@ fn source_instruction(program: &QvmProgram, pc: i32) -> Result<usize, GuestError
             high = middle as i64 - 1;
         }
     }
-    Err(GuestError::invalid(format!("{}: caller PC is not an original instruction", program.source)))
+    Err(GuestError::invalid(format!(
+        "{}: caller PC is not an original instruction",
+        program.source
+    )))
 }
 
 fn source_argument_bytes(ctx: &mut InterpCtx<'_>, caller_instruction: usize) -> Result<usize, GuestError> {
@@ -1075,7 +1073,13 @@ fn counter_narrow_read(core: &QvmCore, address: usize, length: usize) -> Result<
     Ok(())
 }
 
-fn counter_narrow_write(core: &mut QvmCore, sp: usize, address: usize, length: usize, value: i32) -> Result<bool, GuestError> {
+fn counter_narrow_write(
+    core: &mut QvmCore,
+    sp: usize,
+    address: usize,
+    length: usize,
+    value: i32,
+) -> Result<bool, GuestError> {
     let Some(counter) = core.counter.as_mut() else {
         return Ok(false);
     };
@@ -1160,8 +1164,7 @@ impl QvmInterpreter {
         let mut allocations: Vec<QvmAllocation> = Vec::new();
         let accounted = !matches!(profile, QvmAllocationProfile::Unaccounted);
         let mut memory_bytes = if accounted {
-            let mut allocation =
-                profile.allocate("VM_Create:dataBase", &image.source, image.allocated_data_length)?;
+            let mut allocation = profile.allocate("VM_Create:dataBase", &image.source, image.allocated_data_length)?;
             let bytes = allocation.take_bytes()?;
             allocations.push(allocation);
             bytes
@@ -1172,7 +1175,10 @@ impl QvmInterpreter {
             return Err(GuestError::invalid("QVM arena issued a short data allocation"));
         }
         if image.initialized_data.len() > image.allocated_data_length {
-            return Err(GuestError::bad_image("qvm", "QVM initialized data exceeds its allocation"));
+            return Err(GuestError::bad_image(
+                "qvm",
+                "QVM initialized data exceeds its allocation",
+            ));
         }
         if accounted {
             allocations.push(profile.allocate(
@@ -1180,11 +1186,7 @@ impl QvmInterpreter {
                 &image.source,
                 image.instructions.len() * 4,
             )?);
-            allocations.push(profile.allocate(
-                "VM_PrepareInterpreter",
-                &image.source,
-                image.code_length * 4,
-            )?);
+            allocations.push(profile.allocate("VM_PrepareInterpreter", &image.source, image.code_length * 4)?);
         }
         memory_bytes[..image.initialized_data.len()].copy_from_slice(&image.initialized_data);
         if let Some(registration) = registration.as_ref() {
@@ -1209,9 +1211,7 @@ impl QvmInterpreter {
         let mut code = vec![0i32; image.code_length];
         for instruction in &image.instructions {
             let width = instruction.opcode.operand_width();
-            if instruction.byte_offset > image.code_length
-                || width + 1 > image.code_length - instruction.byte_offset
-            {
+            if instruction.byte_offset > image.code_length || width + 1 > image.code_length - instruction.byte_offset {
                 return Err(GuestError::bad_image("qvm", "QVM instruction exceeds code section"));
             }
             code[instruction.byte_offset] = instruction.opcode as i32;
@@ -1223,10 +1223,7 @@ impl QvmInterpreter {
                 QvmOperand::Word(word) => {
                     code[instruction.byte_offset + 1] = if instruction.opcode.is_branch() {
                         *instruction_pointers.get(word as usize).ok_or_else(|| {
-                            GuestError::bad_image(
-                                "qvm",
-                                format!("QVM branch target {word} outside instruction table"),
-                            )
+                            GuestError::bad_image("qvm", format!("QVM branch target {word} outside instruction table"))
                         })?
                     } else {
                         word
@@ -1448,9 +1445,8 @@ impl QvmInterpreter {
         scope: HookScope,
     ) -> Result<QvmHookToken, GuestError> {
         self.core.live()?;
-        let pc = target_pc(&self.program, instruction_index).map_err(|_| {
-            GuestError::invalid("QVM hook requires a function entry instruction")
-        })?;
+        let pc = target_pc(&self.program, instruction_index)
+            .map_err(|_| GuestError::invalid("QVM hook requires a function entry instruction"))?;
         if code_word(&self.program, pc)? != QvmOpcode::OpEnter as i32 {
             return Err(GuestError::invalid("QVM hook requires a function entry instruction"));
         }
@@ -1459,13 +1455,28 @@ impl QvmInterpreter {
         }
         let generation = self.core.next_hook_generation;
         self.core.next_hook_generation += 1;
-        self.core.hooks.insert(instruction_index, FunctionBinding { hook, scope, generation });
-        Ok(QvmHookToken { entry: instruction_index, generation })
+        self.core.hooks.insert(
+            instruction_index,
+            FunctionBinding {
+                hook,
+                scope,
+                generation,
+            },
+        );
+        Ok(QvmHookToken {
+            entry: instruction_index,
+            generation,
+        })
     }
 
     /// Remove a hook installed by `bind_function`/`bind_invocation`.
     pub fn unbind_function(&mut self, token: QvmHookToken) {
-        if self.core.hooks.get(&token.entry).is_some_and(|binding| binding.generation == token.generation) {
+        if self
+            .core
+            .hooks
+            .get(&token.entry)
+            .is_some_and(|binding| binding.generation == token.generation)
+        {
             self.core.hooks.remove(&token.entry);
         }
     }
@@ -1493,11 +1504,12 @@ impl QvmInterpreter {
         observe: QvmFunctionObserver,
     ) -> Result<QvmObserverToken, GuestError> {
         self.core.live()?;
-        let pc = target_pc(&self.program, instruction_index).map_err(|_| {
-            GuestError::invalid("QVM observer requires a function entry instruction")
-        })?;
+        let pc = target_pc(&self.program, instruction_index)
+            .map_err(|_| GuestError::invalid("QVM observer requires a function entry instruction"))?;
         if code_word(&self.program, pc)? != QvmOpcode::OpEnter as i32 {
-            return Err(GuestError::invalid("QVM observer requires a function entry instruction"));
+            return Err(GuestError::invalid(
+                "QVM observer requires a function entry instruction",
+            ));
         }
         let id = self.core.next_observer_id;
         self.core.next_observer_id += 1;
@@ -1505,8 +1517,15 @@ impl QvmInterpreter {
             .observers
             .entry(instruction_index)
             .or_default()
-            .push(ObserverEntry { id, observe, active: true });
-        Ok(QvmObserverToken { entry: instruction_index, id })
+            .push(ObserverEntry {
+                id,
+                observe,
+                active: true,
+            });
+        Ok(QvmObserverToken {
+            entry: instruction_index,
+            id,
+        })
     }
 
     /// Remove an observer installed by `observe_function`.
@@ -1596,7 +1615,17 @@ impl QvmInterpreter {
             program: &self.program,
         };
         let mut ops = OperandStack::new(debug);
-        run_loop(&mut ctx, host, &mut ops, args, entry, None, None, qualified, Some(profile))
+        run_loop(
+            &mut ctx,
+            host,
+            &mut ops,
+            args,
+            entry,
+            None,
+            None,
+            qualified,
+            Some(profile),
+        )
     }
 
     fn qualify_read_only(
@@ -1639,6 +1668,7 @@ impl QvmInterpreter {
 
     /// Run an original counter leaf with one virtual word; no source stores or
     /// host callbacks escape. Returns the isolated word after the nested call.
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_counter(
         &mut self,
         host: &dyn QvmSystemCallHandler,
@@ -1657,7 +1687,7 @@ impl QvmInterpreter {
             ));
         }
         let key = functions.to_vec();
-        if !self.core.counter_functions.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.core.counter_functions.entry(key.clone()) {
             let mut admitted = Vec::new();
             for function in functions {
                 if admitted.contains(function) {
@@ -1674,7 +1704,11 @@ impl QvmInterpreter {
             }
             let mut ranges = Vec::new();
             for function in &admitted {
-                if self.program.instructions.get(*function).map(|instruction| instruction.opcode)
+                if self
+                    .program
+                    .instructions
+                    .get(*function)
+                    .map(|instruction| instruction.opcode)
                     != Some(QvmOpcode::OpEnter)
                 {
                     return Err(GuestError::invalid(
@@ -1695,7 +1729,7 @@ impl QvmInterpreter {
                 };
                 ranges.push((start, finish));
             }
-            self.core.counter_functions.insert(key.clone(), CounterQualification {
+            entry.insert(CounterQualification {
                 functions: admitted,
                 ranges,
             });
@@ -1704,9 +1738,11 @@ impl QvmInterpreter {
         if address + 4 > stack_start {
             return Err(GuestError::invalid("QVM counter word overlaps its evaluation stack"));
         }
-        let qualification = self.core.counter_functions.get(&key).ok_or_else(|| {
-            GuestError::invalid("QVM counter evaluation lost its qualification")
-        })?;
+        let qualification = self
+            .core
+            .counter_functions
+            .get(&key)
+            .ok_or_else(|| GuestError::invalid("QVM counter evaluation lost its qualification"))?;
         self.core.counter = Some(CounterState {
             address,
             value: initial,
@@ -1777,11 +1813,13 @@ fn run_loop(
             }
         } else {
             if args.len() > QVM_MAX_PRIVATE_ARGUMENT_WORDS {
-                return Err(GuestError::invalid(
-                    "QVM private call exceeds OP_ARG argument capacity",
-                ));
+                return Err(GuestError::invalid("QVM private call exceeds OP_ARG argument capacity"));
             }
-            if ctx.program.instructions.get(entry).map(|instruction| instruction.opcode)
+            if ctx
+                .program
+                .instructions
+                .get(entry)
+                .map(|instruction| instruction.opcode)
                 != Some(QvmOpcode::OpEnter)
             {
                 return Err(GuestError::invalid(
@@ -1843,11 +1881,14 @@ fn run_loop(
     } else if let Some(call_id) = source_call {
         let position = find_call(&ctx.core.calls, call_id)
             .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
-        ctx.core.calls[position].evaluation.as_ref().map(|evaluation| DriveEvaluation {
-            region: evaluation.region.clone(),
-            inputs: evaluation.inputs.clone(),
-            frame_size: evaluation.frame_size,
-        })
+        ctx.core.calls[position]
+            .evaluation
+            .as_ref()
+            .map(|evaluation| DriveEvaluation {
+                region: evaluation.region.clone(),
+                inputs: evaluation.inputs.clone(),
+                frame_size: evaluation.frame_size,
+            })
     } else {
         None
     };
@@ -1881,7 +1922,18 @@ fn run_loop(
             .map(|binding| Rc::clone(&binding.hook));
         if let Some(hook) = hook {
             ctx.core.program_stack = sp.saturating_sub(4);
-            let result = intercept(ctx, host, ops, sp, -1, entry, Some(hook), Vec::new(), Some(argument_words * 4), parent_scope);
+            let result = intercept(
+                ctx,
+                host,
+                ops,
+                sp,
+                -1,
+                entry,
+                Some(hook),
+                Vec::new(),
+                Some(argument_words * 4),
+                parent_scope,
+            );
             ctx.core.program_stack = entry_stack;
             return result;
         }
@@ -1926,9 +1978,7 @@ fn drive_loop(drive: &mut Drive<'_, '_, '_>) -> Result<i32, GuestError> {
         if let Some(counter) = drive.ctx.core.counter.as_mut() {
             counter.remaining -= 1;
             let pc = drive.pc;
-            if counter.remaining < 0
-                || !counter.ranges.iter().any(|(start, end)| pc >= *start && pc < *end)
-            {
+            if counter.remaining < 0 || !counter.ranges.iter().any(|(start, end)| pc >= *start && pc < *end) {
                 return Err(GuestError::invalid(
                     "QVM counter evaluation escaped its admitted original functions or instruction budget",
                 ));
@@ -1938,8 +1988,7 @@ fn drive_loop(drive: &mut Drive<'_, '_, '_>) -> Result<i32, GuestError> {
         let owner = if in_counter { None } else { drive.scope };
         if let Some(evaluation) = drive.evaluation.as_ref() {
             let join_pc = target_pc(drive.ctx.program, evaluation.region.join)?;
-            if drive.sp == drive.eval_stack.wrapping_sub(evaluation.frame_size) && drive.pc == join_pc
-            {
+            if drive.sp == drive.eval_stack.wrapping_sub(evaluation.frame_size) && drive.pc == join_pc {
                 if drive.ops.count() != drive.source_operand_depth {
                     return Err(GuestError::invalid("QVM region evaluation lost its caller operands"));
                 }
@@ -2001,7 +2050,9 @@ fn drive_loop(drive: &mut Drive<'_, '_, '_>) -> Result<i32, GuestError> {
             }
             QvmOpcode::OpBreak => {
                 if in_counter {
-                    return Err(GuestError::invalid("QVM counter evaluation cannot trigger a debug break"));
+                    return Err(GuestError::invalid(
+                        "QVM counter evaluation cannot trigger a debug break",
+                    ));
                 }
                 drive.ctx.core.breaks = drive.ctx.core.breaks.wrapping_add(1);
             }
@@ -2198,24 +2249,34 @@ fn op_enter(drive: &mut Drive<'_, '_, '_>) -> Result<(), GuestError> {
             return Err(GuestError::invalid("QVM evaluation stack would overlap source data"));
         }
     }
-    drive.sp = check_stack(drive.ctx.program.source.as_str(), drive.sp as i64 - i64::from(size), drive.debug)?;
+    drive.sp = check_stack(
+        drive.ctx.program.source.as_str(),
+        drive.sp as i64 - i64::from(size),
+        drive.debug,
+    )?;
     drive.pc += 4;
     if drive.evaluation.is_some() && !drive.evaluation_started {
         let entry_pc = target_pc(drive.ctx.program, drive.entry)?;
         if drive.pc - 5 == entry_pc {
             drive.evaluation_started = true;
             let (offsets, inputs, entry) = {
-                let evaluation = drive.evaluation.as_ref().ok_or_else(|| {
-                    GuestError::invalid("Missing QVM region live-in")
-                })?;
-                (evaluation.region.inputs.clone(), evaluation.inputs.clone(), evaluation.region.entry)
+                let evaluation = drive
+                    .evaluation
+                    .as_ref()
+                    .ok_or_else(|| GuestError::invalid("Missing QVM region live-in"))?;
+                (
+                    evaluation.region.inputs.clone(),
+                    evaluation.inputs.clone(),
+                    evaluation.region.entry,
+                )
             };
             for (index, offset) in offsets.iter().enumerate() {
-                let value = inputs.get(index).copied().ok_or_else(|| {
-                    GuestError::invalid("Missing QVM region live-in")
-                })?;
+                let value = inputs
+                    .get(index)
+                    .copied()
+                    .ok_or_else(|| GuestError::invalid("Missing QVM region live-in"))?;
                 let sp = drive.sp;
-                write_word(drive.ctx.core, sp, sp + offset, value)?;
+                write_word(drive.ctx.core, sp, sp + *offset, value)?;
             }
             drive.pc = target_pc(drive.ctx.program, entry)?;
         }
@@ -2240,14 +2301,18 @@ fn op_enter(drive: &mut Drive<'_, '_, '_>) -> Result<(), GuestError> {
 
 fn op_leave(drive: &mut Drive<'_, '_, '_>) -> Result<Option<i32>, GuestError> {
     let size = code_word(drive.ctx.program, drive.pc)?;
-    drive.sp = check_stack(drive.ctx.program.source.as_str(), drive.sp as i64 + i64::from(size), drive.debug)?;
+    drive.sp = check_stack(
+        drive.ctx.program.source.as_str(),
+        drive.sp as i64 + i64::from(size),
+        drive.debug,
+    )?;
     let sp = drive.sp;
     let target = match drive.returns.as_mut() {
         None => read_word(drive.ctx.core, sp)?,
         Some(returns) => {
-            let (saved_sp, target) = returns.pop().ok_or_else(|| {
-                GuestError::invalid("QVM function returned with an invalid program stack")
-            })?;
+            let (saved_sp, target) = returns
+                .pop()
+                .ok_or_else(|| GuestError::invalid("QVM function returned with an invalid program stack"))?;
             if saved_sp != sp {
                 return Err(GuestError::invalid(
                     "QVM function returned with an invalid program stack",
@@ -2357,7 +2422,9 @@ fn op_call(drive: &mut Drive<'_, '_, '_>, in_counter: bool) -> Result<(), GuestE
         return Ok(());
     }
     if in_counter {
-        return Err(GuestError::invalid("QVM counter evaluation cannot call an engine service"));
+        return Err(GuestError::invalid(
+            "QVM counter evaluation cannot call an engine service",
+        ));
     }
     if drive.trace != 0 {
         let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
@@ -2367,7 +2434,11 @@ fn op_call(drive: &mut Drive<'_, '_, '_>, in_counter: bool) -> Result<(), GuestE
     }
     let saved_call_level = drive.ctx.core.call_level;
     drive.ctx.core.program_stack = sp.saturating_sub(4);
-    let saved_frame = if drive.debug { Some(read_word(drive.ctx.core, sp + 4)?) } else { None };
+    let saved_frame = if drive.debug {
+        Some(read_word(drive.ctx.core, sp + 4)?)
+    } else {
+        None
+    };
     write_word(drive.ctx.core, sp, sp + 4, -1 - target)?;
     let value = trap(drive, sp, drive.scope)?;
     if let Some(frame) = saved_frame {
@@ -2425,10 +2496,11 @@ fn resolve_call_target(
             }
             let resolved = resolver(index, first, &arg_words);
             if resolved.is_some()
-                && code_word(drive.ctx.program, target_pc(drive.ctx.program, index)?)?
-                    != QvmOpcode::OpEnter as i32
+                && code_word(drive.ctx.program, target_pc(drive.ctx.program, index)?)? != QvmOpcode::OpEnter as i32
             {
-                return Err(GuestError::invalid("QVM resolver requires a function entry instruction"));
+                return Err(GuestError::invalid(
+                    "QVM resolver requires a function entry instruction",
+                ));
             }
             resolved
         }
@@ -2479,11 +2551,7 @@ fn op_block_copy(drive: &mut Drive<'_, '_, '_>, in_counter: bool) -> Result<(), 
     Ok(())
 }
 
-fn op_branch(
-    drive: &mut Drive<'_, '_, '_>,
-    opcode: QvmOpcode,
-    owner: Option<u64>,
-) -> Result<(), GuestError> {
+fn op_branch(drive: &mut Drive<'_, '_, '_>, opcode: QvmOpcode, owner: Option<u64>) -> Result<(), GuestError> {
     let right = drive.ops.pop()?;
     let left = drive.ops.pop()?;
     let target = code_word(drive.ctx.program, drive.pc)?;
@@ -2506,8 +2574,8 @@ fn op_branch(
         return Ok(());
     };
     let owner_id = owner.ok_or_else(|| GuestError::invalid("QVM branch invocation has expired"))?;
-    let position =
-        find_call(&drive.ctx.core.calls, owner_id).ok_or_else(|| GuestError::invalid("QVM branch invocation has expired"))?;
+    let position = find_call(&drive.ctx.core.calls, owner_id)
+        .ok_or_else(|| GuestError::invalid("QVM branch invocation has expired"))?;
     if !drive.ctx.core.calls[position].active {
         return Err(GuestError::invalid("QVM branch invocation has expired"));
     }
@@ -2526,8 +2594,8 @@ fn op_branch(
     drive.ctx.core.program_stack = previous_stack;
     check_chain(&drive.ctx.core.calls, drive.scope)?;
     drive.ctx.core.live()?;
-    let position =
-        find_call(&drive.ctx.core.calls, owner_id).ok_or_else(|| GuestError::invalid("QVM branch invocation is no longer current"))?;
+    let position = find_call(&drive.ctx.core.calls, owner_id)
+        .ok_or_else(|| GuestError::invalid("QVM branch invocation is no longer current"))?;
     if !drive.ctx.core.calls[position].active {
         return Err(GuestError::invalid("QVM branch invocation is no longer current"));
     }
@@ -2583,8 +2651,8 @@ fn region_callback(
     index: usize,
     complete: bool,
 ) -> Result<bool, GuestError> {
-    let position =
-        find_call(&drive.ctx.core.calls, owner_id).ok_or_else(|| GuestError::invalid("QVM region invocation has expired"))?;
+    let position = find_call(&drive.ctx.core.calls, owner_id)
+        .ok_or_else(|| GuestError::invalid("QVM region invocation has expired"))?;
     let (run, completed, region_stack, frame_size, operand_depth) = {
         let call = &drive.ctx.core.calls[position];
         if !call.active {
@@ -2600,7 +2668,9 @@ fn region_callback(
         )
     };
     if drive.sp != region_stack || drive.ops.count() != operand_depth {
-        return Err(GuestError::invalid("QVM region lost its original frame or operand boundary"));
+        return Err(GuestError::invalid(
+            "QVM region lost its original frame or operand boundary",
+        ));
     }
     let previous_stack = drive.ctx.core.program_stack;
     drive.ctx.core.program_stack = region_stack.saturating_sub(4);
@@ -2674,9 +2744,12 @@ fn intercept(
     let bytes = match argument_bytes {
         Some(bytes) => bytes,
         None => {
-            let caller = caller_instruction
-                .ok_or_else(|| GuestError::invalid("QVM host call lost its argument frame"))?;
-            let mut nested = InterpCtx { core: &mut *ctx.core, program: ctx.program };
+            let caller =
+                caller_instruction.ok_or_else(|| GuestError::invalid("QVM host call lost its argument frame"))?;
+            let mut nested = InterpCtx {
+                core: &mut *ctx.core,
+                program: ctx.program,
+            };
             source_argument_bytes(&mut nested, caller)?
         }
     };
@@ -2774,16 +2847,16 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    fn assemble(
-        program: Vec<(QvmOpcode, QvmOperand)>,
-        data_length: usize,
-        init: &[u8],
-    ) -> QvmImage {
+    fn assemble(program: Vec<(QvmOpcode, QvmOperand)>, data_length: usize, init: &[u8]) -> QvmImage {
         let mut offset = 0usize;
         let instructions = program
             .into_iter()
             .map(|(opcode, operand)| {
-                let instruction = QvmInstruction { byte_offset: offset, opcode, operand };
+                let instruction = QvmInstruction {
+                    byte_offset: offset,
+                    opcode,
+                    operand,
+                };
                 offset += 1 + opcode.operand_width();
                 instruction
             })
@@ -2805,12 +2878,9 @@ mod tests {
         }
     }
 
-    fn runner(
-        program: Vec<(QvmOpcode, QvmOperand)>,
-        semantics: QvmSemantics,
-    ) -> QvmInterpreter {
+    fn runner(program: Vec<(QvmOpcode, QvmOperand)>, semantics: QvmSemantics) -> QvmInterpreter {
         let image = assemble(program, 256, &[]);
-        QvmInterpreter::new(image, QvmAllocationProfile::Unaccounted, None, semantics).unwrap()
+        QvmInterpreter::new(&image, QvmAllocationProfile::Unaccounted, None, semantics).unwrap()
     }
 
     fn word(value: i32) -> QvmOperand {
@@ -2842,7 +2912,9 @@ mod tests {
             ],
             QvmSemantics::Interpreted,
         );
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 42);
         assert_eq!(vm.stack_pointer(), 256);
         assert!(!vm.is_active());
@@ -2880,7 +2952,9 @@ mod tests {
             (O::OpLeave, word(8)),
         ];
         let mut vm = runner(program, QvmSemantics::Interpreted);
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 2);
     }
 
@@ -2899,7 +2973,9 @@ mod tests {
             ],
             QvmSemantics::Interpreted,
         );
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 0x1234_5678);
     }
 
@@ -2918,7 +2994,9 @@ mod tests {
             ],
             QvmSemantics::Compiled,
         );
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 7);
     }
 
@@ -2936,16 +3014,21 @@ mod tests {
                 (O::OpLeave, word(8)),
             ]
         };
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         let mut vm = runner(program(), QvmSemantics::Interpreted);
         let token = vm.bind_function(4, Rc::new(|_call| Ok(99))).unwrap();
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 99);
         vm.unbind_function(token);
         let mut vm = runner(program(), QvmSemantics::Interpreted);
-        vm.bind_function(4, Rc::new(|call| {
-            let inner = call.proceed()?;
-            Ok(inner * 2)
-        }))
+        vm.bind_function(
+            4,
+            Rc::new(|call| {
+                let inner = call.proceed()?;
+                Ok(inner * 2)
+            }),
+        )
         .unwrap();
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 14);
     }
@@ -2978,7 +3061,9 @@ mod tests {
                 }),
             )
             .unwrap();
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 0);
         assert_eq!(*got.borrow(), 5);
         vm.unobserve_function(token);
@@ -3000,12 +3085,17 @@ mod tests {
             ],
             QvmSemantics::Interpreted,
         );
-        vm.bind_function(4, Rc::new(|call| {
-            let scope = call.cancellation_scope()?;
-            Err(call.cancel_function(&scope))
-        }))
+        vm.bind_function(
+            4,
+            Rc::new(|call| {
+                let scope = call.cancellation_scope()?;
+                Err(call.cancel_function(&scope))
+            }),
+        )
         .unwrap();
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 0);
     }
 
@@ -3036,7 +3126,9 @@ mod tests {
             }),
         )
         .unwrap();
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 20);
     }
 
@@ -3055,11 +3147,17 @@ mod tests {
             256,
             &[],
         );
-        let mut vm =
-            QvmInterpreter::new(image, QvmAllocationProfile::Unaccounted, None, QvmSemantics::Interpreted)
-                .unwrap();
+        let mut vm = QvmInterpreter::new(
+            &image,
+            QvmAllocationProfile::Unaccounted,
+            None,
+            QvmSemantics::Interpreted,
+        )
+        .unwrap();
         vm.memory().write_bytes(16, &[1, 2, 3, 4]).unwrap();
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert_eq!(vm.invoke(&host, &[0; 10], 0, None).unwrap(), 0);
         assert_eq!(vm.memory().read_bytes(48, 4).unwrap(), vec![1, 2, 3, 4]);
     }
@@ -3068,10 +3166,16 @@ mod tests {
     fn operand_errors_surface() {
         use QvmOpcode as O;
         let mut vm = runner(
-            vec![(O::OpEnter, word(8)), (O::OpPop, QvmOperand::None), (O::OpLeave, word(8))],
+            vec![
+                (O::OpEnter, word(8)),
+                (O::OpPop, QvmOperand::None),
+                (O::OpLeave, word(8)),
+            ],
             QvmSemantics::Interpreted,
         );
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         assert!(vm.invoke(&host, &[0; 10], 0, None).is_err());
         assert!(vm.invoke(&host, &[0; 3], 0, None).is_err());
     }
@@ -3094,10 +3198,16 @@ mod tests {
             256,
             &[],
         );
-        let mut vm =
-            QvmInterpreter::new(image, QvmAllocationProfile::Unaccounted, None, QvmSemantics::Interpreted)
-                .unwrap();
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let mut vm = QvmInterpreter::new(
+            &image,
+            QvmAllocationProfile::Unaccounted,
+            None,
+            QvmSemantics::Interpreted,
+        )
+        .unwrap();
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         let value = vm.evaluate_counter(&host, 8, 41, &[0], None, &[0; 10], 0).unwrap();
         assert_eq!(value, 42);
         assert_eq!(vm.memory().get_i32(8).unwrap(), 0);
@@ -3106,11 +3216,26 @@ mod tests {
     #[test]
     fn restart_and_restore_replace_data() {
         use QvmOpcode as O;
-        let image = assemble(vec![(O::OpEnter, word(8)), (O::OpBreak, QvmOperand::None), (O::OpConst, word(0)), (O::OpLeave, word(8))], 256, &[]);
-        let mut vm =
-            QvmInterpreter::new(image, QvmAllocationProfile::Unaccounted, None, QvmSemantics::Interpreted)
-                .unwrap();
-        let host = TrapHost { seen: Rc::new(RefCell::new(Vec::new())) };
+        let image = assemble(
+            vec![
+                (O::OpEnter, word(8)),
+                (O::OpBreak, QvmOperand::None),
+                (O::OpConst, word(0)),
+                (O::OpLeave, word(8)),
+            ],
+            256,
+            &[],
+        );
+        let mut vm = QvmInterpreter::new(
+            &image,
+            QvmAllocationProfile::Unaccounted,
+            None,
+            QvmSemantics::Interpreted,
+        )
+        .unwrap();
+        let host = TrapHost {
+            seen: Rc::new(RefCell::new(Vec::new())),
+        };
         vm.invoke(&host, &[0; 10], 0, None).unwrap();
         assert_eq!(vm.break_count(), 1);
         vm.memory().write_bytes(0, &[9, 9, 9, 9]).unwrap();

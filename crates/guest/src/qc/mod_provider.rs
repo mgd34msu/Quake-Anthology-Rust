@@ -1689,13 +1689,13 @@ fn validate_protection_storage(
     program: &dyn QcProgramView,
     declaration: &ModCallbackDeclaration,
 ) -> Result<(), GuestError> {
-    super::mod_protection::qc_protection_regions(program, declaration).map(|_| ())}
+    super::mod_protection::qc_protection_regions(program, declaration).map(|_| ())
+}
 
 /// Validate item declarations via the shared item check.
 fn validate_item_storage(program: &dyn QcProgramView, declaration: &ModCallbackDeclaration) -> Result<(), GuestError> {
     super::mod_items::validate_qc_items(program, declaration)
 }
-
 
 /// Validate pickup rules and their declared storage.
 fn validate_pickups(

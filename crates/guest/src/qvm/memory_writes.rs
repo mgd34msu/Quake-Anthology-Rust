@@ -120,9 +120,7 @@ impl QvmMemoryWrites {
     /// Fail while a publication is in flight.
     pub fn assert_not_publishing(&self) -> Result<(), GuestError> {
         if self.publishing {
-            return Err(GuestError::callback(
-                "QVM store publication permits bookkeeping only",
-            ));
+            return Err(GuestError::callback("QVM store publication permits bookkeeping only"));
         }
         Ok(())
     }
@@ -177,8 +175,7 @@ impl QvmMemoryWrites {
         for range in sorted {
             if let Some(previous) = merged.last_mut() {
                 if previous.byte_offset + previous.byte_length >= range.byte_offset {
-                    let end = (previous.byte_offset + previous.byte_length)
-                        .max(range.byte_offset + range.byte_length);
+                    let end = (previous.byte_offset + previous.byte_length).max(range.byte_offset + range.byte_length);
                     previous.byte_length = end - previous.byte_offset;
                     continue;
                 }
@@ -209,12 +206,7 @@ impl QvmMemoryWrites {
 
     /// Capture pre-store bytes for every watch overlapping `offset..offset+len`.
     /// Returns `None` without allocation when no watch overlaps.
-    pub fn before(
-        &self,
-        bytes: &[u8],
-        offset: usize,
-        len: usize,
-    ) -> Result<Option<Vec<QvmWriteCapture>>, GuestError> {
+    pub fn before(&self, bytes: &[u8], offset: usize, len: usize) -> Result<Option<Vec<QvmWriteCapture>>, GuestError> {
         self.assert_writable()?;
         self.check_range(bytes.len(), offset, len)?;
         let mut captures: Option<Vec<QvmWriteCapture>> = None;
@@ -231,21 +223,16 @@ impl QvmMemoryWrites {
                 }
             }
             if !ranges.is_empty() {
-                captures.get_or_insert_with(Vec::new).push(QvmWriteCapture {
-                    watch_id: id,
-                    ranges,
-                });
+                captures
+                    .get_or_insert_with(Vec::new)
+                    .push(QvmWriteCapture { watch_id: id, ranges });
             }
         }
         Ok(captures)
     }
 
     /// Publish one event per captured watch, then run `after_publication` hooks.
-    pub fn after(
-        &mut self,
-        bytes: &[u8],
-        captures: Option<Vec<QvmWriteCapture>>,
-    ) -> Result<(), GuestError> {
+    pub fn after(&mut self, bytes: &[u8], captures: Option<Vec<QvmWriteCapture>>) -> Result<(), GuestError> {
         let Some(captures) = captures else {
             return Ok(());
         };
@@ -262,10 +249,7 @@ impl QvmMemoryWrites {
                     after: bytes[*start..end].to_vec(),
                 });
             }
-            deliveries.push((
-                capture.watch_id,
-                QvmCommittedWrite { sequence, ranges },
-            ));
+            deliveries.push((capture.watch_id, QvmCommittedWrite { sequence, ranges }));
         }
         let mut errors: Vec<GuestError> = Vec::new();
         self.publishing = true;
@@ -280,14 +264,12 @@ impl QvmMemoryWrites {
         }
         self.publishing = false;
         if errors.len() == 1 {
-            return Err(errors.pop().unwrap_or_else(|| GuestError::callback("QVM store publication failed")));
+            return Err(errors
+                .pop()
+                .unwrap_or_else(|| GuestError::callback("QVM store publication failed")));
         }
         if !errors.is_empty() {
-            let detail = errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ");
+            let detail = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
             return Err(GuestError::callback(format!(
                 "QVM committed store publication failed: {detail}"
             )));
@@ -376,8 +358,14 @@ mod tests {
             .observe(
                 16,
                 &[
-                    QvmWriteRange { byte_offset: 0, byte_length: 8 },
-                    QvmWriteRange { byte_offset: 4, byte_length: 8 },
+                    QvmWriteRange {
+                        byte_offset: 0,
+                        byte_length: 8,
+                    },
+                    QvmWriteRange {
+                        byte_offset: 4,
+                        byte_length: 8,
+                    },
                 ],
                 Box::new(move |event| {
                     seen_clone.borrow_mut().push(event.clone());
@@ -403,7 +391,15 @@ mod tests {
     fn unobserved_stores_skip_watches() {
         let mut writes = QvmMemoryWrites::new();
         let id = writes
-            .observe(16, &[QvmWriteRange { byte_offset: 0, byte_length: 4 }], Box::new(|_| Ok(())), None)
+            .observe(
+                16,
+                &[QvmWriteRange {
+                    byte_offset: 0,
+                    byte_length: 4,
+                }],
+                Box::new(|_| Ok(())),
+                None,
+            )
             .unwrap();
         writes.unobserve(id);
         assert!(!writes.intercepts());
@@ -424,7 +420,10 @@ mod tests {
         writes
             .observe(
                 8,
-                &[QvmWriteRange { byte_offset: 0, byte_length: 8 }],
+                &[QvmWriteRange {
+                    byte_offset: 0,
+                    byte_length: 8,
+                }],
                 Box::new(|_| Err(GuestError::callback("boom"))),
                 None,
             )
@@ -445,7 +444,10 @@ mod tests {
         writes
             .observe(
                 8,
-                &[QvmWriteRange { byte_offset: 0, byte_length: 8 }],
+                &[QvmWriteRange {
+                    byte_offset: 0,
+                    byte_length: 8,
+                }],
                 Box::new(move |_| {
                     order_publish.borrow_mut().push("publish");
                     Ok(())

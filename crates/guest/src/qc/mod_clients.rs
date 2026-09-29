@@ -117,9 +117,9 @@ pub fn client_input_values(application: &ModClientApplication) -> HashMap<ModCal
         .values
         .iter()
         .map(|(input, value)| {
-            let runtime = match value {
-                ModInputValue::Float(value) => ModRuntimeValue::Float(*value),
-                ModInputValue::Vector(value) => ModRuntimeValue::Vector(*value),
+            let runtime = match value.clone() {
+                ModInputValue::Float(value) => ModRuntimeValue::Float(value),
+                ModInputValue::Vector(value) => ModRuntimeValue::Vector(value),
             };
             (input.as_callback_input(), runtime)
         })

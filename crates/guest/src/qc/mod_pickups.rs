@@ -164,16 +164,14 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
         if self.entries.contains_key(actor) {
             return Ok(());
         }
-        let owner = self.services.resolve_owned(actor);
+        let owned = self.services.resolve_owned(actor);
         let client = self.services.client_for_actor(actor);
-        let live = match (&owner, &client) {
-            (Some(_), Some(client)) => self.services.actor_for_client(client).as_ref() == Some(actor),
-            _ => false,
+        let (Some(owner), Some(client)) = (owned, client) else {
+            return Err(GuestError::invalid("QC pickups require a live canonical client"));
         };
-        if !live {
+        if self.services.actor_for_client(&client).as_ref() != Some(actor) {
             return Err(GuestError::invalid("QC pickups require a live canonical client"));
         }
-        let (owner, client) = (owner.unwrap(), client.unwrap());
         let mut entry = Entry {
             client,
             bindings: Vec::new(),
@@ -210,16 +208,16 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
 
     /// Rules bound to one actor.
     pub fn actor_rules(&mut self, actor: &ActorId) -> Vec<QcPickupRule> {
-        if !self.rules.contains_key(actor) {
-            let rules = self
-                .declaration
-                .pickups
-                .iter()
-                .map(|definition| self.rule(actor, definition))
-                .collect();
-            self.rules.insert(actor.clone(), rules);
-        }
-        self.rules.get(actor).cloned().unwrap_or_default()
+        self.rules
+            .entry(actor.clone())
+            .or_insert_with_key(|actor| {
+                self.declaration
+                    .pickups
+                    .iter()
+                    .map(|definition| Self::rule(actor, definition))
+                    .collect()
+            })
+            .clone()
     }
 
     /// Protection rules for one channel.
@@ -235,7 +233,7 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
     }
 
     /// Build one runtime rule.
-    fn rule(&self, actor: &ActorId, definition: &ModPickupRule) -> QcPickupRule {
+    fn rule(actor: &ActorId, definition: &ModPickupRule) -> QcPickupRule {
         QcPickupRule {
             actor: actor.clone(),
             id: definition.id.clone(),

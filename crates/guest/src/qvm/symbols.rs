@@ -82,12 +82,9 @@ struct SymbolRecord {
 fn parse_hex(text: &str) -> i32 {
     let mut value: i32 = 0;
     for byte in text.bytes() {
-        if byte.is_ascii_digit() {
-            value = value.wrapping_mul(16).wrapping_add((byte - b'0') as i32);
-        } else if (b'a'..=b'f').contains(&byte) {
-            value = value.wrapping_mul(16).wrapping_add((byte - b'a' + 10) as i32);
-        } else if (b'A'..=b'F').contains(&byte) {
-            value = value.wrapping_mul(16).wrapping_add((byte - b'A' + 10) as i32);
+        // Non-hex characters are ignored, matching the donor accumulator.
+        if let Some(digit) = (byte as char).to_digit(16) {
+            value = value.wrapping_mul(16).wrapping_add(digit as i32);
         }
     }
     value
@@ -282,8 +279,7 @@ impl QvmSymbols {
         if let Some(record) = self.records.get_mut(index) {
             record.symbol.profile_count = record.symbol.profile_count.wrapping_add(delta);
         } else {
-            self.null_symbol.profile_count =
-                self.null_symbol.profile_count.wrapping_add(delta);
+            self.null_symbol.profile_count = self.null_symbol.profile_count.wrapping_add(delta);
         }
     }
 
@@ -305,7 +301,8 @@ impl QvmSymbols {
         }
         let text = format!("{}+{}", selected.name, value.wrapping_sub(selected.value));
         if text.len() >= 1024 {
-            (self.print.borrow_mut())(&format!("Com_sprintf: overflow of {} in 1024\n", text.len()));
+            let overflow = text.len();
+            (self.print.borrow_mut())(&format!("Com_sprintf: overflow of {overflow} in 1024\n"));
         }
         Ok(text.chars().take(1023).collect())
     }
@@ -334,7 +331,8 @@ impl QvmSymbols {
         let base = name.find('.').map_or(name, |dot| &name[..dot]);
         let requested = format!("vm/{base}.map");
         if requested.len() >= 64 {
-            print(&format!("Com_sprintf: overflow of {} in 64\n", requested.len()));
+            let overflow = requested.len();
+            print(&format!("Com_sprintf: overflow of {overflow} in 64\n"));
         }
         let path: String = requested.chars().take(63).collect();
         let Some(file) = options.files.read_file_retained(&path) else {
@@ -397,11 +395,7 @@ impl QvmSymbols {
     }
 
     /// Print the execution profile and reset every count.
-    pub fn print_profile(
-        &mut self,
-        print: &mut dyn FnMut(&str),
-        debug_enabled: bool,
-    ) -> Result<(), GuestError> {
+    pub fn print_profile(&mut self, print: &mut dyn FnMut(&str), debug_enabled: bool) -> Result<(), GuestError> {
         (self.assert_live)()?;
         if self.parsed_count == 0 {
             return Ok(());
@@ -409,7 +403,10 @@ impl QvmSymbols {
         let len = self.parsed_count.min(self.records.len());
         let mut order: Vec<usize> = (0..len).collect();
         order.sort_by_key(|index| self.records[*index].symbol.profile_count);
-        let total: i64 = order.iter().map(|index| i64::from(self.records[*index].symbol.profile_count)).sum();
+        let total: i64 = order
+            .iter()
+            .map(|index| i64::from(self.records[*index].symbol.profile_count))
+            .sum();
         if total == 0 {
             // C's NaN-to-int conversion has no defined percentage, including
             // after resetting a debug profile.
@@ -427,13 +424,14 @@ impl QvmSymbols {
             } else {
                 // Donor: Math.trunc(100 * fround(count) / total), padded to 2.
                 let percent = ((100.0 * f64::from(count)) / total as f64).trunc() as i64;
-                format!("{:>2}% ", percent)
+                format!("{percent:>2}% ")
             };
-            print(&format!("{prefix}{:>9} {}\n", count, self.records[index].symbol.name));
+            let name = &self.records[index].symbol.name;
+            print(&format!("{prefix}{count:>9} {name}\n"));
             (self.assert_live)()?;
             self.records[index].symbol.profile_count = 0;
         }
-        print(&format!("    {:>9} total\n", total));
+        print(&format!("    {total:>9} total\n"));
         self.sync_backing();
         Ok(())
     }
@@ -467,7 +465,9 @@ mod tests {
 
     impl QvmSymbolFiles for MapFiles {
         fn read_file_retained(&self, path: &str) -> Option<QvmSymbolFile> {
-            self.files.get(path).map(|bytes| QvmSymbolFile { terminated_bytes: bytes.clone() })
+            self.files.get(path).map(|bytes| QvmSymbolFile {
+                terminated_bytes: bytes.clone(),
+            })
         }
 
         fn free_file(&self, _file: &QvmSymbolFile) {
@@ -498,7 +498,15 @@ mod tests {
         let (mut symbols, printed) = symbols();
         let mut files = HashMap::new();
         files.insert("vm/qagame.map".to_string(), b"0 0 vmMain\n0 1 Other\n".to_vec());
-        load(&mut symbols, MapFiles { files, freed: Rc::new(RefCell::new(0)) }, Rc::clone(&printed), "qagame.qvm");
+        load(
+            &mut symbols,
+            MapFiles {
+                files,
+                freed: Rc::new(RefCell::new(0)),
+            },
+            Rc::clone(&printed),
+            "qagame.qvm",
+        );
         assert_eq!(symbols.count().unwrap(), 2);
         assert_eq!(symbols.symbol_to_value("Other").unwrap(), 5);
         assert_eq!(symbols.value_to_symbol(5).unwrap(), "Other");
@@ -514,18 +522,27 @@ mod tests {
             .load(QvmSymbolLoadOptions {
                 name: "qagame.qvm".to_string(),
                 developer: 0,
-                files: Box::new(MapFiles { files: HashMap::new(), freed: Rc::new(RefCell::new(0)) }),
+                files: Box::new(MapFiles {
+                    files: HashMap::new(),
+                    freed: Rc::new(RefCell::new(0)),
+                }),
                 print: Box::new(|_| {}),
             })
             .unwrap();
         assert_eq!(symbols.count().unwrap(), 0);
         load(
             &mut symbols,
-            MapFiles { files: HashMap::new(), freed: Rc::new(RefCell::new(0)) },
+            MapFiles {
+                files: HashMap::new(),
+                freed: Rc::new(RefCell::new(0)),
+            },
             Rc::clone(&printed),
             "qagame.qvm",
         );
-        assert!(printed.borrow().iter().any(|line| line.contains("Couldn't load symbol file")));
+        assert!(printed
+            .borrow()
+            .iter()
+            .any(|line| line.contains("Couldn't load symbol file")));
         assert_eq!(symbols.value_to_symbol(0).unwrap(), "NO SYMBOLS");
     }
 
@@ -538,7 +555,15 @@ mod tests {
             b"1 0 ignored\n0 2 Leaf\n// comment\n".to_vec(),
         );
         let printed = Rc::new(RefCell::new(Vec::new()));
-        load(&mut symbols, MapFiles { files, freed: Rc::new(RefCell::new(0)) }, Rc::clone(&printed), "qagame");
+        load(
+            &mut symbols,
+            MapFiles {
+                files,
+                freed: Rc::new(RefCell::new(0)),
+            },
+            Rc::clone(&printed),
+            "qagame",
+        );
         assert_eq!(symbols.count().unwrap(), 1);
         assert_eq!(symbols.symbol_to_value("Leaf").unwrap(), 10);
         let index = symbols.function_symbol_index(10).unwrap().unwrap();
@@ -560,7 +585,10 @@ mod tests {
         files.insert("vm/qagame.map".to_string(), b"0 0 vmMain\n".to_vec());
         load(
             &mut symbols,
-            MapFiles { files, freed: Rc::new(RefCell::new(0)) },
+            MapFiles {
+                files,
+                freed: Rc::new(RefCell::new(0)),
+            },
             Rc::new(RefCell::new(Vec::new())),
             "qagame",
         );
@@ -569,6 +597,9 @@ mod tests {
         symbols
             .print_profile(&mut move |text| output_clone.borrow_mut().push(text.to_string()), true)
             .unwrap();
-        assert!(output.borrow().iter().any(|line| line.contains("percentages are undefined")));
+        assert!(output
+            .borrow()
+            .iter()
+            .any(|line| line.contains("percentages are undefined")));
     }
 }

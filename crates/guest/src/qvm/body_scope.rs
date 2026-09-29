@@ -106,15 +106,27 @@ pub fn qualify_qvm_body_calls(
         body.mesh.entity_argument,
         body.mesh.state_argument,
     ];
-    if arguments.iter().any(|argument| *argument >= QVM_MAX_PRIVATE_ARGUMENT_WORDS)
+    if arguments
+        .iter()
+        .any(|argument| *argument >= QVM_MAX_PRIVATE_ARGUMENT_WORDS)
         || body.mesh.shader_offset != 112
     {
-        return Err(GuestError::invalid("Source body arguments differ from the original refEntity ABI"));
+        return Err(GuestError::invalid(
+            "Source body arguments differ from the original refEntity ABI",
+        ));
     }
-    let player_entry = image.instructions.get(body.player.entry).map(|instruction| instruction.opcode);
-    let mesh_entry = image.instructions.get(body.mesh.entry).map(|instruction| instruction.opcode);
+    let player_entry = image
+        .instructions
+        .get(body.player.entry)
+        .map(|instruction| instruction.opcode);
+    let mesh_entry = image
+        .instructions
+        .get(body.mesh.entry)
+        .map(|instruction| instruction.opcode);
     if player_entry != Some(QvmOpcode::OpEnter) || mesh_entry != Some(QvmOpcode::OpEnter) {
-        return Err(GuestError::invalid("Source body scope requires original function entries"));
+        return Err(GuestError::invalid(
+            "Source body scope requires original function entries",
+        ));
     }
     let mut end = body.player.entry + 1;
     while end < image.instructions.len() && image.instructions[end].opcode != QvmOpcode::OpEnter {
@@ -155,22 +167,28 @@ pub fn qualify_qvm_body_calls(
         }
     }
     if calls.is_empty() {
-        return Err(GuestError::invalid("Source body scope has no qualified original mesh calls"));
+        return Err(GuestError::invalid(
+            "Source body scope has no qualified original mesh calls",
+        ));
     }
     Ok(calls)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::image::QvmInstruction;
+    use super::*;
 
     fn image(program: Vec<(QvmOpcode, QvmOperand)>) -> QvmImage {
         let mut offset = 0usize;
         let instructions = program
             .into_iter()
             .map(|(opcode, operand)| {
-                let instruction = QvmInstruction { byte_offset: offset, opcode, operand };
+                let instruction = QvmInstruction {
+                    byte_offset: offset,
+                    opcode,
+                    operand,
+                };
                 offset += 1 + opcode.operand_width();
                 instruction
             })
@@ -191,7 +209,10 @@ mod tests {
 
     fn scope(parts: Option<Vec<QvmBodyCallPart>>) -> QvmBodyScope {
         QvmBodyScope {
-            player: QvmBodyPlayer { entry: 0, centity_argument: 1 },
+            player: QvmBodyPlayer {
+                entry: 0,
+                centity_argument: 1,
+            },
             mesh: QvmBodyMesh {
                 entry: 5,
                 entity_argument: 1,
@@ -230,8 +251,14 @@ mod tests {
         let calls = qualify_qvm_body_calls(
             &program(),
             &scope(Some(vec![
-                QvmBodyCallPart { call: 2, part: QvmBodyPart::Head },
-                QvmBodyCallPart { call: 4, part: QvmBodyPart::Lower },
+                QvmBodyCallPart {
+                    call: 2,
+                    part: QvmBodyPart::Head,
+                },
+                QvmBodyCallPart {
+                    call: 4,
+                    part: QvmBodyPart::Lower,
+                },
             ])),
         )
         .unwrap();
@@ -240,8 +267,14 @@ mod tests {
         assert!(qualify_qvm_body_calls(
             &program(),
             &scope(Some(vec![
-                QvmBodyCallPart { call: 2, part: QvmBodyPart::Head },
-                QvmBodyCallPart { call: 2, part: QvmBodyPart::Lower },
+                QvmBodyCallPart {
+                    call: 2,
+                    part: QvmBodyPart::Head
+                },
+                QvmBodyCallPart {
+                    call: 2,
+                    part: QvmBodyPart::Lower
+                },
             ])),
         )
         .is_err());

@@ -77,22 +77,15 @@ pub fn evaluate_binary(opcode: QvmOpcode, left: i32, right: i32) -> Result<i32, 
         QvmOpcode::OpLsh => Ok(left.wrapping_shl(shift_count(right)?)),
         QvmOpcode::OpRshi => Ok(left.wrapping_shr(shift_count(right)?)),
         QvmOpcode::OpRshu => Ok((left as u32).wrapping_shr(shift_count(right)?) as i32),
-        QvmOpcode::OpAddf => Ok(float32_to_bits(
-            bits_to_float32(left as u32) + bits_to_float32(right as u32),
-        ) as i32),
-        QvmOpcode::OpSubf => Ok(float32_to_bits(
-            bits_to_float32(left as u32) - bits_to_float32(right as u32),
-        ) as i32),
+        QvmOpcode::OpAddf => Ok(float32_to_bits(bits_to_float32(left as u32) + bits_to_float32(right as u32)) as i32),
+        QvmOpcode::OpSubf => Ok(float32_to_bits(bits_to_float32(left as u32) - bits_to_float32(right as u32)) as i32),
         // The donor divides in binary64, then rounds once to binary32; dividing
         // directly in binary32 could double-round.
         QvmOpcode::OpDivf => {
-            let quotient =
-                f64::from(bits_to_float32(left as u32)) / f64::from(bits_to_float32(right as u32));
+            let quotient = f64::from(bits_to_float32(left as u32)) / f64::from(bits_to_float32(right as u32));
             Ok(float32_to_bits(quotient as f32) as i32)
         }
-        QvmOpcode::OpMulf => Ok(float32_to_bits(
-            bits_to_float32(left as u32) * bits_to_float32(right as u32),
-        ) as i32),
+        QvmOpcode::OpMulf => Ok(float32_to_bits(bits_to_float32(left as u32) * bits_to_float32(right as u32)) as i32),
         other => Err(GuestError::invalid(format!(
             "Unsupported QVM binary opcode {}",
             other.name()

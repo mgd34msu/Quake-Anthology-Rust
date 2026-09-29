@@ -70,7 +70,7 @@ const KNOWN_ENTRIES: &[KnownEntry] = &[
         product: QvmProduct::Baseq3,
         package: "baseq3/pak8",
         date: "2002-09-30",
-        byte_length: 278308,
+        byte_length: 278_308,
         digest: "sha256:3a6fd12b889f5d35df20a09b51bf8eca46966d014be55ffad38ddc2ffb38c807",
     },
     KnownEntry {
@@ -78,7 +78,7 @@ const KNOWN_ENTRIES: &[KnownEntry] = &[
         product: QvmProduct::Baseq3,
         package: "baseq3/pak8",
         date: "2002-09-30",
-        byte_length: 325220,
+        byte_length: 325_220,
         digest: "sha256:4ea18569bf56a282d26dc89eb9efcc5eedbe0b69c10182fc38446174c1e55b49",
     },
     KnownEntry {
@@ -86,7 +86,7 @@ const KNOWN_ENTRIES: &[KnownEntry] = &[
         product: QvmProduct::Baseq3,
         package: "baseq3/pak8",
         date: "2002-09-30",
-        byte_length: 469796,
+        byte_length: 469_796,
         digest: "sha256:57c52bf22e4f528c064f8af1553a7103723bab0a02276bb11eed944bf829b219",
     },
     KnownEntry {
@@ -94,7 +94,7 @@ const KNOWN_ENTRIES: &[KnownEntry] = &[
         product: QvmProduct::Missionpack,
         package: "missionpack/pak0",
         date: "2000-12-04",
-        byte_length: 272040,
+        byte_length: 272_040,
         digest: "sha256:7b157f32acdb21a3904d078296672ed2d32195c5b7a206922f6f7d33c6c40e40",
     },
     KnownEntry {
@@ -102,7 +102,7 @@ const KNOWN_ENTRIES: &[KnownEntry] = &[
         product: QvmProduct::Missionpack,
         package: "missionpack/pak0",
         date: "2000-12-04",
-        byte_length: 442304,
+        byte_length: 442_304,
         digest: "sha256:09d0b6eb41ea623d67031d2d7a73058ccb3bc6556ec044ead529d48b58d15f4c",
     },
     KnownEntry {
@@ -110,7 +110,7 @@ const KNOWN_ENTRIES: &[KnownEntry] = &[
         product: QvmProduct::Missionpack,
         package: "missionpack/pak0",
         date: "2000-12-04",
-        byte_length: 547700,
+        byte_length: 547_700,
         digest: "sha256:da041f17f296feeaf8269eabc9062cefdecddfd24ff4d84eb291902e527d1d8a",
     },
 ];
@@ -195,14 +195,25 @@ pub enum ResolvedQvmArtifact {
 impl std::fmt::Debug for ResolvedQvmArtifact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Bytecode { module, role, known, abi_profile, .. } => f
+            Self::Bytecode {
+                module,
+                role,
+                known,
+                abi_profile,
+                ..
+            } => f
                 .debug_struct("Bytecode")
                 .field("module", module)
                 .field("role", role)
                 .field("known", known)
                 .field("abi_profile", abi_profile)
                 .finish_non_exhaustive(),
-            Self::TypeScript { module, role, known, replacement } => f
+            Self::TypeScript {
+                module,
+                role,
+                known,
+                replacement,
+            } => f
                 .debug_struct("TypeScript")
                 .field("module", module)
                 .field("role", role)
@@ -235,20 +246,17 @@ impl ResolvedQvmArtifact {
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+        0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+        0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+        0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
         0xc67178f2,
     ];
     let mut state: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
     ];
     let bit_length = (bytes.len() as u64).wrapping_mul(8);
     let mut padded = bytes.to_vec();
@@ -260,7 +268,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     for block in padded.chunks_exact(64) {
         let mut schedule = [0u32; 64];
         for (index, word) in schedule.iter_mut().take(16).enumerate() {
-            *word = u32::from_be_bytes([block[index * 4], block[index * 4 + 1], block[index * 4 + 2], block[index * 4 + 3]]);
+            *word = u32::from_be_bytes([
+                block[index * 4],
+                block[index * 4 + 1],
+                block[index * 4 + 2],
+                block[index * 4 + 3],
+            ]);
         }
         for index in 16..64 {
             let s0 = schedule[index - 15].rotate_right(7)
@@ -304,9 +317,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         state[6] = state[6].wrapping_add(g);
         state[7] = state[7].wrapping_add(h);
     }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut hex = String::with_capacity(64);
     for word in state {
-        hex.push_str(&format!("{word:08x}"));
+        for shift in [28, 24, 20, 16, 12, 8, 4, 0] {
+            hex.push(HEX[((word >> shift) & 0xf) as usize] as char);
+        }
     }
     hex
 }
@@ -326,7 +342,9 @@ pub fn resolve_qvm_artifact(
 ) -> Result<ResolvedQvmArtifact, GuestError> {
     let digest = format!("sha256:{}", sha256_hex(bytes));
     if digest_string(module) != digest {
-        return Err(GuestError::invalid("QVM artifact bytes do not match their module identity"));
+        return Err(GuestError::invalid(
+            "QVM artifact bytes do not match their module identity",
+        ));
     }
     let known = known_qvm_artifacts()
         .into_iter()
@@ -341,9 +359,7 @@ pub fn resolve_qvm_artifact(
         }
     }
     if let Some(replacement) = replacements.into_iter().find(|entry| {
-        entry.artifact.digest == digest
-            && entry.artifact.role == role
-            && entry.artifact.byte_length == bytes.len()
+        entry.artifact.digest == digest && entry.artifact.role == role && entry.artifact.byte_length == bytes.len()
     }) {
         return Ok(ResolvedQvmArtifact::TypeScript {
             module: module.clone(),
@@ -391,7 +407,7 @@ mod tests {
         assert_eq!(known.len(), 6);
         assert_eq!(known[0].role, QvmRole::Ui);
         assert_eq!(known[0].product, QvmProduct::Baseq3);
-        assert_eq!(known[0].byte_length, 278308);
+        assert_eq!(known[0].byte_length, 278_308);
         assert!(known[0].digest.starts_with("sha256:"));
         assert_eq!(known[5].product, QvmProduct::Missionpack);
     }
@@ -447,8 +463,7 @@ mod tests {
         bytes[32] = 2;
         let module = module_for(&bytes);
         let resolved =
-            resolve_qvm_artifact(&module, QvmRole::Cgame, &bytes, Vec::new(), QvmAbiProfile::Modern)
-                .unwrap();
+            resolve_qvm_artifact(&module, QvmRole::Cgame, &bytes, Vec::new(), QvmAbiProfile::Modern).unwrap();
         assert!(matches!(resolved, ResolvedQvmArtifact::Bytecode { .. }));
     }
 }

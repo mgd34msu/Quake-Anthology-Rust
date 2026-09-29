@@ -126,17 +126,16 @@ pub struct QcLocalMessages<P> {
     view_clients: HashMap<ActorId, ActorId>,
 }
 
-impl<P> Default for QcLocalMessages<P> {
-    fn default() -> Self {
-        Self { baseline: Vec::new(), clients: HashMap::new(), view_baseline: None, view_clients: HashMap::new() }
-    }
-}
-
 impl<P: Clone> QcLocalMessages<P> {
     /// Empty state.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            baseline: Vec::new(),
+            clients: HashMap::new(),
+            view_baseline: None,
+            view_clients: HashMap::new(),
+        }
     }
 
     /// Admit a client stream.
@@ -154,7 +153,11 @@ impl<P: Clone> QcLocalMessages<P> {
     pub fn receive(&mut self, messages: &[P], target: Option<&ActorId>, view_target: Option<&ActorId>) {
         match target {
             None => self.baseline.extend(messages.iter().cloned()),
-            Some(actor) => self.clients.entry(actor.clone()).or_default().extend(messages.iter().cloned()),
+            Some(actor) => self
+                .clients
+                .entry(actor.clone())
+                .or_default()
+                .extend(messages.iter().cloned()),
         }
         if let Some(view) = view_target {
             match target {
@@ -240,7 +243,13 @@ pub struct QcModMessages<S, K, P> {
 impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessages<S, K, P> {
     /// Build over services and a presentation sink.
     pub fn new(services: S, sink: K) -> Self {
-        Self { services, sink, local: QcLocalMessages::new(), signon: Vec::new(), admitted: HashMap::new() }
+        Self {
+            services,
+            sink,
+            local: QcLocalMessages::new(),
+            signon: Vec::new(),
+            admitted: HashMap::new(),
+        }
     }
 
     /// Borrow the services.
@@ -263,7 +272,8 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
             let entry = self.signon[index].clone();
             let local = &mut self.local;
             self.sink.present(&entry, Some(actor), local);
-            self.local.receive(std::slice::from_ref(&entry.payload), Some(actor), None);
+            self.local
+                .receive(std::slice::from_ref(&entry.payload), Some(actor), None);
         }
         self.admitted.insert(actor.clone(), self.signon.len());
         Ok(())
@@ -316,7 +326,11 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
     }
 
     /// QuakeWorld routing.
-    fn route_quakeworld(&mut self, entries: Vec<QcMessageEntry<P>>, destination: &QcDestination) -> Result<(), GuestError> {
+    fn route_quakeworld(
+        &mut self,
+        entries: Vec<QcMessageEntry<P>>,
+        destination: &QcDestination,
+    ) -> Result<(), GuestError> {
         match destination {
             QcDestination::Signon => {
                 self.signon.extend(entries);
@@ -358,7 +372,8 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
             for entry in entries {
                 let local = &mut self.local;
                 self.sink.present(entry, Some(actor), local);
-                self.local.receive(std::slice::from_ref(&entry.payload), Some(actor), None);
+                self.local
+                    .receive(std::slice::from_ref(&entry.payload), Some(actor), None);
             }
         }
         Ok(())
@@ -387,7 +402,8 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
                 return Err(GuestError::invalid("QC camera message has no captured source actor"));
             }
             let view = view_targets.and_then(|targets| targets.get(&index));
-            self.local.receive(std::slice::from_ref(&entry.payload), target.as_ref(), view);
+            self.local
+                .receive(std::slice::from_ref(&entry.payload), target.as_ref(), view);
             let local = &mut self.local;
             self.sink.present(entry, target.as_ref(), local);
         }
@@ -400,7 +416,12 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
             .local
             .clients
             .iter()
-            .map(|(actor, messages)| (SavedActorId::from(actor), messages.iter().map(QcMessagePayload::encode).collect()))
+            .map(|(actor, messages)| {
+                (
+                    SavedActorId::from(actor),
+                    messages.iter().map(QcMessagePayload::encode).collect(),
+                )
+            })
             .collect();
         clients.sort_by(|left, right| (left.0.slot, left.0.generation).cmp(&(right.0.slot, right.0.generation)));
         let mut view_clients: Vec<(SavedActorId, SavedActorId)> = self
@@ -410,8 +431,12 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
             .map(|(actor, target)| (SavedActorId::from(actor), SavedActorId::from(target)))
             .collect();
         view_clients.sort_by(|left, right| {
-            (left.0.slot, left.0.generation, left.1.slot, left.1.generation)
-                .cmp(&(right.0.slot, right.0.generation, right.1.slot, right.1.generation))
+            (left.0.slot, left.0.generation, left.1.slot, left.1.generation).cmp(&(
+                right.0.slot,
+                right.0.generation,
+                right.1.slot,
+                right.1.generation,
+            ))
         });
         let local = QcLocalCheckpoint {
             baseline: self.local.baseline.iter().map(QcMessagePayload::encode).collect(),
@@ -420,8 +445,11 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
             view_clients,
         };
         let quakeworld = (self.services.api() == QcMessageApi::QuakeWorld).then(|| {
-            let mut admitted: Vec<(SavedActorId, usize)> =
-                self.admitted.iter().map(|(actor, cursor)| (SavedActorId::from(actor), *cursor)).collect();
+            let mut admitted: Vec<(SavedActorId, usize)> = self
+                .admitted
+                .iter()
+                .map(|(actor, cursor)| (SavedActorId::from(actor), *cursor))
+                .collect();
             admitted.sort_by(|left, right| (left.0.slot, left.0.generation).cmp(&(right.0.slot, right.0.generation)));
             QcQuakeWorldCheckpoint {
                 signon: self
@@ -450,7 +478,8 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
         }
         let mut clients = HashMap::new();
         for (actor, messages) in &saved.local.clients {
-            let live = resolve(actor).ok_or_else(|| GuestError::BadSave("Saved message client has no live target".to_string()))?;
+            let live = resolve(actor)
+                .ok_or_else(|| GuestError::BadSave("Saved message client has no live target".to_string()))?;
             let mut decoded = Vec::with_capacity(messages.len());
             for bytes in messages {
                 decoded.push(P::decode(bytes)?);
@@ -459,31 +488,46 @@ impl<S: QcMessageServices, K: QcMessageSink<P>, P: QcMessagePayload> QcModMessag
         }
         let mut view_baseline = None;
         if let Some(target) = saved.local.view_baseline.as_ref() {
-            view_baseline = Some(resolve(target).ok_or_else(|| GuestError::BadSave("Saved message view has no live target".to_string()))?);
+            view_baseline = Some(
+                resolve(target)
+                    .ok_or_else(|| GuestError::BadSave("Saved message view has no live target".to_string()))?,
+            );
         }
         let mut view_clients = HashMap::new();
         for (actor, target) in &saved.local.view_clients {
-            let live = resolve(actor).ok_or_else(|| GuestError::BadSave("Saved message view has no live target".to_string()))?;
-            let live_target = resolve(target).ok_or_else(|| GuestError::BadSave("Saved message view has no live target".to_string()))?;
+            let live = resolve(actor)
+                .ok_or_else(|| GuestError::BadSave("Saved message view has no live target".to_string()))?;
+            let live_target = resolve(target)
+                .ok_or_else(|| GuestError::BadSave("Saved message view has no live target".to_string()))?;
             view_clients.insert(live, live_target);
         }
-        self.local = QcLocalMessages { baseline, clients, view_baseline, view_clients };
+        self.local = QcLocalMessages {
+            baseline,
+            clients,
+            view_baseline,
+            view_clients,
+        };
         match (&saved.quakeworld, self.services.api() == QcMessageApi::QuakeWorld) {
             (Some(state), true) => {
                 let mut signon = Vec::with_capacity(state.signon.len());
                 for entry in &state.signon {
-                    let actor = match entry.actor.as_ref() {
-                        Some(saved) => {
-                            Some(resolve(saved).ok_or_else(|| GuestError::BadSave("Saved signon entry has no live target".to_string()))?)
-                        }
-                        None => None,
-                    };
-                    signon.push(QcMessageEntry { actor, payload: P::decode(&entry.payload)? });
+                    let actor =
+                        match entry.actor.as_ref() {
+                            Some(saved) => Some(resolve(saved).ok_or_else(|| {
+                                GuestError::BadSave("Saved signon entry has no live target".to_string())
+                            })?),
+                            None => None,
+                        };
+                    signon.push(QcMessageEntry {
+                        actor,
+                        payload: P::decode(&entry.payload)?,
+                    });
                 }
                 let mut admitted = HashMap::new();
                 let mut seen = HashSet::new();
                 for (actor, cursor) in &state.admitted {
-                    let live = resolve(actor).ok_or_else(|| GuestError::BadSave("Saved signon cursor has no live target".to_string()))?;
+                    let live = resolve(actor)
+                        .ok_or_else(|| GuestError::BadSave("Saved signon cursor has no live target".to_string()))?;
                     if *cursor > signon.len() || !seen.insert(live.clone()) {
                         return Err(GuestError::BadSave("Invalid component signon cursor".to_string()));
                     }
@@ -531,8 +575,13 @@ mod tests {
         }
 
         fn decode(bytes: &[u8]) -> Result<Self, GuestError> {
-            let (flag, text) = bytes.split_first().ok_or_else(|| GuestError::BadSave("Empty message payload".to_string()))?;
-            Ok(Self { set_view: *flag != 0, text: String::from_utf8_lossy(text).into_owned() })
+            let (flag, text) = bytes
+                .split_first()
+                .ok_or_else(|| GuestError::BadSave("Empty message payload".to_string()))?;
+            Ok(Self {
+                set_view: *flag != 0,
+                text: String::from_utf8_lossy(text).into_owned(),
+            })
         }
     }
 
@@ -567,13 +616,24 @@ mod tests {
     }
 
     impl QcMessageSink<FakePayload> for FakeSink {
-        fn present(&mut self, entry: &QcMessageEntry<FakePayload>, target: Option<&ActorId>, _local: &mut QcLocalMessages<FakePayload>) {
+        fn present(
+            &mut self,
+            entry: &QcMessageEntry<FakePayload>,
+            target: Option<&ActorId>,
+            _local: &mut QcLocalMessages<FakePayload>,
+        ) {
             self.presented.push((target.cloned(), entry.payload.text.clone()));
         }
     }
 
     fn entry(text: &str) -> QcMessageEntry<FakePayload> {
-        QcMessageEntry { actor: None, payload: FakePayload { set_view: false, text: text.to_string() } }
+        QcMessageEntry {
+            actor: None,
+            payload: FakePayload {
+                set_view: false,
+                text: text.to_string(),
+            },
+        }
     }
 
     #[test]
@@ -589,11 +649,16 @@ mod tests {
             multicast: HashSet::new(),
         };
         let mut router = QcModMessages::new(services, FakeSink::default());
-        router.route(vec![entry("hello")], &QcDestination::Signon, None).unwrap();
+        router
+            .route(vec![entry("hello")], &QcDestination::Signon, None)
+            .unwrap();
         assert_eq!(router.sink.presented, vec![(Some(first.clone()), "hello".to_string())]);
         router.services.players.push(late.clone());
         router.client_admitted(&late).unwrap();
-        assert!(router.sink.presented.contains(&(Some(late.clone()), "hello".to_string())));
+        assert!(router
+            .sink
+            .presented
+            .contains(&(Some(late.clone()), "hello".to_string())));
         assert_eq!(router.client_state().client(&late).unwrap().len(), 1);
     }
 
@@ -611,11 +676,27 @@ mod tests {
             multicast: [inside.clone(), ghost.clone()].into_iter().collect(),
         };
         let mut router = QcModMessages::new(services, FakeSink::default());
-        let scope = MulticastScope { origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, scope: MulticastKind::Pvs };
-        router.route(vec![entry("bang")], &QcDestination::Multicast { scope }, None).unwrap();
-        assert!(router.sink.presented.contains(&(Some(inside.clone()), "bang".to_string())));
-        assert!(!router.sink.presented.iter().any(|(target, _)| target.as_ref() == Some(&outside)));
-        assert!(!router.sink.presented.iter().any(|(target, _)| target.as_ref() == Some(&ghost)));
+        let scope = MulticastScope {
+            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            scope: MulticastKind::Pvs,
+        };
+        router
+            .route(vec![entry("bang")], &QcDestination::Multicast { scope }, None)
+            .unwrap();
+        assert!(router
+            .sink
+            .presented
+            .contains(&(Some(inside.clone()), "bang".to_string())));
+        assert!(!router
+            .sink
+            .presented
+            .iter()
+            .any(|(target, _)| target.as_ref() == Some(&outside)));
+        assert!(!router
+            .sink
+            .presented
+            .iter()
+            .any(|(target, _)| target.as_ref() == Some(&ghost)));
         assert!(router.client_state().client(&ghost).is_none());
     }
 
@@ -631,15 +712,31 @@ mod tests {
             multicast: HashSet::new(),
         };
         let mut router = QcModMessages::new(services, FakeSink::default());
-        router.route(vec![entry("hi")], &QcDestination::Broadcast { reliable: false }, None).unwrap();
+        router
+            .route(vec![entry("hi")], &QcDestination::Broadcast { reliable: false }, None)
+            .unwrap();
         assert_eq!(router.client_state().baseline().len(), 1);
-        let scope = MulticastScope { origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, scope: MulticastKind::All };
-        assert!(router.route(vec![entry("x")], &QcDestination::Multicast { scope }, None).is_err());
-        let camera =
-            QcMessageEntry { actor: None, payload: FakePayload { set_view: true, text: "cam".to_string() } };
-        assert!(router.route(vec![camera.clone()], &QcDestination::Broadcast { reliable: true }, None).is_err());
+        let scope = MulticastScope {
+            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            scope: MulticastKind::All,
+        };
+        assert!(router
+            .route(vec![entry("x")], &QcDestination::Multicast { scope }, None)
+            .is_err());
+        let camera = QcMessageEntry {
+            actor: None,
+            payload: FakePayload {
+                set_view: true,
+                text: "cam".to_string(),
+            },
+        };
+        assert!(router
+            .route(vec![camera.clone()], &QcDestination::Broadcast { reliable: true }, None)
+            .is_err());
         let views = [(0, player.clone())].into_iter().collect();
-        router.route(vec![camera], &QcDestination::Broadcast { reliable: true }, Some(&views)).unwrap();
+        router
+            .route(vec![camera], &QcDestination::Broadcast { reliable: true }, Some(&views))
+            .unwrap();
         assert_eq!(router.client_state().view_target(None), Some(&player));
     }
 
@@ -655,7 +752,9 @@ mod tests {
             multicast: HashSet::new(),
         };
         let mut router = QcModMessages::new(services, FakeSink::default());
-        router.route(vec![entry("saved")], &QcDestination::Signon, None).unwrap();
+        router
+            .route(vec![entry("saved")], &QcDestination::Signon, None)
+            .unwrap();
         let saved = router.capture();
         assert!(saved.quakeworld.is_some());
         let mut revived = QcModMessages::new(
@@ -667,11 +766,18 @@ mod tests {
             },
             FakeSink::default(),
         );
-        revived.restore(&saved, &|saved| (saved.slot == 1).then(|| player.clone())).unwrap();
+        revived
+            .restore(&saved, &|saved| (saved.slot == 1).then(|| player.clone()))
+            .unwrap();
         let again = revived.capture();
         assert_eq!(again, saved);
         let mut netquake = QcModMessages::new(
-            FakeServices { api: QcMessageApi::NetQuake, players: Vec::new(), clients: HashSet::new(), multicast: HashSet::new() },
+            FakeServices {
+                api: QcMessageApi::NetQuake,
+                players: Vec::new(),
+                clients: HashSet::new(),
+                multicast: HashSet::new(),
+            },
             FakeSink::default(),
         );
         assert!(netquake.restore(&saved, &|_| None).is_err());

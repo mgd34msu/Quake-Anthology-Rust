@@ -36,6 +36,9 @@ fn optional_vector(memory: &QvmMemory, word: i32) -> Result<Option<QvmWritableVi
 }
 
 /// Handle game vector traps 107-109. Returns `None` for other roles or traps.
+// The zero-projection check intentionally uses exact equality: like the
+// source assertion, NaN is not zero and passes through to the caller.
+#[allow(clippy::float_cmp)]
 pub fn qvm_vector_syscall(
     role: QvmSyscallRole,
     words: &QvmWritableView,
@@ -142,7 +145,10 @@ mod tests {
         let (memory, words) = fixture(107, &[64, 128, 192]);
         write_matrix(&memory, 64, [[1.0, 2.0, 3.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
         write_matrix(&memory, 128, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [4.0, 5.0, 6.0]]);
-        assert_eq!(qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(), Some(0));
+        assert_eq!(
+            qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(),
+            Some(0)
+        );
         assert_eq!(
             read_matrix(&memory, 192),
             [[13.0, 17.0, 21.0], [0.0, 1.0, 0.0], [4.0, 5.0, 6.0]]
@@ -156,7 +162,10 @@ mod tests {
         angles.set_f32(0, 0.0).unwrap();
         angles.set_f32(4, 90.0).unwrap();
         angles.set_f32(8, 0.0).unwrap();
-        assert_eq!(qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(), Some(0));
+        assert_eq!(
+            qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(),
+            Some(0)
+        );
         let forward = memory.view(128, 12, 0).unwrap();
         assert!((forward.get_f32(0).unwrap() - 0.0).abs() < 1e-5);
         assert!((forward.get_f32(1 * 4).unwrap() - 1.0).abs() < 1e-5);
@@ -171,7 +180,10 @@ mod tests {
         source.set_f32(0, 0.0).unwrap();
         source.set_f32(4, 1.0).unwrap();
         source.set_f32(8, 0.0).unwrap();
-        assert_eq!(qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(), Some(0));
+        assert_eq!(
+            qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(),
+            Some(0)
+        );
         let zero = memory.view(128, 12, 0).unwrap();
         zero.set_f32(4, 0.0).unwrap();
         assert!(qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).is_err());
@@ -180,7 +192,10 @@ mod tests {
     #[test]
     fn other_roles_and_traps_pass_through() {
         let (memory, words) = fixture(107, &[64, 128, 192]);
-        assert_eq!(qvm_vector_syscall(QvmSyscallRole::Cgame, &words, &memory).unwrap(), None);
+        assert_eq!(
+            qvm_vector_syscall(QvmSyscallRole::Cgame, &words, &memory).unwrap(),
+            None
+        );
         let (memory, words) = fixture(42, &[64, 128, 192]);
         assert_eq!(qvm_vector_syscall(QvmSyscallRole::Game, &words, &memory).unwrap(), None);
     }

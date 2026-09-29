@@ -149,11 +149,8 @@ pub fn qvm_common_syscall(
                     let argv = argv(call, services);
                     let index = call.words.get_i32(4)?;
                     let text = argv.get(index as usize).cloned().unwrap_or_default();
-                    call.guest.write_string(
-                        call.words.get_i32(8)?,
-                        &text,
-                        call.words.get_i32(12)? as usize,
-                    )?;
+                    call.guest
+                        .write_string(call.words.get_i32(8)?, &text, call.words.get_i32(12)? as usize)?;
                     Ok(Some(0))
                 }
                 QvmUiImport::UiCmdExecutetext => {
@@ -206,11 +203,8 @@ pub fn qvm_common_syscall(
                     let argv = argv(call, services);
                     let index = call.words.get_i32(4)?;
                     let text = argv.get(index as usize).cloned().unwrap_or_default();
-                    call.guest.write_string(
-                        call.words.get_i32(8)?,
-                        &text,
-                        call.words.get_i32(12)? as usize,
-                    )?;
+                    call.guest
+                        .write_string(call.words.get_i32(8)?, &text, call.words.get_i32(12)? as usize)?;
                     Ok(Some(0))
                 }
                 QvmGameImport::GRealTime => {
@@ -290,11 +284,8 @@ pub fn qvm_common_syscall(
                     let argv = argv(call, services);
                     let index = call.words.get_i32(4)?;
                     let text = argv.get(index as usize).cloned().unwrap_or_default();
-                    call.guest.write_string(
-                        call.words.get_i32(8)?,
-                        &text,
-                        call.words.get_i32(12)? as usize,
-                    )?;
+                    call.guest
+                        .write_string(call.words.get_i32(8)?, &text, call.words.get_i32(12)? as usize)?;
                     Ok(Some(0))
                 }
                 QvmCgameImport::CgArgs => {
@@ -303,11 +294,8 @@ pub fn qvm_common_syscall(
                     if value.len() >= 1024 {
                         return Err(GuestError::invalid("Cmd_Args exceeds its source buffer"));
                     }
-                    call.guest.write_string(
-                        call.words.get_i32(4)?,
-                        &value,
-                        call.words.get_i32(8)? as usize,
-                    )?;
+                    call.guest
+                        .write_string(call.words.get_i32(4)?, &value, call.words.get_i32(8)? as usize)?;
                     Ok(Some(0))
                 }
                 QvmCgameImport::CgSendconsolecommand => {
@@ -337,7 +325,9 @@ pub fn qvm_common_syscall(
 }
 
 fn argv(call: &QvmHostCall<'_, '_, '_>, services: &mut dyn QvmCommonServices) -> Vec<String> {
-    call.command_arguments.clone().unwrap_or_else(|| services.base_arguments())
+    call.command_arguments
+        .clone()
+        .unwrap_or_else(|| services.base_arguments())
 }
 
 #[cfg(test)]
@@ -367,7 +357,10 @@ mod tests {
 
     impl FakeServices {
         fn for_role(role: QvmRole) -> Self {
-            Self { role: Some(role), ..Self::default() }
+            Self {
+                role: Some(role),
+                ..Self::default()
+            }
         }
     }
 
@@ -376,10 +369,7 @@ mod tests {
             self.role.unwrap()
         }
 
-        fn dispatch_cvar(
-            &mut self,
-            _call: &mut QvmHostCall<'_, '_, '_>,
-        ) -> Result<Option<i32>, GuestError> {
+        fn dispatch_cvar(&mut self, _call: &mut QvmHostCall<'_, '_, '_>) -> Result<Option<i32>, GuestError> {
             Ok(None)
         }
 
@@ -439,7 +429,11 @@ mod tests {
         let instructions = program
             .into_iter()
             .map(|(opcode, operand)| {
-                let instruction = QvmInstruction { byte_offset: offset, opcode, operand };
+                let instruction = QvmInstruction {
+                    byte_offset: offset,
+                    opcode,
+                    operand,
+                };
                 offset += 1 + opcode.operand_width();
                 instruction
             })
@@ -479,7 +473,7 @@ mod tests {
 
     fn harness(role: QvmRole, trap: i32, args: &[i32]) -> Harness {
         let vm = QvmInterpreter::new(
-            image(trap_program(trap, args)),
+            &image(trap_program(trap, args)),
             QvmAllocationProfile::Unaccounted,
             None,
             QvmSemantics::Interpreted,
@@ -495,9 +489,8 @@ mod tests {
             role,
             move |call: &mut QvmHostCall<'_, '_, '_>| -> Result<i32, GuestError> {
                 let mut services = services.borrow_mut();
-                qvm_common_syscall(call, &mut *services)?.ok_or_else(|| {
-                    GuestError::callback("unhandled common trap in test")
-                })
+                qvm_common_syscall(call, &mut *services)?
+                    .ok_or_else(|| GuestError::callback("unhandled common trap in test"))
             },
             Box::new(move || argv.clone()),
             QvmAbiProfile::Modern,
@@ -517,12 +510,22 @@ mod tests {
 
         let mut harness = harness(QvmRole::Qagame, 8, &[]);
         assert_eq!(
-            run(&mut harness, QvmRole::Qagame, Some(vec!["prog".to_string(), "x".to_string()])).unwrap(),
+            run(
+                &mut harness,
+                QvmRole::Qagame,
+                Some(vec!["prog".to_string(), "x".to_string()])
+            )
+            .unwrap(),
             2
         );
         let mut harness = harness(QvmRole::Qagame, 9, &[1, 96, 16]);
         assert_eq!(
-            run(&mut harness, QvmRole::Qagame, Some(vec!["prog".to_string(), "x".to_string()])).unwrap(),
+            run(
+                &mut harness,
+                QvmRole::Qagame,
+                Some(vec!["prog".to_string(), "x".to_string()])
+            )
+            .unwrap(),
             0
         );
         assert_eq!(harness.vm.memory().read_string(96).unwrap(), "x");
@@ -563,7 +566,12 @@ mod tests {
     fn cgame_commands_and_args() {
         let mut harness = harness(QvmRole::Cgame, 9, &[96, 32]);
         assert_eq!(
-            run(&mut harness, QvmRole::Cgame, Some(vec!["prog".to_string(), "a".to_string(), "b".to_string()])).unwrap(),
+            run(
+                &mut harness,
+                QvmRole::Cgame,
+                Some(vec!["prog".to_string(), "a".to_string(), "b".to_string()])
+            )
+            .unwrap(),
             0
         );
         assert_eq!(harness.vm.memory().read_string(96).unwrap(), "a b");
