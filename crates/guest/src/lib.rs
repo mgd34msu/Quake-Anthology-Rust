@@ -15,6 +15,7 @@ pub mod x86;
 pub mod error;
 pub mod fields;
 pub mod floating_point;
+pub mod pe;
 pub mod registry;
 pub mod save;
 pub mod traits;
