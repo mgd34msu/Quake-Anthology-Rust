@@ -13,6 +13,7 @@ use qa_core::cmd::{ascii_fold, command_separator_offset, source_command_text, to
 use qa_net::protocol::{q1, ProtocolIdentity};
 
 use crate::error::AppError;
+use crate::persistence::mods;
 
 /// Application help, adapted from the donor's `applicationHelp`.
 pub const HELP: &str = "Quake
@@ -210,14 +211,8 @@ pub enum NetworkTransport {
     IpxNative,
 }
 
-/// Mod component selection (`PRODUCT/COMPONENT_ID`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModSelection {
-    /// Package product.
-    pub product: String,
-    /// Authored component ID.
-    pub id: String,
-}
+/// Mod component selection (`PRODUCT/COMPONENT_ID`, shared with persistence).
+pub use crate::persistence::mods::ModSelection;
 
 /// Weapon-behavior overlay selection (`PRODUCT/DECLARED_ID`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -650,42 +645,7 @@ pub fn startup_requests_world(lines: &[String]) -> bool {
 
 /// Read a mod selection (`readModSelection`): `PRODUCT/COMPONENT_ID`.
 pub fn read_mod_selection(value: &str) -> Result<ModSelection, AppError> {
-    let slash = value.find('/').unwrap_or(0);
-    if slash < 1 {
-        return Err(AppError::BadValue(
-            "Mod selection must be PRODUCT/COMPONENT_ID".to_string(),
-        ));
-    }
-    let selection = ModSelection {
-        product: value[..slash].to_string(),
-        id: value[slash + 1..].to_string(),
-    };
-    if mod_selection_key(&selection).is_none() {
-        return Err(AppError::BadValue(
-            "Mod selection must be PRODUCT/COMPONENT_ID".to_string(),
-        ));
-    }
-    Ok(selection)
-}
-
-/// Validate a mod selection and render its key (`modSelectionKey`).
-fn mod_selection_key(selection: &ModSelection) -> Option<String> {
-    if !valid_product_name(&selection.product) || !valid_component_id(&selection.id) {
-        return None;
-    }
-    Some(format!("{}/{}", selection.product, selection.id))
-}
-
-fn valid_product_name(product: &str) -> bool {
-    let mut chars = product.chars();
-    matches!(chars.next(), Some(first) if first.is_ascii_alphanumeric())
-        && chars.all(|char| char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '+' | '-'))
-}
-
-fn valid_component_id(id: &str) -> bool {
-    let mut chars = id.chars();
-    matches!(chars.next(), Some(first) if first.is_ascii_alphanumeric())
-        && chars.all(|char| char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '+' | ':' | '/' | '-'))
+    mods::read_mod_selection(value).map_err(|error| AppError::BadValue(error.to_string()))
 }
 
 /// Parse the weapon-behavior tool arguments (`parseWeaponBehaviorTool`).
@@ -1063,7 +1023,7 @@ pub fn parse_application_command(argv: &[String]) -> Result<ApplicationCommand, 
                 match value.as_str() {
                     "q1" | "q2" | "q3" => options.movement = parse_family(&value)?,
                     _ => {
-                        if !valid_product_name(&value) {
+                        if !mods::valid_product(&value) {
                             return Err(AppError::BadValue(format!("Invalid movement product: {value}")));
                         }
                         options.movement_product = Some(if value == "qw" {
@@ -1566,6 +1526,19 @@ mod tests {
         assert_eq!(options.q2_game_library.as_deref(), Some("gamex86.dll"));
         assert!(parse_application_command(&argv(&["--progs", "progs.dll"])).is_err());
         assert!(parse_application_command(&argv(&["--q2-game", "game.dat"])).is_err());
+    }
+
+    #[test]
+    fn mod_selection_matches_persistence() {
+        for value in ["pkg/comp", "pkg/sub/comp", "q1-quakeworld/baseqw", "a.b_c+d/e:f/g-h"] {
+            let options_selection = read_mod_selection(value).expect("options accepts donor key");
+            let saved = crate::persistence::mods::read_mod_selection(value).expect("persistence accepts donor key");
+            assert_eq!(options_selection, saved);
+        }
+        for value in ["no-slash", "!bad/id", "pkg/", "/comp", "pkg/has space", ""] {
+            assert!(read_mod_selection(value).is_err(), "{value} must be rejected");
+            assert!(crate::persistence::mods::read_mod_selection(value).is_err());
+        }
     }
 
     #[test]

@@ -1641,7 +1641,7 @@ mod tests {
             }
         }
         let world = to_q2_world_geometry(map, Some(&NoResources)).unwrap();
-        assert_eq!(world.faces[0].back, true);
+        assert!(world.faces[0].back);
         assert_eq!(world.faces[0].lighting_offset, None);
         assert_eq!(world.texture_info[0].material, "");
         assert_eq!(world.texture_info[0].next, None);

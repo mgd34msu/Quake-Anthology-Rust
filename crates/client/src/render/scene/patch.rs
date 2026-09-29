@@ -434,7 +434,7 @@ mod tests {
         let grown_row = insert_patch_strip(&mesh, PatchDirection::Height, 1, 1, vec3(2.0, 1.5, 0.0), 0.5).unwrap();
         assert_eq!((grown_row.width, grown_row.height), (2, 3));
         assert_eq!(grown_row.height_lod_error[1], 0.5);
-        assert_eq!(grown_row.vertices[1 * 2 + 1].position, vec3(2.0, 1.5, 0.0));
+        assert_eq!(grown_row.vertices[3].position, vec3(2.0, 1.5, 0.0));
     }
 
     #[test]

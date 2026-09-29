@@ -3723,18 +3723,18 @@ mod tests {
         )
     }
 
-    fn q1_map<'a>(
-        visibility: &'a [u8],
-        lighting: &'a [u8],
-        l0: &'a [u8],
-        l1: &'a [u8],
-        l2: &'a [u8],
-        l3: &'a [u8],
-        s0: &'a [u8],
-        s1: &'a [u8],
-        s2: &'a [u8],
-        s3: &'a [u8],
-    ) -> Q1Map<'a> {
+    type Q1Levels = (
+        [u8; 256],
+        [u8; 64],
+        [u8; 16],
+        [u8; 4],
+        [u8; 32768],
+        [u8; 8192],
+        [u8; 2048],
+        [u8; 512],
+    );
+
+    fn q1_map<'a>(visibility: &'a [u8], lighting: &'a [u8], levels: &'a Q1Levels) -> Q1Map<'a> {
         let bounds = qa_content::common::Bounds {
             min: [0.0, 0.0, 0.0],
             max: [16.0, 16.0, 64.0],
@@ -3767,13 +3767,13 @@ mod tests {
                     name: "rock".to_string(),
                     width: 16,
                     height: 16,
-                    levels: [l0, l1, l2, l3],
+                    levels: [&levels.0[..], &levels.1[..], &levels.2[..], &levels.3[..]],
                 }),
                 Some(MipTexture::Embedded {
                     name: "sky1".to_string(),
                     width: 256,
                     height: 128,
-                    levels: [s0, s1, s2, s3],
+                    levels: [&levels.4[..], &levels.5[..], &levels.6[..], &levels.7[..]],
                 }),
             ],
             texture_offsets: vec![],
@@ -3866,16 +3866,7 @@ mod tests {
         }
     }
 
-    fn q1_levels() -> (
-        [u8; 256],
-        [u8; 64],
-        [u8; 16],
-        [u8; 4],
-        [u8; 32768],
-        [u8; 8192],
-        [u8; 2048],
-        [u8; 512],
-    ) {
+    fn q1_levels() -> Q1Levels {
         (
             [1u8; 256],
             [1u8; 64],
@@ -3893,18 +3884,7 @@ mod tests {
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
-        let map = q1_map(
-            &visibility,
-            &lighting,
-            &levels.0,
-            &levels.1,
-            &levels.2,
-            &levels.3,
-            &levels.4,
-            &levels.5,
-            &levels.6,
-            &levels.7,
-        );
+        let map = q1_map(&visibility, &lighting, &levels);
         let scene = WorldScene::load_q1(&map, registry("world-q1", HashMap::new()), WorldSceneOptions::default())
             .expect("load");
         assert_eq!(scene.surfaces().len(), 2);
@@ -3923,18 +3903,7 @@ mod tests {
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
-        let map = q1_map(
-            &visibility,
-            &lighting,
-            &levels.0,
-            &levels.1,
-            &levels.2,
-            &levels.3,
-            &levels.4,
-            &levels.5,
-            &levels.6,
-            &levels.7,
-        );
+        let map = q1_map(&visibility, &lighting, &levels);
         let mut scene = WorldScene::load_q1(
             &map,
             registry("world-q1-view", HashMap::new()),
@@ -3961,18 +3930,7 @@ mod tests {
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
-        let map = q1_map(
-            &visibility,
-            &lighting,
-            &levels.0,
-            &levels.1,
-            &levels.2,
-            &levels.3,
-            &levels.4,
-            &levels.5,
-            &levels.6,
-            &levels.7,
-        );
+        let map = q1_map(&visibility, &lighting, &levels);
         let mut scene = WorldScene::load_q1(
             &map,
             registry("world-q1-empty", HashMap::new()),
@@ -3990,18 +3948,7 @@ mod tests {
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
-        let map = q1_map(
-            &visibility,
-            &lighting,
-            &levels.0,
-            &levels.1,
-            &levels.2,
-            &levels.3,
-            &levels.4,
-            &levels.5,
-            &levels.6,
-            &levels.7,
-        );
+        let map = q1_map(&visibility, &lighting, &levels);
         let mut scene = WorldScene::load_q1(
             &map,
             registry("world-q1-remap", HashMap::new()),
@@ -4026,18 +3973,7 @@ mod tests {
         let levels = q1_levels();
         let visibility = [0b11u8];
         let lighting = [128u8; 4];
-        let map = q1_map(
-            &visibility,
-            &lighting,
-            &levels.0,
-            &levels.1,
-            &levels.2,
-            &levels.3,
-            &levels.4,
-            &levels.5,
-            &levels.6,
-            &levels.7,
-        );
+        let map = q1_map(&visibility, &lighting, &levels);
         let mut scene = WorldScene::load_q1(
             &map,
             registry("world-q1-shadow", HashMap::new()),

@@ -598,11 +598,10 @@ mod tests {
     use super::support::*;
     use super::*;
 
-    fn runtime() -> (
-        WorkerRuntime<FakeBackend>,
-        std::rc::Rc<std::cell::RefCell<Vec<ImageResourceOperation>>>,
-        std::rc::Rc<std::cell::RefCell<Vec<Vec<u32>>>>,
-    ) {
+    type SharedOperations = std::rc::Rc<std::cell::RefCell<Vec<ImageResourceOperation>>>;
+    type SharedCaptures = std::rc::Rc<std::cell::RefCell<Vec<Vec<u32>>>>;
+
+    fn runtime() -> (WorkerRuntime<FakeBackend>, SharedOperations, SharedCaptures) {
         let applied = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let swaps = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let applied_inner = std::rc::Rc::clone(&applied);

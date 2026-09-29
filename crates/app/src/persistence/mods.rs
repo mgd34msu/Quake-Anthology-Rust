@@ -24,7 +24,8 @@ pub struct ModSelection {
     pub id: String,
 }
 
-fn valid_product(product: &str) -> bool {
+/// Whether a product name is well-formed (shared with startup options).
+pub(crate) fn valid_product(product: &str) -> bool {
     let mut chars = product.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphanumeric() => {}

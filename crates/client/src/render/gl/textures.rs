@@ -616,6 +616,11 @@ impl GlTextures {
     pub fn len(&self) -> usize {
         self.images.len()
     }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.images.is_empty()
+    }
 }
 
 #[cfg(test)]

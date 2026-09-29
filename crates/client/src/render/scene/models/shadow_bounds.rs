@@ -227,6 +227,6 @@ mod tests {
     #[test]
     fn operator_norm_bounds_identity() {
         let norm = operator_norm(&UNIT_AXES);
-        assert!(norm >= 1.0 && norm < 1.01);
+        assert!((1.0..1.01).contains(&norm));
     }
 }

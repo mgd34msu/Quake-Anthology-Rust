@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(reader.field("count").integer(0).unwrap(), 3);
         assert!(reader.field("count").integer(4).is_err());
         assert_eq!(reader.field("maybe").nullable(|value| value.string()).unwrap(), None);
-        assert_eq!(reader.field("missing").is_missing(), true);
+        assert!(reader.field("missing").is_missing());
         assert!(reader.field("missing").string().is_err());
         assert_eq!(reader.field("items").list(|item| item.integer(0)).unwrap(), vec![1, 2]);
         assert!(reader.field("name").list(|item| item.integer(0)).is_err());
