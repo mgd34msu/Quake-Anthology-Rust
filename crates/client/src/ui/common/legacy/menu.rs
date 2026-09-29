@@ -1284,6 +1284,12 @@ impl SharedUiMenuMemory {
     pub fn new(memory: impl UiMenuMemory + 'static) -> SharedUiMenuMemory {
         SharedUiMenuMemory { inner: Rc::new(memory) }
     }
+
+    /// Whether two handles share the same pools (donor pointer equality).
+    #[must_use]
+    pub fn same_memory(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
 }
 
 impl UiMenuMemory for SharedUiMenuMemory {
@@ -1833,6 +1839,19 @@ impl UiListBoxDefinition {
             });
         }
         Ok(columns)
+    }
+
+    /// Column at `index`, or `None` when out of range (donor indexing).
+    pub(crate) fn column_at(&self, index: usize) -> Option<UiListColumn> {
+        if index >= MAX_UI_LIST_COLUMNS {
+            return None;
+        }
+        let offset = LIST_COLUMNS + index * LIST_COLUMN_STRIDE;
+        Some(UiListColumn {
+            position: self.alloc.get_i32(offset),
+            width: self.alloc.get_i32(offset + 4),
+            max_chars: self.alloc.get_i32(offset + 8),
+        })
     }
 
     /// Write one column (donor `setColumn`).
@@ -2882,6 +2901,18 @@ impl UiMenuDefinition {
     #[must_use]
     pub fn item_at(&self, index: usize) -> Option<UiItemDefinition> {
         self.slot_item(index)
+    }
+
+    /// Item view at `index` (donor indexing; out-of-range and null slots error).
+    pub(crate) fn item_view(&self, index: usize) -> Result<UiItemDefinition, ClientError> {
+        if index >= MAX_UI_MENU_ITEMS {
+            return Err(ClientError::BadUi(
+                "UI menu item index is out of range".to_string(),
+            ));
+        }
+        self.slot_item(index).ok_or_else(|| {
+            ClientError::BadUi("UI menu dereferences a NULL item pointer".to_string())
+        })
     }
 
     /// Retained items, in slot order (donor `items`).
