@@ -197,8 +197,16 @@ impl ExecutableBlock {
 }
 
 struct WriteObserver {
-    chunks: Vec<Chunk>,
+    chunks: Vec<WatchedChunk>,
     notify: Box<dyn Fn(&[GuestWrittenRange])>,
+}
+
+/// Watched backing range, resolved at observe time so later mapping edits
+/// cannot redirect the watch at a replacement backing.
+struct WatchedChunk {
+    backing: BackingRef,
+    start: usize,
+    byte_length: usize,
 }
 
 fn fault(
@@ -736,9 +744,20 @@ impl SparseGuestMemory {
         after_write: Box<dyn Fn(&[GuestWrittenRange])>,
     ) -> Result<u64, GuestError> {
         let chunks = self.chunks(address, byte_length, Some(GuestAccess::Read))?;
+        let watched = chunks
+            .iter()
+            .map(|chunk| {
+                let mapping = &self.mappings[chunk.mapping_id];
+                WatchedChunk {
+                    backing: Rc::clone(&mapping.backing),
+                    start: mapping.backing_start + chunk.offset,
+                    byte_length: chunk.byte_length,
+                }
+            })
+            .collect();
         let id = self.next_observer;
         self.next_observer += 1;
-        self.observers.insert(id, WriteObserver { chunks, notify: after_write });
+        self.observers.insert(id, WriteObserver { chunks: watched, notify: after_write });
         Ok(id)
     }
 
@@ -1533,7 +1552,8 @@ impl SparseGuestMemory {
             return Ok(());
         }
         let mut failures: Vec<String> = Vec::new();
-        let ids: Vec<u64> = self.observers.keys().copied().collect();
+        let mut ids: Vec<u64> = self.observers.keys().copied().collect();
+        ids.sort_unstable();
         for id in ids {
             let Some(observer) = self.observers.get(&id) else {
                 continue;
@@ -1541,13 +1561,12 @@ impl SparseGuestMemory {
             let mut ranges = Vec::new();
             let mut displacement = 0;
             for watched in &observer.chunks {
-                let watched_mapping = &self.mappings[watched.mapping_id];
                 for written in chunks {
                     let written_mapping = &self.mappings[written.mapping_id];
-                    if !Rc::ptr_eq(&watched_mapping.backing, &written_mapping.backing) {
+                    if !Rc::ptr_eq(&watched.backing, &written_mapping.backing) {
                         continue;
                     }
-                    let start = watched_mapping.backing_start + watched.offset;
+                    let start = watched.start;
                     let other = written_mapping.backing_start + written.offset;
                     let first = start.max(other);
                     let last = (start + watched.byte_length).min(other + written.byte_length);
