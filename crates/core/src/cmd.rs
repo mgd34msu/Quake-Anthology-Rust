@@ -3,9 +3,8 @@
 //! `src/contracts/common.ts`.
 //!
 //! This module owns the pure text layer: source validation, tokenizing,
-//! command splitting, macro expansion, and argument tails. Buffered
-//! dispatch (`CommandBuffer`: insertions, aliases, `wait`, script reads) is
-//! a follow-up built on these primitives.
+//! command splitting, macro expansion, and argument tails. The buffered
+//! queue in [`crate::cmd_buffer`] builds on these primitives.
 
 use thiserror::Error;
 
