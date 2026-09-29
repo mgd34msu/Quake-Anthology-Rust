@@ -32,7 +32,8 @@ use crate::x86::decoder::{
 };
 
 /// Numeric executor hook (defaults to the exact x87/SSE executor).
-pub type NumericExecutor = fn(NumericExecutionContext) -> NumericExecutionResult;
+pub type NumericExecutor =
+    fn(NumericExecutionContext) -> Result<NumericExecutionResult, crate::error::GuestError>;
 
 fn arithmetic_operation(index: usize) -> Result<AluOperation, X86Error> {
     match index {
@@ -687,7 +688,7 @@ fn floating(
         state: &mut *decoder.state,
         memory: &mut *decoder.memory,
         instruction,
-    });
+    })?;
     match result {
         NumericExecutionResult::Executed => Ok(()),
         NumericExecutionResult::Unsupported { detail } => Err(X86Error::Unsupported(detail)),

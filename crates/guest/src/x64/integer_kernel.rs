@@ -422,10 +422,13 @@ fn register_operation(
             width: source_width,
             ..
         }) if source_width != width => None,
-        KernelSource::Operand(KernelOperand::Register { register, .. }) => Some((
+        KernelSource::Operand(KernelOperand::Register {
+            register: source_register,
+            ..
+        }) => Some((
             WordDestination { register, width },
             WordSource {
-                register: Some(register),
+                register: Some(source_register),
                 immediate: 0,
             },
         )),

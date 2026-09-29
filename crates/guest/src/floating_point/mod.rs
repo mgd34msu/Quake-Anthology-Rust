@@ -16,29 +16,28 @@ use crate::error::GuestError;
 
 use self::contracts::{NumericError, NumericExecutionContext, NumericExecutionResult};
 
-/// Dispatch one numeric instruction to the x87 or SSE executor.
+/// Dispatch one numeric instruction to the x87 or SSE executor. Guest
+/// memory failures propagate to the caller like any other CPU fault.
 pub fn execute_numeric_instruction(
     context: NumericExecutionContext,
-) -> NumericExecutionResult {
+) -> Result<NumericExecutionResult, GuestError> {
     let opcode = context.instruction.opcode;
     let result = if opcode == 0x9b || (0xd8..=0xdf).contains(&opcode) {
         x87::execute_x87(context).map(|()| NumericExecutionResult::Executed)
     } else if opcode == 0x0f {
         sse::execute_sse(context).map(|()| NumericExecutionResult::Executed)
     } else {
-        return NumericExecutionResult::Unsupported {
+        return Ok(NumericExecutionResult::Unsupported {
             detail: "Unsupported numeric instruction family".to_string(),
-        };
+        });
     };
     match result {
-        Ok(done) => done,
-        Err(NumericError::Unsupported(detail)) => NumericExecutionResult::Unsupported { detail },
+        Ok(done) => Ok(done),
+        Err(NumericError::Unsupported(detail)) => Ok(NumericExecutionResult::Unsupported { detail }),
         Err(NumericError::Fault { vector, detail }) => {
-            NumericExecutionResult::Exception { vector, detail }
+            Ok(NumericExecutionResult::Exception { vector, detail })
         }
-        Err(NumericError::Guest(error)) => NumericExecutionResult::Unsupported {
-            detail: format!("Guest failure in numeric instruction: {error}"),
-        },
+        Err(NumericError::Guest(error)) => Err(error),
     }
 }
 

@@ -678,7 +678,7 @@ fn run_numeric(
         state,
         memory,
         instruction,
-    }) {
+    })? {
         NumericExecutionResult::Executed => Ok(X64_ADVANCE),
         NumericExecutionResult::Exception { vector, detail } => {
             Err(X86Error::fault(u32::from(vector), detail))

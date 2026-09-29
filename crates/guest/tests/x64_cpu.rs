@@ -569,3 +569,616 @@ fn instruction_sequence_preserves_fetch_fault_order() {
         }
     }
 }
+
+#[test]
+fn committed_store_observers_fire_with_exact_ranges() {
+    // The donor reenters the CPU from inside the observer; Rust observers
+    // receive only the written ranges, so this ports the fire/unobserve
+    // semantics with exact range assertions.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut f = Fixture::new(&[0x66, 0xc7, 0x03, 0x34, 0x12, 0xb8, 86, 0, 0, 0, 0xc3]);
+    let data = f.with(|state, memory| {
+        let data = map(memory, 0x50000, 2, GuestPermissions::ReadWrite, None);
+        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        data
+    });
+    let fires: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&fires);
+    let id = f.with(|_, memory| {
+        memory
+            .observe_writes(data, 2, Box::new(move |ranges| {
+                observed.borrow_mut().extend(ranges.iter().map(|range| (range.byte_offset, range.byte_length)));
+            }))
+            .unwrap()
+    });
+    for _ in 0..2 {
+        f.reset(BASE);
+        assert_eq!(f.run(100).kind(), "return");
+        assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 86);
+        f.with(|_, memory| assert_eq!(memory.read_u16(data).unwrap(), 0x1234));
+    }
+    assert_eq!(*fires.borrow(), vec![(0, 2), (0, 2)]);
+    f.with(|_, memory| memory.unobserve(id));
+    f.reset(BASE);
+    assert_eq!(f.run(100).kind(), "return");
+    assert_eq!(fires.borrow().len(), 2);
+}
+
+fn host_callback() -> qa_guest::core::callbacks::GuestHostCallback {
+    use qa_guest::core::callbacks::GuestHostCallback;
+    use qa_guest::core::contracts::{CallbackId, GuestCallResult, GuestCallSignature, NativeCallAbi};
+
+    GuestHostCallback {
+        id: CallbackId::new("test", "plan-hook"),
+        signature: GuestCallSignature {
+            abi: NativeCallAbi::MicrosoftX64,
+            parameters: vec![],
+            result: None,
+            variadic: false,
+        },
+        invoke: std::rc::Rc::new(|_, _, _| Ok(GuestCallResult::Void)),
+    }
+}
+
+#[test]
+fn retained_blocks_requalify_entries_and_gates() {
+    // Register/IP-mutating observers have no Rust equivalent (hook
+    // callbacks receive no state); firing, gating, and budget
+    // continuation port exactly.
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use qa_guest::core::callbacks::HookState;
+
+    let mut f = Fixture::new(&[0xb8, 1, 0, 0, 0, 0x83, 0xc0, 2, 0x83, 0xc0, 3, 0xc3]);
+    let hooks = Rc::new(HookState::new());
+    f.cpu.set_hook_state(Some(Rc::clone(&hooks)));
+    let run = |f: &mut Fixture, budget: u64| {
+        f.reset(BASE);
+        f.run(budget)
+    };
+    for _ in 0..3 {
+        assert_eq!(run(&mut f, 100).kind(), "return");
+        assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
+    }
+    let entries = Rc::new(Cell::new(0u32));
+    let notify = Rc::clone(&entries);
+    let entry = addr_of(&mut f, BASE + 5);
+    let observer = f.with(|_, memory| {
+        hooks.callbacks.borrow_mut().observe_entry(memory, entry, Rc::new(move || notify.set(notify.get() + 1))).unwrap()
+    });
+    assert_eq!(run(&mut f, 100).kind(), "return");
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
+    assert_eq!(entries.get(), 1);
+    hooks.callbacks.borrow_mut().unobserve_entry(entry, observer);
+    assert_eq!(run(&mut f, 100).kind(), "return");
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
+    assert_eq!(entries.get(), 1);
+    let accepts = Rc::new(Cell::new(false));
+    let gate = Rc::clone(&accepts);
+    f.with(|_, memory| {
+        hooks.callbacks.borrow_mut().bind_entry(memory, entry, host_callback(), Rc::new(move || gate.get())).unwrap();
+    });
+    assert_eq!(run(&mut f, 100).kind(), "return");
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
+    accepts.set(true);
+    let stopped = run(&mut f, 100);
+    assert_eq!(stopped.kind(), "host-call");
+    assert_eq!(stopped.instructions(), 1);
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 1);
+    hooks.callbacks.borrow_mut().unhook_entry(entry);
+    f.reset(BASE);
+    assert_eq!(f.run(2).kind(), "budget");
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 3);
+    f.with(|state, _| assert_eq!(state.instruction_pointer, BASE + 8));
+    assert_eq!(f.run(2).kind(), "return");
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
+    let returns = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&returns);
+    let ret = addr_of(&mut f, BASE + 11);
+    let watcher = f.with(|_, memory| {
+        hooks.callbacks.borrow_mut().observe_entry(memory, ret, Rc::new(move || counted.set(counted.get() + 1))).unwrap()
+    });
+    assert_eq!(run(&mut f, 100).kind(), "return");
+    assert_eq!(returns.get(), 1);
+    hooks.callbacks.borrow_mut().unobserve_entry(ret, watcher);
+    assert_eq!(run(&mut f, 100).kind(), "return");
+    assert_eq!(returns.get(), 1);
+}
+
+fn addr_of(f: &mut Fixture, offset: u64) -> qa_guest::core::contracts::GuestAddress {
+    f.with(|_, memory| addr(memory, offset))
+}
+
+#[test]
+fn raw_simd_preserves_scalar_lanes_overlaps_and_stores() {
+    let mut f = Fixture::new(&[
+        0xf3, 0x0f, 0x10, 0xc1, 0xf2, 0x0f, 0x10, 0x03, //
+        0x66, 0x0f, 0x28, 0xd0, 0x66, 0x0f, 0x6f, 0xda, //
+        0xf3, 0x0f, 0x7f, 0x5b, 17, 0x0f, 0x57, 0xdb, //
+        0x66, 0x0f, 0xeb, 0xd8, 0x66, 0x0f, 0xdb, 0xda, //
+        0x0f, 0x55, 0xd8, 0x0f, 0x29, 0x5b, 32, 0xc3,
+    ]);
+    let data = f.with(|_, memory| {
+        let data = map(memory, 0x50000, 64, GuestPermissions::ReadWrite, None);
+        memory.write(data, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]).unwrap();
+        data
+    });
+    let mut expected = [0u8; 16];
+    expected[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    for _ in 0..2 {
+        f.with(|state, _| {
+            state.instruction_pointer = BASE;
+            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
+            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+            state.simd.xmm[0..16].fill(0xaa);
+            state.simd.xmm[16..32].fill(0xbb);
+            state.flags.set_value(0x8d7);
+            state.simd.mxcsr = 0x5fa0;
+        });
+        assert_eq!(f.run(1).kind(), "budget");
+        f.with(|state, _| {
+            let mut lanes = [0xaau8; 16];
+            lanes[0..4].fill(0xbb);
+            assert_eq!(state.simd.xmm[0..16], lanes);
+        });
+        assert_eq!(f.run(1).kind(), "budget");
+        f.with(|state, _| assert_eq!(state.simd.xmm[0..16], expected));
+        assert_eq!(f.run(3).kind(), "budget");
+        f.with(|_, memory| {
+            assert_eq!(memory.copy(memory.offset(data, 17).unwrap(), 16).unwrap(), expected);
+        });
+        assert_eq!(f.run(6).kind(), "return");
+        f.with(|state, memory| {
+            assert_eq!(memory.copy(memory.offset(data, 32).unwrap(), 16).unwrap(), vec![0u8; 16]);
+            assert_eq!(state.flags.value(), 0x8d7);
+            assert_eq!(state.simd.mxcsr, 0x5fa0);
+        });
+    }
+}
+
+#[test]
+fn simd_alignment_fault_before_write_and_live_bytes() {
+    let mut f = Fixture::new(&[0x0f, 0x28, 0x03, 0xc3]);
+    f.with(|_, memory| {
+        map(memory, 0x50000, 32, GuestPermissions::ReadWrite, Some(vec![0x5a; 32]));
+    });
+    let run = |f: &mut Fixture, offset: u64| {
+        f.with(|state, _| {
+            state.instruction_pointer = BASE;
+            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
+            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000 + offset, false).unwrap();
+        });
+        f.run(100)
+    };
+    assert_eq!(run(&mut f, 0).kind(), "return");
+    f.with(|state, _| state.simd.xmm[0..16].fill(0xab));
+    let misaligned = run(&mut f, 1);
+    assert_eq!(misaligned.kind(), "exception");
+    assert_eq!(processor_vector(&misaligned), 13);
+    f.with(|state, _| assert_eq!(state.simd.xmm[0..16], [0xabu8; 16]));
+    f.with(|_, memory| {
+        let code = addr(memory, BASE);
+        let alias = memory.map_alias(0x60000, 4, GuestPermissions::ReadWrite, "alias", code).unwrap();
+        memory.write_u8(memory.offset(alias, 1).unwrap(), 0x10).unwrap();
+    });
+    assert_eq!(run(&mut f, 1).kind(), "return");
+    f.with(|state, _| assert_eq!(state.simd.xmm[0..16], [0x5au8; 16]));
+    f.with(|state, _| state.simd.xmm[0..16].fill(0xcd));
+    assert_eq!(run(&mut f, 24).kind(), "exception");
+    f.with(|state, _| assert_eq!(state.simd.xmm[0..16], [0xcdu8; 16]));
+}
+
+#[test]
+fn integer_kernels_match_source_alu_flags_and_halves() {
+    use qa_guest::x64::decoder::{X64MemoryOperand, X64Operand, X64RegisterOperand, X64Segment};
+    use qa_guest::x64::integer_kernel::X64IntegerKernel;
+    use qa_guest::x64::plan::{execute_x64_plan, make_x64_plan, X64PlanOperation, X64PlanSource};
+    use qa_guest::x86::arithmetic::AluOperation;
+
+    let operations = [
+        AluOperation::Add, AluOperation::Adc, AluOperation::Sub, AluOperation::Sbb,
+        AluOperation::Cmp, AluOperation::And, AluOperation::Test, AluOperation::Or,
+        AluOperation::Xor,
+    ];
+    let widths = [GuestIntegerWidth::B8, GuestIntegerWidth::B16, GuestIntegerWidth::B32, GuestIntegerWidth::B64];
+    let mut source = Fixture::new(&[0x90]);
+    let mut compiled = Fixture::new(&[0x90]);
+    let mut kernel = X64IntegerKernel::new();
+    for width in widths {
+        let bits = width.bits();
+        let maximum = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        let sign = 1u64 << (bits - 1);
+        let edges = [
+            (maximum, 1u64),
+            (sign - 1, 1),
+            (sign, maximum),
+            (0, 1),
+            (0x1234_5678_8765_4321 & maximum, 0x8765_4321_1234_5678 & maximum),
+        ];
+        for operation in operations {
+            for (left, right) in edges {
+                let flag_sets: &[u64] = if matches!(operation, AluOperation::Adc | AluOperation::Sbb) {
+                    &[0x9876_5432_abcdefd6, 0x9876_5432_abcdefd7]
+                } else {
+                    &[0x9876_5432_abcdefd7]
+                };
+                for initial in flag_sets {
+                    let plan = make_x64_plan(
+                        X64PlanOperation::Alu {
+                            operation,
+                            destination: X64Operand::Register(X64RegisterOperand {
+                                register: GuestRegister::Rax,
+                                width,
+                                high_byte: width == GuestIntegerWidth::B8,
+                            }),
+                            source: X64PlanSource::Operand(X64Operand::Register(
+                                X64RegisterOperand { register: GuestRegister::Rbx, width, high_byte: false },
+                            )),
+                        },
+                        BASE + 1,
+                        false,
+                    );
+                    let prepared = qa_guest::x64::integer_kernel::prepare_x64_integer_plan(&plan)
+                        .expect("integer plan prepares");
+                    for f in [&mut source, &mut compiled] {
+                        f.with(|state, _| {
+                            state.flags.set_value(*initial);
+                            state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0xfedc_ba98_7654_3210, false).unwrap();
+                            state.registers.write(GuestRegister::Rax, width, left, width == GuestIntegerWidth::B8).unwrap();
+                            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, right, false).unwrap();
+                        });
+                    }
+                    let (source_state, source_memory) = source.cpu.parts();
+                    execute_x64_plan(&plan, source_memory, source_state).unwrap();
+                    let (compiled_state, compiled_memory) = compiled.cpu.parts();
+                    kernel.execute(&prepared, compiled_state, compiled_memory).unwrap();
+                    let (source_state, _) = source.cpu.parts();
+                    let expected_registers = source_state.registers.checkpoint();
+                    let expected_flags = source_state.flags.value();
+                    let (compiled_state, _) = compiled.cpu.parts();
+                    assert_eq!(compiled_state.registers.checkpoint(), expected_registers);
+                    assert_eq!(compiled_state.flags.value(), expected_flags);
+                }
+            }
+        }
+    }
+    let addresses = [
+        X64MemoryOperand {
+            width: GuestIntegerWidth::B64,
+            base: Some(GuestRegister::Rax),
+            index: Some(GuestRegister::Rbx),
+            scale: 8,
+            displacement: -17,
+            rip_relative: false,
+            address_bits: 64,
+            segment: Some(X64Segment::Fs),
+        },
+        X64MemoryOperand {
+            width: GuestIntegerWidth::B32,
+            base: Some(GuestRegister::Rax),
+            index: Some(GuestRegister::Rbx),
+            scale: 4,
+            displacement: 0x8000_0000,
+            rip_relative: false,
+            address_bits: 32,
+            segment: None,
+        },
+        X64MemoryOperand {
+            width: GuestIntegerWidth::B64,
+            base: None,
+            index: None,
+            scale: 1,
+            displacement: -0x1_0000_0007,
+            rip_relative: true,
+            address_bits: 64,
+            segment: None,
+        },
+    ];
+    for address in addresses {
+        let plan = make_x64_plan(
+            X64PlanOperation::Lea {
+                destination: X64RegisterOperand { register: GuestRegister::R8, width: address.width, high_byte: false },
+                source: address,
+            },
+            BASE + 7,
+            false,
+        );
+        let prepared = qa_guest::x64::integer_kernel::prepare_x64_integer_plan(&plan).expect("LEA prepares");
+        for f in [&mut source, &mut compiled] {
+            f.with(|state, _| {
+                state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0xffff_8000_1234_5678, false).unwrap();
+                state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0xffff_ffff_fffedcba & 0xffff_ffff_ffff_ffff, false).unwrap();
+                state.segments[qa_guest::core::registers::GuestProcessorState::FS].base = 0x1234_5678_90;
+            });
+        }
+        let (source_state, source_memory) = source.cpu.parts();
+        execute_x64_plan(&plan, source_memory, source_state).unwrap();
+        let (compiled_state, compiled_memory) = compiled.cpu.parts();
+        kernel.execute(&prepared, compiled_state, compiled_memory).unwrap();
+        let (source_state, _) = source.cpu.parts();
+        let expected = source_state.registers.checkpoint();
+        let (compiled_state, _) = compiled.cpu.parts();
+        assert_eq!(compiled_state.registers.checkpoint(), expected);
+    }
+    for code in 0..16u8 {
+        for flags in [0u64, 0x8d5, 0x881, 0x44] {
+            let plan = make_x64_plan(
+                X64PlanOperation::Branch { condition: Some(code), displacement: -3 },
+                BASE + 7,
+                false,
+            );
+            let prepared = qa_guest::x64::integer_kernel::prepare_x64_integer_plan(&plan).expect("branch prepares");
+            source.with(|state, _| state.flags.set_value(flags));
+            compiled.with(|state, _| state.flags.set_value(flags));
+            let (source_state, source_memory) = source.cpu.parts();
+            let expected = execute_x64_plan(&plan, source_memory, source_state);
+            let (compiled_state, compiled_memory) = compiled.cpu.parts();
+            assert_eq!(kernel.execute(&prepared, compiled_state, compiled_memory), expected);
+        }
+    }
+}
+
+#[test]
+fn warmed_branch_preserves_noncanonical_target_fault() {
+    // The donor compares generic and managed engines; this port has one
+    // engine, so a warmed run is compared against a cold run instead.
+    let location = 0x7fff_ffff_ffe0u64;
+    let bytes = [0x0f, 0x85, 0x30, 0, 0, 0, 0xc3];
+    let mut warm = Fixture::at(&bytes, location);
+    warm.with(|state, _| state.flags.set(GuestFlag::Zero, true));
+    assert_eq!(warm.run(100).kind(), "return");
+    warm.reset(location);
+    warm.with(|state, _| state.flags.set(GuestFlag::Zero, false));
+    let mut cold = Fixture::at(&bytes, location);
+    cold.with(|state, _| state.flags.set(GuestFlag::Zero, false));
+    let actual = warm.run(100);
+    let expected = cold.run(100);
+    assert_eq!(actual.kind(), "exception");
+    assert_eq!(expected.kind(), "exception");
+    assert_eq!(actual.instructions(), 0);
+    assert_eq!(expected.instructions(), 0);
+    warm.with(|state, _| assert_eq!(state.instruction_pointer, location));
+    let warm_checkpoint = warm.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
+    let cold_checkpoint = cold.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
+    assert_eq!(warm_checkpoint, cold_checkpoint);
+}
+
+#[test]
+fn numeric_instructions_read_live_operands_and_fault_boundaries() {
+    let mut sse = Fixture::new(&[0xf3, 0x0f, 0x58, 0x03, 0xc3]);
+    let input = sse.with(|state, memory| {
+        let input = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
+        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        input
+    });
+    for value in [2.25f32, 3.5, -1.5] {
+        sse.reset(BASE);
+        sse.with(|state, memory| {
+            memory.write_f32(input, value).unwrap();
+            state.simd.xmm[0..4].copy_from_slice(&1.5f32.to_le_bytes());
+        });
+        assert_eq!(sse.run(100).kind(), "return");
+        sse.with(|state, _| {
+            assert_eq!(f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()), 1.5 + value);
+        });
+    }
+    // The donor uses execute-only mappings here; this port has no
+    // execute-only form, so the read fault is exercised with no access.
+    sse.with(|_, memory| memory.protect(input, 4, GuestPermissions::None).unwrap());
+    sse.reset(BASE);
+    let fault = sse.run(100);
+    assert_eq!(fault.kind(), "exception");
+    assert_eq!(fault.instructions(), 0);
+    sse.with(|state, _| {
+        assert_eq!(f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()), 0.0);
+        assert_eq!(state.instruction_pointer, BASE);
+    });
+    let mut x87 = Fixture::new(&[0xd9, 0x03, 0xd9, 0x5b, 4, 0xc3]);
+    let values = x87.with(|state, memory| {
+        let values = map(memory, 0x50000, 8, GuestPermissions::ReadWrite, None);
+        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        values
+    });
+    for value in [2.25f32, -3.5, 7.5] {
+        x87.reset(BASE);
+        x87.with(|_, memory| memory.write_f32(values, value).unwrap());
+        assert_eq!(x87.run(100).kind(), "return");
+        x87.with(|_, memory| {
+            assert_eq!(memory.read_f32(memory.offset(values, 4).unwrap()).unwrap(), value);
+        });
+    }
+    x87.with(|_, memory| {
+        memory.protect(memory.offset(values, 4).unwrap(), 4, GuestPermissions::Read).unwrap();
+    });
+    x87.reset(BASE);
+    let fault = x87.run(100);
+    assert_eq!(fault.kind(), "exception");
+    assert_eq!(fault.instructions(), 1);
+    x87.with(|state, _| assert_eq!(state.instruction_pointer, BASE + 2));
+}
+
+#[test]
+fn returns_preserve_stack_adjustment_and_precise_faults() {
+    for discard in [0u8, 32] {
+        let bytes: Vec<u8> = if discard == 0 { vec![0xc3] } else { vec![0xc2, discard, 0] };
+        let mut f = Fixture::new(&bytes);
+        for _ in 0..2 {
+            f.reset(BASE);
+            assert_eq!(f.run(1).kind(), "return");
+            assert_eq!(read(&mut f, GuestRegister::Rsp, GuestIntegerWidth::B64), STACK + 8 + u64::from(discard));
+        }
+        f.reset(BASE);
+        f.with(|_, memory| memory.write_u64(addr(memory, STACK), 0x8000_0000_0000).unwrap());
+        let target = f.run(100);
+        assert_eq!(target.kind(), "exception");
+        assert_eq!(target.instructions(), 0);
+        f.with(|state, _| {
+            assert_eq!(state.instruction_pointer, BASE);
+            assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK);
+        });
+        f.with(|_, memory| memory.unmap(addr(memory, STACK + 4), 4).unwrap());
+        let stack = f.run(100);
+        assert_eq!(stack.kind(), "exception");
+        assert_eq!(stack.instructions(), 0);
+        f.with(|state, _| {
+            assert_eq!(state.instruction_pointer, BASE);
+            assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK);
+        });
+    }
+}
+
+#[test]
+fn warm_blocks_match_cold_budgets_registers_and_read_faults() {
+    // MOV EAX,7; ADD EAX,5; MOV ECX,[RBX]; ADC EAX,ECX; RET.
+    let bytes = [0xb8, 7, 0, 0, 0, 0x83, 0xc0, 5, 0x8b, 0x0b, 0x11, 0xc8, 0xc3];
+    let mut cold = Fixture::new(&bytes);
+    let mut warm = Fixture::new(&bytes);
+    for f in [&mut cold, &mut warm] {
+        f.with(|state, memory| {
+            let data = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
+            memory.write_u32(data, 30).unwrap();
+            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        });
+        assert_eq!(f.run(100).kind(), "return");
+    }
+    for budget in [1, 2, 3, 4, 5] {
+        for f in [&mut cold, &mut warm] {
+            f.reset(BASE);
+            f.with(|state, _| state.flags.set_value(0x1234_5678_0000_0003));
+        }
+        let expected = cold.run(budget);
+        let actual = warm.run(budget);
+        assert_eq!(actual.kind(), expected.kind());
+        assert_eq!(actual.instructions(), expected.instructions());
+        let (cold_ip, cold_regs, cold_flags) =
+            cold.with(|state, _| (state.instruction_pointer, state.registers.checkpoint(), state.flags.value()));
+        let (warm_ip, warm_regs, warm_flags) =
+            warm.with(|state, _| (state.instruction_pointer, state.registers.checkpoint(), state.flags.value()));
+        assert_eq!(warm_ip, cold_ip);
+        assert_eq!(warm_regs, cold_regs);
+        assert_eq!(warm_flags, cold_flags);
+    }
+    for f in [&mut cold, &mut warm] {
+        f.with(|state, _| {
+            state.instruction_pointer = BASE;
+            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0, false).unwrap();
+            state.registers.write(GuestRegister::Rcx, GuestIntegerWidth::B64, 123, false).unwrap();
+            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
+            state.flags.set_value(0x1234_5678_0000_0003);
+        });
+    }
+    let expected = cold.run(100);
+    let actual = warm.run(100);
+    assert_eq!(actual.kind(), "exception");
+    assert_eq!(actual.instructions(), 2);
+    assert_eq!(expected.kind(), "exception");
+    warm.with(|state, _| assert_eq!(state.instruction_pointer, BASE + 8));
+    let (cold_regs, cold_flags) =
+        cold.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
+    let (warm_regs, warm_flags) =
+        warm.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
+    assert_eq!(warm_regs, cold_regs);
+    assert_eq!(warm_flags, cold_flags);
+    assert_eq!(read(&mut warm, GuestRegister::Rax, GuestIntegerWidth::B32), 12);
+    assert_eq!(read(&mut warm, GuestRegister::Rcx, GuestIntegerWidth::B32), 123);
+}
+
+#[test]
+fn block_boundaries_observe_stores_entries_and_aliases() {
+    // Two read-only instructions, then a store boundary, then two read-only
+    // instructions. Code patches apply from the test body: hook callbacks
+    // receive no processor state in this port.
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use qa_guest::core::callbacks::HookState;
+
+    let mut f = Fixture::new(&[
+        0xb8, 1, 0, 0, 0, 0x83, 0xc0, 2, 0x89, 0x03, 0x83, 0xc0, 3, 0x83, 0xc0, 4, 0xc3,
+    ]);
+    let data = f.with(|state, memory| {
+        let data = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
+        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        data
+    });
+    let hooks = Rc::new(HookState::new());
+    f.cpu.set_hook_state(Some(Rc::clone(&hooks)));
+    let run = |f: &mut Fixture| {
+        f.reset(BASE);
+        f.run(100)
+    };
+    assert_eq!(run(&mut f).kind(), "return");
+    assert_eq!(run(&mut f).kind(), "return");
+    let code = f.with(|_, memory| {
+        memory.map_alias(0x60000, 17, GuestPermissions::ReadWrite, "alias", addr(memory, BASE)).unwrap()
+    });
+    let observed = Rc::new(Cell::new(0u32));
+    let fired = Rc::clone(&observed);
+    let watcher = f.with(|_, memory| {
+        memory.observe_writes(data, 4, Box::new(move |_| fired.set(fired.get() + 1))).unwrap()
+    });
+    f.with(|_, memory| memory.write_u8(memory.offset(code, 12).unwrap(), 8).unwrap());
+    assert_eq!(run(&mut f).kind(), "return");
+    assert_eq!(observed.get(), 1);
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 15);
+    f.with(|_, memory| memory.unobserve(watcher));
+    let entries = Rc::new(Cell::new(0u32));
+    let counted = Rc::clone(&entries);
+    let entry = addr_of(&mut f, BASE + 13);
+    let observer = f.with(|_, memory| {
+        hooks.callbacks.borrow_mut().observe_entry(memory, entry, Rc::new(move || counted.set(counted.get() + 1))).unwrap()
+    });
+    f.with(|_, memory| memory.write_u8(memory.offset(code, 15).unwrap(), 9).unwrap());
+    assert_eq!(run(&mut f).kind(), "return");
+    assert_eq!(entries.get(), 1);
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 20);
+    hooks.callbacks.borrow_mut().unobserve_entry(entry, observer);
+    assert_eq!(run(&mut f).kind(), "return");
+    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 20);
+    f.with(|_, memory| memory.protect(addr(memory, BASE), 17, GuestPermissions::Read).unwrap());
+    f.reset(BASE);
+    let fault = f.run(100);
+    assert_eq!(fault.kind(), "exception");
+    assert_eq!(fault.instructions(), 0);
+}
+
+#[test]
+fn store_observers_report_ranges_and_unobserve_cleanly() {
+    // Rust observers are infallible and stateless, so the donor's throwing
+    // mid-instruction observer ports as range/unobserve semantics.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut f = Fixture::new(&[0xb8, 1, 0, 0, 0, 0x83, 0xc0, 2, 0x89, 0x03, 0xc3]);
+    let data = f.with(|state, memory| {
+        let data = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
+        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        data
+    });
+    assert_eq!(f.run(100).kind(), "return");
+    let fires: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&fires);
+    let id = f.with(|_, memory| {
+        memory
+            .observe_writes(data, 4, Box::new(move |ranges| {
+                observed.borrow_mut().extend(ranges.iter().map(|range| (range.byte_offset, range.byte_length)));
+            }))
+            .unwrap()
+    });
+    f.reset(BASE);
+    assert_eq!(f.run(100).kind(), "return");
+    assert_eq!(*fires.borrow(), vec![(0, 4)]);
+    f.with(|state, memory| {
+        assert_eq!(state.instruction_pointer, RETURNED);
+        assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 3);
+        assert_eq!(memory.read_u32(data).unwrap(), 3);
+    });
+    f.with(|_, memory| memory.unobserve(id));
+    fires.borrow_mut().clear();
+    f.reset(BASE);
+    assert_eq!(f.run(100).kind(), "return");
+    assert!(fires.borrow().is_empty());
+}
