@@ -6,7 +6,7 @@
 //! `readClientData` in `src/network/q1/netquake.ts`.
 //!
 //! Only the protocol 15 wire shape is covered here; FitzQuake/RMQ wide
-//! extensions (`wide.ts`, `qw29.ts`) are future work.
+//! extensions (`wide.ts`, `qw29.ts`) are covered by [`crate::q1_wide`].
 
 use qa_core::numeric::float_to_wrapped_i32;
 

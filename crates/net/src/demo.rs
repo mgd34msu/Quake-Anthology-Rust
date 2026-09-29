@@ -7,9 +7,10 @@
 //! `DemoReader`, `encodeDemo`, `encodeDemoMessage`, and `finishDemo` in
 //! `src/network/q3/demo.ts`.
 //!
-//! Q2 demo preamble decoding (`readQ2DemoHeader`) needs the full
-//! server-message session and is future work; the record framing here
-//! round-trips complete demo files.
+//! The record framing here ([`read_q2_demo`], [`write_q2_demo_record`],
+//! [`finish_q2_demo`]) round-trips complete demo files; preamble decoding
+//! (`readQ2DemoHeader` in `src/network/q2/demo.ts`) parses the framed
+//! records through the Q2 server-message reader.
 
 use thiserror::Error;
 

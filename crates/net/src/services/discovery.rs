@@ -762,12 +762,12 @@ mod tests {
     use crate::common::endpoint::ipv4_address;
     use crate::protocol::ProtocolIdentity;
 
-    struct StubWire;
-    struct StubTransport {
+    struct FakeWire;
+    struct FakeTransport {
         sent: Vec<(NetworkAddress, Vec<u8>)>,
     }
 
-    impl DiscoveryWire for StubWire {
+    impl DiscoveryWire for FakeWire {
         fn query(&self, kind: DiscoveryRequestKind, challenge: &str) -> Result<Vec<u8>, DiscoveryError> {
             Ok(format!(
                 "{}:{challenge}",
@@ -789,7 +789,7 @@ mod tests {
         }
     }
 
-    impl PacketSender for StubTransport {
+    impl PacketSender for FakeTransport {
         fn send(&mut self, to: &NetworkAddress, bytes: &[u8]) -> bool {
             self.sent.push((to.clone(), bytes.to_vec()));
             true
@@ -812,8 +812,8 @@ mod tests {
 
     #[test]
     fn browser_tracks_requests() {
-        let wire = StubWire;
-        let mut transport = StubTransport { sent: Vec::new() };
+        let wire = FakeWire;
+        let mut transport = FakeTransport { sent: Vec::new() };
         let mut browser = ServerBrowser::new(&wire, &mut transport);
         let address = ipv4_address([127, 0, 0, 1], 26000, false).unwrap();
         let handle = browser
@@ -831,14 +831,14 @@ mod tests {
 
     #[test]
     fn favorites_save_and_restore() {
-        let wire = StubWire;
-        let mut transport = StubTransport { sent: Vec::new() };
+        let wire = FakeWire;
+        let mut transport = FakeTransport { sent: Vec::new() };
         let mut browser = ServerBrowser::new(&wire, &mut transport);
         let address = ipv4_address([10, 0, 0, 5], 27910, false).unwrap();
         browser.add(address, DiscoverySource::Favorite, 0.0);
         let saved = browser.save_favorites();
-        let wire = StubWire;
-        let mut transport = StubTransport { sent: Vec::new() };
+        let wire = FakeWire;
+        let mut transport = FakeTransport { sent: Vec::new() };
         let mut restored = ServerBrowser::new(&wire, &mut transport);
         restored.restore_favorites(&saved).unwrap();
         assert_eq!(restored.favorite_addresses().len(), 1);

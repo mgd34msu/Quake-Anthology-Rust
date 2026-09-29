@@ -5,7 +5,7 @@
 //! helpers from `src/network/q1/message.ts`.
 //!
 //! The protocol 29 / wide variants (`qw29.ts`, `wide.ts`) reuse these
-//! shapes with wider precache counts; they are future work.
+//! shapes with wider precache counts; see [`crate::q1_wide`].
 
 use qa_core::numeric::float_to_wrapped_i32;
 
