@@ -58,8 +58,14 @@ mod tests {
             start_solid: false,
             all_solid: false,
         });
-        assert_eq!(geometry_transmission(vec3(0.0, 0.0, 0.0), vec3(100.0, 0.0, 0.0), &mut clear), 1.0);
-        assert_eq!(geometry_transmission(vec3(1.0, 1.0, 1.0), vec3(1.0, 1.0, 1.0), &mut clear), 1.0);
+        assert_eq!(
+            geometry_transmission(vec3(0.0, 0.0, 0.0), vec3(100.0, 0.0, 0.0), &mut clear),
+            1.0
+        );
+        assert_eq!(
+            geometry_transmission(vec3(1.0, 1.0, 1.0), vec3(1.0, 1.0, 1.0), &mut clear),
+            1.0
+        );
         let mut solid: AudioGeometryTrace = Box::new(|_, _| AudioGeometryHit {
             fraction: 0.0,
             start_solid: true,

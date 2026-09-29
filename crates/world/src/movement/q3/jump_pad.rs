@@ -3,8 +3,8 @@
 //! Donor provenance: `src/movement/q3/jump-pad.ts` (from id Software
 //! `code/game/bg_misc.c`).
 
-use qa_core::identity::{ActorId, ProviderId, same_actor};
-use qa_core::math::{Vec3, angle_normalize180, vector_to_angles};
+use qa_core::identity::{same_actor, ActorId, ProviderId};
+use qa_core::math::{angle_normalize180, vector_to_angles, Vec3};
 
 use super::super::types::PredictableMovementEvent;
 use super::constants::{entity_event, move_type};
@@ -152,14 +152,24 @@ mod tests {
     fn flight_and_noclip_ignore_pads() {
         let owner = IdentityOwner::create("q3-pad").unwrap();
         let pad = owner.actor(9, 0);
-        let flying =
-            touch_q3_jump_pad(&state(), &pad, vec3(0.0, 0.0, 500.0), true, &ProviderId::new("q3", "test"));
+        let flying = touch_q3_jump_pad(
+            &state(),
+            &pad,
+            vec3(0.0, 0.0, 500.0),
+            true,
+            &ProviderId::new("q3", "test"),
+        );
         assert!(flying.event.is_none());
         assert_eq!(flying.state, state());
         let mut noclip = state();
         noclip.movement_type = move_type::NOCLIP;
-        let result =
-            touch_q3_jump_pad(&noclip, &pad, vec3(0.0, 0.0, 500.0), false, &ProviderId::new("q3", "test"));
+        let result = touch_q3_jump_pad(
+            &noclip,
+            &pad,
+            vec3(0.0, 0.0, 500.0),
+            false,
+            &ProviderId::new("q3", "test"),
+        );
         assert_eq!(result.state, noclip);
     }
 
@@ -167,9 +177,14 @@ mod tests {
     fn stale_pad_clears_after_prediction() {
         let owner = IdentityOwner::create("q3-pad").unwrap();
         let pad = owner.actor(9, 0);
-        let touched =
-            touch_q3_jump_pad(&state(), &pad, vec3(0.0, 0.0, 500.0), false, &ProviderId::new("q3", "test"))
-                .state;
+        let touched = touch_q3_jump_pad(
+            &state(),
+            &pad,
+            vec3(0.0, 0.0, 500.0),
+            false,
+            &ProviderId::new("q3", "test"),
+        )
+        .state;
         assert_eq!(finish_q3_jump_pad_prediction(&touched), touched);
         let mut stale = touched;
         stale.movement_frame = 4;

@@ -3,19 +3,17 @@
 //! Donor provenance: `src/movement/q1/common.ts` (derived from Quake
 //! `sv_phys.c`, `sv_user.c` and QW `pmove.c`).
 
-use qa_core::math::{
-    AngleVectors, Bounds, Vec3, angle_vectors, donor_angle_vectors, vec3,
-};
+use qa_core::math::{angle_vectors, donor_angle_vectors, vec3, AngleVectors, Bounds, Vec3};
 use qa_core::numeric::{Arithmetic, NumericOps};
 use qa_core::time::SourceTime;
 
 use super::super::types::{
-    MovementContinuation, MovementEffect, MovementTouchContact, OrderedMovementEffect, TraceContact,
-    TraceHit, TraceShape,
+    MovementContinuation, MovementEffect, MovementTouchContact, OrderedMovementEffect, TraceContact, TraceHit,
+    TraceShape,
 };
 use super::types::{
-    NoQ1Hooks, Q1LifecyclePhase, Q1MovementHooks, Q1MovementOptions, Q1PlayerInput, Q1State,
-    Q1Trace, Q1TraceMove, Q1TraceQuery, Q1MovementContact, Q1MovementServices,
+    NoQ1Hooks, Q1LifecyclePhase, Q1MovementContact, Q1MovementHooks, Q1MovementOptions, Q1MovementServices,
+    Q1PlayerInput, Q1State, Q1Trace, Q1TraceMove, Q1TraceQuery,
 };
 
 /// Zero vector.
@@ -157,12 +155,7 @@ impl MovementMath {
         let mut forward = ZERO;
         let mut right = ZERO;
         let mut up = ZERO;
-        donor_angle_vectors(
-            value,
-            Some(&mut forward),
-            Some(&mut right),
-            Some(&mut up),
-        );
+        donor_angle_vectors(value, Some(&mut forward), Some(&mut right), Some(&mut up));
         AngleVectors { forward, right, up }
     }
 
@@ -301,7 +294,11 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
 
     /// Accept or reject a client body-shape request.
     pub fn update_body_shape(&mut self, state: &Q1State) {
-        let requested = self.input.environment().client_outputs.and_then(|outputs| outputs.body_bounds);
+        let requested = self
+            .input
+            .environment()
+            .client_outputs
+            .and_then(|outputs| outputs.body_bounds);
         let Some(requested) = requested else {
             self.owned_bounds = None;
             return;
@@ -320,7 +317,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
             panic!("A player body output requires a selected collision hull");
         };
         let previous = self.owned_bounds.unwrap_or_else(|| {
-            self.input.fields().current_bounds.unwrap_or_else(|| shape_bounds(&source))
+            self.input
+                .fields()
+                .current_bounds
+                .unwrap_or_else(|| shape_bounds(&source))
         });
         let origin = match state {
             Q1State::Netquake(inner) => inner.origin,
@@ -366,7 +366,12 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
 
     /// Run a trace with the active shape by default.
     pub fn trace(&mut self, start: Vec3, end: Vec3, shape: TraceShape, policy: Q1TraceMove) -> Q1Trace {
-        self.services.trace(Q1TraceQuery { start, end, shape, policy })
+        self.services.trace(Q1TraceQuery {
+            start,
+            end,
+            shape,
+            policy,
+        })
     }
 
     /// Run a trace with the active shape and normal policy.
@@ -378,7 +383,11 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
     /// Q1 point contents with source currents collapsed to water.
     pub fn contents(&mut self, point: Vec3) -> i32 {
         let value = self.services.point_contents(point);
-        if (-14..=-9).contains(&value) { -3 } else { value }
+        if (-14..=-9).contains(&value) {
+            -3
+        } else {
+            value
+        }
     }
 
     /// Whether an origin is free of solid.
@@ -509,20 +518,15 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> MovementContext<'s, S, H> {
     #[must_use]
     pub fn input_command(&self) -> super::super::types::UserCommand {
         match &self.input {
-            Q1PlayerInput::Netquake(input) => {
-                super::super::types::UserCommand::Q1Netquake(input.command)
-            }
-            Q1PlayerInput::Quakeworld(input) => {
-                super::super::types::UserCommand::Q1Quakeworld(input.command)
-            }
+            Q1PlayerInput::Netquake(input) => super::super::types::UserCommand::Q1Netquake(input.command),
+            Q1PlayerInput::Quakeworld(input) => super::super::types::UserCommand::Q1Quakeworld(input.command),
         }
     }
 
     /// Whether a hit is BSP geometry.
     #[must_use]
     pub fn is_bsp(&self, hit: &TraceHit) -> bool {
-        matches!(hit, TraceHit::World { .. })
-            || self.options.hooks.as_ref().is_some_and(|hooks| hooks.is_bsp(hit))
+        matches!(hit, TraceHit::World { .. }) || self.options.hooks.as_ref().is_some_and(|hooks| hooks.is_bsp(hit))
     }
 }
 
@@ -533,13 +537,13 @@ mod tests {
     use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
     use qa_core::time::{FrameContext, FramePhase, SourceTime};
 
-    use super::super::types::{
-        NoQ1Hooks, Q1AnimationStepInput, Q1AnimationStepResult, Q1MovementOptions, Q1MovementState,
-        Q1WeaponStepInput, Q1WeaponStepResult, QwMovementState,
-    };
     use super::super::super::types::{
-        ActorAnimationState, AnimationState, ArsenalState, MovementEnvironment, MovementExecution,
-        MovementInputFields, UserCommand, WeaponState,
+        ActorAnimationState, AnimationState, ArsenalState, MovementEnvironment, MovementExecution, MovementInputFields,
+        UserCommand, WeaponState,
+    };
+    use super::super::types::{
+        NoQ1Hooks, Q1AnimationStepInput, Q1AnimationStepResult, Q1MovementOptions, Q1MovementState, Q1WeaponStepInput,
+        Q1WeaponStepResult, QwMovementState,
     };
 
     struct NullServices {
@@ -570,18 +574,10 @@ mod tests {
         fn point_contents(&mut self, _point: Vec3) -> i32 {
             -1
         }
-        fn touch(
-            &mut self,
-            _contact: MovementTouchContact,
-            state: Q1State,
-        ) -> MovementContinuation<Q1State> {
+        fn touch(&mut self, _contact: MovementTouchContact, state: Q1State) -> MovementContinuation<Q1State> {
             MovementContinuation::Continue(state)
         }
-        fn weapon_step(
-            &mut self,
-            input: Q1WeaponStepInput<'_>,
-            _state: &Q1State,
-        ) -> Q1WeaponStepResult {
+        fn weapon_step(&mut self, input: Q1WeaponStepInput<'_>, _state: &Q1State) -> Q1WeaponStepResult {
             Q1WeaponStepResult {
                 continuation: None,
                 arsenal: (*input.arsenal).clone(),
@@ -828,8 +824,7 @@ mod tests {
             }),
             Q1PlayerInput::Quakeworld(_) => panic!("netquake fixture"),
         };
-        let context =
-            MovementContext::new(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default());
+        let context = MovementContext::new(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default());
         assert_eq!(context.view_height(), 22.0);
         let _ = UserCommand::Q1Netquake(super::super::super::types::Q1UserCommand {
             acknowledged_server_time_seconds: 0.0,

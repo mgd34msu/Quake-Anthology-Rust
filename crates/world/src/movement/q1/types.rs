@@ -7,13 +7,12 @@ use qa_core::math::{Bounds, Plane, Vec3};
 use qa_core::numeric::NumericProfile;
 use qa_core::time::{ClockProfile, FrameContext};
 
-use super::super::Q1MovementParameters;
 use super::super::types::{
-    ActorAnimationState, ArsenalState, FixedMovementPose, LocomotionAnimation, MovementContinuation,
-    MovementEffect, MovementEnvironment, MovementError, MovementInputContinuation,
-    MovementInputFields, MovementOutcome, MovementTouchContact, Q1UserCommand, QwUserCommand,
-    TraceContact, TraceHit, TraceShape, UserCommand,
+    ActorAnimationState, ArsenalState, FixedMovementPose, LocomotionAnimation, MovementContinuation, MovementEffect,
+    MovementEnvironment, MovementError, MovementInputContinuation, MovementInputFields, MovementOutcome,
+    MovementTouchContact, Q1UserCommand, QwUserCommand, TraceContact, TraceHit, TraceShape, UserCommand,
 };
+use super::super::Q1MovementParameters;
 
 /// No movement.
 pub const Q1_MOVE_NONE: i32 = 0;
@@ -395,22 +394,13 @@ pub trait Q1MovementHooks {
     /// Observe accepted body bounds.
     fn body_shape(&mut self, _bounds: Bounds) {}
     /// Link the actor, touching triggers on request.
-    fn link(
-        &mut self,
-        actor: &OwnedActor,
-        state: Q1State,
-        touch_triggers: bool,
-    ) -> MovementContinuation<Q1State>;
+    fn link(&mut self, actor: &OwnedActor, state: Q1State, touch_triggers: bool) -> MovementContinuation<Q1State>;
     /// Whether a hit is BSP geometry.
     fn is_bsp(&self, _hit: &TraceHit) -> bool {
         false
     }
     /// Run before physics.
-    fn before_physics(
-        &mut self,
-        input: &Q1PlayerInput,
-        state: Q1State,
-    ) -> MovementContinuation<Q1State>;
+    fn before_physics(&mut self, input: &Q1PlayerInput, state: Q1State) -> MovementContinuation<Q1State>;
     /// Run think; default keeps state (no think hook).
     fn think(&mut self, _input: &Q1PlayerInput, state: Q1State) -> MovementContinuation<Q1State> {
         MovementContinuation::Continue(state)
@@ -420,21 +410,11 @@ pub trait Q1MovementHooks {
         false
     }
     /// Run after physics.
-    fn after_physics(
-        &mut self,
-        input: &Q1PlayerInput,
-        state: Q1State,
-    ) -> MovementContinuation<Q1State>;
+    fn after_physics(&mut self, input: &Q1PlayerInput, state: Q1State) -> MovementContinuation<Q1State>;
     /// Play a movement sound.
     fn sound(&mut self, _actor: &OwnedActor, _sound: Q1MovementSound, _state: &Q1MovementState) {}
     /// Observe a player jump/swim action.
-    fn player_action(
-        &mut self,
-        _actor: &OwnedActor,
-        _action: Q1PlayerActionKind,
-        _state: &Q1MovementState,
-    ) {
-    }
+    fn player_action(&mut self, _actor: &OwnedActor, _action: Q1PlayerActionKind, _state: &Q1MovementState) {}
 }
 
 /// No-op hooks for headless runs.
@@ -442,28 +422,15 @@ pub trait Q1MovementHooks {
 pub struct NoQ1Hooks;
 
 impl Q1MovementHooks for NoQ1Hooks {
-    fn link(
-        &mut self,
-        _actor: &OwnedActor,
-        state: Q1State,
-        _touch_triggers: bool,
-    ) -> MovementContinuation<Q1State> {
+    fn link(&mut self, _actor: &OwnedActor, state: Q1State, _touch_triggers: bool) -> MovementContinuation<Q1State> {
         MovementContinuation::Continue(state)
     }
 
-    fn before_physics(
-        &mut self,
-        _input: &Q1PlayerInput,
-        state: Q1State,
-    ) -> MovementContinuation<Q1State> {
+    fn before_physics(&mut self, _input: &Q1PlayerInput, state: Q1State) -> MovementContinuation<Q1State> {
         MovementContinuation::Continue(state)
     }
 
-    fn after_physics(
-        &mut self,
-        _input: &Q1PlayerInput,
-        state: Q1State,
-    ) -> MovementContinuation<Q1State> {
+    fn after_physics(&mut self, _input: &Q1PlayerInput, state: Q1State) -> MovementContinuation<Q1State> {
         MovementContinuation::Continue(state)
     }
 }
@@ -593,11 +560,7 @@ pub trait Q1MovementServices {
     /// Q1-translated point contents (source currents collapsed to water).
     fn point_contents(&mut self, point: Vec3) -> i32;
     /// Dispatch a touch contact.
-    fn touch(
-        &mut self,
-        contact: MovementTouchContact,
-        state: Q1State,
-    ) -> MovementContinuation<Q1State>;
+    fn touch(&mut self, contact: MovementTouchContact, state: Q1State) -> MovementContinuation<Q1State>;
     /// Run the weapon owner.
     fn weapon_step(&mut self, input: Q1WeaponStepInput<'_>, state: &Q1State) -> Q1WeaponStepResult;
     /// Run the animation owner.
@@ -667,11 +630,7 @@ pub trait Q1PusherServices {
     /// Test an entity's position.
     fn test_position(&mut self, entity: &Q1PhysicsEntity) -> TraceHit;
     /// Push an entity by a displacement.
-    fn push(
-        &mut self,
-        entity: &Q1PhysicsEntity,
-        displacement: Vec3,
-    ) -> (Option<Q1PhysicsEntity>, Q1Trace);
+    fn push(&mut self, entity: &Q1PhysicsEntity, displacement: Vec3) -> (Option<Q1PhysicsEntity>, Q1Trace);
     /// Blocked callback.
     fn blocked(&mut self, pusher: &OwnedActor, obstacle: &ActorId);
     /// Think callback.

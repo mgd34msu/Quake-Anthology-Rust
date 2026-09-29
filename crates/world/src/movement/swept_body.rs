@@ -5,7 +5,7 @@
 //! Source adapters own state access, contact effects, and arithmetic through
 //! [`SweptBodyServices`]; the solver owns only the bump/plane iteration.
 
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
 pub use super::{MAX_BUMPS, MAX_PLANES};
 
@@ -212,11 +212,7 @@ pub fn sweep_body<S: SweptBodyServices>(services: &mut S, elapsed: f64) -> Sweep
             Some(state) => state,
             None => return SweepStop::Removed,
         };
-        if services.stop_when_still()
-            && state.velocity.x == 0.0
-            && state.velocity.y == 0.0
-            && state.velocity.z == 0.0
-        {
+        if services.stop_when_still() && state.velocity.x == 0.0 && state.velocity.y == 0.0 && state.velocity.z == 0.0 {
             break;
         }
         let target = services.advance(state.origin, remaining, state.velocity);

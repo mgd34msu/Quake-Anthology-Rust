@@ -9,8 +9,16 @@ use super::super::types::MovementError;
 
 /// Source player bounds.
 pub const Q2_PLAYER_BOUNDS: Bounds = Bounds {
-    min: Vec3 { x: -16.0, y: -16.0, z: -24.0 },
-    max: Vec3 { x: 16.0, y: 16.0, z: 32.0 },
+    min: Vec3 {
+        x: -16.0,
+        y: -16.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 16.0,
+        y: 16.0,
+        z: 32.0,
+    },
 };
 
 /// Source posture heights relative to the selected character's standing body.
@@ -33,11 +41,7 @@ pub fn standing_bounds() -> Bounds {
 
 /// Body-bounds acceptance gate with a one-shot clearance probe. Same rule as
 /// the shared hull gate; the `FnOnce` probe keeps the pmove borrow.
-pub fn accept_body_bounds(
-    previous: &Bounds,
-    requested: &Bounds,
-    clear: impl FnOnce(&Bounds) -> bool,
-) -> Bounds {
+pub fn accept_body_bounds(previous: &Bounds, requested: &Bounds, clear: impl FnOnce(&Bounds) -> bool) -> Bounds {
     let expands = requested.min.x < previous.min.x
         || requested.min.y < previous.min.y
         || requested.min.z < previous.min.z

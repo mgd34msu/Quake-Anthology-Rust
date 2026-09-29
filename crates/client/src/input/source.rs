@@ -80,7 +80,8 @@ impl SourceJoystickDevice for SdlJoystick {
     }
 
     fn poll_events(&mut self, profile: SourceJoystickProfile) -> Result<Vec<SdlJoystickEvent>, SourceInputError> {
-        SdlJoystick::poll_events(self, platform_profile(profile)).map_err(|error| SourceInputError::Platform(error.to_string()))
+        SdlJoystick::poll_events(self, platform_profile(profile))
+            .map_err(|error| SourceInputError::Platform(error.to_string()))
     }
 
     fn close(&mut self) {
@@ -100,7 +101,12 @@ pub fn open_platform_joystick(
 }
 
 /// Joystick opener for [`SourceInputState`].
-pub type JoystickOpener = Box<dyn FnMut(&mut dyn FnMut(&str), SourceJoystickProfile) -> Result<Option<Box<dyn SourceJoystickDevice>>, SourceInputError>>;
+pub type JoystickOpener = Box<
+    dyn FnMut(
+        &mut dyn FnMut(&str),
+        SourceJoystickProfile,
+    ) -> Result<Option<Box<dyn SourceJoystickDevice>>, SourceInputError>,
+>;
 
 /// Source mouse availability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,7 +156,9 @@ impl SourceInputState {
     }
 
     fn cvar(cvars: &CvarRegistry, name: &str) -> Result<qa_core::cvar::CvarSnapshot, SourceInputError> {
-        cvars.get(name).ok_or_else(|| SourceInputError::MissingCvar(name.to_string()))
+        cvars
+            .get(name)
+            .ok_or_else(|| SourceInputError::MissingCvar(name.to_string()))
     }
 
     /// Register source cvars, apply the joystick latch, discover hardware.
@@ -249,7 +257,9 @@ impl SourceInputState {
         }
         if self.joystick_profile == SourceJoystickProfile::Windows
             && Self::cvar(cvars, "in_debugjoystick")?.integer_value != 0
-            && !events.iter().any(|event| matches!(event, SdlJoystickEvent::Removed { .. }))
+            && !events
+                .iter()
+                .any(|event| matches!(event, SdlJoystickEvent::Removed { .. }))
         {
             let debug = windows_joystick_debug(&events);
             (self.print)(&debug);
@@ -261,7 +271,8 @@ impl SourceInputState {
             match event {
                 SdlJoystickEvent::Button { button, down, .. } => {
                     let windows = self.joystick_profile == SourceJoystickProfile::Windows;
-                    self.joystick_state.button(i32::from(button), down, queue_key, windows)?;
+                    self.joystick_state
+                        .button(i32::from(button), down, queue_key, windows)?;
                 }
                 SdlJoystickEvent::Axis { axis, value, .. } => self.joystick_state.axis(axis, value),
                 SdlJoystickEvent::Hat { hat, value, .. } => self.joystick_state.pov(hat, value),
@@ -285,7 +296,8 @@ impl SourceInputState {
             };
             let axes = self.joystick.as_ref().map_or(0, |joystick| joystick.axes());
             let ball = f64::from(Self::cvar(cvars, "in_joyBallScale")?.numeric_value);
-            self.joystick_state.windows_frame(threshold, axes, ball, queue_key, queue_mouse)?;
+            self.joystick_state
+                .windows_frame(threshold, axes, ball, queue_key, queue_mouse)?;
         } else {
             self.joystick_state.frame(threshold, queue_key);
         }
@@ -293,7 +305,11 @@ impl SourceInputState {
     }
 
     /// Release joystick keys on SDL focus loss.
-    pub fn release_joystick_state(&mut self, time: i64, queue_key: &mut dyn FnMut(i32, bool, i64)) -> Result<(), SourceInputError> {
+    pub fn release_joystick_state(
+        &mut self,
+        time: i64,
+        queue_key: &mut dyn FnMut(i32, bool, i64),
+    ) -> Result<(), SourceInputError> {
         if self.closed {
             return Err(SourceInputError::Closed);
         }
@@ -352,7 +368,11 @@ mod tests {
         }
     }
 
-    fn harness() -> (SourceInputState, CvarRegistry, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+    fn harness() -> (
+        SourceInputState,
+        CvarRegistry,
+        std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    ) {
         let printed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = printed.clone();
         let state = SourceInputState::new(
@@ -370,7 +390,9 @@ mod tests {
     #[test]
     fn initializes_discovers_and_pumps() {
         let (mut state, mut cvars, printed) = harness();
-        cvars.register("in_joystick", "0", qa_core::cvar::flags::ARCHIVE).unwrap();
+        cvars
+            .register("in_joystick", "0", qa_core::cvar::flags::ARCHIVE)
+            .unwrap();
         state.initialize(&mut cvars).unwrap();
         assert!(state.mouse.available);
         assert!(state.instance().is_none());
@@ -387,9 +409,13 @@ mod tests {
                 down: true,
             })
             .unwrap();
-        state.joystick_frame(&cvars, &mut |key, down, _| keys.push((key, down)), None).unwrap();
+        state
+            .joystick_frame(&cvars, &mut |key, down, _| keys.push((key, down)), None)
+            .unwrap();
         assert_eq!(keys, vec![(super::super::KeyCode::Joy1 as i32 + 2, true)]);
-        state.release_joystick_state(9, &mut |key, down, _| keys.push((key, down))).unwrap();
+        state
+            .release_joystick_state(9, &mut |key, down, _| keys.push((key, down)))
+            .unwrap();
         assert!(keys.iter().any(|(_, down)| !down));
         state.close();
         assert!(state.initialize(&mut cvars).is_err());

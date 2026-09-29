@@ -7,10 +7,11 @@ use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::NumericOps;
 
-use super::common::MovementMath;
 use super::super::types::{MovementError, TraceHit};
-use super::types::{Q1Trace, Q1_CONTENTS_EMPTY, Q1_CONTENTS_SOLID, Q1_FLAG_FLY, Q1_FLAG_ONGROUND,
-    Q1_FLAG_SWIM, Q1_STEP_HEIGHT};
+use super::common::MovementMath;
+use super::types::{
+    Q1Trace, Q1_CONTENTS_EMPTY, Q1_CONTENTS_SOLID, Q1_FLAG_FLY, Q1_FLAG_ONGROUND, Q1_FLAG_SWIM, Q1_STEP_HEIGHT,
+};
 
 /// Partial-ground flag.
 pub const Q1_FLAG_PARTIALGROUND: i32 = 1024;
@@ -137,7 +138,9 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         let mut easy = true;
         'corners: for x in [minimum.x, maximum.x] {
             for y in [minimum.y, maximum.y] {
-                let point = self.math.vec(f64::from(x), f64::from(y), n.sub(f64::from(minimum.z), 1.0));
+                let point = self
+                    .math
+                    .vec(f64::from(x), f64::from(y), n.sub(f64::from(minimum.z), 1.0));
                 if self.services.point_contents(actor, point) != Q1_CONTENTS_SOLID {
                     easy = false;
                     break 'corners;
@@ -171,9 +174,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
                     self.math.vec(f64::from(x), f64::from(y), end_z),
                     None,
                 );
-                if corner.fraction == 1.0
-                    || n.sub(f64::from(middle_height), f64::from(corner.end.z)) > Q1_STEP_HEIGHT
-                {
+                if corner.fraction == 1.0 || n.sub(f64::from(middle_height), f64::from(corner.end.z)) > Q1_STEP_HEIGHT {
                     return false;
                 }
             }
@@ -182,12 +183,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
     }
 
     /// Step-move a monster, with step-up and bottom checks for walkers.
-    pub fn move_step(
-        &mut self,
-        actor: &OwnedActor,
-        step: Vec3,
-        relink: bool,
-    ) -> Result<bool, MovementError> {
+    pub fn move_step(&mut self, actor: &OwnedActor, step: Vec3, relink: bool) -> Result<bool, MovementError> {
         let Some(mut state) = self.services.read(actor.id()) else {
             return Ok(false);
         };
@@ -195,10 +191,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         if state.flags & (Q1_FLAG_SWIM | Q1_FLAG_FLY) != 0 {
             for attempt in 0..2 {
                 let mut destination = self.math.add(state.origin, step);
-                let enemy = state
-                    .enemy
-                    .as_ref()
-                    .and_then(|enemy| self.services.read_target(enemy));
+                let enemy = state.enemy.as_ref().and_then(|enemy| self.services.read_target(enemy));
                 if attempt == 0 {
                     if let Some(enemy) = &enemy {
                         let n = self.services.numeric();
@@ -219,9 +212,9 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
                         }
                     }
                 }
-                let trace =
-                    self.services
-                        .trace(actor.id(), state.origin, destination, Some(state.bounds));
+                let trace = self
+                    .services
+                    .trace(actor.id(), state.origin, destination, Some(state.bounds));
                 if trace.fraction == 1.0 {
                     if state.flags & Q1_FLAG_SWIM != 0
                         && self.services.point_contents(actor.id(), trace.end) == Q1_CONTENTS_EMPTY
@@ -258,9 +251,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
             f64::from(destination.y),
             n.sub(f64::from(destination.z), Q1_STEP_HEIGHT * 2.0),
         );
-        let mut trace =
-            self.services
-                .trace(actor.id(), destination, end, Some(state.bounds));
+        let mut trace = self.services.trace(actor.id(), destination, end, Some(state.bounds));
         if trace.all_solid {
             return Ok(false);
         }
@@ -336,12 +327,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
     }
 
     /// Step in a yaw direction, rejecting turns over 45 degrees.
-    pub fn step_direction(
-        &mut self,
-        actor: &OwnedActor,
-        yaw: f64,
-        distance: f64,
-    ) -> Result<bool, MovementError> {
+    pub fn step_direction(&mut self, actor: &OwnedActor, yaw: f64, distance: f64) -> Result<bool, MovementError> {
         let Some(state) = self.services.read(actor.id()) else {
             return Ok(false);
         };
@@ -358,11 +344,9 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
             return Ok(false);
         };
         let radians = n.div(n.mul(n.mul(yaw, std::f64::consts::PI), 2.0), 360.0);
-        let step = self.math.vec(
-            n.mul(radians.cos(), distance),
-            n.mul(radians.sin(), distance),
-            0.0,
-        );
+        let step = self
+            .math
+            .vec(n.mul(radians.cos(), distance), n.mul(radians.sin(), distance), 0.0);
         let original = state.origin;
         let moved = self.move_step(actor, step, false)?;
         let Some(state) = self.services.read(actor.id()) else {
@@ -371,7 +355,13 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         if moved {
             let delta = n.sub(f64::from(state.angles.y), state.ideal_yaw);
             if delta > 45.0 && delta < 315.0 {
-                self.services.write(actor, Q1MonsterMoveState { origin: original, ..state });
+                self.services.write(
+                    actor,
+                    Q1MonsterMoveState {
+                        origin: original,
+                        ..state
+                    },
+                );
             }
         }
         self.services.link(actor, true);
@@ -379,12 +369,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
     }
 
     /// Walk-move in a yaw direction when grounded or flying.
-    pub fn walk_move(
-        &mut self,
-        actor: &OwnedActor,
-        yaw: f64,
-        distance: f64,
-    ) -> Result<bool, MovementError> {
+    pub fn walk_move(&mut self, actor: &OwnedActor, yaw: f64, distance: f64) -> Result<bool, MovementError> {
         let Some(state) = self.services.read(actor.id()) else {
             return Ok(false);
         };
@@ -393,19 +378,15 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         }
         let n = self.services.numeric();
         let radians = n.div(n.mul(n.mul(yaw, std::f64::consts::PI), 2.0), 360.0);
-        let step = self.math.vec(
-            n.mul(radians.cos(), distance),
-            n.mul(radians.sin(), distance),
-            0.0,
-        );
+        let step = self
+            .math
+            .vec(n.mul(radians.cos(), distance), n.mul(radians.sin(), distance), 0.0);
         self.move_step(actor, step, true)
     }
 
     /// Whether two actors' absolute bounds overlap within a distance.
     pub fn close_enough(&mut self, actor: &ActorId, goal: &ActorId, distance: f64) -> bool {
-        let (Some(me), Some(target)) =
-            (self.services.read(actor), self.services.read_target(goal))
-        else {
+        let (Some(me), Some(target)) = (self.services.read(actor), self.services.read_target(goal)) else {
             return false;
         };
         let n = self.services.numeric();
@@ -426,9 +407,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         goal: &ActorId,
         distance: f64,
     ) -> Result<(), MovementError> {
-        let (Some(state), Some(enemy)) =
-            (self.services.read(actor.id()), self.services.read_target(goal))
-        else {
+        let (Some(state), Some(enemy)) = (self.services.read(actor.id()), self.services.read_target(goal)) else {
             return Ok(());
         };
         let n = self.services.numeric();
@@ -437,12 +416,28 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         let turnaround = self.angle_mod(n.sub(old_direction, 180.0));
         let dx = n.sub(f64::from(enemy.origin.x), f64::from(state.origin.x));
         let dy = n.sub(f64::from(enemy.origin.y), f64::from(state.origin.y));
-        let mut first = if dx > 10.0 { 0.0 } else if dx < -10.0 { 180.0 } else { -1.0 };
-        let mut second = if dy < -10.0 { 270.0 } else if dy > 10.0 { 90.0 } else { -1.0 };
+        let mut first = if dx > 10.0 {
+            0.0
+        } else if dx < -10.0 {
+            180.0
+        } else {
+            -1.0
+        };
+        let mut second = if dy < -10.0 {
+            270.0
+        } else if dy > 10.0 {
+            90.0
+        } else {
+            -1.0
+        };
         if first != -1.0 && second != -1.0 {
             // The southwest constant is 215 in both released source and donor.
             let diagonal = if first == 0.0 {
-                if second == 90.0 { 45.0 } else { 315.0 }
+                if second == 90.0 {
+                    45.0
+                } else {
+                    315.0
+                }
             } else if second == 90.0 {
                 135.0
             } else {
@@ -485,7 +480,13 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
             return Ok(());
         }
         if let Some(current) = self.services.read(actor.id()) {
-            self.services.write(actor, Q1MonsterMoveState { ideal_yaw: old_direction, ..current });
+            self.services.write(
+                actor,
+                Q1MonsterMoveState {
+                    ideal_yaw: old_direction,
+                    ..current
+                },
+            );
             if !self.check_bottom(actor.id()) {
                 if let Some(after) = self.services.read(actor.id()) {
                     self.services.write(
@@ -501,12 +502,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         Ok(())
     }
 
-    fn try_step(
-        &mut self,
-        actor: &OwnedActor,
-        direction: f64,
-        distance: f64,
-    ) -> Result<bool, MovementError> {
+    fn try_step(&mut self, actor: &OwnedActor, direction: f64, distance: f64) -> Result<bool, MovementError> {
         if self.services.read(actor.id()).is_none() {
             return Ok(true);
         }
@@ -530,9 +526,7 @@ impl<S: Q1MonsterMoveServices> Q1MonsterMovement<S> {
         if !contact && state.enemy.is_some() && self.close_enough(actor.id(), goal, distance) {
             return Ok(());
         }
-        if self.services.next_random() & 3 == 1
-            || !self.step_direction(actor, state.ideal_yaw, distance)?
-        {
+        if self.services.next_random() & 3 == 1 || !self.step_direction(actor, state.ideal_yaw, distance)? {
             if self.services.read(actor.id()).is_some() {
                 self.new_chase_direction(actor, goal, distance)?;
             }
@@ -638,7 +632,9 @@ mod tests {
     fn yaw_turns_at_yaw_speed() {
         let (owner, harness) = harness();
         let id = owner.actor(1, 0);
-        let actor = owner.owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test")).unwrap();
+        let actor = owner
+            .owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test"))
+            .unwrap();
         let mut movement = Q1MonsterMovement::new(harness);
         movement.change_yaw(&actor);
         assert_eq!(movement.services.state.unwrap().angles.y, 45.0);
@@ -656,7 +652,9 @@ mod tests {
     fn open_step_moves_walker() {
         let (owner, harness) = harness();
         let id = owner.actor(1, 0);
-        let actor = owner.owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test")).unwrap();
+        let actor = owner
+            .owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test"))
+            .unwrap();
         let mut movement = Q1MonsterMovement::new(harness);
         // Open middle trace with fraction 1 fails the bottom middle probe, so
         // force the easy corner path only.
@@ -686,7 +684,9 @@ mod tests {
     fn walk_move_rejects_airborne() {
         let (owner, mut harness) = harness();
         let id = owner.actor(1, 0);
-        let actor = owner.owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test")).unwrap();
+        let actor = owner
+            .owned_actor(&id, qa_core::identity::ProviderId::new("q1", "test"))
+            .unwrap();
         harness.state.as_mut().unwrap().flags = 0;
         let mut movement = Q1MonsterMovement::new(harness);
         assert!(!movement.walk_move(&actor, 0.0, 8.0).unwrap());

@@ -106,7 +106,9 @@ fn device_coordinates(name: &str) -> Option<(u64, u64)> {
     if card_text.is_empty() || device_text.is_empty() {
         return None;
     }
-    if !card_text.chars().all(|value| value.is_ascii_digit()) || !device_text.chars().all(|value| value.is_ascii_digit()) {
+    if !card_text.chars().all(|value| value.is_ascii_digit())
+        || !device_text.chars().all(|value| value.is_ascii_digit())
+    {
         return None;
     }
     Some((card_text.parse().ok()?, device_text.parse().ok()?))
@@ -119,7 +121,10 @@ fn valid_device_path(path: &str) -> bool {
     let Some((card, device)) = rest.split_once('D') else {
         return false;
     };
-    !card.is_empty() && !device.is_empty() && card.chars().all(|value| value.is_ascii_digit()) && device.chars().all(|value| value.is_ascii_digit())
+    !card.is_empty()
+        && !device.is_empty()
+        && card.chars().all(|value| value.is_ascii_digit())
+        && device.chars().all(|value| value.is_ascii_digit())
 }
 
 struct RawMidiHandle<IO> {
@@ -313,7 +318,14 @@ mod std_io {
             match file.read(bytes) {
                 Ok(0) => Err(MidiError::EndOfStream),
                 Ok(count) => Ok(count),
-                Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => Ok(0),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    Ok(0)
+                }
                 Err(error) => Err(MidiError::File(error.to_string())),
             }
         }
@@ -387,13 +399,18 @@ impl SourceMidiInput {
             Ok(devices) => {
                 let device = devices.get(usize::try_from(selected).unwrap_or(usize::MAX)).cloned();
                 match device {
-                    None => (self.print)(&format!("WARNING: could not open MIDI device {selected}: {}\n", MidiError::BadDeviceIndex(devices.len()))),
+                    None => (self.print)(&format!(
+                        "WARNING: could not open MIDI device {selected}: {}\n",
+                        MidiError::BadDeviceIndex(devices.len())
+                    )),
                     Some(device) => match self.boundary.open(&device) {
                         Ok(handle) => {
                             self.devices = devices;
                             self.handle = Some(handle);
                         }
-                        Err(error) => (self.print)(&format!("WARNING: could not open MIDI device {selected}: {error}\n")),
+                        Err(error) => {
+                            (self.print)(&format!("WARNING: could not open MIDI device {selected}: {error}\n"))
+                        }
                     },
                 }
             }
@@ -408,7 +425,12 @@ impl SourceMidiInput {
     }
 
     /// Pump at most sixteen reads into queued keys.
-    pub fn frame(&mut self, cvars: &CvarRegistry, queue_key: &mut dyn FnMut(i32, bool, i64), time: i64) -> Result<(), MidiError> {
+    pub fn frame(
+        &mut self,
+        cvars: &CvarRegistry,
+        queue_key: &mut dyn FnMut(i32, bool, i64),
+        time: i64,
+    ) -> Result<(), MidiError> {
         if self.closed {
             return Err(MidiError::Closed);
         }
@@ -443,14 +465,15 @@ impl SourceMidiInput {
                 return Ok(());
             }
             let held = &mut self.held;
-            self.decoder.feed(&buffer[..count], channel, time, &mut |key, down, timestamp| {
-                if down {
-                    held.insert(key);
-                } else {
-                    held.remove(&key);
-                }
-                queue_key(key, down, timestamp);
-            });
+            self.decoder
+                .feed(&buffer[..count], channel, time, &mut |key, down, timestamp| {
+                    if down {
+                        held.insert(key);
+                    } else {
+                        held.remove(&key);
+                    }
+                    queue_key(key, down, timestamp);
+                });
         }
         Ok(())
     }
@@ -462,16 +485,33 @@ impl SourceMidiInput {
         }
         (self.print)(&format!(
             "\nMIDI control:       {}\n",
-            if Self::cvar(cvars, "in_midi")?.integer_value != 0 { "enabled" } else { "disabled" }
+            if Self::cvar(cvars, "in_midi")?.integer_value != 0 {
+                "enabled"
+            } else {
+                "disabled"
+            }
         ));
-        (self.print)(&format!("port:               {}\n", Self::cvar(cvars, "in_midiport")?.integer_value));
-        (self.print)(&format!("channel:            {}\n", Self::cvar(cvars, "in_midichannel")?.integer_value));
-        (self.print)(&format!("current device:     {}\n", Self::cvar(cvars, "in_mididevice")?.integer_value));
+        (self.print)(&format!(
+            "port:               {}\n",
+            Self::cvar(cvars, "in_midiport")?.integer_value
+        ));
+        (self.print)(&format!(
+            "channel:            {}\n",
+            Self::cvar(cvars, "in_midichannel")?.integer_value
+        ));
+        (self.print)(&format!(
+            "current device:     {}\n",
+            Self::cvar(cvars, "in_mididevice")?.integer_value
+        ));
         (self.print)(&format!("number of devices:  {}\n", self.devices.len()));
         for (index, device) in self.devices.iter().enumerate() {
             (self.print)(&format!(
                 "{}device {:>2}:       {}\n",
-                if index as i32 == Self::cvar(cvars, "in_mididevice")?.integer_value { "***" } else { "..." },
+                if index as i32 == Self::cvar(cvars, "in_mididevice")?.integer_value {
+                    "***"
+                } else {
+                    "..."
+                },
                 index,
                 device.name
             ));
@@ -485,7 +525,13 @@ impl SourceMidiInput {
 
     /// Release every held key.
     pub fn release(&mut self, time: i64, queue_key: &mut dyn FnMut(i32, bool, i64)) {
-        for key in self.held.iter().chain(self.released.iter()).copied().collect::<Vec<_>>() {
+        for key in self
+            .held
+            .iter()
+            .chain(self.released.iter())
+            .copied()
+            .collect::<Vec<_>>()
+        {
             queue_key(key, false, time);
         }
         self.held.clear();
@@ -579,7 +625,12 @@ mod tests {
         let mut bytes = [0u8; 8];
         assert_eq!(handle.read(&mut bytes).unwrap(), 1);
         assert_eq!(bytes[0], 0x90);
-        assert!(boundary.open(&MidiDevice { name: String::new(), path: "/tmp/nope".to_string() }).is_err());
+        assert!(boundary
+            .open(&MidiDevice {
+                name: String::new(),
+                path: "/tmp/nope".to_string()
+            })
+            .is_err());
     }
 
     #[test]
@@ -594,18 +645,25 @@ mod tests {
         };
         let printed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = printed.clone();
-        let mut midi = SourceMidiInput::new(Box::new(LinuxMidiInputBoundary::new(io)), Box::new(move |text| sink.borrow_mut().push(text.to_string())));
+        let mut midi = SourceMidiInput::new(
+            Box::new(LinuxMidiInputBoundary::new(io)),
+            Box::new(move |text| sink.borrow_mut().push(text.to_string())),
+        );
         let mut cvars = CvarRegistry::new(Dialect::Q3);
         register_midi_settings(&mut cvars).unwrap();
         cvars.set("in_midi", "1", false).unwrap();
         midi.initialize(&mut cvars).unwrap();
         assert!(midi.connected());
         let mut keys = Vec::new();
-        midi.frame(&cvars, &mut |key, down, time| keys.push((key, down, time)), 40).unwrap();
+        midi.frame(&cvars, &mut |key, down, time| keys.push((key, down, time)), 40)
+            .unwrap();
         assert_eq!(keys, vec![(super::super::KeyCode::Aux1 as i32, true, 40)]);
         cvars.set("in_midichannel", "2", false).unwrap();
-        midi.frame(&cvars, &mut |key, down, _| keys.push((key, down, 0)), 50).unwrap();
-        assert!(keys.iter().any(|(key, down, _)| *key == super::super::KeyCode::Aux1 as i32 && !down));
+        midi.frame(&cvars, &mut |key, down, _| keys.push((key, down, 0)), 50)
+            .unwrap();
+        assert!(keys
+            .iter()
+            .any(|(key, down, _)| *key == super::super::KeyCode::Aux1 as i32 && !down));
         midi.info(&cvars).unwrap();
         assert!(printed.borrow().iter().any(|line| line.contains("MIDI control")));
         midi.close();

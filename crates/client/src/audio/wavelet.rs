@@ -31,7 +31,11 @@ impl WaveletSoundChunk {
     /// Chunk over caller storage.
     #[must_use]
     pub const fn new(data: [u8; WAVELET_CHUNK_BYTES]) -> Self {
-        Self { data, next: None, size: 0 }
+        Self {
+            data,
+            next: None,
+            size: 0,
+        }
     }
 }
 
@@ -70,7 +74,11 @@ pub fn daub4(samples: &mut [f32], size: usize, sign: i32) -> Result<(), AudioErr
         return Err(AudioError::WaveletOdd);
     }
     let read = |samples: &[f32], index: usize| -> Result<f64, AudioError> {
-        samples.get(index).copied().map(f64::from).ok_or(AudioError::WaveletRead(index))
+        samples
+            .get(index)
+            .copied()
+            .map(f64::from)
+            .ok_or(AudioError::WaveletRead(index))
     };
     let mut scratch = vec![0f32; size];
     let half = size >> 1;
@@ -78,21 +86,37 @@ pub fn daub4(samples: &mut [f32], size: usize, sign: i32) -> Result<(), AudioErr
         let mut i = 0;
         let mut j = 0;
         while j <= size - 4 {
-            scratch[i] = (C0 * read(samples, j)? + C1 * read(samples, j + 1)? + C2 * read(samples, j + 2)? + C3 * read(samples, j + 3)?) as f32;
-            scratch[i + half] = (C3 * read(samples, j)? - C2 * read(samples, j + 1)? + C1 * read(samples, j + 2)? - C0 * read(samples, j + 3)?) as f32;
+            scratch[i] = (C0 * read(samples, j)?
+                + C1 * read(samples, j + 1)?
+                + C2 * read(samples, j + 2)?
+                + C3 * read(samples, j + 3)?) as f32;
+            scratch[i + half] = (C3 * read(samples, j)? - C2 * read(samples, j + 1)? + C1 * read(samples, j + 2)?
+                - C0 * read(samples, j + 3)?) as f32;
             j += 2;
             i += 1;
         }
-        scratch[i] = (C0 * read(samples, size - 2)? + C1 * read(samples, size - 1)? + C2 * read(samples, 0)? + C3 * read(samples, 1)?) as f32;
-        scratch[i + half] = (C3 * read(samples, size - 2)? - C2 * read(samples, size - 1)? + C1 * read(samples, 0)? - C0 * read(samples, 1)?) as f32;
+        scratch[i] = (C0 * read(samples, size - 2)?
+            + C1 * read(samples, size - 1)?
+            + C2 * read(samples, 0)?
+            + C3 * read(samples, 1)?) as f32;
+        scratch[i + half] = (C3 * read(samples, size - 2)? - C2 * read(samples, size - 1)? + C1 * read(samples, 0)?
+            - C0 * read(samples, 1)?) as f32;
     } else {
-        scratch[0] = (C2 * read(samples, half - 1)? + C1 * read(samples, size - 1)? + C0 * read(samples, 0)? + C3 * read(samples, half)?) as f32;
-        scratch[1] = (C3 * read(samples, half - 1)? - C0 * read(samples, size - 1)? + C1 * read(samples, 0)? - C2 * read(samples, half)?) as f32;
+        scratch[0] = (C2 * read(samples, half - 1)?
+            + C1 * read(samples, size - 1)?
+            + C0 * read(samples, 0)?
+            + C3 * read(samples, half)?) as f32;
+        scratch[1] = (C3 * read(samples, half - 1)? - C0 * read(samples, size - 1)? + C1 * read(samples, 0)?
+            - C2 * read(samples, half)?) as f32;
         let mut j = 2;
         for i in 0..half - 1 {
-            scratch[j] = (C2 * read(samples, i)? + C1 * read(samples, i + half)? + C0 * read(samples, i + 1)? + C3 * read(samples, i + half + 1)?) as f32;
+            scratch[j] = (C2 * read(samples, i)?
+                + C1 * read(samples, i + half)?
+                + C0 * read(samples, i + 1)?
+                + C3 * read(samples, i + half + 1)?) as f32;
             j += 1;
-            scratch[j] = (C3 * read(samples, i)? - C0 * read(samples, i + half)? + C1 * read(samples, i + 1)? - C2 * read(samples, i + half + 1)?) as f32;
+            scratch[j] = (C3 * read(samples, i)? - C0 * read(samples, i + half)? + C1 * read(samples, i + 1)?
+                - C2 * read(samples, i + half + 1)?) as f32;
             j += 1;
         }
     }
@@ -139,7 +163,11 @@ pub fn mu_law_decode(value: u8) -> i16 {
     let exponent = (law >> 4) & 0x7;
     let mantissa = (law & 0xf) + 16;
     let adjusted = ((mantissa << (exponent + 3)) as i32) - 132;
-    if law & 0x80 != 0 { adjusted as i16 } else { (-adjusted) as i16 }
+    if law & 0x80 != 0 {
+        adjusted as i16
+    } else {
+        (-adjusted) as i16
+    }
 }
 
 /// Voice codec with the lazy mu-law table.
@@ -221,7 +249,12 @@ impl SourceWaveletCodec {
     }
 
     /// Decompress raw chunk bytes, optionally into a destination.
-    pub fn decode_wavelet_data(&self, size: usize, data: &[u8], destination: Option<&mut [i16]>) -> Result<(), AudioError> {
+    pub fn decode_wavelet_data(
+        &self,
+        size: usize,
+        data: &[u8],
+        destination: Option<&mut [i16]>,
+    ) -> Result<(), AudioError> {
         integer(size as i64, 0, WAVELET_CHUNK_BYTES as i64, "wavelet chunk size")?;
         let mut scratch = vec![0f32; size];
         for (index, slot) in scratch.iter_mut().enumerate() {
@@ -310,7 +343,10 @@ mod tests {
         for sample in [-32768, -1000, -1, 0, 1, 1000, 32767] {
             let decoded = mu_law_decode(mu_law_encode(sample).unwrap());
             let tolerance = (sample.abs() / 16).max(16);
-            assert!((i32::from(decoded) - sample).abs() <= tolerance, "{sample} -> {decoded}");
+            assert!(
+                (i32::from(decoded) - sample).abs() <= tolerance,
+                "{sample} -> {decoded}"
+            );
         }
         assert!(mu_law_encode(32768).is_err());
         assert!(mu_law_encode(-32769).is_err());
@@ -331,11 +367,18 @@ mod tests {
         let mut offset = 0;
         while let Some(current) = chunk {
             let size = current.size;
-            codec.decode_wavelet(current, Some(&mut decoded[offset..offset + size])).unwrap();
+            codec
+                .decode_wavelet(current, Some(&mut decoded[offset..offset + size]))
+                .unwrap();
             offset += size;
             chunk = current.next.as_ref();
         }
-        let error: i64 = packets.iter().zip(decoded.iter()).map(|(want, got)| i64::from(want - got).abs()).sum::<i64>() / packets.len() as i64;
+        let error: i64 = packets
+            .iter()
+            .zip(decoded.iter())
+            .map(|(want, got)| i64::from(want - got).abs())
+            .sum::<i64>()
+            / packets.len() as i64;
         assert!(error < 600, "mean error {error}");
         assert!(daub4(&mut [0f32; 3], 3, 1).is_ok());
         assert!(wt1(&mut [0f32; 4], 2, 1).is_err());

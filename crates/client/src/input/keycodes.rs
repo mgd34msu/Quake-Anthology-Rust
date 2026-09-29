@@ -174,11 +174,7 @@ pub fn string_to_keynum(value: Option<&str>) -> i32 {
     let mut chars = text.chars();
     if let (Some(first), None) = (chars.next(), chars.next()) {
         let unit = first as u32;
-        return if unit < 128 {
-            unit as i32
-        } else {
-            unit as i32 - 256
-        };
+        return if unit < 128 { unit as i32 } else { unit as i32 - 256 };
     }
     let bytes = text.as_bytes();
     if text.starts_with("0x") && text.len() == 4 {
@@ -202,10 +198,7 @@ pub fn keynum_to_string(key: i32) -> String {
         return "<OUT OF RANGE>".to_string();
     }
     if key > 32 && key < 127 && key != 34 && key != 59 {
-        return char::from_u32(key as u32).map_or_else(
-            || format!("0x{key:02x}"),
-            |value| value.to_string(),
-        );
+        return char::from_u32(key as u32).map_or_else(|| format!("0x{key:02x}"), |value| value.to_string());
     }
     for (name, number) in KEY_NAMES {
         if key == *number {
@@ -334,10 +327,7 @@ mod tests {
             Some(KeyCode::F1 as i32 - 10)
         );
         assert_eq!(source_key_number(KeyCode::Pause as i32, KeyFamily::Q1), Some(255));
-        assert_eq!(
-            source_key_number(KeyCode::Mouse1 as i32, KeyFamily::Q2),
-            Some(200)
-        );
+        assert_eq!(source_key_number(KeyCode::Mouse1 as i32, KeyFamily::Q2), Some(200));
         assert_eq!(
             source_key_number(KeyCode::MouseWheelUp as i32, KeyFamily::Q2),
             Some(240)

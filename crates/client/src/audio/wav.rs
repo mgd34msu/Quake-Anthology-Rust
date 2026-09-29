@@ -68,7 +68,13 @@ struct ChunkRange {
     length: usize,
 }
 
-fn find_chunk(reader: &mut BinaryReader, source: &str, start: usize, length: usize, name: &str) -> Result<Option<ChunkRange>, AudioError> {
+fn find_chunk(
+    reader: &mut BinaryReader,
+    source: &str,
+    start: usize,
+    length: usize,
+    name: &str,
+) -> Result<Option<ChunkRange>, AudioError> {
     let mut offset = start;
     while offset < length {
         if offset + 8 > reader.length() {
@@ -93,7 +99,12 @@ fn find_chunk(reader: &mut BinaryReader, source: &str, start: usize, length: usi
     Ok(None)
 }
 
-fn pcm_sample(reader: &mut BinaryReader, data_offset: usize, bytes_per_sample: u8, index: usize) -> Result<i32, AudioError> {
+fn pcm_sample(
+    reader: &mut BinaryReader,
+    data_offset: usize,
+    bytes_per_sample: u8,
+    index: usize,
+) -> Result<i32, AudioError> {
     reader
         .seek(data_offset + index * if bytes_per_sample == 2 { 2 } else { 1 })
         .map_err(AudioError::from)?;
@@ -104,7 +115,12 @@ fn pcm_sample(reader: &mut BinaryReader, data_offset: usize, bytes_per_sample: u
     }
 }
 
-fn pcm_samples(reader: &mut BinaryReader, data_offset: usize, bytes_per_sample: u8, sample_count: usize) -> Result<Vec<i16>, AudioError> {
+fn pcm_samples(
+    reader: &mut BinaryReader,
+    data_offset: usize,
+    bytes_per_sample: u8,
+    sample_count: usize,
+) -> Result<Vec<i16>, AudioError> {
     let mut samples = Vec::with_capacity(sample_count);
     for index in 0..sample_count {
         samples.push(pcm_sample(reader, data_offset, bytes_per_sample, index)? as i16);
@@ -138,10 +154,19 @@ impl WavInfo<'_> {
     /// Materialize mono PCM while the file allocation is live.
     pub fn decode(&self) -> Result<PcmSound, AudioError> {
         if self.channels != 1 {
-            return Err(reject(self.source, self.data_offset, "source WAV sound decoding requires mono channels"));
+            return Err(reject(
+                self.source,
+                self.data_offset,
+                "source WAV sound decoding requires mono channels",
+            ));
         }
         let mut reader = BinaryReader::new(self.data, self.source);
-        let samples = pcm_samples(&mut reader, self.data_offset, self.source_bytes_per_sample as u8, self.frame_count)?;
+        let samples = pcm_samples(
+            &mut reader,
+            self.data_offset,
+            self.source_bytes_per_sample as u8,
+            self.frame_count,
+        )?;
         Ok(PcmSound {
             sample_rate: self.sample_rate,
             channels: 1,
@@ -153,12 +178,22 @@ impl WavInfo<'_> {
 }
 
 /// Read WAV info, printing ordinary diagnostics (`readWavInfo`).
-pub fn read_wav_info<'a>(bytes: &'a [u8], length: usize, source: &'a str, print: &mut dyn FnMut(&str)) -> Result<WavInfo<'a>, AudioError> {
+pub fn read_wav_info<'a>(
+    bytes: &'a [u8],
+    length: usize,
+    source: &'a str,
+    print: &mut dyn FnMut(&str),
+) -> Result<WavInfo<'a>, AudioError> {
     let mut reader = BinaryReader::new(bytes, source);
     if length > reader.length() {
-        return Err(reject(source, 0, format!("WAV file length {length} exceeds its physical allocation")));
+        return Err(reject(
+            source,
+            0,
+            format!("WAV file length {length} exceeds its physical allocation"),
+        ));
     }
-    let (mut sample_rate, mut channels, mut source_bytes_per_sample, mut frame_count, mut data_offset) = (0u32, 0u32, 0u32, 0usize, 0usize);
+    let (mut sample_rate, mut channels, mut source_bytes_per_sample, mut frame_count, mut data_offset) =
+        (0u32, 0u32, 0u32, 0usize, 0usize);
     macro_rules! info {
         () => {
             WavInfo {
@@ -203,7 +238,11 @@ pub fn read_wav_info<'a>(bytes: &'a [u8], length: usize, source: &'a str, print:
         return Ok(info!());
     };
     if source_bytes_per_sample == 0 {
-        return Err(reject(source, data.offset - 4, "WAV sample count divides by zero source width"));
+        return Err(reject(
+            source,
+            data.offset - 4,
+            "WAV sample count divides by zero source width",
+        ));
     }
     frame_count = data.length / source_bytes_per_sample as usize;
     data_offset = data.offset;
@@ -219,15 +258,27 @@ struct WavFormat {
 
 fn parse_format(reader: &mut BinaryReader, source: &str, chunk_offset: usize) -> Result<WavFormat, AudioError> {
     if reader.length() < 16 {
-        return Err(reject(source, chunk_offset, format!("fmt chunk is {} bytes, expected at least 16", reader.length())));
+        return Err(reject(
+            source,
+            chunk_offset,
+            format!("fmt chunk is {} bytes, expected at least 16", reader.length()),
+        ));
     }
     let encoding = reader.u16().map_err(AudioError::from)?;
     if encoding != 1 {
-        return Err(reject(source, chunk_offset, format!("unsupported WAV encoding {encoding}; only PCM is supported")));
+        return Err(reject(
+            source,
+            chunk_offset,
+            format!("unsupported WAV encoding {encoding}; only PCM is supported"),
+        ));
     }
     let channels = reader.u16().map_err(AudioError::from)?;
     if channels != 1 && channels != 2 {
-        return Err(reject(source, chunk_offset + 2, format!("unsupported WAV channel count {channels}")));
+        return Err(reject(
+            source,
+            chunk_offset + 2,
+            format!("unsupported WAV channel count {channels}"),
+        ));
     }
     let sample_rate = reader.u32().map_err(AudioError::from)?;
     if sample_rate == 0 {
@@ -243,7 +294,13 @@ fn parse_format(reader: &mut BinaryReader, source: &str, chunk_offset: usize) ->
             format!("unsupported WAV sample width {bits_per_sample} bits"),
         ));
     }
-    let bytes_per_sample = if bits_per_sample == 8 { 1 } else if bits_per_sample == 16 { 2 } else { 3 };
+    let bytes_per_sample = if bits_per_sample == 8 {
+        1
+    } else if bits_per_sample == 16 {
+        2
+    } else {
+        3
+    };
     let expected_block_align = channels as usize * bytes_per_sample as usize;
     if block_align != expected_block_align {
         return Err(reject(
@@ -283,7 +340,12 @@ fn parse_cue_loop(reader: &mut BinaryReader, source: &str, chunk_offset: usize) 
     Ok(Some(reader.u32().map_err(AudioError::from)?))
 }
 
-fn parse_sampler_loop(reader: &mut BinaryReader, source: &str, chunk_offset: usize, source_sentinel: bool) -> Result<Option<u32>, AudioError> {
+fn parse_sampler_loop(
+    reader: &mut BinaryReader,
+    source: &str,
+    chunk_offset: usize,
+    source_sentinel: bool,
+) -> Result<Option<u32>, AudioError> {
     if reader.length() < 36 {
         return Err(reject(source, chunk_offset, "truncated WAV sampler chunk"));
     }
@@ -305,7 +367,12 @@ fn parse_sampler_loop(reader: &mut BinaryReader, source: &str, chunk_offset: usi
     Ok(Some(start))
 }
 
-fn decode_pcm(bytes: &[u8], source: &str, source_signed_chunks: bool, read_loops: bool) -> Result<DecodedWav, AudioError> {
+fn decode_pcm(
+    bytes: &[u8],
+    source: &str,
+    source_signed_chunks: bool,
+    read_loops: bool,
+) -> Result<DecodedWav, AudioError> {
     let mut reader = BinaryReader::new(bytes, source);
     if reader.length() < 12 {
         return Err(reject(source, 0, "truncated RIFF/WAVE header"));
@@ -317,7 +384,11 @@ fn decode_pcm(bytes: &[u8], source: &str, source_signed_chunks: bool, read_loops
     }
     let riff_end = 8 + riff_size;
     if riff_end > reader.length() {
-        return Err(reject(source, 4, format!("RIFF size {riff_size} exceeds {}-byte input", reader.length())));
+        return Err(reject(
+            source,
+            4,
+            format!("RIFF size {riff_size} exceeds {}-byte input", reader.length()),
+        ));
     }
     expect_four_cc(&mut reader, source, "WAVE")?;
     let mut format: Option<WavFormat> = None;
@@ -345,15 +416,26 @@ fn decode_pcm(bytes: &[u8], source: &str, source_signed_chunks: bool, read_loops
             {
                 break;
             }
-            return Err(reject(source, chunk_header_offset + 4, format!("WAV chunk {chunk_id:?} exceeds RIFF bounds")));
+            return Err(reject(
+                source,
+                chunk_header_offset + 4,
+                format!("WAV chunk {chunk_id:?} exceeds RIFF bounds"),
+            ));
         }
         let chunk_end = chunk_offset + chunk_length;
-        let next_chunk_offset = if chunk_end < riff_end { chunk_end + (chunk_length & 1) } else { chunk_end };
+        let next_chunk_offset = if chunk_end < riff_end {
+            chunk_end + (chunk_length & 1)
+        } else {
+            chunk_end
+        };
         if chunk_id == "fmt " && format.is_none() {
             let mut section = reader.section(chunk_offset, chunk_length).map_err(AudioError::from)?;
             format = Some(parse_format(&mut section, source, chunk_offset)?);
         } else if chunk_id == "data" && data.is_none() {
-            data = Some(ChunkRange { offset: chunk_offset, length: chunk_length });
+            data = Some(ChunkRange {
+                offset: chunk_offset,
+                length: chunk_length,
+            });
         } else if read_loops && chunk_id == "cue " && cue_loop_start.is_none() {
             let mut section = reader.section(chunk_offset, chunk_length).map_err(AudioError::from)?;
             cue_loop_start = parse_cue_loop(&mut section, source, chunk_offset)?;
@@ -369,7 +451,10 @@ fn decode_pcm(bytes: &[u8], source: &str, source_signed_chunks: bool, read_loops
         return Err(reject(
             source,
             data.offset,
-            format!("WAV data length {} is not a multiple of block alignment {}", data.length, format.block_align),
+            format!(
+                "WAV data length {} is not a multiple of block alignment {}",
+                data.length, format.block_align
+            ),
         ));
     }
     let frame_count = data.length / format.block_align;
@@ -388,7 +473,10 @@ fn decode_pcm(bytes: &[u8], source: &str, source_signed_chunks: bool, read_loops
         return Err(reject(
             source,
             data.offset,
-            format!("WAV loop start {} is outside {frame_count} frames", loop_start.unwrap_or(0)),
+            format!(
+                "WAV loop start {} is outside {frame_count} frames",
+                loop_start.unwrap_or(0)
+            ),
         ));
     }
     Ok(DecodedWav {
@@ -432,7 +520,11 @@ pub fn decode_quake_wav(bytes: &[u8], source: &str) -> Result<DecodedWav, AudioE
         if length > 0x7fff_ffff {
             break;
         }
-        if (length > riff_end || start > riff_end - length) && name == "LIST" && riff_end - start >= 4 && matches_four_cc(&mut reader, start, "INFO")? {
+        if (length > riff_end || start > riff_end - length)
+            && name == "LIST"
+            && riff_end - start >= 4
+            && matches_four_cc(&mut reader, start, "INFO")?
+        {
             break;
         }
         if name == "cue " {
@@ -447,16 +539,25 @@ pub fn decode_quake_wav(bytes: &[u8], source: &str) -> Result<DecodedWav, AudioE
                 break;
             }
         }
-        reader.seek(riff_end.min(start + length + (length & 1))).map_err(AudioError::from)?;
+        reader
+            .seek(riff_end.min(start + length + (length & 1)))
+            .map_err(AudioError::from)?;
     }
     let Some(loop_end) = loop_end else {
         return Ok(pcm);
     };
     if loop_end <= marker || loop_end > pcm.pcm.frame_count {
-        return Err(reject(source, reader.offset(), "Sound Forge loop end outside WAV frames"));
+        return Err(reject(
+            source,
+            reader.offset(),
+            "Sound Forge loop end outside WAV frames",
+        ));
     }
     let mut trimmed = pcm;
-    trimmed.pcm.samples.truncate(loop_end * usize::from(trimmed.pcm.channels));
+    trimmed
+        .pcm
+        .samples
+        .truncate(loop_end * usize::from(trimmed.pcm.channels));
     trimmed.pcm.frame_count = loop_end;
     Ok(trimmed)
 }
@@ -511,7 +612,10 @@ mod tests {
         assert_eq!(info.sample(0).unwrap(), 1000);
         assert_eq!(info.decode().unwrap().samples, vec![1000, -1000, 2000, -2000]);
         assert!(printed.is_empty());
-        let missing = read_wav_info(b"NOPEWAVEFMT", 11, "missing", &mut |text| printed.push(text.to_string())).unwrap();
+        let missing = read_wav_info(b"NOPEWAVEFMT", 11, "missing", &mut |text| {
+            printed.push(text.to_string())
+        })
+        .unwrap();
         assert_eq!(missing.sample_rate, 0);
         assert!(!printed.is_empty());
     }

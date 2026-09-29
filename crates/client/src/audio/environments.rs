@@ -6,7 +6,7 @@
 use qa_core::math::Vec3;
 
 use super::error::AudioError;
-use super::reverb_presets::{EfxReverbParams, REVERB_PRESET_NAMES, REVERB_PRESET_PLAIN, REVERB_PRESETS};
+use super::reverb_presets::{EfxReverbParams, REVERB_PRESETS, REVERB_PRESET_NAMES, REVERB_PRESET_PLAIN};
 
 /// One material-to-preset rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +115,10 @@ impl JsonParser<'_> {
                         b't' => text.push('\t'),
                         b'u' => {
                             let code = self.hex4()?;
-                            let scalar = if (0xd800..0xdc00).contains(&code) && self.bytes.get(self.cursor) == Some(&b'\\') && self.bytes.get(self.cursor + 1) == Some(&b'u') {
+                            let scalar = if (0xd800..0xdc00).contains(&code)
+                                && self.bytes.get(self.cursor) == Some(&b'\\')
+                                && self.bytes.get(self.cursor + 1) == Some(&b'u')
+                            {
                                 self.cursor += 2;
                                 let low = self.hex4()?;
                                 if !(0xdc00..0xe000).contains(&low) {
@@ -148,7 +151,8 @@ impl JsonParser<'_> {
                     if start + width > self.bytes.len() {
                         return Err(self.error("truncated UTF-8"));
                     }
-                    let slice = std::str::from_utf8(&self.bytes[start..start + width]).map_err(|_| self.error("invalid UTF-8"))?;
+                    let slice = std::str::from_utf8(&self.bytes[start..start + width])
+                        .map_err(|_| self.error("invalid UTF-8"))?;
                     text.push_str(slice);
                     self.cursor = start + width;
                 }
@@ -160,7 +164,8 @@ impl JsonParser<'_> {
         if self.cursor + 4 > self.bytes.len() {
             return Err(self.error("truncated escape"));
         }
-        let digits = std::str::from_utf8(&self.bytes[self.cursor..self.cursor + 4]).map_err(|_| self.error("invalid escape"))?;
+        let digits =
+            std::str::from_utf8(&self.bytes[self.cursor..self.cursor + 4]).map_err(|_| self.error("invalid escape"))?;
         self.cursor += 4;
         u32::from_str_radix(digits, 16).map_err(|_| self.error("invalid escape"))
     }
@@ -353,7 +358,10 @@ pub fn parse_environments(text: &str, warn: &mut dyn FnMut(&str)) -> Result<Vec<
 
 /// Copy a preset by index.
 pub fn reverb_preset(index: usize) -> Result<EfxReverbParams, AudioError> {
-    REVERB_PRESETS.get(index).copied().ok_or(AudioError::UnknownPreset(index))
+    REVERB_PRESETS
+        .get(index)
+        .copied()
+        .ok_or(AudioError::UnknownPreset(index))
 }
 
 const PROBES: [[f64; 3]; 14] = [
@@ -489,11 +497,23 @@ impl EnvironmentReverb {
             };
             let average = (span(0) + span(1) + span(2)) / 3.0;
             let mut index = self.environment_index;
-            while index < self.environments.len() - 1 && average > self.environments.get(index).map_or(f64::INFINITY, |environment| environment.dimension) {
+            while index < self.environments.len() - 1
+                && average
+                    > self
+                        .environments
+                        .get(index)
+                        .map_or(f64::INFINITY, |environment| environment.dimension)
+            {
                 index += 1;
             }
             if index == self.environment_index {
-                while index > 0 && average < self.environments.get(index - 1).map_or(f64::NEG_INFINITY, |environment| environment.dimension) {
+                while index > 0
+                    && average
+                        < self
+                            .environments
+                            .get(index - 1)
+                            .map_or(f64::NEG_INFINITY, |environment| environment.dimension)
+                {
                     index -= 1;
                 }
             }
@@ -501,16 +521,27 @@ impl EnvironmentReverb {
             self.probe_index = (self.probe_index + 1) % PROBES.len();
         }
         let start = [origin[0], origin[1], origin[2] + 1.0];
-        let floor = (self.trace)(start, [start[0], start[1], start[2] - 256.0], [-16.0, -16.0, 0.0], [16.0, 16.0, 0.0]);
+        let floor = (self.trace)(
+            start,
+            [start[0], start[1], start[2] - 256.0],
+            [-16.0, -16.0, 0.0],
+            [16.0, 16.0, 0.0],
+        );
         let mut selected = self.current_preset;
         if floor.fraction >= 1.0 || floor.sky {
             selected = REVERB_PRESET_PLAIN;
         } else {
-            let environment = self.environments.get(self.environment_index).ok_or(AudioError::ReverbEnvironmentGone)?;
+            let environment = self
+                .environments
+                .get(self.environment_index)
+                .ok_or(AudioError::ReverbEnvironmentGone)?;
             let material = floor.material.as_ref().map(|material| material.to_lowercase());
             for entry in &environment.reverbs {
                 let matches = entry.materials.is_none()
-                    || entry.materials.as_ref().is_some_and(|materials| materials.iter().any(|name| Some(name.to_lowercase()) == material));
+                    || entry
+                        .materials
+                        .as_ref()
+                        .is_some_and(|materials| materials.iter().any(|name| Some(name.to_lowercase()) == material));
                 if matches {
                     selected = entry.preset_index;
                     break;
@@ -553,9 +584,10 @@ mod tests {
         assert_eq!(environments[0].reverbs[0].preset_index, 8);
         assert!(warnings.is_empty());
         let mut warnings = Vec::new();
-        let fallback = parse_environments(r#"{"environments": [{"reverbs": [{"preset": "nope"}]}]}"#, &mut |message| {
-            warnings.push(message.to_string())
-        })
+        let fallback = parse_environments(
+            r#"{"environments": [{"reverbs": [{"preset": "nope"}]}]}"#,
+            &mut |message| warnings.push(message.to_string()),
+        )
         .unwrap();
         assert_eq!(fallback[0].reverbs[0].preset_index, REVERB_PRESET_PLAIN);
         assert_eq!(warnings.len(), 1);
@@ -568,14 +600,17 @@ mod tests {
     fn probes_and_crossfades() {
         let mut warnings = Vec::new();
         let environments = parse_environments(JSON, &mut |message| warnings.push(message.to_string())).unwrap();
-        let mut selector = EnvironmentReverb::new(environments, Box::new(|start, end, mins, _| AudioTrace {
-            // Probe sweeps hit at the origin (a small room); the floor sweep
-            // reports stone.
-            fraction: 0.5,
-            end: if mins == [0.0; 3] { start } else { end },
-            material: Some("stone".to_string()),
-            sky: false,
-        }));
+        let mut selector = EnvironmentReverb::new(
+            environments,
+            Box::new(|start, end, mins, _| AudioTrace {
+                // Probe sweeps hit at the origin (a small room); the floor sweep
+                // reports stone.
+                fraction: 0.5,
+                end: if mins == [0.0; 3] { start } else { end },
+                material: Some("stone".to_string()),
+                sky: false,
+            }),
+        );
         selector.lerp_seconds = 1.0;
         selector.update(vec3(0.0, 0.0, 0.0), 0.0).unwrap();
         assert_eq!(selector.preset_index(), 8);

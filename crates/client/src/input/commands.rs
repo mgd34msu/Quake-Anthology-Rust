@@ -236,7 +236,11 @@ impl ClientCommandBindings {
     /// Release one claim.
     pub fn owner_remove(&mut self, commands: &mut dyn CommandRegistry, owner: ClientCommandOwner, name: &str) {
         let key = ascii_fold(name);
-        if self.owners.get_mut(&owner).is_some_and(|state| state.names.remove(&key)) {
+        if self
+            .owners
+            .get_mut(&owner)
+            .is_some_and(|state| state.names.remove(&key))
+        {
             self.remove_unused(commands, &key);
         }
     }
@@ -257,7 +261,11 @@ impl ClientCommandBindings {
             return;
         }
         self.active = true;
-        let names: Vec<String> = self.owners.values().flat_map(|owner| owner.names.iter().cloned()).collect();
+        let names: Vec<String> = self
+            .owners
+            .values()
+            .flat_map(|owner| owner.names.iter().cloned())
+            .collect();
         for name in names {
             self.install(commands, &name);
         }
@@ -320,14 +328,23 @@ impl ClientCommandBindings {
             }
             return Ok(false);
         }
-        if claims.iter().any(|claim| self.owners.get(claim).is_some_and(|owner| owner.handler.is_none())) {
+        if claims
+            .iter()
+            .any(|claim| self.owners.get(claim).is_some_and(|owner| owner.handler.is_none()))
+        {
             execute(invocation, &seat);
             return Ok(true);
         }
         if claims.len() > 1 {
             let labels = claims
                 .iter()
-                .filter_map(|claim| self.owners.get(claim)?.handler.as_ref().map(|handler| handler.label.clone()))
+                .filter_map(|claim| {
+                    self.owners
+                        .get(claim)?
+                        .handler
+                        .as_ref()
+                        .map(|handler| handler.label.clone())
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(CommandsError::AmbiguousCommand { name, labels });
@@ -416,8 +433,15 @@ mod tests {
         bindings.activate(&mut registry);
         assert_eq!(bindings.installed(), vec!["fire".to_string()]);
         let mut executed = Vec::new();
-        let invocation = CommandInvocation::new(vec!["fire".to_string()], CommandOrigin::LocalSeat(first.clone()), Dialect::Q3);
-        assert!(bindings.dispatch(&invocation, &mut |command, seat| executed.push((command.argv.clone(), seat.clone()))).unwrap());
+        let invocation = CommandInvocation::new(
+            vec!["fire".to_string()],
+            CommandOrigin::LocalSeat(first.clone()),
+            Dialect::Q3,
+        );
+        assert!(bindings
+            .dispatch(&invocation, &mut |command, seat| executed
+                .push((command.argv.clone(), seat.clone())))
+            .unwrap());
         assert_eq!(executed.len(), 1);
         let remote = CommandInvocation::new(
             vec!["fire".to_string()],
@@ -450,12 +474,20 @@ mod tests {
             .unwrap();
         bindings.owner_register(&mut registry, guest, "zap").unwrap();
         bindings.activate(&mut registry);
-        let mut invocation = CommandInvocation::new(vec!["zap".to_string()], CommandOrigin::LocalSeat(seat.clone()), Dialect::Q3);
+        let mut invocation = CommandInvocation::new(
+            vec!["zap".to_string()],
+            CommandOrigin::LocalSeat(seat.clone()),
+            Dialect::Q3,
+        );
         invocation.producer = Some(ClientModuleProducer { instance: 7 });
-        assert!(bindings.dispatch(&invocation, &mut |_, _| panic!("module owned")).unwrap());
+        assert!(bindings
+            .dispatch(&invocation, &mut |_, _| panic!("module owned"))
+            .unwrap());
         assert_eq!(seen.borrow().len(), 1);
         invocation.producer = Some(ClientModuleProducer { instance: 8 });
-        assert!(!bindings.dispatch(&invocation, &mut |_, _| panic!("foreign instance")).unwrap());
+        assert!(!bindings
+            .dispatch(&invocation, &mut |_, _| panic!("foreign instance"))
+            .unwrap());
         bindings.deactivate(&mut registry);
         assert!(!bindings.is_active());
     }

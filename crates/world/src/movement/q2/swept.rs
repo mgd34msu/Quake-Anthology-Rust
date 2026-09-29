@@ -9,12 +9,12 @@
 //! addresses player origin directly and server-entity sweeps address the
 //! shared `pml` origin, matching the source alias.
 
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 use qa_core::numeric::NumericOps;
 
 use super::super::swept_body::{
-    AllSolidVelocity, CandidateVelocity, CollisionOriginalVelocity, CollisionPolicy, CreaseVelocity,
-    SweepStop, SweptBodyServices, SweptBodyState, sweep_body,
+    sweep_body, AllSolidVelocity, CandidateVelocity, CollisionOriginalVelocity, CollisionPolicy, CreaseVelocity,
+    SweepStop, SweptBodyServices, SweptBodyState,
 };
 use super::math::{Q2Math, Q2MathEdition};
 use super::types::{SrcVec3, TraceT};
@@ -263,8 +263,7 @@ mod tests {
             open_trace(end)
         }
         fn clip(&mut self, velocity: SrcVec3, normal: SrcVec3) -> SrcVec3 {
-            Q2Math::new(self.numeric, Q2MathEdition::Classic)
-                .slide_clip_velocity(velocity, normal, 1.01)
+            Q2Math::new(self.numeric, Q2MathEdition::Classic).slide_clip_velocity(velocity, normal, 1.01)
         }
         fn touch(&mut self, _trace: &TraceT) {
             self.touches += 1;

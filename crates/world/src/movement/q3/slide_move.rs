@@ -4,15 +4,12 @@
 //! Software `code/game/bg_slidemove.c`).
 
 use qa_core::identity::ActorId;
-use qa_core::math::{
-    Bounds, Vec3, add3, cross3, dot3, normalize3, normalize3_or_zero, scale3, vec3,
-};
+use qa_core::math::{add3, cross3, dot3, normalize3, normalize3_or_zero, scale3, vec3, Bounds, Vec3};
 
-use super::super::swept_body::{
-    PairedResponse, SweepStop, SweptBodyServices, SweptBodyState, sweep_body,
+use super::super::swept_body::{sweep_body, PairedResponse, SweepStop, SweptBodyServices, SweptBodyState};
+use super::super::{
+    clip_velocity_q3, Q3_DUPLICATE_PLANE_DOT, Q3_ENTER_THRESHOLD, Q3_MIN_GROUND_NORMAL, Q3_STEP_HEIGHT,
 };
-use super::super::{Q3_DUPLICATE_PLANE_DOT, Q3_ENTER_THRESHOLD, Q3_MIN_GROUND_NORMAL,
-    Q3_STEP_HEIGHT, clip_velocity_q3};
 use super::constants::entity_event;
 use super::types::{Q3Motion, Q3Trace};
 
@@ -271,8 +268,8 @@ mod tests {
     use crate::hull::BspPlane;
     use qa_core::identity::{IdentityOwner, ProviderId};
 
-    use super::super::constants::move_type;
     use super::super::super::types::{TraceContact, TraceHit};
+    use super::super::constants::move_type;
 
     fn motion() -> Q3Motion {
         let owner = IdentityOwner::create("q3-slide").unwrap();
@@ -348,8 +345,7 @@ mod tests {
     #[test]
     fn open_slide_reports_no_contacts() {
         let mut motion = motion();
-        let mut trace =
-            |_start: Vec3, end: Vec3, _bounds: Bounds, _actor: ActorId, _mask: i32| open_trace(end);
+        let mut trace = |_start: Vec3, end: Vec3, _bounds: Bounds, _actor: ActorId, _mask: i32| open_trace(end);
         let mut sink = RecSink {
             touches: 0,
             events: Vec::new(),
@@ -375,8 +371,7 @@ mod tests {
     fn gravity_slide_averages_velocity() {
         let mut motion = motion();
         motion.velocity = vec3(0.0, 0.0, 0.0);
-        let mut trace =
-            |_start: Vec3, end: Vec3, _bounds: Bounds, _actor: ActorId, _mask: i32| open_trace(end);
+        let mut trace = |_start: Vec3, end: Vec3, _bounds: Bounds, _actor: ActorId, _mask: i32| open_trace(end);
         let mut sink = RecSink {
             touches: 0,
             events: Vec::new(),

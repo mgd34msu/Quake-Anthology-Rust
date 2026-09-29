@@ -14,10 +14,12 @@ pub mod types;
 pub mod view;
 pub mod weapon;
 
-pub use animation::{run_q3_animation_operation, run_q3_torso_operation, q3_source_animation, q3_source_torso};
+pub use animation::{q3_source_animation, q3_source_torso, run_q3_animation_operation, run_q3_torso_operation};
 pub use jump_pad::{finish_q3_jump_pad_prediction, touch_q3_jump_pad};
-pub use pmove::{drop_q3_movement_timers, move_player, q3_grapple_velocity, qvm_angle_vectors, snap, update_view_angles};
-pub use postures::{Q3_SOURCE_POSTURES, Q3_SOURCE_STANDING_BOUNDS, q3_invulnerability_pose};
+pub use pmove::{
+    drop_q3_movement_timers, move_player, q3_grapple_velocity, qvm_angle_vectors, snap, update_view_angles,
+};
+pub use postures::{q3_invulnerability_pose, Q3_SOURCE_POSTURES, Q3_SOURCE_STANDING_BOUNDS};
 pub use prediction::{update_q3_prediction_view, Q3PredictionRuntime};
 pub use provider::{create_q3_movement_provider, move_q3, q3_command};
 pub use slide_move::{clip_velocity, clip_velocity_overbounce, slide_move, step_slide_move};

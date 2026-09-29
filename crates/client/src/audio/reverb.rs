@@ -80,11 +80,15 @@ impl Network {
         Self {
             combs: [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
                 .iter()
-                .map(|tuning| Comb::new((((tuning + spread) as f64 * f64::from(rate) / 44100.0).round().max(1.0)) as usize))
+                .map(|tuning| {
+                    Comb::new((((tuning + spread) as f64 * f64::from(rate) / 44100.0).round().max(1.0)) as usize)
+                })
                 .collect(),
             allpasses: [556, 441, 341, 225]
                 .iter()
-                .map(|tuning| Allpass::new((((tuning + spread) as f64 * f64::from(rate) / 44100.0).round().max(1.0)) as usize))
+                .map(|tuning| {
+                    Allpass::new((((tuning + spread) as f64 * f64::from(rate) / 44100.0).round().max(1.0)) as usize)
+                })
                 .collect(),
         }
     }
@@ -101,9 +105,12 @@ impl Network {
     }
 
     fn configure(&mut self, params: &EfxReverbParams, rate: u32) {
-        let damping = (0.0f64.max(1.0 - params.decay_hf_ratio) + if params.decay_hf_limit { 0.05 } else { 0.0 }).min(0.99);
+        let damping =
+            (0.0f64.max(1.0 - params.decay_hf_ratio) + if params.decay_hf_limit { 0.05 } else { 0.0 }).min(0.99);
         for comb in &mut self.combs {
-            comb.feedback = 10f64.powf(-3.0 * comb.buffer.len() as f64 / (params.decay_time.max(0.001) * f64::from(rate))).min(0.98);
+            comb.feedback = 10f64
+                .powf(-3.0 * comb.buffer.len() as f64 / (params.decay_time.max(0.001) * f64::from(rate)))
+                .min(0.98);
             comb.damping = damping;
         }
         let diffusion = (params.diffusion * 0.7 + params.density * 0.3).clamp(0.0, 1.0);
@@ -166,9 +173,15 @@ impl StereoReverb {
         }
         self.left.configure(params, self.sample_rate);
         self.right.configure(params, self.sample_rate);
-        let delay = (params.late_reverb_delay * f64::from(self.sample_rate)).round().clamp(0.0, self.delay_left.len() as f64 - 1.0) as usize;
-        let shelf = 1.0 - (-2.0 * PI * params.hf_reference.clamp(20.0, f64::from(self.sample_rate) * 0.45) / f64::from(self.sample_rate)).exp();
-        let wet_gain = (params.gain * (params.late_reverb_gain + 0.25 * params.reflections_gain)).clamp(0.0, 4.0) * 0.12;
+        let delay = (params.late_reverb_delay * f64::from(self.sample_rate))
+            .round()
+            .clamp(0.0, self.delay_left.len() as f64 - 1.0) as usize;
+        let shelf = 1.0
+            - (-2.0 * PI * params.hf_reference.clamp(20.0, f64::from(self.sample_rate) * 0.45)
+                / f64::from(self.sample_rate))
+            .exp();
+        let wet_gain =
+            (params.gain * (params.late_reverb_gain + 0.25 * params.reflections_gain)).clamp(0.0, 4.0) * 0.12;
         for pair in samples.chunks_mut(2) {
             let (dry_left, dry_right) = (pair[0], pair[1]);
             self.delay_left[self.position] = dry_left;
@@ -244,7 +257,11 @@ impl UnderwaterFilter {
         let a1 = 2.0 * (gain - 1.0 - (gain + 1.0) * c) / a0;
         let a2 = (gain + 1.0 - (gain - 1.0) * c - k) / a0;
         for (index, sample) in samples.iter_mut().enumerate() {
-            let state = if index % 2 == 0 { &mut self.left } else { &mut self.right };
+            let state = if index % 2 == 0 {
+                &mut self.left
+            } else {
+                &mut self.right
+            };
             let input = *sample;
             let output = input * b0 + state.z1;
             state.z1 = input * b1 - output * a1 + state.z2;

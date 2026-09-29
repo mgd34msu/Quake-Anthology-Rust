@@ -8,21 +8,20 @@ use qa_core::math::Vec3;
 use qa_core::time::ClockProfile;
 
 use super::super::client_outputs::{client_movement_mode, client_movement_type};
-use super::super::swept_body::{SweepStop, SweptBodyServices, SweptBodyState, sweep_body};
+use super::super::swept_body::{sweep_body, SweepStop, SweptBodyServices, SweptBodyState};
 use super::super::types::{
     MovementContinuation, MovementDialect, MovementError, MovementExecution, MovementInputContinuation,
     MovementOutcome, TraceHit, TraceShape, UserCommand,
 };
-use super::common::{MovementContext, NONE, ZERO, seconds};
-use super::player_actions::{Q1JumpAction, q1_check_water_jump_in, q1_player_jump};
+use super::common::{seconds, MovementContext, NONE, ZERO};
+use super::player_actions::{q1_check_water_jump_in, q1_player_jump, Q1JumpAction};
 use super::result::finish_netquake;
 use super::types::{
-    NoQ1Hooks, Q1_CONTENTS_EMPTY, Q1_CONTENTS_WATER, Q1_FLAG_FLY, Q1_FLAG_JUMPRELEASED,
-    Q1_FLAG_ONGROUND, Q1_FLAG_SWIM, Q1_FLAG_WATERJUMP, Q1_MOVE_BOUNCE, Q1_MOVE_FLY,
-    Q1_MOVE_FLYMISSILE, Q1_MOVE_GIB, Q1_MOVE_NOCLIP, Q1_MOVE_NONE, Q1_MOVE_STEP, Q1_MOVE_TOSS,
-    Q1_MOVE_WALK, Q1_STEP_HEIGHT, Q1Edition, Q1FixAngleRoll, Q1JumpAuthority, Q1LifecyclePhase,
-    Q1MovementHooks, Q1MovementInput, Q1MovementOptions, Q1MovementResult, Q1MovementServices,
-    Q1MovementSound, Q1MovementState, Q1PlayerInput, Q1Solid, Q1State, Q1Trace, Q1TraceMove,
+    NoQ1Hooks, Q1Edition, Q1FixAngleRoll, Q1JumpAuthority, Q1LifecyclePhase, Q1MovementHooks, Q1MovementInput,
+    Q1MovementOptions, Q1MovementResult, Q1MovementServices, Q1MovementSound, Q1MovementState, Q1PlayerInput, Q1Solid,
+    Q1State, Q1Trace, Q1TraceMove, Q1_CONTENTS_EMPTY, Q1_CONTENTS_WATER, Q1_FLAG_FLY, Q1_FLAG_JUMPRELEASED,
+    Q1_FLAG_ONGROUND, Q1_FLAG_SWIM, Q1_FLAG_WATERJUMP, Q1_MOVE_BOUNCE, Q1_MOVE_FLY, Q1_MOVE_FLYMISSILE, Q1_MOVE_GIB,
+    Q1_MOVE_NOCLIP, Q1_MOVE_NONE, Q1_MOVE_STEP, Q1_MOVE_TOSS, Q1_MOVE_WALK, Q1_STEP_HEIGHT,
 };
 use super::water_transition::q1_water_transition;
 
@@ -41,11 +40,7 @@ struct NetQuakeMove<'s, S: Q1MovementServices, H: Q1MovementHooks> {
 }
 
 impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
-    fn new(
-        input: Q1MovementInput,
-        services: &'s mut S,
-        options: Q1MovementOptions<H>,
-    ) -> Result<Self, MovementError> {
+    fn new(input: Q1MovementInput, services: &'s mut S, options: Q1MovementOptions<H>) -> Result<Self, MovementError> {
         if input.profile.edition == Q1Edition::Quake64 {
             return Err(MovementError::Contract(
                 "Quake64 movement requires a qualified source physics profile",
@@ -57,10 +52,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             ));
         }
         let mut state = input.state.clone();
-        if input.fields.environment.flight
-            && input.fields.environment.health > 0.0
-            && state.move_type == Q1_MOVE_WALK
-        {
+        if input.fields.environment.flight && input.fields.environment.health > 0.0 && state.move_type == Q1_MOVE_WALK {
             state.move_type = Q1_MOVE_FLY;
         }
         let mut mover = Self {
@@ -108,17 +100,14 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
     }
 
     fn impact(&mut self, trace: Q1Trace) -> Result<(), MovementError> {
-        let state = self
-            .context
-            .touch(trace, Q1State::Netquake(self.state.clone()), true);
+        let state = self.context.touch(trace, Q1State::Netquake(self.state.clone()), true);
         self.set_state(state)
     }
 
     fn think(&mut self) -> Result<bool, MovementError> {
-        let state = self.context.lifecycle(
-            Q1State::Netquake(self.state.clone()),
-            Q1LifecyclePhase::Think,
-        );
+        let state = self
+            .context
+            .lifecycle(Q1State::Netquake(self.state.clone()), Q1LifecyclePhase::Think);
         self.set_state(state)?;
         Ok(!self.context.removed)
     }
@@ -136,16 +125,14 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         let velocity = |value: f32| coordinate(value).clamp(-maximum, maximum);
         let origin = self.state.origin;
         let velocity_v = self.state.velocity;
-        self.state.origin = self.context.math.vec(
-            coordinate(origin.x),
-            coordinate(origin.y),
-            coordinate(origin.z),
-        );
-        self.state.velocity = self.context.math.vec(
-            velocity(velocity_v.x),
-            velocity(velocity_v.y),
-            velocity(velocity_v.z),
-        );
+        self.state.origin = self
+            .context
+            .math
+            .vec(coordinate(origin.x), coordinate(origin.y), coordinate(origin.z));
+        self.state.velocity =
+            self.context
+                .math
+                .vec(velocity(velocity_v.x), velocity(velocity_v.y), velocity(velocity_v.z));
     }
 
     fn gravity(&mut self) {
@@ -268,16 +255,18 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
     fn push_entity(&mut self, push: Vec3) -> Result<Q1Trace, MovementError> {
         let policy = if self.state.move_type == Q1_MOVE_FLYMISSILE {
             Q1TraceMove::Missile
-        } else if matches!(
-            self.context.options.solid,
-            Some(Q1Solid::Not) | Some(Q1Solid::Trigger)
-        ) {
+        } else if matches!(self.context.options.solid, Some(Q1Solid::Not) | Some(Q1Solid::Trigger)) {
             Q1TraceMove::NoMonsters
         } else {
             Q1TraceMove::Normal
         };
         let shape = self.context.shape();
-        let trace = self.context.trace(self.state.origin, self.context.math.add(self.state.origin, push), shape, policy);
+        let trace = self.context.trace(
+            self.state.origin,
+            self.context.math.add(self.state.origin, push),
+            shape,
+            policy,
+        );
         self.state.origin = trace.end;
         self.link(true)?;
         if !self.context.removed && !matches!(trace.hit, TraceHit::None) {
@@ -386,13 +375,15 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             let push = self.context.math.vec(x, y, 0.0);
             self.push_entity(push)?;
             if self.context.removed {
-                return Ok(FlyResult { blocked: 7, step_trace: None });
+                return Ok(FlyResult {
+                    blocked: 7,
+                    step_trace: None,
+                });
             }
-            self.state.velocity = self.context.math.vec(
-                f64::from(old_velocity.x),
-                f64::from(old_velocity.y),
-                0.0,
-            );
+            self.state.velocity = self
+                .context
+                .math
+                .vec(f64::from(old_velocity.x), f64::from(old_velocity.y), 0.0);
             let clip = self.fly_move(0.1);
             if self.context.removed
                 || (f64::from(original.y) - f64::from(self.state.origin.y)).abs() > 4.0
@@ -403,7 +394,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             self.state.origin = original;
         }
         self.state.velocity = ZERO;
-        Ok(FlyResult { blocked: 7, step_trace: None })
+        Ok(FlyResult {
+            blocked: 7,
+            step_trace: None,
+        })
     }
 
     fn walk_move(&mut self) -> Result<(), MovementError> {
@@ -429,11 +423,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         if self.context.removed {
             return Ok(());
         }
-        self.state.velocity = self.context.math.vec(
-            f64::from(old_velocity.x),
-            f64::from(old_velocity.y),
-            0.0,
-        );
+        self.state.velocity = self
+            .context
+            .math
+            .vec(f64::from(old_velocity.x), f64::from(old_velocity.y), 0.0);
         let mut clip = self.fly_move(self.frame_seconds);
         if self.context.removed {
             return Ok(());
@@ -497,18 +490,14 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         let velocity = self.state.velocity;
         let bounds = self.context.bounds();
         let start = self.context.math.vec(
-            n.add(
-                f64::from(origin.x),
-                n.mul(n.div(f64::from(velocity.x), speed), 16.0),
-            ),
-            n.add(
-                f64::from(origin.y),
-                n.mul(n.div(f64::from(velocity.y), speed), 16.0),
-            ),
+            n.add(f64::from(origin.x), n.mul(n.div(f64::from(velocity.x), speed), 16.0)),
+            n.add(f64::from(origin.y), n.mul(n.div(f64::from(velocity.y), speed), 16.0)),
             n.add(f64::from(origin.z), f64::from(bounds.min.z)),
         );
         let end = self.context.math.add(start, self.context.math.vec(0.0, 0.0, -34.0));
-        let trace = self.context.trace(start, end, TraceShape::Point, Q1TraceMove::NoMonsters);
+        let trace = self
+            .context
+            .trace(start, end, TraceShape::Point, Q1TraceMove::NoMonsters);
         let friction = if trace.fraction == 1.0 {
             n.mul(parameters.friction, edge_friction)
         } else {
@@ -578,7 +567,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         } else {
             self.context.speed(command.up_move)
         };
-        wish = self.context.math.vec(f64::from(wish.x), f64::from(wish.y), n.add(f64::from(wish.z), up));
+        wish = self
+            .context
+            .math
+            .vec(f64::from(wish.x), f64::from(wish.y), n.add(f64::from(wish.z), up));
         let mut wish_speed = self.context.math.length(wish);
         let max = self.context.speed(parameters.max_speed);
         if wish_speed > max {
@@ -589,12 +581,8 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         let speed = self.context.math.length(self.state.velocity);
         let mut new_speed = 0.0;
         if speed != 0.0 {
-            new_speed = (0.0f64).max(n.sub(
-                speed,
-                n.mul(n.mul(self.frame_seconds, speed), parameters.friction),
-            ));
-            self.state.velocity =
-                self.context.math.scale(self.state.velocity, n.div(new_speed, speed));
+            new_speed = (0.0f64).max(n.sub(speed, n.mul(n.mul(self.frame_seconds, speed), parameters.friction)));
+            self.state.velocity = self.context.math.scale(self.state.velocity, n.div(new_speed, speed));
         }
         if wish_speed == 0.0 {
             return;
@@ -603,8 +591,9 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         if add <= 0.0 {
             return;
         }
-        let acceleration =
-            n.mul(n.mul(parameters.accelerate, wish_speed), self.frame_seconds).min(add);
+        let acceleration = n
+            .mul(n.mul(parameters.accelerate, wish_speed), self.frame_seconds)
+            .min(add);
         let direction = self.context.math.normalize(wish).0;
         self.state.velocity = self.context.math.ma(self.state.velocity, acceleration, direction);
     }
@@ -728,17 +717,15 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             4.0,
         );
         if !self.state.fix_angle {
-            self.state.angles = self.context.math.vec(
-                n.div(-f64::from(angles.x), 3.0),
-                f64::from(angles.y),
-                roll,
-            );
+            self.state.angles = self
+                .context
+                .math
+                .vec(n.div(-f64::from(angles.x), 3.0), f64::from(angles.y), roll);
         } else if self.context.options.fix_angle_roll == Q1FixAngleRoll::Source {
-            self.state.angles = self.context.math.vec(
-                f64::from(self.state.angles.x),
-                f64::from(self.state.angles.y),
-                roll,
-            );
+            self.state.angles =
+                self.context
+                    .math
+                    .vec(f64::from(self.state.angles.x), f64::from(self.state.angles.y), roll);
         }
         if self.state.flags & Q1_FLAG_WATERJUMP != 0 {
             if self.time_seconds > self.state.teleport_time_seconds || self.state.water_level == 0 {
@@ -776,8 +763,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         }
         if self.state.water_level == 2 {
             let state = self.state.clone();
-            let checked =
-                q1_check_water_jump_in(&mut self.context, &state, self.time_seconds);
+            let checked = q1_check_water_jump_in(&mut self.context, &state, self.time_seconds);
             self.set_state(Q1State::Netquake(checked))?;
         }
         let buttons = match &self.context.input {
@@ -817,7 +803,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             return;
         }
         let n = self.context.math.n;
-        let radians = n.div(n.mul(n.mul(f64::from(self.state.angles.y), std::f64::consts::PI), 2.0), 360.0);
+        let radians = n.div(
+            n.mul(n.mul(f64::from(self.state.angles.y), std::f64::consts::PI), 2.0),
+            360.0,
+        );
         let sine = radians.sin();
         let cosine = radians.cos();
         let origin = self.state.origin;
@@ -830,7 +819,9 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
                 n.add(f64::from(origin.z), height),
             );
             let bottom = self.context.math.add(top, self.context.math.vec(0.0, 0.0, -160.0));
-            let trace = self.context.trace(top, bottom, TraceShape::Point, Q1TraceMove::NoMonsters);
+            let trace = self
+                .context
+                .trace(top, bottom, TraceShape::Point, Q1TraceMove::NoMonsters);
             if trace.all_solid || trace.fraction == 1.0 {
                 return;
             }
@@ -887,11 +878,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
         if self.state.move_type != Q1_MOVE_FLY && self.state.move_type != Q1_MOVE_FLYMISSILE {
             self.gravity();
         }
-        self.state.angles = self.context.math.ma(
-            self.state.angles,
-            self.frame_seconds,
-            self.state.angular_velocity,
-        );
+        self.state.angles = self
+            .context
+            .math
+            .ma(self.state.angles, self.frame_seconds, self.state.angular_velocity);
         let displacement = self.context.math.scale(self.state.velocity, self.frame_seconds);
         let trace = self.push_entity(displacement)?;
         if trace.fraction == 1.0 || self.context.removed {
@@ -908,9 +898,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             trace.source_plane.normal,
             if bounces { 1.5 } else { 1.0 },
         );
-        if trace.source_plane.normal.z > 0.7
-            && (f64::from(self.state.velocity.z) < 60.0 || !bounces)
-        {
+        if trace.source_plane.normal.z > 0.7 && (f64::from(self.state.velocity.z) < 60.0 || !bounces) {
             self.state.flags |= Q1_FLAG_ONGROUND;
             self.state.ground = trace.hit;
             self.state.velocity = ZERO;
@@ -925,7 +913,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
             Q1PlayerInput::Netquake(input) => input.command.view_angles,
             Q1PlayerInput::Quakeworld(_) => panic!("NetQuake mover with QuakeWorld input"),
         };
-        self.state.view_angles = self.context.math.vec(f64::from(view.x), f64::from(view.y), f64::from(view.z));
+        self.state.view_angles = self
+            .context
+            .math
+            .vec(f64::from(view.x), f64::from(view.y), f64::from(view.z));
         self.client_think();
         let state = self.context.source_state(Q1State::Netquake(self.state.clone()));
         let Q1State::Netquake(state) = state else {
@@ -935,10 +926,9 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
     }
 
     fn physics_step(&mut self) -> Result<Q1MovementResult, MovementError> {
-        let state = self.context.lifecycle(
-            Q1State::Netquake(self.state.clone()),
-            Q1LifecyclePhase::BeforePhysics,
-        );
+        let state = self
+            .context
+            .lifecycle(Q1State::Netquake(self.state.clone()), Q1LifecyclePhase::BeforePhysics);
         self.set_state(state)?;
         let has_pose = self.context.input.environment().pose.is_some();
         if !self.context.removed && !has_pose {
@@ -1006,11 +996,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
                             self.think()?
                         };
                         if proceed {
-                            self.state.origin = self.context.math.ma(
-                                self.state.origin,
-                                self.frame_seconds,
-                                self.state.velocity,
-                            );
+                            self.state.origin =
+                                self.context
+                                    .math
+                                    .ma(self.state.origin, self.frame_seconds, self.state.velocity);
                         }
                     }
                     Q1_MOVE_TOSS | Q1_MOVE_BOUNCE => {
@@ -1047,16 +1036,12 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
                                 }
                             };
                             let n = self.context.math.n;
-                            let hit_sound = f64::from(self.state.velocity.z)
-                                < n.mul(parameters.gravity, -0.1);
+                            let hit_sound = f64::from(self.state.velocity.z) < n.mul(parameters.gravity, -0.1);
                             self.gravity();
                             self.velocity_bounds();
                             self.fly_move(self.frame_seconds);
                             self.link(true)?;
-                            if !self.context.removed
-                                && hit_sound
-                                && self.state.flags & Q1_FLAG_ONGROUND != 0
-                            {
+                            if !self.context.removed && hit_sound && self.state.flags & Q1_FLAG_ONGROUND != 0 {
                                 if let Some(hooks) = self.context.options.hooks.as_mut() {
                                     let actor = self.context.input.actor().clone();
                                     let state = self.state.clone();
@@ -1069,21 +1054,18 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> NetQuakeMove<'s, S, H> {
                         }
                     }
                     other => {
-                        return Err(MovementError::Contract(
-                            Box::leak(
-                                format!("Unsupported NetQuake player movetype {other}").into_boxed_str(),
-                            ),
-                        ));
+                        return Err(MovementError::Contract(Box::leak(
+                            format!("Unsupported NetQuake player movetype {other}").into_boxed_str(),
+                        )));
                     }
                 }
             }
         }
         if !self.context.removed {
             self.link(true)?;
-            let state = self.context.lifecycle(
-                Q1State::Netquake(self.state.clone()),
-                Q1LifecyclePhase::AfterPhysics,
-            );
+            let state = self
+                .context
+                .lifecycle(Q1State::Netquake(self.state.clone()), Q1LifecyclePhase::AfterPhysics);
             self.set_state(state)?;
         }
         if self.context.removed {
@@ -1170,12 +1152,15 @@ pub fn move_netquake<S: Q1MovementServices, H: Q1MovementHooks>(
             effects: Vec::new(),
         },
         MovementInputContinuation::Continue { state, command } => {
-            let (UserCommand::Q1Netquake(command), Q1State::Netquake(state)) = (command, state)
-            else {
+            let (UserCommand::Q1Netquake(command), Q1State::Netquake(state)) = (command, state) else {
                 fail(services, &current.state);
                 return Err(MovementError::Contract("Input output changed NetQuake dialect"));
             };
-            current = Q1MovementInput { command, state, ..current.clone() };
+            current = Q1MovementInput {
+                command,
+                state,
+                ..current.clone()
+            };
             let mut mover = match NetQuakeMove::new(current.clone(), services, options) {
                 Ok(mover) => mover,
                 Err(error) => {
@@ -1217,9 +1202,18 @@ pub fn move_netquake<S: Q1MovementServices, H: Q1MovementHooks>(
                 MovementOutcome::ActorRemoved { effects, .. } => effects,
             },
         }),
-        (MovementContinuation::Continue(_), MovementOutcome::ActorRemoved { actor, command_sequence, effects }) => {
-            Ok(MovementOutcome::ActorRemoved { actor, command_sequence, effects })
-        }
+        (
+            MovementContinuation::Continue(_),
+            MovementOutcome::ActorRemoved {
+                actor,
+                command_sequence,
+                effects,
+            },
+        ) => Ok(MovementOutcome::ActorRemoved {
+            actor,
+            command_sequence,
+            effects,
+        }),
         (MovementContinuation::Continue(state), MovementOutcome::Active { fields, .. }) => {
             let Q1State::Netquake(state) = state else {
                 return Err(MovementError::Contract("Input completion changed NetQuake dialect"));
@@ -1239,10 +1233,7 @@ pub struct Q1MovementProvider<H = NoQ1Hooks> {
 }
 
 /// Build a NetQuake movement provider.
-pub fn create_q1_movement_provider<H>(
-    id: ProviderId,
-    options: Q1MovementOptions<H>,
-) -> Q1MovementProvider<H> {
+pub fn create_q1_movement_provider<H>(id: ProviderId, options: Q1MovementOptions<H>) -> Q1MovementProvider<H> {
     Q1MovementProvider { id, options }
 }
 
@@ -1261,17 +1252,16 @@ impl<H: Q1MovementHooks + Clone> Q1MovementProvider<H> {
 mod tests {
     use super::*;
     use qa_core::identity::IdentityOwner;
-    use qa_core::math::{Bounds, vec3};
+    use qa_core::math::{vec3, Bounds};
     use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
     use qa_core::time::{FrameContext, FramePhase, SourceTime};
 
-    use super::super::types::{
-        Q1AnimationStepInput, Q1AnimationStepResult, Q1TraceQuery, Q1WeaponStepInput,
-        Q1WeaponStepResult,
-    };
     use super::super::super::types::{
         ActorAnimationState, AnimationState, ArsenalState, MovementEnvironment, MovementInputFields,
         MovementTouchContact, Q1UserCommand, TraceContact, WeaponState,
+    };
+    use super::super::types::{
+        Q1AnimationStepInput, Q1AnimationStepResult, Q1TraceQuery, Q1WeaponStepInput, Q1WeaponStepResult,
     };
 
     struct NullServices {
@@ -1303,11 +1293,7 @@ mod tests {
         fn point_contents(&mut self, _point: Vec3) -> i32 {
             self.contents
         }
-        fn touch(
-            &mut self,
-            _contact: MovementTouchContact,
-            state: Q1State,
-        ) -> MovementContinuation<Q1State> {
+        fn touch(&mut self, _contact: MovementTouchContact, state: Q1State) -> MovementContinuation<Q1State> {
             MovementContinuation::Continue(state)
         }
         fn weapon_step(&mut self, input: Q1WeaponStepInput<'_>, _state: &Q1State) -> Q1WeaponStepResult {

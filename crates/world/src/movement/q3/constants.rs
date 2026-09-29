@@ -398,8 +398,10 @@ pub mod player_animation {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_buttons as B, entity_event as E, holdable as H, move_flags as F,
-        move_type as T, player_animation as A, powerup as P, weapon as W, weapon_state as S};
+    use super::{
+        command_buttons as B, entity_event as E, holdable as H, move_flags as F, move_type as T, player_animation as A,
+        powerup as P, weapon as W, weapon_state as S,
+    };
 
     #[test]
     fn enumerations_match_bg_public() {

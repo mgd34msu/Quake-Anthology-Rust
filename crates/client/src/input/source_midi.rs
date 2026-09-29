@@ -92,7 +92,10 @@ mod tests {
         assert_eq!(decode(&[0x90, 60, 0], 1), vec![(aux, false), (aux, true)]);
         assert!(decode(&[0x90, 60, 100], 2).is_empty());
         assert!(decode(&[0xC0, 5, 60, 100], 1).is_empty());
-        assert_eq!(decode(&[0x90, 60, 100, 0xF8, 62, 100], 1), vec![(aux, true), (aux + 2, true)]);
+        assert_eq!(
+            decode(&[0x90, 60, 100, 0xF8, 62, 100], 1),
+            vec![(aux, true), (aux + 2, true)]
+        );
         assert!(decode(&[0x90, 59, 100], 1).is_empty());
         assert!(decode(&[0x90, 60, 100, 0xF0, 62, 100], 1).len() == 1);
         let mut decoder = SourceMidiDecoder::new();

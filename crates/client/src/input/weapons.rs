@@ -157,11 +157,14 @@ pub fn base_weapon_binding_items(family: WeaponFamily, campaign: &str, edition: 
             }
             weapons
                 .iter()
-                .map(|weapon| WeaponBindingItem::weapon(&format!("q1:weapon/{weapon}"), &q1_weapon_display_name(weapon)))
+                .map(|weapon| {
+                    WeaponBindingItem::weapon(&format!("q1:weapon/{weapon}"), &q1_weapon_display_name(weapon))
+                })
                 .collect()
         }
         WeaponFamily::Q2 => {
-            let mut weapons: Vec<(&str, &str)> = Q2_BASE_WEAPONS.iter().map(|(_, item, label)| (*item, *label)).collect();
+            let mut weapons: Vec<(&str, &str)> =
+                Q2_BASE_WEAPONS.iter().map(|(_, item, label)| (*item, *label)).collect();
             let rerelease_pack = edition == "rerelease" && ["baseq2", "xatrix", "rogue", "mg2"].contains(&campaign);
             if rerelease_pack {
                 weapons.extend(Q2_XATRIX_WEAPONS.iter().map(|(_, item, label)| (*item, *label)));
@@ -171,7 +174,10 @@ pub fn base_weapon_binding_items(family: WeaponFamily, campaign: &str, edition: 
             } else if campaign == "rogue" {
                 weapons.extend(Q2_ROGUE_WEAPONS.iter().map(|(_, item, label)| (*item, *label)));
             }
-            weapons.iter().map(|(item, label)| WeaponBindingItem::weapon(item, label)).collect()
+            weapons
+                .iter()
+                .map(|(item, label)| WeaponBindingItem::weapon(item, label))
+                .collect()
         }
         WeaponFamily::Q3 => {
             let missionpack = campaign == "missionpack";
@@ -190,7 +196,9 @@ pub fn default_weapon_bindings(items: &[WeaponBindingItem]) -> Vec<(String, Stri
     let mut result: Vec<(String, String)> = Vec::new();
     let mut append = |id: &str, key: &str| {
         if !result.iter().any(|(assigned, _)| assigned == key)
-            && items.iter().any(|item| item.kind == WeaponBindingKind::Weapon && item.id == id)
+            && items
+                .iter()
+                .any(|item| item.kind == WeaponBindingKind::Weapon && item.id == id)
         {
             result.push((key.to_string(), format!("use {id}")));
         }
@@ -223,7 +231,9 @@ fn normalized(value: &str) -> String {
 }
 
 fn suspicious_argument(argument: &str) -> bool {
-    argument.chars().any(|value| matches!(value, ';' | '\r' | '\n' | '\\' | '"'))
+    argument
+        .chars()
+        .any(|value| matches!(value, ';' | '\r' | '\n' | '\\' | '"'))
         || argument.contains("//")
         || argument.contains("/*")
 }
@@ -239,7 +249,11 @@ pub struct ResolvedWeaponSelection {
 
 /// Resolve `use`, `weapon`, or `impulse` against the item catalog.
 #[must_use]
-pub fn resolve_weapon_selection(command: &str, args: &[&str], items: &[WeaponBindingItem]) -> Option<ResolvedWeaponSelection> {
+pub fn resolve_weapon_selection(
+    command: &str,
+    args: &[&str],
+    items: &[WeaponBindingItem],
+) -> Option<ResolvedWeaponSelection> {
     let name = command.to_lowercase();
     if name != "use" && name != "weapon" && name != "impulse" {
         return None;
@@ -279,8 +293,16 @@ pub fn resolve_weapon_selection(command: &str, args: &[&str], items: &[WeaponBin
                 let q2 = Q2_BASE_WEAPONS
                     .iter()
                     .map(|(qname, item_id, label)| (*qname, *item_id, *label))
-                    .chain(Q2_XATRIX_WEAPONS.iter().map(|(qname, item_id, label)| (*qname, *item_id, *label)))
-                    .chain(Q2_ROGUE_WEAPONS.iter().map(|(qname, item_id, label)| (*qname, *item_id, *label)))
+                    .chain(
+                        Q2_XATRIX_WEAPONS
+                            .iter()
+                            .map(|(qname, item_id, label)| (*qname, *item_id, *label)),
+                    )
+                    .chain(
+                        Q2_ROGUE_WEAPONS
+                            .iter()
+                            .map(|(qname, item_id, label)| (*qname, *item_id, *label)),
+                    )
                     .find(|(_, item_id, _)| *item_id == item.id);
                 if let Some((qname, _, label)) = q2 {
                     if normalized(qname) == requested || normalized(label) == requested {
@@ -310,17 +332,25 @@ pub fn resolve_weapon_selection(command: &str, args: &[&str], items: &[WeaponBin
     if name == "impulse"
         && items.iter().any(|item| {
             item.kind == WeaponBindingKind::Weapon
-                && !Q1_WEAPONS.iter().any(|(weapon, _)| item.id == format!("q1:weapon/{weapon}"))
+                && !Q1_WEAPONS
+                    .iter()
+                    .any(|(weapon, _)| item.id == format!("q1:weapon/{weapon}"))
         })
     {
         return None;
     }
     let id = if name == "weapon" {
-        Q3_WEAPONS.iter().find(|(tag, _, _)| *tag as usize == number)?.1.to_string()
+        Q3_WEAPONS
+            .iter()
+            .find(|(tag, _, _)| *tag as usize == number)?
+            .1
+            .to_string()
     } else {
         format!("q1:weapon/{}", Q1_WEAPONS.get(number - 1)?.0)
     };
-    let item = items.iter().find(|item| item.kind == WeaponBindingKind::Weapon && item.id == id)?;
+    let item = items
+        .iter()
+        .find(|item| item.kind == WeaponBindingKind::Weapon && item.id == id)?;
     Some(ResolvedWeaponSelection {
         kind: item.kind,
         item: item.id.clone(),
@@ -332,12 +362,16 @@ pub fn resolve_weapon_selection(command: &str, args: &[&str], items: &[WeaponBin
 /// Returns `None` for scripts, aliases, and multi-command lines.
 #[must_use]
 pub fn weapon_binding_item(text: &str, items: &[WeaponBindingItem]) -> Option<String> {
-    if text.chars().any(|value| matches!(value, ';' | '\r' | '\n' | '\\')) || text.contains("//") || text.contains("/*") {
+    if text.chars().any(|value| matches!(value, ';' | '\r' | '\n' | '\\')) || text.contains("//") || text.contains("/*")
+    {
         return None;
     }
     let trimmed = text.trim();
     let (name, rest) = trimmed.split_once(char::is_whitespace)?;
-    if !name.eq_ignore_ascii_case("use") && !name.eq_ignore_ascii_case("weapon") && !name.eq_ignore_ascii_case("impulse") {
+    if !name.eq_ignore_ascii_case("use")
+        && !name.eq_ignore_ascii_case("weapon")
+        && !name.eq_ignore_ascii_case("impulse")
+    {
         return None;
     }
     let rest = rest.trim();
@@ -409,7 +443,10 @@ mod tests {
             resolve_weapon_selection("use", &["Thunderbolt"], &q1).unwrap().item,
             "q1:weapon/lightning"
         );
-        assert_eq!(resolve_weapon_selection("impulse", &["8"], &q1).unwrap().item, "q1:weapon/lightning");
+        assert_eq!(
+            resolve_weapon_selection("impulse", &["8"], &q1).unwrap().item,
+            "q1:weapon/lightning"
+        );
         assert!(resolve_weapon_selection("impulse", &["09"], &q1).is_none());
         assert!(resolve_weapon_selection("use", &["a;b"], &q1).is_none());
         let q3 = base_weapon_binding_items(WeaponFamily::Q3, "", "classic");

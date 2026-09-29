@@ -32,7 +32,10 @@ pub const AUDIO_OUTPUT_RATES: [u32; 4] = [11025, 22050, 44100, 48000];
 
 /// Validate an output format.
 pub fn audio_output_format(sample_rate: i64, channels: i64, sample_bits: i64) -> Result<AudioOutputFormat, AudioError> {
-    if !(8000..=192000).contains(&sample_rate) || channels != 1 && channels != 2 || sample_bits != 8 && sample_bits != 16 {
+    if !(8000..=192000).contains(&sample_rate)
+        || channels != 1 && channels != 2
+        || sample_bits != 8 && sample_bits != 16
+    {
         return Err(AudioError::BadOutputFormat);
     }
     Ok(AudioOutputFormat {
@@ -137,7 +140,11 @@ pub fn resample_queued_pcm(samples: &[i16], previous_rate: u32, next_rate: u32) 
         reset_stream: true,
     })?;
     let frames = (samples.len() as f64 / 2.0 * f64::from(next_rate) / f64::from(previous_rate)).ceil() as usize;
-    Ok(stream.mix(frames, 1.0, None)?.iter().map(|sample| to_int16(*sample)).collect())
+    Ok(stream
+        .mix(frames, 1.0, None)?
+        .iter()
+        .map(|sample| to_int16(*sample))
+        .collect())
 }
 
 #[cfg(test)]
@@ -154,7 +161,10 @@ mod tests {
         assert_eq!(audio_khz_rate(" 22 "), Some(22050));
         assert_eq!(audio_khz_rate(""), None);
         assert_eq!(audio_khz_rate("96"), None);
-        assert!(matches!(encode_output_pcm(&[1, 2], &format).unwrap(), EncodedPcm::S16(_)));
+        assert!(matches!(
+            encode_output_pcm(&[1, 2], &format).unwrap(),
+            EncodedPcm::S16(_)
+        ));
         let mono = audio_output_format(22050, 1, 16).unwrap();
         assert_eq!(
             encode_output_pcm(&[1000, 2000, -1000, -2000], &mono).unwrap(),

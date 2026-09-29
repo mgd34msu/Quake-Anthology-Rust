@@ -45,7 +45,10 @@ impl MusicControls {
     /// Map a requested track.
     #[must_use]
     pub fn mapped_track(&self, track: i32) -> i32 {
-        usize::try_from(track).ok().and_then(|index| self.remap.get(index).copied()).unwrap_or(track)
+        usize::try_from(track)
+            .ok()
+            .and_then(|index| self.remap.get(index).copied())
+            .unwrap_or(track)
     }
 
     /// Replace the remap table.
@@ -173,7 +176,12 @@ impl MusicPlayer {
 
     /// Advance source smoothing once per presentation frame.
     pub fn update(&mut self) {
-        if self.family == SoundFamily::Q3 && self.volume_mode == MusicVolumeMode::Source && self.stream.is_some() && !self.paused && self.controls.enabled {
+        if self.family == SoundFamily::Q3
+            && self.volume_mode == MusicVolumeMode::Source
+            && self.stream.is_some()
+            && !self.paused
+            && self.controls.enabled
+        {
             self.smoothed_volume = (self.smoothed_volume + (self.target_volume as f32) * 2.0) / 4.0;
         }
     }
@@ -359,7 +367,12 @@ impl CdMusic {
         self.player.stop();
         self.track = None;
         let number = format!("{mapped:02}");
-        for path in [format!("music/{number}.ogg"), format!("music/track{number}.ogg"), format!("music/{number}.wav"), format!("music/track{number}.wav")] {
+        for path in [
+            format!("music/{number}.ogg"),
+            format!("music/track{number}.ogg"),
+            format!("music/{number}.wav"),
+            format!("music/track{number}.wav"),
+        ] {
             let stream = (self.open)(&path)?;
             if request != self.request || !self.enabled() {
                 if let Some(mut stream) = stream {
@@ -433,7 +446,10 @@ pub fn remap_q2_music_track(track: i32, profile: &Q2SoundtrackProfile) -> Result
         return Ok(track + 10);
     }
     if game == "xatrix" {
-        return XATRIX_TRACKS.get((track - 2) as usize).copied().ok_or(AudioError::XatrixTrack);
+        return XATRIX_TRACKS
+            .get((track - 2) as usize)
+            .copied()
+            .ok_or(AudioError::XatrixTrack);
     }
     Ok(track)
 }
@@ -441,8 +457,8 @@ pub fn remap_q2_music_track(track: i32, profile: &Q2SoundtrackProfile) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::wav::PcmSound;
     use crate::audio::streams::MemoryPcmStream;
+    use crate::audio::wav::PcmSound;
 
     fn pcm(samples: Vec<i16>) -> PcmSound {
         PcmSound {
@@ -458,10 +474,16 @@ mod tests {
     fn loops_intro_and_counts_completions() {
         let mut player = MusicPlayer::new(11025, SoundFamily::Q3, MusicVolumeMode::Immediate, MusicControls::new());
         player.set_volume(1.0).unwrap();
-        player.start(Box::new(MemoryPcmStream::new(pcm(vec![1000, 2000]))), Some(LoopSource::SameAsIntro));
+        player.start(
+            Box::new(MemoryPcmStream::new(pcm(vec![1000, 2000]))),
+            Some(LoopSource::SameAsIntro),
+        );
         assert!(player.playing());
         let mixed = player.mix(4).unwrap();
-        assert_eq!(mixed, vec![1000.0, 1000.0, 2000.0, 2000.0, 1000.0, 1000.0, 2000.0, 2000.0]);
+        assert_eq!(
+            mixed,
+            vec![1000.0, 1000.0, 2000.0, 2000.0, 1000.0, 1000.0, 2000.0, 2000.0]
+        );
         // The loop chunk resets the stream, so the position restarts at zero.
         assert_eq!(player.source_position(), 2);
         player.stop();
@@ -481,7 +503,11 @@ mod tests {
         assert!((player.volume() - 0.625).abs() < 1e-6);
         let mut cd = CdMusic::new(
             MusicPlayer::new(11025, SoundFamily::Q2, MusicVolumeMode::Immediate, MusicControls::new()),
-            Box::new(|path| Ok(path.ends_with("02.ogg").then(|| Box::new(MemoryPcmStream::new(pcm(vec![7]))) as Box<dyn PcmStream>))),
+            Box::new(|path| {
+                Ok(path
+                    .ends_with("02.ogg")
+                    .then(|| Box::new(MemoryPcmStream::new(pcm(vec![7]))) as Box<dyn PcmStream>))
+            }),
         );
         assert!(cd.play(2, true).unwrap());
         assert_eq!(cd.playing_track(), Some(2));
@@ -490,11 +516,23 @@ mod tests {
         assert!(cd.play(99, false).is_ok());
         assert_eq!(remap_q2_music_track(2, &Q2SoundtrackProfile::Disc).unwrap(), 2);
         assert_eq!(
-            remap_q2_music_track(2, &Q2SoundtrackProfile::Remastered { campaign: "rogue".to_string() }).unwrap(),
+            remap_q2_music_track(
+                2,
+                &Q2SoundtrackProfile::Remastered {
+                    campaign: "rogue".to_string()
+                }
+            )
+            .unwrap(),
             12
         );
         assert_eq!(
-            remap_q2_music_track(2, &Q2SoundtrackProfile::Remastered { campaign: "xatrix".to_string() }).unwrap(),
+            remap_q2_music_track(
+                2,
+                &Q2SoundtrackProfile::Remastered {
+                    campaign: "xatrix".to_string()
+                }
+            )
+            .unwrap(),
             9
         );
     }

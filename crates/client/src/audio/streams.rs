@@ -127,13 +127,18 @@ impl VorbisPcmStream {
 
     /// Decode archive bytes through an owned temporary file.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, AudioError> {
-        let directory = std::env::temp_dir().join(format!("quake-audio-{}-{}", std::process::id(), TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)));
+        let directory = std::env::temp_dir().join(format!(
+            "quake-audio-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&directory).map_err(|error| AudioError::StreamIo(error.to_string()))?;
         let result = (|| -> Result<Self, AudioError> {
             let path = directory.join("source.ogg");
             std::fs::write(&path, bytes).map_err(|error| AudioError::StreamIo(error.to_string()))?;
             Ok(Self {
-                decoder: qa_platform::vorbis::VorbisDecoder::open(path.to_string_lossy().as_ref()).map_err(AudioError::from)?,
+                decoder: qa_platform::vorbis::VorbisDecoder::open(path.to_string_lossy().as_ref())
+                    .map_err(AudioError::from)?,
                 temporary_directory: Some(directory.clone()),
                 closed: false,
             })
@@ -348,7 +353,9 @@ impl RawAudioStream {
                     return Err(AudioError::CheckpointSample);
                 }
             }
-            if segment.samples.len() != (segment.end - segment.begin) as usize * usize::from(channels) || segment.begin == segment.end {
+            if segment.samples.len() != (segment.end - segment.begin) as usize * usize::from(channels)
+                || segment.begin == segment.end
+            {
                 return Err(AudioError::CheckpointExtent);
             }
             segments.push(Segment {
@@ -373,7 +380,10 @@ impl RawAudioStream {
             output_rate: value.output_rate as u32,
         };
         if stream.origin < 0.0
-            || stream.segments.first().is_some_and(|first| stream.source_position() < first.begin)
+            || stream
+                .segments
+                .first()
+                .is_some_and(|first| stream.source_position() < first.begin)
             || stream.segments.last().is_some_and(|last| last.end != stream.end)
             || stream.input_rate == 0 && !stream.segments.is_empty()
         {
@@ -398,7 +408,8 @@ impl RawAudioStream {
     /// Current source frame.
     #[must_use]
     pub fn source_position(&self) -> i64 {
-        (self.origin + self.output_frames as f64 * f64::from(self.input_rate) / f64::from(self.output_rate)).floor() as i64
+        (self.origin + self.output_frames as f64 * f64::from(self.input_rate) / f64::from(self.output_rate)).floor()
+            as i64
     }
 
     /// Queued source frames.
@@ -428,7 +439,11 @@ impl RawAudioStream {
             StreamSamples::S16(samples) => samples.len(),
             StreamSamples::U8(samples) => samples.len(),
         };
-        if chunk.sample_rate < 1 || chunk.source_sample < 0 || chunk.channels == 0 || sample_count % usize::from(chunk.channels) != 0 {
+        if chunk.sample_rate < 1
+            || chunk.source_sample < 0
+            || chunk.channels == 0
+            || sample_count % usize::from(chunk.channels) != 0
+        {
             return Err(AudioError::BadStreamedPcm);
         }
         if chunk.reset_stream || self.input_rate == 0 {
@@ -450,7 +465,10 @@ impl RawAudioStream {
         }
         let samples: Vec<i16> = match &chunk.samples {
             StreamSamples::S16(samples) => samples.clone(),
-            StreamSamples::U8(samples) => samples.iter().map(|value| ((i32::from(*value) - 128) << 8) as i16).collect(),
+            StreamSamples::U8(samples) => samples
+                .iter()
+                .map(|value| ((i32::from(*value) - 128) << 8) as i16)
+                .collect(),
         };
         let end = chunk.source_sample + samples.len() as i64 / i64::from(chunk.channels);
         if end > chunk.source_sample {
@@ -465,7 +483,12 @@ impl RawAudioStream {
     }
 
     /// Mix frames with an optional refill.
-    pub fn mix(&mut self, frames: usize, gain: f64, mut refill: Option<&mut dyn FnMut() -> Result<Option<StreamPcm>, AudioError>>) -> Result<Vec<f64>, AudioError> {
+    pub fn mix(
+        &mut self,
+        frames: usize,
+        gain: f64,
+        mut refill: Option<&mut dyn FnMut() -> Result<Option<StreamPcm>, AudioError>>,
+    ) -> Result<Vec<f64>, AudioError> {
         let mut output = vec![0.0; frames * 2];
         if self.paused {
             return Ok(output);
@@ -497,7 +520,11 @@ impl RawAudioStream {
             let right = if self.channels == 1 {
                 left
             } else {
-                segment.samples.get(index + 1).copied().ok_or(AudioError::StreamPosition)?
+                segment
+                    .samples
+                    .get(index + 1)
+                    .copied()
+                    .ok_or(AudioError::StreamPosition)?
             };
             output[frame * 2] = f64::from(left) * gain;
             output[frame * 2 + 1] = f64::from(right) * gain;

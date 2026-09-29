@@ -2,7 +2,6 @@
 //!
 //! Donor provenance: `src/movement/q3/view.ts` (`PM_UpdateViewAngles`;
 /// callers supply the source movement enum).
-
 use qa_core::math::Vec3;
 
 /// Updated view angles plus adjusted delta.

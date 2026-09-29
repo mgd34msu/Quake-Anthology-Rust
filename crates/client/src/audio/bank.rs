@@ -93,7 +93,11 @@ impl<Content: SoundContent> SoundBank<Content> {
         if !base.starts_with('*') {
             return self.register(base, SoundFamily::Q2);
         }
-        let selected = model.split('/').next().filter(|part| !part.is_empty()).unwrap_or("male");
+        let selected = model
+            .split('/')
+            .next()
+            .filter(|part| !part.is_empty())
+            .unwrap_or("male");
         let name = &base[1..];
         if let Some(asset) = self.register(&format!("#players/{selected}/{name}"), SoundFamily::Q2)? {
             return Ok(Some(asset));

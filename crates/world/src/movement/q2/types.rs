@@ -12,10 +12,9 @@ use qa_core::numeric::{NumericOps, NumericProfile};
 use qa_core::time::{ClockProfile, FrameContext};
 
 pub use crate::collision::q2::{
-    CONTENTS_LADDER, CONTENTS_LAVA, CONTENTS_MONSTER, CONTENTS_PLAYER, CONTENTS_PLAYERCLIP,
-    CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, CONTENTS_WINDOW, MASK_CLASSIC_PLAYERSOLID,
-    MASK_DEADSOLID, MASK_PLAYERSOLID, MASK_SOLID, MASK_WATER, MAXTOUCH, MIN_STEP_NORMAL,
-    STEPSIZE, STOP_EPSILON, SURF_SLICK,
+    CONTENTS_LADDER, CONTENTS_LAVA, CONTENTS_MONSTER, CONTENTS_PLAYER, CONTENTS_PLAYERCLIP, CONTENTS_SLIME,
+    CONTENTS_SOLID, CONTENTS_WATER, CONTENTS_WINDOW, MASK_CLASSIC_PLAYERSOLID, MASK_DEADSOLID, MASK_PLAYERSOLID,
+    MASK_SOLID, MASK_WATER, MAXTOUCH, MIN_STEP_NORMAL, STEPSIZE, STOP_EPSILON, SURF_SLICK,
 };
 pub use crate::collision::LeafContents;
 
@@ -58,9 +57,9 @@ pub const ROLL: usize = 2;
 
 /// Index a source tuple with the donor's range error.
 pub fn element(values: &[f64], index: usize) -> f64 {
-    *values.get(index).unwrap_or_else(|| {
-        panic!("Quake II movement index {index} outside {}", values.len())
-    })
+    *values
+        .get(index)
+        .unwrap_or_else(|| panic!("Quake II movement index {index} outside {}", values.len()))
 }
 
 /// Classic pmove types (`PmTypeT`).
@@ -456,9 +455,8 @@ pub const PM_CONFIG_DEFAULT: PmConfig = PmConfig {
 };
 
 use super::super::types::{
-    MovementContinuation, MovementInputContinuation, MovementInputFields, MovementOutcome,
-    MovementTouchContact, Q2RereleaseUserCommand, Q2UserCommand, TouchSurface, TraceContact,
-    TraceHit, UserCommand,
+    MovementContinuation, MovementInputContinuation, MovementInputFields, MovementOutcome, MovementTouchContact,
+    Q2RereleaseUserCommand, Q2UserCommand, TouchSurface, TraceContact, TraceHit, UserCommand,
 };
 
 /// Quake II classic movement state, mirroring donor `Q2MovementState`.
@@ -732,12 +730,7 @@ pub trait Q2InputApplication {
         state: Q2State,
     ) -> MovementInputContinuation<Q2State>;
     /// End input application with the accepted posture.
-    fn end(
-        &mut self,
-        state: Q2State,
-        failed: bool,
-        posture: Option<(Bounds, f64)>,
-    ) -> MovementContinuation<Q2State>;
+    fn end(&mut self, state: Q2State, failed: bool, posture: Option<(Bounds, f64)>) -> MovementContinuation<Q2State>;
 }
 
 /// Movement services for Quake II steps.
@@ -749,11 +742,7 @@ pub trait Q2MovementServices {
     /// Q2 point contents as (stored, merged).
     fn point_contents(&mut self, query: Q2ContentsQuery) -> (i32, i32);
     /// Dispatch a touch contact.
-    fn touch(
-        &mut self,
-        contact: Q2TouchContact,
-        state: Q2State,
-    ) -> MovementContinuation<Q2State>;
+    fn touch(&mut self, contact: Q2TouchContact, state: Q2State) -> MovementContinuation<Q2State>;
     /// Optional authoritative input application.
     fn input_application(&mut self) -> Option<&mut dyn Q2InputApplication> {
         None

@@ -7,10 +7,12 @@ use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::NumericOps;
 
-use super::common::MovementMath;
 use super::super::types::{MovementError, TraceHit};
-use super::types::{Q1_FLAG_ONGROUND, Q1_MOVE_NOCLIP, Q1_MOVE_NONE, Q1_MOVE_PUSH, Q1_MOVE_WALK,
-    Q1PhysicsEntity, Q1PusherResult, Q1PusherServices, Q1PusherStatus, Q1Solid};
+use super::common::MovementMath;
+use super::types::{
+    Q1PhysicsEntity, Q1PusherResult, Q1PusherServices, Q1PusherStatus, Q1Solid, Q1_FLAG_ONGROUND, Q1_MOVE_NOCLIP,
+    Q1_MOVE_NONE, Q1_MOVE_PUSH, Q1_MOVE_WALK,
+};
 
 fn overlap(a: &Bounds, b: &Bounds) -> bool {
     a.min.x < b.max.x
@@ -215,13 +217,13 @@ pub fn push_q1_pusher<S: Q1PusherServices>(
         if entity.bounds.min.x == entity.bounds.max.x {
             continue;
         }
-        if entity.solid == Q1Solid::Not
-            || entity.solid == Q1Solid::Trigger
-            || entity.solid == Q1Solid::Corpse
-        {
+        if entity.solid == Q1Solid::Not || entity.solid == Q1Solid::Trigger || entity.solid == Q1Solid::Corpse {
             let minimum = math.vec(0.0, 0.0, f64::from(entity.bounds.min.z));
             let mut entity = entity;
-            entity.bounds = Bounds { min: minimum, max: minimum };
+            entity.bounds = Bounds {
+                min: minimum,
+                max: minimum,
+            };
             services.write(entity);
             continue;
         }
@@ -237,8 +239,7 @@ pub fn push_q1_pusher<S: Q1PusherServices>(
                 moved: pushed.iter().map(|(actor, _)| actor.clone()).collect(),
             });
         };
-        let restored_time =
-            f64::from(n.store(n.sub(current_pusher.local_time_seconds, input.elapsed_seconds)));
+        let restored_time = f64::from(n.store(n.sub(current_pusher.local_time_seconds, input.elapsed_seconds)));
         let mut current_pusher = current_pusher;
         current_pusher.state.origin = original_origin;
         current_pusher.state.angles = original_angles;
@@ -303,7 +304,13 @@ pub fn step_q1_pusher<S: Q1PusherServices>(
             moved: Vec::new(),
         }
     } else {
-        move_q1_pusher(&Q1PusherInput { elapsed_seconds: move_time, ..input.clone() }, services)?
+        move_q1_pusher(
+            &Q1PusherInput {
+                elapsed_seconds: move_time,
+                ..input.clone()
+            },
+            services,
+        )?
     };
     let Some(current) = services.read(&input.actor) else {
         return Ok(Q1PusherResult {

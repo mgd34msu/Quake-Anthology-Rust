@@ -4,13 +4,11 @@
 
 use qa_core::math::Vec3;
 
+use super::super::types::{LocomotionAnimation, MovementContinuation, MovementResultFields, TraceHit, UserCommand};
 use super::common::MovementContext;
-use super::super::types::{
-    LocomotionAnimation, MovementContinuation, MovementResultFields, TraceHit, UserCommand,
-};
 use super::types::{
-    Q1AnimationStepInput, Q1MovementHooks, Q1MovementResult, Q1MovementServices, Q1MovementState,
-    Q1State, Q1WeaponStepInput, QwMovementResult, QwMovementState,
+    Q1AnimationStepInput, Q1MovementHooks, Q1MovementResult, Q1MovementServices, Q1MovementState, Q1State,
+    Q1WeaponStepInput, QwMovementResult, QwMovementState,
 };
 
 /// Finish a Q1 step: run weapon/animation owners, select locomotion, and
@@ -34,7 +32,14 @@ pub fn finish_movement<S: Q1MovementServices, H: Q1MovementHooks>(
     mut water_level: i32,
     mut water_type: i32,
 ) -> std::result::Result<FinishOutcome<Q1MovementResult, QwMovementResult>, MovementError> {
-    finish_inner(context, state, &mut view_angles, &mut ground, &mut water_level, &mut water_type)
+    finish_inner(
+        context,
+        state,
+        &mut view_angles,
+        &mut ground,
+        &mut water_level,
+        &mut water_type,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -45,10 +50,7 @@ fn finish_inner<S: Q1MovementServices, H: Q1MovementHooks>(
     ground: &mut TraceHit,
     water_level: &mut i32,
     water_type: &mut i32,
-) -> std::result::Result<
-    FinishOutcome<Q1MovementResult, QwMovementResult>,
-    MovementError,
-> {
+) -> std::result::Result<FinishOutcome<Q1MovementResult, QwMovementResult>, MovementError> {
     let (command, actor_id, command_sequence, arsenal, animation, environment, frame) = (
         context.input_command(),
         context.input.actor().id().clone(),
@@ -88,20 +90,17 @@ fn finish_inner<S: Q1MovementServices, H: Q1MovementHooks>(
                         effects,
                     })
                 }
-                Q1State::Quakeworld(_) => {
-                    FinishOutcome::Qw(crate::movement::types::MovementOutcome::ActorRemoved {
-                        actor: actor_id,
-                        command_sequence,
-                        effects,
-                    })
-                }
+                Q1State::Quakeworld(_) => FinishOutcome::Qw(crate::movement::types::MovementOutcome::ActorRemoved {
+                    actor: actor_id,
+                    command_sequence,
+                    effects,
+                }),
             });
         }
         Some(MovementContinuation::Continue(next)) => {
             let same = matches!(
                 (&state, &next),
-                (Q1State::Netquake(_), Q1State::Netquake(_))
-                    | (Q1State::Quakeworld(_), Q1State::Quakeworld(_))
+                (Q1State::Netquake(_), Q1State::Netquake(_)) | (Q1State::Quakeworld(_), Q1State::Quakeworld(_))
             );
             if !same {
                 return Err(MovementError::Contract("Weapon callback changed movement family"));
@@ -174,9 +173,10 @@ fn finish_inner<S: Q1MovementServices, H: Q1MovementHooks>(
         Q1State::Netquake(state) => Ok(FinishOutcome::Netquake(
             crate::movement::types::MovementOutcome::Active { fields, state },
         )),
-        Q1State::Quakeworld(state) => Ok(FinishOutcome::Qw(
-            crate::movement::types::MovementOutcome::Active { fields, state },
-        )),
+        Q1State::Quakeworld(state) => Ok(FinishOutcome::Qw(crate::movement::types::MovementOutcome::Active {
+            fields,
+            state,
+        })),
     }
 }
 
@@ -189,7 +189,14 @@ pub fn finish_netquake<S: Q1MovementServices, H: Q1MovementHooks>(
     water_level: i32,
     water_type: i32,
 ) -> std::result::Result<Q1MovementResult, MovementError> {
-    match finish_movement(context, Q1State::Netquake(state), view_angles, ground, water_level, water_type)? {
+    match finish_movement(
+        context,
+        Q1State::Netquake(state),
+        view_angles,
+        ground,
+        water_level,
+        water_type,
+    )? {
         FinishOutcome::Netquake(result) => Ok(result),
         FinishOutcome::Qw(_) => Err(MovementError::Contract(
             "Weapon callback changed NetQuake movement family",
@@ -225,20 +232,19 @@ pub fn finish_quakeworld<S: Q1MovementServices, H: Q1MovementHooks>(
 mod tests {
     use super::*;
     use qa_core::identity::{IdentityOwner, ProviderId};
-    use qa_core::math::{Bounds, vec3};
+    use qa_core::math::{vec3, Bounds};
     use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
     use qa_core::time::{ClockProfile, FrameContext, FramePhase, SourceTime};
 
-    use super::super::common::MovementContext;
-    use super::super::types::{
-        NoQ1Hooks, Q1AnimationStepResult, Q1Edition, Q1MovementInput, Q1MovementOptions,
-        Q1MovementProfile, Q1MovementState, Q1PlayerInput, Q1Trace, Q1TraceQuery,
-        Q1WeaponStepResult,
-    };
     use super::super::super::types::{
         ActorAnimationState, AnimationState, ArsenalState, MovementContinuation, MovementEnvironment,
-        MovementExecution, MovementInputFields, MovementTouchContact, Q1UserCommand, TraceContact,
-        UserCommand, WeaponState,
+        MovementExecution, MovementInputFields, MovementTouchContact, Q1UserCommand, TraceContact, UserCommand,
+        WeaponState,
+    };
+    use super::super::common::MovementContext;
+    use super::super::types::{
+        NoQ1Hooks, Q1AnimationStepResult, Q1Edition, Q1MovementInput, Q1MovementOptions, Q1MovementProfile,
+        Q1MovementState, Q1PlayerInput, Q1Trace, Q1TraceQuery, Q1WeaponStepResult,
     };
 
     struct NullServices {
@@ -269,11 +275,7 @@ mod tests {
         fn point_contents(&mut self, _point: Vec3) -> i32 {
             -1
         }
-        fn touch(
-            &mut self,
-            _contact: MovementTouchContact,
-            state: Q1State,
-        ) -> MovementContinuation<Q1State> {
+        fn touch(&mut self, _contact: MovementTouchContact, state: Q1State) -> MovementContinuation<Q1State> {
             MovementContinuation::Continue(state)
         }
         fn weapon_step(
@@ -288,10 +290,7 @@ mod tests {
                 effects: Vec::new(),
             }
         }
-        fn animation_step(
-            &mut self,
-            input: super::super::types::Q1AnimationStepInput<'_>,
-        ) -> Q1AnimationStepResult {
+        fn animation_step(&mut self, input: super::super::types::Q1AnimationStepInput<'_>) -> Q1AnimationStepResult {
             Q1AnimationStepResult {
                 animation: (*input.animation).clone(),
                 effects: Vec::new(),
@@ -443,8 +442,7 @@ mod tests {
             &mut services,
             Q1MovementOptions::<NoQ1Hooks>::default(),
         );
-        let result =
-            finish_netquake(&mut context, state, vec3(0.0, 0.0, 0.0), TraceHit::None, 3, -3).unwrap();
+        let result = finish_netquake(&mut context, state, vec3(0.0, 0.0, 0.0), TraceHit::None, 3, -3).unwrap();
         match result {
             crate::movement::types::MovementOutcome::Active { fields, .. } => {
                 assert_eq!(fields.water_level, 3);

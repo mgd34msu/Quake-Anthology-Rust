@@ -7,23 +7,21 @@ use qa_core::identity::ProviderId;
 use qa_core::math::Vec3;
 use qa_core::time::ClockProfile;
 
-use super::super::client_outputs::{
-    client_movement_mode, client_movement_type, client_stance_command,
-};
+use super::super::client_outputs::{client_movement_mode, client_movement_type, client_stance_command};
 use super::super::swept_body::{
-    CollisionOriginalVelocity, CollisionPolicy, CreaseVelocity, SweepStop, SweptBodyServices,
-    SweptBodyState, sweep_body,
+    sweep_body, CollisionOriginalVelocity, CollisionPolicy, CreaseVelocity, SweepStop, SweptBodyServices,
+    SweptBodyState,
 };
 use super::super::types::{
-    MovementContinuation, MovementDialect, MovementError, MovementExecution,
-    MovementInputContinuation, MovementOutcome, QwUserCommand, TraceHit, UserCommand,
+    MovementContinuation, MovementDialect, MovementError, MovementExecution, MovementInputContinuation,
+    MovementOutcome, QwUserCommand, TraceHit, UserCommand,
 };
 use super::common::{MovementContext, NONE, ZERO};
 use super::result::finish_quakeworld;
 use super::types::{
-    NoQ1Hooks, Q1_CONTENTS_EMPTY, Q1_CONTENTS_SLIME, Q1_CONTENTS_SOLID, Q1_CONTENTS_WATER,
-    Q1_STEP_HEIGHT, Q1LifecyclePhase, Q1MovementHooks, Q1MovementOptions, Q1MovementServices,
-    Q1State, Q1Trace, QwMovementInput, QwMovementResult, QwMovementState,
+    NoQ1Hooks, Q1LifecyclePhase, Q1MovementHooks, Q1MovementOptions, Q1MovementServices, Q1State, Q1Trace,
+    QwMovementInput, QwMovementResult, QwMovementState, Q1_CONTENTS_EMPTY, Q1_CONTENTS_SLIME, Q1_CONTENTS_SOLID,
+    Q1_CONTENTS_WATER, Q1_STEP_HEIGHT,
 };
 
 /// Split a command into slices of at most `maximum_milliseconds`, mirroring
@@ -33,15 +31,16 @@ pub fn quake_world_command_slices(
     maximum_milliseconds: f64,
 ) -> Result<Vec<QwUserCommand>, MovementError> {
     if maximum_milliseconds < 1.0 {
-        return Err(MovementError::Range(
-            "QuakeWorld command interval must be positive",
-        ));
+        return Err(MovementError::Range("QuakeWorld command interval must be positive"));
     }
     check_milliseconds(command.milliseconds)?;
     if f64::from(command.milliseconds) > maximum_milliseconds {
         let milliseconds = command.milliseconds / 2;
         let mut out = quake_world_command_slices(
-            &QwUserCommand { milliseconds, ..*command },
+            &QwUserCommand {
+                milliseconds,
+                ..*command
+            },
             maximum_milliseconds,
         )?;
         out.extend(quake_world_command_slices(
@@ -85,11 +84,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         let state = input.state.clone();
         Self {
             state,
-            context: MovementContext::new(
-                super::types::Q1PlayerInput::Quakeworld(input),
-                services,
-                options,
-            ),
+            context: MovementContext::new(super::types::Q1PlayerInput::Quakeworld(input), services, options),
             frame_seconds: 0.0,
             forward: ZERO,
             right: ZERO,
@@ -108,8 +103,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         };
         self.state = state;
         let environment = self.context.input.environment().clone();
-        if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health)
-        {
+        if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health) {
             self.context.project_client_mode();
             self.state.spectator = client_movement_type(MovementDialect::Q1Quakeworld, mode);
         }
@@ -196,7 +190,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         }
 
         let primal = self.state.velocity;
-        let mut sweep = Sweep { mover: self, blocked: 0 };
+        let mut sweep = Sweep {
+            mover: self,
+            blocked: 0,
+        };
         let frame_seconds = sweep.mover.frame_seconds;
         let stop = sweep_body(&mut sweep, frame_seconds);
         let blocked = sweep.blocked;
@@ -210,19 +207,17 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
     }
 
     fn ground_move(&mut self) {
-        self.state.velocity = self.context.math.vec(
-            f64::from(self.state.velocity.x),
-            f64::from(self.state.velocity.y),
-            0.0,
-        );
+        self.state.velocity =
+            self.context
+                .math
+                .vec(f64::from(self.state.velocity.x), f64::from(self.state.velocity.y), 0.0);
         if self.state.velocity.x == 0.0 && self.state.velocity.y == 0.0 {
             return;
         }
-        let destination = self.context.math.ma(
-            self.state.origin,
-            self.frame_seconds,
-            self.state.velocity,
-        );
+        let destination = self
+            .context
+            .math
+            .ma(self.state.origin, self.frame_seconds, self.state.velocity);
         let trace = self.context.trace_active(self.state.origin, destination);
         if trace.fraction == 1.0 {
             self.state.origin = trace.end;
@@ -235,19 +230,19 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         let down_velocity = self.state.velocity;
         self.state.origin = original;
         self.state.velocity = original_velocity;
-        let up = self.context.math.add(
-            self.state.origin,
-            self.context.math.vec(0.0, 0.0, Q1_STEP_HEIGHT),
-        );
+        let up = self
+            .context
+            .math
+            .add(self.state.origin, self.context.math.vec(0.0, 0.0, Q1_STEP_HEIGHT));
         let trace = self.context.trace_active(self.state.origin, up);
         if !trace.start_solid && !trace.all_solid {
             self.state.origin = trace.end;
         }
         self.fly_move();
-        let down_target = self.context.math.add(
-            self.state.origin,
-            self.context.math.vec(0.0, 0.0, -Q1_STEP_HEIGHT),
-        );
+        let down_target = self
+            .context
+            .math
+            .add(self.state.origin, self.context.math.vec(0.0, 0.0, -Q1_STEP_HEIGHT));
         let trace = self.context.trace_active(self.state.origin, down_target);
         let mut use_down = trace.source_plane.normal.z < 0.7;
         if !use_down {
@@ -286,11 +281,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         let parameters = self.qw_parameters();
         let speed = self.context.math.length(self.state.velocity);
         if speed < 1.0 {
-            self.state.velocity = self.context.math.vec(
-                0.0,
-                0.0,
-                f64::from(self.state.velocity.z),
-            );
+            self.state.velocity = self.context.math.vec(0.0, 0.0, f64::from(self.state.velocity.z));
             return;
         }
         let mut friction = parameters.friction;
@@ -300,14 +291,8 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
             let velocity = self.state.velocity;
             let bounds = self.context.bounds();
             let start = self.context.math.vec(
-                n.add(
-                    f64::from(origin.x),
-                    n.mul(n.div(f64::from(velocity.x), speed), 16.0),
-                ),
-                n.add(
-                    f64::from(origin.y),
-                    n.mul(n.div(f64::from(velocity.y), speed), 16.0),
-                ),
+                n.add(f64::from(origin.x), n.mul(n.div(f64::from(velocity.x), speed), 16.0)),
+                n.add(f64::from(origin.y), n.mul(n.div(f64::from(velocity.y), speed), 16.0)),
                 n.add(f64::from(origin.z), f64::from(bounds.min.z)),
             );
             // QW uses the player hull here; NetQuake uses a point trace.
@@ -324,15 +309,12 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
                 self.frame_seconds,
             );
         } else if !matches!(self.state.ground, TraceHit::None) {
-            drop = n.mul(
-                n.mul(speed.max(parameters.stop_speed), friction),
-                self.frame_seconds,
-            );
+            drop = n.mul(n.mul(speed.max(parameters.stop_speed), friction), self.frame_seconds);
         }
-        self.state.velocity = self.context.math.scale(
-            self.state.velocity,
-            n.div((0.0f64).max(n.sub(speed, drop)), speed),
-        );
+        self.state.velocity = self
+            .context
+            .math
+            .scale(self.state.velocity, n.div((0.0f64).max(n.sub(speed, drop)), speed));
     }
 
     fn qw_parameters(&self) -> crate::movement::Q1MovementParameters {
@@ -387,26 +369,27 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         let n = self.context.math.n;
         let command = self.command;
         let mut wish = self.wish_velocity();
-        let up = if command.forward_move == 0.0 && command.side_move == 0.0 && command.up_move == 0.0
-        {
+        let up = if command.forward_move == 0.0 && command.side_move == 0.0 && command.up_move == 0.0 {
             -60.0
         } else {
             self.context.speed(command.up_move)
         };
-        wish = self.context.math.vec(f64::from(wish.x), f64::from(wish.y), n.add(f64::from(wish.z), up));
+        wish = self
+            .context
+            .math
+            .vec(f64::from(wish.x), f64::from(wish.y), n.add(f64::from(wish.z), up));
         let normalized = self.context.math.normalize(wish);
         let max = self.context.speed(parameters.max_speed);
         let speed = n.mul(normalized.1.min(max), 0.7);
         self.accelerate(normalized.0, speed, parameters.water_accelerate, false);
-        let destination = self.context.math.ma(
-            self.state.origin,
-            self.frame_seconds,
-            self.state.velocity,
-        );
-        let start = self.context.math.add(
-            destination,
-            self.context.math.vec(0.0, 0.0, Q1_STEP_HEIGHT + 1.0),
-        );
+        let destination = self
+            .context
+            .math
+            .ma(self.state.origin, self.frame_seconds, self.state.velocity);
+        let start = self
+            .context
+            .math
+            .add(destination, self.context.math.vec(0.0, 0.0, Q1_STEP_HEIGHT + 1.0));
         let trace = self.context.trace_active(start, destination);
         if !trace.start_solid && !trace.all_solid {
             self.state.origin = trace.end;
@@ -418,16 +401,24 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
     fn air_move(&mut self) {
         let parameters = self.qw_parameters();
         let n = self.context.math.n;
-        self.forward = self.context.math.normalize(self.context.math.vec(
-            f64::from(self.forward.x),
-            f64::from(self.forward.y),
-            0.0,
-        )).0;
-        self.right = self.context.math.normalize(self.context.math.vec(
-            f64::from(self.right.x),
-            f64::from(self.right.y),
-            0.0,
-        )).0;
+        self.forward = self
+            .context
+            .math
+            .normalize(
+                self.context
+                    .math
+                    .vec(f64::from(self.forward.x), f64::from(self.forward.y), 0.0),
+            )
+            .0;
+        self.right = self
+            .context
+            .math
+            .normalize(
+                self.context
+                    .math
+                    .vec(f64::from(self.right.x), f64::from(self.right.y), 0.0),
+            )
+            .0;
         let wish = self.wish_velocity();
         let normalized = self.context.math.normalize(wish);
         let max = self.context.speed(parameters.max_speed);
@@ -438,11 +429,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
             self.frame_seconds,
         );
         if !matches!(self.state.ground, TraceHit::None) {
-            self.state.velocity = self.context.math.vec(
-                f64::from(self.state.velocity.x),
-                f64::from(self.state.velocity.y),
-                0.0,
-            );
+            self.state.velocity =
+                self.context
+                    .math
+                    .vec(f64::from(self.state.velocity.x), f64::from(self.state.velocity.y), 0.0);
             self.accelerate(normalized.0, speed, parameters.accelerate, false);
             self.state.velocity = self.context.math.vec(
                 f64::from(self.state.velocity.x),
@@ -467,10 +457,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         if f64::from(self.state.velocity.z) > 180.0 {
             self.state.ground = NONE;
         } else {
-            let down = self.context.math.add(
-                self.state.origin,
-                self.context.math.vec(0.0, 0.0, -1.0),
-            );
+            let down = self
+                .context
+                .math
+                .add(self.state.origin, self.context.math.vec(0.0, 0.0, -1.0));
             let trace = self.context.trace_active(self.state.origin, down);
             self.state.ground = if trace.source_plane.normal.z < 0.7 {
                 NONE
@@ -532,10 +522,8 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         }
         if self.state.water_jump_time_seconds != 0.0 {
             let n = self.context.math.n;
-            self.state.water_jump_time_seconds = (0.0f64).max(n.sub(
-                self.state.water_jump_time_seconds,
-                self.frame_seconds,
-            ));
+            self.state.water_jump_time_seconds =
+                (0.0f64).max(n.sub(self.state.water_jump_time_seconds, self.frame_seconds));
             return;
         }
         if self.water_level >= 2 {
@@ -571,27 +559,28 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         if self.state.water_jump_time_seconds != 0.0 || f64::from(self.state.velocity.z) < -180.0 {
             return;
         }
-        let forward = self.context.math.normalize(self.context.math.vec(
-            f64::from(self.forward.x),
-            f64::from(self.forward.y),
-            0.0,
-        )).0;
+        let forward = self
+            .context
+            .math
+            .normalize(
+                self.context
+                    .math
+                    .vec(f64::from(self.forward.x), f64::from(self.forward.y), 0.0),
+            )
+            .0;
         let spot = self.context.math.add(
             self.context.math.ma(self.state.origin, 24.0, forward),
             self.context.math.vec(0.0, 0.0, 8.0),
         );
         let high = self.context.math.add(spot, self.context.math.vec(0.0, 0.0, 24.0));
-        if self.context.contents(spot) != Q1_CONTENTS_SOLID
-            || self.context.contents(high) != Q1_CONTENTS_EMPTY
-        {
+        if self.context.contents(spot) != Q1_CONTENTS_SOLID || self.context.contents(high) != Q1_CONTENTS_EMPTY {
             return;
         }
         let velocity = self.context.math.scale(forward, 50.0);
-        self.state.velocity = self.context.math.vec(
-            f64::from(velocity.x),
-            f64::from(velocity.y),
-            310.0,
-        );
+        self.state.velocity = self
+            .context
+            .math
+            .vec(f64::from(velocity.x), f64::from(velocity.y), 310.0);
         self.state.water_jump_time_seconds = 2.0;
         self.state.old_buttons |= 2;
     }
@@ -602,10 +591,10 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         for z in [0.0, -1.0, 1.0] {
             for x in [0.0, -1.0, 1.0] {
                 for y in [0.0, -1.0, 1.0] {
-                    self.state.origin = self.context.math.add(
-                        base,
-                        self.context.math.vec(x / 8.0, y / 8.0, z / 8.0),
-                    );
+                    self.state.origin = self
+                        .context
+                        .math
+                        .add(base, self.context.math.vec(x / 8.0, y / 8.0, z / 8.0));
                     if self.context.position_free(self.state.origin) {
                         return;
                     }
@@ -623,14 +612,11 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
             self.state.velocity = ZERO;
         } else {
             let friction = n.mul(parameters.friction, 1.5);
-            let drop = n.mul(
-                n.mul(speed.max(parameters.stop_speed), friction),
-                self.frame_seconds,
-            );
-            self.state.velocity = self.context.math.scale(
-                self.state.velocity,
-                n.div((0.0f64).max(n.sub(speed, drop)), speed),
-            );
+            let drop = n.mul(n.mul(speed.max(parameters.stop_speed), friction), self.frame_seconds);
+            self.state.velocity = self
+                .context
+                .math
+                .scale(self.state.velocity, n.div((0.0f64).max(n.sub(speed, drop)), speed));
         }
         self.forward = self.context.math.normalize(self.forward).0;
         self.right = self.context.math.normalize(self.right).0;
@@ -652,17 +638,18 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         if add <= 0.0 && !collide {
             return;
         }
-        let acceleration =
-            (0.0f64).max(n.mul(n.mul(parameters.accelerate, self.frame_seconds), wish_speed).min(add));
+        let acceleration = (0.0f64).max(
+            n.mul(n.mul(parameters.accelerate, self.frame_seconds), wish_speed)
+                .min(add),
+        );
         self.state.velocity = self.context.math.ma(self.state.velocity, acceleration, normalized.0);
         if collide {
             self.fly_move();
         } else {
-            self.state.origin = self.context.math.ma(
-                self.state.origin,
-                self.frame_seconds,
-                self.state.velocity,
-            );
+            self.state.origin = self
+                .context
+                .math
+                .ma(self.state.origin, self.frame_seconds, self.state.velocity);
         }
     }
 
@@ -697,14 +684,18 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
             }
             MovementInputContinuation::Continue { state, command } => {
                 let UserCommand::Q1Quakeworld(command) = command else {
-                    self.context.services.input_application()
+                    self.context
+                        .services
+                        .input_application()
                         .expect("input application present")
                         .end(Q1State::Quakeworld(self.state.clone()), true);
                     return Err(MovementError::Contract("Input output changed command dialect"));
                 };
                 self.set_state(state)?;
                 if let Err(error) = self.step_physics(command) {
-                    self.context.services.input_application()
+                    self.context
+                        .services
+                        .input_application()
                         .expect("input application present")
                         .end(Q1State::Quakeworld(self.state.clone()), true);
                     return Err(error);
@@ -734,16 +725,20 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
             inner.command = command;
             inner.fields.frame.elapsed = qa_core::time::SourceTime::Milliseconds(command.milliseconds);
         }
-        let state = self.context.lifecycle(
-            Q1State::Quakeworld(self.state.clone()),
-            Q1LifecyclePhase::BeforePhysics,
-        );
+        let state = self
+            .context
+            .lifecycle(Q1State::Quakeworld(self.state.clone()), Q1LifecyclePhase::BeforePhysics);
         self.context.input = original;
         self.set_state(state)?;
         if self.context.removed {
             return Ok(());
         }
-        let stance = self.context.input.environment().client_outputs.and_then(|outputs| outputs.stance);
+        let stance = self
+            .context
+            .input
+            .environment()
+            .client_outputs
+            .and_then(|outputs| outputs.stance);
         let effective = client_stance_command(UserCommand::Q1Quakeworld(command), stance)
             .map_err(|error| MovementError::Contract(error.0))?;
         let UserCommand::Q1Quakeworld(effective) = effective else {
@@ -763,8 +758,7 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         self.forward = axes.forward;
         self.right = axes.right;
         let environment = self.context.input.environment().clone();
-        if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health)
-        {
+        if let Some(mode) = client_movement_mode(environment.client_outputs.as_ref(), environment.health) {
             if mode == super::super::types::ModClientMovementMode::Freeze {
                 self.state.velocity = ZERO;
                 return Ok(());
@@ -826,8 +820,9 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
                 continue;
             }
             self.touched.push(contact.target.clone());
-            let state =
-                self.context.touch(contact.trace.clone(), Q1State::Quakeworld(self.state.clone()), false);
+            let state = self
+                .context
+                .touch(contact.trace.clone(), Q1State::Quakeworld(self.state.clone()), false);
             self.set_state(state)?;
         }
         Ok(())
@@ -868,10 +863,9 @@ impl<'s, S: Q1MovementServices, H: Q1MovementHooks> QuakeWorldMove<'s, S, H> {
         check_milliseconds(self.command.milliseconds)?;
         let command = self.command;
         self.run_command(command)?;
-        let state = self.context.lifecycle(
-            Q1State::Quakeworld(self.state.clone()),
-            Q1LifecyclePhase::AfterPhysics,
-        );
+        let state = self
+            .context
+            .lifecycle(Q1State::Quakeworld(self.state.clone()), Q1LifecyclePhase::AfterPhysics);
         self.set_state(state)?;
         if self.context.removed {
             return Ok(MovementOutcome::ActorRemoved {
@@ -910,10 +904,7 @@ pub struct QwMovementProvider<H = NoQ1Hooks> {
 }
 
 /// Build a QuakeWorld movement provider.
-pub fn create_qw_movement_provider<H>(
-    id: ProviderId,
-    options: Q1MovementOptions<H>,
-) -> QwMovementProvider<H> {
+pub fn create_qw_movement_provider<H>(id: ProviderId, options: Q1MovementOptions<H>) -> QwMovementProvider<H> {
     QwMovementProvider { id, options }
 }
 
@@ -932,17 +923,17 @@ impl<H: Q1MovementHooks + Clone> QwMovementProvider<H> {
 mod tests {
     use super::*;
     use qa_core::identity::IdentityOwner;
-    use qa_core::math::{Bounds, vec3};
+    use qa_core::math::{vec3, Bounds};
     use qa_core::numeric::{NumericOps, Q1_DONOR_PROFILE};
     use qa_core::time::{FrameContext, FramePhase, SourceTime};
 
-    use super::super::types::{
-        Q1AnimationStepInput, Q1AnimationStepResult, Q1MovementProfile, Q1TraceQuery,
-        Q1WeaponStepInput, Q1WeaponStepResult, QwMovementProfile,
-    };
     use super::super::super::types::{
         ActorAnimationState, AnimationState, ArsenalState, MovementEnvironment, MovementInputFields,
         MovementTouchContact, TraceContact, TraceShape, WeaponState,
+    };
+    use super::super::types::{
+        Q1AnimationStepInput, Q1AnimationStepResult, Q1MovementProfile, Q1TraceQuery, Q1WeaponStepInput,
+        Q1WeaponStepResult, QwMovementProfile,
     };
 
     struct NullServices {
@@ -973,11 +964,7 @@ mod tests {
         fn point_contents(&mut self, _point: Vec3) -> i32 {
             Q1_CONTENTS_EMPTY
         }
-        fn touch(
-            &mut self,
-            _contact: MovementTouchContact,
-            state: Q1State,
-        ) -> MovementContinuation<Q1State> {
+        fn touch(&mut self, _contact: MovementTouchContact, state: Q1State) -> MovementContinuation<Q1State> {
             MovementContinuation::Continue(state)
         }
         fn weapon_step(&mut self, input: Q1WeaponStepInput<'_>, _state: &Q1State) -> Q1WeaponStepResult {
@@ -1125,9 +1112,7 @@ mod tests {
     #[test]
     fn step_moves_and_applies_gravity() {
         let (input, mut services) = fixture(30);
-        let result =
-            move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default())
-                .unwrap();
+        let result = move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default()).unwrap();
         match result {
             MovementOutcome::Active { state, .. } => {
                 assert!(state.velocity.z < 0.0);
@@ -1140,9 +1125,7 @@ mod tests {
     #[test]
     fn long_command_runs_multiple_slices() {
         let (input, mut services) = fixture(100);
-        let result =
-            move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default())
-                .unwrap();
+        let result = move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default()).unwrap();
         assert!(!result.removed());
     }
 
@@ -1150,10 +1133,7 @@ mod tests {
     fn invalid_milliseconds_rejected() {
         let (mut input, mut services) = fixture(30);
         input.command.milliseconds = 300;
-        assert!(
-            move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default())
-                .is_err()
-        );
+        assert!(move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default()).is_err());
     }
 
     #[test]
@@ -1164,9 +1144,7 @@ mod tests {
         // Zero wish skips spectator integration in the source; keep a
         // forward command so the wish accelerates the body.
         input.command.forward_move = 100.0;
-        let result =
-            move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default())
-                .unwrap();
+        let result = move_quake_world(input, &mut services, Q1MovementOptions::<NoQ1Hooks>::default()).unwrap();
         match result {
             MovementOutcome::Active { state, .. } => {
                 assert!(state.origin.y > 0.0);

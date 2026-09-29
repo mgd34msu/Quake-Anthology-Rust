@@ -2,9 +2,7 @@
 //!
 //! Donor provenance: `src/movement/client-outputs.ts`.
 
-use super::types::{
-    ModClientMovementMode, ModClientMovementOutputs, MovementDialect, UserCommand,
-};
+use super::types::{ModClientMovementMode, ModClientMovementOutputs, MovementDialect, UserCommand};
 
 /// Error for stance commands a source cannot express.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,10 +18,7 @@ impl std::error::Error for StanceError {}
 
 /// Apply a crouch-stance request to a source command following each
 /// selected source's ordinary command and clearance checks.
-pub fn client_stance_command(
-    command: UserCommand,
-    crouched: Option<bool>,
-) -> Result<UserCommand, StanceError> {
+pub fn client_stance_command(command: UserCommand, crouched: Option<bool>) -> Result<UserCommand, StanceError> {
     let Some(crouched) = crouched else {
         return Ok(command);
     };
@@ -96,10 +91,7 @@ pub fn client_movement_type(kind: MovementDialect, mode: ModClientMovementMode) 
 
 /// Resolve the effective client movement mode; dead actors report none.
 #[must_use]
-pub fn client_movement_mode(
-    outputs: Option<&ModClientMovementOutputs>,
-    health: f64,
-) -> Option<ModClientMovementMode> {
+pub fn client_movement_mode(outputs: Option<&ModClientMovementOutputs>, health: f64) -> Option<ModClientMovementMode> {
     if health > 0.0 {
         outputs.and_then(|outputs| outputs.mode)
     } else {
@@ -112,9 +104,7 @@ mod tests {
     use super::*;
     use qa_core::math::vec3;
 
-    use super::super::types::{
-        Q1UserCommand, Q2RereleaseUserCommand, Q2UserCommand, Q3UserCommand, QwUserCommand,
-    };
+    use super::super::types::{Q1UserCommand, Q2RereleaseUserCommand, Q2UserCommand, Q3UserCommand, QwUserCommand};
 
     fn qw_command(up_move: f64, buttons: i32) -> UserCommand {
         UserCommand::Q1Quakeworld(QwUserCommand {
@@ -244,7 +234,10 @@ mod tests {
             mode: Some(ModClientMovementMode::Noclip),
             ..Default::default()
         };
-        assert_eq!(client_movement_mode(Some(&outputs), 100.0), Some(ModClientMovementMode::Noclip));
+        assert_eq!(
+            client_movement_mode(Some(&outputs), 100.0),
+            Some(ModClientMovementMode::Noclip)
+        );
         assert_eq!(client_movement_mode(Some(&outputs), 0.0), None);
         assert_eq!(client_movement_mode(None, 100.0), None);
     }

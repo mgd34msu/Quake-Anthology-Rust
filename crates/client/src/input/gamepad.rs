@@ -160,7 +160,9 @@ pub fn apply_stick_curve(axis: Vec2, curve: &StickCurve) -> Vec2 {
     match *curve {
         StickCurve::Axial { deadzone, exponent } => {
             let apply = |value: f32| {
-                let shaped = ((f64::from(value).abs() - deadzone) / (1.0 - deadzone)).clamp(0.0, 1.0).powf(exponent);
+                let shaped = ((f64::from(value).abs() - deadzone) / (1.0 - deadzone))
+                    .clamp(0.0, 1.0)
+                    .powf(exponent);
                 f64::from(value.signum()) * shaped
             };
             vec2(apply(axis.x) as f32, apply(axis.y) as f32)
@@ -317,12 +319,19 @@ impl GamepadInput {
 
     /// Raw and curved sticks for menus.
     pub fn preview(&self) -> GamepadPreview {
-        let left = vec2(self.preview_value(ControllerAxis::LeftX) as f32, self.preview_value(ControllerAxis::LeftY) as f32);
+        let left = vec2(
+            self.preview_value(ControllerAxis::LeftX) as f32,
+            self.preview_value(ControllerAxis::LeftY) as f32,
+        );
         let right = vec2(
             self.preview_value(ControllerAxis::RightX) as f32,
             self.preview_value(ControllerAxis::RightY) as f32,
         );
-        let (stick_move, look) = if self.tuning.swap_sticks { (right, left) } else { (left, right) };
+        let (stick_move, look) = if self.tuning.swap_sticks {
+            (right, left)
+        } else {
+            (left, right)
+        };
         GamepadPreview {
             move_raw: stick_move,
             move_curved: apply_stick_curve(stick_move, &self.tuning.stick_move),
@@ -435,12 +444,19 @@ impl GamepadInput {
 
     /// Sample curved sticks and look degrees for a frame.
     pub fn sample(&self, frame_ms: f64) -> GamepadSample {
-        let left = vec2(self.axis_value(ControllerAxis::LeftX) as f32, self.axis_value(ControllerAxis::LeftY) as f32);
+        let left = vec2(
+            self.axis_value(ControllerAxis::LeftX) as f32,
+            self.axis_value(ControllerAxis::LeftY) as f32,
+        );
         let right = vec2(
             self.axis_value(ControllerAxis::RightX) as f32,
             self.axis_value(ControllerAxis::RightY) as f32,
         );
-        let (raw_move, raw_look) = if self.tuning.swap_sticks { (right, left) } else { (left, right) };
+        let (raw_move, raw_look) = if self.tuning.swap_sticks {
+            (right, left)
+        } else {
+            (left, right)
+        };
         let stick_move = apply_stick_curve(raw_move, &self.tuning.stick_move);
         let look = apply_stick_curve(raw_look, &self.tuning.stick_look);
         let seconds = frame_ms / 1000.0;
@@ -451,9 +467,14 @@ impl GamepadInput {
             0.0
         };
         let yaw_index = usize::from(!gyro.yaw_axis_y) + 1;
-        let yaw = self.gyro_sample.map_or(0.0, |sample| sample[yaw_index] - self.gyro_bias.map_or(0.0, |bias| bias[yaw_index]));
-        let pitch = self.gyro_sample.map_or(0.0, |sample| sample[0] - self.gyro_bias.map_or(0.0, |bias| bias[0]));
-        let look_x = f64::from(look.x) * self.tuning.yaw_degrees_per_second * seconds - yaw * gyro.yaw_sensitivity * scale;
+        let yaw = self.gyro_sample.map_or(0.0, |sample| {
+            sample[yaw_index] - self.gyro_bias.map_or(0.0, |bias| bias[yaw_index])
+        });
+        let pitch = self
+            .gyro_sample
+            .map_or(0.0, |sample| sample[0] - self.gyro_bias.map_or(0.0, |bias| bias[0]));
+        let look_x =
+            f64::from(look.x) * self.tuning.yaw_degrees_per_second * seconds - yaw * gyro.yaw_sensitivity * scale;
         let look_y = (f64::from(look.y) * self.tuning.pitch_degrees_per_second * seconds
             - pitch * gyro.pitch_sensitivity * scale)
             * if self.tuning.invert_pitch { -1.0 } else { 1.0 };
@@ -579,7 +600,8 @@ mod tests {
         pad.tuning.gyro.enabled = true;
         pad.begin_gyro_calibration();
         for index in 0..70 {
-            pad.gyro(vec3(0.01, -0.02, 0.005), f64::from(index) * 100.0, true).unwrap();
+            pad.gyro(vec3(0.01, -0.02, 0.005), f64::from(index) * 100.0, true)
+                .unwrap();
         }
         match pad.gyro_calibration() {
             GyroCalibrationState::Ready { bias } => {

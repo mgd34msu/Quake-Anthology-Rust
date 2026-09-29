@@ -9,8 +9,16 @@ use super::types::Q3Postures;
 
 /// Source standing bounds for a selected Q3 collision body.
 pub const Q3_SOURCE_STANDING_BOUNDS: Bounds = Bounds {
-    min: Vec3 { x: -15.0, y: -15.0, z: -24.0 },
-    max: Vec3 { x: 15.0, y: 15.0, z: 32.0 },
+    min: Vec3 {
+        x: -15.0,
+        y: -15.0,
+        z: -24.0,
+    },
+    max: Vec3 {
+        x: 15.0,
+        y: 15.0,
+        z: 32.0,
+    },
 };
 
 /// Source posture dimensions.
@@ -18,21 +26,45 @@ pub const Q3_SOURCE_POSTURES: Q3Postures = Q3Postures {
     standing_view_height: 26.0,
     crouched: super::types::Q3Posture {
         bounds: Bounds {
-            min: Vec3 { x: -15.0, y: -15.0, z: -24.0 },
-            max: Vec3 { x: 15.0, y: 15.0, z: 16.0 },
+            min: Vec3 {
+                x: -15.0,
+                y: -15.0,
+                z: -24.0,
+            },
+            max: Vec3 {
+                x: 15.0,
+                y: 15.0,
+                z: 16.0,
+            },
         },
         view_height: 12.0,
     },
     dead: super::types::Q3Posture {
         bounds: Bounds {
-            min: Vec3 { x: -15.0, y: -15.0, z: -24.0 },
-            max: Vec3 { x: 15.0, y: 15.0, z: -8.0 },
+            min: Vec3 {
+                x: -15.0,
+                y: -15.0,
+                z: -24.0,
+            },
+            max: Vec3 {
+                x: 15.0,
+                y: 15.0,
+                z: -8.0,
+            },
         },
         view_height: -16.0,
     },
     invulnerability_expanded: Bounds {
-        min: Vec3 { x: -42.0, y: -42.0, z: -42.0 },
-        max: Vec3 { x: 42.0, y: 42.0, z: 42.0 },
+        min: Vec3 {
+            x: -42.0,
+            y: -42.0,
+            z: -42.0,
+        },
+        max: Vec3 {
+            x: 42.0,
+            y: 42.0,
+            z: 42.0,
+        },
     },
 };
 

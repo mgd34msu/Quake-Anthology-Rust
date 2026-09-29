@@ -82,11 +82,7 @@ pub fn sdl_game_key(keycode: i32, modifiers: u16) -> i32 {
             return KeyCode::F1 as i32 + code - 58;
         }
         if code == 93 && modifiers & sdl_modifier::NUM_LOCK != 0 {
-            return if modifiers & sdl_modifier::CONTROL != 0 {
-                29
-            } else {
-                53
-            };
+            return if modifiers & sdl_modifier::CONTROL != 0 { 29 } else { 53 };
         }
         return special_key(code);
     }
@@ -165,15 +161,9 @@ mod tests {
         assert_eq!(sdl_game_key(0x4000_0000 + 69, 0), KeyCode::F12 as i32);
         assert_eq!(sdl_game_key(0x4000_0000 + 57, 0), 0);
         assert_eq!(sdl_game_key(0x4000_0000 + 200, 0), 0);
+        assert_eq!(sdl_game_key(0x4000_0000 + 93, sdl_modifier::NUM_LOCK), 53);
         assert_eq!(
-            sdl_game_key(0x4000_0000 + 93, sdl_modifier::NUM_LOCK),
-            53
-        );
-        assert_eq!(
-            sdl_game_key(
-                0x4000_0000 + 93,
-                sdl_modifier::NUM_LOCK | sdl_modifier::CONTROL
-            ),
+            sdl_game_key(0x4000_0000 + 93, sdl_modifier::NUM_LOCK | sdl_modifier::CONTROL),
             29
         );
         assert_eq!(sdl_game_key(65, sdl_modifier::CONTROL), 97);

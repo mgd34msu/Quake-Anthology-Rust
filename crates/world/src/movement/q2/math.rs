@@ -115,13 +115,7 @@ impl Q2Math {
     }
 
     /// Angle vectors into forward/right/up.
-    pub fn angle_vectors(
-        &self,
-        angles: SrcVec3,
-        forward: &mut SrcVec3,
-        right: &mut SrcVec3,
-        up: &mut SrcVec3,
-    ) {
+    pub fn angle_vectors(&self, angles: SrcVec3, forward: &mut SrcVec3, right: &mut SrcVec3, up: &mut SrcVec3) {
         let radians = match self.edition {
             Q2MathEdition::Classic => std::f64::consts::PI * 2.0 / 360.0,
             Q2MathEdition::Rerelease => self
@@ -140,41 +134,36 @@ impl Q2Math {
         forward[0] = f64::from(self.n.store(self.n.mul(cp, cy)));
         forward[1] = f64::from(self.n.store(self.n.mul(cp, sy)));
         forward[2] = f64::from(self.n.store(-sp));
-        right[0] = f64::from(self.n.store(
-            self.n.add(self.n.mul(self.n.mul(-sr, sp), cy), self.n.mul(cr, sy)),
-        ));
-        right[1] = f64::from(self.n.store(
+        right[0] = f64::from(
             self.n
-                .sub(self.n.mul(self.n.mul(-sr, sp), sy), self.n.mul(cr, cy)),
-        ));
+                .store(self.n.add(self.n.mul(self.n.mul(-sr, sp), cy), self.n.mul(cr, sy))),
+        );
+        right[1] = f64::from(
+            self.n
+                .store(self.n.sub(self.n.mul(self.n.mul(-sr, sp), sy), self.n.mul(cr, cy))),
+        );
         right[2] = f64::from(self.n.store(self.n.mul(-sr, cp)));
-        up[0] = f64::from(self.n.store(
-            self.n.add(self.n.mul(self.n.mul(cr, sp), cy), self.n.mul(sr, sy)),
-        ));
-        up[1] = f64::from(self.n.store(
-            self.n.sub(self.n.mul(self.n.mul(cr, sp), sy), self.n.mul(sr, cy)),
-        ));
+        up[0] = f64::from(
+            self.n
+                .store(self.n.add(self.n.mul(self.n.mul(cr, sp), cy), self.n.mul(sr, sy))),
+        );
+        up[1] = f64::from(
+            self.n
+                .store(self.n.sub(self.n.mul(self.n.mul(cr, sp), sy), self.n.mul(sr, cy))),
+        );
         up[2] = f64::from(self.n.store(self.n.mul(cr, cp)));
     }
 
     /// Add two vectors.
     #[must_use]
     pub fn add(&self, a: SrcVec3, b: SrcVec3) -> SrcVec3 {
-        self.vec3(
-            self.n.add(a[0], b[0]),
-            self.n.add(a[1], b[1]),
-            self.n.add(a[2], b[2]),
-        )
+        self.vec3(self.n.add(a[0], b[0]), self.n.add(a[1], b[1]), self.n.add(a[2], b[2]))
     }
 
     /// Subtract two vectors.
     #[must_use]
     pub fn sub(&self, a: SrcVec3, b: SrcVec3) -> SrcVec3 {
-        self.vec3(
-            self.n.sub(a[0], b[0]),
-            self.n.sub(a[1], b[1]),
-            self.n.sub(a[2], b[2]),
-        )
+        self.vec3(self.n.sub(a[0], b[0]), self.n.sub(a[1], b[1]), self.n.sub(a[2], b[2]))
     }
 
     /// Scale a vector.
@@ -235,18 +224,15 @@ impl Q2Math {
         }
         let alpha = self.n.add(blend[3], self.n.mul(self.n.sub(1.0, blend[3]), a));
         let fraction = self.n.div(blend[3], alpha);
-        blend[0] = self.n.add(
-            self.n.mul(blend[0], fraction),
-            self.n.mul(r, self.n.sub(1.0, fraction)),
-        );
-        blend[1] = self.n.add(
-            self.n.mul(blend[1], fraction),
-            self.n.mul(g, self.n.sub(1.0, fraction)),
-        );
-        blend[2] = self.n.add(
-            self.n.mul(blend[2], fraction),
-            self.n.mul(b, self.n.sub(1.0, fraction)),
-        );
+        blend[0] = self
+            .n
+            .add(self.n.mul(blend[0], fraction), self.n.mul(r, self.n.sub(1.0, fraction)));
+        blend[1] = self
+            .n
+            .add(self.n.mul(blend[1], fraction), self.n.mul(g, self.n.sub(1.0, fraction)));
+        blend[2] = self
+            .n
+            .add(self.n.mul(blend[2], fraction), self.n.mul(b, self.n.sub(1.0, fraction)));
         blend[3] = alpha;
     }
 
@@ -303,8 +289,7 @@ mod tests {
     #[test]
     fn angles_and_blend_match_source() {
         let math = math();
-        let (mut forward, mut right, mut up) =
-            ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let (mut forward, mut right, mut up) = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
         math.angle_vectors([0.0, 90.0, 0.0], &mut forward, &mut right, &mut up);
         assert!((forward[0]).abs() < 1e-6);
         assert!((forward[1] - 1.0).abs() < 1e-6);
@@ -317,12 +302,8 @@ mod tests {
 
     #[test]
     fn rerelease_edition_matches_classic_angles() {
-        let math = Q2Math::new(
-            NumericOps::select(Q2_DONOR_PROFILE).unwrap(),
-            Q2MathEdition::Rerelease,
-        );
-        let (mut forward, mut right, mut up) =
-            ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+        let math = Q2Math::new(NumericOps::select(Q2_DONOR_PROFILE).unwrap(), Q2MathEdition::Rerelease);
+        let (mut forward, mut right, mut up) = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
         math.angle_vectors([0.0, 0.0, 0.0], &mut forward, &mut right, &mut up);
         assert!((forward[0] - 1.0).abs() < 1e-6);
     }

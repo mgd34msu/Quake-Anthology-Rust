@@ -17,7 +17,9 @@ use super::error::AudioError;
 use super::paint::{int32, write_linear_blast_stereo16_float};
 use super::types::{SharedPcm, SoundAsset, VoiceStopReason};
 use super::wav::PcmSound;
-use crate::audio::{source_sound_channel, spatialize_sound_origin, ChannelCommand, OutputChannels, SoundChannel, SoundFamily};
+use crate::audio::{
+    source_sound_channel, spatialize_sound_origin, ChannelCommand, OutputChannels, SoundChannel, SoundFamily,
+};
 
 /// SDL paint epoch (`SOUND_TIME_EPOCH`).
 pub const SOUND_TIME_EPOCH: i64 = 0x4000_0000;
@@ -375,10 +377,14 @@ fn require_gain(gain: f64, name: &str) -> Result<(), AudioError> {
 }
 
 fn checked_sample(samples: &[i16], index: usize) -> Result<i32, AudioError> {
-    samples.get(index).copied().map(i32::from).ok_or_else(|| AudioError::BadSampleIndex {
-        index: index.to_string(),
-        length: samples.len().to_string(),
-    })
+    samples
+        .get(index)
+        .copied()
+        .map(i32::from)
+        .ok_or_else(|| AudioError::BadSampleIndex {
+            index: index.to_string(),
+            length: samples.len().to_string(),
+        })
 }
 
 fn validate_sound(sound: &PcmSound, allow_stereo: bool) -> Result<(), AudioError> {
@@ -446,7 +452,13 @@ pub struct AudioMixer {
 
 impl AudioMixer {
     /// Mixer at an output rate with an allocation clock.
-    pub fn new(output_rate: u32, milliseconds: Box<dyn Fn() -> i64>, capacity: usize, output_channels: u8, entity_capacity: usize) -> Result<Self, AudioError> {
+    pub fn new(
+        output_rate: u32,
+        milliseconds: Box<dyn Fn() -> i64>,
+        capacity: usize,
+        output_channels: u8,
+        entity_capacity: usize,
+    ) -> Result<Self, AudioError> {
         require_positive_integer(i64::from(output_rate), "output rate")?;
         require_positive_integer(capacity as i64, "channel capacity")?;
         require_positive_integer(entity_capacity as i64, "entity capacity")?;
@@ -536,7 +548,11 @@ impl AudioMixer {
     }
 
     /// Observe voice starts and stops.
-    pub fn set_voice_observer(&mut self, observer: Option<Box<dyn FnMut(MixerVoiceEvent)>>, allocate_id: Option<Box<dyn FnMut() -> u64>>) {
+    pub fn set_voice_observer(
+        &mut self,
+        observer: Option<Box<dyn FnMut(MixerVoiceEvent)>>,
+        allocate_id: Option<Box<dyn FnMut() -> u64>>,
+    ) {
         self.voice_observer = observer;
         if allocate_id.is_some() {
             self.allocate_voice_id = allocate_id;
@@ -561,7 +577,11 @@ impl AudioMixer {
 
     fn voice_started(&mut self, index: usize) {
         let notify = match &self.voices[index] {
-            Some(voice) if voice.notification == Notification::Pending && matches!(voice.start, VoiceStart::Started { .. }) && voice.asset.is_some() => {
+            Some(voice)
+                if voice.notification == Notification::Pending
+                    && matches!(voice.start, VoiceStart::Started { .. })
+                    && voice.asset.is_some() =>
+            {
                 let start_sample = match voice.start {
                     VoiceStart::Started { sample } => sample,
                     _ => 0,
@@ -637,8 +657,17 @@ impl AudioMixer {
         self.voices
             .iter()
             .flatten()
-            .filter(|voice| !matches!(voice.start, VoiceStart::Scheduled { .. }) && (voice.stereo_volume.left != 0.0 || voice.stereo_volume.right != 0.0))
-            .map(|voice| (voice.prepared.sound.clone(), voice.stereo_volume.left, voice.stereo_volume.right))
+            .filter(|voice| {
+                !matches!(voice.start, VoiceStart::Scheduled { .. })
+                    && (voice.stereo_volume.left != 0.0 || voice.stereo_volume.right != 0.0)
+            })
+            .map(|voice| {
+                (
+                    voice.prepared.sound.clone(),
+                    voice.stereo_volume.left,
+                    voice.stereo_volume.right,
+                )
+            })
             .collect()
     }
 
@@ -740,7 +769,12 @@ impl AudioMixer {
     }
 
     /// Start a listener-local sound.
-    pub fn start_local_sound(&mut self, sound: &SharedPcm, channel: i32, source_name: Option<&str>) -> Result<bool, AudioError> {
+    pub fn start_local_sound(
+        &mut self,
+        sound: &SharedPcm,
+        channel: i32,
+        source_name: Option<&str>,
+    ) -> Result<bool, AudioError> {
         let listener = self.listener_entity;
         self.start_sound(
             sound,
@@ -755,13 +789,27 @@ impl AudioMixer {
     }
 
     /// Start a Q3 sound.
-    pub fn start_sound(&mut self, sound: &SharedPcm, options: &StartSoundOptions, source_name: Option<&str>) -> Result<bool, AudioError> {
+    pub fn start_sound(
+        &mut self,
+        sound: &SharedPcm,
+        options: &StartSoundOptions,
+        source_name: Option<&str>,
+    ) -> Result<bool, AudioError> {
         if !self.enabled {
             return Ok(false);
         }
         require_channel(options.channel)?;
-        let command = source_sound_channel(SoundFamily::Q3, options.channel).map_err(|_| AudioError::BadSourceChannel)?;
-        self.start_shared_sound(sound, options.entity, options.origin.clone(), options.volume, &command, source_name, None)
+        let command =
+            source_sound_channel(SoundFamily::Q3, options.channel).map_err(|_| AudioError::BadSourceChannel)?;
+        self.start_shared_sound(
+            sound,
+            options.entity,
+            options.origin.clone(),
+            options.volume,
+            &command,
+            source_name,
+            None,
+        )
     }
 
     /// Start a sound with an explicit channel command.
@@ -822,7 +870,11 @@ impl AudioMixer {
             Some(channel) => channel,
             None => self.voices.len(),
         };
-        let allocated_at = if channel == self.voices.len() { time } else { self.allocation_time()? };
+        let allocated_at = if channel == self.voices.len() {
+            time
+        } else {
+            self.allocation_time()?
+        };
         let voice = OneShotVoice {
             voice_id: self.alloc_id(),
             asset,
@@ -864,7 +916,11 @@ impl AudioMixer {
         let position = self.resolve_origin(&voice.origin)?;
         let delta = sub3(position, self.listener_origin);
         let distance = length3(delta);
-        let pan = if distance == 0.0 { 0.0 } else { f64::from(-dot3(delta, self.listener_axis[1])) / f64::from(distance) };
+        let pan = if distance == 0.0 {
+            0.0
+        } else {
+            f64::from(-dot3(delta, self.listener_axis[1])) / f64::from(distance)
+        };
         let Some(policy) = voice.policy else {
             return Err(AudioError::MissingPolicy);
         };
@@ -874,7 +930,11 @@ impl AudioMixer {
             left: 0f64.max((gain * if mono { 1.0 } else { policy.stereo_scale * (1.0 - pan) }).trunc()),
             right: 0f64.max((gain * if mono { 1.0 } else { policy.stereo_scale * (1.0 + pan) }).trunc()),
         };
-        Ok(if policy.attenuation == 0.0 { volume } else { self.transmit(position, volume) })
+        Ok(if policy.attenuation == 0.0 {
+            volume
+        } else {
+            self.transmit(position, volume)
+        })
     }
 
     /// Start a Q1 effect.
@@ -913,7 +973,7 @@ impl AudioMixer {
         options: &SourceSoundOptions,
         command: &ChannelCommand,
         policy: VoicePolicy,
-        mut random: Option<&mut dyn FnMut() -> i64>,
+        random: Option<&mut dyn FnMut() -> i64>,
         scheduled: Option<(i64, i64)>,
         asset: Option<SoundAsset>,
     ) -> Result<bool, AudioError> {
@@ -924,7 +984,11 @@ impl AudioMixer {
         if sound.channels != 1 || sound.frame_count < 1 {
             return Err(AudioError::SourceEffectFormat);
         }
-        if !options.volume.is_finite() || options.volume < 0.0 || !options.attenuation.is_finite() || options.attenuation < 0.0 {
+        if !options.volume.is_finite()
+            || options.volume < 0.0
+            || !options.attenuation.is_finite()
+            || options.attenuation < 0.0
+        {
             return Err(AudioError::BadSourceGain);
         }
         let ratio = f64::from(sound.sample_rate) / f64::from(self.output_rate);
@@ -939,7 +1003,9 @@ impl AudioMixer {
             memory: None,
             output_frames: output_frames as usize,
         };
-        let marker = policy.loop_start.or_else(|| sound.loop_start.map(|marker| (marker as f64 / ratio).trunc() as usize));
+        let marker = policy
+            .loop_start
+            .or_else(|| sound.loop_start.map(|marker| (marker as f64 / ratio).trunc() as usize));
         if marker.is_some_and(|marker| marker >= prepared.output_frames) {
             return Err(AudioError::LoopOutsidePcm);
         }
@@ -952,15 +1018,20 @@ impl AudioMixer {
         if jitter {
             if let Some(random) = random {
                 let value = random();
-            if value < 0 {
-                return Err(AudioError::BadRandom);
-            }
-            offset = (prepared.output_frames as i64 - 1).min(value % 1.max((0.1 * f64::from(self.output_rate)).trunc() as i64));
+                if value < 0 {
+                    return Err(AudioError::BadRandom);
+                }
+                offset = (prepared.output_frames as i64 - 1)
+                    .min(value % 1.max((0.1 * f64::from(self.output_rate)).trunc() as i64));
             }
         }
         let start = match scheduled {
             None => VoiceStart::Started {
-                sample: if policy.role == VoiceRole::EntityLoop { 0 } else { self.painted_time - offset },
+                sample: if policy.role == VoiceRole::EntityLoop {
+                    0
+                } else {
+                    self.painted_time - offset
+                },
             },
             Some((sample, order)) => VoiceStart::Scheduled { sample, order },
         };
@@ -979,7 +1050,10 @@ impl AudioMixer {
             stereo_volume: MixerStereoVolume::default(),
             start,
             allocated_at: self.allocation_time()?,
-            policy: Some(VoicePolicy { loop_start: marker, ..policy }),
+            policy: Some(VoicePolicy {
+                loop_start: marker,
+                ..policy
+            }),
         };
         if scheduled.is_none() {
             let stereo = self.policy_spatialize(&voice)?;
@@ -1015,7 +1089,14 @@ impl AudioMixer {
     }
 
     /// Add a static loop.
-    pub fn add_static_sound(&mut self, sound: &SharedPcm, origin: Vec3, volume: f64, attenuation: f64, key: i64) -> Result<bool, AudioError> {
+    pub fn add_static_sound(
+        &mut self,
+        sound: &SharedPcm,
+        origin: Vec3,
+        volume: f64,
+        attenuation: f64,
+        key: i64,
+    ) -> Result<bool, AudioError> {
         if sound.loop_start.is_none() {
             return Err(AudioError::StaticLoop);
         }
@@ -1047,7 +1128,11 @@ impl AudioMixer {
     /// Remove static loops by key.
     pub fn remove_static_sound(&mut self, key: i64) {
         for index in 0..self.voices.len() {
-            let matches = self.voices[index].as_ref().is_some_and(|voice| voice.policy.is_some_and(|policy| policy.role == VoiceRole::Static && policy.key == key));
+            let matches = self.voices[index].as_ref().is_some_and(|voice| {
+                voice
+                    .policy
+                    .is_some_and(|policy| policy.role == VoiceRole::Static && policy.key == key)
+            });
             if matches {
                 self.free_channel(index, VoiceStopReason::Stopped);
             }
@@ -1055,14 +1140,27 @@ impl AudioMixer {
     }
 
     /// Update the two ambient beds.
-    pub fn update_ambient(&mut self, sounds: &[SharedPcm], levels: &[f64], elapsed_seconds: f64, level: f64, fade: f64) -> Result<(), AudioError> {
+    pub fn update_ambient(
+        &mut self,
+        sounds: &[SharedPcm],
+        levels: &[f64],
+        elapsed_seconds: f64,
+        level: f64,
+        fade: f64,
+    ) -> Result<(), AudioError> {
         if !self.enabled {
             return Ok(());
         }
         for key in 0..2i64 {
             let sound = sounds.get(key as usize);
             let amount = levels.get(key as usize).copied();
-            let mut index = self.voices.iter().position(|voice| voice.as_ref().is_some_and(|voice| voice.policy.is_some_and(|policy| policy.role == VoiceRole::Ambient && policy.key == key)));
+            let mut index = self.voices.iter().position(|voice| {
+                voice.as_ref().is_some_and(|voice| {
+                    voice
+                        .policy
+                        .is_some_and(|policy| policy.role == VoiceRole::Ambient && policy.key == key)
+                })
+            });
             if sound.is_none() || amount.is_none() || level == 0.0 {
                 if let Some(index) = index {
                     self.free_channel(index, VoiceStopReason::Stopped);
@@ -1070,7 +1168,11 @@ impl AudioMixer {
                 continue;
             }
             let (sound, amount) = (sound.expect("checked"), amount.expect("checked"));
-            if index.is_none_or(|index| self.voices[index].as_ref().is_some_and(|voice| !std::rc::Rc::ptr_eq(&voice.prepared.sound, sound))) {
+            if index.is_none_or(|index| {
+                self.voices[index]
+                    .as_ref()
+                    .is_some_and(|voice| !std::rc::Rc::ptr_eq(&voice.prepared.sound, sound))
+            }) {
                 if let Some(previous) = index {
                     self.free_channel(previous, VoiceStopReason::Stopped);
                 }
@@ -1097,7 +1199,13 @@ impl AudioMixer {
                     None,
                     None,
                 )?;
-                index = self.voices.iter().position(|voice| voice.as_ref().is_some_and(|voice| voice.policy.is_some_and(|policy| policy.role == VoiceRole::Ambient && policy.key == key)));
+                index = self.voices.iter().position(|voice| {
+                    voice.as_ref().is_some_and(|voice| {
+                        voice
+                            .policy
+                            .is_some_and(|policy| policy.role == VoiceRole::Ambient && policy.key == key)
+                    })
+                });
             }
             let Some(index) = index else {
                 return Err(AudioError::AmbientAdmission);
@@ -1108,9 +1216,16 @@ impl AudioMixer {
             let target = if level * amount < 8.0 { 0.0 } else { level * amount };
             let current = voice.stereo_volume.left;
             let step = 0f64.max(elapsed_seconds * fade);
-            let gain = if current < target { target.min(current + step) } else { target.max(current - step) };
+            let gain = if current < target {
+                target.min(current + step)
+            } else {
+                target.max(current - step)
+            };
             if let Some(voice) = self.voices[index].as_mut() {
-                voice.stereo_volume = MixerStereoVolume { left: gain, right: gain };
+                voice.stereo_volume = MixerStereoVolume {
+                    left: gain,
+                    right: gain,
+                };
             }
         }
         Ok(())
@@ -1119,7 +1234,9 @@ impl AudioMixer {
     /// Replace the entity-loop voices.
     pub fn set_source_loop_sounds(&mut self, entries: &[SourceLoopEntry]) -> Result<(), AudioError> {
         for index in 0..self.voices.len() {
-            let matches = self.voices[index].as_ref().is_some_and(|voice| voice.policy.is_some_and(|policy| policy.role == VoiceRole::EntityLoop));
+            let matches = self.voices[index]
+                .as_ref()
+                .is_some_and(|voice| voice.policy.is_some_and(|policy| policy.role == VoiceRole::EntityLoop));
             if matches {
                 self.free_channel(index, VoiceStopReason::Stopped);
             }
@@ -1155,12 +1272,22 @@ impl AudioMixer {
     }
 
     /// Start a Q2 synchronized sound.
-    pub fn start_q2_sound(&mut self, sound: &SharedPcm, options: &Q2SoundOptions, command: &ChannelCommand, asset: Option<SoundAsset>) -> Result<bool, AudioError> {
+    pub fn start_q2_sound(
+        &mut self,
+        sound: &SharedPcm,
+        options: &Q2SoundOptions,
+        command: &ChannelCommand,
+        asset: Option<SoundAsset>,
+    ) -> Result<bool, AudioError> {
         if !self.enabled {
             return Ok(false);
         }
         let delay = options.delay_seconds.unwrap_or(0.0);
-        let server = options.server_milliseconds.unwrap_or_else(|| self.painted_time as f64 * 1000.0 / f64::from(self.output_rate)) * 0.001 * f64::from(self.output_rate);
+        let server = options
+            .server_milliseconds
+            .unwrap_or_else(|| self.painted_time as f64 * 1000.0 / f64::from(self.output_rate))
+            * 0.001
+            * f64::from(self.output_rate);
         if !delay.is_finite() || !server.is_finite() {
             return Err(AudioError::BadSourceTimestamp);
         }
@@ -1175,7 +1302,11 @@ impl AudioMixer {
         } else {
             offset -= 10;
         }
-        let scheduled = if delay == 0.0 { self.painted_time as f64 } else { (begin as f64 + delay * f64::from(self.output_rate)).trunc() };
+        let scheduled = if delay == 0.0 {
+            self.painted_time as f64
+        } else {
+            (begin as f64 + delay * f64::from(self.output_rate)).trunc()
+        };
         if scheduled.abs() >= 9_007_199_254_740_992.0 {
             return Err(AudioError::BadDeadline);
         }
@@ -1210,7 +1341,11 @@ impl AudioMixer {
     }
 
     /// Add or refresh a frame loop.
-    pub fn update_looping_sound(&mut self, sound: &SharedPcm, options: &FrameLoopingSoundOptions) -> Result<(), AudioError> {
+    pub fn update_looping_sound(
+        &mut self,
+        sound: &SharedPcm,
+        options: &FrameLoopingSoundOptions,
+    ) -> Result<(), AudioError> {
         if !self.enabled {
             return Ok(());
         }
@@ -1235,14 +1370,20 @@ impl AudioMixer {
                 Some(setting) => Some(setting.integer_value),
             },
         };
-        if self.doppler_enabled && doppler_setting.is_none_or(|value| value != 0) && dot3(options.velocity, options.velocity) > 0.0 {
+        if self.doppler_enabled
+            && doppler_setting.is_none_or(|value| value != 0)
+            && dot3(options.velocity, options.velocity) > 0.0
+        {
             doppler = true;
             let listener_position = self.position_for_entity(self.listener_entity)?;
             let before = sub3(listener_position, options.origin);
             let after = sub3(listener_position, add3(options.origin, options.velocity));
             let distance_before = dot3(before, before);
             let distance_after = dot3(after, after);
-            if previous.as_ref().is_some_and(|previous| previous.frame_number.wrapping_add(1) == options.frame_number) {
+            if previous
+                .as_ref()
+                .is_some_and(|previous| previous.frame_number.wrapping_add(1) == options.frame_number)
+            {
                 old_doppler_scale = 1.0;
             }
             doppler_scale = f64::from(distance_after / (distance_before * 100.0));
@@ -1272,7 +1413,11 @@ impl AudioMixer {
     }
 
     /// Add or refresh a persistent loop.
-    pub fn update_real_looping_sound(&mut self, sound: &SharedPcm, options: &RealLoopingSoundOptions) -> Result<(), AudioError> {
+    pub fn update_real_looping_sound(
+        &mut self,
+        sound: &SharedPcm,
+        options: &RealLoopingSoundOptions,
+    ) -> Result<(), AudioError> {
         if !self.enabled {
             return Ok(());
         }
@@ -1310,7 +1455,11 @@ impl AudioMixer {
         let stale: Vec<i64> = self
             .loops
             .iter()
-            .filter(|(_, loop_voice)| kill_all || loop_voice.lifetime == LoopLifetime::Frame || Self::prepared_output_frames(&loop_voice.prepared) == 0)
+            .filter(|(_, loop_voice)| {
+                kill_all
+                    || loop_voice.lifetime == LoopLifetime::Frame
+                    || Self::prepared_output_frames(&loop_voice.prepared) == 0
+            })
             .map(|(entity, _)| *entity)
             .collect();
         for entity in stale {
@@ -1342,7 +1491,9 @@ impl AudioMixer {
         let Some(channel) = channel else {
             for index in 0..self.voices.len() {
                 let matches = self.voices[index].as_ref().is_some_and(|voice| {
-                    voice.entity == entity && voice.channel.is_none() && voice.policy.is_none_or(|policy| policy.role == VoiceRole::Effect)
+                    voice.entity == entity
+                        && voice.channel.is_none()
+                        && voice.policy.is_none_or(|policy| policy.role == VoiceRole::Effect)
                 });
                 if matches {
                     self.free_channel(index, VoiceStopReason::Stopped);
@@ -1351,10 +1502,21 @@ impl AudioMixer {
             }
             return;
         };
-        self.replace_channel(entity, &ChannelCommand::Channel(channel), true, VoiceStopReason::Stopped);
+        self.replace_channel(
+            entity,
+            &ChannelCommand::Channel(channel),
+            true,
+            VoiceStopReason::Stopped,
+        );
     }
 
-    fn replace_channel(&mut self, entity: i64, command: &ChannelCommand, cancel_scheduled: bool, reason: VoiceStopReason) {
+    fn replace_channel(
+        &mut self,
+        entity: i64,
+        command: &ChannelCommand,
+        cancel_scheduled: bool,
+        reason: VoiceStopReason,
+    ) {
         for index in 0..self.voices.len() {
             let matches = self.voices[index].as_ref().is_some_and(|voice| {
                 (cancel_scheduled || !matches!(voice.start, VoiceStart::Scheduled { .. }))
@@ -1431,20 +1593,34 @@ impl AudioMixer {
         validate_sound(sound, true)?;
         require_gain(volume, "raw volume")?;
         let integer_volume = ((volume as f32) * 256.0).trunc();
-        if !integer_volume.is_finite() || f64::from(integer_volume) < -2_147_483_648.0 || f64::from(integer_volume) > 2_147_483_647.0 {
+        if !integer_volume.is_finite()
+            || f64::from(integer_volume) < -2_147_483_648.0
+            || f64::from(integer_volume) > 2_147_483_647.0
+        {
             return Err(AudioError::BadRawConversion);
         }
         self.begin_raw_write()?;
         let output_frames = self.raw_output_frames(sound)?;
         self.append_raw(sound, integer_volume as i32, output_frames)?;
         if self.raw_end_time > self.sound_time + RAW_SAMPLE_CAPACITY as i64 {
-            self.raw_debug_print(&format!("S_RawSamples: overflowed {} > {}\n", self.raw_end_time, self.sound_time))?;
+            self.raw_debug_print(&format!(
+                "S_RawSamples: overflowed {} > {}\n",
+                self.raw_end_time, self.sound_time
+            ))?;
         }
         Ok(())
     }
 
     /// Queue raw bytes (`S_RawSamples`).
-    pub fn queue_raw_bytes(&mut self, samples: i32, rate: i32, width: i32, channels: i32, data: &[u8], volume: f64) -> Result<(), AudioError> {
+    pub fn queue_raw_bytes(
+        &mut self,
+        samples: i32,
+        rate: i32,
+        width: i32,
+        channels: i32,
+        data: &[u8],
+        volume: f64,
+    ) -> Result<(), AudioError> {
         if !self.enabled {
             return Ok(());
         }
@@ -1452,7 +1628,10 @@ impl AudioMixer {
             return Err(AudioError::BadRawShape);
         }
         let mut integer_volume = ((volume as f32) * 256.0).trunc();
-        if !integer_volume.is_finite() || f64::from(integer_volume) < -2_147_483_648.0 || f64::from(integer_volume) > 2_147_483_647.0 {
+        if !integer_volume.is_finite()
+            || f64::from(integer_volume) < -2_147_483_648.0
+            || f64::from(integer_volume) > 2_147_483_647.0
+        {
             return Err(AudioError::BadRawConversion);
         }
         self.begin_raw_write()?;
@@ -1484,20 +1663,30 @@ impl AudioMixer {
                         let offset = offset as usize;
                         Ok(i32::from(i16::from_le_bytes([data[offset], data[offset + 1]])))
                     } else if channels == 2 {
-                        let byte = data.get(at as usize).copied().ok_or(AudioError::RawAccess(at as usize))?;
+                        let byte = data
+                            .get(at as usize)
+                            .copied()
+                            .ok_or(AudioError::RawAccess(at as usize))?;
                         Ok(i32::from(byte as i8))
                     } else {
-                        let byte = data.get(at as usize).copied().ok_or(AudioError::RawAccess(at as usize))?;
+                        let byte = data
+                            .get(at as usize)
+                            .copied()
+                            .ok_or(AudioError::RawAccess(at as usize))?;
                         Ok(i32::from(byte) - 128)
                     }
                 };
                 self.raw_samples[destination * 2] = sample(source_index)?.wrapping_mul(integer_volume);
-                self.raw_samples[destination * 2 + 1] = sample(source_index + i64::from(channels) - 1)?.wrapping_mul(integer_volume);
+                self.raw_samples[destination * 2 + 1] =
+                    sample(source_index + i64::from(channels) - 1)?.wrapping_mul(integer_volume);
                 index += 1;
             }
         }
         if self.raw_end_time > self.sound_time + RAW_SAMPLE_CAPACITY as i64 {
-            self.raw_debug_print(&format!("S_RawSamples: overflowed {} > {}\n", self.raw_end_time, self.sound_time))?;
+            self.raw_debug_print(&format!(
+                "S_RawSamples: overflowed {} > {}\n",
+                self.raw_end_time, self.sound_time
+            ))?;
         }
         Ok(())
     }
@@ -1512,7 +1701,9 @@ impl AudioMixer {
             return Err(AudioError::BadRawFrames);
         }
         let mut output_frames = estimate as i64;
-        while output_frames > 0 && (((output_frames - 1) as f64 * f64::from(scale)) as f32).trunc() as i64 >= sound.frame_count as i64 {
+        while output_frames > 0
+            && (((output_frames - 1) as f64 * f64::from(scale)) as f32).trunc() as i64 >= sound.frame_count as i64
+        {
             output_frames -= 1;
         }
         while ((((output_frames as f64) * f64::from(scale)) as f32).trunc() as i64) < sound.frame_count as i64 {
@@ -1526,7 +1717,10 @@ impl AudioMixer {
 
     fn begin_raw_write(&mut self) -> Result<(), AudioError> {
         if self.raw_end_time < self.sound_time {
-            self.raw_debug_print(&format!("S_RawSamples: resetting minimum: {} < {}\n", self.raw_end_time, self.sound_time))?;
+            self.raw_debug_print(&format!(
+                "S_RawSamples: resetting minimum: {} < {}\n",
+                self.raw_end_time, self.sound_time
+            ))?;
             self.raw_end_time = self.sound_time;
         }
         Ok(())
@@ -1604,7 +1798,9 @@ impl AudioMixer {
 
     /// Live output frame count (bank-backed sounds read the bank).
     fn prepared_output_frames(prepared: &PreparedSound) -> usize {
-        prepared.memory.as_ref().map_or(prepared.output_frames, |memory| memory.borrow().frame_count(&prepared.sound))
+        prepared.memory.as_ref().map_or(prepared.output_frames, |memory| {
+            memory.borrow().frame_count(&prepared.sound)
+        })
     }
 
     /// Read the signed-int allocation clock.
@@ -1673,7 +1869,12 @@ impl AudioMixer {
     }
 
     /// Spatialize a policy-less voice.
-    fn spatialize(&mut self, entity: i64, origin: &MixerVoiceOrigin, volume: f64) -> Result<MixerStereoVolume, AudioError> {
+    fn spatialize(
+        &mut self,
+        entity: i64,
+        origin: &MixerVoiceOrigin,
+        volume: f64,
+    ) -> Result<MixerStereoVolume, AudioError> {
         if matches!(origin, MixerVoiceOrigin::Local) || entity == self.listener_entity {
             return Ok(MixerStereoVolume {
                 left: volume,
@@ -1691,7 +1892,13 @@ impl AudioMixer {
         } else {
             OutputChannels::Stereo
         };
-        let volume = spatialize_sound_origin(position, self.listener_origin, self.listener_axis, volume as f32, channels);
+        let volume = spatialize_sound_origin(
+            position,
+            self.listener_origin,
+            self.listener_axis,
+            volume as f32,
+            channels,
+        );
         Ok(self.transmit(
             position,
             MixerStereoVolume {
@@ -1709,7 +1916,10 @@ impl AudioMixer {
                 None => None,
                 Some(voice) => match voice.start {
                     VoiceStart::Pending => Some(false),
-                    VoiceStart::Started { sample } if voice.policy.is_none_or(|policy| policy.loop_start.is_none()) && sample + voice.prepared.output_frames as i64 <= self.painted_time => {
+                    VoiceStart::Started { sample }
+                        if voice.policy.is_none_or(|policy| policy.loop_start.is_none())
+                            && sample + voice.prepared.output_frames as i64 <= self.painted_time =>
+                    {
                         Some(true)
                     }
                     _ => None,
@@ -1763,7 +1973,12 @@ impl AudioMixer {
                 continue;
             }
             if let Some(channel) = voice.channel {
-                self.replace_channel(voice.entity, &ChannelCommand::Channel(channel), false, VoiceStopReason::Replaced);
+                self.replace_channel(
+                    voice.entity,
+                    &ChannelCommand::Channel(channel),
+                    false,
+                    VoiceStopReason::Replaced,
+                );
             }
             let stereo = self.policy_spatialize(&voice)?;
             if let Some(slot) = self.voices[index].as_mut() {
@@ -1778,7 +1993,11 @@ impl AudioMixer {
     }
 
     /// Sample one output frame of a prepared sound.
-    fn effect_sample(memory: &Option<SharedMixerMemory>, prepared: &PreparedSound, output_frame: usize) -> Result<i32, AudioError> {
+    fn effect_sample(
+        memory: &Option<SharedMixerMemory>,
+        prepared: &PreparedSound,
+        output_frame: usize,
+    ) -> Result<i32, AudioError> {
         if let Some(memory) = memory {
             return Ok(memory.borrow().sample(&prepared.sound, output_frame));
         }
@@ -1787,7 +2006,13 @@ impl AudioMixer {
     }
 
     /// Paint one effect sample into a stereo paint buffer.
-    fn paint_effect(paint: &mut [f64], output_frame: usize, sample: i32, volume: MixerStereoVolume, effects_gain: f64) -> Result<(), AudioError> {
+    fn paint_effect(
+        paint: &mut [f64],
+        output_frame: usize,
+        sample: i32,
+        volume: MixerStereoVolume,
+        effects_gain: f64,
+    ) -> Result<(), AudioError> {
         let left_gain = volume.left * effects_gain;
         let right_gain = volume.right * effects_gain;
         let left_index = output_frame * 2;
@@ -1804,7 +2029,12 @@ impl AudioMixer {
     }
 
     /// Sample a Doppler loop chunk, stabilizing overrun tails as zero.
-    fn doppler_sample(memory: &Option<SharedMixerMemory>, prepared: &PreparedSound, chunk: i64, sample_offset: i64) -> Result<i32, AudioError> {
+    fn doppler_sample(
+        memory: &Option<SharedMixerMemory>,
+        prepared: &PreparedSound,
+        chunk: i64,
+        sample_offset: i64,
+    ) -> Result<i32, AudioError> {
         let output_frame = chunk * SND_CHUNK_SIZE as i64 + (sample_offset & (SND_CHUNK_SIZE as i64 - 1));
         if let Some(memory) = memory {
             let frame = usize::try_from(output_frame).map_err(|_| AudioError::NegativeLoopAccess)?;
@@ -1855,7 +2085,15 @@ impl AudioMixer {
                     )?;
                 }
             } else {
-                Self::paint_doppler_loop(paint, memory, output_frame, count, sample_offset, loop_mix, effects_gain)?;
+                Self::paint_doppler_loop(
+                    paint,
+                    memory,
+                    output_frame,
+                    count,
+                    sample_offset,
+                    loop_mix,
+                    effects_gain,
+                )?;
             }
             output_frame += count;
         }
@@ -1873,7 +2111,15 @@ impl AudioMixer {
         effects_gain: f64,
     ) -> Result<(), AudioError> {
         if loop_mix.doppler_scale > SND_CHUNK_SIZE as f64 {
-            return Self::paint_wide_doppler_loop(paint, memory, output_frame, count, source_offset, loop_mix, effects_gain);
+            return Self::paint_wide_doppler_loop(
+                paint,
+                memory,
+                output_frame,
+                count,
+                source_offset,
+                loop_mix,
+                effects_gain,
+            );
         }
         let output_frames = loop_mix.prepared.output_frames as i64;
         let scaled_offset = ((source_offset as f32) * loop_mix.old_doppler_scale as f32).trunc() as i64;
@@ -1883,7 +2129,11 @@ impl AudioMixer {
         } else {
             (scaled_offset / SND_CHUNK_SIZE as i64) % chunk_count
         };
-        let mut offset = (if scaled_offset < 0 { scaled_offset } else { scaled_offset % SND_CHUNK_SIZE as i64 }) as f32;
+        let mut offset = (if scaled_offset < 0 {
+            scaled_offset
+        } else {
+            scaled_offset % SND_CHUNK_SIZE as i64
+        }) as f32;
         let left_volume = loop_mix.left_volume as f32 * effects_gain as f32;
         let right_volume = loop_mix.right_volume as f32 * effects_gain as f32;
         for index in 0..count {
@@ -1901,8 +2151,16 @@ impl AudioMixer {
             let divisor = 256.0f32 * (last - first) as f32;
             let left_contribution = (sample_total * left_volume) / divisor;
             let right_contribution = (sample_total * right_volume) / divisor;
-            Self::add_float_paint(paint, ((output_frame + index) * 2) as usize, f64::from(left_contribution))?;
-            Self::add_float_paint(paint, ((output_frame + index) * 2 + 1) as usize, f64::from(right_contribution))?;
+            Self::add_float_paint(
+                paint,
+                ((output_frame + index) * 2) as usize,
+                f64::from(left_contribution),
+            )?;
+            Self::add_float_paint(
+                paint,
+                ((output_frame + index) * 2 + 1) as usize,
+                f64::from(right_contribution),
+            )?;
         }
         Ok(())
     }
@@ -1919,7 +2177,12 @@ impl AudioMixer {
     ) -> Result<(), AudioError> {
         let output_frames = loop_mix.prepared.output_frames;
         let period = output_frames.div_ceil(SND_CHUNK_SIZE) * SND_CHUNK_SIZE;
-        if loop_mix.prepared.doppler_sums.as_ref().is_none_or(|sums| sums.len() != period + 1) {
+        if loop_mix
+            .prepared
+            .doppler_sums
+            .as_ref()
+            .is_none_or(|sums| sums.len() != period + 1)
+        {
             let mut sums = vec![0.0f64; period + 1];
             let mut total = 0.0f64;
             for frame in 0..period {
@@ -1947,7 +2210,12 @@ impl AudioMixer {
             let end = offset + remainder;
             let first = offset.trunc() as i64;
             let last = end.trunc() as i64;
-            let tail = sum(last.min(period as i64))? - sum(first)? + if last > period as i64 { sum(last - period as i64)? } else { 0.0 };
+            let tail = sum(last.min(period as i64))? - sum(first)?
+                + if last > period as i64 {
+                    sum(last - period as i64)?
+                } else {
+                    0.0
+                };
             let average = (cycle_total + tail) / (cycle_samples + (last - first) as f64);
             Self::add_float_paint(
                 paint,
@@ -1983,7 +2251,12 @@ impl AudioMixer {
         } else {
             None
         };
-        let mut loops: Vec<LoopVoice> = self.loops.values().filter(|loop_voice| loop_voice.active).cloned().collect();
+        let mut loops: Vec<LoopVoice> = self
+            .loops
+            .values()
+            .filter(|loop_voice| loop_voice.active)
+            .cloned()
+            .collect();
         loops.sort_by_key(|loop_voice| loop_voice.entity);
         let mut merged: HashSet<i64> = HashSet::new();
         let mut mixes: Vec<LoopMix> = Vec::new();
@@ -2033,14 +2306,22 @@ impl AudioMixer {
         while absolute < stop {
             let output_frame = (absolute - self.painted_time) as usize;
             let raw_index = (absolute & (RAW_SAMPLE_CAPACITY as i64 - 1)) as usize;
-            let left = self.raw_samples.get(raw_index * 2).copied().ok_or(AudioError::BadRawIndex {
-                index: (raw_index * 2).to_string(),
-                length: self.raw_samples.len().to_string(),
-            })?;
-            let right = self.raw_samples.get(raw_index * 2 + 1).copied().ok_or(AudioError::BadRawIndex {
-                index: (raw_index * 2 + 1).to_string(),
-                length: self.raw_samples.len().to_string(),
-            })?;
+            let left = self
+                .raw_samples
+                .get(raw_index * 2)
+                .copied()
+                .ok_or(AudioError::BadRawIndex {
+                    index: (raw_index * 2).to_string(),
+                    length: self.raw_samples.len().to_string(),
+                })?;
+            let right = self
+                .raw_samples
+                .get(raw_index * 2 + 1)
+                .copied()
+                .ok_or(AudioError::BadRawIndex {
+                    index: (raw_index * 2 + 1).to_string(),
+                    length: self.raw_samples.len().to_string(),
+                })?;
             let Some(left_cell) = paint.get_mut(output_frame * 2) else {
                 return Err(AudioError::BadPaintIndex {
                     index: (output_frame * 2).to_string(),
@@ -2064,7 +2345,13 @@ impl AudioMixer {
     pub fn mix(&mut self, request: MixRequest) -> Result<Vec<i16>, AudioError> {
         let (start_frame, frames) = match request {
             MixRequest::Consume(frames) => (self.painted_time, frames),
-            MixRequest::Range(range) => (range.start_frame, range.end_frame.checked_sub(range.start_frame).ok_or(AudioError::BadMixFrames)?),
+            MixRequest::Range(range) => (
+                range.start_frame,
+                range
+                    .end_frame
+                    .checked_sub(range.start_frame)
+                    .ok_or(AudioError::BadMixFrames)?,
+            ),
         };
         if frames < 0 {
             return Err(AudioError::BadMixFrames);
@@ -2109,7 +2396,9 @@ impl AudioMixer {
                         let Some(candidate) = candidate else {
                             continue;
                         };
-                        if merged_voices.contains(&candidate_index) || !matches!(candidate.start, VoiceStart::Started { .. }) {
+                        if merged_voices.contains(&candidate_index)
+                            || !matches!(candidate.start, VoiceStart::Started { .. })
+                        {
                             continue;
                         }
                         if candidate.policy.and_then(|policy| policy.synchronized_gain_limit) != Some(limit) {
@@ -2139,7 +2428,8 @@ impl AudioMixer {
                     if let Some(loop_start) = voice.policy.and_then(|policy| policy.loop_start) {
                         let output_frames = voice.prepared.output_frames as i64;
                         if sound_frame >= output_frames {
-                            sound_frame = loop_start as i64 + (sound_frame - output_frames) % (output_frames - loop_start as i64);
+                            sound_frame =
+                                loop_start as i64 + (sound_frame - output_frames) % (output_frames - loop_start as i64);
                         }
                     }
                     if sound_frame < 0 || sound_frame >= voice.prepared.output_frames as i64 {
@@ -2151,7 +2441,8 @@ impl AudioMixer {
             }
             for loop_mix in &mut self.loop_channels {
                 let skip = self.sound_memory.as_ref().is_some_and(|memory| {
-                    !memory.borrow().has_data(&loop_mix.prepared.sound) || memory.borrow().frame_count(&loop_mix.prepared.sound) == 0
+                    !memory.borrow().has_data(&loop_mix.prepared.sound)
+                        || memory.borrow().frame_count(&loop_mix.prepared.sound) == 0
                 });
                 if skip {
                     continue;
@@ -2159,7 +2450,15 @@ impl AudioMixer {
                 let memory = self.sound_memory.clone();
                 let painted_time = self.painted_time;
                 let doppler_enabled = self.doppler_enabled;
-                Self::paint_loop(&mut paint, &memory, doppler_enabled, painted_time, count, loop_mix, effects_gain)?;
+                Self::paint_loop(
+                    &mut paint,
+                    &memory,
+                    doppler_enabled,
+                    painted_time,
+                    count,
+                    loop_mix,
+                    effects_gain,
+                )?;
             }
             if self.diagnostic_setting("s_testsound")? != 0 {
                 for frame in 0..count {
@@ -2268,7 +2567,10 @@ mod tests {
         assert!(ranged.iter().any(|sample| *sample != 0));
         assert_eq!(mixer.sound_clock(), 0);
         assert_eq!(mixer.sample_clock(), 8);
-        assert!(matches!(mixer.mix(MixRequest::Consume(-1)), Err(AudioError::BadMixFrames)));
+        assert!(matches!(
+            mixer.mix(MixRequest::Consume(-1)),
+            Err(AudioError::BadMixFrames)
+        ));
     }
 
     #[test]
@@ -2282,8 +2584,12 @@ mod tests {
             attenuation: 0.0,
         };
         let mut random = || 3i64;
-        assert!(mixer.start_q1_sound(&sound, &options, &ChannelCommand::Auto, Some(&mut random), None).unwrap());
-        assert!(mixer.start_q1_sound(&sound, &options, &ChannelCommand::Auto, Some(&mut random), None).unwrap());
+        assert!(mixer
+            .start_q1_sound(&sound, &options, &ChannelCommand::Auto, Some(&mut random), None)
+            .unwrap());
+        assert!(mixer
+            .start_q1_sound(&sound, &options, &ChannelCommand::Auto, Some(&mut random), None)
+            .unwrap());
         let far = SourceSoundOptions {
             entity: 5,
             origin: MixerVoiceOrigin::Fixed {
@@ -2292,8 +2598,14 @@ mod tests {
             volume: 1.0,
             attenuation: 10.0,
         };
-        assert!(!mixer.start_q1_sound(&sound, &far, &ChannelCommand::Auto, None, None).unwrap());
-        assert!(mixer.mix(MixRequest::Consume(4)).unwrap().iter().any(|sample| *sample != 0));
+        assert!(!mixer
+            .start_q1_sound(&sound, &far, &ChannelCommand::Auto, None, None)
+            .unwrap());
+        assert!(mixer
+            .mix(MixRequest::Consume(4))
+            .unwrap()
+            .iter()
+            .any(|sample| *sample != 0));
     }
 
     #[test]
@@ -2325,8 +2637,14 @@ mod tests {
             )
             .unwrap());
         mixer.mix(MixRequest::Consume(5000)).unwrap();
-        assert!(events.borrow().iter().any(|event| matches!(event, MixerVoiceEvent::Start { .. })));
-        assert!(events.borrow().iter().any(|event| matches!(event, MixerVoiceEvent::Stop { .. })));
+        assert!(events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, MixerVoiceEvent::Start { .. })));
+        assert!(events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, MixerVoiceEvent::Stop { .. })));
     }
 
     #[test]
@@ -2347,7 +2665,11 @@ mod tests {
             )
             .unwrap();
         mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
-        assert!(mixer.mix(MixRequest::Consume(8)).unwrap().iter().any(|sample| *sample != 0));
+        assert!(mixer
+            .mix(MixRequest::Consume(8))
+            .unwrap()
+            .iter()
+            .any(|sample| *sample != 0));
         mixer.clear_looping_sounds(true);
         mixer
             .update_real_looping_sound(
@@ -2390,11 +2712,18 @@ mod tests {
         let mut mixer = mixer();
         mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
         let plain = blip(64, None);
-        assert!(matches!(mixer.add_static_sound(&plain, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1), Err(AudioError::StaticLoop)));
+        assert!(matches!(
+            mixer.add_static_sound(&plain, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1),
+            Err(AudioError::StaticLoop)
+        ));
         let looping = blip(64, Some(0));
-        assert!(mixer.add_static_sound(&looping, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1).unwrap());
+        assert!(mixer
+            .add_static_sound(&looping, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1)
+            .unwrap());
         mixer.remove_static_sound(1);
-        mixer.update_ambient(std::slice::from_ref(&looping), &[1.0], 0.016, 0.3, 100.0).unwrap();
+        mixer
+            .update_ambient(std::slice::from_ref(&looping), &[1.0], 0.016, 0.3, 100.0)
+            .unwrap();
         mixer.update_ambient(&[], &[], 0.016, 0.0, 100.0).unwrap();
         mixer
             .set_source_loop_sounds(&[SourceLoopEntry {
@@ -2406,7 +2735,11 @@ mod tests {
                 attenuation: Some(1.0),
             }])
             .unwrap();
-        assert!(mixer.mix(MixRequest::Consume(8)).unwrap().iter().any(|sample| *sample != 0));
+        assert!(mixer
+            .mix(MixRequest::Consume(8))
+            .unwrap()
+            .iter()
+            .any(|sample| *sample != 0));
         mixer.set_source_loop_sounds(&[]).unwrap();
     }
 

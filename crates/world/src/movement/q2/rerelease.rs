@@ -3,20 +3,19 @@
 //! Donor provenance: `src/movement/q2/rerelease.ts` (ported through
 //! quake-2-re-ts and checked against rerelease `p_move.cpp`).
 
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::numeric::{Arithmetic, NumericOps};
 
+use super::super::swept_body::SweepStop;
 use super::dimensions::{accept_body_bounds, character_height};
 use super::math::{Q2Math, Q2MathEdition};
-use super::swept::{Q2SweepBody, sweep_q2_body};
-use super::super::swept_body::SweepStop;
+use super::swept::{sweep_q2_body, Q2SweepBody};
 use super::types::{
-    CSurface, KexPmove, KexTouchList, PmConfig, SrcVec3, StuckResult, TraceT, AXES,
-    CONTENTS_CURRENT_0, CONTENTS_CURRENT_180, CONTENTS_CURRENT_270, CONTENTS_CURRENT_90,
-    CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LAVA,
-    CONTENTS_NO_WATERJUMP, CONTENTS_NONE, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER,
-    MASK_CURRENT, MASK_PLAYERSOLID, MASK_SOLID, MASK_WATER, MAXTOUCH, PITCH, STEPSIZE, SURF_SLICK,
-    button, kex_pm_type, pm_flags, refdef_flags, water_level,
+    button, kex_pm_type, pm_flags, refdef_flags, water_level, CSurface, KexPmove, KexTouchList, PmConfig, SrcVec3,
+    StuckResult, TraceT, AXES, CONTENTS_CURRENT_0, CONTENTS_CURRENT_180, CONTENTS_CURRENT_270, CONTENTS_CURRENT_90,
+    CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LAVA, CONTENTS_NONE, CONTENTS_NO_WATERJUMP, CONTENTS_SLIME,
+    CONTENTS_SOLID, CONTENTS_WATER, MASK_CURRENT, MASK_PLAYERSOLID, MASK_SOLID, MASK_WATER, MAXTOUCH, PITCH, STEPSIZE,
+    SURF_SLICK,
 };
 use super::view::rerelease_view_angles;
 
@@ -72,12 +71,36 @@ struct SideCheck {
 }
 
 const SIDE_CHECKS: [SideCheck; 6] = [
-    SideCheck { normal: [0.0, 0.0, 1.0], mins: [-1.0, -1.0, 0.0], maxs: [1.0, 1.0, 0.0] },
-    SideCheck { normal: [0.0, 0.0, -1.0], mins: [-1.0, -1.0, 0.0], maxs: [1.0, 1.0, 0.0] },
-    SideCheck { normal: [1.0, 0.0, 0.0], mins: [0.0, -1.0, -1.0], maxs: [0.0, 1.0, 1.0] },
-    SideCheck { normal: [-1.0, 0.0, 0.0], mins: [0.0, -1.0, -1.0], maxs: [0.0, 1.0, 1.0] },
-    SideCheck { normal: [0.0, 1.0, 0.0], mins: [-1.0, 0.0, -1.0], maxs: [1.0, 0.0, 1.0] },
-    SideCheck { normal: [0.0, -1.0, 0.0], mins: [-1.0, 0.0, -1.0], maxs: [1.0, 0.0, 1.0] },
+    SideCheck {
+        normal: [0.0, 0.0, 1.0],
+        mins: [-1.0, -1.0, 0.0],
+        maxs: [1.0, 1.0, 0.0],
+    },
+    SideCheck {
+        normal: [0.0, 0.0, -1.0],
+        mins: [-1.0, -1.0, 0.0],
+        maxs: [1.0, 1.0, 0.0],
+    },
+    SideCheck {
+        normal: [1.0, 0.0, 0.0],
+        mins: [0.0, -1.0, -1.0],
+        maxs: [0.0, 1.0, 1.0],
+    },
+    SideCheck {
+        normal: [-1.0, 0.0, 0.0],
+        mins: [0.0, -1.0, -1.0],
+        maxs: [0.0, 1.0, 1.0],
+    },
+    SideCheck {
+        normal: [0.0, 1.0, 0.0],
+        mins: [-1.0, 0.0, -1.0],
+        maxs: [1.0, 0.0, 1.0],
+    },
+    SideCheck {
+        normal: [0.0, -1.0, 0.0],
+        mins: [-1.0, 0.0, -1.0],
+        maxs: [1.0, 0.0, 1.0],
+    },
 ];
 
 fn source_float_value(n: NumericOps, value: f64) -> f64 {
@@ -156,16 +179,13 @@ pub fn fix_stuck_object(
         let other_side = &SIDE_CHECKS[sn ^ 1];
         for axis in AXES {
             if other_side.normal[axis] < 0.0 {
-                opposite_start[axis] =
-                    f64::from(n.store(n.add(opposite_start[axis], own_mins[axis])));
+                opposite_start[axis] = f64::from(n.store(n.add(opposite_start[axis], own_mins[axis])));
             } else if other_side.normal[axis] > 0.0 {
-                opposite_start[axis] =
-                    f64::from(n.store(n.add(opposite_start[axis], own_maxs[axis])));
+                opposite_start[axis] = f64::from(n.store(n.add(opposite_start[axis], own_maxs[axis])));
             }
         }
         if let Some(e) = needed_epsilon_fix {
-            opposite_start[e] =
-                f64::from(n.store(n.add(opposite_start[e], needed_epsilon_dir)));
+            opposite_start[e] = f64::from(n.store(n.add(opposite_start[e], needed_epsilon_dir)));
         }
         tr = trace(start, mins, maxs, opposite_start);
         if tr.startsolid {
@@ -173,9 +193,7 @@ pub fn fix_stuck_object(
         }
         let mut end = tr.endpos;
         for axis in AXES {
-            end[axis] = f64::from(n.store(
-                n.add(end[axis], n.mul(side.normal[axis], source_float_value(n, 0.125))),
-            ));
+            end[axis] = f64::from(n.store(n.add(end[axis], n.mul(side.normal[axis], source_float_value(n, 0.125)))));
         }
         let delta = math.sub(end, opposite_start);
         let mut new_origin = math.add(*origin, delta);
@@ -193,9 +211,7 @@ pub fn fix_stuck_object(
         if count > 1 {
             // Source sorts every candidate but the last.
             let mut sortable = good_positions[..count - 1].to_vec();
-            sortable.sort_by(|a, b| {
-                n.sub(a.0, b.0).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            sortable.sort_by(|a, b| n.sub(a.0, b.0).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal));
             for (i, entry) in sortable.into_iter().enumerate() {
                 good_positions[i] = entry;
             }
@@ -266,10 +282,12 @@ impl Q2SweepBody for RereleaseSweepBody<'_> {
     }
     fn prepare_trace(&mut self, trace: &mut TraceT) {
         if trace.surface2.is_some() {
-            let clipped_a =
-                self.math.slide_clip_velocity(self.velocity, trace.plane.normal, self.overbounce);
-            let clipped_b =
-                self.math.slide_clip_velocity(self.velocity, trace.plane2.normal, self.overbounce);
+            let clipped_a = self
+                .math
+                .slide_clip_velocity(self.velocity, trace.plane.normal, self.overbounce);
+            let clipped_b = self
+                .math
+                .slide_clip_velocity(self.velocity, trace.plane2.normal, self.overbounce);
             if AXES.iter().any(|i| clipped_a[*i].abs() < clipped_b[*i].abs()) {
                 trace.plane = trace.plane2.clone();
                 trace.surface = trace.surface2.clone();
@@ -289,9 +307,10 @@ impl Q2SweepBody for RereleaseSweepBody<'_> {
         if self.working_is_pml {
             // Player move: the working origin aliases pml; fix it in place.
             for axis in AXES {
-                self.origin[axis] = f64::from(self.n.store(
-                    self.n.add(self.origin[axis], self.n.mul(normal[axis], self.fix_nudge)),
-                ));
+                self.origin[axis] = f64::from(
+                    self.n
+                        .store(self.n.add(self.origin[axis], self.n.mul(normal[axis], self.fix_nudge))),
+                );
             }
             let mut fixed = self.origin;
             fix_stuck_object(self.n, self.math, &mut fixed, self.mins, self.maxs, self.trace);
@@ -299,9 +318,10 @@ impl Q2SweepBody for RereleaseSweepBody<'_> {
             *target = fixed;
         } else {
             for axis in AXES {
-                target[axis] = f64::from(self.n.store(
-                    self.n.add(target[axis], self.n.mul(normal[axis], self.fix_nudge)),
-                ));
+                target[axis] = f64::from(
+                    self.n
+                        .store(self.n.add(target[axis], self.n.mul(normal[axis], self.fix_nudge))),
+                );
             }
             let mut fixed = *target;
             fix_stuck_object(self.n, self.math, &mut fixed, self.mins, self.maxs, self.trace);
@@ -504,14 +524,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         (self.pm.trace)(start, mins, maxs, end, player, mask)
     }
 
-    fn pm_trace_masked(
-        &mut self,
-        start: SrcVec3,
-        mins: SrcVec3,
-        maxs: SrcVec3,
-        end: SrcVec3,
-        mask: i32,
-    ) -> TraceT {
+    fn pm_trace_masked(&mut self, start: SrcVec3, mins: SrcVec3, maxs: SrcVec3, end: SrcVec3, mask: i32) -> TraceT {
         if self.pm.s.pm_type == kex_pm_type::SPECTATOR {
             return (self.pm.clip)(start, mins, maxs, end, MASK_SOLID);
         }
@@ -736,9 +749,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             .groundsurface
             .as_ref()
             .is_some_and(|surface| surface.flags & SURF_SLICK == 0);
-        if (self.pm.groundentity.is_some() && slick)
-            || self.pm.s.pm_flags & pm_flags::ON_LADDER != 0
-        {
+        if (self.pm.groundentity.is_some() && slick) || self.pm.s.pm_flags & pm_flags::ON_LADDER != 0 {
             let control = if speed < stopspeed { stopspeed } else { speed };
             drop = n.add(drop, n.mul(n.mul(control, friction), self.pml.frametime));
         }
@@ -773,9 +784,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             accelspeed = addspeed;
         }
         for i in AXES {
-            self.pml.velocity[i] = f64::from(n.store(
-                n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i])),
-            ));
+            self.pml.velocity[i] = f64::from(n.store(n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i]))));
         }
     }
 
@@ -796,9 +805,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             accelspeed = addspeed;
         }
         for i in AXES {
-            self.pml.velocity[i] = f64::from(n.store(
-                n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i])),
-            ));
+            self.pml.velocity[i] = f64::from(n.store(n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i]))));
         }
     }
 
@@ -944,13 +951,15 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                 wishvel[2] = f64::from(n.store(n.sub(wishvel[2], 60.0)));
             }
         } else if self.pm.cmd.buttons & button::CROUCH != 0 {
-            wishvel[2] = f64::from(n.store(
-                n.sub(wishvel[2], self.equipment_speed(n.mul(waterspeed, self.source_float(0.5)))),
-            ));
+            wishvel[2] = f64::from(n.store(n.sub(
+                wishvel[2],
+                self.equipment_speed(n.mul(waterspeed, self.source_float(0.5))),
+            )));
         } else if self.pm.cmd.buttons & button::JUMP != 0 {
-            wishvel[2] = f64::from(n.store(
-                n.add(wishvel[2], self.equipment_speed(n.mul(waterspeed, self.source_float(0.5)))),
-            ));
+            wishvel[2] = f64::from(n.store(n.add(
+                wishvel[2],
+                self.equipment_speed(n.mul(waterspeed, self.source_float(0.5))),
+            )));
         }
         self.add_currents(&mut wishvel);
         let mut wishdir = wishvel;
@@ -997,16 +1006,14 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             self.accelerate(wishdir, wishspeed, accelerate);
             if wishvel[2] == 0.0 {
                 if self.pml.velocity[2] > 0.0 {
-                    self.pml.velocity[2] = f64::from(n.store(
-                        n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime)),
-                    ));
+                    self.pml.velocity[2] =
+                        f64::from(n.store(n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime))));
                     if self.pml.velocity[2] < 0.0 {
                         self.pml.velocity[2] = f64::from(n.store(0.0));
                     }
                 } else {
-                    self.pml.velocity[2] = f64::from(n.store(
-                        n.add(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime)),
-                    ));
+                    self.pml.velocity[2] =
+                        f64::from(n.store(n.add(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime))));
                     if self.pml.velocity[2] > 0.0 {
                         self.pml.velocity[2] = f64::from(n.store(0.0));
                     }
@@ -1019,9 +1026,8 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             if self.pm.s.gravity > 0.0 {
                 self.pml.velocity[2] = f64::from(n.store(0.0));
             } else {
-                self.pml.velocity[2] = f64::from(n.store(
-                    n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime)),
-                ));
+                self.pml.velocity[2] =
+                    f64::from(n.store(n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime))));
             }
             if self.pml.velocity[0] == 0.0 && self.pml.velocity[1] == 0.0 {
                 return;
@@ -1035,9 +1041,8 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                 self.accelerate(wishdir, wishspeed, 1.0);
             }
             if self.pm.s.pm_type != kex_pm_type::GRAPPLE {
-                self.pml.velocity[2] = f64::from(n.store(
-                    n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime)),
-                ));
+                self.pml.velocity[2] =
+                    f64::from(n.store(n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime))));
             }
             self.step_slide_move();
         }
@@ -1061,15 +1066,11 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             level = water_level::FEET;
             // Later samples reuse pml origin in the source.
             let origin = self.origin();
-            point[2] = f64::from(n.store(
-                n.add(n.add(origin[2], self.pm.mins[2]), sample1 as f64),
-            ));
+            point[2] = f64::from(n.store(n.add(n.add(origin[2], self.pm.mins[2]), sample1 as f64)));
             let cont = (self.pm.pointcontents)(point);
             if cont & MASK_WATER != 0 {
                 level = water_level::WAIST;
-                point[2] = f64::from(n.store(
-                    n.add(n.add(origin[2], self.pm.mins[2]), sample2 as f64),
-                ));
+                point[2] = f64::from(n.store(n.add(n.add(origin[2], self.pm.mins[2]), sample2 as f64)));
                 let cont = (self.pm.pointcontents)(point);
                 if cont & MASK_WATER != 0 {
                     level = water_level::UNDER;
@@ -1130,8 +1131,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                         self.pm.groundplane.normal,
                         self.source_float(1.01),
                     );
-                    self.pm.impact_delta =
-                        n.sub(self.pml.start_velocity[2], clipped[2]);
+                    self.pm.impact_delta = n.sub(self.pml.start_velocity[2], clipped[2]);
                     self.pm.s.pm_flags |= pm_flags::ON_GROUND;
                     if self.config.n64_physics || self.pm.s.pm_flags & pm_flags::DUCKED != 0 {
                         self.pm.s.pm_flags |= pm_flags::TIME_LAND;
@@ -1221,36 +1221,39 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         }
         let mut waterjump_vel = math.muls(flatforward, 50.0);
         waterjump_vel[2] = f64::from(n.store(350.0));
-        let mut touches = KexTouchList { num: 0, traces: Vec::new() };
+        let mut touches = KexTouchList {
+            num: 0,
+            traces: Vec::new(),
+        };
         let mut waterjump_origin = origin;
         let time = self.source_float(0.1);
         let mut has_time = true;
-        let iter_count =
-            (50.0f64).min(n.mul(10.0, n.div(800.0, self.pm.s.gravity)).trunc()) as i32;
+        let iter_count = (50.0f64).min(n.mul(10.0, n.div(800.0, self.pm.s.gravity)).trunc()) as i32;
         for _ in 0..iter_count {
-            waterjump_vel[2] = f64::from(n.store(
-                n.sub(waterjump_vel[2], n.mul(self.pm.s.gravity, time)),
-            ));
+            waterjump_vel[2] = f64::from(n.store(n.sub(waterjump_vel[2], n.mul(self.pm.s.gravity, time))));
             if waterjump_vel[2] < 0.0 {
                 has_time = false;
             }
             let mins = self.pm.mins;
             let maxs = self.pm.maxs;
-            self.sweep_temp(&mut waterjump_origin, &mut waterjump_vel, time, mins, maxs, &mut touches, has_time);
+            self.sweep_temp(
+                &mut waterjump_origin,
+                &mut waterjump_vel,
+                time,
+                mins,
+                maxs,
+                &mut touches,
+                has_time,
+            );
         }
         let mins = self.pm.mins;
         let maxs = self.pm.maxs;
         let below = math.sub(waterjump_origin, [0.0, 0.0, 2.0]);
         trace = self.pm_trace_masked(waterjump_origin, mins, maxs, below, MASK_SOLID);
-        if trace.fraction == 1.0
-            || trace.plane.normal[2] < self.source_float(0.7)
-            || trace.endpos[2] < origin[2]
-        {
+        if trace.fraction == 1.0 || trace.plane.normal[2] < self.source_float(0.7) || trace.endpos[2] < origin[2] {
             return;
         }
-        if self.pm.groundentity.is_some()
-            && n.sub(origin[2], trace.endpos[2]).abs() <= f64::from(STEPSIZE)
-        {
+        if self.pm.groundentity.is_some() && n.sub(origin[2], trace.endpos[2]).abs() <= f64::from(STEPSIZE) {
             return;
         }
         let (level, _) = self.get_water_level(trace.endpos);
@@ -1275,7 +1278,11 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         self.pm.s.viewheight = if doclip { 0.0 } else { 22.0 };
         let speed = math.length(self.pml.velocity);
         if speed < 1.0 {
-            self.pml.velocity = [f64::from(n.store(0.0)), f64::from(n.store(0.0)), f64::from(n.store(0.0))];
+            self.pml.velocity = [
+                f64::from(n.store(0.0)),
+                f64::from(n.store(0.0)),
+                f64::from(n.store(0.0)),
+            ];
         } else {
             let friction = n.mul(friction, 1.5);
             let control = if speed < stopspeed { stopspeed } else { speed };
@@ -1297,14 +1304,16 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             n.add(n.mul(self.pml.forward[2], fmove), n.mul(self.pml.right[2], smove)),
         );
         if self.pm.cmd.buttons & button::JUMP != 0 {
-            wishvel[2] = f64::from(n.store(
-                n.add(wishvel[2], self.equipment_speed(n.mul(waterspeed, self.source_float(0.5)))),
-            ));
+            wishvel[2] = f64::from(n.store(n.add(
+                wishvel[2],
+                self.equipment_speed(n.mul(waterspeed, self.source_float(0.5))),
+            )));
         }
         if self.pm.cmd.buttons & button::CROUCH != 0 {
-            wishvel[2] = f64::from(n.store(
-                n.sub(wishvel[2], self.equipment_speed(n.mul(waterspeed, self.source_float(0.5)))),
-            ));
+            wishvel[2] = f64::from(n.store(n.sub(
+                wishvel[2],
+                self.equipment_speed(n.mul(waterspeed, self.source_float(0.5))),
+            )));
         }
         let mut wishdir = wishvel;
         let mut wishspeed = math.normalize(&mut wishdir);
@@ -1321,9 +1330,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                 accelspeed = addspeed;
             }
             for i in AXES {
-                self.pml.velocity[i] = f64::from(n.store(
-                    n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i])),
-                ));
+                self.pml.velocity[i] = f64::from(n.store(n.add(self.pml.velocity[i], n.mul(accelspeed, wishdir[i]))));
             }
         }
         if doclip {
@@ -1367,8 +1374,16 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         let bounds = accept_body_bounds(&previous, &requested, |bounds| {
             let trace = self.pm_trace_auto(
                 origin,
-                [f64::from(bounds.min.x), f64::from(bounds.min.y), f64::from(bounds.min.z)],
-                [f64::from(bounds.max.x), f64::from(bounds.max.y), f64::from(bounds.max.z)],
+                [
+                    f64::from(bounds.min.x),
+                    f64::from(bounds.min.y),
+                    f64::from(bounds.min.z),
+                ],
+                [
+                    f64::from(bounds.max.x),
+                    f64::from(bounds.max.y),
+                    f64::from(bounds.max.z),
+                ],
                 origin,
             );
             !trace.allsolid
@@ -1380,8 +1395,16 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         self.accepted_duck = self.pm.s.pm_flags & pm_flags::DUCKED;
         self.accepted_height = self.pm.s.viewheight;
         self.accepted_body_bounds = Some(bounds);
-        self.pm.mins = [f64::from(bounds.min.x), f64::from(bounds.min.y), f64::from(bounds.min.z)];
-        self.pm.maxs = [f64::from(bounds.max.x), f64::from(bounds.max.y), f64::from(bounds.max.z)];
+        self.pm.mins = [
+            f64::from(bounds.min.x),
+            f64::from(bounds.min.y),
+            f64::from(bounds.min.z),
+        ];
+        self.pm.maxs = [
+            f64::from(bounds.max.x),
+            f64::from(bounds.max.y),
+            f64::from(bounds.max.z),
+        ];
     }
 
     fn above_water(&mut self) -> bool {
@@ -1392,8 +1415,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         let mins = self.pm.mins;
         let maxs = self.pm.maxs;
         let player = self.pm.player.clone();
-        let solid_below =
-            (self.pm.trace)(origin, mins, maxs, below, player.clone(), MASK_SOLID).fraction < 1.0;
+        let solid_below = (self.pm.trace)(origin, mins, maxs, below, player.clone(), MASK_SOLID).fraction < 1.0;
         if solid_below {
             return false;
         }
@@ -1412,8 +1434,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                 flags_changed = true;
             }
         } else if self.pm.cmd.buttons & button::CROUCH != 0
-            && (self.pm.groundentity.is_some()
-                || (self.pm.waterlevel <= water_level::FEET && !self.above_water()))
+            && (self.pm.groundentity.is_some() || (self.pm.waterlevel <= water_level::FEET && !self.above_water()))
             && self.pm.s.pm_flags & pm_flags::ON_LADDER == 0
             && !self.config.n64_physics
         {
@@ -1427,11 +1448,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                         let character = self.pm.character_bounds;
                         (
                             self.pm.mins,
-                            [
-                                self.pm.maxs[0],
-                                self.pm.maxs[1],
-                                character_height(&character, 4.0, &n),
-                            ],
+                            [self.pm.maxs[0], self.pm.maxs[1], character_height(&character, 4.0, &n)],
                         )
                     }
                 };
@@ -1448,7 +1465,14 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                     [f64::from(body.min.x), f64::from(body.min.y), f64::from(body.min.z)],
                     [f64::from(body.max.x), f64::from(body.max.y), f64::from(body.max.z)],
                 ),
-                None => (self.pm.mins, [self.pm.maxs[0], self.pm.maxs[1], f64::from(self.pm.character_bounds.max.z)]),
+                None => (
+                    self.pm.mins,
+                    [
+                        self.pm.maxs[0],
+                        self.pm.maxs[1],
+                        f64::from(self.pm.character_bounds.max.z),
+                    ],
+                ),
             };
             let origin = self.origin();
             let trace = self.pm_trace_auto(origin, check_mins, check_maxs, origin);
@@ -1473,8 +1497,11 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         let mut forward = math.length(self.pml.velocity);
         forward = n.sub(forward, 20.0);
         if forward <= 0.0 {
-            self.pml.velocity =
-                [f64::from(n.store(0.0)), f64::from(n.store(0.0)), f64::from(n.store(0.0))];
+            self.pml.velocity = [
+                f64::from(n.store(0.0)),
+                f64::from(n.store(0.0)),
+                f64::from(n.store(0.0)),
+            ];
         } else {
             math.normalize(&mut self.pml.velocity);
             math.mul_eq(&mut self.pml.velocity, forward);
@@ -1522,9 +1549,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
             }
             trace_cb(start, mins, maxs, end, player.clone(), mask)
         };
-        if fix_stuck_object(n, math, &mut self.pm.s.origin, mins, maxs, &mut auto)
-            == StuckResult::NoGoodPosition
-        {
+        if fix_stuck_object(n, math, &mut self.pm.s.origin, mins, maxs, &mut auto) == StuckResult::NoGoodPosition {
             let previous = self.pml.previous_origin;
             math.copy(previous, &mut self.pm.s.origin);
         }
@@ -1559,12 +1584,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         let flags = self.pm.s.pm_flags;
         rerelease_view_angles(&mut self.pm.viewangles, angles, delta, flags, &n);
         let viewangles = self.pm.viewangles;
-        math.angle_vectors(
-            viewangles,
-            &mut self.pml.forward,
-            &mut self.pml.right,
-            &mut self.pml.up,
-        );
+        math.angle_vectors(viewangles, &mut self.pml.forward, &mut self.pml.right, &mut self.pml.up);
     }
 
     fn screen_effects(&mut self) {
@@ -1614,13 +1634,21 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         let math = self.runner.math;
         let flight = self.runner.flight;
         self.pm.touch.num = 0;
-        self.pm.viewangles = [f64::from(n.store(0.0)), f64::from(n.store(0.0)), f64::from(n.store(0.0))];
+        self.pm.viewangles = [
+            f64::from(n.store(0.0)),
+            f64::from(n.store(0.0)),
+            f64::from(n.store(0.0)),
+        ];
         self.pm.s.viewheight = 0.0;
         self.pm.groundentity = None;
         self.pm.watertype = CONTENTS_NONE;
         self.pm.waterlevel = water_level::NONE;
-        self.pm.screen_blend =
-            [f64::from(n.store(0.0)), f64::from(n.store(0.0)), f64::from(n.store(0.0)), f64::from(n.store(0.0))];
+        self.pm.screen_blend = [
+            f64::from(n.store(0.0)),
+            f64::from(n.store(0.0)),
+            f64::from(n.store(0.0)),
+            f64::from(n.store(0.0)),
+        ];
         self.pm.rdflags = refdef_flags::NONE;
         self.pm.jump_sound = false;
         self.pm.step_clip = false;
@@ -1633,8 +1661,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         self.pml.start_velocity = self.pm.s.velocity;
         self.clamp_angles();
         if flight && self.pm.s.pm_type == kex_pm_type::NORMAL {
-            self.pm.s.pm_flags &=
-                !(pm_flags::ON_GROUND | pm_flags::DUCKED | pm_flags::TIME_WATERJUMP);
+            self.pm.s.pm_flags &= !(pm_flags::ON_GROUND | pm_flags::DUCKED | pm_flags::TIME_WATERJUMP);
             self.pm.s.pm_time = 0;
             self.fly_move(true);
             self.snap_position();
@@ -1678,26 +1705,20 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
         self.check_special_movement();
         if self.pm.s.pm_time != 0 {
             if self.pm.cmd.msec >= self.pm.s.pm_time {
-                self.pm.s.pm_flags &= !(pm_flags::TIME_WATERJUMP
-                    | pm_flags::TIME_LAND
-                    | pm_flags::TIME_TELEPORT
-                    | pm_flags::TIME_TRICK);
+                self.pm.s.pm_flags &=
+                    !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT | pm_flags::TIME_TRICK);
                 self.pm.s.pm_time = 0;
             } else {
-                self.pm.s.pm_time =
-                    n.sub(self.pm.s.pm_time as f64, self.pm.cmd.msec as f64) as i32;
+                self.pm.s.pm_time = n.sub(self.pm.s.pm_time as f64, self.pm.cmd.msec as f64) as i32;
             }
         }
         if self.pm.s.pm_flags & pm_flags::TIME_TELEPORT != 0 {
         } else if self.pm.s.pm_flags & pm_flags::TIME_WATERJUMP != 0 {
-            self.pml.velocity[2] = f64::from(n.store(
-                n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime)),
-            ));
+            self.pml.velocity[2] =
+                f64::from(n.store(n.sub(self.pml.velocity[2], n.mul(self.pm.s.gravity, self.pml.frametime))));
             if self.pml.velocity[2] < 0.0 {
-                self.pm.s.pm_flags &= !(pm_flags::TIME_WATERJUMP
-                    | pm_flags::TIME_LAND
-                    | pm_flags::TIME_TELEPORT
-                    | pm_flags::TIME_TRICK);
+                self.pm.s.pm_flags &=
+                    !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT | pm_flags::TIME_TRICK);
                 self.pm.s.pm_time = 0;
             }
             self.step_slide_move();
@@ -1712,12 +1733,7 @@ impl<'r, 'c, 'p, 'cb> RereleasePmove<'r, 'c, 'p, 'cb> {
                     angles[PITCH] = f64::from(n.store(n.sub(angles[PITCH], 360.0)));
                 }
                 angles[PITCH] = f64::from(n.store(n.div(angles[PITCH], 3.0)));
-                math.angle_vectors(
-                    angles,
-                    &mut self.pml.forward,
-                    &mut self.pml.right,
-                    &mut self.pml.up,
-                );
+                math.angle_vectors(angles, &mut self.pml.forward, &mut self.pml.right, &mut self.pml.up);
                 self.air_move();
             }
         }
@@ -1786,7 +1802,10 @@ mod tests {
                 server_frame: 1,
             },
             snapinitial: false,
-            touch: KexTouchList { num: 0, traces: Vec::new() },
+            touch: KexTouchList {
+                num: 0,
+                traces: Vec::new(),
+            },
             viewangles: [0.0, 0.0, 0.0],
             mins: [-16.0, -16.0, -24.0],
             maxs: [16.0, 16.0, 32.0],
@@ -1896,9 +1915,7 @@ mod tests {
         let numeric = NumericOps::select(Q2_DONOR_PROFILE).unwrap();
         let math = Q2Math::new(numeric, Q2MathEdition::Rerelease);
         let mut origin = [0.0, 0.0, 0.0];
-        let mut trace = |start: SrcVec3, _mins: SrcVec3, _maxs: SrcVec3, _end: SrcVec3| -> TraceT {
-            open_trace(start)
-        };
+        let mut trace = |start: SrcVec3, _mins: SrcVec3, _maxs: SrcVec3, _end: SrcVec3| -> TraceT { open_trace(start) };
         let result = fix_stuck_object(
             numeric,
             math,
@@ -1935,4 +1952,3 @@ mod tests {
         assert!(pm.s.velocity[1] > 0.0);
     }
 }
-

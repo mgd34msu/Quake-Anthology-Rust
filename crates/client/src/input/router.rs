@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use qa_core::cmd::{command_separator_offset, source_command_text, Dialect};
 use qa_core::identity::SeatId;
 use qa_core::math::{vec2, Vec2, Vec3};
-use qa_platform::controller::{ControllerOperationResult, ControllerSelection, ControllerSensor, ControllerState};
 use qa_platform::controller::{ControllerEvent, SdlControllers};
+use qa_platform::controller::{ControllerOperationResult, ControllerSelection, ControllerSensor, ControllerState};
 use qa_platform::sdl::{SdlEvent, SdlInputLease, SdlWindow};
 use thiserror::Error;
 
@@ -20,7 +20,10 @@ use super::bindings::ButtonSeat;
 use super::commands::CommandRegistry;
 use super::gamepad::{controller_axis_name, normalized_controller_axis, GamepadError, GamepadInput};
 use super::sdl_keys::{sdl_event_time, sdl_game_key};
-use super::{quake_mouse_button, BindingTable, ButtonSample, ButtonTiming, InputBindingTarget, InputButton, InputBinding, KeyCode, PhysicalInput, SeatFocus, SourceAction};
+use super::{
+    quake_mouse_button, BindingTable, ButtonSample, ButtonTiming, InputBinding, InputBindingTarget, InputButton,
+    KeyCode, PhysicalInput, SeatFocus, SourceAction,
+};
 
 /// Seat error.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -245,7 +248,11 @@ fn command_key(input: &PhysicalInput) -> i32 {
         PhysicalInput::Key(code) => *code,
         PhysicalInput::MouseButton(button) => KeyCode::Mouse1 as i32 + quake_mouse_button(*button) - 1,
         PhysicalInput::ControllerButton { device, button } => 65536 + device * 64 + button,
-        PhysicalInput::ControllerAxis { device, axis, direction } => {
+        PhysicalInput::ControllerAxis {
+            device,
+            axis,
+            direction,
+        } => {
             let index = match axis {
                 super::ControllerAxis::LeftX => 0,
                 super::ControllerAxis::LeftY => 1,
@@ -380,7 +387,11 @@ impl Seat {
             self.bindings.unbind(&binding.input);
             let input = match binding.input {
                 PhysicalInput::ControllerButton { button, .. } => PhysicalInput::ControllerButton { device, button },
-                PhysicalInput::ControllerAxis { axis, direction, .. } => PhysicalInput::ControllerAxis { device, axis, direction },
+                PhysicalInput::ControllerAxis { axis, direction, .. } => PhysicalInput::ControllerAxis {
+                    device,
+                    axis,
+                    direction,
+                },
                 other => other,
             };
             self.bindings.bind(InputBinding {
@@ -511,7 +522,11 @@ impl Seat {
             }
             if let Some(rest) = segment.strip_prefix('+') {
                 commands.append(
-                    &format!("{} {key} {}\n", if down { format!("+{rest}") } else { format!("-{rest}") }, now_ms.trunc() as i64),
+                    &format!(
+                        "{} {key} {}\n",
+                        if down { format!("+{rest}") } else { format!("-{rest}") },
+                        now_ms.trunc() as i64
+                    ),
                     &self.seat,
                 );
                 had_button = true;
@@ -521,7 +536,14 @@ impl Seat {
         }
     }
 
-    fn digital(&mut self, input: PhysicalInput, down: bool, time_ms: f64, consumed: bool, commands: &mut dyn CommandRegistry) {
+    fn digital(
+        &mut self,
+        input: PhysicalInput,
+        down: bool,
+        time_ms: f64,
+        consumed: bool,
+        commands: &mut dyn CommandRegistry,
+    ) {
         let key = super::physical_input_key(&input);
         if down {
             if self.held.contains_key(&key) {
@@ -569,9 +591,17 @@ impl Seat {
                 self.digital(PhysicalInput::Key(*code), *down, time, consumed, commands);
             }
             SeatInputEvent::MouseButton { button, down, .. } => {
-                self.digital(PhysicalInput::MouseButton(i32::from(*button)), *down, time, consumed, commands);
+                self.digital(
+                    PhysicalInput::MouseButton(i32::from(*button)),
+                    *down,
+                    time,
+                    consumed,
+                    commands,
+                );
             }
-            SeatInputEvent::ControllerButton { device, button, down, .. } => {
+            SeatInputEvent::ControllerButton {
+                device, button, down, ..
+            } => {
                 self.digital(
                     PhysicalInput::ControllerButton {
                         device: *device,
@@ -583,13 +613,19 @@ impl Seat {
                     commands,
                 );
             }
-            SeatInputEvent::ControllerAxis { device, axis, value, .. } => {
+            SeatInputEvent::ControllerAxis {
+                device, axis, value, ..
+            } => {
                 self.gamepad.preview_axis(*axis, *value);
                 if !consumed && self.focus == SeatFocus::Game {
                     self.gamepad.axis(*axis, *value);
                 }
                 for direction in [super::AxisDirection::Negative, super::AxisDirection::Positive] {
-                    let deflected = if direction == super::AxisDirection::Positive { *value } else { -*value };
+                    let deflected = if direction == super::AxisDirection::Positive {
+                        *value
+                    } else {
+                        -*value
+                    };
                     self.digital(
                         PhysicalInput::ControllerAxis {
                             device: *device,
@@ -610,7 +646,11 @@ impl Seat {
                 }
             }
             SeatInputEvent::MouseWheel { delta, .. } => {
-                let code = if delta.1 > 0.0 { KeyCode::MouseWheelUp as i32 } else { KeyCode::MouseWheelDown as i32 };
+                let code = if delta.1 > 0.0 {
+                    KeyCode::MouseWheelUp as i32
+                } else {
+                    KeyCode::MouseWheelDown as i32
+                };
                 for _ in 0..delta.1.abs().floor().max(0.0) as i64 {
                     self.digital(PhysicalInput::Key(code), true, time, consumed, commands);
                     self.digital(PhysicalInput::Key(code), false, time, consumed, commands);
@@ -636,9 +676,8 @@ impl Seat {
             .held
             .iter()
             .filter(|(_, held)| match &held.input {
-                PhysicalInput::ControllerButton { device: owned, .. } | PhysicalInput::ControllerAxis { device: owned, .. } => {
-                    *owned == device
-                }
+                PhysicalInput::ControllerButton { device: owned, .. }
+                | PhysicalInput::ControllerAxis { device: owned, .. } => *owned == device,
                 _ => false,
             })
             .map(|(key, held)| (key.clone(), held.clone()))
@@ -741,7 +780,12 @@ pub trait RouterControllers {
     /// Route assignment slots.
     fn set_assignments(&mut self, selections: &[ControllerSelection]) -> Result<(), RouterError>;
     /// Enable a controller sensor.
-    fn set_sensor_enabled(&mut self, instance: i32, sensor: ControllerSensor, enabled: bool) -> Result<ControllerOperationResult, RouterError>;
+    fn set_sensor_enabled(
+        &mut self,
+        instance: i32,
+        sensor: ControllerSensor,
+        enabled: bool,
+    ) -> Result<ControllerOperationResult, RouterError>;
     /// Pump controller events.
     fn poll_events(&mut self) -> Result<Vec<ControllerEvent>, RouterError>;
     /// Snapshot live axes and buttons.
@@ -818,8 +862,15 @@ impl RouterControllers for SdlRouterControllers {
         self.controllers.set_assignments(selections).map_err(platform)
     }
 
-    fn set_sensor_enabled(&mut self, instance: i32, sensor: ControllerSensor, enabled: bool) -> Result<ControllerOperationResult, RouterError> {
-        self.controllers.set_sensor_enabled(instance, sensor, enabled).map_err(platform)
+    fn set_sensor_enabled(
+        &mut self,
+        instance: i32,
+        sensor: ControllerSensor,
+        enabled: bool,
+    ) -> Result<ControllerOperationResult, RouterError> {
+        self.controllers
+            .set_sensor_enabled(instance, sensor, enabled)
+            .map_err(platform)
     }
 
     fn poll_events(&mut self) -> Result<Vec<ControllerEvent>, RouterError> {
@@ -898,7 +949,10 @@ impl InputRouter {
         controller_operation: Option<ControllerOperationFn>,
     ) -> Result<Self, RouterError> {
         for (index, route) in routes.iter().enumerate() {
-            if routes[..index].iter().any(|previous| previous.seat.seat() == route.seat.seat()) {
+            if routes[..index]
+                .iter()
+                .any(|previous| previous.seat.seat() == route.seat.seat())
+            {
                 return Err(RouterError::DuplicateSeat);
             }
         }
@@ -925,7 +979,8 @@ impl InputRouter {
         };
         router.set_keyboard_seat(keyboard)?;
         if platform_active {
-            let selections: Vec<ControllerSelection> = router.routes.iter().map(|route| route.controller.clone()).collect();
+            let selections: Vec<ControllerSelection> =
+                router.routes.iter().map(|route| route.controller.clone()).collect();
             if let Some(controllers) = router.controllers.as_mut() {
                 controllers.set_assignments(&selections)?;
             }
@@ -940,7 +995,10 @@ impl InputRouter {
 
     /// Seat by id.
     pub fn seat(&self, id: &SeatId) -> Option<&Seat> {
-        self.routes.iter().find(|route| route.seat.seat() == id).map(|route| &route.seat)
+        self.routes
+            .iter()
+            .find(|route| route.seat.seat() == id)
+            .map(|route| &route.seat)
     }
 
     fn seat_index(&self, id: &SeatId) -> Option<usize> {
@@ -972,7 +1030,10 @@ impl InputRouter {
     /// Publish a new seat set.
     pub fn publish_seats(&mut self, routes: Vec<SeatRoute>, keyboard: Option<SeatId>) -> Result<(), RouterError> {
         for (index, route) in routes.iter().enumerate() {
-            if routes[..index].iter().any(|previous| previous.seat.seat() == route.seat.seat()) {
+            if routes[..index]
+                .iter()
+                .any(|previous| previous.seat.seat() == route.seat.seat())
+            {
                 return Err(RouterError::DuplicateSeat);
             }
         }
@@ -1062,7 +1123,10 @@ impl InputRouter {
                 self.keyboard = remap.get(&keyboard).copied();
             }
         }
-        let current = self.keyboard.and_then(|index| self.routes.get(index)).map(|route| route.seat.seat().clone());
+        let current = self
+            .keyboard
+            .and_then(|index| self.routes.get(index))
+            .map(|route| route.seat.seat().clone());
         if current.as_ref() != keyboard.as_ref() {
             self.set_keyboard_seat(keyboard)?;
         }
@@ -1072,7 +1136,9 @@ impl InputRouter {
     /// Keyboard seat id.
     #[must_use]
     pub fn keyboard_seat(&self) -> Option<SeatId> {
-        self.keyboard.and_then(|index| self.routes.get(index)).map(|route| route.seat.seat().clone())
+        self.keyboard
+            .and_then(|index| self.routes.get(index))
+            .map(|route| route.seat.seat().clone())
     }
 
     /// Controller selection for a seat.
@@ -1100,7 +1166,9 @@ impl InputRouter {
             return self.source_joystick;
         }
         for (instance, index) in &self.device_seats {
-            if Some(*instance) != self.source_joystick && self.routes.get(*index).is_some_and(|route| route.seat.seat() == id) {
+            if Some(*instance) != self.source_joystick
+                && self.routes.get(*index).is_some_and(|route| route.seat.seat() == id)
+            {
                 return Some(*instance);
             }
         }
@@ -1137,7 +1205,9 @@ impl InputRouter {
 
     /// Calibration state for a seat.
     pub fn gyro_calibration(&self, id: &SeatId) -> Result<super::gamepad::GyroCalibrationState, RouterError> {
-        self.seat(id).map(|seat| seat.gamepad.gyro_calibration()).ok_or(RouterError::BadGyroSeat)
+        self.seat(id)
+            .map(|seat| seat.gamepad.gyro_calibration())
+            .ok_or(RouterError::BadGyroSeat)
     }
 
     /// Begin gyro calibration for a seat.
@@ -1199,7 +1269,12 @@ impl InputRouter {
         let sensors: Vec<i32> = self.calibration_sensors.iter().copied().collect();
         for instance in sensors {
             let index = self.device_seats.get(&instance).copied();
-            if index.is_some_and(|index| matches!(self.routes[index].seat.gamepad.gyro_calibration(), super::gamepad::GyroCalibrationState::Calibrating { .. })) {
+            if index.is_some_and(|index| {
+                matches!(
+                    self.routes[index].seat.gamepad.gyro_calibration(),
+                    super::gamepad::GyroCalibrationState::Calibrating { .. }
+                )
+            }) {
                 continue;
             }
             self.calibration_sensors.remove(&instance);
@@ -1351,7 +1426,11 @@ impl InputRouter {
                 modifiers,
                 ..
             } => {
-                let code = self.keyboard_keys.get(&scancode).copied().unwrap_or_else(|| sdl_game_key(keycode, modifiers));
+                let code = self
+                    .keyboard_keys
+                    .get(&scancode)
+                    .copied()
+                    .unwrap_or_else(|| sdl_game_key(keycode, modifiers));
                 if code == 0 {
                     return Ok(());
                 }
@@ -1469,7 +1548,9 @@ impl InputRouter {
             | ControllerEvent::Touchpad { instance, .. }
             | ControllerEvent::Sensor { instance, .. }
             | ControllerEvent::Unrecognized { instance, .. } => Some(*instance),
-            ControllerEvent::Connected { .. } | ControllerEvent::Remapped { .. } | ControllerEvent::Assignment { .. } => None,
+            ControllerEvent::Connected { .. }
+            | ControllerEvent::Remapped { .. }
+            | ControllerEvent::Assignment { .. } => None,
         };
         let Some(instance) = instance else {
             (self.unhandled)(UnhandledEvent::Controller(event));
@@ -1560,15 +1641,29 @@ impl InputRouter {
 
     /// Pump window and controller events, then refresh snapshots.
     pub fn pump(&mut self) -> Result<(), RouterError> {
-        let window_events = self.window.as_mut().map(|window| window.poll_events()).transpose()?.unwrap_or_default();
+        let window_events = self
+            .window
+            .as_mut()
+            .map(|window| window.poll_events())
+            .transpose()?
+            .unwrap_or_default();
         for event in window_events {
             self.handle_platform(event)?;
         }
-        let controller_events = self.controllers.as_mut().map(|controllers| controllers.poll_events()).transpose()?.unwrap_or_default();
+        let controller_events = self
+            .controllers
+            .as_mut()
+            .map(|controllers| controllers.poll_events())
+            .transpose()?
+            .unwrap_or_default();
         for event in controller_events {
             self.handle_controller(event)?;
         }
-        let devices: Vec<(i32, usize)> = self.device_seats.iter().map(|(instance, index)| (*instance, *index)).collect();
+        let devices: Vec<(i32, usize)> = self
+            .device_seats
+            .iter()
+            .map(|(instance, index)| (*instance, *index))
+            .collect();
         for (instance, index) in devices {
             if Some(instance) == self.source_joystick {
                 continue;
@@ -1576,11 +1671,19 @@ impl InputRouter {
             if !self.routes[index].seat.focused() || *self.routes[index].seat.focus() != SeatFocus::Game {
                 continue;
             }
-            let snapshot = self.controllers.as_mut().map(|controllers| controllers.snapshot(instance)).transpose()?.flatten();
+            let snapshot = self
+                .controllers
+                .as_mut()
+                .map(|controllers| controllers.snapshot(instance))
+                .transpose()?
+                .flatten();
             if let Some(snapshot) = snapshot {
                 for (number, value) in snapshot.axes.iter().enumerate() {
                     if let Some(axis) = controller_axis_name(number as u8) {
-                        self.routes[index].seat.gamepad.axis(axis, normalized_controller_axis(axis, *value));
+                        self.routes[index]
+                            .seat
+                            .gamepad
+                            .axis(axis, normalized_controller_axis(axis, *value));
                     }
                 }
             }
@@ -1603,12 +1706,18 @@ impl InputRouter {
         self.keyboard_keys.clear();
         self.controller_seats = (0..self.routes.len()).map(Some).collect();
         if self.platform_active {
-            let selections: Vec<ControllerSelection> = self.routes.iter().map(|route| route.controller.clone()).collect();
+            let selections: Vec<ControllerSelection> =
+                self.routes.iter().map(|route| route.controller.clone()).collect();
             if let Some(controllers) = self.controllers.as_mut() {
                 controllers.set_assignments(&selections)?;
             }
         }
-        let assignments = self.controllers.as_mut().map(|controllers| controllers.assignments()).transpose()?.unwrap_or_default();
+        let assignments = self
+            .controllers
+            .as_mut()
+            .map(|controllers| controllers.assignments())
+            .transpose()?
+            .unwrap_or_default();
         for (slot, instance) in assignments.iter().enumerate() {
             if let (Some(instance), Some(route)) = (instance, self.routes.get_mut(slot)) {
                 if self.platform_active {
@@ -1743,7 +1852,12 @@ mod tests {
             Ok(())
         }
 
-        fn set_sensor_enabled(&mut self, instance: i32, _sensor: ControllerSensor, enabled: bool) -> Result<ControllerOperationResult, RouterError> {
+        fn set_sensor_enabled(
+            &mut self,
+            instance: i32,
+            _sensor: ControllerSensor,
+            enabled: bool,
+        ) -> Result<ControllerOperationResult, RouterError> {
             self.sensors.push((instance, enabled));
             Ok(ControllerOperationResult::Accepted)
         }
@@ -1815,7 +1929,10 @@ mod tests {
         let frame = seat.sample(20.0, 10.0).unwrap();
         assert_eq!(frame.mouse, vec2(4.0, -2.0));
         assert_eq!(frame.any_key_down, 2);
-        assert!(frame.buttons.iter().any(|button| button.action == SourceAction::Action(InputAction::Attack) && button.active));
+        assert!(frame
+            .buttons
+            .iter()
+            .any(|button| button.action == SourceAction::Action(InputAction::Attack) && button.active));
         assert!(seat.sample(20.0, 0.0).is_err());
         seat.release(30.0, &mut commands);
         assert!(!seat.has_held_input());
@@ -1897,7 +2014,12 @@ mod tests {
             None,
         )
         .unwrap();
-        router.attach_window(Box::new(FakeWindow { events: Vec::new(), relative: false })).unwrap();
+        router
+            .attach_window(Box::new(FakeWindow {
+                events: Vec::new(),
+                relative: false,
+            }))
+            .unwrap();
         router
             .handle_platform(SdlEvent::Key {
                 timestamp: 990,
@@ -1938,11 +2060,11 @@ mod tests {
             })
             .unwrap();
         assert!(router.seat(&first).unwrap().is_down(&PhysicalInput::MouseButton(1)));
-        router
-            .handle_platform(SdlEvent::Quit { timestamp: 994 })
-            .unwrap();
+        router.handle_platform(SdlEvent::Quit { timestamp: 994 }).unwrap();
         assert_eq!(dropped.borrow().len(), 1);
-        router.retain_seats(std::slice::from_ref(&first), Some(first.clone())).unwrap();
+        router
+            .retain_seats(std::slice::from_ref(&first), Some(first.clone()))
+            .unwrap();
         assert_eq!(router.seats().len(), 1);
         assert_eq!(router.keyboard_seat(), Some(first));
         router.close().unwrap();
@@ -1975,7 +2097,10 @@ mod tests {
         .unwrap();
         router.restart().unwrap();
         assert_eq!(router.controller_for(&id), Some(5));
-        assert_eq!(router.begin_gyro_calibration(&id).unwrap(), ControllerOperationResult::Accepted);
+        assert_eq!(
+            router.begin_gyro_calibration(&id).unwrap(),
+            ControllerOperationResult::Accepted
+        );
         assert!(matches!(
             router.gyro_calibration(&id).unwrap(),
             crate::input::gamepad::GyroCalibrationState::Calibrating { .. }
@@ -1989,7 +2114,10 @@ mod tests {
                 down: true,
             })
             .unwrap();
-        assert!(router.seat(&id).unwrap().is_down(&PhysicalInput::ControllerButton { device: 5, button: 0 }));
+        assert!(router
+            .seat(&id)
+            .unwrap()
+            .is_down(&PhysicalInput::ControllerButton { device: 5, button: 0 }));
         router
             .handle_controller(ControllerEvent::Disconnected {
                 timestamp: 991,

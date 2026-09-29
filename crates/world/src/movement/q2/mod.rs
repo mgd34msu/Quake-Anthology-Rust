@@ -5,8 +5,8 @@
 
 use std::cell::RefCell;
 
-use qa_core::identity::{ProviderId, same_actor};
-use qa_core::math::{Bounds, Plane, Vec3, vec3};
+use qa_core::identity::{same_actor, ProviderId};
+use qa_core::math::{vec3, Bounds, Plane, Vec3};
 use qa_core::time::SourceTime;
 
 pub mod classic;
@@ -19,27 +19,23 @@ pub mod view;
 
 pub use classic::pmove_classic;
 pub use dimensions::Q2_PLAYER_BOUNDS;
-pub use rerelease::{Q2RereleaseMovementContext, create_rerelease_movement, pmove_rerelease};
-pub use types::{
-    ClassicPmove, KexPmove, PmConfig, TraceT, button, kex_pm_type, pm_flags, pm_type, water_level,
-};
+pub use rerelease::{create_rerelease_movement, pmove_rerelease, Q2RereleaseMovementContext};
+pub use types::{button, kex_pm_type, pm_flags, pm_type, water_level, ClassicPmove, KexPmove, PmConfig, TraceT};
 
 use super::client_outputs::{client_movement_mode, client_movement_type, client_stance_command};
 use super::types::{
-    MovementContinuation, MovementDialect, MovementEffect, MovementError, MovementExecution,
-    MovementInputContinuation, MovementOutcome, MovementResultFields, OrderedMovementEffect,
-    TouchSurface, TraceContact, TraceHit, TraceShape, UserCommand,
+    MovementContinuation, MovementDialect, MovementEffect, MovementError, MovementExecution, MovementInputContinuation,
+    MovementOutcome, MovementResultFields, OrderedMovementEffect, TouchSurface, TraceContact, TraceHit, TraceShape,
+    UserCommand,
 };
 use dimensions::command_duration;
+use types::{pm_flags as flags, pm_type as classic_type, Q2MovementServices};
 use types::{
-    CPlane, CSurface, ClassicPmoveCmd, ClassicPmoveState, KexPmoveCmd, KexPmoveState, KexTouchList,
-    MASK_CLASSIC_PLAYERSOLID, MovementEntity, Q2ContentsQuery, Q2MovementContact,
-    Q2MovementInput, Q2MovementResult, Q2MovementState, Q2RereleaseMovementInput,
-    Q2RereleaseMovementResult, Q2RereleaseMovementState, Q2RereleasePresentation, Q2SourceTrace,
-    Q2State, Q2Surface, Q2TouchContact, Q2Trace, Q2TracePlane, Q2TraceQuery, SrcVec3,
-    PM_CONFIG_DEFAULT,
+    CPlane, CSurface, ClassicPmoveCmd, ClassicPmoveState, KexPmoveCmd, KexPmoveState, KexTouchList, MovementEntity,
+    Q2ContentsQuery, Q2MovementContact, Q2MovementInput, Q2MovementResult, Q2MovementState, Q2RereleaseMovementInput,
+    Q2RereleaseMovementResult, Q2RereleaseMovementState, Q2RereleasePresentation, Q2SourceTrace, Q2State, Q2Surface,
+    Q2TouchContact, Q2Trace, Q2TracePlane, Q2TraceQuery, SrcVec3, MASK_CLASSIC_PLAYERSOLID, PM_CONFIG_DEFAULT,
 };
-use types::{Q2MovementServices, pm_flags as flags, pm_type as classic_type};
 
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 
@@ -183,9 +179,10 @@ fn contact_trace(trace: &TraceT) -> Q2Trace {
                 contents: trace.contents,
                 surface: trace.surface.as_ref().map(Q2Surface::from),
                 source_plane: plane,
-                secondary: trace.surface2.as_ref().map(|surface| {
-                    (scene_plane(&trace.plane2), Some(Q2Surface::from(surface)))
-                }),
+                secondary: trace
+                    .surface2
+                    .as_ref()
+                    .map(|surface| (scene_plane(&trace.plane2), Some(Q2Surface::from(surface)))),
             }
         }
     }
@@ -271,8 +268,7 @@ fn touch_contacts<S: Q2MovementServices>(
             MovementContinuation::Continue(next) => {
                 let same = matches!(
                     (&state, &next),
-                    (Q2State::Classic(_), Q2State::Classic(_))
-                        | (Q2State::Rerelease(_), Q2State::Rerelease(_))
+                    (Q2State::Classic(_), Q2State::Classic(_)) | (Q2State::Rerelease(_), Q2State::Rerelease(_))
                 );
                 if !same {
                     return Err(MovementError::Contract(
@@ -292,9 +288,8 @@ fn move_q2_classic_physics<S: Q2MovementServices>(
 ) -> Result<Q2MovementResult, MovementError> {
     let output = input.fields.environment.client_outputs;
     let mode = client_movement_mode(output.as_ref(), input.fields.environment.health);
-    let command =
-        client_stance_command(UserCommand::Q2Classic(input.command), output.and_then(|o| o.stance))
-            .map_err(|error| MovementError::Contract(error.0))?;
+    let command = client_stance_command(UserCommand::Q2Classic(input.command), output.and_then(|o| o.stance))
+        .map_err(|error| MovementError::Contract(error.0))?;
     let UserCommand::Q2Classic(command) = command else {
         return Err(MovementError::Contract("Client output changed movement dialect"));
     };
@@ -302,7 +297,9 @@ fn move_q2_classic_physics<S: Q2MovementServices>(
     command_duration(input.command.milliseconds)?;
     let n = services.numeric();
     let pose = input.fields.environment.pose;
-    let body = pose.map(|pose| pose.bounds).unwrap_or_else(|| body_bounds(&input.fields.shape));
+    let body = pose
+        .map(|pose| pose.bounds)
+        .unwrap_or_else(|| body_bounds(&input.fields.shape));
     let adapter = RefCell::new(TraceAdapter {
         services,
         entities: Vec::new(),
@@ -355,7 +352,9 @@ fn move_q2_classic_physics<S: Q2MovementServices>(
             (None, Some(bounds)) => Some(bounds),
         },
         trace: Box::new(|start, mins, maxs, end| {
-            adapter.borrow_mut().trace(start, mins, maxs, end, MASK_CLASSIC_PLAYERSOLID, false)
+            adapter
+                .borrow_mut()
+                .trace(start, mins, maxs, end, MASK_CLASSIC_PLAYERSOLID, false)
         }),
         pointcontents: Box::new(|point| adapter.borrow_mut().pointcontents(point)),
     };
@@ -430,14 +429,11 @@ pub fn move_q2_classic<S: Q2MovementServices>(
     }
     let mut frame = input.fields.frame.clone();
     frame.elapsed = SourceTime::Milliseconds(input.command.milliseconds);
-    let before = services
-        .input_application()
-        .expect("input application present")
-        .begin(
-            UserCommand::Q2Classic(input.command),
-            &frame,
-            Q2State::Classic(input.state),
-        );
+    let before = services.input_application().expect("input application present").begin(
+        UserCommand::Q2Classic(input.command),
+        &frame,
+        Q2State::Classic(input.state),
+    );
     let result = match before {
         MovementInputContinuation::ActorRemoved => MovementOutcome::ActorRemoved {
             actor: input.fields.actor.id().clone(),
@@ -445,39 +441,49 @@ pub fn move_q2_classic<S: Q2MovementServices>(
             effects: Vec::new(),
         },
         MovementInputContinuation::Continue { state, command } => {
-            let (UserCommand::Q2Classic(command), Q2State::Classic(state)) = (command, state)
-            else {
-                services
-                    .input_application()
-                    .expect("input application present")
-                    .end(Q2State::Classic(input.state), true, None);
-                return Err(MovementError::Contract("Input callback changed Quake II movement family"));
+            let (UserCommand::Q2Classic(command), Q2State::Classic(state)) = (command, state) else {
+                services.input_application().expect("input application present").end(
+                    Q2State::Classic(input.state),
+                    true,
+                    None,
+                );
+                return Err(MovementError::Contract(
+                    "Input callback changed Quake II movement family",
+                ));
             };
-            match move_q2_classic_physics(Q2MovementInput { command, state, ..input.clone() }, services) {
+            match move_q2_classic_physics(
+                Q2MovementInput {
+                    command,
+                    state,
+                    ..input.clone()
+                },
+                services,
+            ) {
                 Ok(result) => result,
                 Err(error) => {
-                    services
-                        .input_application()
-                        .expect("input application present")
-                        .end(Q2State::Classic(input.state), true, None);
+                    services.input_application().expect("input application present").end(
+                        Q2State::Classic(input.state),
+                        true,
+                        None,
+                    );
                     return Err(error);
                 }
             }
         }
     };
     let after = match &result {
-        MovementOutcome::Active { fields, state } => services
-            .input_application()
-            .expect("input application present")
-            .end(
+        MovementOutcome::Active { fields, state } => {
+            services.input_application().expect("input application present").end(
                 Q2State::Classic(*state),
                 false,
                 Some((fields.bounds, fields.view_height)),
-            ),
-        MovementOutcome::ActorRemoved { .. } => services
-            .input_application()
-            .expect("input application present")
-            .end(Q2State::Classic(input.state), false, None),
+            )
+        }
+        MovementOutcome::ActorRemoved { .. } => services.input_application().expect("input application present").end(
+            Q2State::Classic(input.state),
+            false,
+            None,
+        ),
     };
     match after {
         MovementContinuation::ActorRemoved => Ok(MovementOutcome::ActorRemoved {
@@ -489,9 +495,15 @@ pub fn move_q2_classic<S: Q2MovementServices>(
             },
         }),
         MovementContinuation::Continue(state) => match result {
-            MovementOutcome::ActorRemoved { actor, command_sequence, effects } => {
-                Ok(MovementOutcome::ActorRemoved { actor, command_sequence, effects })
-            }
+            MovementOutcome::ActorRemoved {
+                actor,
+                command_sequence,
+                effects,
+            } => Ok(MovementOutcome::ActorRemoved {
+                actor,
+                command_sequence,
+                effects,
+            }),
             MovementOutcome::Active { fields, .. } => {
                 let Q2State::Classic(state) = state else {
                     return Err(MovementError::Contract(
@@ -511,11 +523,8 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
 ) -> Result<Q2RereleaseMovementResult, MovementError> {
     let output = input.fields.environment.client_outputs;
     let mode = client_movement_mode(output.as_ref(), input.fields.environment.health);
-    let command = client_stance_command(
-        UserCommand::Q2Rerelease(input.command),
-        output.and_then(|o| o.stance),
-    )
-    .map_err(|error| MovementError::Contract(error.0))?;
+    let command = client_stance_command(UserCommand::Q2Rerelease(input.command), output.and_then(|o| o.stance))
+        .map_err(|error| MovementError::Contract(error.0))?;
     let UserCommand::Q2Rerelease(command) = command else {
         return Err(MovementError::Contract("Client output changed movement dialect"));
     };
@@ -523,7 +532,9 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
     command_duration(input.command.milliseconds)?;
     let n = services.numeric();
     let pose = input.fields.environment.pose;
-    let body = pose.map(|pose| pose.bounds).unwrap_or_else(|| body_bounds(&input.fields.shape));
+    let body = pose
+        .map(|pose| pose.bounds)
+        .unwrap_or_else(|| body_bounds(&input.fields.shape));
     let adapter = RefCell::new(TraceAdapter {
         services,
         entities: Vec::new(),
@@ -554,7 +565,10 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
             server_frame: input.command.server_frame,
         },
         snapinitial: input.snap_initial,
-        touch: KexTouchList { num: 0, traces: Vec::new() },
+        touch: KexTouchList {
+            num: 0,
+            traces: Vec::new(),
+        },
         viewangles: [0.0, 0.0, 0.0],
         mins: source_vector(body.min),
         maxs: source_vector(body.max),
@@ -574,9 +588,7 @@ fn move_q2_rerelease_physics<S: Q2MovementServices>(
         trace: Box::new(|start, mins, maxs, end, _pass, mask| {
             adapter.borrow_mut().trace(start, mins, maxs, end, mask, false)
         }),
-        clip: Box::new(|start, mins, maxs, end, mask| {
-            adapter.borrow_mut().trace(start, mins, maxs, end, mask, true)
-        }),
+        clip: Box::new(|start, mins, maxs, end, mask| adapter.borrow_mut().trace(start, mins, maxs, end, mask, true)),
         pointcontents: Box::new(|point| adapter.borrow_mut().pointcontents(point)),
         viewoffset: source_vector(input.view_offset),
         screen_blend: [0.0, 0.0, 0.0, 0.0],
@@ -669,14 +681,11 @@ pub fn move_q2_rerelease<S: Q2MovementServices>(
     }
     let mut frame = input.fields.frame.clone();
     frame.elapsed = SourceTime::Milliseconds(input.command.milliseconds);
-    let before = services
-        .input_application()
-        .expect("input application present")
-        .begin(
-            UserCommand::Q2Rerelease(input.command),
-            &frame,
-            Q2State::Rerelease(input.state),
-        );
+    let before = services.input_application().expect("input application present").begin(
+        UserCommand::Q2Rerelease(input.command),
+        &frame,
+        Q2State::Rerelease(input.state),
+    );
     let result = match before {
         MovementInputContinuation::ActorRemoved => Q2RereleaseMovementResult::ActorRemoved {
             actor: input.fields.actor.id().clone(),
@@ -684,62 +693,70 @@ pub fn move_q2_rerelease<S: Q2MovementServices>(
             effects: Vec::new(),
         },
         MovementInputContinuation::Continue { state, command } => {
-            let (UserCommand::Q2Rerelease(command), Q2State::Rerelease(state)) = (command, state)
-            else {
-                services
-                    .input_application()
-                    .expect("input application present")
-                    .end(Q2State::Rerelease(input.state), true, None);
-                return Err(MovementError::Contract("Input callback changed Quake II movement family"));
+            let (UserCommand::Q2Rerelease(command), Q2State::Rerelease(state)) = (command, state) else {
+                services.input_application().expect("input application present").end(
+                    Q2State::Rerelease(input.state),
+                    true,
+                    None,
+                );
+                return Err(MovementError::Contract(
+                    "Input callback changed Quake II movement family",
+                ));
             };
             match move_q2_rerelease_physics(
-                Q2RereleaseMovementInput { command, state, ..input.clone() },
+                Q2RereleaseMovementInput {
+                    command,
+                    state,
+                    ..input.clone()
+                },
                 services,
                 context,
             ) {
                 Ok(result) => result,
                 Err(error) => {
-                    services
-                        .input_application()
-                        .expect("input application present")
-                        .end(Q2State::Rerelease(input.state), true, None);
+                    services.input_application().expect("input application present").end(
+                        Q2State::Rerelease(input.state),
+                        true,
+                        None,
+                    );
                     return Err(error);
                 }
             }
         }
     };
     let after = match &result {
-        Q2RereleaseMovementResult::Active { fields, state, .. } => services
-            .input_application()
-            .expect("input application present")
-            .end(
+        Q2RereleaseMovementResult::Active { fields, state, .. } => {
+            services.input_application().expect("input application present").end(
                 Q2State::Rerelease(*state),
                 false,
                 Some((fields.bounds, fields.view_height)),
-            ),
+            )
+        }
         Q2RereleaseMovementResult::ActorRemoved { .. } => services
             .input_application()
             .expect("input application present")
             .end(Q2State::Rerelease(input.state), false, None),
     };
     match (after, result) {
-        (MovementContinuation::ActorRemoved, result) => {
-            Ok(Q2RereleaseMovementResult::ActorRemoved {
-                actor: input.fields.actor.id().clone(),
-                command_sequence: input.fields.command_sequence,
-                effects: match result {
-                    Q2RereleaseMovementResult::Active { fields, .. } => fields.effects,
-                    Q2RereleaseMovementResult::ActorRemoved { effects, .. } => effects,
-                },
-            })
-        }
+        (MovementContinuation::ActorRemoved, result) => Ok(Q2RereleaseMovementResult::ActorRemoved {
+            actor: input.fields.actor.id().clone(),
+            command_sequence: input.fields.command_sequence,
+            effects: match result {
+                Q2RereleaseMovementResult::Active { fields, .. } => fields.effects,
+                Q2RereleaseMovementResult::ActorRemoved { effects, .. } => effects,
+            },
+        }),
         (MovementContinuation::Continue(_), result @ Q2RereleaseMovementResult::ActorRemoved { .. }) => Ok(result),
         (
             MovementContinuation::Continue(state),
-            Q2RereleaseMovementResult::Active { fields, presentation, .. },
+            Q2RereleaseMovementResult::Active {
+                fields, presentation, ..
+            },
         ) => {
             let Q2State::Rerelease(state) = state else {
-                return Err(MovementError::Contract("Input callback changed Quake II movement family"));
+                return Err(MovementError::Contract(
+                    "Input callback changed Quake II movement family",
+                ));
             };
             Ok(Q2RereleaseMovementResult::Active {
                 fields,
@@ -841,15 +858,11 @@ pub fn apply_q2_movement_contacts<S: Q2MovementServices>(
             command_sequence: fields.command_sequence,
             effects,
         }),
-        MovementContinuation::Continue(Q2State::Classic(state)) => {
-            Ok(MovementOutcome::Active {
-                fields: MovementResultFields { effects, ..fields },
-                state,
-            })
-        }
-        MovementContinuation::Continue(_) => Err(MovementError::Contract(
-            "Q2 contacts changed the movement family",
-        )),
+        MovementContinuation::Continue(Q2State::Classic(state)) => Ok(MovementOutcome::Active {
+            fields: MovementResultFields { effects, ..fields },
+            state,
+        }),
+        MovementContinuation::Continue(_) => Err(MovementError::Contract("Q2 contacts changed the movement family")),
     }
 }
 
@@ -868,7 +881,12 @@ pub fn apply_q2_rerelease_contacts<S: Q2MovementServices>(
             "Q2 contact result does not belong to this movement input",
         ));
     }
-    let Q2RereleaseMovementResult::Active { fields, state, presentation } = result else {
+    let Q2RereleaseMovementResult::Active {
+        fields,
+        state,
+        presentation,
+    } = result
+    else {
         return Ok(result);
     };
     let mut effects = fields.effects.clone();
@@ -887,16 +905,12 @@ pub fn apply_q2_rerelease_contacts<S: Q2MovementServices>(
             command_sequence: fields.command_sequence,
             effects,
         }),
-        MovementContinuation::Continue(Q2State::Rerelease(state)) => {
-            Ok(Q2RereleaseMovementResult::Active {
-                fields: MovementResultFields { effects, ..fields },
-                state,
-                presentation,
-            })
-        }
-        MovementContinuation::Continue(_) => Err(MovementError::Contract(
-            "Q2 contacts changed the movement family",
-        )),
+        MovementContinuation::Continue(Q2State::Rerelease(state)) => Ok(Q2RereleaseMovementResult::Active {
+            fields: MovementResultFields { effects, ..fields },
+            state,
+            presentation,
+        }),
+        MovementContinuation::Continue(_) => Err(MovementError::Contract("Q2 contacts changed the movement family")),
     }
 }
 
@@ -953,11 +967,7 @@ mod tests {
         fn point_contents(&mut self, _query: Q2ContentsQuery) -> (i32, i32) {
             (self.contents, self.contents)
         }
-        fn touch(
-            &mut self,
-            _contact: Q2TouchContact,
-            state: Q2State,
-        ) -> MovementContinuation<Q2State> {
+        fn touch(&mut self, _contact: Q2TouchContact, state: Q2State) -> MovementContinuation<Q2State> {
             self.touches += 1;
             MovementContinuation::Continue(state)
         }
@@ -1109,7 +1119,11 @@ mod tests {
         let mut context = Q2RereleaseMovementContext::new();
         let result = move_q2_rerelease(rerelease_input(), &mut services, &mut context).unwrap();
         match result {
-            Q2RereleaseMovementResult::Active { state, presentation, fields } => {
+            Q2RereleaseMovementResult::Active {
+                state,
+                presentation,
+                fields,
+            } => {
                 assert!(state.velocity.y > 0.0);
                 assert!(!presentation.jump_sound);
                 assert_eq!(fields.view_height, 22.0);

@@ -92,7 +92,11 @@ pub fn parse_bnvib(bytes: &[u8]) -> Result<BnvibPattern, HapticError> {
         Some(BnvibLoop {
             start_sample: reader.u32().map_err(truncated)?,
             end_sample: reader.u32().map_err(truncated)?,
-            interval_samples: if size == 16 { reader.u32().map_err(truncated)? } else { 0 },
+            interval_samples: if size == 16 {
+                reader.u32().map_err(truncated)?
+            } else {
+                0
+            },
         })
     };
     let data_size = reader.u32().map_err(truncated)?;
@@ -297,7 +301,13 @@ impl SeatHaptics {
     /// Haptics for a seat. The rumble backend routes through the
     /// seat's current controller.
     #[must_use]
-    pub fn new(seat: SeatId, controller: HapticsController, load: HapticsLoader, now: HapticsClock, rumble: HapticsRumble) -> Self {
+    pub fn new(
+        seat: SeatId,
+        controller: HapticsController,
+        load: HapticsLoader,
+        now: HapticsClock,
+        rumble: HapticsRumble,
+    ) -> Self {
         let sink_device = std::rc::Rc::new(std::cell::RefCell::new(None));
         Self {
             scheduler: BnvibScheduler::new(Box::new(SinkRouter {
@@ -457,8 +467,14 @@ mod tests {
         assert_eq!(pattern.samples.len(), 2);
         assert_eq!(pattern.loop_region, None);
         assert!((bnvib_frequency(32) - 20.0).abs() < 1e-9);
-        assert_eq!(tactile_path_for_sound("#sound/shot.wav"), Some("tactile/sound/shot.bnvib".to_string()));
-        assert_eq!(tactile_path_for_sound("shot.wav"), Some("tactile/shot.bnvib".to_string()));
+        assert_eq!(
+            tactile_path_for_sound("#sound/shot.wav"),
+            Some("tactile/sound/shot.bnvib".to_string())
+        );
+        assert_eq!(
+            tactile_path_for_sound("shot.wav"),
+            Some("tactile/shot.bnvib".to_string())
+        );
         assert_eq!(tactile_path_for_sound("shot.ogg"), None);
         assert_eq!(parse_bnvib(&[5, 0, 0, 0]), Err(HapticError::BadMetadataSize(5)));
         let mut scheduler = BnvibScheduler::new(Box::new(FakeSink { calls: Vec::new() }));

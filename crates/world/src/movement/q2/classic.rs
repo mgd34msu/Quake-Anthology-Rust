@@ -4,17 +4,16 @@
 //! `pmove` sources via quake-2-re-ts and checked against the originals).
 
 use qa_core::math::Bounds;
-use qa_core::numeric::{Arithmetic, NumericOps, float_to_wrapped_i32};
+use qa_core::numeric::{float_to_wrapped_i32, Arithmetic, NumericOps};
 
+use super::super::swept_body::SweepStop;
 use super::dimensions::{accept_body_bounds, character_height};
 use super::math::{Q2Math, Q2MathEdition};
 use super::swept::sweep_q2_body;
-use super::super::swept_body::SweepStop;
 use super::types::{
-    ClassicPmove, CPlane, CSurface, SrcVec3, TraceT, AXES, CONTENTS_CURRENT_0,
-    CONTENTS_CURRENT_180, CONTENTS_CURRENT_270, CONTENTS_CURRENT_90, CONTENTS_CURRENT_DOWN,
-    CONTENTS_CURRENT_UP, CONTENTS_LADDER, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER,
-    MASK_CURRENT, MASK_WATER, MAXTOUCH, PITCH, STEPSIZE, pm_flags, pm_type,
+    pm_flags, pm_type, CPlane, CSurface, ClassicPmove, SrcVec3, TraceT, AXES, CONTENTS_CURRENT_0, CONTENTS_CURRENT_180,
+    CONTENTS_CURRENT_270, CONTENTS_CURRENT_90, CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LADDER,
+    CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, MASK_CURRENT, MASK_WATER, MAXTOUCH, PITCH, STEPSIZE,
 };
 use super::view::classic_view_angles;
 
@@ -133,8 +132,10 @@ impl ClassicRunner<'_, '_> {
         let origin = self.pml.origin;
         self.math.copy(origin, &mut up);
         let down_dist = self.n.add(
-            self.n.mul(self.n.sub(down_o[0], start_o[0]), self.n.sub(down_o[0], start_o[0])),
-            self.n.mul(self.n.sub(down_o[1], start_o[1]), self.n.sub(down_o[1], start_o[1])),
+            self.n
+                .mul(self.n.sub(down_o[0], start_o[0]), self.n.sub(down_o[0], start_o[0])),
+            self.n
+                .mul(self.n.sub(down_o[1], start_o[1]), self.n.sub(down_o[1], start_o[1])),
         );
         let up_dist = self.n.add(
             self.n.mul(self.n.sub(up[0], start_o[0]), self.n.sub(up[0], start_o[0])),
@@ -173,13 +174,17 @@ impl ClassicRunner<'_, '_> {
             } else {
                 speed
             };
-            drop = self.n.add(drop, self.n.mul(self.n.mul(control, self.pm_friction), self.pml.frametime));
+            drop = self.n.add(
+                drop,
+                self.n.mul(self.n.mul(control, self.pm_friction), self.pml.frametime),
+            );
         }
         if self.pm.waterlevel != 0 && !self.pml.ladder {
             drop = self.n.add(
                 drop,
                 self.n.mul(
-                    self.n.mul(self.n.mul(speed, self.pm_waterfriction), self.pm.waterlevel as f64),
+                    self.n
+                        .mul(self.n.mul(speed, self.pm_waterfriction), self.pm.waterlevel as f64),
                     self.pml.frametime,
                 ),
             );
@@ -205,9 +210,10 @@ impl ClassicRunner<'_, '_> {
             accelspeed = addspeed;
         }
         for i in AXES {
-            self.pml.velocity[i] = f64::from(self.n.store(
-                self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i])),
-            ));
+            self.pml.velocity[i] = f64::from(
+                self.n
+                    .store(self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i]))),
+            );
         }
     }
 
@@ -226,9 +232,10 @@ impl ClassicRunner<'_, '_> {
             accelspeed = addspeed;
         }
         for i in AXES {
-            self.pml.velocity[i] = f64::from(self.n.store(
-                self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i])),
-            ));
+            self.pml.velocity[i] = f64::from(
+                self.n
+                    .store(self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i]))),
+            );
         }
     }
 
@@ -314,13 +321,13 @@ impl ClassicRunner<'_, '_> {
                 self.n.mul(self.pml.right[i], smove),
             )));
         }
-        if self.pm.cmd.forwardmove == 0.0 && self.pm.cmd.sidemove == 0.0 && self.pm.cmd.upmove == 0.0
-        {
+        if self.pm.cmd.forwardmove == 0.0 && self.pm.cmd.sidemove == 0.0 && self.pm.cmd.upmove == 0.0 {
             wishvel[2] = f64::from(self.n.store(self.n.sub(wishvel[2], 60.0)));
         } else {
-            wishvel[2] = f64::from(self.n.store(
-                self.n.add(wishvel[2], self.equipment_speed(self.pm.cmd.upmove)),
-            ));
+            wishvel[2] = f64::from(
+                self.n
+                    .store(self.n.add(wishvel[2], self.equipment_speed(self.pm.cmd.upmove))),
+            );
         }
         self.add_currents(&mut wishvel);
         let mut wishdir = self.math.vec3(0.0, 0.0, 0.0);
@@ -368,16 +375,22 @@ impl ClassicRunner<'_, '_> {
             self.accelerate(wishdir, wishspeed, accelerate);
             if wishvel[2] == 0.0 {
                 if self.pml.velocity[2] > 0.0 {
-                    self.pml.velocity[2] = f64::from(self.n.store(
-                        self.n.sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
-                    ));
+                    self.pml.velocity[2] = f64::from(
+                        self.n.store(
+                            self.n
+                                .sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
+                        ),
+                    );
                     if self.pml.velocity[2] < 0.0 {
                         self.pml.velocity[2] = f64::from(self.n.store(0.0));
                     }
                 } else {
-                    self.pml.velocity[2] = f64::from(self.n.store(
-                        self.n.add(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
-                    ));
+                    self.pml.velocity[2] = f64::from(
+                        self.n.store(
+                            self.n
+                                .add(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
+                        ),
+                    );
                     if self.pml.velocity[2] > 0.0 {
                         self.pml.velocity[2] = f64::from(self.n.store(0.0));
                     }
@@ -391,9 +404,12 @@ impl ClassicRunner<'_, '_> {
             if self.pm.s.gravity > 0.0 {
                 self.pml.velocity[2] = f64::from(self.n.store(0.0));
             } else {
-                self.pml.velocity[2] = f64::from(self.n.store(
-                    self.n.sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
-                ));
+                self.pml.velocity[2] = f64::from(
+                    self.n.store(
+                        self.n
+                            .sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
+                    ),
+                );
             }
             if self.pml.velocity[0] == 0.0 && self.pml.velocity[1] == 0.0 {
                 return;
@@ -406,9 +422,12 @@ impl ClassicRunner<'_, '_> {
             } else {
                 self.accelerate(wishdir, wishspeed, 1.0);
             }
-            self.pml.velocity[2] = f64::from(self.n.store(
-                self.n.sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
-            ));
+            self.pml.velocity[2] = f64::from(
+                self.n.store(
+                    self.n
+                        .sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
+                ),
+            );
             self.step_slide_move();
         }
     }
@@ -431,16 +450,13 @@ impl ClassicRunner<'_, '_> {
             Self::copy_plane(&math, &mut self.pml.groundplane, &plane);
             self.pml.groundsurface = trace.surface.clone();
             self.pml.groundcontents = trace.contents;
-            if trace.ent.is_none()
-                || (trace.plane.normal[2] < 0.7 && !trace.startsolid)
-            {
+            if trace.ent.is_none() || (trace.plane.normal[2] < 0.7 && !trace.startsolid) {
                 self.pm.groundentity = None;
                 self.pm.s.pm_flags &= !pm_flags::ON_GROUND;
             } else {
                 self.pm.groundentity = trace.ent.clone();
                 if self.pm.s.pm_flags & pm_flags::TIME_WATERJUMP != 0 {
-                    self.pm.s.pm_flags &=
-                        !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT);
+                    self.pm.s.pm_flags &= !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT);
                     self.pm.s.pm_time = 0;
                 }
                 if self.pm.s.pm_flags & pm_flags::ON_GROUND == 0 {
@@ -467,24 +483,31 @@ impl ClassicRunner<'_, '_> {
         self.pm.watertype = 0;
         let sample2 = self.n.sub(self.pm.viewheight, self.pm.mins[2]).trunc() as i32;
         let sample1 = (self.n.div(sample2 as f64, 2.0)) as i32;
-        point[2] = f64::from(self.n.store(
-            self.n.add(self.n.add(self.pml.origin[2], self.pm.mins[2]), 1.0),
-        ));
+        point[2] = f64::from(
+            self.n
+                .store(self.n.add(self.n.add(self.pml.origin[2], self.pm.mins[2]), 1.0)),
+        );
         let point_copy = point;
         let mut cont = (self.pm.pointcontents)(point_copy);
         if cont & MASK_WATER != 0 {
             self.pm.watertype = cont;
             self.pm.waterlevel = 1;
-            point[2] = f64::from(self.n.store(
-                self.n.add(self.n.add(self.pml.origin[2], self.pm.mins[2]), sample1 as f64),
-            ));
+            point[2] = f64::from(
+                self.n.store(
+                    self.n
+                        .add(self.n.add(self.pml.origin[2], self.pm.mins[2]), sample1 as f64),
+                ),
+            );
             let point_copy = point;
             cont = (self.pm.pointcontents)(point_copy);
             if cont & MASK_WATER != 0 {
                 self.pm.waterlevel = 2;
-                point[2] = f64::from(self.n.store(
-                    self.n.add(self.n.add(self.pml.origin[2], self.pm.mins[2]), sample2 as f64),
-                ));
+                point[2] = f64::from(
+                    self.n.store(
+                        self.n
+                            .add(self.n.add(self.pml.origin[2], self.pm.mins[2]), sample2 as f64),
+                    ),
+                );
                 let point_copy = point;
                 cont = (self.pm.pointcontents)(point_copy);
                 if cont & MASK_WATER != 0 {
@@ -527,8 +550,7 @@ impl ClassicRunner<'_, '_> {
         }
         self.pm.s.pm_flags |= pm_flags::JUMP_HELD;
         self.pm.groundentity = None;
-        self.pml.velocity[2] =
-            f64::from(self.n.store(self.n.add(self.pml.velocity[2], 270.0)));
+        self.pml.velocity[2] = f64::from(self.n.store(self.n.add(self.pml.velocity[2], 270.0)));
         if self.pml.velocity[2] < 270.0 {
             self.pml.velocity[2] = f64::from(self.n.store(270.0));
         }
@@ -617,9 +639,10 @@ impl ClassicRunner<'_, '_> {
                 self.n.mul(self.pml.right[i], smove),
             )));
         }
-        wishvel[2] = f64::from(self.n.store(
-            self.n.add(wishvel[2], self.equipment_speed(self.pm.cmd.upmove)),
-        ));
+        wishvel[2] = f64::from(
+            self.n
+                .store(self.n.add(wishvel[2], self.equipment_speed(self.pm.cmd.upmove))),
+        );
         let mut wishdir = self.math.vec3(0.0, 0.0, 0.0);
         self.math.copy(wishvel, &mut wishdir);
         let mut wishspeed = self.math.normalize(&mut wishdir);
@@ -633,12 +656,15 @@ impl ClassicRunner<'_, '_> {
         if addspeed <= 0.0 && !doclip {
             return;
         }
-        let accelspeed =
-            self.n.mul(self.n.mul(self.pm_accelerate, self.pml.frametime), wishspeed).clamp(0.0, addspeed.max(0.0));
+        let accelspeed = self
+            .n
+            .mul(self.n.mul(self.pm_accelerate, self.pml.frametime), wishspeed)
+            .clamp(0.0, addspeed.max(0.0));
         for i in AXES {
-            self.pml.velocity[i] = f64::from(self.n.store(
-                self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i])),
-            ));
+            self.pml.velocity[i] = f64::from(
+                self.n
+                    .store(self.n.add(self.pml.velocity[i], self.n.mul(accelspeed, wishdir[i]))),
+            );
         }
         if doclip {
             self.step_slide_move();
@@ -664,7 +690,10 @@ impl ClassicRunner<'_, '_> {
             self.pm.viewheight = character_height(&self.pm.character_bounds, 8.0, &self.n);
             return;
         }
-        self.pm.mins[2] = f64::from(self.n.store(character_height(&self.pm.character_bounds, -24.0, &self.n)));
+        self.pm.mins[2] = f64::from(
+            self.n
+                .store(character_height(&self.pm.character_bounds, -24.0, &self.n)),
+        );
         if self.pm.s.pm_type == pm_type::DEAD {
             self.pm.s.pm_flags |= pm_flags::DUCKED;
         } else if self.pm.cmd.upmove < 0.0 && self.pm.s.pm_flags & pm_flags::ON_GROUND != 0 {
@@ -674,8 +703,16 @@ impl ClassicRunner<'_, '_> {
             let origin = self.pml.origin;
             let (mins, maxs) = match self.pm.body_bounds {
                 Some(requested) => (
-                    [f64::from(requested.min.x), f64::from(requested.min.y), f64::from(requested.min.z)],
-                    [f64::from(requested.max.x), f64::from(requested.max.y), f64::from(requested.max.z)],
+                    [
+                        f64::from(requested.min.x),
+                        f64::from(requested.min.y),
+                        f64::from(requested.min.z),
+                    ],
+                    [
+                        f64::from(requested.max.x),
+                        f64::from(requested.max.y),
+                        f64::from(requested.max.z),
+                    ],
                 ),
                 None => (self.pm.mins, self.pm.maxs),
             };
@@ -701,8 +738,16 @@ impl ClassicRunner<'_, '_> {
         let bounds = accept_body_bounds(&previous, &requested, |bounds| {
             let trace = trace_fn(
                 origin,
-                [f64::from(bounds.min.x), f64::from(bounds.min.y), f64::from(bounds.min.z)],
-                [f64::from(bounds.max.x), f64::from(bounds.max.y), f64::from(bounds.max.z)],
+                [
+                    f64::from(bounds.min.x),
+                    f64::from(bounds.min.y),
+                    f64::from(bounds.min.z),
+                ],
+                [
+                    f64::from(bounds.max.x),
+                    f64::from(bounds.max.y),
+                    f64::from(bounds.max.z),
+                ],
                 origin,
             );
             !trace.allsolid
@@ -715,8 +760,16 @@ impl ClassicRunner<'_, '_> {
                 &self.n,
             );
         }
-        self.pm.mins = [f64::from(bounds.min.x), f64::from(bounds.min.y), f64::from(bounds.min.z)];
-        self.pm.maxs = [f64::from(bounds.max.x), f64::from(bounds.max.y), f64::from(bounds.max.z)];
+        self.pm.mins = [
+            f64::from(bounds.min.x),
+            f64::from(bounds.min.y),
+            f64::from(bounds.min.z),
+        ];
+        self.pm.maxs = [
+            f64::from(bounds.max.x),
+            f64::from(bounds.max.y),
+            f64::from(bounds.max.z),
+        ];
     }
 
     fn dead_move(&mut self) {
@@ -901,8 +954,7 @@ impl ClassicRunner<'_, '_> {
                 msec = 1;
             }
             if msec >= self.pm.s.pm_time {
-                self.pm.s.pm_flags &=
-                    !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT);
+                self.pm.s.pm_flags &= !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT);
                 self.pm.s.pm_time = 0;
             } else {
                 self.pm.s.pm_time = self.n.sub(self.pm.s.pm_time as f64, msec as f64) as i32;
@@ -910,12 +962,14 @@ impl ClassicRunner<'_, '_> {
         }
         if self.pm.s.pm_flags & pm_flags::TIME_TELEPORT != 0 {
         } else if self.pm.s.pm_flags & pm_flags::TIME_WATERJUMP != 0 {
-            self.pml.velocity[2] = f64::from(self.n.store(
-                self.n.sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
-            ));
+            self.pml.velocity[2] = f64::from(
+                self.n.store(
+                    self.n
+                        .sub(self.pml.velocity[2], self.n.mul(self.pm.s.gravity, self.pml.frametime)),
+                ),
+            );
             if self.pml.velocity[2] < 0.0 {
-                self.pm.s.pm_flags &=
-                    !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT);
+                self.pm.s.pm_flags &= !(pm_flags::TIME_WATERJUMP | pm_flags::TIME_LAND | pm_flags::TIME_TELEPORT);
                 self.pm.s.pm_time = 0;
             }
             self.step_slide_move();
@@ -1150,7 +1204,14 @@ mod tests {
                 open_trace(end)
             }
         });
-        pmove_classic(&mut pm, NumericOps::select(Q2_DONOR_PROFILE).unwrap(), 0.0, false, false, 1.0);
+        pmove_classic(
+            &mut pm,
+            NumericOps::select(Q2_DONOR_PROFILE).unwrap(),
+            0.0,
+            false,
+            false,
+            1.0,
+        );
         assert_eq!(pm.s.pm_flags & pm_flags::ON_GROUND, pm_flags::ON_GROUND);
         assert!(pm.s.velocity[1] > 0);
         assert_eq!(pm.viewheight, 22.0);
@@ -1181,7 +1242,14 @@ mod tests {
                 open_trace(end)
             }
         });
-        pmove_classic(&mut pm, NumericOps::select(Q2_DONOR_PROFILE).unwrap(), 0.0, false, false, 1.0);
+        pmove_classic(
+            &mut pm,
+            NumericOps::select(Q2_DONOR_PROFILE).unwrap(),
+            0.0,
+            false,
+            false,
+            1.0,
+        );
         assert_eq!(pm.s.pm_flags & pm_flags::JUMP_HELD, pm_flags::JUMP_HELD);
         // Jump launches at 270 then air-move gravity applies in the same frame.
         assert!(pm.s.velocity[2] > 200 * 8);
@@ -1192,7 +1260,14 @@ mod tests {
         let mut pm = fixture();
         pm.s.pm_flags = 0;
         pm.cmd.forwardmove = 0.0;
-        pmove_classic(&mut pm, NumericOps::select(Q2_DONOR_PROFILE).unwrap(), 0.0, false, false, 1.0);
+        pmove_classic(
+            &mut pm,
+            NumericOps::select(Q2_DONOR_PROFILE).unwrap(),
+            0.0,
+            false,
+            false,
+            1.0,
+        );
         assert!(pm.s.velocity[2] < 0);
     }
 
@@ -1200,7 +1275,14 @@ mod tests {
     fn spectator_flies_without_snapping_ground() {
         let mut pm = fixture();
         pm.s.pm_type = pm_type::SPECTATOR;
-        pmove_classic(&mut pm, NumericOps::select(Q2_DONOR_PROFILE).unwrap(), 0.0, false, false, 1.0);
+        pmove_classic(
+            &mut pm,
+            NumericOps::select(Q2_DONOR_PROFILE).unwrap(),
+            0.0,
+            false,
+            false,
+            1.0,
+        );
         assert!(pm.s.velocity[1] > 0);
     }
 

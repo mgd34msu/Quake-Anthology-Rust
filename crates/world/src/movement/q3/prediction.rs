@@ -3,12 +3,11 @@
 //! Donor provenance: `src/movement/q3/prediction.ts` (from id Software
 //! `code/cgame/cg_predict.c`).
 
-use qa_core::math::{Bounds, Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
 use qa_core::numeric::qvm_float_to_int;
 
 use super::super::types::{
-    ActorAnimationState, ArsenalState, MovementError, MovementExecution, OrderedMovementEffect,
-    Q3UserCommand, TraceHit,
+    ActorAnimationState, ArsenalState, MovementError, MovementExecution, OrderedMovementEffect, Q3UserCommand, TraceHit,
 };
 use super::constants::{move_flags, move_type};
 use super::provider::Q3MovementProvider;
@@ -208,10 +207,7 @@ pub trait Q3PredictionHost {
         physics_time_milliseconds: i32,
     ) -> Q3MovementInput;
     /// Movement services for a physics time.
-    fn movement_services(
-        &mut self,
-        physics_time_milliseconds: i32,
-    ) -> &mut dyn Q3MovementServices;
+    fn movement_services(&mut self, physics_time_milliseconds: i32) -> &mut dyn Q3MovementServices;
     /// Source item admission, teleport and jump-pad prediction after Pmove.
     fn touch_triggers(
         &mut self,
@@ -259,11 +255,7 @@ fn lerp_angle(from: f32, to: f32, fraction: f32) -> f32 {
 
 /// Update predicted view angles from the newest command.
 #[must_use]
-pub fn update_q3_prediction_view(
-    state: &Q3MovementState,
-    health: f64,
-    command: &Q3UserCommand,
-) -> Q3MovementState {
+pub fn update_q3_prediction_view(state: &Q3MovementState, health: f64, command: &Q3UserCommand) -> Q3MovementState {
     if state.movement_type == move_type::INTERMISSION
         || state.movement_type == move_type::SPINTERMISSION
         || (state.movement_type != move_type::SPECTATOR && health <= 0.0)
@@ -353,11 +345,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
         }
     }
 
-    fn interpolate(
-        &self,
-        frame: &Q3PredictionFrame,
-        grab_angles: bool,
-    ) -> Result<Q3PredictedActor, MovementError> {
+    fn interpolate(&self, frame: &Q3PredictionFrame, grab_angles: bool) -> Result<Q3PredictedActor, MovementError> {
         let previous = &frame.snapshot;
         let mut movement = previous.actor.movement.clone();
         if grab_angles {
@@ -370,9 +358,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
         let next = frame.next_snapshot.as_ref();
         if frame.next_frame_teleport
             || next.is_none()
-            || next.is_some_and(|next| {
-                next.server_time_milliseconds <= previous.server_time_milliseconds
-            })
+            || next.is_some_and(|next| next.server_time_milliseconds <= previous.server_time_milliseconds)
         {
             return Ok(Q3PredictedActor {
                 movement,
@@ -394,9 +380,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
             arsenal: previous.actor.arsenal.clone(),
             animation: previous.actor.animation.clone(),
             movement: Q3MovementState {
-                bob_cycle: qvm_float_to_int(
-                    a.bob_cycle as f32 + (fraction * (cycle - a.bob_cycle) as f32),
-                ),
+                bob_cycle: qvm_float_to_int(a.bob_cycle as f32 + (fraction * (cycle - a.bob_cycle) as f32)),
                 origin: interpolate_vector(a.origin, b.origin, fraction),
                 velocity: interpolate_vector(a.velocity, b.velocity, fraction),
                 view_angles: if grab_angles {
@@ -414,10 +398,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
     }
 
     /// Run one prediction frame.
-    pub fn predict(
-        &mut self,
-        frame: &Q3PredictionFrame,
-    ) -> Result<Q3PredictionOutput, MovementError> {
+    pub fn predict(&mut self, frame: &Q3PredictionFrame) -> Result<Q3PredictionOutput, MovementError> {
         let mut settings = self.host.settings();
         let snapshot = frame.snapshot.clone();
         if self.predicted.is_none() {
@@ -428,8 +409,8 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
             || settings.no_predict
             || settings.synchronous_clients
         {
-            let grab_angles = !settings.demo_playback
-                && snapshot.actor.movement.movement_flags & move_flags::FOLLOW == 0;
+            let grab_angles =
+                !settings.demo_playback && snapshot.actor.movement.movement_flags & move_flags::FOLLOW == 0;
             let actor = self.interpolate(frame, grab_angles)?;
             self.predicted = Some(actor.clone());
             return Ok(Q3PredictionOutput::Interpolated(Q3PredictionSuccess {
@@ -456,10 +437,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
             }));
         }
         let latest = self.required_command(current)?;
-        let selected = if frame.next_snapshot.is_some()
-            && !frame.next_frame_teleport
-            && !frame.this_frame_teleport
-        {
+        let selected = if frame.next_snapshot.is_some() && !frame.next_frame_teleport && !frame.this_frame_teleport {
             frame.next_snapshot.clone().expect("snapshot checked")
         } else {
             snapshot.clone()
@@ -485,22 +463,15 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
             if settings.fixed {
                 let predicted = self.predicted.clone().expect("predicted set");
                 self.predicted = Some(Q3PredictedActor {
-                    movement: update_q3_prediction_view(
-                        &predicted.movement,
-                        frame.health,
-                        &self.command,
-                    ),
+                    movement: update_q3_prediction_view(&predicted.movement, frame.health, &self.command),
                     ..predicted
                 });
             }
             let predicted = self.predicted.clone().expect("predicted set");
-            let fresh = self.command.server_time_milliseconds
-                > predicted.movement.command_time_milliseconds
+            let fresh = self.command.server_time_milliseconds > predicted.movement.command_time_milliseconds
                 && self.command.server_time_milliseconds <= latest.server_time_milliseconds;
             if fresh {
-                if predicted.movement.command_time_milliseconds
-                    == old.movement.command_time_milliseconds
-                {
+                if predicted.movement.command_time_milliseconds == old.movement.command_time_milliseconds {
                     if frame.this_frame_teleport && !consumed_teleport {
                         self.error = vec3(0.0, 0.0, 0.0);
                         consumed_teleport = true;
@@ -522,8 +493,8 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
                             }
                             if settings.error_decay_integer != 0 {
                                 let elapsed = frame.time_milliseconds - self.error_time;
-                                let mut fraction = (settings.error_decay_value - elapsed as f32)
-                                    / settings.error_decay_value;
+                                let mut fraction =
+                                    (settings.error_decay_value - elapsed as f32) / settings.error_decay_value;
                                 if fraction < 0.0 {
                                     fraction = 0.0;
                                 }
@@ -542,12 +513,9 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
                         ((self.command.server_time_milliseconds + step - 1) / step) * step;
                 }
                 let predicted = self.predicted.clone().expect("predicted set");
-                let mut input = self.host.movement_input(
-                    &predicted,
-                    &self.command,
-                    number,
-                    physics_time,
-                );
+                let mut input = self
+                    .host
+                    .movement_input(&predicted, &self.command, number, physics_time);
                 input.state = predicted.movement.clone();
                 input.fields.arsenal = predicted.arsenal.clone();
                 input.fields.animation = predicted.animation.clone();
@@ -567,12 +535,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
                 let (state, arsenal, animation, bounds) = match output {
                     super::super::types::MovementOutcome::Active { fields, state } => {
                         effects.extend(fields.effects.clone());
-                        (
-                            state,
-                            fields.arsenal.clone(),
-                            fields.animation.clone(),
-                            fields.bounds,
-                        )
+                        (state, fields.arsenal.clone(), fields.animation.clone(), fields.bounds)
                     }
                     super::super::types::MovementOutcome::ActorRemoved { effects: removed, .. } => {
                         effects.extend(removed);
@@ -623,8 +586,7 @@ impl<H: Q3PredictionHost> Q3PredictionRuntime<H> {
         });
         let predicted = self.predicted.clone().expect("predicted set");
         if settings.show_miss != 0
-            && predicted.movement.predictable_event_sequence
-                > old.movement.predictable_event_sequence.wrapping_add(2)
+            && predicted.movement.predictable_event_sequence > old.movement.predictable_event_sequence.wrapping_add(2)
         {
             self.host.warn("WARNING: dropped event\n");
         }

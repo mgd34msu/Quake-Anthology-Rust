@@ -16,12 +16,21 @@ use qa_platform::audio::{AudioChannels, AudioSampleBits, AudioState, SdlAudioDev
 
 use super::environments::{AudioTraceQuery, EnvironmentReverb, ReverbEnvironment};
 use super::error::AudioError;
-use super::mixer::{AudioMixer, FrameLoopingSoundOptions, MixRequest, MixerVoiceEvent, MixerVoiceOrigin, Q2SoundOptions, RealLoopingSoundOptions, SourceSoundOptions};
+use super::mixer::{
+    AudioMixer, FrameLoopingSoundOptions, MixRequest, MixerVoiceEvent, MixerVoiceOrigin, Q2SoundOptions,
+    RealLoopingSoundOptions, SourceSoundOptions,
+};
 use super::music::MusicPlayer;
-use super::output::{audio_output_format, encode_output_pcm, resample_queued_pcm, to_int16, AudioOutputFormat, EncodedPcm, DEFAULT_AUDIO_OUTPUT_FORMAT};
+use super::output::{
+    audio_output_format, encode_output_pcm, resample_queued_pcm, to_int16, AudioOutputFormat, EncodedPcm,
+    DEFAULT_AUDIO_OUTPUT_FORMAT,
+};
 use super::reverb::{StereoReverb, UnderwaterFilter};
 use super::streams::{RawAudioStream, RawCheckpoint};
-use super::types::{AudioAudience, AudioListener, AudioStreamTarget, AudioVoiceClock, AudioVoiceEvent, LoopLifetime, LoopSound, PlaySound, SoundAsset, SoundOrigin, StreamPcm, StreamSamples};
+use super::types::{
+    AudioAudience, AudioListener, AudioStreamTarget, AudioVoiceClock, AudioVoiceEvent, LoopLifetime, LoopSound,
+    PlaySound, SoundAsset, SoundOrigin, StreamPcm, StreamSamples,
+};
 use crate::audio::{source_sound_channel, SoundChannel, SoundFamily};
 
 /// Default seat mixer capacity (96 voices).
@@ -49,7 +58,9 @@ pub enum DeviceOpenError {
 impl DeviceOpenError {
     fn audio_error(&self) -> AudioError {
         match self {
-            DeviceOpenError::Unavailable(detail) | DeviceOpenError::Failed(detail) => AudioError::Device(detail.clone()),
+            DeviceOpenError::Unavailable(detail) | DeviceOpenError::Failed(detail) => {
+                AudioError::Device(detail.clone())
+            }
         }
     }
 }
@@ -89,7 +100,12 @@ pub trait AudioOutputDevice {
 /// Opens output devices and lists their names.
 pub trait AudioDeviceFactory {
     /// Open an output device.
-    fn open(&self, device_name: Option<&str>, format: &AudioOutputFormat, buffer_frames: Option<u32>) -> Result<Box<dyn AudioOutputDevice>, DeviceOpenError>;
+    fn open(
+        &self,
+        device_name: Option<&str>,
+        format: &AudioOutputFormat,
+        buffer_frames: Option<u32>,
+    ) -> Result<Box<dyn AudioOutputDevice>, DeviceOpenError>;
     /// List output device names.
     fn output_names(&self) -> Result<Vec<String>, AudioError>;
 }
@@ -175,7 +191,12 @@ impl AudioOutputDevice for SdlOutputDevice {
 pub struct SdlDeviceFactory;
 
 impl AudioDeviceFactory for SdlDeviceFactory {
-    fn open(&self, device_name: Option<&str>, format: &AudioOutputFormat, buffer_frames: Option<u32>) -> Result<Box<dyn AudioOutputDevice>, DeviceOpenError> {
+    fn open(
+        &self,
+        device_name: Option<&str>,
+        format: &AudioOutputFormat,
+        buffer_frames: Option<u32>,
+    ) -> Result<Box<dyn AudioOutputDevice>, DeviceOpenError> {
         let options = SdlAudioOptions {
             sample_rate: format.sample_rate,
             channels: if format.channels == 1 {
@@ -456,7 +477,10 @@ impl EngineMix {
             add_f64(&mut output, mixed, *gain * self.audience_gain(audience))?;
         }
         self.frame += frames as i64;
-        Ok(output.iter().map(|value| (value.trunc() as i64).clamp(-32768, 32767) as i16).collect())
+        Ok(output
+            .iter()
+            .map(|value| (value.trunc() as i64).clamp(-32768, 32767) as i16)
+            .collect())
     }
 }
 
@@ -472,7 +496,11 @@ impl UnifiedAudio {
                 sample_rate,
                 ..DEFAULT_AUDIO_OUTPUT_FORMAT
             },
-            Some(format) => audio_output_format(i64::from(format.sample_rate), i64::from(format.channels), i64::from(format.sample_bits))?,
+            Some(format) => audio_output_format(
+                i64::from(format.sample_rate),
+                i64::from(format.channels),
+                i64::from(format.sample_bits),
+            )?,
         };
         Ok(Self {
             sample_rate,
@@ -545,7 +573,10 @@ impl UnifiedAudio {
     pub fn selected_output(&self) -> Option<String> {
         match self.device.as_ref() {
             Some(device) => device.device_name(),
-            None => self.detached_output.as_ref().and_then(|detached| detached.device_name.clone()),
+            None => self
+                .detached_output
+                .as_ref()
+                .and_then(|detached| detached.device_name.clone()),
         }
     }
 
@@ -555,7 +586,10 @@ impl UnifiedAudio {
             Some(device) => device.queued_frames()? * 2,
             None => self.queued_pcm.len() as u64,
         };
-        let start = self.queued_pcm.len().saturating_sub(usize::try_from(samples).unwrap_or(usize::MAX));
+        let start = self
+            .queued_pcm
+            .len()
+            .saturating_sub(usize::try_from(samples).unwrap_or(usize::MAX));
         Ok(self.queued_pcm[start..].to_vec())
     }
 
@@ -596,7 +630,9 @@ impl UnifiedAudio {
         self.ensure_open()?;
         self.next_observer += 1;
         let id = self.next_observer;
-        self.voice_observers.borrow_mut().push(VoiceObserver { id, callback: observer });
+        self.voice_observers
+            .borrow_mut()
+            .push(VoiceObserver { id, callback: observer });
         Ok(id)
     }
 
@@ -652,7 +688,11 @@ impl UnifiedAudio {
 
     /// Map an actor (and optional Q3 owner) to a 1-based entity number.
     fn entity(&mut self, actor: &ActorId, owner: Option<&ProviderId>) -> Result<i64, AudioError> {
-        if let Some(index) = self.actors.iter().position(|entry| entry.actor == *actor && entry.owner.as_ref() == owner) {
+        if let Some(index) = self
+            .actors
+            .iter()
+            .position(|entry| entry.actor == *actor && entry.owner.as_ref() == owner)
+        {
             return Ok(index as i64 + 1);
         }
         let original = if owner.is_none() {
@@ -715,14 +755,25 @@ impl UnifiedAudio {
         }
         for listener in listeners {
             let milliseconds = (self.milliseconds)();
-            let index = match self.mix.seats.iter().position(|state| state.listener.borrow().seat == listener.seat) {
+            let index = match self
+                .mix
+                .seats
+                .iter()
+                .position(|state| state.listener.borrow().seat == listener.seat)
+            {
                 Some(index) => index,
                 None => {
                     let retained = self.round_mixers.iter().position(|entry| entry.seat == listener.seat);
                     let mixer = match retained {
                         None => {
                             let clock = Rc::clone(&self.milliseconds);
-                            AudioMixer::new(self.sample_rate, Box::new(move || clock()), SEAT_MIXER_CAPACITY, 2, self.max_actors)?
+                            AudioMixer::new(
+                                self.sample_rate,
+                                Box::new(move || clock()),
+                                SEAT_MIXER_CAPACITY,
+                                2,
+                                self.max_actors,
+                            )?
                         }
                         Some(retained) => self.round_mixers.remove(retained).mixer,
                     };
@@ -740,7 +791,11 @@ impl UnifiedAudio {
                     state.mixer.set_effects_volume(effects)?;
                     state.mixer.set_doppler_enabled(doppler);
                     state.mixer.select_time(frame, frame)?;
-                    let positions: Vec<(i64, Vec3)> = self.positions.iter().map(|(entity, position)| (*entity, *position)).collect();
+                    let positions: Vec<(i64, Vec3)> = self
+                        .positions
+                        .iter()
+                        .map(|(entity, position)| (*entity, *position))
+                        .collect();
                     for (entity, position) in positions {
                         state.mixer.update_entity_position(entity, position)?;
                     }
@@ -773,7 +828,11 @@ impl UnifiedAudio {
                 Some(actor) => self.entity(actor, None)?,
             };
             let state = &mut self.mix.seats[index];
-            state.mixer.set_listener(i32::try_from(entity).map_err(|_| AudioError::BadListener)?, listener.origin, listener.axis)?;
+            state.mixer.set_listener(
+                i32::try_from(entity).map_err(|_| AudioError::BadListener)?,
+                listener.origin,
+                listener.axis,
+            )?;
             if let Some(environment) = state.environment.as_mut() {
                 environment.update(listener.origin, milliseconds as f64)?;
             }
@@ -819,14 +878,25 @@ impl UnifiedAudio {
     }
 
     /// Move a Q3 seat actor owned by a guest provider.
-    pub fn update_q3_seat_actor(&mut self, seat: &SeatId, actor: &ActorId, origin: Vec3, owner: Option<&ProviderId>) -> Result<(), AudioError> {
+    pub fn update_q3_seat_actor(
+        &mut self,
+        seat: &SeatId,
+        actor: &ActorId,
+        origin: Vec3,
+        owner: Option<&ProviderId>,
+    ) -> Result<(), AudioError> {
         self.ensure_open()?;
         let index = self.seat_index(seat)?;
         let entity = self.entity(actor, owner)?;
         self.mix.seats[index].mixer.update_entity_position(entity, origin)
     }
 
-    fn request_origin(&mut self, family: SoundFamily, origin: &SoundOrigin, owner: Option<&ProviderId>) -> Result<MixerVoiceOrigin, AudioError> {
+    fn request_origin(
+        &mut self,
+        family: SoundFamily,
+        origin: &SoundOrigin,
+        owner: Option<&ProviderId>,
+    ) -> Result<MixerVoiceOrigin, AudioError> {
         match origin {
             SoundOrigin::Local => Ok(MixerVoiceOrigin::Local),
             SoundOrigin::Fixed { position } => Ok(MixerVoiceOrigin::Fixed { position: *position }),
@@ -845,14 +915,24 @@ impl UnifiedAudio {
         if !request.volume.is_finite() || request.volume < 0.0 || request.volume > 1.0 {
             return Err(AudioError::BadVolume);
         }
-        let command = source_sound_channel(request.family, request.channel).map_err(|_| AudioError::BadSourceChannel)?;
-        let owner = if request.family == SoundFamily::Q3 { request.owner.as_ref() } else { None };
+        let command =
+            source_sound_channel(request.family, request.channel).map_err(|_| AudioError::BadSourceChannel)?;
+        let owner = if request.family == SoundFamily::Q3 {
+            request.owner.as_ref()
+        } else {
+            None
+        };
         let origin = self.request_origin(request.family, &request.origin, owner)?;
         let entity = match request.actor.as_ref() {
             None => -1,
             Some(actor) => self.entity(actor, owner)?,
         };
-        let listeners: Vec<AudioListener> = self.mix.seats.iter().map(|state| state.listener.borrow().clone()).collect();
+        let listeners: Vec<AudioListener> = self
+            .mix
+            .seats
+            .iter()
+            .map(|state| state.listener.borrow().clone())
+            .collect();
         let mut planned: Vec<(bool, i64, bool)> = Vec::with_capacity(listeners.len());
         for listener in &listeners {
             if !selected(&request.audience, &listener.seat) {
@@ -863,7 +943,10 @@ impl UnifiedAudio {
                 None => 0,
                 Some(actor) => self.entity(actor, owner)?,
             };
-            let personal = owner.is_some() && request.actor.is_some() && listener.actor.is_some() && request.actor == listener.actor;
+            let personal = owner.is_some()
+                && request.actor.is_some()
+                && listener.actor.is_some()
+                && request.actor == listener.actor;
             planned.push((true, local, personal));
         }
         let mut playing = 0usize;
@@ -872,8 +955,16 @@ impl UnifiedAudio {
             if !select {
                 continue;
             }
-            let voice_origin = if *personal { MixerVoiceOrigin::Local } else { origin.clone() };
-            let voice_entity = if matches!(origin, MixerVoiceOrigin::Local) { *local } else { entity };
+            let voice_origin = if *personal {
+                MixerVoiceOrigin::Local
+            } else {
+                origin.clone()
+            };
+            let voice_entity = if matches!(origin, MixerVoiceOrigin::Local) {
+                *local
+            } else {
+                entity
+            };
             let accepted = match request.family {
                 SoundFamily::Q3 => state.mixer.start_shared_sound(
                     &request.sound.pcm,
@@ -923,7 +1014,12 @@ impl UnifiedAudio {
     }
 
     /// Stop an actor's channel on an audience.
-    pub fn stop_sound(&mut self, actor: &ActorId, channel: Option<SoundChannel>, audience: &AudioAudience) -> Result<(), AudioError> {
+    pub fn stop_sound(
+        &mut self,
+        actor: &ActorId,
+        channel: Option<SoundChannel>,
+        audience: &AudioAudience,
+    ) -> Result<(), AudioError> {
         let entity = self.entity(actor, None)?;
         for state in &mut self.mix.seats {
             if selected(audience, &state.listener.borrow().seat) {
@@ -951,10 +1047,19 @@ impl UnifiedAudio {
                 SoundOrigin::Fixed { position } => *position,
                 SoundOrigin::Actor { .. } => self.positions.get(&entity).copied().ok_or(AudioError::LoopPosition)?,
             };
-            state.loops.insert(loop_key(request.family, entity, request.owner.as_ref()), request.clone());
+            state.loops.insert(
+                loop_key(request.family, entity, request.owner.as_ref()),
+                request.clone(),
+            );
             if request.family == SoundFamily::Q3 {
                 let owned = q3_entity.expect("q3 entity");
-                let volume = (request.volume * (if request.lifetime == LoopLifetime::Frame { 127.0 } else { 90.0 })).trunc() as i32;
+                let volume = (request.volume
+                    * (if request.lifetime == LoopLifetime::Frame {
+                        127.0
+                    } else {
+                        90.0
+                    }))
+                .trunc() as i32;
                 if request.lifetime == LoopLifetime::Frame {
                     state.mixer.update_looping_sound(
                         &request.sound.pcm,
@@ -986,7 +1091,9 @@ impl UnifiedAudio {
     pub fn begin_loop_frame(&mut self) {
         for state in &mut self.mix.seats {
             state.mixer.clear_looping_sounds(false);
-            state.loops.retain(|_, existing| existing.lifetime != LoopLifetime::Frame);
+            state
+                .loops
+                .retain(|_, existing| existing.lifetime != LoopLifetime::Frame);
         }
     }
 
@@ -1002,7 +1109,9 @@ impl UnifiedAudio {
                 let origin = match &existing.origin {
                     SoundOrigin::Local => listener.origin,
                     SoundOrigin::Fixed { position } => *position,
-                    SoundOrigin::Actor { .. } => self.positions.get(&entity).copied().ok_or(AudioError::LoopPosition)?,
+                    SoundOrigin::Actor { .. } => {
+                        self.positions.get(&entity).copied().ok_or(AudioError::LoopPosition)?
+                    }
                 };
                 if existing.family == SoundFamily::Q1 || existing.family == SoundFamily::Q2 {
                     entries.push(super::mixer::SourceLoopEntry {
@@ -1021,15 +1130,22 @@ impl UnifiedAudio {
                 None => 0,
                 Some(actor) => self.entity(actor, None)?,
             };
-            self.mix.seats[index]
-                .mixer
-                .set_listener(i32::try_from(entity).map_err(|_| AudioError::BadListener)?, listener.origin, listener.axis)?;
+            self.mix.seats[index].mixer.set_listener(
+                i32::try_from(entity).map_err(|_| AudioError::BadListener)?,
+                listener.origin,
+                listener.axis,
+            )?;
         }
         Ok(())
     }
 
     /// Stop an actor's loops on an audience.
-    pub fn stop_loop(&mut self, actor: &ActorId, audience: &AudioAudience, owner: Option<&ProviderId>) -> Result<(), AudioError> {
+    pub fn stop_loop(
+        &mut self,
+        actor: &ActorId,
+        audience: &AudioAudience,
+        owner: Option<&ProviderId>,
+    ) -> Result<(), AudioError> {
         let entity = self.entity(actor, None)?;
         let owned = self.entity(actor, owner)?;
         for state in &mut self.mix.seats {
@@ -1055,7 +1171,12 @@ impl UnifiedAudio {
     }
 
     /// Clear a seat's Q3 loops for an owner.
-    pub fn clear_q3_seat_loops(&mut self, seat: &SeatId, kill_all: bool, owner: Option<&ProviderId>) -> Result<(), AudioError> {
+    pub fn clear_q3_seat_loops(
+        &mut self,
+        seat: &SeatId,
+        kill_all: bool,
+        owner: Option<&ProviderId>,
+    ) -> Result<(), AudioError> {
         let index = self.seat_index(seat)?;
         let mut removed: Vec<(String, ActorId)> = Vec::new();
         for (key, existing) in &self.mix.seats[index].loops {
@@ -1080,7 +1201,12 @@ impl UnifiedAudio {
     }
 
     /// Stop one Q3 seat loop.
-    pub fn stop_q3_seat_loop(&mut self, seat: &SeatId, actor: &ActorId, owner: Option<&ProviderId>) -> Result<(), AudioError> {
+    pub fn stop_q3_seat_loop(
+        &mut self,
+        seat: &SeatId,
+        actor: &ActorId,
+        owner: Option<&ProviderId>,
+    ) -> Result<(), AudioError> {
         let index = self.seat_index(seat)?;
         let owned = self.entity(actor, owner)?;
         let base = self.entity(actor, None)?;
@@ -1114,9 +1240,19 @@ impl UnifiedAudio {
     }
 
     /// Add a static loop to a seat mixer.
-    pub fn add_static_sound(&mut self, seat: &SeatId, sound: &SoundAsset, origin: Vec3, volume: f64, attenuation: f64, key: i64) -> Result<bool, AudioError> {
+    pub fn add_static_sound(
+        &mut self,
+        seat: &SeatId,
+        sound: &SoundAsset,
+        origin: Vec3,
+        volume: f64,
+        attenuation: f64,
+        key: i64,
+    ) -> Result<bool, AudioError> {
         let index = self.seat_index(seat)?;
-        self.mix.seats[index].mixer.add_static_sound(&sound.pcm, origin, volume, attenuation, key)
+        self.mix.seats[index]
+            .mixer
+            .add_static_sound(&sound.pcm, origin, volume, attenuation, key)
     }
 
     /// Remove a static loop from a seat mixer.
@@ -1127,14 +1263,29 @@ impl UnifiedAudio {
     }
 
     /// Update a seat's ambient bed.
-    pub fn update_ambient(&mut self, seat: &SeatId, sounds: &[SoundAsset], levels: &[f64], elapsed_seconds: f64, level: f64, fade: f64) -> Result<(), AudioError> {
+    pub fn update_ambient(
+        &mut self,
+        seat: &SeatId,
+        sounds: &[SoundAsset],
+        levels: &[f64],
+        elapsed_seconds: f64,
+        level: f64,
+        fade: f64,
+    ) -> Result<(), AudioError> {
         let index = self.seat_index(seat)?;
         let pcm: Vec<_> = sounds.iter().map(|sound| sound.pcm.clone()).collect();
-        self.mix.seats[index].mixer.update_ambient(&pcm, levels, elapsed_seconds, level, fade)
+        self.mix.seats[index]
+            .mixer
+            .update_ambient(&pcm, levels, elapsed_seconds, level, fade)
     }
 
     /// Bind a reverb environment selector to a seat.
-    pub fn set_environment(&mut self, seat: &SeatId, environments: Vec<ReverbEnvironment>, trace: AudioTraceQuery) -> Result<(), AudioError> {
+    pub fn set_environment(
+        &mut self,
+        seat: &SeatId,
+        environments: Vec<ReverbEnvironment>,
+        trace: AudioTraceQuery,
+    ) -> Result<(), AudioError> {
         let index = self.seat_index(seat)?;
         let milliseconds = (self.milliseconds)();
         let origin = self.mix.seats[index].listener.borrow().origin;
@@ -1166,7 +1317,11 @@ impl UnifiedAudio {
     }
 
     /// Restore a stream checkpoint onto an unused lane.
-    pub fn restore_stream_checkpoint(&mut self, target: AudioStreamTarget, value: Option<RawCheckpoint>) -> Result<(), AudioError> {
+    pub fn restore_stream_checkpoint(
+        &mut self,
+        target: AudioStreamTarget,
+        value: Option<RawCheckpoint>,
+    ) -> Result<(), AudioError> {
         self.ensure_open()?;
         if self.mix.streams.contains_key(&target.id) {
             return Err(AudioError::StreamLaneUsed);
@@ -1232,7 +1387,10 @@ impl UnifiedAudio {
             return Err(AudioError::AlreadyOpen);
         }
         let format = self.format;
-        let device = self.factory.open(device_name, &format, buffer_frames).map_err(|error| error.audio_error())?;
+        let device = self
+            .factory
+            .open(device_name, &format, buffer_frames)
+            .map_err(|error| error.audio_error())?;
         self.device = Some(device);
         self.detached_output = None;
         Ok(())
@@ -1242,7 +1400,10 @@ impl UnifiedAudio {
     ///
     /// The donor returns a thunk so the caller can swap engine references
     /// first; the commit closure borrows both engines and performs the move.
-    pub fn prepare_output_transfer<'a>(&'a mut self, next: &'a mut UnifiedAudio) -> Result<Box<dyn FnOnce() + 'a>, AudioError> {
+    pub fn prepare_output_transfer<'a>(
+        &'a mut self,
+        next: &'a mut UnifiedAudio,
+    ) -> Result<Box<dyn FnOnce() + 'a>, AudioError> {
         self.ensure_open()?;
         next.ensure_open()?;
         if next.device.is_some() || next.detached_output.is_some() {
@@ -1283,7 +1444,10 @@ impl UnifiedAudio {
         };
         device.pause()?;
         let queued = device.queued_frames()? * 2;
-        let start = self.queued_pcm.len().saturating_sub(usize::try_from(queued).unwrap_or(usize::MAX));
+        let start = self
+            .queued_pcm
+            .len()
+            .saturating_sub(usize::try_from(queued).unwrap_or(usize::MAX));
         self.queued_pcm = self.queued_pcm[start..].to_vec();
         self.detached_output = Some(detached);
         if let Some(device) = self.device.take() {
@@ -1301,10 +1465,12 @@ impl UnifiedAudio {
         pcm: &[i16],
         buffer_frames: Option<u32>,
     ) -> Result<Box<dyn AudioOutputDevice>, OpenOutputError> {
-        let mut device = factory.open(device_name, format, buffer_frames).map_err(|error| OpenOutputError {
-            unavailable: matches!(error, DeviceOpenError::Unavailable(_)),
-            error: error.audio_error(),
-        })?;
+        let mut device = factory
+            .open(device_name, format, buffer_frames)
+            .map_err(|error| OpenOutputError {
+                unavailable: matches!(error, DeviceOpenError::Unavailable(_)),
+                error: error.audio_error(),
+            })?;
         if let Err(error) = device.queue(pcm, format) {
             device.close_box();
             return Err(OpenOutputError {
@@ -1316,9 +1482,18 @@ impl UnifiedAudio {
     }
 
     /// Select an output device and format, recovering the old one on failure.
-    pub fn select_output(&mut self, device_name: Option<&str>, requested: &AudioOutputFormat, restart: bool) -> Result<(), AudioError> {
+    pub fn select_output(
+        &mut self,
+        device_name: Option<&str>,
+        requested: &AudioOutputFormat,
+        restart: bool,
+    ) -> Result<(), AudioError> {
         self.ensure_open()?;
-        let format = audio_output_format(i64::from(requested.sample_rate), i64::from(requested.channels), i64::from(requested.sample_bits))?;
+        let format = audio_output_format(
+            i64::from(requested.sample_rate),
+            i64::from(requested.channels),
+            i64::from(requested.sample_bits),
+        )?;
         let old_format = self.format;
         if !restart {
             if let Some(previous) = self.device.as_ref() {
@@ -1362,7 +1537,13 @@ impl UnifiedAudio {
                 match Self::open_output(&self.factory.clone(), device_name, &format, &converted, old_buffer) {
                     Ok(device) => device,
                     Err(selection) => {
-                        let restore = Self::open_output(&self.factory.clone(), previous_name.as_deref(), &old_format, &retained, Some(previous_buffer.clamp(1, 32768) as u32));
+                        let restore = Self::open_output(
+                            &self.factory.clone(),
+                            previous_name.as_deref(),
+                            &old_format,
+                            &retained,
+                            Some(previous_buffer.clamp(1, 32768) as u32),
+                        );
                         match restore {
                             Ok(restored) => {
                                 self.device = Some(restored);
@@ -1383,7 +1564,10 @@ impl UnifiedAudio {
                                 });
                                 self.previous_pump_frame = None;
                                 self.pump_intervals.clear();
-                                return Err(AudioError::OutputSelectionFailed(format!("{}; {}", selection.error, restore_error.error)));
+                                return Err(AudioError::OutputSelectionFailed(format!(
+                                    "{}; {}",
+                                    selection.error, restore_error.error
+                                )));
                             }
                         }
                         self.previous_pump_frame = None;
@@ -1430,7 +1614,8 @@ impl UnifiedAudio {
             1.0,
             Some(&mut || {
                 let source_sample = *source_frame;
-                let source_frames = ((frames as f64 * f64::from(sample_rate) / f64::from(format_rate)).ceil() as usize).max(1);
+                let source_frames =
+                    ((frames as f64 * f64::from(sample_rate) / f64::from(format_rate)).ceil() as usize).max(1);
                 let samples = mix.mix(source_frames, sample_rate)?;
                 *source_frame += source_frames as i64;
                 Ok(Some(StreamPcm {
@@ -1466,7 +1651,9 @@ impl UnifiedAudio {
         let work_frames = (measured_work_milliseconds * f64::from(device_rate) / 1000.0).ceil() as i64;
         let initial_fill = self.output_handoff_pending || !self.output_started && state_paused && queued_now == 0;
         let playback_frame = self.device.as_ref().expect("checked").playback_frames()?;
-        let interval = self.previous_pump_frame.map_or(0, |previous| playback_frame as i64 - previous as i64);
+        let interval = self
+            .previous_pump_frame
+            .map_or(0, |previous| playback_frame as i64 - previous as i64);
         if !initial_fill {
             self.pump_intervals.push(interval.max(work_frames));
             if self.pump_intervals.len() > 8 {
@@ -1477,7 +1664,8 @@ impl UnifiedAudio {
             max_queued.min(if initial_fill {
                 ((f64::from(device_rate) * 0.2).ceil() as u64).max(buffer_frames * 2)
             } else {
-                ((f64::from(device_rate) * 0.08).ceil() as u64).max(self.pump_intervals.iter().copied().max().unwrap_or(0).max(0) as u64 + buffer_frames * 2)
+                ((f64::from(device_rate) * 0.08).ceil() as u64)
+                    .max(self.pump_intervals.iter().copied().max().unwrap_or(0).max(0) as u64 + buffer_frames * 2)
             })
         });
         if target > max_queued {
@@ -1550,8 +1738,15 @@ impl UnifiedAudio {
         self.stop_all()?;
         for state in self.mix.seats.drain(..) {
             let seat = state.listener.borrow().seat.clone();
-            let entry = RoundMixer { seat, mixer: state.mixer };
-            match self.round_mixers.iter_mut().find(|retained| retained.seat == entry.seat) {
+            let entry = RoundMixer {
+                seat,
+                mixer: state.mixer,
+            };
+            match self
+                .round_mixers
+                .iter_mut()
+                .find(|retained| retained.seat == entry.seat)
+            {
                 Some(slot) => *slot = entry,
                 None => self.round_mixers.push(entry),
             }
@@ -1744,12 +1939,21 @@ mod tests {
     }
 
     impl AudioDeviceFactory for FakeFactory {
-        fn open(&self, device_name: Option<&str>, format: &AudioOutputFormat, buffer_frames: Option<u32>) -> Result<Box<dyn AudioOutputDevice>, DeviceOpenError> {
-            self.opens.borrow_mut().push((device_name.map(str::to_string), *format, buffer_frames));
+        fn open(
+            &self,
+            device_name: Option<&str>,
+            format: &AudioOutputFormat,
+            buffer_frames: Option<u32>,
+        ) -> Result<Box<dyn AudioOutputDevice>, DeviceOpenError> {
+            self.opens
+                .borrow_mut()
+                .push((device_name.map(str::to_string), *format, buffer_frames));
             let spec = match self.script.borrow_mut().pop_front() {
                 Some(ScriptedOpen::Device(spec)) => spec,
                 None => self.spec.clone(),
-                Some(ScriptedOpen::Unavailable) => return Err(DeviceOpenError::Unavailable("fake unavailable".to_string())),
+                Some(ScriptedOpen::Unavailable) => {
+                    return Err(DeviceOpenError::Unavailable("fake unavailable".to_string()))
+                }
                 Some(ScriptedOpen::Failed) => return Err(DeviceOpenError::Failed("fake failed".to_string())),
             };
             Ok(Box::new(FakeDevice {
@@ -1813,7 +2017,10 @@ mod tests {
         let audio = engine(FakeFactory::named(&["a", "b"]));
         assert_eq!(audio.sample_rate(), 44100);
         assert_eq!(audio.output_state(), OutputState::Detached);
-        assert_eq!(audio.output_device_names().unwrap(), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            audio.output_device_names().unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
         assert!(audio.output_configuration().is_none());
         assert_eq!(audio.selected_output(), None);
     }
@@ -1825,8 +2032,14 @@ mod tests {
         let first = listener(&owner, 0);
         let mut second = listener(&owner, 1);
         second.gain = f64::NAN;
-        assert!(matches!(audio.set_listeners(&[first.clone(), second]), Err(AudioError::BadListenerGain)));
-        assert!(matches!(audio.set_listeners(&[first.clone(), first.clone()]), Err(AudioError::DuplicateSeat)));
+        assert!(matches!(
+            audio.set_listeners(&[first.clone(), second]),
+            Err(AudioError::BadListenerGain)
+        ));
+        assert!(matches!(
+            audio.set_listeners(&[first.clone(), first.clone()]),
+            Err(AudioError::DuplicateSeat)
+        ));
         audio.set_listeners(std::slice::from_ref(&first)).unwrap();
         let mut second = listener(&owner, 1);
         second.gain = 0.5;
@@ -1854,7 +2067,9 @@ mod tests {
         .unwrap();
         audio.set_listeners(&[listener(&owner, 0)]).unwrap();
         let seen = Rc::clone(&observed);
-        let token = audio.observe_voices(Box::new(move |event| seen.borrow_mut().push(event))).unwrap();
+        let token = audio
+            .observe_voices(Box::new(move |event| seen.borrow_mut().push(event)))
+            .unwrap();
         let sound = asset(blip(4410, None));
         for family in [SoundFamily::Q1, SoundFamily::Q3, SoundFamily::Q2] {
             let request = PlaySound {
@@ -1877,7 +2092,10 @@ mod tests {
         assert_eq!(mixed.len(), 128);
         assert!(mixed.iter().any(|sample| *sample != 0));
         assert_eq!(audio.sample_clock(), 64);
-        assert!(observed.borrow().iter().any(|event| matches!(event, AudioVoiceEvent::Start { .. })));
+        assert!(observed
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, AudioVoiceEvent::Start { .. })));
         audio.unobserve_voices(token);
         let bad = PlaySound {
             family: SoundFamily::Q1,
@@ -1918,7 +2136,9 @@ mod tests {
             server_milliseconds: None,
         };
         assert_eq!(audio.play(&request).unwrap(), 1);
-        audio.stop_sound(&actor, Some(SoundChannel::Weapon), &AudioAudience::World).unwrap();
+        audio
+            .stop_sound(&actor, Some(SoundChannel::Weapon), &AudioAudience::World)
+            .unwrap();
         audio.stop_sound(&actor, None, &AudioAudience::World).unwrap();
         let persistent = LoopSound {
             family: SoundFamily::Q1,
@@ -1939,9 +2159,20 @@ mod tests {
         let mixed = audio.mix(16).unwrap();
         assert!(mixed.iter().any(|sample| *sample != 0));
         audio.stop_loop(&actor, &AudioAudience::World, None).unwrap();
-        assert!(audio.add_static_sound(&owner.seat(0), &asset(blip(64, Some(0))), vec3(0.0, 0.0, 0.0), 200.0, 1.0, 3).unwrap());
+        assert!(audio
+            .add_static_sound(
+                &owner.seat(0),
+                &asset(blip(64, Some(0))),
+                vec3(0.0, 0.0, 0.0),
+                200.0,
+                1.0,
+                3
+            )
+            .unwrap());
         audio.remove_static_sound(&owner.seat(0), 3).unwrap();
-        audio.update_ambient(&owner.seat(0), &[sound], &[1.0], 0.016, 0.3, 100.0).unwrap();
+        audio
+            .update_ambient(&owner.seat(0), &[sound], &[1.0], 0.016, 0.3, 100.0)
+            .unwrap();
     }
 
     #[test]
@@ -1952,12 +2183,16 @@ mod tests {
         audio.set_listeners(&[listener(&owner, 0)]).unwrap();
         let actor = owner.actor(2, 0);
         let provider = ProviderId::new("q3", "guest");
-        audio.update_q3_seat_actor(&seat, &actor, vec3(5.0, 0.0, 0.0), Some(&provider)).unwrap();
+        audio
+            .update_q3_seat_actor(&seat, &actor, vec3(5.0, 0.0, 0.0), Some(&provider))
+            .unwrap();
         let sound = asset(blip(2205, None));
         let frame_loop = LoopSound {
             family: SoundFamily::Q3,
             sound: sound.clone(),
-            origin: SoundOrigin::Fixed { position: vec3(5.0, 0.0, 0.0) },
+            origin: SoundOrigin::Fixed {
+                position: vec3(5.0, 0.0, 0.0),
+            },
             actor: actor.clone(),
             owner: Some(provider.clone()),
             velocity: vec3(0.0, 0.0, 0.0),
@@ -1980,7 +2215,10 @@ mod tests {
         audio.start_loop(&world_loop).unwrap();
         audio.stop_q3_seat_loop(&seat, &actor, Some(&provider)).unwrap();
         audio.release_q3_seat_owner(&seat, &provider).unwrap();
-        assert!(matches!(audio.clear_q3_seat_loops(&owner.seat(9), true, None), Err(AudioError::UnknownSeat)));
+        assert!(matches!(
+            audio.clear_q3_seat_loops(&owner.seat(9), true, None),
+            Err(AudioError::UnknownSeat)
+        ));
     }
 
     #[test]
@@ -2015,28 +2253,34 @@ mod tests {
             gain: 1.0,
             audience: AudioAudience::World,
         };
-        audio.restore_stream_checkpoint(target2.clone(), Some(checkpoint)).unwrap();
-        audio.restore_stream_checkpoint(
-            AudioStreamTarget {
-                id: "noop".to_string(),
-                gain: 1.0,
-                audience: AudioAudience::World,
-            },
-            None,
-        )
-        .unwrap();
+        audio
+            .restore_stream_checkpoint(target2.clone(), Some(checkpoint))
+            .unwrap();
+        audio
+            .restore_stream_checkpoint(
+                AudioStreamTarget {
+                    id: "noop".to_string(),
+                    gain: 1.0,
+                    audience: AudioAudience::World,
+                },
+                None,
+            )
+            .unwrap();
         assert!(audio.capture_stream_checkpoint("noop").unwrap().is_none());
         assert!(matches!(
-            audio.restore_stream_checkpoint(target2.clone(), Some(RawCheckpoint {
-                output_rate: 44100,
-                input_rate: 44100,
-                channels: 2,
-                origin: 0.0,
-                output_frames: 0,
-                end: 0,
-                paused: false,
-                segments: Vec::new(),
-            })),
+            audio.restore_stream_checkpoint(
+                target2.clone(),
+                Some(RawCheckpoint {
+                    output_rate: 44100,
+                    input_rate: 44100,
+                    channels: 2,
+                    origin: 0.0,
+                    output_frames: 0,
+                    end: 0,
+                    paused: false,
+                    segments: Vec::new(),
+                })
+            ),
             Err(AudioError::StreamLaneUsed)
         ));
         audio.pause_stream("movie2", true);
@@ -2051,7 +2295,10 @@ mod tests {
         audio.attach_music(music_target.clone(), player).unwrap();
         audio.update_music();
         let player = MusicPlayer::new(22050, SoundFamily::Q3, MusicVolumeMode::Immediate, MusicControls::new());
-        assert!(matches!(audio.attach_music(music_target, player), Err(AudioError::MusicRateMismatch)));
+        assert!(matches!(
+            audio.attach_music(music_target, player),
+            Err(AudioError::MusicRateMismatch)
+        ));
         audio.stop_music("music");
     }
 
@@ -2127,7 +2374,10 @@ mod tests {
             channels: 2,
             sample_bits: 16,
         };
-        assert!(matches!(audio.select_output(Some("gone"), &stereo, false), Err(AudioError::Device(_))));
+        assert!(matches!(
+            audio.select_output(Some("gone"), &stereo, false),
+            Err(AudioError::Device(_))
+        ));
         assert_eq!(audio.selected_output().as_deref(), Some("other"));
         shared.push(ScriptedOpen::Unavailable);
         shared.push(ScriptedOpen::Unavailable);
@@ -2138,7 +2388,9 @@ mod tests {
         ));
         assert_eq!(audio.output_state(), OutputState::Detached);
         let opens = shared.opens.borrow();
-        assert!(opens.iter().any(|(name, format, _)| name.as_deref() == Some("fake") && format.sample_rate == 44100));
+        assert!(opens
+            .iter()
+            .any(|(name, format, _)| name.as_deref() == Some("fake") && format.sample_rate == 44100));
     }
 
     #[test]
@@ -2149,7 +2401,10 @@ mod tests {
         audio.open_device(Some("fake"), Some(2048)).unwrap();
         assert!(matches!(audio.pump(None, 0.0), Err(AudioError::Device(_))));
         let format = audio.output_format();
-        assert!(matches!(audio.select_output(Some("other"), &format, false), Err(AudioError::Device(_))));
+        assert!(matches!(
+            audio.select_output(Some("other"), &format, false),
+            Err(AudioError::Device(_))
+        ));
         assert_eq!(audio.selected_output().as_deref(), Some("fake"));
         let factory = FakeFactory::named(&["fake"]);
         factory.push(ScriptedOpen::Device(FakeSpec {
@@ -2177,9 +2432,15 @@ mod tests {
         assert_eq!(next.pump(None, 0.0).unwrap(), 0);
         let mut other = engine(FakeFactory::named(&["fake"]));
         other.open_device(Some("fake"), None).unwrap();
-        assert!(matches!(next.prepare_output_transfer(&mut other), Err(AudioError::ReplacementOwnsOutput)));
+        assert!(matches!(
+            next.prepare_output_transfer(&mut other),
+            Err(AudioError::ReplacementOwnsOutput)
+        ));
         let mut slow = engine_with_options(FakeFactory::named(&["fake"]), Some(22050), None);
-        assert!(matches!(next.prepare_output_transfer(&mut slow), Err(AudioError::ReplacementRateMismatch)));
+        assert!(matches!(
+            next.prepare_output_transfer(&mut slow),
+            Err(AudioError::ReplacementRateMismatch)
+        ));
         next.close().unwrap();
         next.close().unwrap();
         assert_eq!(next.output_state(), OutputState::Closed);
@@ -2193,21 +2454,27 @@ mod tests {
         let mut audio = engine(FakeFactory::named(&[]));
         let seat = listener(&owner, 0);
         audio.set_listeners(&[seat.clone()]).unwrap();
+        audio.set_geometry_transmission(Some(Box::new(|_, _| 0.5))).unwrap();
         audio
-            .set_geometry_transmission(Some(Box::new(|_, _| 0.5)))
+            .set_environment(
+                &seat.seat,
+                Vec::new(),
+                Box::new(|_, _, _, _| super::super::environments::AudioTrace {
+                    fraction: 1.0,
+                    end: [0.0, 0.0, 0.0],
+                    material: None,
+                    sky: false,
+                }),
+            )
             .unwrap();
-        audio.set_environment(&seat.seat, Vec::new(), Box::new(|_, _, _, _| super::super::environments::AudioTrace {
-            fraction: 1.0,
-            end: [0.0, 0.0, 0.0],
-            material: None,
-            sky: false,
-        })).unwrap();
         let sound = asset(blip(4410, None));
         audio
             .play(&PlaySound {
                 family: SoundFamily::Q1,
                 sound,
-                origin: SoundOrigin::Fixed { position: vec3(200.0, 0.0, 0.0) },
+                origin: SoundOrigin::Fixed {
+                    position: vec3(200.0, 0.0, 0.0),
+                },
                 actor: None,
                 owner: None,
                 channel: 0,
@@ -2225,7 +2492,10 @@ mod tests {
         assert_eq!(audio.mix(8).unwrap().len(), 16);
         audio.set_doppler_enabled(false).unwrap();
         audio.set_effects_volume(0.3).unwrap();
-        assert!(matches!(audio.set_effects_volume(-1.0), Err(AudioError::BadEffectsGain)));
+        assert!(matches!(
+            audio.set_effects_volume(-1.0),
+            Err(AudioError::BadEffectsGain)
+        ));
         audio.reset_round().unwrap();
         audio.set_listeners(std::slice::from_ref(&seat)).unwrap();
         audio.set_geometry_transmission(None).unwrap();
@@ -2240,7 +2510,10 @@ mod tests {
         let first = owner.actor(0, 0);
         audio.update_actor(&first, vec3(0.0, 0.0, 0.0)).unwrap();
         let second = owner.actor(1, 0);
-        assert!(matches!(audio.update_actor(&second, vec3(0.0, 0.0, 0.0)), Err(AudioError::ActorCapacity)));
+        assert!(matches!(
+            audio.update_actor(&second, vec3(0.0, 0.0, 0.0)),
+            Err(AudioError::ActorCapacity)
+        ));
         let mut roomy = engine(FakeFactory::named(&[]));
         roomy.set_listeners(&[listener(&owner, 0)]).unwrap();
         let ghost = owner.actor(7, 0);
@@ -2263,6 +2536,3 @@ mod tests {
         ));
     }
 }
-
-
-

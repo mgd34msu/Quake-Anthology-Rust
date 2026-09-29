@@ -198,7 +198,11 @@ impl SourceJoystickState {
         let mut axes = 0u32;
         if let Some(threshold) = threshold {
             for index in 0..axis_count.min(4) {
-                let value = self.axes.get(index as usize).copied().ok_or(JoystickError::MissingAxis)?;
+                let value = self
+                    .axes
+                    .get(index as usize)
+                    .copied()
+                    .ok_or(JoystickError::MissingAxis)?;
                 let fraction = f64::from(f32::from(value) / 32768.0);
                 if fraction < -threshold {
                     axes |= 1 << (index * 2);
@@ -297,9 +301,13 @@ mod tests {
     fn buttons_validate_and_track() {
         let mut state = SourceJoystickState::new();
         let mut keys = Vec::new();
-        state.button(0, true, &mut |key, down, _| keys.push((key, down)), false).unwrap();
+        state
+            .button(0, true, &mut |key, down, _| keys.push((key, down)), false)
+            .unwrap();
         assert_eq!(keys, vec![(KeyCode::Joy1 as i32, true)]);
-        state.button(0, true, &mut |_, _, _| panic!("transition swallowed"), true).unwrap();
+        state
+            .button(0, true, &mut |_, _, _| panic!("transition swallowed"), true)
+            .unwrap();
         assert!(state.button(256, true, &mut |_, _, _| {}, false).is_err());
         state.remove_device(&mut |key, down, _| keys.push((key, down)));
         assert_eq!(keys.len(), 2);
@@ -313,9 +321,15 @@ mod tests {
         state.pov(0, 1);
         state.axis(4, 1000);
         state
-            .windows_frame(Some(0.15), 6, 0.02, &mut |key, down, _| keys.push((key, down)), &mut |dx, dy, _| {
-                mouse.push((dx, dy));
-            })
+            .windows_frame(
+                Some(0.15),
+                6,
+                0.02,
+                &mut |key, down, _| keys.push((key, down)),
+                &mut |dx, dy, _| {
+                    mouse.push((dx, dy));
+                },
+            )
             .unwrap();
         assert_eq!(keys, vec![(KeyCode::Joy24 as i32, true)]);
         assert_eq!(mouse, vec![(20, 0)]);

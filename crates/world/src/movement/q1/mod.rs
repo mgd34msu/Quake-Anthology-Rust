@@ -12,12 +12,13 @@ pub mod result;
 pub mod types;
 pub mod water_transition;
 
+pub use monsters::{
+    create_q1_monster_movement, Q1MonsterMoveServices, Q1MonsterMoveState, Q1MonsterMovement, Q1_FLAG_PARTIALGROUND,
+};
 pub use netquake::{create_q1_movement_provider, move_netquake};
-pub use quakeworld::{create_qw_movement_provider, move_quake_world};
+pub use player_actions::{q1_check_water_jump, q1_player_jump, Q1JumpAction, Q1JumpResult};
 pub use pusher::{move_q1_pusher, step_q1_pusher};
-pub use player_actions::{Q1JumpAction, Q1JumpResult, q1_check_water_jump, q1_player_jump};
 pub use pusher::{Q1PushInput, Q1PusherInput, Q1PusherMovement};
-pub use monsters::{Q1_FLAG_PARTIALGROUND, Q1MonsterMoveServices, Q1MonsterMoveState,
-    Q1MonsterMovement, create_q1_monster_movement};
+pub use quakeworld::{create_qw_movement_provider, move_quake_world};
 pub use types::*;
-pub use water_transition::{Q1WaterTransition, q1_water_transition};
+pub use water_transition::{q1_water_transition, Q1WaterTransition};

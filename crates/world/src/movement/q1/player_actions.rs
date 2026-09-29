@@ -5,11 +5,10 @@
 
 use qa_core::math::Vec3;
 
-use super::common::{MovementContext, seconds};
+use super::common::{seconds, MovementContext};
 use super::types::{
-    Q1_CONTENTS_SLIME, Q1_CONTENTS_WATER, Q1_FLAG_JUMPRELEASED, Q1_FLAG_ONGROUND, Q1_FLAG_WATERJUMP,
-    Q1MovementHooks, Q1MovementInput, Q1MovementOptions, Q1MovementServices, Q1MovementState,
-    Q1PlayerInput, Q1State, Q1TraceMove,
+    Q1MovementHooks, Q1MovementInput, Q1MovementOptions, Q1MovementServices, Q1MovementState, Q1PlayerInput, Q1State,
+    Q1TraceMove, Q1_CONTENTS_SLIME, Q1_CONTENTS_WATER, Q1_FLAG_JUMPRELEASED, Q1_FLAG_ONGROUND, Q1_FLAG_WATERJUMP,
 };
 
 /// Jump result action.
@@ -35,10 +34,7 @@ pub struct Q1JumpResult {
 /// Gamecode jump/swim entry. Gamecode owns sounds and timers; do not run in
 /// addition to QC.
 #[must_use]
-pub fn q1_player_jump<S: Q1MovementServices>(
-    state: &Q1MovementState,
-    services: &S,
-) -> Q1JumpResult {
+pub fn q1_player_jump<S: Q1MovementServices>(state: &Q1MovementState, services: &S) -> Q1JumpResult {
     if state.flags & Q1_FLAG_WATERJUMP != 0 {
         return Q1JumpResult {
             state: state.clone(),
@@ -93,11 +89,7 @@ pub fn q1_check_water_jump<S: Q1MovementServices, H: Q1MovementHooks>(
     services: &mut S,
     options: Q1MovementOptions<H>,
 ) -> Q1MovementState {
-    let mut context = MovementContext::new(
-        Q1PlayerInput::Netquake(input.clone()),
-        services,
-        options,
-    );
+    let mut context = MovementContext::new(Q1PlayerInput::Netquake(input.clone()), services, options);
     let frame_seconds = seconds(input.fields.frame.time);
     q1_check_water_jump_in(&mut context, &input.state, frame_seconds)
 }
@@ -111,11 +103,18 @@ pub fn q1_check_water_jump_in<S: Q1MovementServices, H: Q1MovementHooks>(
     let state = state.clone();
     let axes = context.math.angles(state.angles);
     // progs106 ignores normalize(v_forward)'s return value after zeroing Z.
-    let forward = context.math.vec(f64::from(axes.forward.x), f64::from(axes.forward.y), 0.0);
+    let forward = context
+        .math
+        .vec(f64::from(axes.forward.x), f64::from(axes.forward.y), 0.0);
     let up8 = context.math.vec(0.0, 0.0, 8.0);
     let start = context.math.add(state.origin, up8);
     let end = context.math.ma(start, 24.0, forward);
-    let low = context.trace(start, end, super::super::types::TraceShape::Point, Q1TraceMove::NoMonsters);
+    let low = context.trace(
+        start,
+        end,
+        super::super::types::TraceShape::Point,
+        Q1TraceMove::NoMonsters,
+    );
     if low.fraction == 1.0 {
         return state;
     }
@@ -125,7 +124,12 @@ pub fn q1_check_water_jump_in<S: Q1MovementServices, H: Q1MovementHooks>(
     let start = context.math.add(start, rise);
     let direction = context.math.scale(low.source_plane.normal, -50.0);
     let end = context.math.ma(start, 24.0, forward);
-    let high = context.trace(start, end, super::super::types::TraceShape::Point, Q1TraceMove::NoMonsters);
+    let high = context.trace(
+        start,
+        end,
+        super::super::types::TraceShape::Point,
+        Q1TraceMove::NoMonsters,
+    );
     if high.fraction != 1.0 {
         return Q1MovementState {
             water_jump_direction: direction,
@@ -134,11 +138,9 @@ pub fn q1_check_water_jump_in<S: Q1MovementServices, H: Q1MovementHooks>(
     }
     Q1MovementState {
         flags: (state.flags | Q1_FLAG_WATERJUMP) & !Q1_FLAG_JUMPRELEASED,
-        velocity: context.math.vec(
-            f64::from(state.velocity.x),
-            f64::from(state.velocity.y),
-            225.0,
-        ),
+        velocity: context
+            .math
+            .vec(f64::from(state.velocity.x), f64::from(state.velocity.y), 225.0),
         water_jump_direction: direction,
         teleport_time_seconds: f64::from(n.store(n.add(frame_time_seconds, 2.0))),
         ..state
@@ -181,10 +183,7 @@ mod tests {
     #[test]
     fn ground_jump_needs_ground_and_release() {
         let services = NullActions;
-        let airborne = q1_player_jump(
-            &jump_state(Q1_FLAG_JUMPRELEASED, 0, Q1_CONTENTS_WATER),
-            &services,
-        );
+        let airborne = q1_player_jump(&jump_state(Q1_FLAG_JUMPRELEASED, 0, Q1_CONTENTS_WATER), &services);
         assert_eq!(airborne.action, Q1JumpAction::None);
         let held = q1_player_jump(&jump_state(Q1_FLAG_ONGROUND, 0, Q1_CONTENTS_WATER), &services);
         assert_eq!(held.action, Q1JumpAction::None);

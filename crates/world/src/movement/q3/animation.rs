@@ -25,11 +25,7 @@ pub struct Q3AnimationContext {
     pub event_sequence: i32,
 }
 
-fn result(
-    context: &Q3AnimationContext,
-    state: AnimationState,
-    events: &[i32],
-) -> Q3AnimationStepResult {
+fn result(context: &Q3AnimationContext, state: AnimationState, events: &[i32]) -> Q3AnimationStepResult {
     let mut effects = Vec::new();
     if state != context.animation.state {
         effects.push(MovementEffect::Animation {
@@ -193,12 +189,9 @@ pub fn run_q3_torso_operation(
     context: &Q3AnimationContext,
     continue_animation: bool,
 ) -> Result<Q3AnimationStepResult, MovementError> {
-    let (legs, torso, legs_timer, torso_timer) = q3_state(context).map_err(|_| {
-        MovementError::Contract("Q3 torso operations require the selected Q3 character adapter")
-    })?;
-    if context.dead
-        || (continue_animation && ((torso & !128) == animation || torso_timer > 0))
-    {
+    let (legs, torso, legs_timer, torso_timer) = q3_state(context)
+        .map_err(|_| MovementError::Contract("Q3 torso operations require the selected Q3 character adapter"))?;
+    if context.dead || (continue_animation && ((torso & !128) == animation || torso_timer > 0)) {
         return Ok(result(context, context.animation.state, &[]));
     }
     Ok(result(
@@ -317,8 +310,7 @@ mod tests {
             legs_timer_milliseconds: 130,
             torso_timer_milliseconds: 20,
         };
-        let out =
-            run_q3_animation_operation(Q3AnimationRequest::DropTimers, &context).unwrap();
+        let out = run_q3_animation_operation(Q3AnimationRequest::DropTimers, &context).unwrap();
         match out.animation.state {
             AnimationState::Q3 {
                 legs_timer_milliseconds,
@@ -335,8 +327,7 @@ mod tests {
     fn gesture_emits_taunt() {
         let mut context = context();
         context.buttons = B::GESTURE;
-        let out =
-            run_q3_animation_operation(Q3AnimationRequest::Gesture, &context).unwrap();
+        let out = run_q3_animation_operation(Q3AnimationRequest::Gesture, &context).unwrap();
         assert_eq!(out.effects.len(), 2);
         match out.animation.state {
             AnimationState::Q3 {

@@ -26,7 +26,11 @@ const JOYSTICK_DEFAULTS: [(&str, &str, u32); 9] = [
 ];
 
 fn joystick_profile_default() -> &'static str {
-    if cfg!(windows) { "windows" } else { "linux" }
+    if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
+    }
 }
 
 /// Every cvar name owned by MIDI and source-device settings.
@@ -59,11 +63,22 @@ pub fn register_midi_settings(cvars: &mut CvarRegistry) -> Result<(), CvarError>
 pub fn register_source_input_settings(cvars: &mut CvarRegistry) -> Result<(), CvarError> {
     let dialect = cvars.dialect();
     let mut entries: Vec<(&str, &str, u32)> = JOYSTICK_DEFAULTS.to_vec();
-    entries.push(("in_joystickProfile", joystick_profile_default(), flags::ARCHIVE | flags::LATCH));
+    entries.push((
+        "in_joystickProfile",
+        joystick_profile_default(),
+        flags::ARCHIVE | flags::LATCH,
+    ));
     for (name, value, entry_flags) in entries {
         let mapped = if dialect.is_q2() {
-            (if entry_flags & flags::ARCHIVE != 0 { q2_flags::ARCHIVE } else { 0 })
-                | (if entry_flags & flags::LATCH != 0 { q2_flags::LATCH } else { 0 })
+            (if entry_flags & flags::ARCHIVE != 0 {
+                q2_flags::ARCHIVE
+            } else {
+                0
+            }) | (if entry_flags & flags::LATCH != 0 {
+                q2_flags::LATCH
+            } else {
+                0
+            })
         } else if dialect == qa_core::cmd::Dialect::Q3 {
             entry_flags
         } else {
@@ -92,7 +107,10 @@ mod tests {
         assert_eq!(cvars.get("in_midi").unwrap().value, "0");
         assert_eq!(cvars.get("in_midichannel").unwrap().value, "1");
         assert_eq!(cvars.get("joy_threshold").unwrap().value, "0.15");
-        assert_eq!(cvars.get("in_joystickProfile").unwrap().value, joystick_profile_default());
+        assert_eq!(
+            cvars.get("in_joystickProfile").unwrap().value,
+            joystick_profile_default()
+        );
         assert_eq!(cvars.get("in_mouse").unwrap().flags & flags::ARCHIVE, flags::ARCHIVE);
         cvars.set("joy_threshold", "0.5", false).unwrap();
         register_input_device_cvars(&mut cvars).unwrap();
@@ -104,7 +122,10 @@ mod tests {
     fn maps_flags_per_dialect() {
         let mut q2 = CvarRegistry::new(Dialect::Q2Classic);
         register_source_input_settings(&mut q2).unwrap();
-        assert_eq!(q2.get("in_joystick").unwrap().flags, q2_flags::ARCHIVE | q2_flags::LATCH);
+        assert_eq!(
+            q2.get("in_joystick").unwrap().flags,
+            q2_flags::ARCHIVE | q2_flags::LATCH
+        );
         assert_eq!(q2.get("in_debugjoystick").unwrap().flags, q2_flags::NONE);
         let mut q1 = CvarRegistry::new(Dialect::Q1Netquake);
         register_source_input_settings(&mut q1).unwrap();

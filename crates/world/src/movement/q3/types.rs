@@ -11,9 +11,9 @@ use qa_core::numeric::{NumericOps, NumericProfile};
 use qa_core::time::{ClockProfile, FrameContext};
 
 use super::super::types::{
-    ActorAnimationState, AnimationState, ArsenalState, FixedMovementPose, MovementContinuation,
-    MovementEffect, MovementInputContinuation, MovementInputFields, MovementOutcome, Q3UserCommand,
-    TraceContact, TraceHit, UserCommand, WeaponState,
+    ActorAnimationState, AnimationState, ArsenalState, FixedMovementPose, MovementContinuation, MovementEffect,
+    MovementInputContinuation, MovementInputFields, MovementOutcome, Q3UserCommand, TraceContact, TraceHit,
+    UserCommand, WeaponState,
 };
 
 /// Q3 product selecting mission-pack behavior.
@@ -169,11 +169,7 @@ pub trait Q3MovementHooks {
     /// Whether the weapon is firing.
     fn firing(&mut self, context: &Q3HookContext) -> bool;
     /// Run an animation request.
-    fn animation(
-        &mut self,
-        request: Q3AnimationRequest,
-        context: &Q3HookContext,
-    ) -> Q3AnimationStepResult;
+    fn animation(&mut self, request: Q3AnimationRequest, context: &Q3HookContext) -> Q3AnimationStepResult;
     /// Run the weapon phase.
     fn weapon(&mut self, context: &Q3HookContext) -> Q3WeaponPhaseResult;
     /// Run the torso phase.
@@ -182,8 +178,7 @@ pub trait Q3MovementHooks {
 
 /// Trace callback for locomotion, mirroring donor
 /// `Q3MovementTraceFunction`.
-pub type Q3MovementTraceFn<'a> =
-    dyn FnMut(Vec3, Vec3, Bounds, ActorId, i32) -> Q3Trace + 'a;
+pub type Q3MovementTraceFn<'a> = dyn FnMut(Vec3, Vec3, Bounds, ActorId, i32) -> Q3Trace + 'a;
 
 /// Point-contents callback for locomotion.
 pub type Q3PointContentsFn<'a> = dyn FnMut(Vec3, ActorId) -> i32 + 'a;
@@ -195,13 +190,7 @@ pub type Q3PointContentsFn<'a> = dyn FnMut(Vec3, ActorId) -> i32 + 'a;
 /// touch and diagnostics observers do not need it.
 pub trait Q3MotionDriver {
     /// Begin a substep; false stops the command.
-    fn begin_step(
-        &mut self,
-        motion: &mut Q3Motion,
-        command: &mut Q3Command,
-        msec: i32,
-        substep: usize,
-    ) -> bool;
+    fn begin_step(&mut self, motion: &mut Q3Motion, command: &mut Q3Command, msec: i32, substep: usize) -> bool;
     /// End a substep; false stops the command.
     fn end_step(&mut self, _motion: &mut Q3Motion) -> bool {
         true
@@ -429,11 +418,7 @@ pub trait Q3InputApplication {
         state: Q3MovementState,
     ) -> MovementInputContinuation<Q3MovementState>;
     /// End input application.
-    fn end(
-        &mut self,
-        state: Q3MovementState,
-        failed: bool,
-    ) -> MovementContinuation<Q3MovementState>;
+    fn end(&mut self, state: Q3MovementState, failed: bool) -> MovementContinuation<Q3MovementState>;
 }
 
 /// Movement services for Quake III steps.
@@ -536,10 +521,7 @@ mod tests {
             Q3AnimationRequest::LegsTimer { milliseconds: 130 },
             Q3AnimationRequest::LegsTimer { milliseconds: 130 }
         );
-        assert_eq!(
-            Q3AnimationRequest::DropTimers,
-            Q3AnimationRequest::DropTimers
-        );
+        assert_eq!(Q3AnimationRequest::DropTimers, Q3AnimationRequest::DropTimers);
     }
 
     #[test]

@@ -17,7 +17,11 @@ pub fn int32(value: f64) -> i32 {
         return 0;
     }
     let wrapped = value.trunc() % 4_294_967_296.0;
-    let wrapped = if wrapped < 0.0 { wrapped + 4_294_967_296.0 } else { wrapped };
+    let wrapped = if wrapped < 0.0 {
+        wrapped + 4_294_967_296.0
+    } else {
+        wrapped
+    };
     if wrapped >= 2_147_483_648.0 {
         (wrapped - 4_294_967_296.0) as i32
     } else {
@@ -153,7 +157,12 @@ pub fn write_linear_blast_stereo16(paint: &[i32], output: &mut [i16], count: usi
             return Err(AudioError::BlastOutput);
         }
         output[index] = clipped(paint.get(index).copied().ok_or(AudioError::PaintAccess(index as i64))?);
-        output[index + 1] = clipped(paint.get(index + 1).copied().ok_or(AudioError::PaintAccess(index as i64 + 1))?);
+        output[index + 1] = clipped(
+            paint
+                .get(index + 1)
+                .copied()
+                .ok_or(AudioError::PaintAccess(index as i64 + 1))?,
+        );
     }
     Ok(())
 }
@@ -168,7 +177,10 @@ pub fn write_linear_blast_stereo16_float(paint: &[f64], output: &mut [i16], coun
             return Err(AudioError::BlastOutput);
         }
         for offset in [0, 1] {
-            let sample = paint.get(index + offset).copied().ok_or(AudioError::PaintAccess(index as i64 + offset as i64))?;
+            let sample = paint
+                .get(index + offset)
+                .copied()
+                .ok_or(AudioError::PaintAccess(index as i64 + offset as i64))?;
             output[index + offset] = (sample / 256.0).floor().clamp(-32768.0, 32767.0) as i16;
         }
     }
@@ -209,15 +221,31 @@ impl SourceDmaBuffer<'_> {
 }
 
 /// Swap raw sample bytes on big-endian hosts (`S_ByteSwapRawSamples`).
-pub fn byte_swap_raw_samples(samples: i32, width: i32, channels: i32, data: &mut [u8], little_endian: bool) -> Result<(), AudioError> {
+pub fn byte_swap_raw_samples(
+    samples: i32,
+    width: i32,
+    channels: i32,
+    data: &mut [u8],
+    little_endian: bool,
+) -> Result<(), AudioError> {
     if width != 2 || little_endian {
         return Ok(());
     }
-    let samples = if channels == 2 { samples.wrapping_shl(1) } else { samples };
+    let samples = if channels == 2 {
+        samples.wrapping_shl(1)
+    } else {
+        samples
+    };
     for index in 0..samples.max(0) as usize {
         let offset = index * 2;
-        let first = data.get(offset).copied().ok_or(AudioError::PaintAccess(offset as i64))?;
-        let second = data.get(offset + 1).copied().ok_or(AudioError::PaintAccess(offset as i64 + 1))?;
+        let first = data
+            .get(offset)
+            .copied()
+            .ok_or(AudioError::PaintAccess(offset as i64))?;
+        let second = data
+            .get(offset + 1)
+            .copied()
+            .ok_or(AudioError::PaintAccess(offset as i64 + 1))?;
         data[offset] = second;
         data[offset + 1] = first;
     }
@@ -225,7 +253,13 @@ pub fn byte_swap_raw_samples(samples: i32, width: i32, channels: i32, data: &mut
 }
 
 /// Transfer paint blocks into the DMA ring (`S_TransferPaintBuffer`).
-pub fn transfer_paint_buffer(paint: &mut [i32], dma: &mut SourceDmaBuffer, painted_time: i64, end_time: i64, test_sound: bool) -> Result<(), AudioError> {
+pub fn transfer_paint_buffer(
+    paint: &mut [i32],
+    dma: &mut SourceDmaBuffer,
+    painted_time: i64,
+    end_time: i64,
+    test_sound: bool,
+) -> Result<(), AudioError> {
     let frames = end_time - painted_time;
     let capacity = dma.capacity();
     if frames < 0 || capacity < dma.channels() || !capacity.is_power_of_two() {
@@ -246,7 +280,12 @@ pub fn transfer_paint_buffer(paint: &mut [i32], dma: &mut SourceDmaBuffer, paint
     let mask = capacity - 1;
     let mut destination = ((painted_time * dma.channels() as i64) & mask as i64) as usize;
     for index in 0..count {
-        let sample = clipped(paint.get(index * step).copied().ok_or(AudioError::PaintAccess((index * step) as i64))?);
+        let sample = clipped(
+            paint
+                .get(index * step)
+                .copied()
+                .ok_or(AudioError::PaintAccess((index * step) as i64))?,
+        );
         match dma {
             SourceDmaBuffer::S16 { samples, .. } => samples[destination] = sample,
             SourceDmaBuffer::S8 { samples, .. } => samples[destination] = ((sample as i32 >> 8) + 128) as u8,
@@ -274,13 +313,23 @@ impl SourceCompressedPainter {
         }
     }
 
-    fn add(paint: &mut [i32], index: usize, sample: i32, channel: &SourcePaintChannel, volume: f64) -> Result<(), AudioError> {
+    fn add(
+        paint: &mut [i32],
+        index: usize,
+        sample: i32,
+        channel: &SourcePaintChannel,
+        volume: f64,
+    ) -> Result<(), AudioError> {
         let gain = int32(volume);
         let left = sample.wrapping_mul(channel.leftvol.wrapping_mul(gain)) >> 8;
         let right = sample.wrapping_mul(channel.rightvol.wrapping_mul(gain)) >> 8;
-        let slot = paint.get_mut(index * 2).ok_or(AudioError::PaintAccess(index as i64 * 2))?;
+        let slot = paint
+            .get_mut(index * 2)
+            .ok_or(AudioError::PaintAccess(index as i64 * 2))?;
         *slot = slot.wrapping_add(left);
-        let slot = paint.get_mut(index * 2 + 1).ok_or(AudioError::PaintAccess(index as i64 * 2 + 1))?;
+        let slot = paint
+            .get_mut(index * 2 + 1)
+            .ok_or(AudioError::PaintAccess(index as i64 * 2 + 1))?;
         *slot = slot.wrapping_add(right);
         Ok(())
     }
@@ -313,7 +362,11 @@ impl SourceCompressedPainter {
             self.scratch_sound = Some(sound as *const SourcePaintSound);
         }
         for index in 0..count {
-            let sample = self.scratch.get(sample_offset as usize).copied().ok_or(AudioError::PaintAccess(sample_offset))?;
+            let sample = self
+                .scratch
+                .get(sample_offset as usize)
+                .copied()
+                .ok_or(AudioError::PaintAccess(sample_offset))?;
             Self::add(paint, buffer_offset + index, i32::from(sample), channel, volume)?;
             sample_offset += 1;
             if sample_offset == 4096 {
@@ -352,7 +405,11 @@ impl SourceCompressedPainter {
             self.scratch_sound = Some(sound as *const SourcePaintSound);
         }
         for index in 0..count {
-            let sample = self.scratch.get(sample_offset as usize).copied().ok_or(AudioError::PaintAccess(sample_offset))?;
+            let sample = self
+                .scratch
+                .get(sample_offset as usize)
+                .copied()
+                .ok_or(AudioError::PaintAccess(sample_offset))?;
             Self::add(paint, buffer_offset + index, i32::from(sample), channel, volume)?;
             sample_offset += 1;
             if sample_offset == 2048 {
@@ -380,14 +437,28 @@ impl SourceCompressedPainter {
     ) -> Result<(), AudioError> {
         let mut current = sound.sound_data.as_deref().ok_or(AudioError::NullPaintChunk)?;
         while sample_offset >= 2048 {
-            current = current.next.as_deref().or(sound.sound_data.as_deref()).ok_or(AudioError::NullPaintChunk)?;
+            current = current
+                .next
+                .as_deref()
+                .or(sound.sound_data.as_deref())
+                .ok_or(AudioError::NullPaintChunk)?;
             sample_offset -= 2048;
         }
         if !channel.doppler {
             for index in 0..count {
-                let byte = current.data.get(sample_offset as usize).copied().ok_or(AudioError::PaintAccess(sample_offset))?;
+                let byte = current
+                    .data
+                    .get(sample_offset as usize)
+                    .copied()
+                    .ok_or(AudioError::PaintAccess(sample_offset))?;
                 sample_offset += 1;
-                Self::add(paint, buffer_offset + index, i32::from(codec.mu_law_sample(byte)), channel, volume)?;
+                Self::add(
+                    paint,
+                    buffer_offset + index,
+                    i32::from(codec.mu_law_sample(byte)),
+                    channel,
+                    volume,
+                )?;
                 if sample_offset == 2048 {
                     current = current.next.as_deref().ok_or(AudioError::NullPaintChunk)?;
                     sample_offset = 0;
@@ -400,11 +471,25 @@ impl SourceCompressedPainter {
                 if at < 0.0 {
                     return Err(AudioError::PaintAccess(at as i64));
                 }
-                let byte = current.data.get(at as usize).copied().ok_or(AudioError::PaintAccess(at as i64))?;
+                let byte = current
+                    .data
+                    .get(at as usize)
+                    .copied()
+                    .ok_or(AudioError::PaintAccess(at as i64))?;
                 offset = (f64::from(offset) + channel.doppler_scale) as f32;
-                Self::add(paint, buffer_offset + index, i32::from(codec.mu_law_sample(byte)), channel, volume)?;
+                Self::add(
+                    paint,
+                    buffer_offset + index,
+                    i32::from(codec.mu_law_sample(byte)),
+                    channel,
+                    volume,
+                )?;
                 if offset >= 2048.0 {
-                    current = current.next.as_deref().or(sound.sound_data.as_deref()).ok_or(AudioError::NullPaintChunk)?;
+                    current = current
+                        .next
+                        .as_deref()
+                        .or(sound.sound_data.as_deref())
+                        .ok_or(AudioError::NullPaintChunk)?;
                     offset = 0.0;
                 }
             }
@@ -436,7 +521,10 @@ mod tests {
         assert!(SourceSoundResampler::new(1.0, 0.0, 10.0).is_err());
         let mut output = [0i16; 4];
         let data = [0u8, 128, 255, 64];
-        assert_eq!(resample_sound_raw(&mut output, 11025.0, 11025.0, 1, 4.0, &data).unwrap(), 4);
+        assert_eq!(
+            resample_sound_raw(&mut output, 11025.0, 11025.0, 1, 4.0, &data).unwrap(),
+            4
+        );
         assert_eq!(output, [(-128 << 8) as i16, 0, (127 << 8) as i16, (-64 << 8) as i16]);
     }
 
@@ -450,7 +538,17 @@ mod tests {
         assert!(write_linear_blast_stereo16(&[0], &mut output, 3).is_err());
         let mut paint = [256i32, 512, 768, 1024];
         let mut ring = [0i16; 4];
-        transfer_paint_buffer(&mut paint, &mut SourceDmaBuffer::S16 { channels: 2, samples: &mut ring }, 0, 2, false).unwrap();
+        transfer_paint_buffer(
+            &mut paint,
+            &mut SourceDmaBuffer::S16 {
+                channels: 2,
+                samples: &mut ring,
+            },
+            0,
+            2,
+            false,
+        )
+        .unwrap();
         assert_eq!(ring, [1, 2, 3, 4]);
         let mut bytes = [0u8, 1, 2, 3];
         byte_swap_raw_samples(2, 2, 1, &mut bytes, false).unwrap();

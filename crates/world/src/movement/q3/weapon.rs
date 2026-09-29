@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 
-use super::constants::{command_buttons as B, entity_event, holdable, move_flags as F,
-    player_animation as A, powerup, weapon as W, weapon_state as S};
+use super::constants::{
+    command_buttons as B, entity_event, holdable, move_flags as F, player_animation as A, powerup, weapon as W,
+    weapon_state as S,
+};
 use super::types::Q3Product;
 
 /// External weapon slot phase, mirroring donor `Q3ExternalWeaponSlot`.
@@ -111,11 +113,7 @@ pub struct Q3HoldableState {
 
 /// True consumes this weapon step; an already-held button permits normal
 /// primary processing.
-pub fn step_q3_holdable(
-    state: &mut Q3HoldableState,
-    pressed: bool,
-    event: &mut dyn FnMut(i32),
-) -> bool {
+pub fn step_q3_holdable(state: &mut Q3HoldableState, pressed: bool, event: &mut dyn FnMut(i32)) -> bool {
     if pressed {
         if state.pm_flags & F::USE_ITEM_HELD == 0 {
             let tag = state.holdable_tag;
@@ -174,9 +172,20 @@ impl WeaponStep<'_, '_, '_> {
     fn finish_weapon_change(&mut self) {
         let requested = self.cmd.weapon;
         let mut weapon = match requested {
-            W::NONE | W::GAUNTLET | W::MACHINEGUN | W::SHOTGUN | W::GRENADE_LAUNCHER
-            | W::ROCKET_LAUNCHER | W::LIGHTNING | W::RAILGUN | W::PLASMAGUN | W::BFG
-            | W::GRAPPLING_HOOK | W::NAILGUN | W::PROX_LAUNCHER | W::CHAINGUN => requested,
+            W::NONE
+            | W::GAUNTLET
+            | W::MACHINEGUN
+            | W::SHOTGUN
+            | W::GRENADE_LAUNCHER
+            | W::ROCKET_LAUNCHER
+            | W::LIGHTNING
+            | W::RAILGUN
+            | W::PLASMAGUN
+            | W::BFG
+            | W::GRAPPLING_HOOK
+            | W::NAILGUN
+            | W::PROX_LAUNCHER
+            | W::CHAINGUN => requested,
             _ => W::NONE,
         };
         let cap = if self.state.product == Q3Product::MissionPack {
@@ -243,8 +252,7 @@ impl WeaponStep<'_, '_, '_> {
             }
             Some(Q3ExternalWeaponSlot::HolsterRequested)
                 if self.state.weapon_time <= 0
-                    && (self.state.weapon_state == S::READY
-                        || self.state.weapon_state == S::FIRING) =>
+                    && (self.state.weapon_state == S::READY || self.state.weapon_state == S::FIRING) =>
             {
                 let requested = self.cmd.weapon;
                 let cap = if self.state.product == Q3Product::MissionPack {
@@ -287,9 +295,7 @@ impl WeaponStep<'_, '_, '_> {
             self.start_torso(animation);
             return;
         }
-        if self.cmd.buttons & B::ATTACK == 0
-            || (self.state.weapon == W::GAUNTLET && !self.options.gauntlet_hit)
-        {
+        if self.cmd.buttons & B::ATTACK == 0 || (self.state.weapon == W::GAUNTLET && !self.options.gauntlet_hit) {
             self.state.weapon_time = 0;
             self.state.weapon_state = S::READY;
             return;
@@ -342,11 +348,7 @@ impl WeaponStep<'_, '_, '_> {
             }
             _ => 400,
         };
-        let persistent = if mission {
-            self.state.persistent_powerup_tag
-        } else {
-            0
-        };
+        let persistent = if mission { self.state.persistent_powerup_tag } else { 0 };
         let delay = match self.options.firing_delay.as_ref() {
             Some(delay) => delay(add_time),
             None => q3_weapon_delay(add_time, persistent, self.state.haste),

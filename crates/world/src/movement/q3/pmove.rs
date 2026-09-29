@@ -4,20 +4,14 @@
 //! `code/game/bg_pmove.c`). Named `pmove` because `move` is a strict Rust
 //! keyword.
 
-use qa_core::math::{
-    AngleVectors, Bounds, Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3,
-};
+use qa_core::math::{add3, dot3, length3, normalize3, scale3, sub3, vec3, AngleVectors, Bounds, Vec3};
 use qa_core::numeric::qvm_float_to_int;
 
 use super::super::types::{MovementError, TraceContact, TraceHit};
-use super::constants::{command_buttons as B, entity_event, move_flags as F, move_type,
-    player_animation as A};
+use super::constants::{command_buttons as B, entity_event, move_flags as F, move_type, player_animation as A};
 use super::postures::q3_invulnerability_pose;
-use super::slide_move::{SlideMoveContext, SlideSink, clip_velocity, slide_move, step_slide_move};
-use super::types::{
-    Q3AnimationRequest, Q3Command, Q3Motion, Q3MotionDriver, Q3MotionOptions, Q3MotionResult,
-    Q3Trace,
-};
+use super::slide_move::{clip_velocity, slide_move, step_slide_move, SlideMoveContext, SlideSink};
+use super::types::{Q3AnimationRequest, Q3Command, Q3Motion, Q3MotionDriver, Q3MotionOptions, Q3MotionResult, Q3Trace};
 use super::view::q3_view_angles;
 
 const ALL_TIMES: i32 = F::TIME_WATERJUMP | F::TIME_LAND | F::TIME_KNOCKBACK;
@@ -87,16 +81,8 @@ pub fn qvm_angle_vectors(angles: Vec3) -> AngleVectors {
     let (sr, cr) = roll.sin_cos();
     AngleVectors {
         forward: vec3(cp * cy, cp * sy, -sp),
-        right: vec3(
-            (-sr * sp) * cy + -cr * -sy,
-            (-sr * sp) * sy + -cr * cy,
-            -sr * cp,
-        ),
-        up: vec3(
-            (cr * sp) * cy + -sr * -sy,
-            (cr * sp) * sy + -sr * cy,
-            cr * cp,
-        ),
+        right: vec3((-sr * sp) * cy + -cr * -sy, (-sr * sp) * sy + -cr * cy, -sr * cp),
+        up: vec3((cr * sp) * cy + -sr * -sy, (cr * sp) * sy + -sr * cy, cr * cp),
     }
 }
 
@@ -136,11 +122,7 @@ struct MoveStep<'s, 'c, 'o, 'x> {
 }
 
 impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
-    fn new(
-        state: &'s mut Q3Motion,
-        cmd: &'c mut Q3Command,
-        options: &'o mut Q3MotionOptions<'x>,
-    ) -> Self {
+    fn new(state: &'s mut Q3Motion, cmd: &'c mut Q3Command, options: &'o mut Q3MotionOptions<'x>) -> Self {
         let bounds = options.current_bounds.unwrap_or(options.standing_bounds);
         let msec = (cmd.server_time - state.command_time).clamp(1, 200);
         let frame_time = (msec as f32) * 0.001;
@@ -191,9 +173,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
             return;
         }
         if self.contacts.iter().any(|previous| match &previous.hit {
-            TraceHit::Actor { actor: other } => {
-                qa_core::identity::same_actor(other, actor)
-            }
+            TraceHit::Actor { actor: other } => qa_core::identity::same_actor(other, actor),
             _ => false,
         }) {
             return;
@@ -245,9 +225,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
                     return;
                 }
                 if self.contacts.iter().any(|previous| match &previous.hit {
-                    TraceHit::Actor { actor: other } => {
-                        qa_core::identity::same_actor(other, actor)
-                    }
+                    TraceHit::Actor { actor: other } => qa_core::identity::same_actor(other, actor),
                     _ => false,
                 }) {
                     return;
@@ -299,9 +277,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
                     return;
                 }
                 if self.contacts.iter().any(|previous| match &previous.hit {
-                    TraceHit::Actor { actor: other } => {
-                        qa_core::identity::same_actor(other, actor)
-                    }
+                    TraceHit::Actor { actor: other } => qa_core::identity::same_actor(other, actor),
                     _ => false,
                 }) {
                     return;
@@ -436,11 +412,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         self.walking = false;
         self.state.pm_flags |= F::JUMP_HELD;
         self.state.ground = TraceHit::None;
-        self.state.velocity = vec3(
-            self.state.velocity.x,
-            self.state.velocity.y,
-            270.0,
-        );
+        self.state.velocity = vec3(self.state.velocity.x, self.state.velocity.y, 270.0);
         self.event(entity_event::JUMP);
         self.jump_animation();
         true
@@ -479,8 +451,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
 
     fn wish_velocity(&self, scale: f32) -> Vec3 {
         let component = |forward: f32, right: f32| {
-            (scale * forward) * self.cmd.forwardmove as f32
-                + (scale * right) * self.cmd.rightmove as f32
+            (scale * forward) * self.cmd.forwardmove as f32 + (scale * right) * self.cmd.rightmove as f32
         };
         vec3(
             component(self.forward.x, self.right.x),
@@ -507,8 +478,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         if let Some(ground) = self.ground_normal {
             if dot3(self.state.velocity, ground) < 0.0 {
                 let speed = length3(self.state.velocity);
-                self.state.velocity =
-                    scale3(normalize3(clip_velocity(self.state.velocity, ground)), speed);
+                self.state.velocity = scale3(normalize3(clip_velocity(self.state.velocity, ground)), speed);
             }
         }
         self.slide(false);
@@ -543,8 +513,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
     }
 
     fn grapple_move(&mut self) {
-        self.state.velocity =
-            q3_grapple_velocity(self.state.origin, self.state.grapple_point, self.forward);
+        self.state.velocity = q3_grapple_velocity(self.state.origin, self.state.grapple_point, self.forward);
         self.ground_normal = None;
     }
 
@@ -567,14 +536,8 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         self.friction();
         let scale = self.command_scale();
         self.movement_direction();
-        self.forward = normalize3(clip_velocity(
-            vec3(self.forward.x, self.forward.y, 0.0),
-            normal,
-        ));
-        self.right = normalize3(clip_velocity(
-            vec3(self.right.x, self.right.y, 0.0),
-            normal,
-        ));
+        self.forward = normalize3(clip_velocity(vec3(self.forward.x, self.forward.y, 0.0), normal));
+        self.right = normalize3(clip_velocity(vec3(self.right.x, self.right.y, 0.0), normal));
         let wish = add3(
             scale3(self.forward, self.cmd.forwardmove as f32),
             scale3(self.right, self.cmd.rightmove as f32),
@@ -587,8 +550,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
             let water_scale = 1.0 - 0.5 * (self.waterlevel as f32 / 3.0);
             wish_speed = wish_speed.min(self.state.speed * water_scale);
         }
-        let sliding = self.ground_surface_flags & SURF_SLICK != 0
-            || self.state.pm_flags & F::TIME_KNOCKBACK != 0;
+        let sliding = self.ground_surface_flags & SURF_SLICK != 0 || self.state.pm_flags & F::TIME_KNOCKBACK != 0;
         let direction = normalize3(wish);
         self.accelerate(direction, wish_speed, if sliding { 1.0 } else { 10.0 });
         if sliding {
@@ -599,8 +561,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
             );
         }
         let speed = length3(self.state.velocity);
-        self.state.velocity =
-            scale3(normalize3(clip_velocity(self.state.velocity, normal)), speed);
+        self.state.velocity = scale3(normalize3(clip_velocity(self.state.velocity, normal)), speed);
         if self.state.velocity.x != 0.0 || self.state.velocity.y != 0.0 {
             self.step_slide(false);
         }
@@ -621,10 +582,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         let length = length3(wish);
         let direction = normalize3(wish);
         self.accelerate(direction, length * self.command_scale(), 10.0);
-        self.state.origin = add3(
-            self.state.origin,
-            scale3(self.state.velocity, self.frame_time),
-        );
+        self.state.origin = add3(self.state.origin, scale3(self.state.velocity, self.frame_time));
     }
 
     fn footstep_for_surface(&self) -> i32 {
@@ -646,10 +604,9 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
             },
             true,
         );
-        self.options.driver.animation(
-            Q3AnimationRequest::LegsTimer { milliseconds: 130 },
-            &mut *self.state,
-        );
+        self.options
+            .driver
+            .animation(Q3AnimationRequest::LegsTimer { milliseconds: 130 }, &mut *self.state);
         let dist = self.state.origin.z - self.previous_origin.z;
         let velocity = self.previous_velocity.z;
         let acceleration = qvm_float_to_int(-self.state.gravity) as f32;
@@ -799,12 +756,10 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         let previous_duck = self.state.pm_flags & F::DUCKED;
         let postures = self.options.postures;
         if self.state.invulnerable || self.options.pose.is_some() {
-            let pose = self.options.pose.unwrap_or_else(|| {
-                q3_invulnerability_pose(
-                    self.state.pm_flags & F::INVULEXPAND != 0,
-                    &postures,
-                )
-            });
+            let pose = self
+                .options
+                .pose
+                .unwrap_or_else(|| q3_invulnerability_pose(self.state.pm_flags & F::INVULEXPAND != 0, &postures));
             self.bounds = pose.bounds;
             if pose.crouched {
                 self.state.pm_flags |= F::DUCKED;
@@ -882,39 +837,17 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         }
         let backwards = self.state.pm_flags & F::BACKWARDS_RUN != 0;
         let (bob, footstep) = if self.state.pm_flags & F::DUCKED != 0 {
-            self.legs(
-                if backwards {
-                    A::LEGS_BACKCR
-                } else {
-                    A::LEGS_WALKCR
-                },
-                false,
-            );
+            self.legs(if backwards { A::LEGS_BACKCR } else { A::LEGS_WALKCR }, false);
             (0.5f32, false)
         } else if self.cmd.buttons & B::WALKING == 0 {
-            self.legs(
-                if backwards {
-                    A::LEGS_BACK
-                } else {
-                    A::LEGS_RUN
-                },
-                false,
-            );
+            self.legs(if backwards { A::LEGS_BACK } else { A::LEGS_RUN }, false);
             (0.4f32, true)
         } else {
-            self.legs(
-                if backwards {
-                    A::LEGS_BACKWALK
-                } else {
-                    A::LEGS_WALK
-                },
-                false,
-            );
+            self.legs(if backwards { A::LEGS_BACKWALK } else { A::LEGS_WALK }, false);
             (0.3f32, false)
         };
         let old = self.state.bob_cycle;
-        self.state.bob_cycle =
-            ((old as f32 + bob * self.msec as f32).trunc() as i32) & 255;
+        self.state.bob_cycle = ((old as f32 + bob * self.msec as f32).trunc() as i32) & 255;
         if ((old + 64) ^ (self.state.bob_cycle + 64)) & 128 != 0 {
             if self.waterlevel == 0 && footstep && !self.options.no_footsteps {
                 let footstep = self.footstep_for_surface();
@@ -1026,8 +959,7 @@ impl<'s, 'c, 'o, 'x> MoveStep<'s, 'c, 'o, 'x> {
         }
         self.drop_timers();
         if self.options.pose.is_some()
-            || (self.state.product == super::types::Q3Product::MissionPack
-                && self.state.invulnerable)
+            || (self.state.product == super::types::Q3Product::MissionPack && self.state.invulnerable)
         {
             self.cmd.forwardmove = 0;
             self.cmd.rightmove = 0;
@@ -1075,9 +1007,7 @@ pub fn move_player(
 ) -> Result<Q3MotionResult, MovementError> {
     for axis in [command.forwardmove, command.rightmove, command.upmove] {
         if axis < -128 || axis > 127 {
-            return Err(MovementError::Range(
-                "Command movement must be a signed byte",
-            ));
+            return Err(MovementError::Range("Command movement must be a signed byte"));
         }
     }
     let fixed = options.fixed_msec.unwrap_or(66);
@@ -1333,17 +1263,9 @@ mod tests {
 
     #[test]
     fn grapple_pulls_toward_point() {
-        let velocity = q3_grapple_velocity(
-            vec3(0.0, 0.0, 0.0),
-            vec3(1000.0, 0.0, 0.0),
-            vec3(1.0, 0.0, 0.0),
-        );
+        let velocity = q3_grapple_velocity(vec3(0.0, 0.0, 0.0), vec3(1000.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
         assert!((velocity.x - 800.0).abs() < 0.001, "{}", velocity.x);
-        let near = q3_grapple_velocity(
-            vec3(0.0, 0.0, 0.0),
-            vec3(50.0, 0.0, 0.0),
-            vec3(1.0, 0.0, 0.0),
-        );
+        let near = q3_grapple_velocity(vec3(0.0, 0.0, 0.0), vec3(50.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0));
         assert!(near.x < 800.0 && near.x > 0.0);
     }
 }

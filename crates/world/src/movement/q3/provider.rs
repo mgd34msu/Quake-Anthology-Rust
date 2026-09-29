@@ -11,23 +11,22 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use qa_core::identity::ProviderId;
-use qa_core::math::{Bounds, vec3};
+use qa_core::math::{vec3, Bounds};
 use qa_core::numeric::Arithmetic;
 use qa_core::time::{FrameContext, SourceTime};
 
 use super::super::client_outputs::{client_movement_mode, client_movement_type, client_stance_command};
 use super::super::types::{
-    ActorAnimationState, ArsenalState, MovementContinuation, MovementDialect, MovementEffect,
-    MovementError, MovementExecution, MovementInputContinuation, MovementOutcome,
-    MovementResultFields, OrderedMovementEffect, PredictableMovementEvent, Q3UserCommand, TraceHit,
-    TraceShape, UserCommand,
+    ActorAnimationState, ArsenalState, MovementContinuation, MovementDialect, MovementEffect, MovementError,
+    MovementExecution, MovementInputContinuation, MovementOutcome, MovementResultFields, OrderedMovementEffect,
+    PredictableMovementEvent, Q3UserCommand, TraceHit, TraceShape, UserCommand,
 };
 use super::constants::{move_flags as F, move_type};
 use super::pmove::move_player;
 use super::types::{
-    Q3AnimationRequest, Q3AnimationStepResult, Q3Command, Q3HookContext, Q3Motion, Q3MotionDriver,
-    Q3MotionOptions, Q3MovementContact, Q3MovementHooks, Q3MovementInput, Q3MovementResult,
-    Q3MovementServices, Q3MovementState, Q3Postures, Q3Trace, Q3TraceQuery, Q3WeaponPhaseResult,
+    Q3AnimationRequest, Q3AnimationStepResult, Q3Command, Q3HookContext, Q3Motion, Q3MotionDriver, Q3MotionOptions,
+    Q3MovementContact, Q3MovementHooks, Q3MovementInput, Q3MovementResult, Q3MovementServices, Q3MovementState,
+    Q3Postures, Q3Trace, Q3TraceQuery, Q3WeaponPhaseResult,
 };
 
 /// Decode a source command into locomotion words.
@@ -213,7 +212,9 @@ impl<H: Q3MovementHooks> ProviderDriver<'_, H> {
         let mode = self.output_mode();
         self.mode_projected = mode.is_some();
         motion.command_time = state.command_time_milliseconds;
-        motion.pm_type = mode.map_or(state.movement_type, |mode| client_movement_type(MovementDialect::Q3, mode));
+        motion.pm_type = mode.map_or(state.movement_type, |mode| {
+            client_movement_type(MovementDialect::Q3, mode)
+        });
         motion.bob_cycle = state.bob_cycle;
         motion.pm_flags = state.movement_flags;
         motion.pm_time = state.movement_time_milliseconds;
@@ -233,7 +234,10 @@ impl<H: Q3MovementHooks> ProviderDriver<'_, H> {
         motion.event_sequence = state.predictable_event_sequence;
         motion.grapple_point = state.grapple_point;
         motion.gravity = (state.gravity * self.input.fields.environment.gravity_multiplier).trunc() as f32;
-        motion.speed = movement_speed(state.speed, self.input.fields.environment.speed_multiplier.unwrap_or(1.0)) as f32;
+        motion.speed = movement_speed(
+            state.speed,
+            self.input.fields.environment.speed_multiplier.unwrap_or(1.0),
+        ) as f32;
     }
 
     fn context(&self, motion: &Q3Motion) -> Q3HookContext {
@@ -293,13 +297,7 @@ impl<H: Q3MovementHooks> ProviderDriver<'_, H> {
 }
 
 impl<H: Q3MovementHooks> Q3MotionDriver for ProviderDriver<'_, H> {
-    fn begin_step(
-        &mut self,
-        motion: &mut Q3Motion,
-        active_command: &mut Q3Command,
-        msec: i32,
-        substep: usize,
-    ) -> bool {
+    fn begin_step(&mut self, motion: &mut Q3Motion, active_command: &mut Q3Command, msec: i32, substep: usize) -> bool {
         if self.removed || self.failure.is_some() {
             return false;
         }
@@ -336,7 +334,13 @@ impl<H: Q3MovementHooks> Q3MotionDriver for ProviderDriver<'_, H> {
             }
         }
         let rebuilt = self.continued_user_command(active_command);
-        let stance = self.input.fields.environment.client_outputs.as_ref().and_then(|outputs| outputs.stance);
+        let stance = self
+            .input
+            .fields
+            .environment
+            .client_outputs
+            .as_ref()
+            .and_then(|outputs| outputs.stance);
         match client_stance_command(UserCommand::Q3(rebuilt), stance) {
             Ok(UserCommand::Q3(effective)) => *active_command = q3_command(&effective),
             _ => {
@@ -474,7 +478,9 @@ pub fn move_q3<H: Q3MovementHooks>(
     let source = input.state.clone();
     let mut motion = Q3Motion {
         command_time: source.command_time_milliseconds,
-        pm_type: initial_mode.map_or(source.movement_type, |mode| client_movement_type(MovementDialect::Q3, mode)),
+        pm_type: initial_mode.map_or(source.movement_type, |mode| {
+            client_movement_type(MovementDialect::Q3, mode)
+        }),
         bob_cycle: source.bob_cycle,
         pm_flags: source.movement_flags,
         pm_time: source.movement_time_milliseconds,
@@ -510,13 +516,19 @@ pub fn move_q3<H: Q3MovementHooks>(
         Q3TracePolicy {
             curves: true,
             player_curve_clip: true,
-            contents_mask: 1 | 0x10000 | if source.movement_type == move_type::SPECTATOR { 0 } else { 0x2000000 },
+            contents_mask: 1
+                | 0x10000
+                | if source.movement_type == move_type::SPECTATOR {
+                    0
+                } else {
+                    0x2000000
+                },
         },
         |policy| policy(&input),
     );
     let shared: Rc<RefCell<&mut dyn Q3MovementServices>> = Rc::new(RefCell::new(services));
-    let has_application = input.fields.execution == MovementExecution::Authoritative
-        && shared.borrow_mut().input_application().is_some();
+    let has_application =
+        input.fields.execution == MovementExecution::Authoritative && shared.borrow_mut().input_application().is_some();
     let mut driver = ProviderDriver {
         id: options.id.clone(),
         hooks: options.hooks,
@@ -638,11 +650,10 @@ mod tests {
     use qa_core::numeric::{NumericOps, Q3_BINARY32_PROFILE};
     use qa_core::time::{ClockProfile, FrameContext, FramePhase, SourceTime};
 
-    use super::super::super::types::{
-        ActorAnimationState, AnimationState, ArsenalState, MovementEnvironment, MovementInputFields,
-        WeaponState,
-    };
     use super::super::super::types::ModClientMovementOutputs;
+    use super::super::super::types::{
+        ActorAnimationState, AnimationState, ArsenalState, MovementEnvironment, MovementInputFields, WeaponState,
+    };
     use super::*;
 
     struct NullServices {
@@ -826,7 +837,9 @@ mod tests {
                 self.inner.numeric
             }
             fn trace(&mut self, query: Q3TraceQuery) -> Q3Trace {
-                self.seen.borrow_mut().push((query.mask, query.curves, query.player_curve_clip));
+                self.seen
+                    .borrow_mut()
+                    .push((query.mask, query.curves, query.player_curve_clip));
                 self.inner.trace(query)
             }
             fn point_contents(&mut self, point: qa_core::math::Vec3, pass_actor: &qa_core::identity::ActorId) -> i32 {
@@ -857,7 +870,9 @@ mod tests {
         assert!(matches!(output, MovementOutcome::Active { .. }));
         let seen = seen.borrow();
         assert!(!seen.is_empty());
-        assert!(seen.iter().all(|(mask, curves, clip)| *mask == 0x10000 && !curves && !clip));
+        assert!(seen
+            .iter()
+            .all(|(mask, curves, clip)| *mask == 0x10000 && !curves && !clip));
     }
 
     #[test]

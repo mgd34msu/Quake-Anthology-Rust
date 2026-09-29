@@ -13,11 +13,14 @@ use qa_core::identity::SeatId;
 use qa_world::client::ClientFamily;
 use thiserror::Error;
 
-use super::keycodes::string_to_keynum;
-use super::{physical_mouse_button, quake_mouse_button, BindingTable, InputAction, InputBinding, InputBindingTarget, PhysicalInput, SourceAction};
 use super::keycodes::keynum_to_string;
+use super::keycodes::string_to_keynum;
 use super::weapons::WeaponBindingItem;
 use super::{parse_impulse, seat_impulse};
+use super::{
+    physical_mouse_button, quake_mouse_button, BindingTable, InputAction, InputBinding, InputBindingTarget,
+    PhysicalInput, SourceAction,
+};
 use crate::input::commands::{CommandInvocation, CommandOrigin, CommandRegistry, CommandsError};
 
 /// Named controller buttons: command, index, menu label.
@@ -69,8 +72,14 @@ pub fn named_physical_input(name: &str, device: i32) -> Option<PhysicalInput> {
     } else {
         format!("gamepad_{lower}")
     };
-    if let Some((_, button, _)) = CONTROLLER_BUTTONS.iter().find(|(command, _, _)| *command == controller_name) {
-        return Some(PhysicalInput::ControllerButton { device, button: *button });
+    if let Some((_, button, _)) = CONTROLLER_BUTTONS
+        .iter()
+        .find(|(command, _, _)| *command == controller_name)
+    {
+        return Some(PhysicalInput::ControllerButton {
+            device,
+            button: *button,
+        });
     }
     if controller_name == "gamepad_left_trigger" || controller_name == "gamepad_right_trigger" {
         return Some(PhysicalInput::ControllerAxis {
@@ -97,18 +106,33 @@ pub fn physical_input_name(input: &PhysicalInput) -> String {
             let label = CONTROLLER_BUTTONS
                 .iter()
                 .find(|(_, index, _)| *index == *button)
-                .map_or_else(|| format!("Button {}", button + 1), |(_, _, label)| (*label).to_string());
+                .map_or_else(
+                    || format!("Button {}", button + 1),
+                    |(_, _, label)| (*label).to_string(),
+                );
             format!("Pad {} {label}", device + 1)
         }
-        PhysicalInput::ControllerAxis { device, axis, direction } => {
+        PhysicalInput::ControllerAxis {
+            device,
+            axis,
+            direction,
+        } => {
             let prefix = format!("Pad {}", device + 1);
             let positive = *direction == super::AxisDirection::Positive;
             match axis {
-                super::ControllerAxis::LeftX => format!("{prefix} Left stick {}", if positive { "right" } else { "left" }),
+                super::ControllerAxis::LeftX => {
+                    format!("{prefix} Left stick {}", if positive { "right" } else { "left" })
+                }
                 super::ControllerAxis::LeftY => format!("{prefix} Left stick {}", if positive { "down" } else { "up" }),
-                super::ControllerAxis::RightX => format!("{prefix} Right stick {}", if positive { "right" } else { "left" }),
-                super::ControllerAxis::RightY => format!("{prefix} Right stick {}", if positive { "down" } else { "up" }),
-                super::ControllerAxis::LeftTrigger => format!("{prefix} Left trigger{}", if positive { "" } else { " released" }),
+                super::ControllerAxis::RightX => {
+                    format!("{prefix} Right stick {}", if positive { "right" } else { "left" })
+                }
+                super::ControllerAxis::RightY => {
+                    format!("{prefix} Right stick {}", if positive { "down" } else { "up" })
+                }
+                super::ControllerAxis::LeftTrigger => {
+                    format!("{prefix} Left trigger{}", if positive { "" } else { " released" })
+                }
                 super::ControllerAxis::RightTrigger => {
                     format!("{prefix} Right trigger{}", if positive { "" } else { " released" })
                 }
@@ -199,7 +223,10 @@ fn quoted(value: &str) -> Result<String, BindingsError> {
 }
 
 /// Archive bindings as `bind` commands (`archivedBindings`).
-pub fn archived_bindings(bindings: &[InputBinding], include_controller_bindings: bool) -> Result<Vec<String>, BindingsError> {
+pub fn archived_bindings(
+    bindings: &[InputBinding],
+    include_controller_bindings: bool,
+) -> Result<Vec<String>, BindingsError> {
     let mut commands = vec!["unbindall".to_string()];
     for binding in bindings {
         let InputBindingTarget::Command(text) = &binding.target else {
@@ -262,7 +289,10 @@ pub fn canonical_wheel_command(text: &str) -> String {
     if prefix != '+' && prefix != '-' {
         return text.to_string();
     }
-    let mode = WHEEL_COMMANDS.iter().find(|(name, _)| command[1..] == **name).map(|(_, mode)| *mode);
+    let mode = WHEEL_COMMANDS
+        .iter()
+        .find(|(name, _)| command[1..] == **name)
+        .map(|(_, mode)| *mode);
     match mode {
         None => text.to_string(),
         Some(WheelMode::Weapons) => format!("{prefix}weaponwheel"),
@@ -275,7 +305,11 @@ pub type BindingLookup = Rc<dyn Fn(&SeatId) -> Option<Rc<RefCell<BindingTable>>>
 /// Print sink for binding commands.
 pub type PrintFn = Rc<dyn Fn(&str)>;
 
-fn local_seat(invocation: &CommandInvocation, lookup: &BindingLookup, console: &Option<Rc<RefCell<BindingTable>>>) -> Option<Rc<RefCell<BindingTable>>> {
+fn local_seat(
+    invocation: &CommandInvocation,
+    lookup: &BindingLookup,
+    console: &Option<Rc<RefCell<BindingTable>>>,
+) -> Option<Rc<RefCell<BindingTable>>> {
     match invocation.root_origin() {
         CommandOrigin::LocalSeat(seat) => lookup(seat),
         CommandOrigin::LocalConsole | CommandOrigin::ServerConsole => console.clone(),
@@ -309,9 +343,16 @@ pub fn register_binding_commands(
             let device = table
                 .bindings()
                 .iter()
-                .find(|binding| matches!(binding.input, PhysicalInput::ControllerButton { .. } | PhysicalInput::ControllerAxis { .. }))
+                .find(|binding| {
+                    matches!(
+                        binding.input,
+                        PhysicalInput::ControllerButton { .. } | PhysicalInput::ControllerAxis { .. }
+                    )
+                })
                 .map(|binding| match &binding.input {
-                    PhysicalInput::ControllerButton { device, .. } | PhysicalInput::ControllerAxis { device, .. } => *device,
+                    PhysicalInput::ControllerButton { device, .. } | PhysicalInput::ControllerAxis { device, .. } => {
+                        *device
+                    }
                     _ => 0,
                 })
                 .unwrap_or(0);
@@ -322,9 +363,15 @@ pub fn register_binding_commands(
             if invocation.argv.len() == 2 {
                 match table.binding(&input) {
                     None => bind_print(&format!("{} = Unbound\n", physical_input_name(&input))),
-                    Some(InputBindingTarget::Command(text)) => bind_print(&format!("{} = {text}\n", physical_input_name(&input))),
+                    Some(InputBindingTarget::Command(text)) => {
+                        bind_print(&format!("{} = {text}\n", physical_input_name(&input)))
+                    }
                     Some(InputBindingTarget::Action(action)) => {
-                        bind_print(&format!("{} = {}\n", physical_input_name(&input), input_action_name(*action)));
+                        bind_print(&format!(
+                            "{} = {}\n",
+                            physical_input_name(&input),
+                            input_action_name(*action)
+                        ));
                     }
                 }
                 return Ok(());
@@ -386,7 +433,9 @@ pub fn register_binding_commands(
                                 axis: candidate_axis,
                                 direction: candidate_direction,
                                 ..
-                            } if candidate_axis == axis && candidate_direction == direction => Some(binding.input.clone()),
+                            } if candidate_axis == axis && candidate_direction == direction => {
+                                Some(binding.input.clone())
+                            }
                             _ => None,
                         })
                         .collect();
@@ -438,7 +487,10 @@ pub fn register_binding_commands(
 }
 
 /// Register `+weaponwheel`/`-wheel` style commands.
-pub fn register_wheel_commands(registry: &mut dyn CommandRegistry, wheel: Rc<dyn Fn(SeatId, WheelMode, bool)>) -> Vec<String> {
+pub fn register_wheel_commands(
+    registry: &mut dyn CommandRegistry,
+    wheel: Rc<dyn Fn(SeatId, WheelMode, bool)>,
+) -> Vec<String> {
     let mut registered = Vec::new();
     for (name, mode) in WHEEL_COMMANDS {
         for down in [true, false] {
@@ -499,7 +551,10 @@ fn action_commands() -> Vec<(String, SourceAction)> {
         ("klook", SourceAction::KeyLook),
         ("holster", SourceAction::Holster),
     ];
-    let mut commands: Vec<(String, SourceAction)> = named.iter().map(|(name, action)| ((*name).to_string(), *action)).collect();
+    let mut commands: Vec<(String, SourceAction)> = named
+        .iter()
+        .map(|(name, action)| ((*name).to_string(), *action))
+        .collect();
     for index in 0..15u8 {
         commands.push((format!("button{index}"), SourceAction::Button(index)));
     }
@@ -541,7 +596,10 @@ pub fn register_input_commands(
                     let Some(target) = lookup(seat) else {
                         return Ok(());
                     };
-                    let time = invocation.argv.get(2).map_or(0.0, |text| text.parse::<f64>().unwrap_or(f64::NAN));
+                    let time = invocation
+                        .argv
+                        .get(2)
+                        .map_or(0.0, |text| text.parse::<f64>().unwrap_or(f64::NAN));
                     if !time.is_finite() {
                         return Err(CommandsError::BadTimestamp);
                     }
@@ -655,12 +713,19 @@ mod tests {
 
     #[test]
     fn defaults_and_archives_cover_dialects() {
-        let items = super::super::weapons::base_weapon_binding_items(super::super::weapons::WeaponFamily::Q1, "", "classic");
+        let items =
+            super::super::weapons::base_weapon_binding_items(super::super::weapons::WeaponFamily::Q1, "", "classic");
         let q1 = default_bindings(0, Dialect::Q1Netquake, &items);
-        assert!(q1.iter().any(|binding| binding.target == InputBindingTarget::Command("+jump".to_string())));
+        assert!(q1
+            .iter()
+            .any(|binding| binding.target == InputBindingTarget::Command("+jump".to_string())));
         let q3 = default_bindings(0, Dialect::Q3, &items);
-        assert!(q3.iter().any(|binding| binding.target == InputBindingTarget::Command("+moveup".to_string())));
-        assert!(q3.iter().any(|binding| binding.target == InputBindingTarget::Command("use q1:weapon/axe".to_string())));
+        assert!(q3
+            .iter()
+            .any(|binding| binding.target == InputBindingTarget::Command("+moveup".to_string())));
+        assert!(q3
+            .iter()
+            .any(|binding| binding.target == InputBindingTarget::Command("use q1:weapon/axe".to_string())));
         let archived = archived_bindings(&q1, true).unwrap();
         assert_eq!(archived[0], "unbindall");
         assert!(archived.iter().any(|line| line.starts_with("bind \"SPACE\"")));

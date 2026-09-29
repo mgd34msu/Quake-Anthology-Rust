@@ -4,7 +4,7 @@
 
 use qa_core::numeric::NumericOps;
 
-use super::types::{SrcVec3, AXES, pm_flags};
+use super::types::{pm_flags, SrcVec3, AXES};
 
 fn clamp_pitch(view: &mut SrcVec3, numeric: &NumericOps) {
     if view[0] > 89.0 && view[0] < 180.0 {
@@ -15,17 +15,10 @@ fn clamp_pitch(view: &mut SrcVec3, numeric: &NumericOps) {
 }
 
 /// Classic short-encoded view angles.
-pub fn classic_view_angles(
-    view: &mut SrcVec3,
-    angles: [i32; 3],
-    delta: [i32; 3],
-    flags: i32,
-    numeric: &NumericOps,
-) {
+pub fn classic_view_angles(view: &mut SrcVec3, angles: [i32; 3], delta: [i32; 3], flags: i32, numeric: &NumericOps) {
     if flags & pm_flags::TIME_TELEPORT != 0 {
-        view[1] = f64::from(numeric.store(
-            numeric.mul(numeric.add(angles[1] as f64, delta[1] as f64), 360.0 / 65536.0),
-        ));
+        view[1] =
+            f64::from(numeric.store(numeric.mul(numeric.add(angles[1] as f64, delta[1] as f64), 360.0 / 65536.0)));
         view[0] = f64::from(numeric.store(0.0));
         view[2] = f64::from(numeric.store(0.0));
     } else {
@@ -38,13 +31,7 @@ pub fn classic_view_angles(
 }
 
 /// Rerelease float view angles.
-pub fn rerelease_view_angles(
-    view: &mut SrcVec3,
-    angles: SrcVec3,
-    delta: SrcVec3,
-    flags: i32,
-    numeric: &NumericOps,
-) {
+pub fn rerelease_view_angles(view: &mut SrcVec3, angles: SrcVec3, delta: SrcVec3, flags: i32, numeric: &NumericOps) {
     if flags & pm_flags::TIME_TELEPORT != 0 {
         view[1] = f64::from(numeric.store(numeric.add(angles[1], delta[1])));
         view[0] = f64::from(numeric.store(0.0));
@@ -81,7 +68,13 @@ mod tests {
         classic_view_angles(&mut view, [0, 8192, 0], [0, 0, 0], pm_flags::TIME_TELEPORT, &numeric);
         assert_eq!(view, [0.0, 45.0, 0.0]);
         let mut view = [10.0, 20.0, 30.0];
-        rerelease_view_angles(&mut view, [10.0, 20.0, 30.0], [0.0, 0.0, 0.0], pm_flags::TIME_TELEPORT, &numeric);
+        rerelease_view_angles(
+            &mut view,
+            [10.0, 20.0, 30.0],
+            [0.0, 0.0, 0.0],
+            pm_flags::TIME_TELEPORT,
+            &numeric,
+        );
         assert_eq!(view, [0.0, 20.0, 0.0]);
     }
 
