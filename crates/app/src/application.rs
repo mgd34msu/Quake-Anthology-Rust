@@ -24,8 +24,9 @@ use qa_core::identity::IdentityOwner;
 use qa_core::math::{vec3, vec4, Axis, Vec3};
 use qa_core::rng::Qrand;
 use qa_core::time::SourceTime;
+use qa_guest::server::GuestServerLogic;
 use qa_world::client::{apply_scalar, ClientCommand, ClientFamily, ScalarInput};
-use qa_world::server::{NullLogic, Server};
+use qa_world::server::Server;
 
 use crate::console::commands::{register_console_commands, ConsoleCommandServices, ConsoleCommands};
 use crate::console::queue::ConsoleQueue;
@@ -86,7 +87,7 @@ impl HeadlessSeat {
 
 /// Host application over a renderer backend.
 pub struct Application<R: RendererBackend> {
-    server: Server<NullLogic>,
+    server: Server<GuestServerLogic>,
     renderer: R,
     audio: ChannelPool,
     seats: Vec<HeadlessSeat>,
@@ -231,12 +232,12 @@ impl<R: RendererBackend> Application<R> {
 
     /// Borrow the server.
     #[must_use]
-    pub fn server(&self) -> &Server<NullLogic> {
+    pub fn server(&self) -> &Server<GuestServerLogic> {
         &self.server
     }
 
     /// Borrow the server mutably.
-    pub fn server_mut(&mut self) -> &mut Server<NullLogic> {
+    pub fn server_mut(&mut self) -> &mut Server<GuestServerLogic> {
         &mut self.server
     }
 

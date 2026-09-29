@@ -7,11 +7,24 @@
 //! (guest checkpoints), `src/world/actors/callbacks.ts` (invocation stack),
 //! `src/compat/qc/entity-host.ts` (edict fields).
 
+// `GuestError` is intentionally descriptive; boxing it at every fallible
+// boundary would obscure signatures for no runtime gain.
+#![allow(clippy::result_large_err)]
+
+pub mod abi;
 pub mod checkpoint;
+pub mod core;
+pub mod elf;
 pub mod error;
 pub mod fields;
+pub mod floating_point;
+pub mod pe;
 pub mod registry;
+pub mod runtime;
 pub mod save;
+pub mod server;
 pub mod traits;
+pub mod x64;
+pub mod x86;
 
 pub use error::GuestError;
