@@ -36,6 +36,10 @@ pub struct EntityState {
     pub skin: u8,
     /// Effects.
     pub effects: u8,
+    /// Entity alpha (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub alpha: u8,
+    /// Entity scale (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub scale: u8,
     /// Origin.
     pub origin: [f64; 3],
     /// Angles in degrees.
@@ -623,6 +627,8 @@ mod tests {
             colormap: 11,
             skin: 2,
             effects: 5,
+            alpha: 0,
+            scale: 16,
             origin: [12.5, -4.25, 100.0],
             angles: [0.0, 90.0, 180.0],
         }

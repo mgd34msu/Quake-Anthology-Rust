@@ -59,6 +59,12 @@ pub struct QwEntityState {
     pub skinnum: u8,
     /// Effects.
     pub effects: u8,
+    /// Entity flags (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub flags: u16,
+    /// Entity alpha (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub alpha: u8,
+    /// Entity scale (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub scale: u8,
     /// Solid for prediction (`U_SOLID`).
     pub solid: bool,
 }
@@ -528,6 +534,9 @@ mod tests {
             colormap: 11,
             skinnum: 2,
             effects: 5,
+            flags: 0,
+            alpha: 0,
+            scale: 16,
             solid: true,
         }
     }

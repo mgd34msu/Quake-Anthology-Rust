@@ -9,6 +9,7 @@ pub mod huffman;
 pub mod msg;
 pub mod protocol;
 pub mod q1;
+pub mod q1_checkpoint;
 pub mod q1_chktbl;
 pub mod q1_net;
 pub mod q1_wide;
