@@ -193,6 +193,9 @@ impl Parser<'_> {
         while self.at < self.chars.len() && self.chars[self.at].is_ascii_digit() {
             self.at += 1;
         }
+        if start == self.at {
+            return Ok(0);
+        }
         let value: i64 = self.chars[start..self.at].iter().collect::<String>().parse().unwrap_or(i64::MAX);
         if value > 0x7fff_ffff {
             return Err(FormatFailure {

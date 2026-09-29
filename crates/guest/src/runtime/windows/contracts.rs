@@ -10,8 +10,8 @@ use crate::abi::runner::{GuestCallFailure, GuestCallRequest};
 use crate::core::callbacks::{GuestHostCallback, HookState, HostCallContext, HostCallbackFn};
 use crate::core::contracts::{
     CallbackId, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature,
-    GuestCallValue, GuestCallbackReference, GuestExportTarget, GuestImportResolution,
-    GuestStorage, GuestSymbolName, GuestValueLayout, NativeCallAbi,
+    GuestCallValue, GuestCallbackReference, GuestExportTarget, GuestStorage, GuestSymbolName,
+    GuestValueLayout, NativeCallAbi,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
@@ -293,6 +293,17 @@ pub fn import_key(library: &str, name: &str) -> String {
     format!("{}!{name}", canonical_library(library))
 }
 
+/// Host clock in milliseconds since the epoch.
+pub fn now_millis(shared: &SharedWindows) -> i64 {
+    if let Some(now) = &shared.borrow().capabilities.now_milliseconds {
+        return now();
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Memory-independent service context.
 #[derive(Debug, Clone)]
 pub struct WindowsContext {
@@ -369,7 +380,7 @@ impl WindowsContext {
             }
         }
         let address = memory.allocate(&crate::core::contracts::GuestAllocationOptions {
-            byte_length: bytes.len().max(1),
+            byte_length: bytes.len(),
             alignment: 16,
             permissions: crate::core::contracts::GuestPermissions::ReadWrite,
             label: key.clone(),
@@ -800,48 +811,5 @@ impl<'m> WindowsServiceRegistrar<'m> {
     /// Release a library reference.
     pub fn free_library(&mut self, handle: GuestAddress) -> Result<bool, GuestError> {
         self.context.free_library(self.memory, self.teb, handle)
-    }
-
-    /// Resolve an import to its resolution, registering an unsupported trap
-    /// when no provider exists.
-    pub fn resolve_import(
-        &mut self,
-        library: &str,
-        name: &str,
-    ) -> Result<GuestImportResolution, GuestError> {
-        let normalized = canonical_library(library);
-        self.shared.borrow_mut().requested.insert(format!("{normalized}!{name}"));
-        if let Some(address) = self.shared.borrow().data.get(&format!("{normalized}!{name}")).copied() {
-            return Ok(GuestImportResolution::Guest {
-                address,
-                module: self.memory.module().clone(),
-            });
-        }
-        // Guest-image providers are resolved by the runtime, which owns the
-        // requesting-image comparison; the registrar only serves host traps.
-        if self.shared.borrow().imports.contains_key(&format!("{normalized}!{name}")) {
-            let entry = self.shared.borrow().imports.get(&format!("{normalized}!{name}")).cloned().expect("import checked");
-            return Ok(GuestImportResolution::Host {
-                address: entry.address,
-                callback: entry.callback,
-            });
-        }
-        let signature = self.signature(library, &[], None);
-        let library_owned = normalized.clone();
-        let name_owned = name.to_string();
-        let invoke_library = library_owned.clone();
-        let invoke_name = name_owned.clone();
-        let entry = self.context.register_inner(
-            self.memory,
-            &library_owned,
-            &name_owned,
-            signature,
-            Rc::new(move |_, _, _| Err(unsupported_windows(&invoke_library, &invoke_name, "runtime service is not implemented"))),
-            false,
-        )?;
-        Ok(GuestImportResolution::Host {
-            address: entry.address,
-            callback: entry.callback,
-        })
     }
 }

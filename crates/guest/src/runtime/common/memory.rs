@@ -4,9 +4,7 @@
 //! [`GuestCallValue`] lanes; the read/write helpers operate on checked guest
 //! bytes without touching host memory layout.
 
-use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallValue, GuestPermissions,
-};
+use crate::core::contracts::{GuestAddress, GuestAllocationOptions, GuestCallValue, GuestPermissions};
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
 
@@ -62,15 +60,6 @@ pub fn required_pointer(
     index: usize,
 ) -> Result<GuestAddress, GuestError> {
     pointer(args, index)?.ok_or_else(|| GuestError::invalid("Nonnull guest pointer required"))
-}
-
-/// Decode a floating call argument.
-pub fn floating(args: &[GuestCallValue], index: usize) -> Result<f64, GuestError> {
-    match argument(args, index)? {
-        GuestCallValue::Float32(value) => Ok(f64::from(*value)),
-        GuestCallValue::Float64(value) => Ok(*value),
-        _ => Err(GuestError::invalid("Guest floating argument required")),
-    }
 }
 
 /// Read an unsigned `width`-byte little-endian value (`width` in 1, 2, 4, 8).
@@ -129,7 +118,7 @@ pub fn write_pointer(
     value: Option<GuestAddress>,
 ) -> Result<(), GuestError> {
     if let Some(target) = value {
-        memory.check(target, 0, GuestAccess::Write)?;
+        memory.offset(target, 0)?;
     }
     memory.write_pointer(address, value)
 }

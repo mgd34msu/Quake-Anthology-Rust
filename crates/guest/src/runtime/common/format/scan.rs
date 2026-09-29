@@ -260,7 +260,7 @@ fn valid_int_token(token: &str) -> bool {
 pub fn scan_windows_buffer(
     memory: &mut SparseGuestMemory,
     input: GuestAddress,
-    capacity: u64,
+    capacity: i128,
     format: GuestAddress,
     arguments: Option<GuestAddress>,
 ) -> Result<i32, GuestError> {
@@ -273,7 +273,7 @@ pub fn scan_windows_buffer(
 
     macro_rules! peek {
         () => {{
-            if cursor >= capacity {
+            if cursor as i128 >= capacity {
                 None
             } else {
                 let byte = memory.read_u8(memory.offset(input, cursor as i64)?)?;

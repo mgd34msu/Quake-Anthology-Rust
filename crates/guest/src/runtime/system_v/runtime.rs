@@ -312,6 +312,9 @@ impl SystemVGuestRuntime {
 
     /// Attach a runner, installing the thread pointer segment base.
     pub fn attach_runner(&self, runner: &mut GuestCallRunner<'_>) -> Result<(), GuestError> {
+        if !Rc::ptr_eq(runner.hooks(), &self.context.hooks) {
+            return Err(GuestError::invalid("System V runner belongs to another process"));
+        }
         let (state, memory) = runner.cpu_parts();
         if memory.address_space() != self.address_space {
             return Err(GuestError::invalid("System V runner belongs to another process"));
@@ -603,11 +606,10 @@ impl SystemVGuestRuntime {
                 self.context.shared.borrow_mut().budget = options.instruction_budget;
                 self.images[index].state = SystemVImageState::Finalizing;
                 let finalizers = self.images[index].image.image.finalizers.clone();
-                let mut failed = false;
+                let mut failure = None;
                 for target in finalizers {
-                    let result = self.invoke(runner, &options.context, target, &[], None, vec![]);
-                    if result.is_err() {
-                        failed = true;
+                    if let Err(error) = self.invoke(runner, &options.context, target, &[], None, vec![]) {
+                        failure = Some(error);
                         break;
                     }
                     let module = self.images[index].image.image.module.clone();
@@ -617,13 +619,13 @@ impl SystemVGuestRuntime {
                         target,
                     });
                 }
-                self.images[index].state = if failed {
+                self.images[index].state = if failure.is_some() {
                     SystemVImageState::Failed
                 } else {
                     SystemVImageState::Finalized
                 };
-                if failed {
-                    return Err(GuestError::callback("System V finalizer failed"));
+                if let Some(error) = failure {
+                    return Err(error);
                 }
                 Ok(())
             }

@@ -470,7 +470,7 @@ impl SystemVContext {
         let Some(address) = address else {
             return Ok(());
         };
-        memory.check(address, 0, GuestAccess::Write)?;
+        memory.offset(address, 0)?;
         let entry = self.shared.borrow_mut().heap.remove(&address.offset);
         let Some(entry) = entry else {
             return Err(GuestError::callback("System V free of a non-live allocation"));
@@ -484,7 +484,7 @@ impl SystemVContext {
         memory: &mut SparseGuestMemory,
         address: GuestAddress,
     ) -> Result<Option<usize>, GuestError> {
-        memory.check(address, 0, GuestAccess::Write)?;
+        memory.offset(address, 0)?;
         Ok(self
             .shared
             .borrow()

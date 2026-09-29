@@ -17,7 +17,7 @@ use crate::runtime::common::memory::{
     string_bytes, write_pointer, write_unsigned,
 };
 use crate::runtime::windows::contracts::{
-    invoke_nested, set_last_error, unsupported_windows, SharedWindows, WindowsContext,
+    invoke_nested, now_millis, set_last_error, unsupported_windows, SharedWindows, WindowsContext,
     WindowsFile, WindowsOpenOptions, WindowsServiceRegistrar, WindowsStream,
 };
 use crate::runtime::windows::time::{local_offset_at, system_time_fields};
@@ -106,21 +106,9 @@ fn pointer_secret(width: usize) -> u64 {
     (if width == 4 { x as u32 as u64 } else { x }) | 1
 }
 
-fn now_millis(shared: &SharedWindows) -> i64 {
-    if let Some(now) = &shared.borrow().capabilities.now_milliseconds {
-        return now();
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn performance_micros() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_micros() as u64)
-        .unwrap_or(0)
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_micros() as u64
 }
 
 /// Register the kernel32 service set.
@@ -1636,7 +1624,10 @@ fn install_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestErr
                 let memory = ctx.memory();
                 let source = string_input(memory, required_pointer(args, shift + 1)?, integer(args, shift + 2)? as i64, wide)?;
                 let output = required_pointer(args, shift + 3)?;
-                for (index, character) in source.chars().enumerate() {
+                // Units, not scalar values: lone surrogates classify alone.
+                let units: Vec<char> = source.encode_utf16().map(|unit| char::from_u32(unit as u32).unwrap_or(char::REPLACEMENT_CHARACTER)).collect();
+                for (index, character) in units.iter().enumerate() {
+                    let character = *character;
                     let code = character as u32;
                     let mut flags = 0u32;
                     if character.is_ascii_uppercase() {

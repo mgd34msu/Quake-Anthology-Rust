@@ -48,15 +48,10 @@ pub fn install_windows_format(
                 }
                 let memory = ctx.memory();
                 let capacity = integer(args, 2)?;
-                if capacity < 0 || capacity > u64::MAX as i128 {
-                    return Err(GuestError::invalid(
-                        "Guest scanf buffer count is not size_t",
-                    ));
-                }
                 let input = required_pointer(args, 1)?;
                 let format = required_pointer(args, 3)?;
                 let arguments = pointer(args, 5)?;
-                match scan_windows_buffer(memory, input, capacity as u64, format, arguments) {
+                match scan_windows_buffer(memory, input, capacity, format, arguments) {
                     Ok(assigned) => Ok(GuestCallResult::Value(GuestCallValue::Int32(assigned))),
                     Err(error) => Err(crate::runtime::windows::contracts::unsupported_windows(
                         &library_owned,

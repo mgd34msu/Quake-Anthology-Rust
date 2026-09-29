@@ -7,9 +7,17 @@ use std::rc::Rc;
 use crate::core::contracts::{GuestAccess, GuestAddress, GuestCallResult, GuestCallValue, GuestStorage};
 use crate::error::GuestError;
 use crate::runtime::common::memory::{
-    allocate_bytes, count, fill_bytes, floating, integer, move_bytes, pointer, read_string,
+    allocate_bytes, argument, count, fill_bytes, integer, move_bytes, pointer, read_string,
     required_pointer, string_bytes, string_length,
 };
+
+fn floating(args: &[GuestCallValue], index: usize) -> Result<f64, GuestError> {
+    match argument(args, index)? {
+        GuestCallValue::Float32(value) => Ok(f64::from(*value)),
+        GuestCallValue::Float64(value) => Ok(*value),
+        _ => Err(GuestError::invalid("System V floating argument required")),
+    }
+}
 use crate::runtime::system_v::contracts::{
     invoke_nested, tls_address, unsupported_system_v, SharedSystemV, SystemVServiceRegistrar,
 };
@@ -322,16 +330,13 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                 let source = required_pointer(args, 0)?;
                 let text = read_string(memory, source, false)?;
                 let needle = read_string(memory, required_pointer(args, 1)?, false)?;
+                // Offsets count UTF-16 units, like the donor's indexOf.
                 let index = if substring {
                     text.find(&needle)
+                        .map(|byte| text[..byte].chars().count())
                 } else {
-                    text.chars()
-                        .position(|character| needle.contains(character))
-                        .map(|character_index| {
-                            text.chars().take(character_index).collect::<String>().len()
-                        })
+                    text.chars().position(|character| needle.contains(character))
                 };
-                // latin-1 text: byte and character indices coincide.
                 let result = match index {
                     Some(index) => Some(memory.offset(source, index as i64)?),
                     None => None,
@@ -341,7 +346,12 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
         ))?;
     }
 
-    let token_slot = host.allocate(pointer_bytes)?;
+    let token_slot = host.memory.allocate(&crate::core::contracts::GuestAllocationOptions {
+        byte_length: pointer_bytes,
+        alignment: 16,
+        permissions: crate::core::contracts::GuestPermissions::ReadWrite,
+        label: "System V strtok cursor".to_string(),
+    })?;
     host.service(lib, "strtok", &version, &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
         move |ctx, _, args| {
             let memory = ctx.memory();
@@ -693,7 +703,7 @@ pub fn system_v_free(
     let Some(address) = address else {
         return Ok(());
     };
-    memory.check(address, 0, GuestAccess::Write)?;
+    memory.offset(address, 0)?;
     let entry = shared.borrow_mut().heap.remove(&address.offset);
     let Some(entry) = entry else {
         return Err(GuestError::callback("System V free of a non-live allocation"));
@@ -707,6 +717,6 @@ pub fn system_v_allocation_size(
     memory: &mut crate::core::memory::SparseGuestMemory,
     address: GuestAddress,
 ) -> Result<Option<usize>, GuestError> {
-    memory.check(address, 0, GuestAccess::Write)?;
+    memory.offset(address, 0)?;
     Ok(shared.borrow().heap.get(&address.offset).map(|entry| entry.size))
 }
