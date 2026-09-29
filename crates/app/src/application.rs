@@ -240,6 +240,11 @@ impl<R: RendererBackend> Application<R> {
         &mut self.server
     }
 
+    /// Attach a bot command source to the server tick.
+    pub fn set_bot_source(&mut self, source: Option<Box<dyn qa_world::server::BotCommandSource>>) {
+        self.server.set_bot_source(source);
+    }
+
     /// Borrow the renderer.
     #[must_use]
     pub fn renderer(&self) -> &R {

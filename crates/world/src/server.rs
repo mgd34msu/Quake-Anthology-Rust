@@ -186,6 +186,16 @@ pub struct ServerTick {
     pub events: Vec<ServerEvent>,
 }
 
+/// Bot command source polled at the start of each server frame.
+///
+/// Bot decisions (qa-bots behavior) enter the ordinary client pipeline:
+/// generated commands queue alongside player input and apply in slot
+/// order, so bot play replays bit-identically.
+pub trait BotCommandSource {
+    /// Generate bot client commands for the frame at `time_ms`.
+    fn bot_commands(&mut self, time_ms: i32) -> Vec<(u32, ClientCommand)>;
+}
+
 /// Deterministic game server over a headless simulation.
 pub struct Server<L: ServerLogic> {
     simulation: Simulation,
@@ -197,6 +207,7 @@ pub struct Server<L: ServerLogic> {
     movers: MoverTable,
     spawns: SpawnRegistry,
     queue: Vec<(u32, ClientCommand)>,
+    bots: Option<Box<dyn BotCommandSource>>,
     game_provider: ProviderId,
     default_bounds: Bounds,
     spatial_bounds: Bounds,
@@ -224,6 +235,7 @@ impl<L: ServerLogic> Server<L> {
             movers: MoverTable::new(),
             spawns: SpawnRegistry::new(),
             queue: Vec::new(),
+            bots: None,
             game_provider,
             default_bounds,
             spatial_bounds,
@@ -284,6 +296,17 @@ impl<L: ServerLogic> Server<L> {
         self.assert_open()?;
         self.queue.push((slot, command));
         Ok(())
+    }
+
+    /// Attach a bot command source, polled at the start of each frame.
+    pub fn set_bot_source(&mut self, source: Option<Box<dyn BotCommandSource>>) {
+        self.bots = source;
+    }
+
+    /// Whether a bot command source is attached.
+    #[must_use]
+    pub fn has_bot_source(&self) -> bool {
+        self.bots.is_some()
     }
 
     /// Spawn a map entity through the registered spawn function.
@@ -360,6 +383,12 @@ impl<L: ServerLogic> Server<L> {
 
     fn run_frame(&mut self, step: SourceTime) -> Result<Vec<ServerEvent>, WorldError> {
         let mut events = Vec::new();
+        if let Some(source) = self.bots.as_mut() {
+            let time_ms = self.simulation.frame().time.as_milliseconds_truncated();
+            for (slot, command) in source.bot_commands(time_ms) {
+                self.queue.push((slot, command));
+            }
+        }
         let mut queued = std::mem::take(&mut self.queue);
         queued.sort_by_key(|(slot, _)| *slot);
         for (slot, command) in &queued {
