@@ -1058,6 +1058,16 @@ pub enum GuestExportTarget {
     },
 }
 
+/// Resolves image imports to guest definitions or host traps.
+pub trait GuestImportResolver {
+    /// Resolve one import requested by `requesting`.
+    fn resolve(
+        &mut self,
+        import: &GuestImport,
+        requesting: &GuestImage,
+    ) -> GuestImportResolution;
+}
+
 /// Thread-local-storage template of one image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuestTlsTemplate {
