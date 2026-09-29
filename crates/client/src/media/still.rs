@@ -23,19 +23,11 @@ pub struct CinematicStill {
 }
 
 /// Build a still from RGBA pixels.
-pub fn cinematic_still(
-    width: usize,
-    height: usize,
-    rgba: Vec<u8>,
-) -> Result<CinematicStill, ClientError> {
+pub fn cinematic_still(width: usize, height: usize, rgba: Vec<u8>) -> Result<CinematicStill, ClientError> {
     if width == 0 || height == 0 || rgba.len() != width * height * 4 {
         return Err(ClientError::BadMedia("Invalid still frame pixels".to_string()));
     }
-    Ok(CinematicStill {
-        width,
-        height,
-        rgba,
-    })
+    Ok(CinematicStill { width, height, rgba })
 }
 
 /// Build a still from indexed pixels plus a palette.

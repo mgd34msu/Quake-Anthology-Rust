@@ -189,7 +189,10 @@ fn timestamp(value: &str) -> Result<f64, ClientError> {
         Some(_) => {
             let parts: Vec<&str> = value.split(':').collect();
             if parts.len() == 3 {
-                (parts[0].parse::<f64>().map_err(|_| invalid())?, format!("{}:{}", parts[1], parts[2]))
+                (
+                    parts[0].parse::<f64>().map_err(|_| invalid())?,
+                    format!("{}:{}", parts[1], parts[2]),
+                )
             } else if parts.len() == 2 {
                 (0.0, value.to_string())
             } else {
@@ -198,7 +201,6 @@ fn timestamp(value: &str) -> Result<f64, ClientError> {
         }
         None => return Err(invalid()),
     };
-    let rest = rest;
     let dot = rest.find(['.', ',']).ok_or_else(invalid)?;
     let (clock, millis) = rest.split_at(dot);
     let millis = millis[1..].parse::<f64>().map_err(|_| invalid())?;
@@ -252,9 +254,9 @@ pub fn parse_subtitle_text(text: &str, namespace: &str) -> Result<Vec<CaptionCue
             continue;
         };
         let timing = lines[timing_index];
-        let arrow = timing.find("-->").ok_or_else(|| {
-            ClientError::BadText("Invalid subtitle cue timing".to_string())
-        })?;
+        let arrow = timing
+            .find("-->")
+            .ok_or_else(|| ClientError::BadText("Invalid subtitle cue timing".to_string()))?;
         let start = timing[..arrow].trim();
         let end = timing[arrow + 3..]
             .split_whitespace()
@@ -366,18 +368,16 @@ mod tests {
     fn bad_cue_is_an_error() {
         let (_owner, catalog) = catalog();
         let mut timeline = CaptionTimeline::new(catalog.seat.clone(), &catalog).unwrap();
-        assert!(
-            timeline
-                .add(CaptionCue {
-                    id: String::new(),
-                    kind: CaptionKind::Subtitle,
-                    start_ms: 0.0,
-                    duration_ms: 1.0,
-                    text: String::new(),
-                    speaker: None,
-                    arguments: Vec::new(),
-                })
-                .is_err()
-        );
+        assert!(timeline
+            .add(CaptionCue {
+                id: String::new(),
+                kind: CaptionKind::Subtitle,
+                start_ms: 0.0,
+                duration_ms: 1.0,
+                text: String::new(),
+                speaker: None,
+                arguments: Vec::new(),
+            })
+            .is_err());
     }
 }

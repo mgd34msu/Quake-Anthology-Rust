@@ -67,10 +67,7 @@ pub fn parse_cin_header(input: &mut dyn MediaInput) -> Result<CinHeader, ClientE
     }
     let audio = if sample_rate == 0 && sample_bytes == 0 && channels == 0 {
         None
-    } else if sample_rate > 0
-        && (sample_bytes == 1 || sample_bytes == 2)
-        && (channels == 1 || channels == 2)
-    {
+    } else if sample_rate > 0 && (sample_bytes == 1 || sample_bytes == 2) && (channels == 1 || channels == 2) {
         Some(CinAudioFormat {
             sample_rate,
             channels: channels as u8,
@@ -79,11 +76,7 @@ pub fn parse_cin_header(input: &mut dyn MediaInput) -> Result<CinHeader, ClientE
     } else {
         return Err(ClientError::BadMedia(format!("{source}:8: invalid CIN audio format")));
     };
-    Ok(CinHeader {
-        width,
-        height,
-        audio,
-    })
+    Ok(CinHeader { width, height, audio })
 }
 
 /// A CIN chunk (`CinDecoder::next` framing).
@@ -103,10 +96,7 @@ pub enum CinChunk {
 }
 
 /// Walk one CIN chunk header at an offset.
-pub fn read_cin_chunk(
-    input: &mut dyn MediaInput,
-    offset: usize,
-) -> Result<(CinChunk, usize), ClientError> {
+pub fn read_cin_chunk(input: &mut dyn MediaInput, offset: usize) -> Result<(CinChunk, usize), ClientError> {
     let source = input.source().to_string();
     let command_bytes = read_media(input, offset, 4)?;
     let mut reader = BinaryReader::new(&command_bytes, &source);
@@ -127,7 +117,7 @@ pub fn read_cin_chunk(
     let size_bytes = read_media(input, cursor, 4)?;
     let mut reader = BinaryReader::new(&size_bytes, &source);
     let size = reader.i32().map_err(|error| map_err(&source, error))?;
-    if size < 4 || size > 0x20000 {
+    if !(4..=0x20000).contains(&size) {
         return Err(ClientError::BadMedia(format!(
             "{source}:{cursor}: bad CIN compressed frame size"
         )));
@@ -299,11 +289,7 @@ pub enum RoqChunk {
 }
 
 /// Walk RoQ chunks (`RoqDecoder::nextChunk` framing, decode deferred).
-pub fn walk_roq_chunks(
-    data: &[u8],
-    source: &str,
-    policy: RoqEndPolicy,
-) -> Result<Vec<RoqChunk>, ClientError> {
+pub fn walk_roq_chunks(data: &[u8], source: &str, policy: RoqEndPolicy) -> Result<Vec<RoqChunk>, ClientError> {
     let (_, mut offset) = parse_roq_header(data, source)?;
     let mut chunks = Vec::new();
     let mut saw_info = false;
@@ -353,8 +339,8 @@ pub fn walk_roq_chunks(
                 if !saw_info {
                     if width == 0
                         || height == 0
-                        || width % 8 != 0
-                        || height % 8 != 0
+                        || !width.is_multiple_of(8)
+                        || !height.is_multiple_of(8)
                         || u32::from(width) * u32::from(height) > 512 * 512
                     {
                         return Err(ClientError::BadMedia(format!(
@@ -474,10 +460,7 @@ pub fn decode_ogg_movie(bytes: &[u8]) -> Result<OggMovie, ClientError> {
     let mut offset = 0usize;
     let invalid = |message: &str| ClientError::BadMedia(message.to_string());
     while offset < bytes.len() {
-        if offset + 27 > bytes.len()
-            || bytes[offset..offset + 4] != [b'O', b'g', b'g', b'S']
-            || bytes[offset + 4] != 0
-        {
+        if offset + 27 > bytes.len() || bytes[offset..offset + 4] != *b"OggS" || bytes[offset + 4] != 0 {
             return Err(invalid("Invalid or truncated Ogg page"));
         }
         let flags = bytes[offset + 5];
@@ -493,11 +476,12 @@ pub fn decode_ogg_movie(bytes: &[u8]) -> Result<OggMovie, ClientError> {
             return Err(invalid("Truncated Ogg page payload"));
         }
         let mut crc = 0u32;
-        for position in offset..end {
+        for (index, byte) in bytes[offset..end].iter().enumerate() {
+            let position = offset + index;
             let byte = if (offset + 22..offset + 26).contains(&position) {
                 0
             } else {
-                bytes[position]
+                *byte
             };
             crc = (crc << 8) ^ table[((crc >> 24) ^ u32::from(byte)) as usize & 255];
         }
@@ -658,22 +642,19 @@ pub struct TheoraIdent {
 /// Parse a Theora identification header (container-level fields).
 pub fn parse_theora_ident(packet: &OggPacket) -> Result<TheoraIdent, ClientError> {
     let data = &packet.data;
-    if data.len() < 42
-        || data[0] != 0x80
-        || data[1..7] != *b"theora"
-        || data[7] != 3
-        || data[8] != 2
-    {
-        return Err(ClientError::BadMedia("Invalid Theora identification header".to_string()));
+    if data.len() < 42 || data[0] != 0x80 || data[1..7] != *b"theora" || data[7] != 3 || data[8] != 2 {
+        return Err(ClientError::BadMedia(
+            "Invalid Theora identification header".to_string(),
+        ));
     }
-    let width =
-        ((u32::from(data[14]) << 16) | (u32::from(data[15]) << 8) | u32::from(data[16])) as usize;
-    let height =
-        ((u32::from(data[17]) << 16) | (u32::from(data[18]) << 8) | u32::from(data[19])) as usize;
+    let width = ((u32::from(data[14]) << 16) | (u32::from(data[15]) << 8) | u32::from(data[16])) as usize;
+    let height = ((u32::from(data[17]) << 16) | (u32::from(data[18]) << 8) | u32::from(data[19])) as usize;
     let numerator = u32::from_be_bytes([data[22], data[23], data[24], data[25]]) as f64;
     let denominator = u32::from_be_bytes([data[26], data[27], data[28], data[29]]) as f64;
     if width == 0 || height == 0 || numerator <= 0.0 || denominator <= 0.0 {
-        return Err(ClientError::BadMedia("Invalid Theora picture size or frame rate".to_string()));
+        return Err(ClientError::BadMedia(
+            "Invalid Theora picture size or frame rate".to_string(),
+        ));
     }
     Ok(TheoraIdent {
         width,

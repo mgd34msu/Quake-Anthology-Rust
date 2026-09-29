@@ -8,22 +8,18 @@ use qa_core::math::{Vec2, Vec3, Vec4};
 
 use super::color::{evaluate_stage_color, StageColorContext};
 use super::compile::{CompiledMaterial, FinishedImagePlayback, FinishedStageBinding};
-use super::deform::{deform_geometry, DeformGeometry, DeformView, ProjectionShadowContext, RendererNoise};
+use super::deform::{deform_geometry, DeformView, ProjectionShadowContext, RendererNoise};
 use super::dlight::{project_dlight_texture, receives_projected_dlights};
 use super::fog::{attenuate_fog_color, fog_pass_state, FogAdjustment};
 use super::geometry::{MaterialDeformState, MaterialGeometry, MaterialVertex};
 use super::iterator::{
-    source_material_iterator, FinishedAlphaGen, FinishedIteratorStage, MaterialIteratorInput,
-    MaterialIteratorProfile, IteratorDriver, MultitextureEnv,
+    source_material_iterator, FinishedAlphaGen, FinishedIteratorStage, IteratorDriver, MaterialIteratorInput,
+    MaterialIteratorProfile, MultitextureEnv,
 };
-use super::material::{
-    evaluate_tex_coords, evaluate_waveform, stage_state, TexCoordContext, TexGen, WaveKind,
-};
+use super::material::{evaluate_tex_coords, stage_state, TexCoordContext, TexGen, WaveKind};
 use super::material::{SourceColorGen, SourceTcGen};
 use super::q3_lighting::{DynamicLight, EntityLighting};
-use super::state::{
-    source_state_changes, AlphaTest, CullFace, DepthTest, PolygonMode, RenderState, SourceStateChange,
-};
+use super::state::{source_state_changes, AlphaTest, DepthTest, PolygonMode, RenderState, SourceStateChange};
 use crate::ClientError;
 
 /// A batch texture reference.
@@ -157,6 +153,9 @@ pub struct Q1FogInput {
     pub texture: TextureRef,
 }
 
+/// Scene-owned dynamic-light batches hook.
+pub type DynamicLightBatches<'a> = Option<&'a dyn Fn(&MaterialGeometry) -> Vec<MaterialBatch>>;
+
 /// Material draw context (`MaterialDrawContext`).
 pub struct MaterialDrawContext<'a> {
     /// Shader time.
@@ -188,7 +187,7 @@ pub struct MaterialDrawContext<'a> {
     /// Dynamic lights.
     pub dynamic_lights: Option<DynamicLightInput>,
     /// Scene-owned dynamic-light batches hook.
-    pub dynamic_light_batches: Option<&'a dyn Fn(&MaterialGeometry) -> Vec<MaterialBatch>>,
+    pub dynamic_light_batches: DynamicLightBatches<'a>,
     /// Depth range.
     pub depth_range: [f32; 2],
     /// Polygon offset.
@@ -201,10 +200,7 @@ pub struct MaterialDrawContext<'a> {
     pub project: &'a dyn Fn(Vec3) -> Vec4,
 }
 
-fn texture_binding(
-    bundle: &FinishedIteratorStage,
-    time: f32,
-) -> Result<TextureRef, ClientError> {
+fn texture_binding(bundle: &FinishedIteratorStage, time: f32) -> Result<TextureRef, ClientError> {
     let Some(binding) = bundle.binding.as_ref() else {
         return Err(ClientError::BadMaterial(
             "Collapsed stage lost its registered texture".to_string(),
@@ -218,9 +214,7 @@ fn texture_binding(
             FinishedImagePlayback::Animation { frequency, frames } => {
                 let index = super::color::animated_picture_index(time, *frequency, frames.len())?;
                 frames.get(index).copied().map(TextureRef::BindImage).ok_or_else(|| {
-                    ClientError::BadMaterial(
-                        "Animation frame is outside the registered image bundle".to_string(),
-                    )
+                    ClientError::BadMaterial("Animation frame is outside the registered image bundle".to_string())
                 })
             }
         },
@@ -319,8 +313,7 @@ pub fn prepare_material_batches(
 ) -> Result<Vec<MaterialBatch>, ClientError> {
     if compiled.finished.iterator.kind == super::iterator::MaterialIteratorKind::Sky {
         return Err(ClientError::BadMaterial(
-            "Sky materials require sky-box/cloud geometry preparation before ordinary stage evaluation"
-                .to_string(),
+            "Sky materials require sky-box/cloud geometry preparation before ordinary stage evaluation".to_string(),
         ));
     }
     evaluate_material_passes(compiled, input, context)
@@ -602,8 +595,7 @@ pub fn evaluate_material_passes(
 mod tests {
     use super::*;
     use crate::materials::compile::{
-        compile_shader_script, CompileOptions, RegisteredImage, ShaderRegistrationHost,
-        SourceImageRequest,
+        compile_shader_script, CompileOptions, RegisteredImage, ShaderRegistrationHost, SourceImageRequest,
     };
     use qa_core::math::{vec2, vec3, vec4};
 
@@ -626,10 +618,7 @@ mod tests {
             Some(RegisteredImage { image: 4, tmu: 0 })
         }
 
-        fn play_shader_cinematic(
-            &mut self,
-            _name: &str,
-        ) -> Option<crate::materials::compile::RegisteredShaderVideo> {
+        fn play_shader_cinematic(&mut self, _name: &str) -> Option<crate::materials::compile::RegisteredShaderVideo> {
             None
         }
 
@@ -701,6 +690,5 @@ mod tests {
         // One material pass; no fog volume means no fog batch.
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].vertices.len(), 3);
-        let _ = evaluate_waveform;
     }
 }

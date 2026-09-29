@@ -169,7 +169,7 @@ smallvec = "1"
 bitflags = "2"
 ```
 
-Planned (not deferred — all in scope): native backends via `libloading`
+Planned, all in scope: native backends via `libloading`
 for the donor's SDL/GL/FreeType/Vorbis/Theora surface, image decoders,
 `mio`, compression. UDP starts on `std::net::UdpSocket`. No `tokio`,
 `bevy`, `glam`, `nom` in v1 — hand-rolled math and decoders preserve

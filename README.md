@@ -1,10 +1,13 @@
 # qa-muse
 
 A Rust port of [quake-typescript](https://github.com/)'s Quake anthology engine: one
-workspace, eight library crates, and two binaries. It runs the headless
-simulation — option parsing, startup, fixed-timestep server ticks, headless
-client seats, demo framing — with no window, no sockets, and no game data
-required.
+workspace, library crates, and two binaries covering the entire donor
+tree — server, client, renderer, audio, input, UI, platform backends,
+network transports, bots, tools, and game content. It currently runs the
+headless simulation — option parsing, startup, fixed-timestep server
+ticks, headless client seats, demo framing — with no window, no sockets,
+and no game data required; windowed/GL rendering, native audio/input,
+and socket transports land with the platform/net lanes now in flight.
 
 Port source (hard boundary): `/home/buzzkill/Projects/quake-typescript`,
 scoped to `src/`, `tests/`, `tools/`, `docs/`, `verification/`. Sibling
@@ -40,11 +43,12 @@ cargo run --bin qa-muse -- --list-content --content-root ~/Projects/qfiles
 
 Headless runs print a summary line, e.g.
 `Ran 120 host frames, 120 server ticks, 5 entities (120 render frames)`.
-Runs without `--frames` continue until quit (Ctrl-C). The interactive
-startup menu needs a display and is not ported: `Menu` selections run the
-same headless loop. `weapon-behavior` actions other than `--help` report
-"not ported yet", and `--list-content` reports raw corpus-root directory
-names until catalog discovery is ported.
+Runs without `--frames` continue until quit (Ctrl-C). Current
+behavior while the remaining lanes land: `Menu` selections run the
+headless loop (full menu behavior: UI/bootstrap lanes),
+`weapon-behavior` actions other than `--help` report "not ported yet"
+(tools lane), and `--list-content` reports raw corpus-root directory
+names (content catalog lane).
 
 Selected options (full list in `--help`): `--game`, `--map-game`, `--map`,
 `--movement q1|q2|q3|qw|PRODUCT`, `--character`, `--model`, `--renderer`,
@@ -59,13 +63,13 @@ Selected options (full list in `--help`): `--game`, `--map-game`, `--map`,
 | Crate | Donor scope | Contents |
 | --- | --- | --- |
 | `qa-core` | `core`, contracts (math/numeric/time/identity/common) | fround-ordered `Vec3` math, numeric profiles, `Qrand`, source clocks, generational identity, command buffer, cvar registry |
-| `qa-content` | `content`, `formats` | resource paths, VFS/mounts, Q1–Q3 BSP/MDL/MD2/SPR/WAD + MD3/MD4/MD5 decoders (Q1-Quake64 still rejected; images deferred) |
+| `qa-content` | `content`, `formats` | resource paths, VFS/mounts, Q1–Q3 BSP/MDL/MD2/SPR/WAD + MD3/MD4/MD5 decoders; Q1-Quake64 support, image codecs, and game content land with the formats/content lanes |
 | `qa-world` | `world`, `movement`, `persistence` (save kernel) | actor registry, bodies, spatial index, collision, q1–q3 movement, combat/inventory, headless `Simulation` + deterministic `Server` tick, saves; lossless JSON save codec (`$qts` tags, bigint, bytes, canonical base64), records/ownership/protection, world-state snapshot/restore |
 | `qa-net` | `network` | bounded byte buffer, q1/q2/q3/quakeworld codecs, demo framing, protocol identities |
-| `qa-guest` | `guest`, `compat/qc,qvm`, `persistence` (execution) | QVM interpreter, QC modules, ELF/PE loaders, x86/x64, float env; module/API/ABI/layout/callback/native checkpoints |
+| `qa-guest` | `guest`, `compat/qc,qvm`, `persistence` (execution) | entity fields, module registry, save/checkpoint records; x86/x64 VM, ELF/PE loaders, ABI runner landing in the guest-vm lane |
 | `qa-compat` | `compat/q2,q3` + shims | cross-family versions, demo kinds, userinfo, game adapters |
-| `qa-client` | `render`, `audio`, `input`, `ui`, `media`, `platform`, `camera`, `capture` | headless client core: prediction histories, view/HUD, seats/bindings, mixer channel pool, `RendererBackend` + `NullRenderer`, spline cameras (`.camera` parse/playback/view override), screenshot/levelshot capture (encoders injected; image formats deferred) |
-| `qa-app` | `app`, `console`, `settings`, `debug`, `llm`, `main.ts`, `persistence` (providers) | CLI options, startup/config, host main loop, CLI dispatch, console core (scrollback, edit fields, dispatch + builtins, log, session, metrics, discovery, dedicated stdin), seat/server settings + restart flow, debug-line shapes/store; saved-game read/write (Q1/Q2-classic/TS/Rerelease/Q3 envelopes), per-family providers/recipes, save policy, unified save image (`QTSAVE3`/`QTSAVE2`; codecs deferred) |
+| `qa-client` | `render`, `materials`, `text`, `media`, `audio`, `input`, `ui`, `platform`, `camera`, `capture` | headless client core: prediction histories, view/HUD, seats/bindings, mixer channel pool, `RendererBackend` + `NullRenderer`, spline cameras (`.camera` parse/playback/view override), screenshot/levelshot capture (encoders injected; image-format encoders land with the images lane), shader/material data levels (`materials/`), text layout/fonts/localization/captions (`text/`), cinematic containers/timelines/presentation (`media/`; CIN/RoQ/OGV pixel+audio decode, TrueType rasterization, and PCX/`kfont` bitmap decode complete under the undefer-media lane — `DeferredEngine` errors exist only until then) |
+| `qa-app` | `app`, `console`, `settings`, `debug`, `llm`, `main.ts`, `persistence` (providers) | CLI options, startup/config, host main loop, CLI dispatch, console core (scrollback, edit fields, dispatch + builtins, log, session, metrics, discovery, dedicated stdin), seat/server settings + restart flow, debug-line shapes/store; saved-game read/write (Q1/Q2-classic/TS/Rerelease/Q3 envelopes), per-family providers/recipes, save policy, unified save image (`QTSAVE3`/`QTSAVE2`; remaining codecs land with the undefer-media lane) |
 
 Dependency direction is acyclic: `app` drives `world` (server),
 `client` (headless seats/render/audio), and `net` (demos); `world` never
@@ -85,9 +89,10 @@ bytes, and Q3 sequences, payloads, and terminator.
 
 ## Status and limits
 
-No deferrals are authorized: every `quake-typescript` subsystem under
-`src/` and `tools/` is in scope and will be ported with tests. The
-following are ported already: protocol codecs, BSP/model/sprite/WAD
+Project rule: if it is in the `quake-typescript` project, it gets
+written in Rust here. The only exception is TypeScript-specific
+machinery. No deferrals, no stubs left for later, no exceptions without
+explicit user authorization. Ported already: protocol codecs, BSP/model/sprite/WAD
 readers, server tick and game rules, console core, settings, debug,
 camera/capture, persistence providers and save envelopes, materials,
 and text/media data levels. Still to port: media codec engines,

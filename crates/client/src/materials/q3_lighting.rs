@@ -3,9 +3,7 @@
 //! Donor provenance: `src/materials/q3-lighting.ts`.
 
 use qa_content::md3::renderer_sine;
-use qa_core::math::{
-    add3, dot3, length3, normalize3, normalize3_or_zero, scale3, sub3, vec3, Axis, Bounds, Vec3,
-};
+use qa_core::math::{add3, dot3, length3, normalize3, normalize3_or_zero, scale3, sub3, vec3, Axis, Bounds, Vec3};
 
 /// `RF_MINLIGHT` (unconditional in the source).
 pub const RF_MINLIGHT: u32 = 1;
@@ -137,11 +135,10 @@ fn shifted_color(color: [u8; 3], shift: u32) -> [u8; 3] {
 
 fn grid_float(token: &str) -> f32 {
     let value = token.trim().to_ascii_lowercase();
-    if let Some(rest) = value.strip_prefix("0x").or_else(|| {
-        value
-            .strip_prefix("+0x")
-            .or_else(|| value.strip_prefix("-0x"))
-    }) {
+    if let Some(rest) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("+0x").or_else(|| value.strip_prefix("-0x")))
+    {
         let negative = value.starts_with('-');
         let (mantissa, exponent) = match rest.find('p') {
             Some(index) => (&rest[..index], rest[index + 1..].parse::<i32>().unwrap_or(0)),
@@ -165,7 +162,7 @@ fn grid_float(token: &str) -> f32 {
 pub fn world_grid_size(worldspawn: &[(String, String)]) -> Vec3 {
     let mut size = vec3(64.0, 64.0, 128.0);
     for (key, value) in worldspawn {
-        if key.to_ascii_lowercase() != "gridsize" {
+        if !key.eq_ignore_ascii_case("gridsize") {
             continue;
         }
         let mut rest = value.as_str();
@@ -274,7 +271,7 @@ pub fn prepare_light_grid(
     overbright_bits: i32,
 ) -> Result<(Option<LightGrid>, Vec<String>), crate::ClientError> {
     let shift = map_overbright_bits - overbright_bits;
-    if shift < 0 || shift > 15 {
+    if !(0..=15).contains(&shift) {
         return Err(crate::ClientError::BadMaterial(
             "Light-grid overbright shift must be an integer in 0..15; other values have undefined source C shifts or overflow".to_string(),
         ));
@@ -332,10 +329,7 @@ pub fn prepare_light_grid(
 fn sample_axis(coordinate: f32, inverse_size: f32, count: usize) -> (usize, f32) {
     let v = coordinate * inverse_size;
     let position = v.floor() as i64;
-    (
-        position.clamp(0, count as i64 - 1) as usize,
-        v - position as f32,
-    )
+    (position.clamp(0, count as i64 - 1) as usize, v - position as f32)
 }
 
 /// Sample the grid (`lightForPoint`).
@@ -370,13 +364,10 @@ pub fn light_for_point(
         let mut index = sx + grid.bounds[0] * (sy + grid.bounds[1] * sz);
         if index >= grid.samples.len() {
             index = sx.min(grid.bounds[0] - 1)
-                + grid.bounds[0]
-                    * (sy.min(grid.bounds[1] - 1) + grid.bounds[1] * sz.min(grid.bounds[2] - 1));
+                + grid.bounds[0] * (sy.min(grid.bounds[1] - 1) + grid.bounds[1] * sz.min(grid.bounds[2] - 1));
         }
         let data = grid.samples.get(index).ok_or_else(|| {
-            crate::ClientError::BadMaterial(
-                "Prepared light-grid sample layout is inconsistent".to_string(),
-            )
+            crate::ClientError::BadMaterial("Prepared light-grid sample layout is inconsistent".to_string())
         })?;
         if data.ambient.iter().map(|value| u32::from(*value)).sum::<u32>() == 0 {
             continue;
@@ -522,11 +513,7 @@ mod tests {
         LightingEntity {
             origin: vec3(0.0, 0.0, 0.0),
             lighting_origin: vec3(0.0, 0.0, 0.0),
-            axis: [
-                vec3(1.0, 0.0, 0.0),
-                vec3(0.0, 1.0, 0.0),
-                vec3(0.0, 0.0, 1.0),
-            ],
+            axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
             render_flags: 0,
         }
     }

@@ -34,11 +34,7 @@ pub fn q1_light_style(map: &str, time: f32, interpolation: u8) -> i32 {
     if interpolation < 2 && (next - current).abs() >= 6 {
         next = current;
     }
-    let fraction = if interpolation == 0 {
-        0.0
-    } else {
-        phase - frame as f32
-    };
+    let fraction = if interpolation == 0 { 0.0 } else { phase - frame as f32 };
     (current as f32 * 22.0 + (next - current) as f32 * 22.0 * fraction).trunc() as i32
 }
 
@@ -103,10 +99,7 @@ pub fn lightmap_coordinates(position: Vec3, projection: &LightmapProjection) -> 
             dot3(position, mapping.axes[0]) + mapping.offset.x,
             dot3(position, mapping.axes[1]) + mapping.offset.y,
         ),
-        LightmapProjection::Classic {
-            texture,
-            texture_mins,
-        } => {
+        LightmapProjection::Classic { texture, texture_mins } => {
             let s = qa_core::math::vec3(texture.s.x, texture.s.y, texture.s.z);
             let t = qa_core::math::vec3(texture.t.x, texture.t.y, texture.t.z);
             qa_core::math::vec2(
@@ -165,12 +158,10 @@ pub struct SurfaceDynamicLight {
 }
 
 fn element(values: &[f32], index: usize) -> Result<f32, ClientError> {
-    values.get(index).copied().ok_or_else(|| {
-        ClientError::BadMaterial(format!(
-            "Lightmap sample {index} is outside {} values",
-            values.len()
-        ))
-    })
+    values
+        .get(index)
+        .copied()
+        .ok_or_else(|| ClientError::BadMaterial(format!("Lightmap sample {index} is outside {} values", values.len())))
 }
 
 fn face_size(face: &LightmapFace) -> Result<usize, ClientError> {
@@ -195,12 +186,7 @@ fn sample(face: &LightmapFace, style: usize, pixel: usize, channel: usize) -> u8
     samples.get(index).copied().unwrap_or(0)
 }
 
-fn add_dynamic_lights(
-    block: &mut [f32],
-    face: &LightmapFace,
-    lights: &[SurfaceDynamicLight],
-    scale: f32,
-) {
+fn add_dynamic_lights(block: &mut [f32], face: &LightmapFace, lights: &[SurfaceDynamicLight], scale: f32) {
     for light in lights {
         let distance = dot3(light.origin, face.plane.normal) - face.plane.distance;
         let radius = light.radius - distance.abs();
@@ -300,11 +286,7 @@ pub fn build_q1_lightmap(
                 break;
             }
             let scale = styles.get(usize::from(*style)).copied().ok_or_else(|| {
-                ClientError::BadMaterial(format!(
-                    "Lightmap sample {} is outside {} values",
-                    style,
-                    styles.len()
-                ))
+                ClientError::BadMaterial(format!("Lightmap sample {} is outside {} values", style, styles.len()))
             })?;
             for pixel in 0..size {
                 for channel in 0..3 {
@@ -319,8 +301,10 @@ pub fn build_q1_lightmap(
     }
     let mut pixels = vec![0u8; size * 4];
     for pixel in 0..size {
-        let brightness =
-            |channel: usize| ((element(&block, pixel * 3 + channel)? as u32).min(u32::MAX) >> 7).min(255) as u8;
+        let brightness = |channel: usize| -> Result<u8, ClientError> {
+            let sample = element(&block, pixel * 3 + channel)? as u32;
+            Ok((sample >> 7).min(255) as u8)
+        };
         match encoding {
             Q1LightmapEncoding::Rgb => {
                 pixels[pixel * 4] = brightness(0)?;
@@ -385,19 +369,15 @@ pub fn build_q2_lightmap(
             if *style_index == 255 {
                 break;
             }
-            let style = styles.get(usize::from(*style_index)).copied().ok_or_else(|| {
-                ClientError::BadMaterial(format!("Missing Q2 lightstyle {style_index}"))
-            })?;
-            let scales = [
-                style.rgb.x * modulate,
-                style.rgb.y * modulate,
-                style.rgb.z * modulate,
-            ];
+            let style = styles
+                .get(usize::from(*style_index))
+                .copied()
+                .ok_or_else(|| ClientError::BadMaterial(format!("Missing Q2 lightstyle {style_index}")))?;
+            let scales = [style.rgb.x * modulate, style.rgb.y * modulate, style.rgb.z * modulate];
             for pixel in 0..size {
-                for channel in 0..3 {
+                for (channel, scale) in scales.iter().enumerate() {
                     let offset = pixel * 3 + channel;
-                    block[offset] +=
-                        f32::from(sample(face, map, pixel, channel)) * scales[channel];
+                    block[offset] += f32::from(sample(face, map, pixel, channel)) * *scale;
                 }
             }
         }
@@ -424,12 +404,7 @@ pub fn build_q2_lightmap(
             Q2Mono::Alpha => (0, 0, 0, 255 - a),
             Q2Mono::Contrast => {
                 let alpha = 255 - (r + g + b) / 3;
-                (
-                    r * alpha / 255,
-                    g * alpha / 255,
-                    b * alpha / 255,
-                    alpha,
-                )
+                (r * alpha / 255, g * alpha / 255, b * alpha / 255, alpha)
             }
         };
         pixels[pixel * 4] = r as u8;
@@ -476,16 +451,8 @@ pub enum LightmapFiltering {
 
 /// Sample a lightmap (`sampleLightmap`).
 #[must_use]
-pub fn sample_lightmap(
-    image: &BuiltLightmap,
-    uv: Vec2,
-    filtering: LightmapFiltering,
-) -> Option<Vec4> {
-    if uv.x < 0.0
-        || uv.y < 0.0
-        || uv.x > image.width as f32 - 1.0
-        || uv.y > image.height as f32 - 1.0
-    {
+pub fn sample_lightmap(image: &BuiltLightmap, uv: Vec2, filtering: LightmapFiltering) -> Option<Vec4> {
+    if uv.x < 0.0 || uv.y < 0.0 || uv.x > image.width as f32 - 1.0 || uv.y > image.height as f32 - 1.0 {
         return None;
     }
     let x = uv.x.floor() as usize;
@@ -543,9 +510,7 @@ impl LightmapAtlas {
     /// Allocate a rectangle.
     pub fn allocate(&mut self, width: usize, height: usize) -> Result<Option<Vec2>, ClientError> {
         if width < 1 || height < 1 {
-            return Err(ClientError::BadMaterial(
-                "Invalid lightmap rectangle".to_string(),
-            ));
+            return Err(ClientError::BadMaterial("Invalid lightmap rectangle".to_string()));
         }
         let mut best = self.height as i32;
         let mut location: Option<usize> = None;
@@ -582,8 +547,7 @@ impl LightmapAtlas {
 pub fn direct_lightmap_pixels(built: &BuiltLightmap) -> Result<BuiltLightmap, ClientError> {
     if built.encoding == BuiltLightmapEncoding::Q2Mono {
         return Err(ClientError::BadMaterial(
-            "Q2 alternate monochrome encodings require their matching texture environment"
-                .to_string(),
+            "Q2 alternate monochrome encodings require their matching texture environment".to_string(),
         ));
     }
     let mut pixels = built.pixels.clone();
@@ -616,9 +580,7 @@ mod tests {
         LightmapFace {
             width: 2,
             height: 2,
-            lighting: Some(BspLighting::Luminance8 {
-                samples: vec![128; 4],
-            }),
+            lighting: Some(BspLighting::Luminance8 { samples: vec![128; 4] }),
             offset: 0,
             styles: vec![0],
             plane: Plane {
@@ -627,10 +589,7 @@ mod tests {
             },
             projection: LightmapProjection::Decoupled {
                 mapping: DecoupledLightmap {
-                    axes: [
-                        qa_core::math::vec3(1.0, 0.0, 0.0),
-                        qa_core::math::vec3(0.0, 1.0, 0.0),
-                    ],
+                    axes: [qa_core::math::vec3(1.0, 0.0, 0.0), qa_core::math::vec3(0.0, 1.0, 0.0)],
                     offset: qa_core::math::vec2(0.0, 0.0),
                 },
             },

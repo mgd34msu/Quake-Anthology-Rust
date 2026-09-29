@@ -5,8 +5,8 @@
 use super::playback::CinematicPlayback;
 use super::presentation::{CinematicImage, ImageOperation};
 use super::types::CinematicTarget;
-use crate::ClientError;
 use crate::materials::cinematic::ShaderCinematicSource;
+use crate::ClientError;
 
 /// A material cinematic (`MaterialCinematic`).
 pub struct MaterialCinematic {
@@ -41,7 +41,12 @@ impl MaterialCinematic {
     }
 
     /// Enable or disable.
-    pub fn set_enabled(&mut self, enabled: bool, wall_now: f64, host: &mut dyn super::types::CinematicHost) -> Result<(), ClientError> {
+    pub fn set_enabled(
+        &mut self,
+        enabled: bool,
+        wall_now: f64,
+        host: &mut dyn super::types::CinematicHost,
+    ) -> Result<(), ClientError> {
         self.enabled = enabled;
         self.playback.pause(!enabled, wall_now, host)
     }
@@ -88,10 +93,7 @@ impl MaterialCinematic {
     }
 
     /// Close the cinematic.
-    pub fn close(
-        &mut self,
-        host: &mut dyn super::types::CinematicHost,
-    ) -> Result<Option<ImageOperation>, ClientError> {
+    pub fn close(&mut self, host: &mut dyn super::types::CinematicHost) -> Result<Option<ImageOperation>, ClientError> {
         let release = self.texture.release();
         self.playback.close(host)?;
         Ok(release)

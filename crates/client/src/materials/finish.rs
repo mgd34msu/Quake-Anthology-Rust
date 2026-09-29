@@ -2,19 +2,19 @@
 //!
 //! Donor provenance: `src/materials/material-finish.ts`.
 
-use super::compile::{FinishedImagePlayback, FinishedStageBinding, RegisteredStage};
+use super::compile::{FinishedStageBinding, RegisteredStage};
 use super::fog::{FogAdjustment, FogPass};
 use super::iterator::{
-    source_material_iterator, FinishedAlphaGen, FinishedIteratorStage, IteratorBinding,
-    MaterialIterator, MaterialIteratorInput, MaterialIteratorProfile,
+    source_material_iterator, FinishedAlphaGen, FinishedIteratorStage, IteratorBinding, MaterialIterator,
+    MaterialIteratorInput, MaterialIteratorProfile,
 };
 use super::material::{
-    AlphaGen, ColorGen, ParsedStage, ShaderDefinition, ShaderMap, ShaderStage, SourceAlphaGen,
-    SourceColorGen, SourceTcGen, SourceWaveFunc, SourceWaveStorage,
+    AlphaGen, ColorGen, ParsedStage, ShaderDefinition, ShaderMap, ShaderStage, SourceAlphaGen, SourceColorGen,
+    SourceTcGen, SourceWaveFunc, SourceWaveStorage,
 };
-use super::state::{source_state_bits, PolygonMode, SourceStateInput};
 use super::state::bits as state_bits;
-use super::state::{CullFace, DepthTest, ADDITIVE_BLEND, FILTER_BLEND, OPAQUE_BLEND};
+use super::state::{source_state_bits, PolygonMode, SourceStateInput};
+use super::state::{CullFace, DepthTest, FILTER_BLEND, OPAQUE_BLEND};
 use crate::ClientError;
 
 /// Finish profile (`FinishShaderProfile`).
@@ -138,7 +138,7 @@ pub enum ImplicitShaderKind {
     },
 }
 
-fn alpha_kind(source: SourceAlphaGen, semantic: &AlphaGen) -> FinishedAlphaGen {
+fn alpha_kind(source: SourceAlphaGen, _semantic: &AlphaGen) -> FinishedAlphaGen {
     match source {
         SourceAlphaGen::Identity => FinishedAlphaGen::Identity,
         SourceAlphaGen::Skip => FinishedAlphaGen::Skip,
@@ -170,19 +170,13 @@ struct WorkingStage {
     fog_adjustment: FogAdjustment,
 }
 
-fn working_stage(
-    stage: &ParsedStage,
-    image: &RegisteredStage,
-    portal_range: f32,
-) -> WorkingStage {
+fn working_stage(stage: &ParsedStage, image: &RegisteredStage, portal_range: f32) -> WorkingStage {
     let mut semantic = stage.stage.clone();
     if matches!(semantic.alpha_gen, AlphaGen::Portal(_)) {
         semantic.alpha_gen = AlphaGen::Portal(portal_range);
     }
     let (active, image_tmu, binding) = match image {
-        RegisteredStage::Loaded { tmu, binding } => {
-            (stage.source_state.active, Some(*tmu), Some(binding.clone()))
-        }
+        RegisteredStage::Loaded { tmu, binding } => (stage.source_state.active, Some(*tmu), Some(binding.clone())),
         RegisteredStage::Missing => (false, None, None),
     };
     WorkingStage {
@@ -246,9 +240,7 @@ fn vertex_lighting_collapse(stages: &mut [Option<WorkingStage>], sort: i32, ligh
             if !candidate.stage.tc_mods.is_empty() {
                 rank -= 5;
             }
-            if candidate.rgb_gen != SourceColorGen::Identity
-                && candidate.rgb_gen != SourceColorGen::IdentityLighting
-            {
+            if candidate.rgb_gen != SourceColorGen::Identity && candidate.rgb_gen != SourceColorGen::IdentityLighting {
                 rank -= 3;
             }
             if rank > best_rank {
@@ -276,8 +268,7 @@ fn vertex_lighting_collapse(stages: &mut [Option<WorkingStage>], sort: i32, ligh
             } else {
                 ColorGen::ExactVertex
             };
-            first.state_bits =
-                (first.state_bits & !state_bits::BLEND_MASK) | state_bits::DEPTHMASK_TRUE;
+            first.state_bits = (first.state_bits & !state_bits::BLEND_MASK) | state_bits::DEPTHMASK_TRUE;
             first.rgb_gen = if lightmap_index == -1 {
                 SourceColorGen::LightingDiffuse
             } else {
@@ -301,15 +292,11 @@ fn vertex_lighting_collapse(stages: &mut [Option<WorkingStage>], sort: i32, ligh
             Some(collapsed) => collapsed,
             None => return,
         };
-        if collapsed.rgb_gen == SourceColorGen::OneMinusEntity
-            || second.rgb_gen == SourceColorGen::OneMinusEntity
-        {
+        if collapsed.rgb_gen == SourceColorGen::OneMinusEntity || second.rgb_gen == SourceColorGen::OneMinusEntity {
             collapsed.stage.rgb_gen = ColorGen::IdentityLighting;
             collapsed.rgb_gen = SourceColorGen::IdentityLighting;
         }
-        if collapsed.rgb_gen == SourceColorGen::Waveform
-            && second.rgb_gen == SourceColorGen::Waveform
-        {
+        if collapsed.rgb_gen == SourceColorGen::Waveform && second.rgb_gen == SourceColorGen::Waveform {
             let a = collapsed.rgb_wave.func;
             let b = second.rgb_wave.func;
             if (a == SourceWaveFunc::Sawtooth && b == SourceWaveFunc::InverseSawtooth)
@@ -352,8 +339,7 @@ fn finished_stage(stage: &WorkingStage) -> FinishedShaderStage {
 pub fn finish_shader(input: &FinishShaderInput) -> Result<FinishedShader, ClientError> {
     if input.lightmap_index < -4 {
         return Err(ClientError::BadMaterial(
-            "FinishShader lightmapIndex must be a source lightmap sentinel or non-negative int32"
-                .to_string(),
+            "FinishShader lightmapIndex must be a source lightmap sentinel or non-negative int32".to_string(),
         ));
     }
     if input.images.len() != input.definition.stages.len() {
@@ -381,6 +367,7 @@ pub fn finish_shader(input: &FinishShaderInput) -> Result<FinishedShader, Client
     let mut has_lightmap_stage = false;
     let mut stage_index = 0usize;
     while stage_index < 8 {
+        let blended_first = stages[0].as_ref().is_some_and(is_blended);
         let current = match stages[stage_index].as_mut() {
             Some(current) => current,
             None => break,
@@ -420,7 +407,6 @@ pub fn finish_shader(input: &FinishShaderInput) -> Result<FinishedShader, Client
         if current.is_lightmap {
             has_lightmap_stage = true;
         }
-        let blended_first = stages[0].as_ref().is_some_and(|first| is_blended(first));
         if is_blended(current) && blended_first {
             current.fog_adjustment = stage_fog_adjustment(current);
             if sort == 0 {
@@ -451,10 +437,7 @@ pub fn finish_shader(input: &FinishShaderInput) -> Result<FinishedShader, Client
         diagnostics.push(FinishShaderDiagnostic {
             kind: FinishDiagnosticKind::LightmapCleared,
             stage: None,
-            message: format!(
-                "Shader {} has lightmap but no lightmap stage",
-                input.definition.name
-            ),
+            message: format!("Shader {} has lightmap but no lightmap stage", input.definition.name),
         });
         lightmap_index = -1;
     }
@@ -496,6 +479,7 @@ pub fn finish_shader(input: &FinishShaderInput) -> Result<FinishedShader, Client
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn implicit_stage(
     map: ShaderMap,
     rgb_gen: ColorGen,
@@ -553,11 +537,7 @@ fn implicit_stage(
     }
 }
 
-fn implicit_definition(
-    name: &str,
-    stages: Vec<ParsedStage>,
-    sort: Option<f32>,
-) -> ShaderDefinition {
+fn implicit_definition(name: &str, stages: Vec<ParsedStage>, sort: Option<f32>) -> ShaderDefinition {
     ShaderDefinition {
         name: name.to_string(),
         stages,
@@ -580,9 +560,7 @@ fn implicit_definition(
 }
 
 /// Build implicit-shader finish input (`implicitShaderInput`).
-pub fn implicit_shader_input(
-    input: &FinishImplicitShaderInput,
-) -> Result<FinishShaderInput, ClientError> {
+pub fn implicit_shader_input(input: &FinishImplicitShaderInput) -> Result<FinishShaderInput, ClientError> {
     let is_picture = matches!(input.kind, ImplicitShaderKind::Picture);
     let base_map = ShaderMap::Image {
         name: input.name.clone(),
@@ -738,9 +716,7 @@ pub fn implicit_shader_input(
 }
 
 /// Finish an implicit shader (`finishImplicitShader`).
-pub fn finish_implicit_shader(
-    input: &FinishImplicitShaderInput,
-) -> Result<FinishedShader, ClientError> {
+pub fn finish_implicit_shader(input: &FinishImplicitShaderInput) -> Result<FinishedShader, ClientError> {
     let prepared = implicit_shader_input(input)?;
     finish_shader(&prepared)
 }
@@ -762,8 +738,10 @@ pub fn finish_failed_shader(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materials::compile::FinishedImagePlayback;
     use crate::materials::iterator::{IteratorDriver, MaterialIteratorProfile};
     use crate::materials::material::parse_shader_script;
+    use crate::materials::state::ADDITIVE_BLEND;
 
     fn profile() -> FinishShaderProfile {
         FinishShaderProfile {
@@ -782,11 +760,7 @@ mod tests {
 
     #[test]
     fn opaque_shader_sorts_opaque() {
-        let definitions = parse_shader_script(
-            "rock\n{\n {\n map textures/rock.tga\n }\n}\n",
-            "<test>",
-        )
-        .unwrap();
+        let definitions = parse_shader_script("rock\n{\n {\n map textures/rock.tga\n }\n}\n", "<test>").unwrap();
         let finished = finish_shader(&FinishShaderInput {
             definition: definitions[0].clone(),
             lightmap_index: -1,
@@ -807,11 +781,7 @@ mod tests {
 
     #[test]
     fn missing_image_keeps_diagnostic() {
-        let definitions = parse_shader_script(
-            "rock\n{\n {\n map textures/rock.tga\n }\n}\n",
-            "<test>",
-        )
-        .unwrap();
+        let definitions = parse_shader_script("rock\n{\n {\n map textures/rock.tga\n }\n}\n", "<test>").unwrap();
         let finished = finish_shader(&FinishShaderInput {
             definition: definitions[0].clone(),
             lightmap_index: -1,
@@ -820,10 +790,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(finished.diagnostics.len(), 1);
-        assert_eq!(
-            finished.diagnostics[0].kind,
-            FinishDiagnosticKind::MissingImage
-        );
+        assert_eq!(finished.diagnostics[0].kind, FinishDiagnosticKind::MissingImage);
     }
 
     #[test]

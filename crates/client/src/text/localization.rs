@@ -11,7 +11,12 @@ use std::collections::BTreeMap;
 
 use qa_core::identity::SeatId;
 
-use crate::ClientError;
+/// Reborrow an optional log for forwarding (`as_deref_mut` on a
+/// `&mut dyn` payload trips `needless_option_as_deref`, and the
+/// reborrowed lifetime cannot be named inline).
+fn reborrow_log<'a, 'b, 'c>(log: &'a mut Option<&'b mut (dyn LibLog + 'c)>) -> Option<&'a mut (dyn LibLog + 'c)> {
+    log.as_mut().map(|log| &mut **log)
+}
 
 /// Maximum key bytes.
 pub const MAX_LOC_KEY: usize = 64;
@@ -23,9 +28,7 @@ pub const MAX_LOC_ARGS: usize = 8;
 pub const MAX_STRING_CHARS: usize = 1024;
 
 /// Known languages (`LOC_KNOWN_LANGUAGES`).
-pub const LOC_KNOWN_LANGUAGES: [&str; 6] = [
-    "english", "french", "german", "italian", "russian", "spanish",
-];
+pub const LOC_KNOWN_LANGUAGES: [&str; 6] = ["english", "french", "german", "italian", "russian", "spanish"];
 
 /// A log sink (`LibLog`).
 pub trait LibLog {
@@ -55,24 +58,21 @@ fn strnlcpy(src: &str, count: usize, size: i64) -> String {
     if size <= 0 {
         return String::new();
     }
-    let end: usize = src.char_indices().take(count).last().map_or(0, |(index, ch)| index + ch.len_utf8());
-    let head = if count >= src.chars().count() {
-        src
-    } else {
-        &src[..end]
-    };
+    let end: usize = src
+        .char_indices()
+        .take(count)
+        .last()
+        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    let head = if count >= src.chars().count() { src } else { &src[..end] };
     strlcpy(head, size)
 }
 
 fn strlcat(dst: &str, src: &str, size: i64) -> String {
-    format!("{dst}{}", strlcpy(src, size - dst.as_bytes().len() as i64))
+    format!("{dst}{}", strlcpy(src, size - dst.len() as i64))
 }
 
 fn strnlcat(dst: &str, src: &str, count: usize, size: i64) -> String {
-    format!(
-        "{dst}{}",
-        strnlcpy(src, count, size - dst.as_bytes().len() as i64)
-    )
+    format!("{dst}{}", strnlcpy(src, count, size - dst.len() as i64))
 }
 
 /// A format argument (`LocArg`).
@@ -219,9 +219,7 @@ fn com_parse_token(state: &mut TokenState, size: usize, escape: bool) -> String 
         if byte == b'/' && state.bytes.get(state.index + 1) == Some(&b'*') {
             state.index += 2;
             while state.bytes.get(state.index).copied().unwrap_or(0) != 0 {
-                if state.bytes.get(state.index) == Some(&b'*')
-                    && state.bytes.get(state.index + 1) == Some(&b'/')
-                {
+                if state.bytes.get(state.index) == Some(&b'*') && state.bytes.get(state.index + 1) == Some(&b'/') {
                     state.index += 2;
                     break;
                 }
@@ -304,10 +302,10 @@ fn strip_platform_tag(token: &str) -> String {
 }
 
 /// Merge one file into a table (`Loc_ParseInto` merge path).
-fn loc_merge_into(
+fn loc_merge_into<'l>(
     bytes: &[u8],
     options: &LocReloadOptions,
-    mut log: Option<&mut dyn LibLog>,
+    mut log: Option<&mut (dyn LibLog + 'l)>,
     table: &mut BTreeMap<String, LocString>,
     last_wins: bool,
 ) -> usize {
@@ -347,7 +345,7 @@ fn loc_merge_into(
         let parsed = match loc_parse(&format) {
             Ok(arguments) => arguments,
             Err(error) => {
-                if let Some(log) = log.as_deref_mut() {
+                if let Some(log) = log.as_mut() {
                     log.warn(&format!("loc parse error ({key}): {error}"));
                 }
                 continue;
@@ -356,7 +354,13 @@ fn loc_merge_into(
         if has_platform_spec {
             if let Some(platform) = &platform {
                 if platform_tags.iter().any(|tag| tag == platform) {
-                    table.insert(key, LocString { format, arguments: parsed });
+                    table.insert(
+                        key,
+                        LocString {
+                            format,
+                            arguments: parsed,
+                        },
+                    );
                     count += 1;
                 }
             }
@@ -364,7 +368,13 @@ fn loc_merge_into(
         }
         if last_wins || !seen.contains(&key) {
             seen.insert(key.clone());
-            table.insert(key, LocString { format, arguments: parsed });
+            table.insert(
+                key,
+                LocString {
+                    format,
+                    arguments: parsed,
+                },
+            );
             count += 1;
         }
     }
@@ -372,9 +382,10 @@ fn loc_merge_into(
 }
 
 /// Localization profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LocalizationProfile {
     /// Q1 rerelease (first duplicate wins).
+    #[default]
     Q1Rerelease,
     /// Q2 rerelease (last duplicate wins).
     Q2Rerelease,
@@ -419,13 +430,13 @@ impl LocalizationTable {
 
     /// Localize a source (`localizeSource`).
     #[allow(clippy::too_many_arguments)]
-    fn localize_source(
+    fn localize_source<'l>(
         &self,
         base: &str,
         allow_in_place: bool,
         args: &[String],
         output_length: i64,
-        log: Option<&mut dyn LibLog>,
+        log: Option<&mut (dyn LibLog + 'l)>,
     ) -> String {
         let mut log = log;
         let working = base.to_string();
@@ -439,20 +450,20 @@ impl LocalizationTable {
                 return strlcpy(&key, output_length);
             };
             record = Some(found.clone());
-            return Self::substitute(&key, record.as_ref(), args, output_length, log.as_deref_mut());
+            Self::substitute(&key, record.as_ref(), args, output_length, reborrow_log(&mut log))
         } else if let Some(key) = working.strip_prefix('$') {
             let key = key.to_string();
             let Some(found) = self.find(&key) else {
                 return strlcpy(&key, output_length);
             };
             record = Some(found.clone());
-            return Self::substitute(&key, record.as_ref(), args, output_length, log.as_deref_mut());
+            Self::substitute(&key, record.as_ref(), args, output_length, reborrow_log(&mut log))
         } else if loc_has_arguments(&working) {
             let format = strlcpy(&working, MAX_LOC_FORMAT as i64);
             let parsed = match loc_parse(&format) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    if let Some(log) = log.as_deref_mut() {
+                    if let Some(log) = log.as_mut() {
                         log.warn(&format!("in-place localization of \"{working}\" failed: {error}"));
                     }
                     return strlcpy(&working, output_length);
@@ -462,18 +473,18 @@ impl LocalizationTable {
                 format,
                 arguments: parsed,
             });
-            return Self::substitute(&working, record.as_ref(), args, output_length, log.as_deref_mut());
+            Self::substitute(&working, record.as_ref(), args, output_length, reborrow_log(&mut log))
         } else {
-            return strlcpy(&working, output_length);
+            strlcpy(&working, output_length)
         }
     }
 
-    fn substitute(
+    fn substitute<'l>(
         working: &str,
         record: Option<&LocString>,
         args: &[String],
         output_length: i64,
-        log: Option<&mut dyn LibLog>,
+        log: Option<&mut (dyn LibLog + 'l)>,
     ) -> String {
         let mut log = log;
         let Some(record) = record else {
@@ -484,7 +495,7 @@ impl LocalizationTable {
         }
         for arg in &record.arguments {
             if arg.arg_index >= args.len() {
-                if let Some(log) = log.as_deref_mut() {
+                if let Some(log) = log.as_mut() {
                     log.warn(&format!(
                         "Loc_Localize: base \"{working}\" localized with too few arguments"
                     ));
@@ -507,7 +518,7 @@ impl LocalizationTable {
                 false,
                 &[],
                 MAX_STRING_CHARS as i64,
-                log.as_deref_mut(),
+                reborrow_log(&mut log),
             );
             output = strlcat(&output, &localized, output_length);
             let rest: String = record.format.chars().skip(arg.end).collect();
@@ -519,7 +530,7 @@ impl LocalizationTable {
             false,
             &[],
             MAX_STRING_CHARS as i64,
-            log.as_deref_mut(),
+            reborrow_log(&mut log),
         );
         output = strlcat(&output, &localized, output_length);
         let rest: String = record.format.chars().skip(arg.end).collect();
@@ -532,20 +543,21 @@ impl LocalizationTable {
     }
 
     /// Reload the table (`reload`).
-    pub fn reload(
+    pub fn reload<'l>(
         &mut self,
         bytes: Option<&[u8]>,
         options: &LocReloadOptions,
-        log: Option<&mut dyn LibLog>,
+        log: Option<&mut (dyn LibLog + 'l)>,
     ) -> usize {
         self.clear();
         let Some(bytes) = bytes else {
             return 0;
         };
-        let last_wins = options.duplicate_keys.map_or(
-            self.profile == LocalizationProfile::Q2Rerelease,
-            |policy| policy == DuplicateKeys::Last,
-        );
+        let last_wins = options
+            .duplicate_keys
+            .map_or(self.profile == LocalizationProfile::Q2Rerelease, |policy| {
+                policy == DuplicateKeys::Last
+            });
         // First-wins needs a pre-populated seen set; emulate by
         // collecting with merge semantics on a scratch table.
         let mut scratch = BTreeMap::new();
@@ -586,7 +598,7 @@ impl LocalizationTable {
             let parsed = match loc_parse(&format) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    if let Some(log) = log.as_deref_mut() {
+                    if let Some(log) = log.as_mut() {
                         log.warn(&format!("loc parse error ({key}): {error}"));
                     }
                     continue;
@@ -595,7 +607,13 @@ impl LocalizationTable {
             if has_platform_spec {
                 if let Some(platform) = &platform {
                     if platform_tags.iter().any(|tag| tag == platform) {
-                        scratch.insert(key, LocString { format, arguments: parsed });
+                        scratch.insert(
+                            key,
+                            LocString {
+                                format,
+                                arguments: parsed,
+                            },
+                        );
                         count += 1;
                     }
                 }
@@ -603,33 +621,39 @@ impl LocalizationTable {
             }
             if last_wins || !seen.contains(&key) {
                 seen.insert(key.clone());
-                scratch.insert(key, LocString { format, arguments: parsed });
+                scratch.insert(
+                    key,
+                    LocString {
+                        format,
+                        arguments: parsed,
+                    },
+                );
                 count += 1;
             }
         }
         self.table = scratch;
-        if let Some(log) = log.as_deref_mut() {
+        if let Some(log) = log.as_mut() {
             log.info(&format!("Loaded {count} localization strings"));
         }
         count
     }
 
     /// Merge a file (`merge`).
-    pub fn merge(
+    pub fn merge<'l>(
         &mut self,
         bytes: Option<&[u8]>,
         options: &LocReloadOptions,
-        log: Option<&mut dyn LibLog>,
+        log: Option<&mut (dyn LibLog + 'l)>,
     ) -> usize {
         let Some(bytes) = bytes else {
             return 0;
         };
-        let last_wins = options.duplicate_keys.map_or(
-            self.profile == LocalizationProfile::Q2Rerelease,
-            |policy| policy == DuplicateKeys::Last,
-        );
-        let count = loc_merge_into(bytes, options, log, &mut self.table, last_wins);
-        count
+        let last_wins = options
+            .duplicate_keys
+            .map_or(self.profile == LocalizationProfile::Q2Rerelease, |policy| {
+                policy == DuplicateKeys::Last
+            });
+        loc_merge_into(bytes, options, log, &mut self.table, last_wins)
     }
 
     /// Entry count.
@@ -639,18 +663,18 @@ impl LocalizationTable {
     }
 
     /// Load an ordered tier (`loadOrdered`).
-    pub fn load_ordered(
+    pub fn load_ordered<'l>(
         &mut self,
         primary: &LocLoadTier,
         fallback: &LocLoadTier,
         options: &LocReloadOptions,
-        log: Option<&mut dyn LibLog>,
+        log: Option<&mut (dyn LibLog + 'l)>,
     ) -> usize {
         let mut log = log;
         let tier = if primary.base.is_some() { primary } else { fallback };
-        self.reload(tier.base.as_deref(), options, log.as_deref_mut());
+        self.reload(tier.base.as_deref(), options, reborrow_log(&mut log));
         for mods in &tier.mods {
-            self.merge(Some(mods), options, log.as_deref_mut());
+            self.merge(Some(mods), options, reborrow_log(&mut log));
         }
         self.table.len()
     }
@@ -661,37 +685,25 @@ impl LocalizationTable {
     }
 
     /// Localize (`localize`).
-    pub fn localize(
+    pub fn localize<'l>(
         &self,
         base: &str,
         args: &[String],
         allow_in_place: bool,
         output_bytes: i64,
-        log: Option<&mut dyn LibLog>,
+        log: Option<&mut (dyn LibLog + 'l)>,
     ) -> String {
         assert!(output_bytes >= 0, "Invalid localization output size");
         self.localize_source(base, allow_in_place, args, output_bytes, log)
     }
 
     /// Byte-oriented output with raw truncation (`localizeBytes`).
-    pub fn localize_bytes(
-        &self,
-        base: &str,
-        args: &[String],
-        allow_in_place: bool,
-        output_bytes: i64,
-    ) -> Vec<u8> {
+    pub fn localize_bytes(&self, base: &str, args: &[String], allow_in_place: bool, output_bytes: i64) -> Vec<u8> {
         assert!(output_bytes >= 0, "Invalid localization output size");
         let text = self.localize_source(base, allow_in_place, args, i64::MAX, None);
         let bytes = text.as_bytes();
         let end = (output_bytes.max(0) - 1).max(0) as usize;
         bytes[..end.min(bytes.len())].to_vec()
-    }
-}
-
-impl Default for LocalizationProfile {
-    fn default() -> Self {
-        Self::Q1Rerelease
     }
 }
 
@@ -714,11 +726,7 @@ pub fn loc_language_from_locale(tag: Option<&str>) -> String {
         return "english".to_string();
     }
     let stripped = tag.split('.').next().unwrap_or("").split('@').next().unwrap_or("");
-    let primary = stripped
-        .split(['-', '_'])
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let primary = stripped.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
     match primary.as_str() {
         "en" => "english",
         "fr" => "french",
@@ -817,20 +825,25 @@ mod tests {
     #[test]
     fn duplicate_policy() {
         let mut first = LocalizationTable::new(LocalizationProfile::Q1Rerelease);
-        first.reload(Some(b"A = \"1\"\nA = \"2\"\n".as_slice()), &LocReloadOptions::default(), None);
+        first.reload(
+            Some(b"A = \"1\"\nA = \"2\"\n".as_slice()),
+            &LocReloadOptions::default(),
+            None,
+        );
         assert_eq!(first.localize("$A", &[], true, 1024, None), "1");
         let mut last = LocalizationTable::new(LocalizationProfile::Q2Rerelease);
-        last.reload(Some(b"A = \"1\"\nA = \"2\"\n".as_slice()), &LocReloadOptions::default(), None);
+        last.reload(
+            Some(b"A = \"1\"\nA = \"2\"\n".as_slice()),
+            &LocReloadOptions::default(),
+            None,
+        );
         assert_eq!(last.localize("$A", &[], true, 1024, None), "2");
     }
 
     #[test]
     fn lookup_strips_dollar() {
         let table = table();
-        assert_eq!(
-            table.lookup("$PLAIN", &[]).as_deref(),
-            Some("No args")
-        );
+        assert_eq!(table.lookup("$PLAIN", &[]).as_deref(), Some("No args"));
         assert!(table.lookup("$MISSING", &[]).is_none());
     }
 }

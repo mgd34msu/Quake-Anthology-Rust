@@ -168,11 +168,15 @@ impl From<ParsedKfont> for Kfont {
 /// Look up an ASCII glyph (`SCR_KFontLookup`).
 #[must_use]
 pub fn kfont_lookup(font: &Kfont, codepoint: u32) -> Option<KfontChar> {
-    if codepoint < KFONT_ASCII_MIN || codepoint > KFONT_ASCII_MAX {
+    if !(KFONT_ASCII_MIN..=KFONT_ASCII_MAX).contains(&codepoint) {
         return None;
     }
     let glyph = font.chars[(codepoint - KFONT_ASCII_MIN) as usize]?;
-    if glyph.w == 0 { None } else { Some(glyph) }
+    if glyph.w == 0 {
+        None
+    } else {
+        Some(glyph)
+    }
 }
 
 /// Look up any glyph (`kfontGlyph`).
@@ -183,7 +187,11 @@ pub fn kfont_glyph(font: &Kfont, codepoint: u32) -> Option<KfontChar> {
         .iter()
         .find(|(code, _)| *code == codepoint)
         .map(|(_, glyph)| *glyph)?;
-    if glyph.w == 0 { None } else { Some(glyph) }
+    if glyph.w == 0 {
+        None
+    } else {
+        Some(glyph)
+    }
 }
 
 /// Whether a glyph exists (`kfontHasGlyph`).
@@ -196,7 +204,7 @@ pub fn kfont_has_glyph(font: &Kfont, codepoint: u32) -> bool {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "texture gfx/font.tga\nmapchar font {\n65 0 0 8 8 0\n}\n";
+    const SAMPLE: &str = "texture gfx/font.tga\nmapchar font\n65 0 0 8 8 0\n";
 
     #[test]
     fn parses_mapchar() {
@@ -211,7 +219,12 @@ mod tests {
 
     #[test]
     fn missing_texture_is_none() {
-        assert!(parse_kfont("mapchar font {\n}\n").is_none());
+        assert!(parse_kfont("mapchar font\n65 0 0 8 8 0\n").is_none());
+    }
+
+    #[test]
+    fn braces_are_rejected_like_donor() {
+        assert!(parse_kfont("texture gfx/font.tga\nmapchar font {\n65 0 0 8 8 0\n}\n").is_none());
     }
 
     #[test]

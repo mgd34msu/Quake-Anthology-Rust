@@ -74,8 +74,7 @@ pub struct FileMedia {
 impl FileMedia {
     /// Open a media file.
     pub fn open(path: &str) -> Result<Self, ClientError> {
-        let file = File::open(path)
-            .map_err(|error| ClientError::BadMedia(format!("{path}: {error}")))?;
+        let file = File::open(path).map_err(|error| ClientError::BadMedia(format!("{path}: {error}")))?;
         let byte_length = file
             .metadata()
             .map_err(|error| ClientError::BadMedia(format!("{path}: {error}")))?
@@ -123,11 +122,7 @@ impl MediaInput for FileMedia {
 }
 
 /// Read an exact range (`readMedia`).
-pub fn read_media(
-    input: &mut dyn MediaInput,
-    offset: usize,
-    length: usize,
-) -> Result<Vec<u8>, ClientError> {
+pub fn read_media(input: &mut dyn MediaInput, offset: usize, length: usize) -> Result<Vec<u8>, ClientError> {
     if offset > input.byte_length().saturating_sub(length) {
         return Err(ClientError::BadMedia(format!(
             "{}:{offset}: truncated media read of {length} bytes",

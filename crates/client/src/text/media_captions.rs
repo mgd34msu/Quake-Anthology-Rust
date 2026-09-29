@@ -60,7 +60,7 @@ pub enum CaptionPlaybackStatus {
 }
 
 /// Caption playback state (`CaptionPlaybackState`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CaptionPlaybackState {
     /// Source.
     pub source: String,
@@ -132,10 +132,7 @@ impl<'a> SeatMediaCaptions<'a> {
             }
             let cues = parse_subtitle_text(&String::from_utf8_lossy(&bytes), &path)?
                 .into_iter()
-                .map(|cue| super::captions::CaptionCue {
-                    kind: self.kind,
-                    ..cue
-                })
+                .map(|cue| super::captions::CaptionCue { kind: self.kind, ..cue })
                 .collect();
             self.timeline_cues = cues;
             self.prepared = key;

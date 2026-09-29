@@ -97,25 +97,36 @@ pub struct Q2Frames {
 #[must_use]
 pub const fn q1_surface_kind(name: &str) -> Q1Surface {
     let bytes = name.as_bytes();
-    let starts_with = |prefix: &str| -> bool {
-        let prefix = prefix.as_bytes();
-        bytes.len() >= prefix.len() && bytes[..prefix.len()] == *prefix
-    };
-    if starts_with("sky") {
+    if starts_with_bytes(bytes, "sky") {
         Q1Surface::Sky
-    } else if starts_with("{") {
+    } else if starts_with_bytes(bytes, "{") {
         Q1Surface::Fence
-    } else if !starts_with("*") {
+    } else if !starts_with_bytes(bytes, "*") {
         Q1Surface::Ordinary
-    } else if starts_with("*lava") {
+    } else if starts_with_bytes(bytes, "*lava") {
         Q1Surface::Lava
-    } else if starts_with("*slime") {
+    } else if starts_with_bytes(bytes, "*slime") {
         Q1Surface::Slime
-    } else if starts_with("*tele") {
+    } else if starts_with_bytes(bytes, "*tele") {
         Q1Surface::Teleport
     } else {
         Q1Surface::Water
     }
+}
+
+const fn starts_with_bytes(bytes: &[u8], prefix: &str) -> bool {
+    let prefix = prefix.as_bytes();
+    if bytes.len() < prefix.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < prefix.len() {
+        if bytes[index] != prefix[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 /// Create a Q1 material (`createQ1Material`).
@@ -170,9 +181,10 @@ pub fn q1_texture_animations(
         let count = frames.keys().next_back().map_or(0, |last| usize::from(*last) + 1);
         let mut result = Vec::with_capacity(count);
         for frame in 0..count {
-            let image = frames.get(&(frame as u8)).copied().ok_or_else(|| {
-                ClientError::BadMaterial(format!("Missing Q1 animation frame {frame} in {name}"))
-            })?;
+            let image = frames
+                .get(&(frame as u8))
+                .copied()
+                .ok_or_else(|| ClientError::BadMaterial(format!("Missing Q1 animation frame {frame} in {name}")))?;
             result.push(Q1AnimFrame {
                 image,
                 start_tenths: frame as i32 * 2,
@@ -191,11 +203,7 @@ pub fn q1_texture_animations(
 }
 
 /// Pick a Q1 animated texture (`q1AnimatedTexture`).
-pub fn q1_animated_texture(
-    material: &Q1Material,
-    time: f32,
-    alternate: bool,
-) -> Result<u32, ClientError> {
+pub fn q1_animated_texture(material: &Q1Material, time: f32, alternate: bool) -> Result<u32, ClientError> {
     let frames = if alternate && !material.alternate_animation.is_empty() {
         &material.alternate_animation
     } else {
@@ -209,9 +217,7 @@ pub fn q1_animated_texture(
         .iter()
         .find(|frame| phase >= frame.start_tenths && phase < frame.end_tenths)
         .map(|frame| frame.image)
-        .ok_or_else(|| {
-            ClientError::BadMaterial(format!("Broken animation cycle in {}", material.name))
-        })
+        .ok_or_else(|| ClientError::BadMaterial(format!("Broken animation cycle in {}", material.name)))
 }
 
 /// Create a Q2 material (`createQ2Material`).
@@ -252,9 +258,12 @@ pub fn create_q2_material(
 pub fn q2_animated_texture(material: &Q2Material, frame: f32, name: &str) -> Result<u32, ClientError> {
     let count = material.frames.count as i32;
     let index = ((frame.trunc() as i32 % count) + count) % count;
-    material.frames.frames.get(index as usize).copied().ok_or_else(|| {
-        ClientError::BadMaterial(format!("Broken Q2 animation cycle in {name}"))
-    })
+    material
+        .frames
+        .frames
+        .get(index as usize)
+        .copied()
+        .ok_or_else(|| ClientError::BadMaterial(format!("Broken Q2 animation cycle in {name}")))
 }
 
 /// Liquid texture coordinates (`liquidTexCoords`, pre-tile UVs).
@@ -455,8 +464,7 @@ pub fn prepare_legacy_material_batches(
         if blended || context.q1_fog_active {
             let combined = context.translucent_lightmap.ok_or_else(|| {
                 ClientError::BadMaterial(
-                    "Translucent lightmapped surfaces require an uploaded directLightmapPixels image"
-                        .to_string(),
+                    "Translucent lightmapped surfaces require an uploaded directLightmapPixels image".to_string(),
                 )
             })?;
             let paired: Vec<BatchVertex> = batches[0]
@@ -480,20 +488,14 @@ pub fn prepare_legacy_material_batches(
             };
         } else {
             let blend = match material {
-                LegacyMaterial::Q1(_)
-                    if context.q1_lightmap_encoding != Q1LightmapEncoding::Rgb =>
-                {
-                    Blend {
-                        source: super::state::BlendFactor::Zero,
-                        destination: if context.q1_lightmap_encoding
-                            == Q1LightmapEncoding::InvertedAlpha
-                        {
-                            super::state::BlendFactor::OneMinusSrcAlpha
-                        } else {
-                            super::state::BlendFactor::OneMinusSrcColor
-                        },
-                    }
-                }
+                LegacyMaterial::Q1(_) if context.q1_lightmap_encoding != Q1LightmapEncoding::Rgb => Blend {
+                    source: super::state::BlendFactor::Zero,
+                    destination: if context.q1_lightmap_encoding == Q1LightmapEncoding::InvertedAlpha {
+                        super::state::BlendFactor::OneMinusSrcAlpha
+                    } else {
+                        super::state::BlendFactor::OneMinusSrcColor
+                    },
+                },
                 _ => Blend {
                     source: super::state::BlendFactor::DstColor,
                     destination: super::state::BlendFactor::Zero,
@@ -601,9 +603,7 @@ pub fn split_q1_sky_texture(image: &IndexedImage) -> Result<SkyLayers, ClientErr
         let offset = usize::from(index) * 3;
         match image.palette.get(offset..offset + 3) {
             Some(color) => Ok((color[0], color[1], color[2])),
-            None => Err(ClientError::BadMaterial(
-                "Q1 sky palette is incomplete".to_string(),
-            )),
+            None => Err(ClientError::BadMaterial("Q1 sky palette is incomplete".to_string())),
         }
     };
     let mut solid = vec![0u8; 128 * 128 * 4];
@@ -619,12 +619,7 @@ pub fn split_q1_sky_texture(image: &IndexedImage) -> Result<SkyLayers, ClientErr
             blue += u32::from(b);
         }
     }
-    let average = [
-        (red / 16384) as u8,
-        (green / 16384) as u8,
-        (blue / 16384) as u8,
-        0,
-    ];
+    let average = [(red / 16384) as u8, (green / 16384) as u8, (blue / 16384) as u8, 0];
     for y in 0..128 {
         for x in 0..128 {
             let index = image.pixels[y * 256 + x];
@@ -647,7 +642,7 @@ pub fn split_q1_sky_texture(image: &IndexedImage) -> Result<SkyLayers, ClientErr
 
 /// Split a Quake64 sky texture (`splitQ64SkyTexture`).
 pub fn split_q64_sky_texture(image: &IndexedImage) -> Result<SkyLayers, ClientError> {
-    if image.height < 2 || image.height % 2 != 0 {
+    if image.height < 2 || !image.height.is_multiple_of(2) {
         return Err(ClientError::BadMaterial(
             "Quake64 sky requires two vertically stacked layers".to_string(),
         ));
@@ -703,8 +698,7 @@ mod tests {
     #[test]
     fn animations_form_tenth_loops() {
         let (animation, alternate) =
-            q1_texture_animations("+0lava", &[("+0lava", 1), ("+1lava", 2), ("+Alava", 3)])
-                .unwrap();
+            q1_texture_animations("+0lava", &[("+0lava", 1), ("+1lava", 2), ("+Alava", 3)]).unwrap();
         assert_eq!(animation.len(), 2);
         assert_eq!(animation[1].end_tenths, 4);
         assert_eq!(alternate.len(), 1);
@@ -717,14 +711,8 @@ mod tests {
 
     #[test]
     fn q2_alpha_from_flags() {
-        assert_eq!(
-            create_q2_material(&[1], None, false, 16).unwrap().alpha,
-            0.33
-        );
-        assert_eq!(
-            create_q2_material(&[1], None, false, 0).unwrap().alpha,
-            1.0
-        );
+        assert_eq!(create_q2_material(&[1], None, false, 16).unwrap().alpha, 0.33);
+        assert_eq!(create_q2_material(&[1], None, false, 0).unwrap().alpha, 1.0);
         assert!(create_q2_material(&[], None, false, 0).is_err());
     }
 
@@ -744,9 +732,7 @@ mod tests {
     #[test]
     fn legacy_batches_cover_lightmap() {
         let material = create_q1_material("rock", 1, Some(2), false, 1.0, Vec::new(), Vec::new());
-        let project = |position: Vec3| {
-            qa_core::math::vec4(position.x, position.y, position.z, 1.0)
-        };
+        let project = |position: Vec3| qa_core::math::vec4(position.x, position.y, position.z, 1.0);
         let context = LegacyMaterialDrawContext {
             entity_rgba: None,
             time: 0.0,
@@ -770,9 +756,7 @@ mod tests {
             )],
             indices: vec![0],
         };
-        let batches =
-            prepare_legacy_material_batches(&LegacyMaterial::Q1(material), &geometry, &context)
-                .unwrap();
+        let batches = prepare_legacy_material_batches(&LegacyMaterial::Q1(material), &geometry, &context).unwrap();
         assert_eq!(batches.len(), 2);
     }
 }

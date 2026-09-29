@@ -9,12 +9,7 @@ use super::types::{AudioSamples, CinematicAudio, CinematicTarget};
 /// A cinematic mixer (`audioMixer` subset, sync).
 pub trait CinematicMixer {
     /// Queue a stream.
-    fn queue_stream(
-        &mut self,
-        audience: &CinematicAudience,
-        samples: &AudioSamples,
-        sample_rate: u32,
-    );
+    fn queue_stream(&mut self, audience: &CinematicAudience, samples: &AudioSamples, sample_rate: u32);
     /// Stop a stream.
     fn stop_stream(&mut self, audience: &CinematicAudience);
     /// Pause or resume a stream.
@@ -56,11 +51,8 @@ impl<'a> CinematicAudioAdapter<'a> {
         if audio.reset_stream {
             self.mixer.stop_stream(&resolve_audience(target));
         }
-        self.mixer.queue_stream(
-            &resolve_audience(target),
-            &audio.samples,
-            audio.sample_rate,
-        );
+        self.mixer
+            .queue_stream(&resolve_audience(target), &audio.samples, audio.sample_rate);
     }
 
     /// Handle reset.
@@ -86,12 +78,7 @@ mod tests {
     }
 
     impl CinematicMixer for FixedMixer {
-        fn queue_stream(
-            &mut self,
-            _audience: &CinematicAudience,
-            _samples: &AudioSamples,
-            _sample_rate: u32,
-        ) {
+        fn queue_stream(&mut self, _audience: &CinematicAudience, _samples: &AudioSamples, _sample_rate: u32) {
             self.queued += 1;
         }
 
@@ -131,9 +118,6 @@ mod tests {
         assert_eq!(mixer.queued, 1);
         assert_eq!(mixer.stopped, 1);
         assert_eq!(mixer.paused, vec![true]);
-        assert_eq!(
-            resolve_audience(&target),
-            CinematicAudience::Seat(owner.seat(0))
-        );
+        assert_eq!(resolve_audience(&target), CinematicAudience::Seat(owner.seat(0)));
     }
 }

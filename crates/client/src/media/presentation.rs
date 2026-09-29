@@ -8,14 +8,11 @@
 
 use qa_core::identity::SeatId;
 
-use super::containers::{
-    decode_ogg_movie, parse_cin_header, parse_roq_header, parse_theora_ident, CIN_FRAME_RATE,
-};
+use super::containers::{decode_ogg_movie, parse_cin_header, parse_roq_header, parse_theora_ident};
 use super::playback::CinematicSource;
 use super::source::MemMedia;
 use super::types::{
-    CinematicEndReason, CinematicFrame, CinematicHost, CinematicStatus, CinematicTarget,
-    CinematicTimeline,
+    CinematicEndReason, CinematicFrame, CinematicHost, CinematicStatus, CinematicTarget, CinematicTimeline,
 };
 use crate::ClientError;
 
@@ -31,9 +28,7 @@ pub struct CinematicDimensions {
 /// Read cinematic dimensions without decoding (`cinematicDimensions`).
 pub fn cinematic_dimensions(source: &CinematicSource) -> Result<CinematicDimensions, ClientError> {
     match source {
-        CinematicSource::Image {
-            width, height, ..
-        } => Ok(CinematicDimensions {
+        CinematicSource::Image { width, height, .. } => Ok(CinematicDimensions {
             width: *width,
             height: *height,
         }),
@@ -49,8 +44,8 @@ pub fn cinematic_dimensions(source: &CinematicSource) -> Result<CinematicDimensi
         }
         CinematicSource::Roq { bytes, .. } => {
             use super::containers::{
-                ROQ_AUDIO_MONO, ROQ_AUDIO_STEREO, ROQ_CODEBOOK, ROQ_FRAME, ROQ_HANG, ROQ_INFO,
-                ROQ_MAGIC, ROQ_PACKET, ROQ_QUAD_JPEG,
+                ROQ_AUDIO_MONO, ROQ_AUDIO_STEREO, ROQ_CODEBOOK, ROQ_FRAME, ROQ_HANG, ROQ_INFO, ROQ_MAGIC, ROQ_PACKET,
+                ROQ_QUAD_JPEG,
             };
             let no_video = || ClientError::BadMedia("Cinematic contains no video info".to_string());
             let mut offset = parse_roq_header(bytes, "<cinematic>").map(|(_, offset)| offset)?;
@@ -58,8 +53,7 @@ pub fn cinematic_dimensions(source: &CinematicSource) -> Result<CinematicDimensi
                 if offset + 8 > bytes.len() {
                     return Err(no_video());
                 }
-                let header =
-                    super::containers::parse_roq_chunk_header(bytes, offset, "<cinematic>")?;
+                let header = super::containers::parse_roq_chunk_header(bytes, offset, "<cinematic>")?;
                 if header.size > 65536 || header.id == ROQ_MAGIC {
                     return Err(no_video());
                 }
@@ -67,10 +61,8 @@ pub fn cinematic_dimensions(source: &CinematicSource) -> Result<CinematicDimensi
                     if offset + 8 + 4 > bytes.len() {
                         return Err(no_video());
                     }
-                    let width =
-                        u16::from_le_bytes([bytes[offset + 8], bytes[offset + 9]]) as usize;
-                    let height =
-                        u16::from_le_bytes([bytes[offset + 10], bytes[offset + 11]]) as usize;
+                    let width = u16::from_le_bytes([bytes[offset + 8], bytes[offset + 9]]) as usize;
+                    let height = u16::from_le_bytes([bytes[offset + 10], bytes[offset + 11]]) as usize;
                     return Ok(CinematicDimensions { width, height });
                 }
                 if !matches!(
@@ -85,12 +77,11 @@ pub fn cinematic_dimensions(source: &CinematicSource) -> Result<CinematicDimensi
                 ) {
                     return Err(no_video());
                 }
-                offset += 8
-                    + if matches!(header.id, ROQ_HANG | ROQ_PACKET) {
-                        0
-                    } else {
-                        header.size
-                    };
+                offset += 8 + if matches!(header.id, ROQ_HANG | ROQ_PACKET) {
+                    0
+                } else {
+                    header.size
+                };
             }
         }
         CinematicSource::Ogv { bytes, .. } => {
@@ -131,7 +122,6 @@ pub enum ImageOperation {
 }
 
 /// A cinematic upload image (`CinematicImage`).
-#[derive(Debug)]
 pub struct CinematicImage {
     image: u32,
     width: usize,
@@ -139,6 +129,18 @@ pub struct CinematicImage {
     revision: i32,
     closed: bool,
     allocate: Box<dyn Fn(usize, usize) -> u32>,
+}
+
+impl std::fmt::Debug for CinematicImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CinematicImage")
+            .field("image", &self.image)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("revision", &self.revision)
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CinematicImage {
@@ -219,7 +221,6 @@ impl CinematicImage {
 
 /// A fullscreen cinematic (`FullscreenCinematic`).
 pub struct FullscreenCinematic<'a> {
-    seat: SeatId,
     playback: super::playback::CinematicPlayback,
     texture: CinematicImage,
     host: &'a mut dyn CinematicHost,
@@ -244,14 +245,13 @@ impl<'a> FullscreenCinematic<'a> {
     ) -> Result<Self, ClientError> {
         let playback = super::playback::CinematicPlayback::open(
             source,
-            CinematicTarget::Seat(seat.clone()),
+            CinematicTarget::Seat(seat),
             wall_now,
             loop_playback,
             hold,
             silent,
         )?;
         Ok(Self {
-            seat,
             playback,
             texture: CinematicImage::new(image, width, height, allocate),
             host,
@@ -298,11 +298,7 @@ impl<'a> FullscreenCinematic<'a> {
                 let texture = if blank {
                     None
                 } else {
-                    Some(self.texture.resolve(
-                        frame,
-                        self.playback.revision() as i32,
-                        apply,
-                    )?)
+                    Some(self.texture.resolve(frame, self.playback.revision() as i32, apply)?)
                 };
                 Ok(FullscreenFrame {
                     status: tick.status,
@@ -316,9 +312,7 @@ impl<'a> FullscreenCinematic<'a> {
     /// Complete the cinematic.
     pub fn complete(&mut self, reason: CinematicEndReason) -> Result<(), ClientError> {
         match reason {
-            CinematicEndReason::Finished | CinematicEndReason::Skipped => {
-                self.playback.skip(self.host)
-            }
+            CinematicEndReason::Finished | CinematicEndReason::Skipped => self.playback.skip(self.host),
             CinematicEndReason::Stopped => self.playback.stop(self.host),
         }
     }
@@ -354,12 +348,7 @@ pub struct FullscreenFrame {
 
 /// Letterboxed pixel rect (`cinematicPixelRect`).
 #[must_use]
-pub fn cinematic_pixel_rect(
-    video_width: f32,
-    video_height: f32,
-    target_width: f32,
-    target_height: f32,
-) -> [f32; 4] {
+pub fn cinematic_pixel_rect(video_width: f32, video_height: f32, target_width: f32, target_height: f32) -> [f32; 4] {
     let scale = (target_width / video_width).min(target_height / video_height);
     let width = (video_width * scale).trunc();
     let height = (video_height * scale).trunc();
@@ -381,12 +370,7 @@ mod tests {
     struct NullHost;
 
     impl CinematicHost for NullHost {
-        fn on_audio(
-            &mut self,
-            _audio: &super::super::types::CinematicAudio,
-            _target: &CinematicTarget,
-        ) {
-        }
+        fn on_audio(&mut self, _audio: &super::super::types::CinematicAudio, _target: &CinematicTarget) {}
 
         fn on_audio_reset(&mut self, _target: &CinematicTarget) {}
 
@@ -405,10 +389,7 @@ mod tests {
         };
         assert_eq!(
             cinematic_dimensions(&image).unwrap(),
-            CinematicDimensions {
-                width: 4,
-                height: 2
-            }
+            CinematicDimensions { width: 4, height: 2 }
         );
         let mut roq = vec![0u8; 8 + 8 + 8];
         roq[0..2].copy_from_slice(&super::super::containers::ROQ_MAGIC.to_le_bytes());
@@ -423,10 +404,7 @@ mod tests {
         };
         assert_eq!(
             cinematic_dimensions(&source).unwrap(),
-            CinematicDimensions {
-                width: 64,
-                height: 32
-            }
+            CinematicDimensions { width: 64, height: 32 }
         );
     }
 
@@ -444,8 +422,12 @@ mod tests {
             decoded: true,
         };
         let mut operations = Vec::new();
-        image.prepare(&frame, 3, &mut |operation| operations.push(operation)).unwrap();
-        image.prepare(&frame, 3, &mut |operation| operations.push(operation)).unwrap();
+        image
+            .prepare(&frame, 3, &mut |operation| operations.push(operation))
+            .unwrap();
+        image
+            .prepare(&frame, 3, &mut |operation| operations.push(operation))
+            .unwrap();
         assert_eq!(operations.len(), 1);
         assert!(image.release().is_some());
         assert!(image.release().is_none());
@@ -453,8 +435,14 @@ mod tests {
 
     #[test]
     fn pixel_rect_letterboxes() {
-        assert_eq!(cinematic_pixel_rect(320.0, 240.0, 640.0, 480.0), [0.0, 0.0, 640.0, 480.0]);
-        assert_eq!(cinematic_pixel_rect(320.0, 240.0, 640.0, 400.0), [53.0, 0.0, 533.0, 400.0]);
+        assert_eq!(
+            cinematic_pixel_rect(320.0, 240.0, 640.0, 480.0),
+            [0.0, 0.0, 640.0, 480.0]
+        );
+        assert_eq!(
+            cinematic_pixel_rect(320.0, 240.0, 640.0, 400.0),
+            [53.0, 0.0, 533.0, 400.0]
+        );
         let _ = CIN_FPS;
     }
 
@@ -484,7 +472,9 @@ mod tests {
         )
         .unwrap();
         let mut operations = Vec::new();
-        let frame = fullscreen.prepare(0.0, "game", &mut |operation| operations.push(operation)).unwrap();
+        let frame = fullscreen
+            .prepare(0.0, "game", &mut |operation| operations.push(operation))
+            .unwrap();
         assert_eq!(frame.status, CinematicStatus::Held);
         assert_eq!(operations.len(), 1);
     }

@@ -48,9 +48,7 @@ impl FontImageServices for MountedServices<'_> {
 ///
 /// The returned registry borrows the services adapter; keep it alive
 /// for the registry lifetime.
-pub fn create_mounted_text_fonts<'a>(
-    services: &'a mut dyn FontImageServices,
-) -> TextFontRegistry<'a> {
+pub fn create_mounted_text_fonts<'a>(services: &'a mut dyn FontImageServices) -> TextFontRegistry<'a> {
     TextFontRegistry::new(services)
 }
 
@@ -63,11 +61,21 @@ pub fn mounted_font_services<'a>(
 }
 
 /// A retained-source font reader (`MountedFontReader`).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MountedFontReader<'a> {
     content: Option<&'a mut dyn MountedContentReads>,
     cache: BTreeMap<String, Option<Vec<u8>>>,
     retained: Vec<RetainedFontFile>,
+}
+
+impl std::fmt::Debug for MountedFontReader<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MountedFontReader")
+            .field("content", &self.content.is_some())
+            .field("cache", &self.cache)
+            .field("retained", &self.retained)
+            .finish()
+    }
 }
 
 impl<'a> MountedFontReader<'a> {

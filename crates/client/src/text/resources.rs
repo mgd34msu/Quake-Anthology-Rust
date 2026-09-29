@@ -14,11 +14,7 @@ pub trait LocalizationReader {
     fn read(&mut self, path: &str) -> Option<Vec<u8>>;
 }
 
-fn load_resources(
-    catalog: &mut LocalizationTable,
-    language: &str,
-    read: &mut dyn LocalizationReader,
-) {
+fn load_resources(catalog: &mut LocalizationTable, language: &str, read: &mut dyn LocalizationReader) {
     let names: Vec<&str> = if language == "english" {
         vec!["english"]
     } else {
@@ -89,8 +85,7 @@ mod tests {
                 b"HELLO = \"Hello\"\n".to_vec(),
             )],
         };
-        let catalog =
-            load_localization_resources(owner.seat(0), "french", &mut read, LocalizationProfile::Q1Rerelease);
+        let catalog = load_localization_resources(owner.seat(0), "french", &mut read, LocalizationProfile::Q1Rerelease);
         assert_eq!(catalog.localize("$HELLO", &[]), "Hello");
     }
 
@@ -99,12 +94,17 @@ mod tests {
         let owner = IdentityOwner::create("test").unwrap();
         let mut read = Fixed {
             files: vec![
-                ("localization/loc_english.txt".to_string(), b"HELLO = \"Hello\"\n".to_vec()),
-                ("localization/loc_french.txt".to_string(), b"HELLO = \"Bonjour\"\n".to_vec()),
+                (
+                    "localization/loc_english.txt".to_string(),
+                    b"HELLO = \"Hello\"\n".to_vec(),
+                ),
+                (
+                    "localization/loc_french.txt".to_string(),
+                    b"HELLO = \"Bonjour\"\n".to_vec(),
+                ),
             ],
         };
-        let catalog =
-            load_localization_resources(owner.seat(0), "french", &mut read, LocalizationProfile::Q1Rerelease);
+        let catalog = load_localization_resources(owner.seat(0), "french", &mut read, LocalizationProfile::Q1Rerelease);
         assert_eq!(catalog.localize("$HELLO", &[]), "Bonjour");
     }
 }

@@ -227,8 +227,8 @@ pub enum PolygonMode {
 }
 
 fn source_blend_bits(factor: BlendFactor) -> Result<u32, ClientError> {
-    use BlendFactor as F;
     use bits as B;
+    use BlendFactor as F;
     match factor {
         F::Zero => Ok(B::SRCBLEND_ZERO),
         F::One => Ok(B::SRCBLEND_ONE),
@@ -246,8 +246,8 @@ fn source_blend_bits(factor: BlendFactor) -> Result<u32, ClientError> {
 }
 
 fn destination_blend_bits(factor: BlendFactor) -> Result<u32, ClientError> {
-    use BlendFactor as F;
     use bits as B;
+    use BlendFactor as F;
     match factor {
         F::Zero => Ok(B::DSTBLEND_ZERO),
         F::One => Ok(B::DSTBLEND_ONE),
@@ -333,8 +333,8 @@ pub enum SourceStateChange {
 }
 
 fn decode_source_factor(state: u32) -> Result<BlendFactor, ClientError> {
-    use BlendFactor as F;
     use bits as B;
+    use BlendFactor as F;
     match state {
         B::SRCBLEND_ZERO => Ok(F::Zero),
         B::SRCBLEND_ONE => Ok(F::One),
@@ -352,8 +352,8 @@ fn decode_source_factor(state: u32) -> Result<BlendFactor, ClientError> {
 }
 
 fn decode_destination_factor(state: u32) -> Result<BlendFactor, ClientError> {
-    use BlendFactor as F;
     use bits as B;
+    use BlendFactor as F;
     match state {
         B::DSTBLEND_ZERO => Ok(F::Zero),
         B::DSTBLEND_ONE => Ok(F::One),
@@ -373,10 +373,7 @@ fn decode_destination_factor(state: u32) -> Result<BlendFactor, ClientError> {
 ///
 /// `None` previous yields every change. Apply each operation before
 /// advancing, then commit next only after completion.
-pub fn source_state_changes(
-    previous: Option<u32>,
-    next: u32,
-) -> Result<Vec<SourceStateChange>, ClientError> {
+pub fn source_state_changes(previous: Option<u32>, next: u32) -> Result<Vec<SourceStateChange>, ClientError> {
     use bits as B;
     let diff = match previous {
         None => u32::MAX,
@@ -387,13 +384,11 @@ pub fn source_state_changes(
     }
     let mut changes = Vec::new();
     if diff & B::DEPTHFUNC_EQUAL != 0 {
-        changes.push(SourceStateChange::DepthFunction(
-            if next & B::DEPTHFUNC_EQUAL != 0 {
-                DepthTest::Equal
-            } else {
-                DepthTest::LessEqual
-            },
-        ));
+        changes.push(SourceStateChange::DepthFunction(if next & B::DEPTHFUNC_EQUAL != 0 {
+            DepthTest::Equal
+        } else {
+            DepthTest::LessEqual
+        }));
     }
     if diff & (B::SRCBLEND_BITS | B::DSTBLEND_BITS) != 0 {
         if next & (B::SRCBLEND_BITS | B::DSTBLEND_BITS) != 0 {
@@ -406,23 +401,17 @@ pub fn source_state_changes(
         }
     }
     if diff & B::DEPTHMASK_TRUE != 0 {
-        changes.push(SourceStateChange::DepthWrite(
-            next & B::DEPTHMASK_TRUE != 0,
-        ));
+        changes.push(SourceStateChange::DepthWrite(next & B::DEPTHMASK_TRUE != 0));
     }
     if diff & B::POLYMODE_LINE != 0 {
-        changes.push(SourceStateChange::PolygonMode(
-            if next & B::POLYMODE_LINE != 0 {
-                PolygonMode::Line
-            } else {
-                PolygonMode::Fill
-            },
-        ));
+        changes.push(SourceStateChange::PolygonMode(if next & B::POLYMODE_LINE != 0 {
+            PolygonMode::Line
+        } else {
+            PolygonMode::Fill
+        }));
     }
     if diff & B::DEPTHTEST_DISABLE != 0 {
-        changes.push(SourceStateChange::DepthTest(
-            next & B::DEPTHTEST_DISABLE == 0,
-        ));
+        changes.push(SourceStateChange::DepthTest(next & B::DEPTHTEST_DISABLE == 0));
     }
     if diff & B::ATEST_BITS != 0 {
         match next & B::ATEST_BITS {

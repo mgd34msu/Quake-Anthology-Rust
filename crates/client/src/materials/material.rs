@@ -18,11 +18,11 @@ use qa_content::md3::renderer_sine;
 use qa_core::math::{dot3, normalize3, scale3, sub3, Vec2, Vec3};
 use qa_core::numeric::native_atof;
 
-use super::state::{
-    source_state_bits, AlphaTest, Blend, BlendFactor, CullFace, DepthTest, PolygonMode,
-    RenderState, SourceStateInput, ADDITIVE_BLEND, FILTER_BLEND, OPAQUE_BLEND,
-};
 use super::state::bits as state_bits;
+use super::state::{
+    source_state_bits, AlphaTest, Blend, BlendFactor, CullFace, DepthTest, PolygonMode, RenderState, SourceStateInput,
+    ADDITIVE_BLEND, FILTER_BLEND, OPAQUE_BLEND,
+};
 use crate::ClientError;
 
 /// Waveform kind (`genFunc_t` names).
@@ -752,9 +752,7 @@ fn tokenize(text: &str) -> Vec<Token> {
         if ch == '/' && chars.get(index + 1) == Some(&'*') {
             index += 2;
             column += 2;
-            while index < chars.len()
-                && !(chars[index] == '*' && chars.get(index + 1) == Some(&'/'))
-            {
+            while index < chars.len() && !(chars[index] == '*' && chars.get(index + 1) == Some(&'/')) {
                 if chars[index] == '\n' {
                     line += 1;
                     column = 1;
@@ -793,10 +791,7 @@ fn tokenize(text: &str) -> Vec<Token> {
         while index < chars.len()
             && !chars[index].is_whitespace()
             && chars[index] != '"'
-            && !(chars[index] == '/'
-                && chars
-                    .get(index + 1)
-                    .is_some_and(|next| *next == '/' || *next == '*'))
+            && !(chars[index] == '/' && chars.get(index + 1).is_some_and(|next| *next == '/' || *next == '*'))
         {
             value.push(chars[index]);
             index += 1;
@@ -1147,10 +1142,7 @@ impl ShaderParser {
             "oneminusvertex" => Some(ColorGen::OneMinusVertex),
             "const" => self.vector().ok().map(ColorGen::Const),
             "wave" => {
-                let missing = format!(
-                    "WARNING: missing waveform parm in shader '{}'\n",
-                    self.shader_name
-                );
+                let missing = format!("WARNING: missing waveform parm in shader '{}'\n", self.shader_name);
                 self.wave(Some(previous_wave), &missing).ok().map(ColorGen::Wave)
             }
             _ => {
@@ -1182,26 +1174,22 @@ impl ShaderParser {
             "lightingspecular" => Ok(Some(AlphaGen::LightingSpecular)),
             "oneminusvertex" => Ok(Some(AlphaGen::OneMinusVertex)),
             "const" => {
-                let alpha =
-                    native_atof(&self.source_line_value().unwrap_or_default()).unwrap_or(0.0);
+                let alpha = native_atof(&self.source_line_value().unwrap_or_default()).unwrap_or(0.0);
                 let integer = (255.0 * alpha).trunc() as i64;
                 if !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&integer) {
                     return Err(ParseFail {
                         line: self.location.line,
                         column: self.location.column,
-                        message: "alphaGen const reaches undefined source byte conversion"
-                            .to_string(),
+                        message: "alphaGen const reaches undefined source byte conversion".to_string(),
                     });
                 }
                 #[allow(clippy::cast_possible_truncation)]
                 Ok(Some(AlphaGen::Const(alpha as f32)))
             }
             "wave" => {
-                let missing = format!(
-                    "WARNING: missing waveform parm in shader '{}'\n",
-                    self.shader_name
-                );
-                self.wave(Some(previous_wave), &missing).map(|wave| Some(AlphaGen::Wave(wave)))
+                let missing = format!("WARNING: missing waveform parm in shader '{}'\n", self.shader_name);
+                self.wave(Some(previous_wave), &missing)
+                    .map(|wave| Some(AlphaGen::Wave(wave)))
             }
             "portal" => {
                 let token = match self.next(false) {
@@ -1268,32 +1256,12 @@ impl ShaderParser {
     fn parse_tcmod(&mut self) -> Result<TexMod, ParseFail> {
         let token = self.next(false).map(|token| token.value).unwrap_or_default();
         let kind = token.to_ascii_lowercase();
-        let mut count = 0usize;
         macro_rules! number {
-            () => {{
+            ($label:expr) => {{
                 match self.next(false) {
-                    Some(token) => {
-                        count += 1;
-                        source_atof(&token.value)
-                    }
+                    Some(token) => source_atof(&token.value),
                     None => {
-                        let label = match kind.as_str() {
-                            "scale" => "scale parms",
-                            "scroll" => "scale scroll parms",
-                            "transform" => "transform parms",
-                            "turb" => {
-                                if count == 0 {
-                                    "tcMod turb parms"
-                                } else {
-                                    "tcMod turb"
-                                }
-                            }
-                            _ => "tcMod rotate parms",
-                        };
-                        let message = format!(
-                            "WARNING: missing {label} in shader '{}'\n",
-                            self.shader_name
-                        );
+                        let message = format!("WARNING: missing {} in shader '{}'\n", $label, self.shader_name);
                         self.warn(message.clone());
                         return Err(self.fail(message));
                     }
@@ -1302,27 +1270,37 @@ impl ShaderParser {
         }
         match kind.as_str() {
             "scale" => {
-                let x = number!();
-                let y = number!();
+                let x = number!("scale parms");
+                let y = number!("scale parms");
                 Ok(TexMod::Scale(qa_core::math::vec2(x, y)))
             }
             "scroll" => {
-                let x = number!();
-                let y = number!();
+                let x = number!("scale scroll parms");
+                let y = number!("scale scroll parms");
                 Ok(TexMod::Scroll(qa_core::math::vec2(x, y)))
             }
             "stretch" => {
-                let missing = format!(
-                    "WARNING: missing stretch parms in shader '{}'\n",
-                    self.shader_name
-                );
+                let missing = format!("WARNING: missing stretch parms in shader '{}'\n", self.shader_name);
                 Ok(TexMod::Stretch(self.wave(None, &missing)?))
             }
             "turb" => {
-                let base = number!();
-                let amplitude = number!();
-                let phase = number!();
-                let frequency = number!();
+                let mut parms = [0.0f32; 4];
+                for (consumed, parm) in parms.iter_mut().enumerate() {
+                    match self.next(false) {
+                        Some(token) => *parm = source_atof(&token.value),
+                        None => {
+                            let label = if consumed == 0 {
+                                "tcMod turb parms"
+                            } else {
+                                "tcMod turb"
+                            };
+                            let message = format!("WARNING: missing {label} in shader '{}'\n", self.shader_name);
+                            self.warn(message.clone());
+                            return Err(self.fail(message));
+                        }
+                    }
+                }
+                let [base, amplitude, phase, frequency] = parms;
                 Ok(TexMod::Turb(Waveform {
                     kind: WaveKind::Sin,
                     base,
@@ -1331,14 +1309,14 @@ impl ShaderParser {
                     frequency,
                 }))
             }
-            "rotate" => Ok(TexMod::Rotate(number!())),
+            "rotate" => Ok(TexMod::Rotate(number!("tcMod rotate parms"))),
             "transform" => {
-                let m00 = number!();
-                let m01 = number!();
-                let m10 = number!();
-                let m11 = number!();
-                let x = number!();
-                let y = number!();
+                let m00 = number!("transform parms");
+                let m01 = number!("transform parms");
+                let m10 = number!("transform parms");
+                let m11 = number!("transform parms");
+                let x = number!("transform parms");
+                let y = number!("transform parms");
                 Ok(TexMod::Transform {
                     m00,
                     m01,
@@ -1382,15 +1360,9 @@ impl ShaderParser {
             }
             "gl_one_minus_src_alpha" => {
                 if destination {
-                    (
-                        BlendFactor::OneMinusSrcAlpha,
-                        state_bits::DSTBLEND_ONE_MINUS_SRC_ALPHA,
-                    )
+                    (BlendFactor::OneMinusSrcAlpha, state_bits::DSTBLEND_ONE_MINUS_SRC_ALPHA)
                 } else {
-                    (
-                        BlendFactor::OneMinusSrcAlpha,
-                        state_bits::SRCBLEND_ONE_MINUS_SRC_ALPHA,
-                    )
+                    (BlendFactor::OneMinusSrcAlpha, state_bits::SRCBLEND_ONE_MINUS_SRC_ALPHA)
                 }
             }
             "gl_dst_alpha" => {
@@ -1402,35 +1374,22 @@ impl ShaderParser {
             }
             "gl_one_minus_dst_alpha" => {
                 if destination {
-                    (
-                        BlendFactor::OneMinusDstAlpha,
-                        state_bits::DSTBLEND_ONE_MINUS_DST_ALPHA,
-                    )
+                    (BlendFactor::OneMinusDstAlpha, state_bits::DSTBLEND_ONE_MINUS_DST_ALPHA)
                 } else {
-                    (
-                        BlendFactor::OneMinusDstAlpha,
-                        state_bits::SRCBLEND_ONE_MINUS_DST_ALPHA,
-                    )
+                    (BlendFactor::OneMinusDstAlpha, state_bits::SRCBLEND_ONE_MINUS_DST_ALPHA)
                 }
             }
-            "gl_dst_color" if !destination => {
-                (BlendFactor::DstColor, state_bits::SRCBLEND_DST_COLOR)
+            "gl_dst_color" if !destination => (BlendFactor::DstColor, state_bits::SRCBLEND_DST_COLOR),
+            "gl_one_minus_dst_color" if !destination => {
+                (BlendFactor::OneMinusDstColor, state_bits::SRCBLEND_ONE_MINUS_DST_COLOR)
             }
-            "gl_one_minus_dst_color" if !destination => (
-                BlendFactor::OneMinusDstColor,
-                state_bits::SRCBLEND_ONE_MINUS_DST_COLOR,
-            ),
-            "gl_src_alpha_saturate" if !destination => (
-                BlendFactor::SrcAlphaSaturate,
-                state_bits::SRCBLEND_ALPHA_SATURATE,
-            ),
-            "gl_src_color" if destination => {
-                (BlendFactor::SrcColor, state_bits::DSTBLEND_SRC_COLOR)
+            "gl_src_alpha_saturate" if !destination => {
+                (BlendFactor::SrcAlphaSaturate, state_bits::SRCBLEND_ALPHA_SATURATE)
             }
-            "gl_one_minus_src_color" if destination => (
-                BlendFactor::OneMinusSrcColor,
-                state_bits::DSTBLEND_ONE_MINUS_SRC_COLOR,
-            ),
+            "gl_src_color" if destination => (BlendFactor::SrcColor, state_bits::DSTBLEND_SRC_COLOR),
+            "gl_one_minus_src_color" if destination => {
+                (BlendFactor::OneMinusSrcColor, state_bits::DSTBLEND_ONE_MINUS_SRC_COLOR)
+            }
             _ => {
                 self.warn(format!(
                     "WARNING: unknown blend mode '{value}' in shader '{}', substituting GL_ONE\n",
@@ -1441,19 +1400,10 @@ impl ShaderParser {
         }
     }
 
-    fn blend(
-        &mut self,
-        previous: Blend,
-        previous_destination_bits: u32,
-    ) -> Result<(Blend, u32, u32, bool), ParseFail> {
+    fn blend(&mut self, previous: Blend, previous_destination_bits: u32) -> Result<(Blend, u32, u32, bool), ParseFail> {
         let value = self.required(false)?;
         match value.to_ascii_lowercase().as_str() {
-            "add" => Ok((
-                ADDITIVE_BLEND,
-                state_bits::SRCBLEND_ONE,
-                state_bits::DSTBLEND_ONE,
-                true,
-            )),
+            "add" => Ok((ADDITIVE_BLEND, state_bits::SRCBLEND_ONE, state_bits::DSTBLEND_ONE, true)),
             "filter" => Ok((
                 FILTER_BLEND,
                 state_bits::SRCBLEND_DST_COLOR,
@@ -1490,15 +1440,7 @@ impl ShaderParser {
                     }
                 };
                 let (destination, destination_bits) = self.blend_factor(&token.value, true);
-                Ok((
-                    Blend {
-                        source,
-                        destination,
-                    },
-                    source_bits,
-                    destination_bits,
-                    true,
-                ))
+                Ok((Blend { source, destination }, source_bits, destination_bits, true))
             }
         }
     }
@@ -1531,8 +1473,7 @@ impl ShaderParser {
 
         macro_rules! snapshot {
             ($completed:expr) => {{
-                let mut stage_rgb_gen =
-                    rgb_gen.unwrap_or(ColorGen::IdentityLighting);
+                let mut stage_rgb_gen = rgb_gen.unwrap_or(ColorGen::IdentityLighting);
                 let mut stage_raw_rgb_gen = raw_rgb_gen;
                 let mut stage_raw_alpha_gen = raw_alpha_gen;
                 let mut stage_tc_gen = tc_gen.unwrap_or(if is_lightmap {
@@ -1573,9 +1514,7 @@ impl ShaderParser {
                     match source_state_bits(&input, PolygonMode::Fill, true) {
                         Ok(extra) => state_bits_value = blend_bits | extra,
                         Err(_) => {
-                            return Err(self.fail(
-                                "GL_State cannot encode stage state".to_string(),
-                            ));
+                            return Err(self.fail("GL_State cannot encode stage state".to_string()));
                         }
                     }
                     // ParseStage compares alphaGen_t to CGEN_IDENTITY (2).
@@ -1652,11 +1591,7 @@ impl ShaderParser {
                         frequency,
                         frames: Vec::new(),
                     };
-                    loop {
-                        let token = match self.next(false) {
-                            Some(token) => token,
-                            None => break,
-                        };
+                    while let Some(token) = self.next(false) {
                         if token.value == "}" || token.value == "{" {
                             self.pending = Some(token);
                             break;
@@ -1734,9 +1669,7 @@ impl ShaderParser {
                 "rgbgen" => {
                     if let Some(parsed) = self.parse_rgb(rgb_wave) {
                         raw_rgb_gen = parsed.source();
-                        if parsed == ColorGen::Vertex
-                            && raw_alpha_gen == SourceAlphaGen::Identity
-                        {
+                        if parsed == ColorGen::Vertex && raw_alpha_gen == SourceAlphaGen::Identity {
                             alpha_gen = AlphaGen::Vertex;
                             raw_alpha_gen = SourceAlphaGen::Vertex;
                         }
@@ -1763,14 +1696,9 @@ impl ShaderParser {
                 }
                 "tcmod" => {
                     if tc_mods.len() == 4 {
-                        let message = format!(
-                            "ERROR: too many tcMod stages in shader '{}'\n",
-                            self.shader_name
-                        );
+                        let message = format!("ERROR: too many tcMod stages in shader '{}'\n", self.shader_name);
                         self.drop_message = Some(message);
-                        return Err(self.fail(
-                            "A stage cannot exceed four tcMod directives".to_string(),
-                        ));
+                        return Err(self.fail("A stage cannot exceed four tcMod directives".to_string()));
                     }
                     tc_mods.push(TexMod::None);
                     let slot = tc_mods.len() - 1;
@@ -1807,10 +1735,7 @@ impl ShaderParser {
         let token = self.required(false)?;
         let kind = token.to_ascii_lowercase();
         let zero_wave = Waveform::zero(WaveKind::None);
-        let missing = format!(
-            "WARNING: missing waveform parm in shader '{}'\n",
-            self.shader_name
-        );
+        let missing = format!("WARNING: missing waveform parm in shader '{}'\n", self.shader_name);
         match kind.as_str() {
             "projectionshadow" => Ok(VertexDeformation::ProjectionShadow),
             "autosprite" => Ok(VertexDeformation::Autosprite),
@@ -1823,22 +1748,13 @@ impl ShaderParser {
                 ) else {
                     return Ok(VertexDeformation::None);
                 };
-                Ok(VertexDeformation::Bulge {
-                    width,
-                    height,
-                    speed,
-                })
+                Ok(VertexDeformation::Bulge { width, height, speed })
             }
             "normal" => {
-                let (Some(amplitude), Some(frequency)) =
-                    (self.deform_number(false), self.deform_number(false))
-                else {
+                let (Some(amplitude), Some(frequency)) = (self.deform_number(false), self.deform_number(false)) else {
                     return Ok(VertexDeformation::None);
                 };
-                Ok(VertexDeformation::Normal {
-                    amplitude,
-                    frequency,
-                })
+                Ok(VertexDeformation::Normal { amplitude, frequency })
             }
             "move" => {
                 let (Some(x), Some(y), Some(z)) = (
@@ -1872,13 +1788,10 @@ impl ShaderParser {
             }
             _ => {
                 if let Some(rest) = kind.strip_prefix("text") {
-                    let index = rest.bytes().next().map(|code| {
-                        if (48..=55).contains(&code) {
-                            code - 48
-                        } else {
-                            0
-                        }
-                    });
+                    let index = rest
+                        .bytes()
+                        .next()
+                        .map(|code| if (48..=55).contains(&code) { code - 48 } else { 0 });
                     return Ok(VertexDeformation::Text {
                         index: index.unwrap_or(0),
                     });
@@ -1950,10 +1863,7 @@ impl ShaderParser {
             let next = match self.next(true) {
                 Some(next) => next,
                 None => {
-                    return Err(self.reject(format!(
-                        "WARNING: no concluding '}}' in shader {}\n",
-                        self.shader_name
-                    )));
+                    return Err(self.reject(format!("WARNING: no concluding '}}' in shader {}\n", self.shader_name)));
                 }
             };
             let token = next.value.to_ascii_lowercase();
@@ -2022,10 +1932,7 @@ impl ShaderParser {
                         continue;
                     };
                     if deforms.len() == 3 {
-                        self.warn(format!(
-                            "WARNING: MAX_SHADER_DEFORMS in '{}'\n",
-                            self.shader_name
-                        ));
+                        self.warn(format!("WARNING: MAX_SHADER_DEFORMS in '{}'\n", self.shader_name));
                         continue;
                     }
                     self.pending = Some(token);
@@ -2066,10 +1973,7 @@ impl ShaderParser {
                     });
                 }
                 _ => {
-                    if keyword.starts_with("qer")
-                        || keyword.starts_with("q3map")
-                        || keyword == "tesssize"
-                    {
+                    if keyword.starts_with("qer") || keyword.starts_with("q3map") || keyword == "tesssize" {
                         let arguments = self.line_arguments();
                         compiler_directives.push(CompilerDirective {
                             name: keyword.clone(),
@@ -2086,8 +1990,7 @@ impl ShaderParser {
         }
         if stages.is_empty() && sky.is_none() && !surface_parms.iter().any(|parm| parm == "fog") {
             return Err(self.fail(
-                "Shader has no stages and is neither sky nor fog; source uses an implicit material"
-                    .to_string(),
+                "Shader has no stages and is neither sky nor fog; source uses an implicit material".to_string(),
             ));
         }
         Ok(ShaderDefinition {
@@ -2126,7 +2029,7 @@ impl ShaderParser {
             match self.definition(&name) {
                 Ok(definition) => entries.push(ShaderEntry {
                     name,
-                    result: ShaderEntryResult::Accepted(definition),
+                    result: ShaderEntryResult::Accepted(Box::new(definition)),
                 }),
                 Err(fail) => {
                     if !recover {
@@ -2168,7 +2071,7 @@ pub struct ShaderEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShaderEntryResult {
     /// Parsed definition.
-    Accepted(ShaderDefinition),
+    Accepted(Box<ShaderDefinition>),
     /// Rejected with message and optional drop directive.
     Rejected {
         /// Error message.
@@ -2185,7 +2088,7 @@ pub fn parse_shader_script(text: &str, source: &str) -> Result<Vec<ShaderDefinit
     let mut definitions = Vec::with_capacity(entries.len());
     for entry in entries {
         match entry.result {
-            ShaderEntryResult::Accepted(definition) => definitions.push(definition),
+            ShaderEntryResult::Accepted(definition) => definitions.push(*definition),
             ShaderEntryResult::Rejected { message, .. } => {
                 return Err(ClientError::BadShader(message));
             }
@@ -2276,15 +2179,13 @@ pub fn evaluate_tex_coords(
     use qa_core::math::vec2;
     let mut result = match &stage.tc_gen {
         TexGen::Texture => uv,
-        TexGen::Lightmap => context.lightmap.ok_or_else(|| {
-            ClientError::BadShader("Lightmap tcGen requires lightmap coordinates".to_string())
-        })?,
+        TexGen::Lightmap => context
+            .lightmap
+            .ok_or_else(|| ClientError::BadShader("Lightmap tcGen requires lightmap coordinates".to_string()))?,
         TexGen::Vector { s, t } => vec2(dot3(position, *s), dot3(position, *t)),
         TexGen::Environment => {
             let view_origin = context.view_origin.ok_or_else(|| {
-                ClientError::BadShader(
-                    "Environment tcGen requires the view origin in model coordinates".to_string(),
-                )
+                ClientError::BadShader("Environment tcGen requires the view origin in model coordinates".to_string())
             })?;
             let delta = sub3(view_origin, position);
             let viewer = qa_content::md3::normalize_fast3(delta);
@@ -2306,9 +2207,7 @@ pub fn evaluate_tex_coords(
             }
             TexMod::EntityTranslate => {
                 let coord = context.shader_tex_coord.ok_or_else(|| {
-                    ClientError::BadShader(
-                        "entityTranslate requires entity shaderTexCoord".to_string(),
-                    )
+                    ClientError::BadShader("entityTranslate requires entity shaderTexCoord".to_string())
                 })?;
                 let x = coord.x * time;
                 let y = coord.y * time;
@@ -2321,10 +2220,7 @@ pub fn evaluate_tex_coords(
                 m11,
                 translation,
             } => {
-                result = vec2(
-                    s * m00 + t * m10 + translation.x,
-                    s * m01 + t * m11 + translation.y,
-                );
+                result = vec2(s * m00 + t * m10 + translation.x, s * m01 + t * m11 + translation.y);
             }
             TexMod::Rotate(degrees_per_second) => {
                 let index = shader_table_index(-degrees_per_second * time * (1024.0 / 360.0))?;
@@ -2395,10 +2291,7 @@ textures/test/rock
         assert_eq!(definition.name, "textures/test/rock");
         assert_eq!(definition.stages.len(), 1);
         assert_eq!(definition.surface_parms, vec!["stone".to_string()]);
-        assert!(matches!(
-            definition.stages[0].stage.map,
-            ShaderMap::Image { .. }
-        ));
+        assert!(matches!(definition.stages[0].stage.map, ShaderMap::Image { .. }));
     }
 
     #[test]

@@ -4,8 +4,8 @@
 //! `renderer/tr_shader.c`).
 
 use super::material::{ShaderStage, SourceColorGen, SourceTcGen, SourceWaveStorage};
-use super::state::Blend;
 use super::state::bits as state_bits;
+use super::state::Blend;
 use crate::materials::fog::FogAdjustment;
 
 /// Finished alpha generator after `ParseStage`'s numeric comparison.
@@ -203,10 +203,7 @@ fn same_wave(a: &SourceWaveStorage, b: &SourceWaveStorage) -> bool {
 /// Only the first two stages are considered once; the source does not
 /// collapse to a fixed point.
 #[must_use]
-pub fn source_material_iterator(
-    input: &MaterialIteratorInput,
-    profile: &MaterialIteratorProfile,
-) -> MaterialIterator {
+pub fn source_material_iterator(input: &MaterialIteratorInput, profile: &MaterialIteratorProfile) -> MaterialIterator {
     let mut passes: Vec<IteratorPass> = input
         .stages
         .iter()
@@ -243,8 +240,8 @@ pub fn source_material_iterator(
                 b.state_bits & state_bits::BLEND_MASK,
             );
             if let Some((env, blend, bits)) = collapsed {
-                let add_ok = env != MultitextureEnv::Add
-                    || profile.texture_env_add && a.rgb_gen == SourceColorGen::Identity;
+                let add_ok =
+                    env != MultitextureEnv::Add || profile.texture_env_add && a.rgb_gen == SourceColorGen::Identity;
                 if add_ok {
                     multitexture_env = env;
                     let bundles = if a.is_lightmap {
@@ -272,11 +269,7 @@ pub fn source_material_iterator(
     let mut kind = MaterialIteratorKind::Generic;
     if input.sky {
         kind = MaterialIteratorKind::Sky;
-    } else if !profile.ignore_fast_path
-        && passes.len() == 1
-        && !input.polygon_offset
-        && input.deform_count == 0
-    {
+    } else if !profile.ignore_fast_path && passes.len() == 1 && !input.polygon_offset && input.deform_count == 0 {
         let first = passes.first();
         let bundle = first.and_then(|first| first.bundles.first());
         let (Some(first), Some(bundle)) = (first, bundle) else {
@@ -296,8 +289,7 @@ pub fn source_material_iterator(
         if first.rgb_gen == SourceColorGen::Identity
             && first.alpha_gen == FinishedAlphaGen::Identity
             && bundle.tc_gen == SourceTcGen::Texture
-            && first.bundles.get(1).map(|bundle| bundle.tc_gen)
-                == Some(SourceTcGen::Lightmap)
+            && first.bundles.get(1).map(|bundle| bundle.tc_gen) == Some(SourceTcGen::Lightmap)
             && multitexture_env != MultitextureEnv::None
         {
             kind = MaterialIteratorKind::LightmappedMultitexture;
@@ -314,9 +306,7 @@ pub fn source_material_iterator(
 mod tests {
     use super::*;
     use crate::materials::compile::FinishedStageBinding;
-    use crate::materials::material::{
-        AlphaGen, ColorGen, ShaderMap, SourceAlphaGen, SourceWaveStorage, TexGen,
-    };
+    use crate::materials::material::{AlphaGen, ColorGen, ShaderMap, SourceAlphaGen, SourceWaveStorage, TexGen};
     use crate::materials::state::{CullFace, OPAQUE_BLEND};
 
     fn stage(state: u32) -> FinishedIteratorStage {
@@ -324,7 +314,7 @@ mod tests {
             stage: ShaderStage {
                 map: ShaderMap::None,
                 blend: OPAQUE_BLEND,
-                depth_test: crate::materials::state::DepthTest::LessEqual,
+                depth_func: crate::materials::state::DepthTest::LessEqual,
                 depth_write: true,
                 alpha_func: crate::materials::state::AlphaTest::None,
                 detail: false,

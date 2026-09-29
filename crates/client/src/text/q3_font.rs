@@ -134,13 +134,48 @@ pub const UI_INVERSE: u32 = 0x2000;
 pub const UI_PULSE: u32 = 0x4000;
 
 const COLORS: [Vec4; 8] = [
-    Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 0.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 0.0, y: 1.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 1.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 0.0, y: 0.0, z: 1.0, w: 1.0 },
-    Vec4 { x: 0.0, y: 1.0, z: 1.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 0.0, z: 1.0, w: 1.0 },
+    Vec4 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 0.0,
+        y: 1.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 1.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 0.0,
+        y: 1.0,
+        z: 1.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 0.0,
+        z: 1.0,
+        w: 1.0,
+    },
     WHITE,
 ];
 
@@ -227,10 +262,7 @@ pub fn read_font_data(bytes: &[u8], source: &str) -> Result<FontData, ClientErro
 pub fn parse_font_data(bytes: &[u8], source: &str) -> Result<FontData, ClientError> {
     let data = read_font_data(bytes, source)?;
     for (index, glyph) in data.glyphs.iter().enumerate() {
-        for (component, value) in [glyph.s, glyph.t, glyph.s2, glyph.t2]
-            .iter()
-            .enumerate()
-        {
+        for (component, value) in [glyph.s, glyph.t, glyph.s2, glyph.t2].iter().enumerate() {
             if !value.is_finite() {
                 return Err(ClientError::BadFont(format!(
                     "{source}:{}: non-finite float",
@@ -257,27 +289,14 @@ pub fn parse_font_data(bytes: &[u8], source: &str) -> Result<FontData, ClientErr
 }
 
 /// Draw a charset character (`drawChar`).
-pub fn draw_char(
-    draw: &mut Draw2D,
-    charset: PictureAsset,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    code: u8,
-) {
+pub fn draw_char(draw: &mut Draw2D, charset: PictureAsset, x: f32, y: f32, width: f32, height: f32, code: u8) {
     if code == 32 {
         return;
     }
     let s = f32::from(code & 15) / 16.0;
     let t = f32::from(code >> 4) / 16.0;
     draw.stretch_pic(
-        Rect {
-            x,
-            y,
-            width,
-            height,
-        },
+        Rect { x, y, width, height },
         TextureRect {
             s,
             t,
@@ -312,11 +331,7 @@ pub struct FixedTextOptions<'a> {
 }
 
 /// Draw a cgame string (`drawCgString`).
-pub fn draw_cg_string(
-    draw: &mut Draw2D,
-    charset: PictureAsset,
-    options: &FixedTextOptions,
-) -> Result<(), ClientError> {
+pub fn draw_cg_string(draw: &mut Draw2D, charset: PictureAsset, options: &FixedTextOptions) -> Result<(), ClientError> {
     let text = byte_text(options.text)?;
     let bytes = text.as_bytes();
     let maximum = if options.max_chars <= 0 {
@@ -324,14 +339,10 @@ pub fn draw_cg_string(
     } else {
         options.max_chars as usize
     };
-    for shadow in (if options.shadow { vec![true, false] } else { vec![false] }) {
+    for shadow in if options.shadow { vec![true, false] } else { vec![false] } {
         let mut x = options.x.trunc();
         let mut count = 0usize;
-        draw.set_color(Some(if shadow {
-            black(options.color.w)
-        } else {
-            options.color
-        }));
+        draw.set_color(Some(if shadow { black(options.color.w) } else { options.color }));
         let mut index = 0usize;
         while index < bytes.len() && count < maximum {
             if escape_at(bytes, index) {
@@ -392,11 +403,7 @@ fn pulse(time: i32) -> f32 {
 }
 
 /// Draw a UI string (`drawUiString`).
-pub fn draw_ui_string(
-    draw: &mut Draw2D,
-    charset: PictureAsset,
-    options: &UiTextOptions,
-) -> Result<(), ClientError> {
+pub fn draw_ui_string(draw: &mut Draw2D, charset: PictureAsset, options: &UiTextOptions) -> Result<(), ClientError> {
     if options.style & UI_BLINK != 0 && (options.time / 200) & 1 != 0 {
         return Ok(());
     }
@@ -426,11 +433,11 @@ pub fn draw_ui_string(
         };
     }
     let start = aligned_x(options.x, bytes.len() as f32 * width, options.style);
-    for (offset, pass_color) in (if options.style & UI_DROPSHADOW != 0 {
+    for (offset, pass_color) in if options.style & UI_DROPSHADOW != 0 {
         vec![(2.0, black(color.w)), (0.0, color)]
     } else {
         vec![(0.0, color)]
-    }) {
+    } {
         if options.y.trunc() + offset < -height {
             continue;
         }
@@ -751,7 +758,17 @@ fn proportional_text(
         )?;
         return Ok(());
     }
-    atlas_pass(draw, fonts.proportional, text, x, y, options.color, size, false, profile)?;
+    atlas_pass(
+        draw,
+        fonts.proportional,
+        text,
+        x,
+        y,
+        options.color,
+        size,
+        false,
+        profile,
+    )?;
     if options.style & UI_PULSE != 0 {
         atlas_pass(
             draw,
@@ -799,17 +816,23 @@ fn banner_text(
     let x = aligned_x(options.x, banner_string_width(text)? as f32, options.style);
     let y = options.y.trunc();
     if options.style & UI_DROPSHADOW != 0 {
-        atlas_pass(draw, fonts.banner, text, x + 2.0, y + 2.0, black(options.color.w), 1.0, true, profile)?;
+        atlas_pass(
+            draw,
+            fonts.banner,
+            text,
+            x + 2.0,
+            y + 2.0,
+            black(options.color.w),
+            1.0,
+            true,
+            profile,
+        )?;
     }
     atlas_pass(draw, fonts.banner, text, x, y, options.color, 1.0, true, profile)
 }
 
 /// Draw a banner string (`drawBannerString`).
-pub fn draw_banner_string(
-    draw: &mut Draw2D,
-    fonts: &LegacyFonts,
-    options: &UiTextOptions,
-) -> Result<(), ClientError> {
+pub fn draw_banner_string(draw: &mut Draw2D, fonts: &LegacyFonts, options: &UiTextOptions) -> Result<(), ClientError> {
     banner_text(draw, fonts, options, FontProfile::Ui)
 }
 
@@ -822,7 +845,7 @@ pub fn draw_cg_banner_string(
     banner_text(draw, fonts, options, FontProfile::Cgame)
 }
 
-fn select_font<'a>(fonts: &'a FontSet, scale: f32) -> Result<&'a RegisteredFont, ClientError> {
+fn select_font(fonts: &FontSet, scale: f32) -> Result<&RegisteredFont, ClientError> {
     if !scale.is_finite() {
         return Err(ClientError::BadText("Non-finite text scale".to_string()));
     }
@@ -842,18 +865,12 @@ fn select_font<'a>(fonts: &'a FontSet, scale: f32) -> Result<&'a RegisteredFont,
 }
 
 fn glyph_at(font: &RegisteredFont, code: u8) -> Result<&RegisteredGlyph, ClientError> {
-    font.glyphs.get(usize::from(code)).ok_or_else(|| {
-        ClientError::BadText(format!("Missing font glyph {}", code))
-    })
+    font.glyphs
+        .get(usize::from(code))
+        .ok_or_else(|| ClientError::BadText(format!("Missing font glyph {}", code)))
 }
 
-fn text_metric(
-    fonts: &FontSet,
-    input: &str,
-    scale: f32,
-    limit: i32,
-    height: bool,
-) -> Result<i32, ClientError> {
+fn text_metric(fonts: &FontSet, input: &str, scale: f32, limit: i32, height: bool) -> Result<i32, ClientError> {
     let text = byte_text(input)?;
     let bytes = text.as_bytes();
     let font = select_font(fonts, scale)?;
@@ -981,7 +998,7 @@ fn paint_text(
         let baseline = options.y;
         if options.style == 3 || options.style == 6 {
             let offset = if options.style == 3 { 1.0 } else { 2.0 };
-            if glyph.picture.is_some() {
+            if let Some(picture) = glyph.picture {
                 draw.set_color(Some(black(color.w)));
                 draw.stretch_pic(
                     Rect {
@@ -996,7 +1013,7 @@ fn paint_text(
                         s2: glyph.metrics.s2,
                         t2: glyph.metrics.t2,
                     },
-                    glyph.picture.unwrap(),
+                    picture,
                 );
                 draw.set_color(Some(color));
             }
@@ -1009,8 +1026,7 @@ fn paint_text(
                 }
             }
         }
-        x += glyph.metrics.x_skip as f32 * scale
-            + if cursor.is_none() { options.adjust } else { 0.0 };
+        x += glyph.metrics.x_skip as f32 * scale + if cursor.is_none() { options.adjust } else { 0.0 };
         count += 1;
         index += 1;
     }
@@ -1026,11 +1042,7 @@ fn paint_text(
 }
 
 /// Paint text (`textPaint`).
-pub fn text_paint(
-    draw: &mut Draw2D,
-    fonts: &FontSet,
-    options: &TextPaintOptions,
-) -> Result<(), ClientError> {
+pub fn text_paint(draw: &mut Draw2D, fonts: &FontSet, options: &TextPaintOptions) -> Result<(), ClientError> {
     paint_text(draw, fonts, options, None)
 }
 
@@ -1044,7 +1056,10 @@ pub fn text_paint_with_cursor(
     paint_text(
         draw,
         fonts,
-        &TextPaintOptions { adjust: 0.0, ..options.clone() },
+        &TextPaintOptions {
+            adjust: 0.0,
+            ..options.clone()
+        },
         Some(cursor),
     )
 }

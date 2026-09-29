@@ -53,11 +53,11 @@ impl<'a> TransitionCompletion<'a> {
 }
 
 /// Run a transition (`cinematicTransition`).
-pub fn cinematic_transition(
+pub fn cinematic_transition<'a>(
     seat: &SeatId,
     transition: &CinematicTransition,
-    host: &mut dyn CinematicTransitionHost,
-) -> TransitionCompletion<'_> {
+    host: &'a mut dyn CinematicTransitionHost,
+) -> TransitionCompletion<'a> {
     match transition {
         CinematicTransition::Q2NextServer { target } | CinematicTransition::Q3NextMap { target } => {
             host.send_client_command(seat, &format!("cinematic {target}\n"));
@@ -111,11 +111,10 @@ mod tests {
             },
             &mut host,
         );
-        assert_eq!(host.commands, vec!["cinematic intro\n", "disconnect\n"]);
         completion.complete(CinematicEndReason::Finished);
-        assert_eq!(host.commands.len(), 2);
         completion.complete(CinematicEndReason::Stopped);
-        assert_eq!(host.commands.len(), 2);
+        drop(completion);
+        assert_eq!(host.commands, vec!["cinematic intro\n", "disconnect\n"]);
     }
 
     #[test]

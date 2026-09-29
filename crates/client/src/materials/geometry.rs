@@ -24,13 +24,7 @@ pub struct MaterialVertex {
 impl MaterialVertex {
     /// Build a vertex from parts.
     #[must_use]
-    pub const fn new(
-        position: Vec3,
-        normal: Vec3,
-        tex_coord: Vec2,
-        lightmap_coord: Vec2,
-        color: [u8; 4],
-    ) -> Self {
+    pub const fn new(position: Vec3, normal: Vec3, tex_coord: Vec2, lightmap_coord: Vec2, color: [u8; 4]) -> Self {
         Self {
             position,
             normal,

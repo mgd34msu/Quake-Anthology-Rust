@@ -9,13 +9,12 @@
 //! `u32`). Request order, warnings, and defaulting match the donor.
 
 use super::finish::{
-    finish_implicit_shader, finish_shader, implicit_shader_input, FinishImplicitShaderInput,
-    FinishShaderInput, FinishShaderProfile, FinishedShader,
+    finish_implicit_shader, finish_shader, implicit_shader_input, FinishImplicitShaderInput, FinishShaderInput,
+    FinishShaderProfile, FinishedShader,
 };
 use super::iterator::{IteratorDriver, MaterialIteratorProfile};
 use super::material::{
-    inspect_shader_script, normalize_image_name, parse_shader_script, ShaderDefinition,
-    ShaderEntryResult, ShaderMap, SourceWaveFunc, SourceWaveStorage, WaveKind, Waveform,
+    inspect_shader_script, ShaderDefinition, ShaderEntryResult, ShaderMap, SourceWaveFunc, SourceWaveStorage, WaveKind,
 };
 use super::state::{AlphaTest, Blend, CullFace, DepthTest};
 use crate::ClientError;
@@ -348,9 +347,7 @@ pub struct RenderMaterialView {
 }
 
 /// Build the render-material view (`shaderRenderMaterial`).
-pub fn shader_render_material(
-    definition: &ShaderDefinition,
-) -> Result<RenderMaterialView, ClientError> {
+pub fn shader_render_material(definition: &ShaderDefinition) -> Result<RenderMaterialView, ClientError> {
     let mut stages = Vec::with_capacity(definition.stages.len());
     for stage in &definition.stages {
         stages.push(RenderStageView {
@@ -382,8 +379,8 @@ pub fn shader_render_material(
         portal_range: definition.portal_range,
         clamp_time: definition.clamp_time,
         sky: definition.sky.clone(),
-        fog: definition.fog.clone(),
-        sun: definition.sun.clone(),
+        fog: definition.fog,
+        sun: definition.sun,
     })
 }
 
@@ -416,11 +413,7 @@ fn sky_box_name(face: SourceSkyFaceName) -> &'static str {
     }
 }
 
-fn register_sky_box(
-    host: &mut dyn ShaderRegistrationHost,
-    base: &str,
-    wrap: ImageWrap,
-) -> RegisteredSkyBox {
+fn register_sky_box(host: &mut dyn ShaderRegistrationHost, base: &str, wrap: ImageWrap) -> RegisteredSkyBox {
     let mut faces = [0u32; 6];
     for (index, face) in SKY_FACES.iter().enumerate() {
         let request = SourceImageRequest {
@@ -430,10 +423,9 @@ fn register_sky_box(
             wrap,
         };
         // Missing sky faces fall back to the default image.
-        faces[index] = host.find_image(&request).map_or_else(
-            || host.default_image().image,
-            |image| image.image,
-        );
+        faces[index] = host
+            .find_image(&request)
+            .map_or_else(|| host.default_image().image, |image| image.image);
     }
     RegisteredSkyBox { faces }
 }
@@ -551,9 +543,7 @@ pub fn register_definition(
             ShaderMap::Video { name } => match host.play_shader_cinematic(name) {
                 Some(video) => stages.push(RegisteredStage::Loaded {
                     tmu: video.image.tmu,
-                    binding: FinishedStageBinding::Video {
-                        source: video.source,
-                    },
+                    binding: FinishedStageBinding::Video { source: video.source },
                 }),
                 None => stages.push(RegisteredStage::Missing),
             },
@@ -613,10 +603,7 @@ pub fn compile_shader_script(
                     material,
                 });
             }
-            ShaderEntryResult::Rejected {
-                message,
-                drop_message,
-            } => {
+            ShaderEntryResult::Rejected { message, drop_message } => {
                 if let Some(drop) = drop_message {
                     return Err(ClientError::BadShader(drop));
                 }
@@ -759,9 +746,7 @@ pub fn shader_surface_flags(parameters: &[String]) -> SurfaceParameterFlags {
 }
 
 /// Compile an implicit material (`compileImplicitMaterial`).
-pub fn compile_implicit_material(
-    input: &FinishImplicitShaderInput,
-) -> Result<CompiledMaterial, ClientError> {
+pub fn compile_implicit_material(input: &FinishImplicitShaderInput) -> Result<CompiledMaterial, ClientError> {
     let prepared = implicit_shader_input(input)?;
     let finished = finish_implicit_shader(input)?;
     let stages = prepared
@@ -796,6 +781,7 @@ pub use super::material::parse_shader_script as parse_definitions_only;
 mod tests {
     use super::*;
     use crate::materials::finish::{FinishHardware, ImplicitShaderKind};
+    use crate::materials::material::{normalize_image_name, parse_shader_script, Waveform};
 
     struct FixedHost {
         next: u32,
@@ -859,10 +845,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(materials.len(), 1);
-        assert_eq!(
-            materials[0].registered.outcome,
-            RegistrationOutcome::Defined
-        );
+        assert_eq!(materials[0].registered.outcome, RegistrationOutcome::Defined);
         assert_eq!(materials[0].finished.sort, 3);
     }
 
@@ -888,9 +871,7 @@ mod tests {
 
     #[test]
     fn surface_flags_match_donor_tables() {
-        let flags = shader_surface_flags(
-            &["sky".to_string(), "water".to_string(), "nodlight".to_string()],
-        );
+        let flags = shader_surface_flags(&["sky".to_string(), "water".to_string(), "nodlight".to_string()]);
         assert_eq!(flags.surface, 4 | 0x20000);
         assert_eq!(flags.contents, 32);
         assert!(flags.clear_solid);

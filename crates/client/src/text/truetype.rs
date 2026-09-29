@@ -96,9 +96,7 @@ impl ParsedFont {
     #[must_use]
     pub fn cmap_lookup(&self, codepoint: u32) -> u32 {
         let view = &self.bytes;
-        let read_u16 = |offset: usize| -> u16 {
-            u16::from_be_bytes([view[offset], view[offset + 1]])
-        };
+        let read_u16 = |offset: usize| -> u16 { u16::from_be_bytes([view[offset], view[offset + 1]]) };
         let read_u32 = |offset: usize| -> u32 {
             u32::from_be_bytes([view[offset], view[offset + 1], view[offset + 2], view[offset + 3]])
         };
@@ -127,8 +125,7 @@ impl ParsedFont {
                     if range_offset == 0 {
                         return ((codepoint as i32 + delta) & 0xffff) as u32;
                     }
-                    let address =
-                        range_base + index * 2 + range_offset + (codepoint - start) as usize * 2;
+                    let address = range_base + index * 2 + range_offset + (codepoint - start) as usize * 2;
                     let glyph = read_u16(address) as u32;
                     if glyph == 0 {
                         return 0;
@@ -177,8 +174,7 @@ impl ParsedFont {
         let scale = pixel_size as f32 / f32::from(self.metrics.units_per_em);
         Ok(ScaledMetrics {
             pixels_per_em: pixel_size as f32,
-            line_height: f32::from(self.metrics.ascent - self.metrics.descent + self.metrics.line_gap)
-                * scale,
+            line_height: f32::from(self.metrics.ascent - self.metrics.descent + self.metrics.line_gap) * scale,
         })
     }
 }
@@ -201,7 +197,9 @@ pub fn validate_codepoint(code: u32) -> Result<(), ClientError> {
 
 fn read_tag(bytes: &[u8], offset: usize) -> Result<String, ClientError> {
     if offset + 4 > bytes.len() {
-        return Err(ClientError::BadFont("not a recognized sfnt file (bad signature)".to_string()));
+        return Err(ClientError::BadFont(
+            "not a recognized sfnt file (bad signature)".to_string(),
+        ));
     }
     Ok(String::from_utf8_lossy(&bytes[offset..offset + 4]).into_owned())
 }
@@ -210,7 +208,9 @@ fn read_tag(bytes: &[u8], offset: usize) -> Result<String, ClientError> {
 pub fn parse_font(bytes: &[u8], source: &str) -> Result<ParsedFont, ClientError> {
     let map_err = |error: BinaryError| ClientError::BadFont(format!("{source}: {error}"));
     if bytes.len() < 12 {
-        return Err(ClientError::BadFont(format!("{source}: not a recognized sfnt file (bad signature)")));
+        return Err(ClientError::BadFont(format!(
+            "{source}: not a recognized sfnt file (bad signature)"
+        )));
     }
     let mut reader = BinaryReader::new(bytes, source);
     let mut magic = [0u8; 4];
@@ -220,17 +220,29 @@ pub fn parse_font(bytes: &[u8], source: &str) -> Result<ParsedFont, ClientError>
     let version = u32::from_be_bytes(magic);
     let tag = String::from_utf8_lossy(&magic).into_owned();
     if version != 0x0001_0000 && tag != "OTTO" && tag != "true" && version != 0x7472_7565 {
-        return Err(ClientError::BadFont(format!("{source}: not a recognized sfnt file (bad signature)")));
+        return Err(ClientError::BadFont(format!(
+            "{source}: not a recognized sfnt file (bad signature)"
+        )));
     }
-    let num_tables = reader.u16().map_err(map_err)?;
+    // sfnt integers are big-endian; BinaryReader reads little-endian.
+    let num_tables = {
+        let raw = reader.bytes(2).map_err(map_err)?;
+        u16::from_be_bytes([raw[0], raw[1]])
+    };
     reader.skip(6).map_err(map_err)?;
     let mut tables: Vec<(String, TableRecord)> = Vec::new();
     for _ in 0..num_tables {
         let tag_bytes = reader.bytes(4).map_err(map_err)?;
         let tag = String::from_utf8_lossy(&tag_bytes).into_owned();
         reader.skip(4).map_err(map_err)?;
-        let offset = reader.u32().map_err(map_err)? as usize;
-        let length = reader.u32().map_err(map_err)? as usize;
+        let offset = {
+            let raw = reader.bytes(4).map_err(map_err)?;
+            u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize
+        };
+        let length = {
+            let raw = reader.bytes(4).map_err(map_err)?;
+            u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize
+        };
         reader.view(offset, length).map_err(map_err)?;
         tables.push((tag, TableRecord { offset, length }));
     }
@@ -242,7 +254,9 @@ pub fn parse_font(bytes: &[u8], source: &str) -> Result<ParsedFont, ClientError>
         table("hmtx"),
         table("cmap"),
     ) else {
-        return Err(ClientError::BadFont(format!("{source}: missing a required table (head/hhea/maxp/hmtx/cmap)")));
+        return Err(ClientError::BadFont(format!(
+            "{source}: missing a required table (head/hhea/maxp/hmtx/cmap)"
+        )));
     };
     if head.length < 54 {
         return Err(ClientError::BadFont(format!("{source}: head table too short")));
@@ -267,21 +281,19 @@ pub fn parse_font(bytes: &[u8], source: &str) -> Result<ParsedFont, ClientError>
     let num_glyphs = view_u16(maxp.offset + 4);
     if number_of_h_metrics < 1
         || number_of_h_metrics > num_glyphs
-        || hmtx.length
-            < usize::from(number_of_h_metrics) * 4
-                + usize::from(num_glyphs - number_of_h_metrics) * 2
+        || hmtx.length < usize::from(number_of_h_metrics) * 4 + usize::from(num_glyphs - number_of_h_metrics) * 2
     {
         return Err(ClientError::BadFont(format!("{source}: invalid horizontal metrics")));
     }
     let mut advances = vec![0u16; usize::from(num_glyphs)];
     let mut offset = hmtx.offset;
     let mut last = 0u16;
-    for glyph in 0..usize::from(num_glyphs) {
+    for (glyph, advance) in advances.iter_mut().enumerate() {
         if glyph < usize::from(number_of_h_metrics) {
             last = view_u16(offset);
             offset += 4;
         }
-        advances[glyph] = last;
+        *advance = last;
     }
     let cmap_subtable = select_cmap(bytes, cmap.offset)
         .ok_or_else(|| ClientError::BadFont(format!("{source}: no supported cmap subtable (need format 4 or 12)")))?;
@@ -333,8 +345,12 @@ fn select_cmap(bytes: &[u8], cmap_offset: usize) -> Option<CmapSubtable> {
         let platform = u16::from_be_bytes([bytes[record], bytes[record + 1]]);
         let encoding = u16::from_be_bytes([bytes[record + 2], bytes[record + 3]]);
         let sub_offset = cmap_offset
-            + u32::from_be_bytes([bytes[record + 4], bytes[record + 5], bytes[record + 6], bytes[record + 7]])
-                as usize;
+            + u32::from_be_bytes([
+                bytes[record + 4],
+                bytes[record + 5],
+                bytes[record + 6],
+                bytes[record + 7],
+            ]) as usize;
         if sub_offset + 2 > bytes.len() {
             return None;
         }
@@ -377,8 +393,7 @@ mod tests {
         let mut table = |tag: &[u8; 4], data: &[u8]| {
             bytes[directory..directory + 4].copy_from_slice(tag);
             bytes[directory + 8..directory + 12].copy_from_slice(&(blob as u32).to_be_bytes());
-            bytes[directory + 12..directory + 16]
-                .copy_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes[directory + 12..directory + 16].copy_from_slice(&(data.len() as u32).to_be_bytes());
             bytes[blob..blob + data.len()].copy_from_slice(data);
             directory += 16;
             blob += data.len();
@@ -394,12 +409,12 @@ mod tests {
         maxp[4..6].copy_from_slice(&2u16.to_be_bytes());
         let hmtx = vec![0u8, 100, 0, 0, 0, 120, 0, 0];
         // cmap: one format-4 subtable mapping 'A' (65) to gid 1.
-        let mut cmap = vec![0u8; 8 + 32];
+        let mut cmap = vec![0u8; 16 + 32];
         cmap[2..4].copy_from_slice(&1u16.to_be_bytes());
         cmap[4..6].copy_from_slice(&3u16.to_be_bytes());
         cmap[6..8].copy_from_slice(&1u16.to_be_bytes());
-        cmap[8..12].copy_from_slice(&8u32.to_be_bytes());
-        let sub = 8usize;
+        cmap[8..12].copy_from_slice(&16u32.to_be_bytes());
+        let sub = 16usize;
         cmap[sub..sub + 2].copy_from_slice(&4u16.to_be_bytes());
         cmap[sub + 2..sub + 4].copy_from_slice(&32u16.to_be_bytes());
         cmap[sub + 6..sub + 8].copy_from_slice(&4u16.to_be_bytes());

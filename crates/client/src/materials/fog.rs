@@ -61,9 +61,10 @@ pub enum FogPass {
 }
 
 fn at<T: Copy>(items: &[T], index: usize) -> Result<T, ClientError> {
-    items.get(index).copied().ok_or_else(|| {
-        ClientError::BadMaterial(format!("fog index {index} outside {}", items.len()))
-    })
+    items
+        .get(index)
+        .copied()
+        .ok_or_else(|| ClientError::BadMaterial(format!("fog index {index} outside {}", items.len())))
 }
 
 /// Prepare a fog volume (`prepareFogVolume`).
@@ -85,11 +86,7 @@ pub fn prepare_fog_volume(
         at(&map.planes, side_index)
     };
     let bounds = Bounds {
-        min: vec3(
-            -plane(0)?.distance,
-            -plane(2)?.distance,
-            -plane(4)?.distance,
-        ),
+        min: vec3(-plane(0)?.distance, -plane(2)?.distance, -plane(4)?.distance),
         max: vec3(plane(1)?.distance, plane(3)?.distance, plane(5)?.distance),
     };
     let surface = if visible_side < 0 {
@@ -198,6 +195,7 @@ pub struct FogTexture {
 }
 
 /// Build the fog lookup texture (`createFogTexture`).
+#[allow(clippy::cast_possible_truncation)]
 pub fn create_fog_texture() -> FogTexture {
     let mut pixels = vec![0u8; 256 * 32 * 4];
     for y in 0..32 {
@@ -207,7 +205,6 @@ pub fn create_fog_texture() -> FogTexture {
             pixels[offset] = 255;
             pixels[offset + 1] = 255;
             pixels[offset + 2] = 255;
-            #[allow(clippy::cast_possible_truncation)]
             pixels[offset + 3] = (255.0 * density) as u8;
         }
     }
@@ -229,8 +226,7 @@ pub fn fog_adjustment(stage: &Blend, first: &Blend) -> FogAdjustment {
         return FogAdjustment::None;
     }
     match (stage.source, stage.destination) {
-        (BlendFactor::One, BlendFactor::One)
-        | (BlendFactor::Zero, BlendFactor::OneMinusSrcColor) => FogAdjustment::Rgb,
+        (BlendFactor::One, BlendFactor::One) | (BlendFactor::Zero, BlendFactor::OneMinusSrcColor) => FogAdjustment::Rgb,
         (BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha) => FogAdjustment::Alpha,
         (BlendFactor::One, BlendFactor::OneMinusSrcAlpha) => FogAdjustment::Rgba,
         _ => FogAdjustment::None,
@@ -384,11 +380,7 @@ impl Q1FogState {
         self.previous = self.sample(time);
         self.target = Q1Fog {
             density: value.density.max(0.0),
-            color: vec3(
-                clamp01(value.color.x),
-                clamp01(value.color.y),
-                clamp01(value.color.z),
-            ),
+            color: vec3(clamp01(value.color.x), clamp01(value.color.y), clamp01(value.color.z)),
         };
         self.start = time;
         self.duration = duration.max(0.0);
@@ -422,8 +414,7 @@ impl Q1FogState {
             clamp01((time - self.start) / self.duration)
         };
         Q1Fog {
-            density: self.previous.density
-                + (self.target.density - self.previous.density) * fraction,
+            density: self.previous.density + (self.target.density - self.previous.density) * fraction,
             color: mix(self.previous.color, self.target.color, fraction),
         }
     }
@@ -437,9 +428,7 @@ impl Default for Q1FogState {
 
 /// Parse worldspawn fog (`q1WorldFog`).
 pub fn q1_world_fog(entities: &str) -> Result<Q1FogTransition, ClientError> {
-    let parsed = parse_q1_entities(entities, "<fog>").map_err(|error| {
-        ClientError::BadMaterial(format!("{error}"))
-    })?;
+    let parsed = parse_q1_entities(entities, "<fog>").map_err(|error| ClientError::BadMaterial(format!("{error}")))?;
     let mut state = Q1FogState::new();
     if let Some(world) = parsed.first() {
         for (key, value) in &world.properties {
@@ -501,16 +490,9 @@ pub fn height_fog_dir_z(direction_z: f32) -> f32 {
 
 /// Height fog extinction (`heightFogExtinction`).
 #[must_use]
-pub fn height_fog_extinction(
-    view_z: f32,
-    world_z: f32,
-    start: f32,
-    falloff: f32,
-    direction_z: f32,
-) -> f32 {
+pub fn height_fog_extinction(view_z: f32, world_z: f32, start: f32, falloff: f32, direction_z: f32) -> f32 {
     let density =
-        ((-falloff * (view_z - start)).exp() - (-falloff * (world_z - start)).exp())
-            / (falloff * direction_z);
+        ((-falloff * (view_z - start)).exp() - (-falloff * (world_z - start)).exp()) / (falloff * direction_z);
     1.0 - clamp01((-density).exp())
 }
 
@@ -557,14 +539,7 @@ pub struct Q2SceneFog {
 
 /// Q2 fog color (`q2FogColor`).
 #[must_use]
-pub fn q2_fog_color(
-    color: Vec3,
-    fog: &Q2SceneFog,
-    point: Vec3,
-    view: Vec3,
-    depth: f32,
-    sky: bool,
-) -> Vec3 {
+pub fn q2_fog_color(color: Vec3, fog: &Q2SceneFog, point: Vec3, view: Vec3, depth: f32, sky: bool) -> Vec3 {
     let mut result = mix(color, fog.color, global_fog_amount(fog.density / 64.0, depth));
     if fog.height.density > 0.0 {
         let dx = point.x - view.x;

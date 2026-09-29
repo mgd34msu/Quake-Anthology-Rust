@@ -41,9 +41,7 @@ pub fn point_light_falloff(distance: f32, radius: f32) -> f32 {
 /// Spot-cone attenuation (`spotConeAttenuation`).
 #[must_use]
 pub fn spot_cone_attenuation(direction: Vec3, cone_direction: Vec3, cone_cos: f32) -> f32 {
-    let magnitude = -(direction.x * cone_direction.x
-        + direction.y * cone_direction.y
-        + direction.z * cone_direction.z);
+    let magnitude = -(direction.x * cone_direction.x + direction.y * cone_direction.y + direction.z * cone_direction.z);
     if cone_cos >= 1.0 {
         return 0.0;
     }
@@ -55,11 +53,7 @@ pub fn spot_cone_attenuation(direction: Vec3, cone_direction: Vec3, cone_cos: f3
 /// Point lights shift 16 units along the normal; negative red bypasses
 /// Lambert.
 #[must_use]
-pub fn calc_dynamic_light_contribution(
-    light: &DynamicLightSample,
-    position: Vec3,
-    normal: Vec3,
-) -> Vec3 {
+pub fn calc_dynamic_light_contribution(light: &DynamicLightSample, position: Vec3, normal: Vec3) -> Vec3 {
     let light_position = match light.cone {
         Some(_) => light.origin,
         None => vec3(
@@ -86,11 +80,7 @@ pub fn calc_dynamic_light_contribution(
     if let Some(cone) = light.cone {
         scale *= spot_cone_attenuation(direction, cone.direction, cone.cos_half_angle);
     }
-    vec3(
-        light.color.x * scale,
-        light.color.y * scale,
-        light.color.z * scale,
-    )
+    vec3(light.color.x * scale, light.color.y * scale, light.color.z * scale)
 }
 
 /// A light-grid octree child (`Q2Lightgrid` node reference).
@@ -166,7 +156,7 @@ pub fn lookup_q2_lightgrid(grid: &Q2Lightgrid, point: Vec3) -> Option<&[Lightgri
                 let x = (point.x - leaf.min.x) as u32;
                 let y = (point.y - leaf.min.y) as u32;
                 let z = (point.z - leaf.min.z) as u32;
-                let index = leaf.size.x as u32
+                let index = (leaf.size.x as u32)
                     .wrapping_mul((leaf.size.y as u32).wrapping_mul(z).wrapping_add(y))
                     .wrapping_add(x);
                 if index as usize >= leaf.point_count {
@@ -237,11 +227,7 @@ pub fn q2_light_grid_point(
         (position.y - grid.min.y) * grid.scale.y,
         (position.z - grid.min.z) * grid.scale.z,
     );
-    let base = [
-        point.x.trunc() as u32,
-        point.y.trunc() as u32,
-        point.z.trunc() as u32,
-    ];
+    let base = [point.x.trunc() as u32, point.y.trunc() as u32, point.z.trunc() as u32];
     let mut corners: Vec<Option<Vec3>> = Vec::with_capacity(8);
     let mut average = vec3(0.0, 0.0, 0.0);
     let mut count = 0u32;
@@ -281,9 +267,7 @@ pub fn q2_light_grid_point(
     }
     average = scale3(average, 1.0 / count as f32);
     let values: Vec<Vec3> = corners.into_iter().map(|corner| corner.unwrap_or(average)).collect();
-    let interpolate = |a: Vec3, b: Vec3, fraction: f32| {
-        add3(scale3(a, 1.0 - fraction), scale3(b, fraction))
-    };
+    let interpolate = |a: Vec3, b: Vec3, fraction: f32| add3(scale3(a, 1.0 - fraction), scale3(b, fraction));
     let fx = point.x - base[0] as f32;
     let fy = point.y - base[1] as f32;
     let fz = point.z - base[2] as f32;
@@ -328,8 +312,7 @@ mod tests {
             cone: None,
         };
         let near = calc_dynamic_light_contribution(&light, vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0));
-        let far =
-            calc_dynamic_light_contribution(&light, vec3(0.0, 0.0, -500.0), vec3(0.0, 0.0, 1.0));
+        let far = calc_dynamic_light_contribution(&light, vec3(0.0, 0.0, -500.0), vec3(0.0, 0.0, 1.0));
         assert!(near.x > far.x);
     }
 
@@ -344,18 +327,16 @@ mod tests {
             min: vec3(0.0, 0.0, 0.0),
             scale: vec3(1.0, 1.0, 1.0),
         };
-        assert!(
-            q2_light_grid_point(
-                &grid,
-                vec3(0.0, 0.0, 0.0),
-                &[],
-                &Q2LightingAdjustment {
-                    add: 0.0,
-                    modulate: 1.0,
-                    saturation: 1.0
-                },
-            )
-            .is_none()
-        );
+        assert!(q2_light_grid_point(
+            &grid,
+            vec3(0.0, 0.0, 0.0),
+            &[],
+            &Q2LightingAdjustment {
+                add: 0.0,
+                modulate: 1.0,
+                saturation: 1.0
+            },
+        )
+        .is_none());
     }
 }

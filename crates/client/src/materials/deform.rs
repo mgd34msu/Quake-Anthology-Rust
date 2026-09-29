@@ -4,9 +4,7 @@
 //! `tr_shade_calc.c`, `tr_surface.c`, `tr_shadows.c`, `tr_noise.c`).
 
 use qa_content::md3::{normalize_fast3, renderer_sine};
-use qa_core::math::{
-    add3, cross3, dot3, length3, normalize3, scale3, sub3, vec3, Axis, Vec3,
-};
+use qa_core::math::{add3, cross3, dot3, length3, normalize3, scale3, sub3, vec3, Axis, Vec3};
 
 use super::geometry::{MaterialDeformState, MaterialGeometry, MaterialVertex};
 use super::material::{evaluate_waveform, SourceWaveFunc, VertexDeformation, WaveKind};
@@ -66,12 +64,10 @@ pub struct ProjectionShadowContext {
 }
 
 fn at(vertices: &[MaterialVertex], index: usize) -> Result<MaterialVertex, ClientError> {
-    vertices.get(index).copied().ok_or_else(|| {
-        ClientError::BadMaterial(format!(
-            "deformation index {index} outside {}",
-            vertices.len()
-        ))
-    })
+    vertices
+        .get(index)
+        .copied()
+        .ok_or_else(|| ClientError::BadMaterial(format!("deformation index {index} outside {}", vertices.len())))
 }
 
 /// Linux `rand()` sequence (`linuxRandom`).
@@ -128,10 +124,7 @@ impl RendererNoise {
             let slot = ((random.next() as f32 / 2_147_483_647.0) * 255.0) as u8;
             permutation[index] = slot;
         }
-        Self {
-            values,
-            permutation,
-        }
+        Self { values, permutation }
     }
 
     /// Sample 4D noise (`R_NoiseGet4f`).
@@ -147,7 +140,10 @@ impl RendererNoise {
         let ft = time - it as f32;
         let perm = |index: i32| -> usize { self.permutation[(index & 255) as usize] as usize };
         let lattice = |dx: i32, dy: i32, dz: i32, dt: i32| -> f32 {
-            self.values[perm(ix + dx + perm(iy + dy + perm(iz + dz + perm(it + dt))) as i32)]
+            let inner = perm(it + dt) as i32;
+            let mid = perm(iz + dz + inner) as i32;
+            let outer = perm(iy + dy + mid) as i32;
+            self.values[perm(ix + dx + outer)]
         };
         let lerp = |a: f32, b: f32, amount: f32| a * (1.0 - amount) + b * amount;
         let plane = |dz: i32, dt: i32| {
@@ -182,10 +178,7 @@ fn local_direction(direction: Vec3, view: &DeformView) -> Vec3 {
     }
 }
 
-fn projection_shadow_geometry(
-    mesh: &DeformGeometry,
-    context: &ProjectionShadowContext,
-) -> DeformGeometry {
+fn projection_shadow_geometry(mesh: &DeformGeometry, context: &ProjectionShadowContext) -> DeformGeometry {
     let ground = vec3(context.axis[0].z, context.axis[1].z, context.axis[2].z);
     let ground_dist = context.origin.z - context.shadow_plane;
     let mut light_dir = context.light_dir;
@@ -216,7 +209,7 @@ fn projection_shadow_geometry(
 }
 
 fn sprite_geometry(mesh: &DeformGeometry, view: &DeformView) -> Result<DeformGeometry, ClientError> {
-    if mesh.vertices.len() % 4 != 0 || mesh.indices.len() != mesh.vertices.len() / 4 * 6 {
+    if !mesh.vertices.len().is_multiple_of(4) || mesh.indices.len() != mesh.vertices.len() / 4 * 6 {
         return Err(ClientError::BadMaterial(
             "autosprite requires independent four-vertex quads".to_string(),
         ));
@@ -245,10 +238,7 @@ fn sprite_geometry(mesh: &DeformGeometry, view: &DeformView) -> Result<DeformGeo
         );
         let delta = sub3(first.position, center);
         let radius = dot3(delta, delta).sqrt() * 0.707;
-        let left = scale3(
-            scale3(left_dir, if view.mirror { -radius } else { radius }),
-            axis_scale,
-        );
+        let left = scale3(scale3(left_dir, if view.mirror { -radius } else { radius }), axis_scale);
         let up = scale3(scale3(up_dir, radius), axis_scale);
         let normal = sub3(vec3(0.0, 0.0, 0.0), view.axis[0]);
         let positions = [
@@ -279,17 +269,11 @@ fn sprite_geometry(mesh: &DeformGeometry, view: &DeformView) -> Result<DeformGeo
     Ok(DeformGeometry { vertices, indices })
 }
 
-fn text_geometry(
-    tess: &mut MaterialDeformState,
-    index: usize,
-    view: &DeformView,
-) -> Result<(), ClientError> {
+fn text_geometry(tess: &mut MaterialDeformState, index: usize, view: &DeformView) -> Result<(), ClientError> {
     let text = tess
         .render_text
         .get(index)
-        .ok_or_else(|| {
-            ClientError::BadMaterial(format!("deformation index {index} outside render text"))
-        })?
+        .ok_or_else(|| ClientError::BadMaterial(format!("deformation index {index} outside render text")))?
         .clone();
     let quad = tess.text_quad()?;
     let mut width = cross3(quad[0].normal, vec3(0.0, 0.0, -1.0));
@@ -309,8 +293,8 @@ fn text_geometry(
     let mut origin = add3(scale3(mid, 0.25), scale3(width, (length as i32 - 1) as f32));
     let normal = sub3(vec3(0.0, 0.0, 0.0), view.axis[0]);
     tess.reset_geometry();
-    for character in 0..length {
-        let ch = chars[character] as u32 & 255;
+    for character in &chars {
+        let ch = *character as u32 & 255;
         if ch != 32 {
             let s = f32::from((ch & 15) as u8) * 0.0625;
             let t = f32::from((ch >> 4) as u8) * 0.0625;
@@ -347,7 +331,7 @@ fn text_geometry(
 }
 
 fn pivot_geometry(mesh: &DeformGeometry, view: &DeformView) -> Result<DeformGeometry, ClientError> {
-    if mesh.vertices.len() % 4 != 0 || mesh.indices.len() != mesh.vertices.len() / 4 * 6 {
+    if !mesh.vertices.len().is_multiple_of(4) || mesh.indices.len() != mesh.vertices.len() / 4 * 6 {
         return Err(ClientError::BadMaterial(
             "autosprite2 requires independent four-vertex quads".to_string(),
         ));
@@ -376,18 +360,12 @@ fn pivot_geometry(mesh: &DeformGeometry, view: &DeformView) -> Result<DeformGeom
         }
         let midpoint = |edge: usize| {
             let (a, b) = edges[edge];
-            scale3(
-                add3(vertices[start + a].position, vertices[start + b].position),
-                0.5,
-            )
+            scale3(add3(vertices[start + a].position, vertices[start + b].position), 0.5)
         };
         let first_mid = midpoint(shortest);
         let second_mid = midpoint(second);
         let minor = normalize3(cross3(sub3(second_mid, first_mid), forward));
-        for (edge, mid, length) in [
-            (shortest, first_mid, first_length),
-            (second, second_mid, second_length),
-        ] {
+        for (edge, mid, length) in [(shortest, first_mid, first_length), (second, second_mid, second_length)] {
             let (a, b) = edges[edge];
             let mut follows = false;
             for k in 0..5 {
@@ -445,21 +423,18 @@ pub fn deform_geometry(
             VertexDeformation::ProjectionShadow => {
                 let context = projection_shadow.ok_or_else(|| {
                     ClientError::BadMaterial(
-                        "projectionshadow deformation requires retained entity orientation and lighting"
-                            .to_string(),
+                        "projectionshadow deformation requires retained entity orientation and lighting".to_string(),
                     )
                 })?;
                 result = projection_shadow_geometry(&result, context);
                 tess.replace_geometry(MaterialGeometry::from(result.clone()));
             }
-            VertexDeformation::Move { direction, wave }
-            | VertexDeformation::Wave { wave, .. }
+            VertexDeformation::Move { wave, .. } | VertexDeformation::Wave { wave, .. }
                 if matches!(wave.kind, WaveKind::None | WaveKind::Noise) =>
             {
                 let material = tess.material.clone().ok_or_else(|| {
                     ClientError::BadMaterial(
-                        "Invalid deformation waveform requires its begun source material"
-                            .to_string(),
+                        "Invalid deformation waveform requires its begun source material".to_string(),
                     )
                 })?;
                 let func = if wave.kind == WaveKind::None {
@@ -498,10 +473,7 @@ pub fn deform_geometry(
                     let phase = wave.phase + sum * spread;
                     let scale = match constant {
                         Some(scale) => scale,
-                        None => evaluate_waveform(
-                            &super::material::Waveform { phase, ..*wave },
-                            time,
-                        )?,
+                        None => evaluate_waveform(&super::material::Waveform { phase, ..*wave }, time)?,
                     };
                     vertices.push(MaterialVertex {
                         position: add3(vertex.position, scale3(vertex.normal, scale)),
@@ -514,10 +486,7 @@ pub fn deform_geometry(
                 };
                 tess.replace_geometry(MaterialGeometry::from(result.clone()));
             }
-            VertexDeformation::Normal {
-                amplitude,
-                frequency,
-            } => {
+            VertexDeformation::Normal { amplitude, frequency } => {
                 let mut vertices = Vec::with_capacity(result.vertices.len());
                 for vertex in &result.vertices {
                     let position = vertex.position;
@@ -538,11 +507,7 @@ pub fn deform_geometry(
                 };
                 tess.replace_geometry(MaterialGeometry::from(result.clone()));
             }
-            VertexDeformation::Bulge {
-                width,
-                height,
-                speed,
-            } => {
+            VertexDeformation::Bulge { width, height, speed } => {
                 let now = tess.refdef_time * speed * 0.001;
                 let mut vertices = Vec::with_capacity(result.vertices.len());
                 for vertex in &result.vertices {
@@ -550,10 +515,7 @@ pub fn deform_geometry(
                     #[allow(clippy::cast_possible_truncation)]
                     let index = ((1024.0 / (core::f32::consts::PI * 2.0) * phase) as i32) & 1023;
                     vertices.push(MaterialVertex {
-                        position: add3(
-                            vertex.position,
-                            scale3(vertex.normal, renderer_sine(index) * height),
-                        ),
+                        position: add3(vertex.position, scale3(vertex.normal, renderer_sine(index) * height)),
                         ..*vertex
                     });
                 }
@@ -575,13 +537,15 @@ mod tests {
     use qa_core::math::{vec2, Vec2};
 
     fn quad() -> MaterialGeometry {
-        let vertex = |x: f32, y: f32| MaterialVertex::new(
-            vec3(x, y, 0.0),
-            vec3(0.0, 0.0, 1.0),
-            vec2(0.0, 0.0),
-            vec2(0.0, 0.0),
-            [255, 255, 255, 255],
-        );
+        let vertex = |x: f32, y: f32| {
+            MaterialVertex::new(
+                vec3(x, y, 0.0),
+                vec3(0.0, 0.0, 1.0),
+                vec2(0.0, 0.0),
+                vec2(0.0, 0.0),
+                [255, 255, 255, 255],
+            )
+        };
         MaterialGeometry {
             vertices: vec![vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(1.0, 1.0), vertex(0.0, 1.0)],
             indices: vec![0, 1, 2, 0, 2, 3],
@@ -590,11 +554,7 @@ mod tests {
 
     fn view() -> DeformView {
         DeformView {
-            axis: [
-                vec3(1.0, 0.0, 0.0),
-                vec3(0.0, 1.0, 0.0),
-                vec3(0.0, 0.0, 1.0),
-            ],
+            axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
             mirror: false,
             entity_axis: None,
             non_normalized_axis: None,
@@ -628,12 +588,7 @@ mod tests {
 
     #[test]
     fn invalid_move_waveform_drops() {
-        let mut tess = MaterialDeformState::new(
-            quad(),
-            0.0,
-            Vec::new(),
-            Some("test".to_string()),
-        );
+        let mut tess = MaterialDeformState::new(quad(), 0.0, Vec::new(), Some("test".to_string()));
         let noise = RendererNoise::new();
         let err = deform_geometry(
             &mut tess,
@@ -675,9 +630,6 @@ mod tests {
             ],
             indices: Vec::new(),
         });
-        assert!(
-            deform_geometry(&mut tess, &[VertexDeformation::Autosprite], &view(), 0.0, &noise, None)
-                .is_err()
-        );
+        assert!(deform_geometry(&mut tess, &[VertexDeformation::Autosprite], &view(), 0.0, &noise, None).is_err());
     }
 }

@@ -14,11 +14,23 @@ pub const SKY_FACE_SUFFIXES: [&str; 6] = ["rt", "lf", "bk", "ft", "up", "dn"];
 
 const CLIP_PLANES: [Vec3; 6] = [
     Vec3 { x: 1.0, y: 1.0, z: 0.0 },
-    Vec3 { x: 1.0, y: -1.0, z: 0.0 },
-    Vec3 { x: 0.0, y: -1.0, z: 1.0 },
+    Vec3 {
+        x: 1.0,
+        y: -1.0,
+        z: 0.0,
+    },
+    Vec3 {
+        x: 0.0,
+        y: -1.0,
+        z: 1.0,
+    },
     Vec3 { x: 0.0, y: 1.0, z: 1.0 },
     Vec3 { x: 1.0, y: 0.0, z: 1.0 },
-    Vec3 { x: -1.0, y: 0.0, z: 1.0 },
+    Vec3 {
+        x: -1.0,
+        y: 0.0,
+        z: 1.0,
+    },
 ];
 
 /// A sky face (`SkyFace`).
@@ -84,18 +96,12 @@ pub fn sky_vector(face: usize, s: f32, t: f32, size: f32) -> Result<Vec3, Client
             y: -horizontal,
             z: -size,
         }),
-        _ => Err(ClientError::BadMaterial(
-            "sky face must be 0..5".to_string(),
-        )),
+        _ => Err(ClientError::BadMaterial("sky face must be 0..5".to_string())),
     }
 }
 
 fn project_polygon(points: &[Vec3], bounds: &mut [FaceBounds]) {
-    let mut sum = Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
+    let mut sum = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
     for point in points {
         sum = add3(sum, *point);
     }
@@ -103,7 +109,11 @@ fn project_polygon(points: &[Vec3], bounds: &mut [FaceBounds]) {
     let face = if x > y && x > z {
         usize::from(sum.x >= 0.0)
     } else if y > z && y > x {
-        if sum.y < 0.0 { 3 } else { 2 }
+        if sum.y < 0.0 {
+            3
+        } else {
+            2
+        }
     } else if sum.z < 0.0 {
         5
     } else {
@@ -111,7 +121,11 @@ fn project_polygon(points: &[Vec3], bounds: &mut [FaceBounds]) {
     };
     // Note: face 0/1 selection above matches `sum.x < 0 ? 1 : 0`.
     let face = if x > y && x > z {
-        if sum.x < 0.0 { 1 } else { 0 }
+        if sum.x < 0.0 {
+            1
+        } else {
+            0
+        }
     } else {
         face
     };
@@ -137,11 +151,7 @@ fn project_polygon(points: &[Vec3], bounds: &mut [FaceBounds]) {
     }
 }
 
-fn clip_polygon(
-    points: Vec<Vec3>,
-    stage: usize,
-    bounds: &mut [FaceBounds],
-) -> Result<(), ClientError> {
+fn clip_polygon(points: Vec<Vec3>, stage: usize, bounds: &mut [FaceBounds]) -> Result<(), ClientError> {
     if points.len() > 62 {
         return Err(ClientError::BadMaterial(
             "sky polygon exceeds source clip vertex limit".to_string(),
@@ -221,10 +231,7 @@ pub fn cloud_tex_coord(face: usize, s: f32, t: f32, height: f32) -> Result<Vec2,
         direction.z * p + radius,
     ));
     // Q_acos does not clamp; negative heights can leave NaN coordinates.
-    Ok(qa_core::math::vec2(
-        intersection.x.acos(),
-        intersection.y.acos(),
-    ))
+    Ok(qa_core::math::vec2(intersection.x.acos(), intersection.y.acos()))
 }
 
 /// Renderer-global sky builder (`SkyBuilder`).
@@ -289,10 +296,7 @@ impl SkyBuilder {
                 for offset in 0..3 {
                     let vertex_index = mesh.indices[index + offset] as usize;
                     let vertex = mesh.vertices.get(vertex_index).ok_or_else(|| {
-                        ClientError::BadMaterial(format!(
-                            "sky index {vertex_index} outside {}",
-                            mesh.vertices.len()
-                        ))
+                        ClientError::BadMaterial(format!("sky index {vertex_index} outside {}", mesh.vertices.len()))
                     })?;
                     points.push(sub3(vertex.position, origin));
                 }
@@ -318,12 +322,7 @@ impl SkyBuilder {
             if raw_min_s >= raw_max_s || raw_min_t >= raw_max_t {
                 continue;
             }
-            let (min_s, min_t, max_s, max_t) = (
-                clamp(raw_min_s),
-                clamp(raw_min_t),
-                clamp(raw_max_s),
-                clamp(raw_max_t),
-            );
+            let (min_s, min_t, max_s, max_t) = (clamp(raw_min_s), clamp(raw_min_t), clamp(raw_max_s), clamp(raw_max_t));
             let mut vertices = Vec::new();
             let mut indices = Vec::new();
             let width = (max_s - min_s + 1) as usize;
@@ -414,14 +413,7 @@ mod tests {
 
     #[test]
     fn sky_vector_faces() {
-        assert_eq!(
-            sky_vector(0, 0.0, 0.0, 1.0).unwrap(),
-            Vec3 {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0
-            }
-        );
+        assert_eq!(sky_vector(0, 0.0, 0.0, 1.0).unwrap(), Vec3 { x: 1.0, y: 0.0, z: 0.0 });
         assert!(sky_vector(6, 0.0, 0.0, 1.0).is_err());
     }
 
@@ -435,13 +427,15 @@ mod tests {
     #[test]
     fn builder_clips_and_builds() {
         use qa_core::math::{vec2, vec3};
-        let vertex = |position: Vec3| MaterialVertex::new(
-            position,
-            vec3(0.0, 0.0, 1.0),
-            vec2(0.0, 0.0),
-            vec2(0.0, 0.0),
-            [255, 255, 255, 255],
-        );
+        let vertex = |position: Vec3| {
+            MaterialVertex::new(
+                position,
+                vec3(0.0, 0.0, 1.0),
+                vec2(0.0, 0.0),
+                vec2(0.0, 0.0),
+                [255, 255, 255, 255],
+            )
+        };
         let mesh = DeformGeometry {
             vertices: vec![
                 vertex(vec3(100.0, -10.0, 10.0)),

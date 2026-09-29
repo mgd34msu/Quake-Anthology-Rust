@@ -8,7 +8,7 @@
 //! [`TextDrawSink`] instead of touching a renderer.
 
 use qa_core::identity::SeatId;
-use qa_core::math::{Vec4, vec4};
+use qa_core::math::Vec4;
 
 /// A rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,7 +54,12 @@ pub const FULL_UV: TextureRect = TextureRect {
 };
 
 /// White color.
-pub const WHITE: Vec4 = vec4(1.0, 1.0, 1.0, 1.0);
+pub const WHITE: Vec4 = Vec4 {
+    x: 1.0,
+    y: 1.0,
+    z: 1.0,
+    w: 1.0,
+};
 
 /// An image picture (`ImagePicture`, headless handle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,9 +285,7 @@ impl<'a> Draw2D<'a> {
     /// Horizontal bias (base UI letterboxing).
     #[must_use]
     pub fn bias_x(&self) -> f32 {
-        if self.space == CoordinateSpace::BaseUi640
-            && self.width() as i64 * 480 > self.height() as i64 * 640
-        {
+        if self.space == CoordinateSpace::BaseUi640 && self.width() as i64 * 480 > self.height() as i64 * 640 {
             0.5 * (self.width() - self.height() * (640.0 / 480.0))
         } else {
             0.0
@@ -432,25 +435,23 @@ mod tests {
             width: 0.0,
             height: 10.0,
         };
-        assert!(
-            clip_picture(
-                &rect,
-                &FULL_UV,
-                &Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 640.0,
-                    height: 480.0
-                },
-            )
-            .is_none()
-        );
+        assert!(clip_picture(
+            &rect,
+            &FULL_UV,
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 640.0,
+                height: 480.0
+            },
+        )
+        .is_none());
     }
 
     #[test]
     fn stretch_scales() {
         let mut sink = sink();
-        let mut draw = Draw2D::new(&mut sink, CoordinateSpace::Stretch640);
+        let draw = Draw2D::new(&mut sink, CoordinateSpace::Stretch640);
         let rect = draw.adjust(&Rect {
             x: 320.0,
             y: 240.0,
@@ -475,9 +476,6 @@ mod tests {
             FULL_UV,
             picture,
         );
-        assert!(matches!(
-            sink.commands[0],
-            DrawCommand::Material { .. }
-        ));
+        assert!(matches!(sink.commands[0], DrawCommand::Material { .. }));
     }
 }

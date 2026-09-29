@@ -141,10 +141,8 @@ pub fn classic_charset(
     name: &str,
     baked_color: bool,
 ) -> Result<TextAtlas, ClientError> {
-    if width % 16 != 0 || height % 16 != 0 {
-        return Err(ClientError::BadText(
-            "Charset needs 16 by 16 glyph cells".to_string(),
-        ));
+    if !width.is_multiple_of(16) || !height.is_multiple_of(16) {
+        return Err(ClientError::BadText("Charset needs 16 by 16 glyph cells".to_string()));
     }
     let (cell_w, cell_h) = (width / 16, height / 16);
     let mut glyphs = BTreeMap::new();
@@ -164,11 +162,7 @@ pub fn classic_charset(
     Ok(TextAtlas {
         kind: AtlasKind::Classic,
         name: name.to_string(),
-        picture: ImagePicture {
-            image,
-            width,
-            height,
-        },
+        picture: ImagePicture { image, width, height },
         line_height: cell_h,
         cap_ink: None,
         glyphs,
@@ -197,19 +191,13 @@ impl<'a> TextFontRegistry<'a> {
 
     fn require_open(&self) -> Result<(), ClientError> {
         if self.closed {
-            return Err(ClientError::BadText(
-                "Text font registry is closed".to_string(),
-            ));
+            return Err(ClientError::BadText("Text font registry is closed".to_string()));
         }
         Ok(())
     }
 
     /// Select a font (`select`).
-    pub fn select(
-        &mut self,
-        request: &TextFontRequest,
-        classic: &TextAtlas,
-    ) -> Result<TextFontSelection, ClientError> {
+    pub fn select(&mut self, request: &TextFontRequest, classic: &TextAtlas) -> Result<TextFontSelection, ClientError> {
         match request {
             TextFontRequest::Classic { unicode_font } => Ok(TextFontSelection::Classic {
                 classic: classic.clone(),
@@ -412,17 +400,13 @@ pub fn resolve_text_glyph(
                 return classic(codepoint);
             }
             if let Some(unicode) = unicode {
-                if let Some(glyph) =
-                    atlas_glyph(unicode, codepoint).or_else(|| atlas_glyph(unicode, 63))
-                {
+                if let Some(glyph) = atlas_glyph(unicode, codepoint).or_else(|| atlas_glyph(unicode, 63)) {
                     return Ok(glyph);
                 }
             }
             classic(63)
         }
-        TextFontSelection::Atlas {
-            font, fallbacks, ..
-        } => {
+        TextFontSelection::Atlas { font, fallbacks, .. } => {
             if let Some(glyph) = atlas_glyph(font, codepoint) {
                 return Ok(glyph);
             }
@@ -434,7 +418,7 @@ pub fn resolve_text_glyph(
             if codepoint <= 255 {
                 return classic(codepoint);
             }
-            Ok(atlas_glyph(font, 63).map_or(classic(63)?, |glyph| glyph))
+            Ok(atlas_glyph(font, 63).unwrap_or(classic(63)?))
         }
     }
 }

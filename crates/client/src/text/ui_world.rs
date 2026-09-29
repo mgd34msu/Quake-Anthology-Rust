@@ -33,7 +33,7 @@ pub struct UiTextCommand {
 }
 
 /// A UI text renderer (`UiTextRenderer`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct UiTextRenderer {
     seat: SeatId,
     fonts: BTreeMap<u32, TextFontSelection>,
@@ -65,20 +65,19 @@ impl UiTextRenderer {
     }
 
     /// Draw a text command.
-    pub fn draw(
-        &self,
+    pub fn draw<'a>(
+        &'a self,
         seat: &SeatId,
-        command: &UiTextCommand,
+        command: &'a UiTextCommand,
         draw: &mut Draw2D,
-    ) -> Result<TextLayout<'_>, ClientError> {
+    ) -> Result<TextLayout<'a>, ClientError> {
         if self.seat != *seat || self.seat != *draw.commands.seat() {
-            return Err(ClientError::BadText(
-                "UI text belongs to a different seat".to_string(),
-            ));
+            return Err(ClientError::BadText("UI text belongs to a different seat".to_string()));
         }
-        let font = self.fonts.get(&command.font).ok_or_else(|| {
-            ClientError::BadText("UI font has not been registered for this seat".to_string())
-        })?;
+        let font = self
+            .fonts
+            .get(&command.font)
+            .ok_or_else(|| ClientError::BadText("UI font has not been registered for this seat".to_string()))?;
         let layout = layout_text(&TextLayoutOptions {
             text: &command.text,
             font,
@@ -181,18 +180,11 @@ impl WorldTextStore {
     /// New store.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self { entries: Vec::new() }
     }
 
     /// Submit text.
-    pub fn submit(
-        &mut self,
-        text: WorldText,
-        now_seconds: f64,
-        lifetime_seconds: f64,
-    ) -> Result<(), ClientError> {
+    pub fn submit(&mut self, text: WorldText, now_seconds: f64, lifetime_seconds: f64) -> Result<(), ClientError> {
         let mut values = vec![
             now_seconds,
             lifetime_seconds,
@@ -211,10 +203,7 @@ impl WorldTextStore {
         if let WorldTextOrientation::Fixed { angles } = text.input.orientation {
             values.extend([angles.x as f64, angles.y as f64, angles.z as f64]);
         }
-        if !values.iter().all(|value| value.is_finite())
-            || lifetime_seconds < 0.0
-            || text.input.cell_size <= 0.0
-        {
+        if !values.iter().all(|value| value.is_finite()) || lifetime_seconds < 0.0 || text.input.cell_size <= 0.0 {
             return Err(ClientError::BadText(
                 "Invalid world text geometry or lifetime".to_string(),
             ));
@@ -255,9 +244,7 @@ impl WorldTextStore {
         // Drop frame entries from older frames.
         self.entries.retain(|entry| match entry.lifetime {
             WorldTextLifetime::Seconds { .. } => true,
-            WorldTextLifetime::Frame { first_frame } => {
-                first_frame.is_none_or(|first| first == frame)
-            }
+            WorldTextLifetime::Frame { first_frame } => first_frame.is_none_or(|first| first == frame),
         });
         visible
     }
@@ -336,22 +323,20 @@ mod tests {
         );
         let mut draw = Draw2D::new(&mut sink, CoordinateSpace::Pixels);
         let seat = owner.seat(0);
-        assert!(
-            renderer
-                .draw(
-                    &seat,
-                    &UiTextCommand {
-                        font: 1,
-                        text: "hi".to_string(),
-                        scale: 1.0,
-                        color: qa_core::math::vec4(1.0, 1.0, 1.0, 1.0),
-                        origin: crate::text::draw2d::RectOrigin { x: 0.0, y: 0.0 },
-                        align: TextAlign::Left,
-                        shadow: false,
-                    },
-                    &mut draw,
-                )
-                .is_err()
-        );
+        assert!(renderer
+            .draw(
+                &seat,
+                &UiTextCommand {
+                    font: 1,
+                    text: "hi".to_string(),
+                    scale: 1.0,
+                    color: qa_core::math::vec4(1.0, 1.0, 1.0, 1.0),
+                    origin: crate::text::draw2d::RectOrigin { x: 0.0, y: 0.0 },
+                    align: TextAlign::Left,
+                    shadow: false,
+                },
+                &mut draw,
+            )
+            .is_err());
     }
 }

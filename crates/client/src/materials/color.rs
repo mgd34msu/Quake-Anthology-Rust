@@ -81,12 +81,7 @@ pub fn evaluate_stage_color(
     evaluate_stage_alpha(stage, vertex, &next, source_rgb)
 }
 
-fn waveform_color(
-    wave: &Waveform,
-    time: f32,
-    identity_light: f32,
-    noise: &RendererNoise,
-) -> Result<Vec4, ClientError> {
+fn waveform_color(wave: &Waveform, time: f32, identity_light: f32, noise: &RendererNoise) -> Result<Vec4, ClientError> {
     let glow = if wave.kind == WaveKind::Noise {
         wave.base + noise.sample(0.0, 0.0, 0.0, (time + wave.phase) * wave.frequency) * wave.amplitude
     } else {
@@ -106,9 +101,9 @@ fn evaluate_stage_rgb_color(
     use super::material::ColorGen;
     let identity_light = context.identity_light;
     let entity = context.entity_rgba;
-    let mut red = 0u8;
-    let mut green = 0u8;
-    let mut blue = 0u8;
+    let red: u8;
+    let green: u8;
+    let blue: u8;
     let mut alpha = normalized_byte(context.previous_color.w)?;
     if source_rgb == Some(SourceColorGen::Bad) {
         red = normalized_byte(identity_light)?;
@@ -171,11 +166,9 @@ fn evaluate_stage_rgb_color(
                 return waveform_color(wave, context.time, identity_light, context.noise);
             }
             ColorGen::LightingDiffuse => {
-                let lighting = context.lighting.ok_or_else(|| {
-                    ClientError::BadMaterial(
-                        "lightingDiffuse requires entity lighting".to_string(),
-                    )
-                })?;
+                let lighting = context
+                    .lighting
+                    .ok_or_else(|| ClientError::BadMaterial("lightingDiffuse requires entity lighting".to_string()))?;
                 let color = diffuse_color(&vertex_normal(vertex), &lighting);
                 red = color[0];
                 green = color[1];
@@ -224,8 +217,7 @@ fn evaluate_stage_alpha(
         AlphaGen::Entity => {
             // ParseStage compares alphaGen to CGEN_IDENTITY (2), which is AGEN_ENTITY.
             if source_rgb.is_some()
-                || !matches!(stage.rgb_gen, ColorGen::Identity)
-                    && !matches!(stage.rgb_gen, ColorGen::LightingDiffuse)
+                || !matches!(stage.rgb_gen, ColorGen::Identity) && !matches!(stage.rgb_gen, ColorGen::LightingDiffuse)
             {
                 alpha = entity[3];
             }
@@ -253,11 +245,7 @@ fn evaluate_stage_alpha(
 
 /// Keep animation phase aligned with the 1024-entry table
 /// (`animatedPictureIndex`).
-pub fn animated_picture_index(
-    time: f32,
-    frequency: f32,
-    count: usize,
-) -> Result<usize, ClientError> {
+pub fn animated_picture_index(time: f32, frequency: f32, count: usize) -> Result<usize, ClientError> {
     if count < 1 {
         return Err(ClientError::BadMaterial(
             "Animated picture needs registered frames".to_string(),
@@ -376,11 +364,11 @@ mod tests {
     #[test]
     fn exact_vertex_passes_bytes_through() {
         let noise = RendererNoise::new();
+        let color = evaluate_stage_color(&stage(), &vertex(), &context(&noise), false, None).unwrap();
+        assert_eq!(color.w, 1.0);
         let mut stage = stage();
         stage.rgb_gen = ColorGen::ExactVertex;
         stage.alpha_gen = AlphaGen::Vertex;
-        let color = evaluate_stage_color(&stage(), &vertex(), &context(&noise), false, None).unwrap();
-        assert_eq!(color.w, 1.0);
         let color = evaluate_stage_color(&stage, &vertex(), &context(&noise), false, None).unwrap();
         assert!((color.x - 10.0 / 255.0).abs() < 1e-6);
         assert!((color.w - 40.0 / 255.0).abs() < 1e-6);
@@ -395,11 +383,7 @@ mod tests {
 
     #[test]
     fn specular_backface_is_zero() {
-        let alpha = specular_alpha(
-            &vec3(0.0, 0.0, 0.0),
-            &vec3(0.0, 0.0, -1.0),
-            &vec3(0.0, 0.0, -100.0),
-        );
+        let alpha = specular_alpha(&vec3(0.0, 0.0, 0.0), &vec3(0.0, 0.0, -1.0), &vec3(0.0, 0.0, -100.0));
         assert_eq!(alpha, 0);
     }
 }

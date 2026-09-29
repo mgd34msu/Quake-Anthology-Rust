@@ -49,10 +49,7 @@ pub struct RendererFontRegistry<'a> {
 impl<'a> RendererFontRegistry<'a> {
     /// New registry.
     #[must_use]
-    pub fn new(
-        reader: &'a mut dyn FontFileReader,
-        host: &'a mut dyn FontRegistrationHost,
-    ) -> Self {
+    pub fn new(reader: &'a mut dyn FontFileReader, host: &'a mut dyn FontRegistrationHost) -> Self {
         Self {
             reader,
             host,
@@ -106,10 +103,7 @@ impl<'a> RendererFontRegistry<'a> {
             let data = read_font_data(&row.record, "<font>")?;
             let mut glyphs = Vec::with_capacity(FONT_GLYPH_COUNT);
             for (index, metric) in data.glyphs.iter().enumerate() {
-                let picture = match row.pictures[index] {
-                    Some(order) => Some(PictureAsset::Material(MaterialPicture { order })),
-                    None => None,
-                };
+                let picture = row.pictures[index].map(|order| PictureAsset::Material(MaterialPicture { order }));
                 glyphs.push(RegisteredGlyph {
                     metrics: metric.clone(),
                     picture,
@@ -151,7 +145,7 @@ impl<'a> RendererFontRegistry<'a> {
         if let Some((font, _)) = self
             .fonts
             .iter()
-            .find(|(font, _)| font.name.to_ascii_lowercase() == name.to_ascii_lowercase())
+            .find(|(font, _)| font.name.eq_ignore_ascii_case(&name))
         {
             return Ok(Some(font.clone()));
         }
@@ -185,8 +179,7 @@ impl<'a> RendererFontRegistry<'a> {
             let shader_name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
             let picture = self.host.register_picture(&shader_name);
             self.require_open()?;
-            record[index * 80 + 44..index * 80 + 48]
-                .copy_from_slice(&picture.order.to_le_bytes());
+            record[index * 80 + 44..index * 80 + 48].copy_from_slice(&picture.order.to_le_bytes());
             pictures.push(picture);
         }
         let data = read_font_data(&record, &name)?;
@@ -195,9 +188,13 @@ impl<'a> RendererFontRegistry<'a> {
             let picture = if index == 255 {
                 None
             } else {
-                pictures.get(index).copied().map(PictureAsset::Material).ok_or_else(|| {
-                    ClientError::BadFont("Missing registered font glyph".to_string())
-                })?
+                Some(
+                    pictures
+                        .get(index)
+                        .copied()
+                        .map(PictureAsset::Material)
+                        .ok_or_else(|| ClientError::BadFont("Missing registered font glyph".to_string()))?,
+                )
             };
             glyphs.push(RegisteredGlyph {
                 metrics: metric.clone(),
@@ -248,12 +245,12 @@ mod tests {
         }
 
         fn read_file_retained(&mut self, path: &str) -> Option<super::super::draw2d::RetainedFontFile> {
-            self.files.get(path).map(|bytes| {
-                super::super::draw2d::RetainedFontFile {
+            self.files
+                .get(path)
+                .map(|bytes| super::super::draw2d::RetainedFontFile {
                     bytes: bytes.clone(),
                     length: bytes.len(),
-                }
-            })
+                })
         }
 
         fn free_file(&mut self, _file: &super::super::draw2d::RetainedFontFile) {}
@@ -296,9 +293,7 @@ mod tests {
 
     #[test]
     fn missing_dat_defers_generation() {
-        let mut reader = FixedReader {
-            files: HashMap::new(),
-        };
+        let mut reader = FixedReader { files: HashMap::new() };
         let mut host = FixedHost { next: 0 };
         let mut registry = RendererFontRegistry::new(&mut reader, &mut host);
         let err = registry
@@ -317,15 +312,10 @@ mod tests {
         registry.register_font(None, 12.0, &mut |_| {}).unwrap();
         let checkpoint = registry.capture_checkpoint().unwrap();
         assert_eq!(checkpoint.rows.len(), 1);
-        let mut reader = FixedReader {
-            files: HashMap::new(),
-        };
+        let mut reader = FixedReader { files: HashMap::new() };
         let mut host = FixedHost { next: 0 };
         let mut restored = RendererFontRegistry::new(&mut reader, &mut host);
         restored.restore_checkpoint(&checkpoint).unwrap();
-        assert_eq!(
-            restored.capture_checkpoint().unwrap(),
-            checkpoint
-        );
+        assert_eq!(restored.capture_checkpoint().unwrap(), checkpoint);
     }
 }

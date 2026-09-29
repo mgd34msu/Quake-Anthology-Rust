@@ -20,11 +20,7 @@ fn bit(index: usize) -> u32 {
 
 /// Transform dlights into model space (`transformDlights`).
 #[must_use]
-pub fn transform_dlights(
-    lights: &[DynamicLight],
-    origin: Vec3,
-    axis: &Axis,
-) -> Vec<DynamicLight> {
+pub fn transform_dlights(lights: &[DynamicLight], origin: Vec3, axis: &Axis) -> Vec<DynamicLight> {
     lights
         .iter()
         .map(|light| {
@@ -43,11 +39,7 @@ pub fn transform_dlights(
 
 /// Split a dlight mask by a plane (`splitDlightMask`).
 #[must_use]
-pub fn split_dlight_mask(
-    lights: &[DynamicLight],
-    mask: u32,
-    plane: &Plane,
-) -> (u32, u32) {
+pub fn split_dlight_mask(lights: &[DynamicLight], mask: u32, plane: &Plane) -> (u32, u32) {
     if mask == 0 {
         return (0, 0);
     }
@@ -163,23 +155,16 @@ pub fn project_dlight_texture(
         }
         let radius = light.radius;
         let scale = 1.0 / radius;
-        let color = vec3(
-            light.color.x * 255.0,
-            light.color.y * 255.0,
-            light.color.z * 255.0,
-        );
+        let color = vec3(light.color.x * 255.0, light.color.y * 255.0, light.color.z * 255.0);
         let mut clip_bits = Vec::with_capacity(geometry.vertices.len());
         let mut vertices = Vec::with_capacity(geometry.vertices.len());
         for vertex in &geometry.vertices {
             let distance = sub3(light.origin, vertex.position);
-            let tex_coord = qa_core::math::vec2(
-                0.5 + distance.x * scale,
-                0.5 + distance.y * scale,
-            );
+            let tex_coord = qa_core::math::vec2(0.5 + distance.x * scale, 0.5 + distance.y * scale);
             let mut clip = (i32::from(tex_coord.x < 0.0)
-                | i32::from(tex_coord.x > 1.0) * 2
-                | i32::from(tex_coord.y < 0.0) * 4
-                | i32::from(tex_coord.y > 1.0) * 8) as u32;
+                | (i32::from(tex_coord.x > 1.0) * 2)
+                | (i32::from(tex_coord.y < 0.0) * 4)
+                | (i32::from(tex_coord.y > 1.0) * 8)) as u32;
             let modulate = if distance.z > radius {
                 clip |= 16;
                 0.0
@@ -196,9 +181,7 @@ pub fn project_dlight_texture(
             };
             clip_bits.push(clip);
             // Linux myftol truncates; byte assignment keeps low eight bits.
-            let byte = |component: f32| {
-                (((component * modulate).trunc() as i32) & 255) as u8 as f32 / 255.0
-            };
+            let byte = |component: f32| (((component * modulate).trunc() as i32) & 255) as u8 as f32 / 255.0;
             vertices.push(BatchVertex {
                 position: project(vertex.position),
                 tex_coord,
@@ -215,11 +198,7 @@ pub fn project_dlight_texture(
             let a = geometry.indices[offset] as usize;
             let b = geometry.indices[offset + 1] as usize;
             let c = geometry.indices[offset + 2] as usize;
-            let (Some(ac), Some(bc), Some(cc)) = (
-                clip_bits.get(a),
-                clip_bits.get(b),
-                clip_bits.get(c),
-            ) else {
+            let (Some(ac), Some(bc), Some(cc)) = (clip_bits.get(a), clip_bits.get(b), clip_bits.get(c)) else {
                 return Err(ClientError::BadMaterial(
                     "ProjectDlightTexture: triangle has no active clipBits entry; inactive source scratch is indeterminate".to_string(),
                 ));

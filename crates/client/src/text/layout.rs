@@ -11,14 +11,54 @@ use super::draw2d::{Draw2D, Rect, TextureRect};
 use crate::ClientError;
 
 const PALETTE: [Vec4; 8] = [
-    Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 0.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 0.0, y: 1.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 1.0, z: 0.0, w: 1.0 },
-    Vec4 { x: 0.0, y: 0.0, z: 1.0, w: 1.0 },
-    Vec4 { x: 0.0, y: 1.0, z: 1.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 0.0, z: 1.0, w: 1.0 },
-    Vec4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 },
+    Vec4 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 0.0,
+        y: 1.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 1.0,
+        z: 0.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 0.0,
+        y: 1.0,
+        z: 1.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 0.0,
+        z: 1.0,
+        w: 1.0,
+    },
+    Vec4 {
+        x: 1.0,
+        y: 1.0,
+        z: 1.0,
+        w: 1.0,
+    },
 ];
 
 /// Color-code mode.
@@ -127,7 +167,7 @@ struct Cell<'a> {
 }
 
 /// Lay out text (`layoutText`).
-pub fn layout_text(options: &TextLayoutOptions) -> Result<TextLayout<'_>, ClientError> {
+pub fn layout_text<'a>(options: &TextLayoutOptions<'a>) -> Result<TextLayout<'a>, ClientError> {
     if !options.scale.is_finite() || options.scale <= 0.0 {
         return Err(ClientError::BadText("Text scale must be positive".to_string()));
     }
@@ -146,7 +186,7 @@ pub fn layout_text(options: &TextLayoutOptions) -> Result<TextLayout<'_>, Client
     let mut count = 0usize;
     let mut skip_through = 0usize;
 
-    let mut flush = |current: &mut Vec<Cell>, width: &mut f32, rows: &mut Vec<Vec<Cell>>| {
+    let flush = |current: &mut Vec<Cell<'a>>, width: &mut f32, rows: &mut Vec<Vec<Cell<'a>>>| {
         rows.push(core::mem::take(current));
         *width = 0.0;
     };
@@ -163,10 +203,7 @@ pub fn layout_text(options: &TextLayoutOptions) -> Result<TextLayout<'_>, Client
             break;
         }
         let next = chars.get(index + 1).map(|(_, ch)| *ch);
-        if options.color_codes == ColorCodes::Q3
-            && character == '^'
-            && next.is_some_and(|next| next != '^')
-        {
+        if options.color_codes == ColorCodes::Q3 && character == '^' && next.is_some_and(|next| next != '^') {
             // The following unit is consumed even for non-digits.
             if let Some(next) = next {
                 let palette = PALETTE[(next as u32).wrapping_sub(48) as usize & 7];
@@ -311,12 +348,7 @@ pub fn layout_text(options: &TextLayoutOptions) -> Result<TextLayout<'_>, Client
 }
 
 /// Draw a layout (`drawTextLayout`).
-pub fn draw_text_layout(
-    draw: &mut Draw2D,
-    layout: &TextLayout,
-    origin: Vec2,
-    shadow_offset: f32,
-) {
+pub fn draw_text_layout(draw: &mut Draw2D, layout: &TextLayout, origin: Vec2, shadow_offset: f32) {
     let mut pass = |shadow: bool| {
         for line in &layout.lines {
             for glyph in &line.glyphs {
@@ -377,12 +409,10 @@ pub fn seat_text_scale(
     crosshair_scale: f32,
 ) -> SeatTextScale {
     let automatic = (viewport.height / 300.0).floor().max(1.0);
-    let requested = if console_scale > 0.0 {
-        console_scale
-    } else {
-        automatic
-    };
-    let console_width = ((viewport.width / requested).max(320.0).min(viewport.width.max(320.0))).floor().max(8.0);
+    let requested = if console_scale > 0.0 { console_scale } else { automatic };
+    let console_width = ((viewport.width / requested).max(320.0).min(viewport.width.max(320.0)))
+        .floor()
+        .max(8.0);
     let console_width = ((console_width as i32) & !7) as f32;
     let fit = ((viewport.width / 320.0).floor() as i32)
         .min((viewport.height / 144.0).floor() as i32)
@@ -400,7 +430,7 @@ pub fn seat_text_scale(
         } else {
             fit
         },
-        crosshair: crosshair_scale.max(1.0).min(10.0),
+        crosshair: crosshair_scale.clamp(1.0, 10.0),
     }
 }
 
@@ -420,10 +450,7 @@ impl<'a> SeatTextPresentation<'a> {
     }
 
     /// Lay out text.
-    pub fn layout(
-        &self,
-        options: TextLayoutOptionsWithoutFont<'a>,
-    ) -> Result<TextLayout<'a>, ClientError> {
+    pub fn layout(&self, options: TextLayoutOptionsWithoutFont<'a>) -> Result<TextLayout<'a>, ClientError> {
         layout_text(&options.with_font(self.font))
     }
 
