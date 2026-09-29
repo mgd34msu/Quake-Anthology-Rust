@@ -2906,13 +2906,10 @@ impl UiMenuDefinition {
     /// Item view at `index` (donor indexing; out-of-range and null slots error).
     pub(crate) fn item_view(&self, index: usize) -> Result<UiItemDefinition, ClientError> {
         if index >= MAX_UI_MENU_ITEMS {
-            return Err(ClientError::BadUi(
-                "UI menu item index is out of range".to_string(),
-            ));
+            return Err(ClientError::BadUi("UI menu item index is out of range".to_string()));
         }
-        self.slot_item(index).ok_or_else(|| {
-            ClientError::BadUi("UI menu dereferences a NULL item pointer".to_string())
-        })
+        self.slot_item(index)
+            .ok_or_else(|| ClientError::BadUi("UI menu dereferences a NULL item pointer".to_string()))
     }
 
     /// Retained items, in slot order (donor `items`).
@@ -5348,39 +5345,72 @@ pub fn load_menu_definitions(
 ) -> Result<UiMenuDefinitions, ClientError> {
     UiMenuSourceParser::new(host, preprocessor_options, parse_options).load(&plan)
 }
+
+/// In-memory menu files for layout-fixture tests.
+#[cfg(test)]
+struct MapResolver {
+    files: HashMap<String, String>,
+}
+
+#[cfg(test)]
+impl IncludeResolver for MapResolver {
+    fn resolve(&mut self, request: &IncludeRequest) -> Result<Option<ScriptSource>, ClientError> {
+        Ok(self.files.get(&request.requested_path).map(|text| ScriptSource {
+            path: request.requested_path.clone(),
+            text: text.clone(),
+        }))
+    }
+}
+
+#[cfg(test)]
+impl UiMenuResolver for MapResolver {
+    fn resolve_root(&mut self, path: &str) -> Option<ScriptSource> {
+        self.files.get(path).map(|text| ScriptSource {
+            path: path.to_string(),
+            text: text.clone(),
+        })
+    }
+}
+
+/// Deterministic random source for layout-fixture tests.
+#[cfg(test)]
+struct FixedRandom(i32);
+
+#[cfg(test)]
+impl UiMenuRandom for FixedRandom {
+    fn next_int(&mut self) -> i32 {
+        self.0
+    }
+}
+
+/// Parse host over in-memory files for layout-fixture tests.
+#[cfg(test)]
+pub(crate) fn test_host(files: HashMap<String, String>) -> UiMenuParseHost {
+    UiMenuParseHost::Resolved(UiMenuResolvedParseHost::new(
+        SharedUiMenuResolver::new(MapResolver { files }),
+        FixedRandom(42),
+    ))
+}
+
+/// Parse a UI menu set from in-memory files for layout-fixture tests.
+#[cfg(test)]
+pub(crate) fn parse_test_menus(
+    files: HashMap<String, String>,
+    set_path: &str,
+) -> Result<UiMenuDefinitions, ClientError> {
+    load_menu_definitions(
+        test_host(files),
+        UiMenuLoadPlan::Ui {
+            set_paths: vec![set_path.to_string()],
+        },
+        ScriptPreprocessorOptions::default(),
+        UiMenuParseOptions::default(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct MapResolver {
-        files: HashMap<String, String>,
-    }
-
-    impl IncludeResolver for MapResolver {
-        fn resolve(&mut self, request: &IncludeRequest) -> Result<Option<ScriptSource>, ClientError> {
-            Ok(self.files.get(&request.requested_path).map(|text| ScriptSource {
-                path: request.requested_path.clone(),
-                text: text.clone(),
-            }))
-        }
-    }
-
-    impl UiMenuResolver for MapResolver {
-        fn resolve_root(&mut self, path: &str) -> Option<ScriptSource> {
-            self.files.get(path).map(|text| ScriptSource {
-                path: path.to_string(),
-                text: text.clone(),
-            })
-        }
-    }
-
-    struct FixedRandom(i32);
-
-    impl UiMenuRandom for FixedRandom {
-        fn next_int(&mut self) -> i32 {
-            self.0
-        }
-    }
 
     struct VecRegSink {
         events: Vec<UiMenuRegistrationEvent>,
@@ -5419,13 +5449,6 @@ mod tests {
             self.menus.push(menu.clone());
             Ok(())
         }
-    }
-
-    fn test_host(files: HashMap<String, String>) -> UiMenuParseHost {
-        UiMenuParseHost::Resolved(UiMenuResolvedParseHost::new(
-            SharedUiMenuResolver::new(MapResolver { files }),
-            FixedRandom(42),
-        ))
     }
 
     fn files(pairs: &[(&str, &str)]) -> HashMap<String, String> {
