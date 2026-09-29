@@ -1,20 +1,13 @@
 //! Cinematic audio mixer adapter.
 //!
 //! Donor provenance: `src/media/audio.ts` (`cinematicAudio`).
+//!
+//! A movie owns one PCM lane in the shared mixer, regardless of
+//! renderer or video format.
 
 use qa_core::identity::SeatId;
 
 use super::types::{AudioSamples, CinematicAudio, CinematicTarget};
-
-/// A cinematic mixer (`audioMixer` subset, sync).
-pub trait CinematicMixer {
-    /// Queue a stream.
-    fn queue_stream(&mut self, audience: &CinematicAudience, samples: &AudioSamples, sample_rate: u32);
-    /// Stop a stream.
-    fn stop_stream(&mut self, audience: &CinematicAudience);
-    /// Pause or resume a stream.
-    fn pause_stream(&mut self, audience: &CinematicAudience, paused: bool);
-}
 
 /// A cinematic audience (seat or world material).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +18,7 @@ pub enum CinematicAudience {
     World,
 }
 
-/// Resolve an audience (`resolveAudience`).
+/// Resolve an audience (`target.kind === "seat" ? target : world`).
 #[must_use]
 pub fn resolve_audience(target: &CinematicTarget) -> CinematicAudience {
     match target {
@@ -34,35 +27,108 @@ pub fn resolve_audience(target: &CinematicTarget) -> CinematicAudience {
     }
 }
 
-/// A cinematic audio adapter (`cinematicAudio`).
-pub struct CinematicAudioAdapter<'a> {
-    mixer: &'a mut dyn CinematicMixer,
+/// A mixer stream target (`AudioStreamTarget`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioStreamTarget {
+    /// Stream id.
+    pub id: String,
+    /// Audience.
+    pub audience: CinematicAudience,
+    /// Gain.
+    pub gain: f32,
 }
 
-impl<'a> CinematicAudioAdapter<'a> {
-    /// New adapter.
-    #[must_use]
-    pub fn new(mixer: &'a mut dyn CinematicMixer) -> Self {
-        Self { mixer }
-    }
+/// Streamed PCM (`StreamPcm`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamPcm {
+    /// Samples.
+    pub samples: AudioSamples,
+    /// Channels.
+    pub channels: u8,
+    /// Sample rate.
+    pub sample_rate: u32,
+    /// Source sample.
+    pub source_sample: usize,
+    /// Reset the stream.
+    pub reset_stream: bool,
+}
 
-    /// Handle audio.
-    pub fn on_audio(&mut self, audio: &CinematicAudio, target: &CinematicTarget) {
-        if audio.reset_stream {
-            self.mixer.stop_stream(&resolve_audience(target));
+impl From<&CinematicAudio> for StreamPcm {
+    fn from(audio: &CinematicAudio) -> Self {
+        Self {
+            samples: audio.samples.clone(),
+            channels: audio.channels,
+            sample_rate: audio.sample_rate,
+            source_sample: audio.source_sample,
+            reset_stream: audio.reset_stream,
         }
-        self.mixer
-            .queue_stream(&resolve_audience(target), &audio.samples, audio.sample_rate);
+    }
+}
+
+/// A cinematic mixer (`CinematicMixer`).
+pub trait CinematicMixer {
+    /// Opaque mixer stream checkpoint.
+    type StreamCheckpoint: Clone;
+
+    /// Queue a stream.
+    fn queue_stream(&mut self, target: &AudioStreamTarget, pcm: &StreamPcm);
+    /// Stop a stream.
+    fn stop_stream(&mut self, id: &str);
+    /// Pause or resume a stream.
+    fn pause_stream(&mut self, id: &str, paused: bool);
+    /// Capture a stream checkpoint, when the mixer supports it.
+    fn capture_stream_checkpoint(&self, _id: &str) -> Option<Self::StreamCheckpoint> {
+        None
+    }
+    /// Restore a stream checkpoint, when the mixer supports it.
+    fn restore_stream_checkpoint(&mut self, _target: &AudioStreamTarget, _checkpoint: &Self::StreamCheckpoint) {}
+}
+
+/// A cinematic audio adapter (`cinematicAudio`).
+pub struct CinematicAudioAdapter<'a, M: CinematicMixer + ?Sized> {
+    mixer: &'a mut M,
+    id: String,
+    gain: f32,
+}
+
+/// Build an adapter over one mixer lane (`cinematicAudio`).
+pub fn cinematic_audio<'a, M: CinematicMixer + ?Sized>(
+    mixer: &'a mut M,
+    id: &str,
+    gain: f32,
+) -> CinematicAudioAdapter<'a, M> {
+    CinematicAudioAdapter {
+        mixer,
+        id: id.to_string(),
+        gain,
+    }
+}
+
+impl<M: CinematicMixer + ?Sized> CinematicAudioAdapter<'_, M> {
+    fn target(&self, target: &CinematicTarget) -> AudioStreamTarget {
+        AudioStreamTarget {
+            id: self.id.clone(),
+            gain: self.gain,
+            audience: resolve_audience(target),
+        }
     }
 
-    /// Handle reset.
-    pub fn on_audio_reset(&mut self, target: &CinematicTarget) {
-        self.mixer.stop_stream(&resolve_audience(target));
+    /// Handle audio (`onAudio`).
+    pub fn on_audio(&mut self, audio: &CinematicAudio, target: &CinematicTarget) {
+        let target = self.target(target);
+        self.mixer.queue_stream(&target, &StreamPcm::from(audio));
     }
 
-    /// Handle pause.
-    pub fn on_audio_pause(&mut self, paused: bool, target: &CinematicTarget) {
-        self.mixer.pause_stream(&resolve_audience(target), paused);
+    /// Handle reset (`onAudioReset`).
+    pub fn on_audio_reset(&mut self) {
+        let id = self.id.clone();
+        self.mixer.stop_stream(&id);
+    }
+
+    /// Handle pause (`onAudioPause`).
+    pub fn on_audio_pause(&mut self, paused: bool) {
+        let id = self.id.clone();
+        self.mixer.pause_stream(&id, paused);
     }
 }
 
@@ -72,52 +138,66 @@ mod tests {
     use qa_core::identity::IdentityOwner;
 
     struct FixedMixer {
-        queued: usize,
-        stopped: usize,
-        paused: Vec<bool>,
+        queued: Vec<(AudioStreamTarget, StreamPcm)>,
+        stopped: Vec<String>,
+        paused: Vec<(String, bool)>,
     }
 
     impl CinematicMixer for FixedMixer {
-        fn queue_stream(&mut self, _audience: &CinematicAudience, _samples: &AudioSamples, _sample_rate: u32) {
-            self.queued += 1;
+        type StreamCheckpoint = Vec<u8>;
+
+        fn queue_stream(&mut self, target: &AudioStreamTarget, pcm: &StreamPcm) {
+            self.queued.push((target.clone(), pcm.clone()));
         }
 
-        fn stop_stream(&mut self, _audience: &CinematicAudience) {
-            self.stopped += 1;
+        fn stop_stream(&mut self, id: &str) {
+            self.stopped.push(id.to_string());
         }
 
-        fn pause_stream(&mut self, _audience: &CinematicAudience, paused: bool) {
-            self.paused.push(paused);
+        fn pause_stream(&mut self, id: &str, paused: bool) {
+            self.paused.push((id.to_string(), paused));
+        }
+    }
+
+    fn audio() -> CinematicAudio {
+        CinematicAudio {
+            samples: AudioSamples::U8(vec![1, 2]),
+            channels: 1,
+            sample_rate: 22050,
+            source_sample: 4,
+            source_time: 0.0,
+            time: 0.0,
+            pass: 0,
+            reset_stream: true,
         }
     }
 
     #[test]
-    fn reset_stops_before_queue() {
+    fn routes_one_lane_with_gain() {
         let owner = IdentityOwner::create("test").unwrap();
-        let target = CinematicTarget::Seat(owner.seat(0));
+        let seat = CinematicTarget::Seat(owner.seat(0));
+        let material = CinematicTarget::Material("wall".to_string());
         let mut mixer = FixedMixer {
-            queued: 0,
-            stopped: 0,
+            queued: Vec::new(),
+            stopped: Vec::new(),
             paused: Vec::new(),
         };
-        let mut adapter = CinematicAudioAdapter::new(&mut mixer);
-        adapter.on_audio(
-            &CinematicAudio {
-                samples: AudioSamples::U8(vec![1, 2]),
-                channels: 1,
-                sample_rate: 22050,
-                source_sample: 0,
-                source_time: 0.0,
-                time: 0.0,
-                pass: 0,
-                reset_stream: true,
-            },
-            &target,
-        );
-        adapter.on_audio_pause(true, &target);
-        assert_eq!(mixer.queued, 1);
-        assert_eq!(mixer.stopped, 1);
-        assert_eq!(mixer.paused, vec![true]);
-        assert_eq!(resolve_audience(&target), CinematicAudience::Seat(owner.seat(0)));
+        let mut adapter = cinematic_audio(&mut mixer, "movie", 0.5);
+        adapter.on_audio(&audio(), &seat);
+        adapter.on_audio(&audio(), &material);
+        adapter.on_audio_pause(true);
+        adapter.on_audio_reset();
+        assert_eq!(mixer.queued.len(), 2);
+        // The reset flag rides through the PCM chunk; the adapter
+        // never stops the lane itself.
+        assert!(mixer.stopped.iter().any(|id| id == "movie"));
+        assert_eq!(mixer.queued[0].0.id, "movie");
+        assert_eq!(mixer.queued[0].0.gain, 0.5);
+        assert_eq!(mixer.queued[0].0.audience, CinematicAudience::Seat(owner.seat(0)));
+        assert_eq!(mixer.queued[1].0.audience, CinematicAudience::World);
+        assert_eq!(mixer.queued[0].1.source_sample, 4);
+        assert!(mixer.queued[0].1.reset_stream);
+        assert_eq!(mixer.paused, vec![("movie".to_string(), true)]);
+        assert_eq!(mixer.capture_stream_checkpoint("movie"), None);
     }
 }

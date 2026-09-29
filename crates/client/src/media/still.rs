@@ -2,10 +2,8 @@
 //!
 //! Donor provenance: `src/media/still.ts` (`cinematicPcx`). Stills play
 //! through [`crate::media::playback::CinematicPlayback`] image sources.
-//!
-//! PCX container decode needs image formats (deferred in `qa-content`);
-//! this module validates still inputs and expands palette pixels with
-//! [`crate::media::containers::cin_rgba`].
+
+use qa_content::images::decode_pcx;
 
 use super::containers::cin_rgba;
 use super::playback::CinematicSource;
@@ -48,17 +46,48 @@ pub fn cinematic_indexed_still(
 }
 
 /// Build an image source from PCX bytes (`cinematicPcx`).
-///
-/// PCX decode needs image formats; the palette check
-/// (`A cinematic PCX needs its own palette`) runs after decode.
 pub fn cinematic_pcx(bytes: &[u8], source: &str) -> Result<CinematicSource, ClientError> {
-    let _ = (bytes, source);
-    Err(ClientError::DeferredEngine("PCX still decode"))
+    let image = decode_pcx(bytes, source).map_err(|error| ClientError::BadMedia(error.to_string()))?;
+    let Some(palette) = image.palette else {
+        return Err(ClientError::BadMedia(
+            "A cinematic PCX needs its own palette".to_string(),
+        ));
+    };
+    Ok(CinematicSource::Image {
+        source: source.to_string(),
+        width: image.width,
+        height: image.height,
+        rgba: cin_rgba(&image.indices, &palette)?,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pcx(width: u16, height: u16, scanline: &[u8], palette: Option<&[u8]>) -> Vec<u8> {
+        // Minimal version 5, RLE, 8-bit, single-plane PCX.
+        let mut bytes = vec![0u8; 128];
+        bytes[..4].copy_from_slice(&[10, 5, 1, 8]);
+        bytes[4..6].copy_from_slice(&0u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+        bytes[8..10].copy_from_slice(&(width - 1).to_le_bytes());
+        bytes[10..12].copy_from_slice(&(height - 1).to_le_bytes());
+        bytes[65] = 1;
+        bytes[66..68].copy_from_slice(&width.to_le_bytes());
+        for _ in 0..height {
+            bytes.extend_from_slice(scanline);
+        }
+        if let Some(palette) = palette {
+            bytes.push(12);
+            bytes.extend_from_slice(palette);
+        }
+        bytes
+    }
+
+    fn palette() -> Vec<u8> {
+        (0..768).map(|index| (index % 256) as u8).collect()
+    }
 
     #[test]
     fn still_validates_pixels() {
@@ -69,15 +98,37 @@ mod tests {
 
     #[test]
     fn indexed_still_expands_palette() {
-        let palette: Vec<u8> = (0..768).map(|index| (index % 256) as u8).collect();
-        let still = cinematic_indexed_still(2, 1, &[0, 1], &palette).unwrap();
+        let still = cinematic_indexed_still(2, 1, &[0, 1], &palette()).unwrap();
         assert_eq!(still.rgba.len(), 8);
-        assert!(cinematic_indexed_still(2, 1, &[0], &palette).is_err());
+        assert!(cinematic_indexed_still(2, 1, &[0], &palette()).is_err());
     }
 
     #[test]
-    fn pcx_decode_is_deferred() {
-        let err = cinematic_pcx(&[1, 2, 3], "<test>").unwrap_err();
-        assert!(matches!(err, ClientError::DeferredEngine(_)));
+    fn pcx_decodes_through_its_own_palette() {
+        let bytes = pcx(2, 1, &[3, 4], Some(&palette()));
+        match cinematic_pcx(&bytes, "<test>").unwrap() {
+            CinematicSource::Image {
+                width, height, rgba, ..
+            } => {
+                assert_eq!((width, height), (2, 1));
+                assert_eq!(rgba, vec![9, 10, 11, 255, 12, 13, 14, 255]);
+            }
+            source => panic!("expected image, got {source:?}"),
+        }
+        // RLE runs expand before palette lookup.
+        let bytes = pcx(2, 1, &[0xC2, 7], Some(&palette()));
+        match cinematic_pcx(&bytes, "<test>").unwrap() {
+            CinematicSource::Image { rgba, .. } => {
+                assert_eq!(rgba, vec![21, 22, 23, 255, 21, 22, 23, 255]);
+            }
+            source => panic!("expected image, got {source:?}"),
+        }
+    }
+
+    #[test]
+    fn pcx_without_palette_is_an_error() {
+        let bytes = pcx(2, 1, &[3, 4], None);
+        let error = cinematic_pcx(&bytes, "<test>").unwrap_err();
+        assert_eq!(error.to_string(), "A cinematic PCX needs its own palette");
     }
 }

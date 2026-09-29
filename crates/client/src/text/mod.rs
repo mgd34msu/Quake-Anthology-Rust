@@ -7,13 +7,13 @@
 //! `media-captions`), 2D drawing coordinates (`draw2d`), Q3 DAT fonts
 //! and string drawing (`q3-font`, `q3-font-registry`), UI and
 //! world-space text (`ui`, `world`), mount wiring (`mounted`), and the
-//! TrueType data contract (`truetype`).
+//! TrueType engine (`truetype`).
 //!
-//! Deferred engines (need external engines): TrueType glyph
-//! rasterization and atlas building, FreeType Q3 font generation, and
-//! `kfont`/TrueType bitmap decoding (needs image formats). The atlas,
-//! registry, and layout contracts validate inputs and metrics without
-//! them.
+//! The TrueType engine (`truetype`) parses sfnt faces and rasterizes
+//! monochrome and COLR v0 color glyphs; the atlas registry (`atlas`)
+//! builds `kfont` and TrueType uploads over `qa-content` image decoders,
+//! and the Q3 registry (`q3-font-registry`) generates DAT records from
+//! TrueType sources when no cached record exists.
 
 pub mod atlas;
 pub mod captions;

@@ -1,10 +1,10 @@
 //! Unified save envelope ported from `src/persistence/save-image.ts`.
 //!
 //! The donor names this module `save-image.ts`: it is the `QTSAVE3`
-//! unified-save assembly, not an image codec (content image formats stay
-//! deferred per `README.md`). Schema 2 payloads still decode and upgrade
-//! to schema 3 with `legacy_armor_layout` set; the framing version must
-//! match the payload `schemaVersion`.
+//! unified-save assembly, not an image codec (content image formats live
+//! in `qa-content`'s `images` module). Schema 2 payloads still decode
+//! and upgrade to schema 3 with `legacy_armor_layout` set; the framing
+//! version must match the payload `schemaVersion`.
 
 use qa_core::identity::SavedActorId;
 use qa_core::time::{FrameContext, SourceTime};

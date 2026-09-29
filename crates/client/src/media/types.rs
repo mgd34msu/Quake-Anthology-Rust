@@ -22,7 +22,7 @@ pub enum CinematicTarget {
 /// A cinematic frame (`CinematicFrame`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CinematicFrame {
-    /// RGBA pixels (empty while decode is deferred).
+    /// RGBA pixels.
     pub rgba: Vec<u8>,
     /// Width.
     pub width: usize,
@@ -68,6 +68,23 @@ pub enum AudioSamples {
     I16(Vec<i16>),
     /// 8-bit samples.
     U8(Vec<u8>),
+}
+
+impl AudioSamples {
+    /// Sample count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::I16(samples) => samples.len(),
+            Self::U8(samples) => samples.len(),
+        }
+    }
+
+    /// Whether no samples are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Cinematic status (`CinematicStatus`).
@@ -179,6 +196,16 @@ pub struct CinematicOptions<'a> {
     pub silent: bool,
     /// Host.
     pub host: &'a mut dyn CinematicHost,
+}
+
+/// Audio sink for decoder playbacks (host plus target).
+pub trait CinematicAudioSink {
+    /// Queue audio.
+    fn on_audio(&mut self, audio: &CinematicAudio);
+    /// Reset the mixer lane (RoQ stereo before the first info).
+    fn on_audio_reset(&mut self) {}
+    /// Developer print.
+    fn developer_print(&mut self, message: &str);
 }
 
 #[cfg(test)]
