@@ -6,11 +6,14 @@
 //! `createVanillaContext` in `src/network/q2/codecs/vanilla.ts`.
 //! `EntityStateT` / `UsercmdT` shapes come from `src/network/q2/state.ts`.
 //!
-//! Only the classic (protocol 34) wire shape is covered; R1Q2, Q2Pro,
-//! rerelease, and KEX codec variants are future work.
+//! Classic (protocol 34) framing plus the shared state shapes every
+//! variant codec builds on; R1Q2, Q2Pro, rerelease, KEX, zpacket, and MVD
+//! codecs live in [`crate::q2_variants`].
 
+use qa_core::numeric::float_to_wrapped_i32;
 use thiserror::Error;
 
+use crate::angles::{q2_angle_to_short, q2_short_to_angle};
 use crate::msg::{MsgError, MsgReader, MsgWriter};
 use crate::protocol::q2 as protocol;
 
@@ -18,6 +21,12 @@ use crate::protocol::q2 as protocol;
 pub const MAX_EDICTS: u16 = 1024;
 /// Beam render effect flag (`RF_BEAM`).
 pub const RF_BEAM: i32 = 128;
+/// Classic stat slots (`MAX_STATS`).
+pub const MAX_STATS: usize = 32;
+/// Stored stat slots (`MAX_STATS_STORAGE`).
+pub const MAX_STATS_STORAGE: usize = 64;
+/// Precomputed vertex normals (`NUMVERTEXNORMALS`).
+pub const NUMVERTEXNORMALS: usize = 162;
 
 /// Error for entity numbers the wire format cannot represent.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -31,6 +40,12 @@ pub enum Q2CodecError {
     /// Underlying message failure.
     #[error("{0}")]
     Msg(#[from] MsgError),
+    /// A frame parser met the wrong opcode where the donor raises `ERR_DROP`.
+    #[error("expected opcode {expected}, found {found}")]
+    UnexpectedOpcode { expected: u8, found: u8 },
+    /// A direction byte fell outside the vertex-normal table.
+    #[error("direction {0} outside vertex-normal table")]
+    BadDirection(u8),
 }
 
 /// Quake II user command (`UsercmdT`).
@@ -52,9 +67,14 @@ pub struct Usercmd {
     pub impulse: u8,
     /// Light level.
     pub lightlevel: u8,
+    /// Server frame the command was generated for (KEX `serverFrame`).
+    pub server_frame: i32,
 }
 
-/// Quake II entity state (`EntityStateT`, wire-covered fields).
+/// Quake II entity state (`EntityStateT`, all protocol fields).
+///
+/// The classic codec only wires the id Software subset; variant codecs
+/// cover the extension tail (`morefx` through `old_frame`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EntityState {
     /// Entity number.
@@ -66,13 +86,13 @@ pub struct EntityState {
     /// Old origin (beam endpoints, teleport trails).
     pub old_origin: [f64; 3],
     /// Model indices.
-    pub modelindex: u8,
+    pub modelindex: u16,
     /// Second model index.
-    pub modelindex2: u8,
+    pub modelindex2: u16,
     /// Third model index.
-    pub modelindex3: u8,
+    pub modelindex3: u16,
     /// Fourth model index.
-    pub modelindex4: u8,
+    pub modelindex4: u16,
     /// Frame.
     pub frame: i32,
     /// Skin number.
@@ -82,11 +102,185 @@ pub struct EntityState {
     /// Render effects.
     pub renderfx: i32,
     /// Solid.
-    pub solid: u16,
+    pub solid: u32,
     /// Sound.
-    pub sound: u8,
+    pub sound: u16,
     /// Event.
     pub event: u8,
+    /// Extended effects bits.
+    pub morefx: i32,
+    /// Entity alpha.
+    pub alpha: f64,
+    /// Entity scale.
+    pub scale: f64,
+    /// KEX instance bits.
+    pub instance_bits: u8,
+    /// Looping-sound volume.
+    pub loop_volume: f64,
+    /// Looping-sound attenuation (`-1` means none).
+    pub loop_attenuation: f64,
+    /// KEX owner entity.
+    pub owner: u16,
+    /// KEX previous frame.
+    pub old_frame: u16,
+}
+
+/// Quake II player movement state (`PmoveStateT`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PmoveState {
+    /// Movement type.
+    pub pm_type: u8,
+    /// Fixed-point origin (eighths).
+    pub origin: [i32; 3],
+    /// Fixed-point velocity (eighths).
+    pub velocity: [i32; 3],
+    /// Movement flags.
+    pub pm_flags: i32,
+    /// Movement timer.
+    pub pm_time: i32,
+    /// Gravity.
+    pub gravity: i16,
+    /// Delta angles.
+    pub delta_angles: [i16; 3],
+    /// View height.
+    pub viewheight: i32,
+    /// Float origin (rerelease/KEX).
+    pub origin_f: [f32; 3],
+    /// Float velocity (rerelease/KEX).
+    pub velocity_f: [f32; 3],
+    /// Float delta angles (KEX).
+    pub delta_angles_f: [f32; 3],
+    /// Whether delta angles compare as floats (KEX).
+    pub delta_angle_float: bool,
+}
+
+impl Default for PmoveState {
+    fn default() -> Self {
+        Self {
+            pm_type: 0,
+            origin: [0; 3],
+            velocity: [0; 3],
+            pm_flags: 0,
+            pm_time: 0,
+            gravity: 0,
+            delta_angles: [0; 3],
+            viewheight: 0,
+            origin_f: [0.0; 3],
+            velocity_f: [0.0; 3],
+            delta_angles_f: [0.0; 3],
+            delta_angle_float: false,
+        }
+    }
+}
+
+/// Q2Pro player fog state (`Q2ProPlayerFog`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Q2ProFog {
+    /// Fog color.
+    pub color: [u8; 3],
+    /// Fog density.
+    pub density: u16,
+    /// Sky factor.
+    pub sky_factor: u16,
+    /// Height-fog density.
+    pub height_density: u16,
+    /// Height-fog falloff.
+    pub height_falloff: u16,
+    /// Height-fog start color.
+    pub height_start_color: [u8; 3],
+    /// Height-fog end color.
+    pub height_end_color: [u8; 3],
+    /// Height-fog start distance (eighths).
+    pub height_start_distance: i32,
+    /// Height-fog end distance (eighths).
+    pub height_end_distance: i32,
+}
+
+/// Quake II player state (`PlayerStateT`, all protocol fields).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerState {
+    /// Client number (Q2Pro revision 1022+).
+    pub clientnum: i32,
+    /// Movement state.
+    pub pmove: PmoveState,
+    /// View angles in degrees.
+    pub viewangles: [f64; 3],
+    /// View offset.
+    pub viewoffset: [f64; 3],
+    /// Kick angles.
+    pub kick_angles: [f64; 3],
+    /// Gun angles.
+    pub gunangles: [f64; 3],
+    /// Gun offset.
+    pub gunoffset: [f64; 3],
+    /// Gun model index.
+    pub gunindex: i32,
+    /// Gun skin.
+    pub gunskin: i32,
+    /// Gun frame.
+    pub gunframe: i32,
+    /// Gun frame rate.
+    pub gunrate: u8,
+    /// Screen blend.
+    pub blend: [f64; 4],
+    /// Damage blend.
+    pub damage_blend: [f64; 4],
+    /// Field of view.
+    pub fov: u8,
+    /// Refresh flags.
+    pub rdflags: u8,
+    /// Stats (`MAX_STATS_STORAGE` slots).
+    pub stats: [i16; MAX_STATS_STORAGE],
+    /// KEX team id.
+    pub team_id: u8,
+    /// Q2Pro fog.
+    pub fog: Q2ProFog,
+}
+
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self {
+            clientnum: 0,
+            pmove: PmoveState::default(),
+            viewangles: [0.0; 3],
+            viewoffset: [0.0; 3],
+            kick_angles: [0.0; 3],
+            gunangles: [0.0; 3],
+            gunoffset: [0.0; 3],
+            gunindex: 0,
+            gunskin: 0,
+            gunframe: 0,
+            gunrate: 0,
+            blend: [0.0; 4],
+            damage_blend: [0.0; 4],
+            fov: 0,
+            rdflags: 0,
+            stats: [0; MAX_STATS_STORAGE],
+            team_id: 0,
+            fog: Q2ProFog::default(),
+        }
+    }
+}
+
+/// Truncate a scaled float to a wrapping `i32`.
+///
+/// Matches the donor's `Math.trunc(value * scale)` followed by `& 0xff`
+/// / `& 0xffff` masking in `MSG_Write*`.
+#[must_use]
+pub fn scaled_trunc(value: f64, scale: f64) -> i32 {
+    float_to_wrapped_i32((value * scale).trunc())
+}
+
+/// Convert degrees to a 16-bit wire angle (`ANGLE2SHORT`).
+#[must_use]
+pub fn angle_to_short(value: f64) -> u16 {
+    q2_angle_to_short(value)
+}
+
+/// Convert a 16-bit wire angle to degrees (`SHORT2ANGLE`).
+#[must_use]
+pub fn short_to_angle(word: i16) -> f64 {
+    q2_short_to_angle(word)
 }
 
 /// Server data preamble (`readServerData` / `writeServerData`).
@@ -325,16 +519,16 @@ pub fn write_delta_entity(
         writer.write_byte(to.number as u8)?;
     }
     if (bits & protocol::U_MODEL) != 0 {
-        writer.write_byte(to.modelindex)?;
+        writer.write_byte(to.modelindex as u8)?;
     }
     if (bits & protocol::U_MODEL2) != 0 {
-        writer.write_byte(to.modelindex2)?;
+        writer.write_byte(to.modelindex2 as u8)?;
     }
     if (bits & protocol::U_MODEL3) != 0 {
-        writer.write_byte(to.modelindex3)?;
+        writer.write_byte(to.modelindex3 as u8)?;
     }
     if (bits & protocol::U_MODEL4) != 0 {
-        writer.write_byte(to.modelindex4)?;
+        writer.write_byte(to.modelindex4 as u8)?;
     }
     if (bits & protocol::U_FRAME8) != 0 {
         writer.write_byte(to.frame as u8)?;
@@ -385,7 +579,7 @@ pub fn write_delta_entity(
         writer.write_q2_pos(to.old_origin)?;
     }
     if (bits & protocol::U_SOUND) != 0 {
-        writer.write_byte(to.sound)?;
+        writer.write_byte(to.sound as u8)?;
     }
     if (bits & protocol::U_EVENT) != 0 {
         writer.write_byte(to.event)?;
@@ -427,16 +621,16 @@ pub fn read_delta_entity(
     to.old_origin = from.origin;
     to.number = number;
     if (bits & protocol::U_MODEL) != 0 {
-        to.modelindex = reader.byte()?;
+        to.modelindex = u16::from(reader.byte()?);
     }
     if (bits & protocol::U_MODEL2) != 0 {
-        to.modelindex2 = reader.byte()?;
+        to.modelindex2 = u16::from(reader.byte()?);
     }
     if (bits & protocol::U_MODEL3) != 0 {
-        to.modelindex3 = reader.byte()?;
+        to.modelindex3 = u16::from(reader.byte()?);
     }
     if (bits & protocol::U_MODEL4) != 0 {
-        to.modelindex4 = reader.byte()?;
+        to.modelindex4 = u16::from(reader.byte()?);
     }
     if (bits & protocol::U_FRAME8) != 0 {
         to.frame = i32::from(reader.byte()?);
@@ -487,7 +681,7 @@ pub fn read_delta_entity(
         to.old_origin = reader.q2_pos()?;
     }
     if (bits & protocol::U_SOUND) != 0 {
-        to.sound = reader.byte()?;
+        to.sound = u16::from(reader.byte()?);
     }
     if (bits & protocol::U_EVENT) != 0 {
         to.event = reader.byte()?;
@@ -495,7 +689,7 @@ pub fn read_delta_entity(
         to.event = 0;
     }
     if (bits & protocol::U_SOLID) != 0 {
-        to.solid = reader.short()? as u16;
+        to.solid = u32::from(reader.short()? as u16);
     }
     Ok(to)
 }
@@ -557,6 +751,532 @@ pub fn read_server_data(reader: &mut MsgReader<'_>) -> Result<ServerData, MsgErr
     })
 }
 
+/// Frame write parameters shared by every Q2 frame codec (`FrameWriteParamsT`).
+pub struct FrameWrite<'a> {
+    /// Frame number.
+    pub framenum: i32,
+    /// Delta base frame (`-1` for none).
+    pub lastframe: i32,
+    /// Suppressed-packet count.
+    pub surpress_count: i32,
+    /// Area visibility bits.
+    pub areabits: &'a [u8],
+    /// Delta base player state (`None` means a zeroed state).
+    pub ps_from: Option<&'a PlayerState>,
+    /// Target player state.
+    pub ps_to: &'a PlayerState,
+}
+
+/// Parsed frame header (`FrameHeaderT`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameHeader {
+    /// Server frame number.
+    pub serverframe: i32,
+    /// Delta base frame (`-1` for none).
+    pub deltaframe: i32,
+    /// Suppressed-packet count.
+    pub surpress_count: i32,
+    /// Area-bytes length.
+    pub areabytes: usize,
+}
+
+/// Compute classic player-state delta flags.
+#[must_use]
+pub fn player_state_bits(from: &PlayerState, to: &PlayerState) -> u32 {
+    let mut pflags = 0;
+    if to.pmove.pm_type != from.pmove.pm_type {
+        pflags |= protocol::PS_M_TYPE;
+    }
+    if to.pmove.origin != from.pmove.origin {
+        pflags |= protocol::PS_M_ORIGIN;
+    }
+    if to.pmove.velocity != from.pmove.velocity {
+        pflags |= protocol::PS_M_VELOCITY;
+    }
+    if to.pmove.pm_time != from.pmove.pm_time {
+        pflags |= protocol::PS_M_TIME;
+    }
+    if to.pmove.pm_flags != from.pmove.pm_flags {
+        pflags |= protocol::PS_M_FLAGS;
+    }
+    if to.pmove.gravity != from.pmove.gravity {
+        pflags |= protocol::PS_M_GRAVITY;
+    }
+    if to.pmove.delta_angles != from.pmove.delta_angles {
+        pflags |= protocol::PS_M_DELTA_ANGLES;
+    }
+    if to.viewoffset != from.viewoffset {
+        pflags |= protocol::PS_VIEWOFFSET;
+    }
+    if to.viewangles != from.viewangles {
+        pflags |= protocol::PS_VIEWANGLES;
+    }
+    if to.kick_angles != from.kick_angles {
+        pflags |= protocol::PS_KICKANGLES;
+    }
+    if to.blend != from.blend {
+        pflags |= protocol::PS_BLEND;
+    }
+    if to.fov != from.fov {
+        pflags |= protocol::PS_FOV;
+    }
+    if to.rdflags != from.rdflags {
+        pflags |= protocol::PS_RDFLAGS;
+    }
+    if to.gunframe != from.gunframe {
+        pflags |= protocol::PS_WEAPONFRAME;
+    }
+    pflags |= protocol::PS_WEAPONINDEX;
+    pflags
+}
+
+/// Write a classic player-state delta (`writePlayerStateDelta`).
+pub fn write_player_state_delta(writer: &mut MsgWriter, from: &PlayerState, to: &PlayerState) -> Result<(), MsgError> {
+    let pflags = player_state_bits(from, to);
+    writer.write_byte(protocol::Svc::Playerinfo as u8)?;
+    writer.write_short(pflags as i16)?;
+    write_player_state_body(writer, to, pflags)?;
+    let mut statbits = 0u32;
+    for (i, slot) in to.stats.iter().take(MAX_STATS).enumerate() {
+        if *slot != from.stats[i] {
+            statbits |= 1 << i;
+        }
+    }
+    writer.write_long(statbits as i32)?;
+    for (i, slot) in to.stats.iter().take(MAX_STATS).enumerate() {
+        if (statbits & (1 << i)) != 0 {
+            writer.write_short(*slot)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write the body of a classic player-state delta after the flags.
+fn write_player_state_body(writer: &mut MsgWriter, to: &PlayerState, pflags: u32) -> Result<(), MsgError> {
+    if (pflags & protocol::PS_M_TYPE) != 0 {
+        writer.write_byte(to.pmove.pm_type)?;
+    }
+    if (pflags & protocol::PS_M_ORIGIN) != 0 {
+        for axis in to.pmove.origin {
+            writer.write_short(axis as i16)?;
+        }
+    }
+    if (pflags & protocol::PS_M_VELOCITY) != 0 {
+        for axis in to.pmove.velocity {
+            writer.write_short(axis as i16)?;
+        }
+    }
+    if (pflags & protocol::PS_M_TIME) != 0 {
+        writer.write_byte(to.pmove.pm_time as u8)?;
+    }
+    if (pflags & protocol::PS_M_FLAGS) != 0 {
+        writer.write_byte(to.pmove.pm_flags as u8)?;
+    }
+    if (pflags & protocol::PS_M_GRAVITY) != 0 {
+        writer.write_short(to.pmove.gravity)?;
+    }
+    if (pflags & protocol::PS_M_DELTA_ANGLES) != 0 {
+        for axis in to.pmove.delta_angles {
+            writer.write_short(axis)?;
+        }
+    }
+    if (pflags & protocol::PS_VIEWOFFSET) != 0 {
+        for axis in to.viewoffset {
+            writer.write_char(scaled_trunc(axis, 4.0) as i8)?;
+        }
+    }
+    if (pflags & protocol::PS_VIEWANGLES) != 0 {
+        for axis in to.viewangles {
+            writer.write_q2_angle16(axis)?;
+        }
+    }
+    if (pflags & protocol::PS_KICKANGLES) != 0 {
+        for axis in to.kick_angles {
+            writer.write_char(scaled_trunc(axis, 4.0) as i8)?;
+        }
+    }
+    if (pflags & protocol::PS_WEAPONINDEX) != 0 {
+        writer.write_byte(to.gunindex as u8)?;
+    }
+    if (pflags & protocol::PS_WEAPONFRAME) != 0 {
+        writer.write_byte(to.gunframe as u8)?;
+        for axis in to.gunoffset {
+            writer.write_char(scaled_trunc(axis, 4.0) as i8)?;
+        }
+        for axis in to.gunangles {
+            writer.write_char(scaled_trunc(axis, 4.0) as i8)?;
+        }
+    }
+    if (pflags & protocol::PS_BLEND) != 0 {
+        for axis in to.blend {
+            writer.write_byte(scaled_trunc(axis, 255.0) as u8)?;
+        }
+    }
+    if (pflags & protocol::PS_FOV) != 0 {
+        writer.write_byte(to.fov)?;
+    }
+    if (pflags & protocol::PS_RDFLAGS) != 0 {
+        writer.write_byte(to.rdflags)?;
+    }
+    Ok(())
+}
+
+/// Read a classic player-state delta (`readPlayerStateDelta`).
+///
+/// Unchanged fields inherit from the delta base.
+pub fn read_player_state_delta(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, MsgError> {
+    let mut to = from.clone();
+    let flags = u32::from(reader.short()? as u16);
+    if (flags & protocol::PS_M_TYPE) != 0 {
+        to.pmove.pm_type = reader.byte()?;
+    }
+    if (flags & protocol::PS_M_ORIGIN) != 0 {
+        for axis in &mut to.pmove.origin {
+            *axis = i32::from(reader.short()?);
+        }
+    }
+    if (flags & protocol::PS_M_VELOCITY) != 0 {
+        for axis in &mut to.pmove.velocity {
+            *axis = i32::from(reader.short()?);
+        }
+    }
+    if (flags & protocol::PS_M_TIME) != 0 {
+        to.pmove.pm_time = i32::from(reader.byte()?);
+    }
+    if (flags & protocol::PS_M_FLAGS) != 0 {
+        to.pmove.pm_flags = i32::from(reader.byte()?);
+    }
+    if (flags & protocol::PS_M_GRAVITY) != 0 {
+        to.pmove.gravity = reader.short()?;
+    }
+    if (flags & protocol::PS_M_DELTA_ANGLES) != 0 {
+        for axis in &mut to.pmove.delta_angles {
+            *axis = reader.short()?;
+        }
+    }
+    if (flags & protocol::PS_VIEWOFFSET) != 0 {
+        for axis in &mut to.viewoffset {
+            *axis = f64::from(reader.char()?) * 0.25;
+        }
+    }
+    if (flags & protocol::PS_VIEWANGLES) != 0 {
+        for axis in &mut to.viewangles {
+            *axis = short_to_angle(reader.short()?);
+        }
+    }
+    if (flags & protocol::PS_KICKANGLES) != 0 {
+        for axis in &mut to.kick_angles {
+            *axis = f64::from(reader.char()?) * 0.25;
+        }
+    }
+    if (flags & protocol::PS_WEAPONINDEX) != 0 {
+        to.gunindex = i32::from(reader.byte()?);
+    }
+    if (flags & protocol::PS_WEAPONFRAME) != 0 {
+        to.gunframe = i32::from(reader.byte()?);
+        for axis in &mut to.gunoffset {
+            *axis = f64::from(reader.char()?) * 0.25;
+        }
+        for axis in &mut to.gunangles {
+            *axis = f64::from(reader.char()?) * 0.25;
+        }
+    }
+    if (flags & protocol::PS_BLEND) != 0 {
+        for axis in &mut to.blend {
+            *axis = f64::from(reader.byte()?) / 255.0;
+        }
+    }
+    if (flags & protocol::PS_FOV) != 0 {
+        to.fov = reader.byte()?;
+    }
+    if (flags & protocol::PS_RDFLAGS) != 0 {
+        to.rdflags = reader.byte()?;
+    }
+    let statbits = reader.long()? as u32;
+    for i in 0..MAX_STATS {
+        if (statbits & (1 << i)) != 0 {
+            to.stats[i] = reader.short()?;
+        }
+    }
+    Ok(to)
+}
+
+/// Write a classic frame (`writeFrame`).
+pub fn write_frame<E>(
+    writer: &mut MsgWriter,
+    params: &FrameWrite<'_>,
+    write_entities: impl FnOnce(&mut MsgWriter) -> Result<(), E>,
+) -> Result<(), E>
+where
+    E: From<MsgError>,
+{
+    writer.write_byte(protocol::Svc::Frame as u8)?;
+    writer.write_long(params.framenum)?;
+    writer.write_long(params.lastframe)?;
+    writer.write_byte(params.surpress_count as u8)?;
+    writer.write_byte(params.areabits.len() as u8)?;
+    writer.write_bytes(params.areabits)?;
+    let base = PlayerState::default();
+    let from = params.ps_from.unwrap_or(&base);
+    write_player_state_delta(writer, from, params.ps_to)?;
+    write_entities(writer)
+}
+
+/// Read a classic frame header (`readFrameHeader`).
+pub fn read_frame_header(
+    reader: &mut MsgReader<'_>,
+    areabits: &mut Vec<u8>,
+    read_suppress_byte: bool,
+) -> Result<FrameHeader, MsgError> {
+    let serverframe = reader.long()?;
+    let deltaframe = reader.long()?;
+    let surpress_count = if read_suppress_byte {
+        i32::from(reader.byte()?)
+    } else {
+        0
+    };
+    let len = usize::from(reader.byte()?);
+    areabits.clear();
+    areabits.extend_from_slice(reader.bytes(len)?);
+    Ok(FrameHeader {
+        serverframe,
+        deltaframe,
+        surpress_count,
+        areabytes: len,
+    })
+}
+
+/// Read the player state of a classic frame (`readFramePlayerstate`).
+pub fn read_frame_playerstate(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, Q2CodecError> {
+    let opcode = reader.byte()?;
+    if opcode != protocol::Svc::Playerinfo as u8 {
+        return Err(Q2CodecError::UnexpectedOpcode {
+            expected: protocol::Svc::Playerinfo as u8,
+            found: opcode,
+        });
+    }
+    Ok(read_player_state_delta(reader, from)?)
+}
+
+/// Consume the packet-entities opcode of a classic frame (`readPacketEntitiesBegin`).
+pub fn read_packet_entities_begin(reader: &mut MsgReader<'_>) -> Result<(), Q2CodecError> {
+    let opcode = reader.byte()?;
+    if opcode != protocol::Svc::Packetentities as u8 {
+        return Err(Q2CodecError::UnexpectedOpcode {
+            expected: protocol::Svc::Packetentities as u8,
+            found: opcode,
+        });
+    }
+    Ok(())
+}
+
+/// Encode a string as single-byte characters (`stringToBytes`).
+///
+/// Each UTF-16 unit contributes its low byte, matching the donor's
+/// `charCodeAt(i) & 0xff` exactly, including surrogate halves.
+#[must_use]
+pub fn string_to_bytes(text: &str) -> Vec<u8> {
+    text.encode_utf16().map(|unit| unit as u8).collect()
+}
+
+/// Write the closest vertex normal to a direction (`MSG_WriteDir`).
+///
+/// A missing direction writes index 0; ties keep the first index, matching
+/// the donor's strictly-greater search over the same table.
+pub fn write_dir(writer: &mut MsgWriter, dir: Option<[f64; 3]>) -> Result<(), MsgError> {
+    let Some(dir) = dir else {
+        return writer.write_byte(0);
+    };
+    let mut best_dot = 0.0f64;
+    let mut best = 0u8;
+    for (index, normal) in BYTEDIRS.iter().enumerate() {
+        let dot = dir[0] * f64::from(normal[0]) + dir[1] * f64::from(normal[1]) + dir[2] * f64::from(normal[2]);
+        if dot > best_dot {
+            best_dot = dot;
+            best = index as u8;
+        }
+    }
+    writer.write_byte(best)
+}
+
+/// Read a direction byte into a vertex normal (`MSG_ReadDir`).
+pub fn read_dir(reader: &mut MsgReader<'_>) -> Result<[f64; 3], Q2CodecError> {
+    let index = reader.byte()?;
+    if usize::from(index) >= NUMVERTEXNORMALS {
+        return Err(Q2CodecError::BadDirection(index));
+    }
+    let dir = BYTEDIRS[usize::from(index)];
+    Ok([f64::from(dir[0]), f64::from(dir[1]), f64::from(dir[2])])
+}
+
+/// Precomputed vertex normals (`bytedirs`).
+///
+/// Mechanically generated from `src/network/q2/anorms.ts`.
+pub const BYTEDIRS: [[f32; 3]; NUMVERTEXNORMALS] = [
+    [-0.525731, 0.000000, 0.850651],
+    [-0.442863, 0.238856, 0.864188],
+    [-0.295242, 0.000000, 0.955423],
+    [-0.309017, 0.500000, 0.809017],
+    [-0.162460, 0.262866, 0.951056],
+    [0.000000, 0.000000, 1.000000],
+    [0.000000, 0.850651, 0.525731],
+    [-0.147621, 0.716567, 0.681718],
+    [0.147621, 0.716567, 0.681718],
+    [0.000000, 0.525731, 0.850651],
+    [0.309017, 0.500000, 0.809017],
+    [0.525731, 0.000000, 0.850651],
+    [0.295242, 0.000000, 0.955423],
+    [0.442863, 0.238856, 0.864188],
+    [0.162460, 0.262866, 0.951056],
+    [-0.681718, 0.147621, 0.716567],
+    [-0.809017, 0.309017, 0.500000],
+    [-0.587785, 0.425325, 0.688191],
+    [-0.850651, 0.525731, 0.000000],
+    [-0.864188, 0.442863, 0.238856],
+    [-0.716567, 0.681718, 0.147621],
+    [-0.688191, 0.587785, 0.425325],
+    [-0.500000, 0.809017, 0.309017],
+    [-0.238856, 0.864188, 0.442863],
+    [-0.425325, 0.688191, 0.587785],
+    [-0.716567, 0.681718, -0.147621],
+    [-0.500000, 0.809017, -0.309017],
+    [-0.525731, 0.850651, 0.000000],
+    [0.000000, 0.850651, -0.525731],
+    [-0.238856, 0.864188, -0.442863],
+    [0.000000, 0.955423, -0.295242],
+    [-0.262866, 0.951056, -0.162460],
+    [0.000000, 1.000000, 0.000000],
+    [0.000000, 0.955423, 0.295242],
+    [-0.262866, 0.951056, 0.162460],
+    [0.238856, 0.864188, 0.442863],
+    [0.262866, 0.951056, 0.162460],
+    [0.500000, 0.809017, 0.309017],
+    [0.238856, 0.864188, -0.442863],
+    [0.262866, 0.951056, -0.162460],
+    [0.500000, 0.809017, -0.309017],
+    [0.850651, 0.525731, 0.000000],
+    [0.716567, 0.681718, 0.147621],
+    [0.716567, 0.681718, -0.147621],
+    [0.525731, 0.850651, 0.000000],
+    [0.425325, 0.688191, 0.587785],
+    [0.864188, 0.442863, 0.238856],
+    [0.688191, 0.587785, 0.425325],
+    [0.809017, 0.309017, 0.500000],
+    [0.681718, 0.147621, 0.716567],
+    [0.587785, 0.425325, 0.688191],
+    [0.955423, 0.295242, 0.000000],
+    [1.000000, 0.000000, 0.000000],
+    [0.951056, 0.162460, 0.262866],
+    [0.850651, -0.525731, 0.000000],
+    [0.955423, -0.295242, 0.000000],
+    [0.864188, -0.442863, 0.238856],
+    [0.951056, -0.162460, 0.262866],
+    [0.809017, -0.309017, 0.500000],
+    [0.681718, -0.147621, 0.716567],
+    [0.850651, 0.000000, 0.525731],
+    [0.864188, 0.442863, -0.238856],
+    [0.809017, 0.309017, -0.500000],
+    [0.951056, 0.162460, -0.262866],
+    [0.525731, 0.000000, -0.850651],
+    [0.681718, 0.147621, -0.716567],
+    [0.681718, -0.147621, -0.716567],
+    [0.850651, 0.000000, -0.525731],
+    [0.809017, -0.309017, -0.500000],
+    [0.864188, -0.442863, -0.238856],
+    [0.951056, -0.162460, -0.262866],
+    [0.147621, 0.716567, -0.681718],
+    [0.309017, 0.500000, -0.809017],
+    [0.425325, 0.688191, -0.587785],
+    [0.442863, 0.238856, -0.864188],
+    [0.587785, 0.425325, -0.688191],
+    [0.688191, 0.587785, -0.425325],
+    [-0.147621, 0.716567, -0.681718],
+    [-0.309017, 0.500000, -0.809017],
+    [0.000000, 0.525731, -0.850651],
+    [-0.525731, 0.000000, -0.850651],
+    [-0.442863, 0.238856, -0.864188],
+    [-0.295242, 0.000000, -0.955423],
+    [-0.162460, 0.262866, -0.951056],
+    [0.000000, 0.000000, -1.000000],
+    [0.295242, 0.000000, -0.955423],
+    [0.162460, 0.262866, -0.951056],
+    [-0.442863, -0.238856, -0.864188],
+    [-0.309017, -0.500000, -0.809017],
+    [-0.162460, -0.262866, -0.951056],
+    [0.000000, -0.850651, -0.525731],
+    [-0.147621, -0.716567, -0.681718],
+    [0.147621, -0.716567, -0.681718],
+    [0.000000, -0.525731, -0.850651],
+    [0.309017, -0.500000, -0.809017],
+    [0.442863, -0.238856, -0.864188],
+    [0.162460, -0.262866, -0.951056],
+    [0.238856, -0.864188, -0.442863],
+    [0.500000, -0.809017, -0.309017],
+    [0.425325, -0.688191, -0.587785],
+    [0.716567, -0.681718, -0.147621],
+    [0.688191, -0.587785, -0.425325],
+    [0.587785, -0.425325, -0.688191],
+    [0.000000, -0.955423, -0.295242],
+    [0.000000, -1.000000, 0.000000],
+    [0.262866, -0.951056, -0.162460],
+    [0.000000, -0.850651, 0.525731],
+    [0.000000, -0.955423, 0.295242],
+    [0.238856, -0.864188, 0.442863],
+    [0.262866, -0.951056, 0.162460],
+    [0.500000, -0.809017, 0.309017],
+    [0.716567, -0.681718, 0.147621],
+    [0.525731, -0.850651, 0.000000],
+    [-0.238856, -0.864188, -0.442863],
+    [-0.500000, -0.809017, -0.309017],
+    [-0.262866, -0.951056, -0.162460],
+    [-0.850651, -0.525731, 0.000000],
+    [-0.716567, -0.681718, -0.147621],
+    [-0.716567, -0.681718, 0.147621],
+    [-0.525731, -0.850651, 0.000000],
+    [-0.500000, -0.809017, 0.309017],
+    [-0.238856, -0.864188, 0.442863],
+    [-0.262866, -0.951056, 0.162460],
+    [-0.864188, -0.442863, 0.238856],
+    [-0.809017, -0.309017, 0.500000],
+    [-0.688191, -0.587785, 0.425325],
+    [-0.681718, -0.147621, 0.716567],
+    [-0.442863, -0.238856, 0.864188],
+    [-0.587785, -0.425325, 0.688191],
+    [-0.309017, -0.500000, 0.809017],
+    [-0.147621, -0.716567, 0.681718],
+    [-0.425325, -0.688191, 0.587785],
+    [-0.162460, -0.262866, 0.951056],
+    [0.442863, -0.238856, 0.864188],
+    [0.162460, -0.262866, 0.951056],
+    [0.309017, -0.500000, 0.809017],
+    [0.147621, -0.716567, 0.681718],
+    [0.000000, -0.525731, 0.850651],
+    [0.425325, -0.688191, 0.587785],
+    [0.587785, -0.425325, 0.688191],
+    [0.688191, -0.587785, 0.425325],
+    [-0.955423, 0.295242, 0.000000],
+    [-0.951056, 0.162460, 0.262866],
+    [-1.000000, 0.000000, 0.000000],
+    [-0.850651, 0.000000, 0.525731],
+    [-0.955423, -0.295242, 0.000000],
+    [-0.951056, -0.162460, 0.262866],
+    [-0.864188, 0.442863, -0.238856],
+    [-0.951056, 0.162460, -0.262866],
+    [-0.809017, 0.309017, -0.500000],
+    [-0.864188, -0.442863, -0.238856],
+    [-0.951056, -0.162460, -0.262866],
+    [-0.809017, -0.309017, -0.500000],
+    [-0.681718, 0.147621, -0.716567],
+    [-0.681718, -0.147621, -0.716567],
+    [-0.850651, 0.000000, -0.525731],
+    [-0.688191, 0.587785, -0.425325],
+    [-0.587785, 0.425325, -0.688191],
+    [-0.425325, 0.688191, -0.587785],
+    [-0.425325, -0.688191, -0.587785],
+    [-0.587785, -0.425325, -0.688191],
+    [-0.688191, -0.587785, -0.425325],
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +1298,7 @@ mod tests {
             solid: 31,
             sound: 9,
             event: 7,
+            ..EntityState::default()
         }
     }
 
@@ -593,6 +1314,7 @@ mod tests {
             upmove: 10,
             impulse: 8,
             lightlevel: 200,
+            server_frame: 0,
         };
         let mut writer = MsgWriter::new(protocol::MAX_MSGLEN, false);
         write_delta_usercmd(&mut writer, &from, &cmd).unwrap();
@@ -652,6 +1374,137 @@ mod tests {
         assert_eq!(
             write_delta_entity(&mut writer, &unset, &wide, true, false),
             Err(Q2CodecError::NumberTooLarge(MAX_EDICTS))
+        );
+    }
+
+    fn full_player() -> PlayerState {
+        let mut ps = PlayerState::default();
+        ps.pmove.pm_type = 1;
+        ps.pmove.origin = [800, -400, 120];
+        ps.pmove.velocity = [10, -20, 30];
+        ps.pmove.pm_time = 5;
+        ps.pmove.pm_flags = 3;
+        ps.pmove.gravity = 800;
+        ps.pmove.delta_angles = [100, 200, 300];
+        ps.viewoffset = [0.25, -0.5, 1.0];
+        ps.viewangles = [10.0, 20.0, 30.0];
+        ps.kick_angles = [1.0, 2.0, 3.0];
+        ps.gunindex = 5;
+        ps.gunframe = 7;
+        ps.gunoffset = [0.5, 0.5, 0.5];
+        ps.gunangles = [4.0, 5.0, 6.0];
+        ps.blend = [0.1, 0.2, 0.3, 0.4];
+        ps.fov = 90;
+        ps.rdflags = 1;
+        ps.stats[0] = 100;
+        ps.stats[5] = -3;
+        ps
+    }
+
+    fn decode_hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn playerstate_byte_exact() {
+        let mut writer = MsgWriter::new(4096, false);
+        write_player_state_delta(&mut writer, &PlayerState::default(), &full_player()).unwrap();
+        assert_eq!(
+            writer.bytes(),
+            decode_hex("11ff7f01200370fe78000a00ecff1e00050320036400c8002c0101fe041c07380e551504080c050702020210141819334c665a01210000006400fdff").as_slice()
+        );
+        let mut reader = MsgReader::new(writer.bytes());
+        assert_eq!(reader.byte().unwrap(), protocol::Svc::Playerinfo as u8);
+        let decoded = read_player_state_delta(&mut reader, &PlayerState::default()).unwrap();
+        reader.finish().unwrap();
+        assert_eq!(decoded.pmove.pm_type, 1);
+        assert_eq!(decoded.pmove.origin, [800, -400, 120]);
+        assert_eq!(decoded.pmove.velocity, [10, -20, 30]);
+        assert_eq!(decoded.pmove.pm_time, 5);
+        assert_eq!(decoded.pmove.pm_flags, 3);
+        assert_eq!(decoded.gunindex, 5);
+        assert_eq!(decoded.gunframe, 7);
+        assert_eq!(decoded.gunoffset, [0.5, 0.5, 0.5]);
+        assert_eq!(decoded.fov, 90);
+        assert_eq!(decoded.stats[0], 100);
+        assert_eq!(decoded.stats[5], -3);
+    }
+
+    #[test]
+    fn frame_byte_exact() {
+        let ps = PlayerState {
+            gunframe: 7,
+            fov: 90,
+            ..Default::default()
+        };
+        let mut writer = MsgWriter::new(4096, false);
+        write_frame(
+            &mut writer,
+            &FrameWrite {
+                framenum: 10,
+                lastframe: 9,
+                surpress_count: 1,
+                areabits: &[0x3c],
+                ps_from: None,
+                ps_to: &ps,
+            },
+            |w| {
+                w.write_byte(protocol::Svc::Packetentities as u8)?;
+                w.write_short(0)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            writer.bytes(),
+            decode_hex("140a0000000900000001013c11003800070000000000005a00000000120000").as_slice()
+        );
+        let mut reader = MsgReader::new(writer.bytes());
+        assert_eq!(reader.byte().unwrap(), protocol::Svc::Frame as u8);
+        let mut areas = Vec::new();
+        let header = read_frame_header(&mut reader, &mut areas, true).unwrap();
+        assert_eq!(
+            header,
+            FrameHeader {
+                serverframe: 10,
+                deltaframe: 9,
+                surpress_count: 1,
+                areabytes: 1,
+            }
+        );
+        assert_eq!(areas, vec![0x3c]);
+        let decoded = read_frame_playerstate(&mut reader, &PlayerState::default()).unwrap();
+        assert_eq!(decoded.gunframe, 7);
+        assert_eq!(decoded.fov, 90);
+        read_packet_entities_begin(&mut reader).unwrap();
+        assert_eq!(reader.short().unwrap(), 0);
+        reader.finish().unwrap();
+    }
+
+    #[test]
+    fn dir_and_opcode_errors() {
+        let mut reader = MsgReader::new(&[0]);
+        let dir = read_dir(&mut reader).unwrap();
+        assert_eq!(dir[0] as f32, BYTEDIRS[0][0]);
+        let mut reader = MsgReader::new(&[162]);
+        assert_eq!(read_dir(&mut reader), Err(Q2CodecError::BadDirection(162)));
+        let mut reader = MsgReader::new(&[6]);
+        assert_eq!(
+            read_frame_playerstate(&mut reader, &PlayerState::default()),
+            Err(Q2CodecError::UnexpectedOpcode {
+                expected: protocol::Svc::Playerinfo as u8,
+                found: 6,
+            })
+        );
+        let mut reader = MsgReader::new(&[6]);
+        assert_eq!(
+            read_packet_entities_begin(&mut reader),
+            Err(Q2CodecError::UnexpectedOpcode {
+                expected: protocol::Svc::Packetentities as u8,
+                found: 6,
+            })
         );
     }
 

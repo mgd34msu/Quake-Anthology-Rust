@@ -146,6 +146,13 @@ impl MsgWriter {
         Ok(())
     }
 
+    /// Write a little-endian 64-bit integer (`MSG_WriteLong64`).
+    pub fn write_long64(&mut self, value: i64) -> Result<(), MsgError> {
+        let offset = self.reserve(8)?;
+        self.data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
     /// Write a NUL-terminated byte string (`MSG_WriteString`).
     ///
     /// Bytes pass through unchanged; values above 127 are preserved as
@@ -264,6 +271,12 @@ impl<'a> MsgReader<'a> {
         self.offset
     }
 
+    /// Borrow a slice of the underlying buffer.
+    #[must_use]
+    pub fn data_slice(&self, start: usize, end: usize) -> &[u8] {
+        &self.data[start.min(end)..end.min(self.data.len())]
+    }
+
     /// Bytes remaining after the cursor.
     #[must_use]
     pub fn remaining(&self) -> usize {
@@ -335,6 +348,23 @@ impl<'a> MsgReader<'a> {
     /// Read a binary32 float (`Float` / `MSG_ReadFloat`).
     pub fn float(&mut self) -> Result<f32, MsgError> {
         Ok(f32::from_bits(self.long()? as u32))
+    }
+
+    /// Advance past `len` bytes without reading them.
+    pub fn skip(&mut self, len: usize) -> Result<(), MsgError> {
+        self.scalar(len).map(|_| ())
+    }
+
+    /// Read a little-endian `i64` (`MSG_ReadLong64`).
+    ///
+    /// The donor returns `-1` past the end and lets `checkMessageRead`
+    /// report it later; here the overrun surfaces immediately and
+    /// [`MsgReader::finish`] stays the explicit truncation gate.
+    pub fn long64(&mut self) -> Result<i64, MsgError> {
+        let offset = self.scalar(8)?;
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&self.data[offset..offset + 8]);
+        Ok(i64::from_le_bytes(bytes))
     }
 
     fn text(&mut self, limit: usize, skip_newline: bool, stop_newline: bool) -> String {
