@@ -247,7 +247,6 @@ impl BotNavigation for SourceBotNavigation<'_> {
             on_mover: false,
             mover_down: false,
         };
-        let time = self.time_seconds;
         let origin = self.move_states.get(move_state).map(|state| state.origin);
         let Some(origin) = origin else {
             result.failure = true;
@@ -278,7 +277,7 @@ impl BotNavigation for SourceBotNavigation<'_> {
             _ => None,
         };
         if let Some(state) = self.move_states.get_mut(move_state) {
-            let _ = move_to_goal(state, goal, travel_step, &mover, || 0, &[], time, result);
+            let _ = move_to_goal(state, goal, travel_step, &mover, || 0, &[], result);
         } else {
             result.failure = true;
         }

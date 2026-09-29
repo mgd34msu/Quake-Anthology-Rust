@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use qa_bots::behavior::library::goals::BotGoal;
 use qa_bots::behavior::q3::ai_state::BotUserCommand;
-use qa_bots::behavior::q3::movement_state::{BotMoveResult, BotMoveState, BotMoveStateStore};
+use qa_bots::behavior::q3::movement_state::{BotMoveResult, BotMoveStateStore};
 use qa_bots::behavior::q3::navigation_types::{
     AlternativeGoal, AlternativeRouteQuery, AreaTravelTimeQuery, BotNavigation, BotNavigationArea, PredictRouteQuery,
     PredictedRoute, RouteQuery, RouteResult, RouteStopEvent,

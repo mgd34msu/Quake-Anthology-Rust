@@ -419,9 +419,8 @@ impl<'a> WeaponAi<'a> {
     /// Whether a weapon is owned.
     #[must_use]
     pub fn is_owned(&self, handle: i32, number: i32) -> bool {
-        self.state(handle).map_or(false, |state| {
-            state.owned.get(number as usize).copied().unwrap_or(false)
-        })
+        self.state(handle)
+            .is_some_and(|state| state.owned.get(number as usize).copied().unwrap_or(false))
     }
 
     /// Choose the best weapon for the sensed range (`BotChooseBestWeapon`).

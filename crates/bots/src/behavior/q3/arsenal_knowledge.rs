@@ -50,7 +50,6 @@ impl Weapon {
 /// Personality role for a weapon number.
 #[must_use]
 pub fn personality_role(
-    _weapon: i32,
     melee: bool,
     gravity: f32,
     speed: f32,

@@ -330,8 +330,7 @@ pub fn follow_path(
         .filter(|link| link.link_type == NavLinkType::Elevator)
         .or_else(|| prev_link.filter(|link| link.link_type == NavLinkType::Elevator));
     if let Some(lift) = lift {
-        if lift.traversal.is_some() && input.on_ground {
-            let ride = lift.traversal.expect("traversal checked");
+        if let Some(ride) = lift.traversal.filter(|_| input.on_ground) {
             let below_end = ride.end.z - input.origin.z > 64.0;
             if below_end && bvec_distance_2d(input.origin, ride.start) <= LIFT_BOARD_RADIUS {
                 if state.lift_wait_since < 0.0 || (input.origin.z - state.lift_wait_z).abs() > 8.0 {

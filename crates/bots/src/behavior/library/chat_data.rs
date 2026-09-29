@@ -77,7 +77,7 @@ impl SynonymGroup {
     #[must_use]
     pub fn pick(&self, unit: f32) -> &str {
         let total = self.total_weight();
-        if !(total > 0.0) || self.entries.is_empty() {
+        if total.is_nan() || total <= 0.0 || self.entries.is_empty() {
             return "";
         }
         let mut draw = unit * total;
@@ -87,7 +87,7 @@ impl SynonymGroup {
                 return &entry.text;
             }
         }
-        &self.entries.last().map_or("", |entry| entry.text.as_str())
+        self.entries.last().map_or("", |entry| entry.text.as_str())
     }
 }
 

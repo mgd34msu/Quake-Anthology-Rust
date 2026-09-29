@@ -64,13 +64,13 @@ pub struct FuzzySeparator {
 
 impl FuzzySeparator {
     /// Evaluate this separator chain for an inventory value.
-    fn evaluate(&self, inventory: &dyn WeightInventory, random: &mut dyn BotRandom) -> f32 {
+    fn evaluate(&self, inventory: &dyn WeightInventory, _random: &mut dyn BotRandom) -> f32 {
         let value = inventory.value(self.inventory_index).clamp(0, MAX_INVENTORY_VALUE);
         let mut node = self;
         loop {
             if value < node.threshold {
                 if let Some(child) = node.child.as_deref() {
-                    return child.evaluate(inventory, random);
+                    return child.evaluate(inventory, _random);
                 }
                 return node.weight.clamp(node.min_weight, node.max_weight);
             }
@@ -78,7 +78,7 @@ impl FuzzySeparator {
                 Some(next) => node = next,
                 None => {
                     if let Some(child) = node.child.as_deref() {
-                        return child.evaluate(inventory, random);
+                        return child.evaluate(inventory, _random);
                     }
                     return node.weight.clamp(node.min_weight, node.max_weight);
                 }

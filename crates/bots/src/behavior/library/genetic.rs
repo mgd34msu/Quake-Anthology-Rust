@@ -45,7 +45,7 @@ pub struct GeneticSelection {
 /// Roulette-select one rank by fitness proportion.
 fn select_rank(ranks: &[f32], random: &mut dyn BotRandom) -> Option<usize> {
     let sum: f32 = ranks.iter().map(|rank| rank.max(0.0)).sum();
-    if !(sum > 0.0) {
+    if sum.is_nan() || sum <= 0.0 {
         return None;
     }
     let raw = random.next_int();

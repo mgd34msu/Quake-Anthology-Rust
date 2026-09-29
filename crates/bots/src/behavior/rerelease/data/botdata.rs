@@ -12,9 +12,10 @@ use crate::behavior::rerelease::data::blockparse::{
 };
 
 /// Bot data format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BotDataFormat {
     /// Quake 1.
+    #[default]
     Q1,
     /// Quake 2.
     Q2,
@@ -1047,8 +1048,10 @@ pub fn parse_bot_settings(text: &str) -> (Vec<BotSkillSettings>, Vec<String>) {
     let mut skills = Vec::new();
     for block in &parsed.blocks {
         if block.header.first().is_some_and(|head| head == "skill") {
-            let mut settings = BotSkillSettings::default();
-            settings.skill = block.header.get(1).cloned().unwrap_or_default();
+            let mut settings = BotSkillSettings {
+                skill: block.header.get(1).cloned().unwrap_or_default(),
+                ..BotSkillSettings::default()
+            };
             parse_skill_block(block, &mut settings, &mut errors);
             skills.push(settings);
         } else {

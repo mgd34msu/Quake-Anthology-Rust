@@ -16,7 +16,7 @@ use crate::behavior::q3::ai_combat::{
 };
 use crate::behavior::q3::ai_context::GameAiContext;
 use crate::behavior::q3::ai_definitions::BotLongTermGoal;
-use crate::behavior::q3::ai_navigation::{bot_seek_activate_entity, bot_seek_ltg, bot_seek_nbg};
+use crate::behavior::q3::ai_navigation::{bot_seek_activate_entity, bot_seek_ltg, bot_seek_nbg, SeekFrame};
 use crate::behavior::q3::ai_state::{AiNode, BotState};
 use crate::behavior::q3::game_host::SourceBotGame;
 use crate::behavior::q3::library::BotLibrary;
@@ -105,19 +105,32 @@ pub fn bot_battle_ai(
     }
 }
 
+/// Per-think scalar frame for [`bot_deathmatch_ai`].
+#[derive(Debug, Clone, Copy)]
+pub struct DeathmatchFrame {
+    pub client: i32,
+    pub time: f32,
+    pub intermission: bool,
+    pub alive: bool,
+    pub random_unit: f32,
+}
+
 /// Deathmatch AI: one think for a bot.
 pub fn bot_deathmatch_ai(
     context: &mut GameAiContext,
     library: &mut BotLibrary<'_>,
     game: &mut dyn SourceBotGame,
     navigation: &mut dyn BotNavigation,
-    client: i32,
-    time: f32,
-    intermission: bool,
-    alive: bool,
     random: &mut dyn BotRandom,
-    random_unit: f32,
+    frame: DeathmatchFrame,
 ) -> AiNode {
+    let DeathmatchFrame {
+        client,
+        time,
+        intermission,
+        alive,
+        random_unit,
+    } = frame;
     if intermission {
         if let Some(state) = context.states.get_mut(client) {
             state.ai_node = Some(AiNode::Intermission);
@@ -165,10 +178,12 @@ pub fn bot_deathmatch_ai(
                         library,
                         game,
                         navigation,
-                        client,
+                        SeekFrame {
+                            client,
+                            time,
+                            random_unit,
+                        },
                         &mut result,
-                        time,
-                        random_unit,
                     )
                 }
             } else {
@@ -177,10 +192,12 @@ pub fn bot_deathmatch_ai(
                     library,
                     game,
                     navigation,
-                    client,
+                    SeekFrame {
+                        client,
+                        time,
+                        random_unit,
+                    },
                     &mut result,
-                    time,
-                    random_unit,
                 )
             }
         }

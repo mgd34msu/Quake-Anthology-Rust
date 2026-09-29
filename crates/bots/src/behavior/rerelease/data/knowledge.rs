@@ -273,20 +273,13 @@ pub struct BotKnowledge {
     dangers_by_name: HashMap<String, usize>,
 }
 
-impl Default for BotDataFormat {
-    fn default() -> Self {
-        Self::Q1
-    }
-}
+/// Weapon-number resolver for knowledge builds.
+type WeaponNumber<'a> = Option<&'a dyn Fn(&str) -> Option<i32>>;
 
 impl BotKnowledge {
     /// Build knowledge from source files.
     #[must_use]
-    pub fn new(
-        files: &BotDataFilesT,
-        format: BotDataFormat,
-        weapon_number: Option<&dyn Fn(&str) -> Option<i32>>,
-    ) -> Self {
+    pub fn new(files: &BotDataFilesT, format: BotDataFormat, weapon_number: WeaponNumber<'_>) -> Self {
         let mut knowledge = Self {
             format,
             ..Self::default()

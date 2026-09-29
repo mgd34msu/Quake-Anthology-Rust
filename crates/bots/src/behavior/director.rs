@@ -91,21 +91,35 @@ pub struct SourceBotDirector<'a> {
     phase: RoundPhase,
 }
 
+/// Constructor parameters for [`SourceBotDirector`].
+pub struct SourceBotDirectorParams<'a> {
+    pub host: Box<dyn SourceBotDirectorHost + 'a>,
+    pub game: Box<dyn SourceBotGame + 'a>,
+    pub navigation: Box<dyn BotNavigation + 'a>,
+    pub files: &'a dyn BotSourceFiles,
+    pub entities: String,
+    pub item_config: String,
+    pub gametype: i32,
+    pub max_clients: i32,
+    pub debug: bool,
+}
+
 impl<'a> SourceBotDirector<'a> {
     /// New director. `entities` is the BSP entity lump text.
-    pub fn new(
-        host: Box<dyn SourceBotDirectorHost + 'a>,
-        game: Box<dyn SourceBotGame + 'a>,
-        navigation: Box<dyn BotNavigation + 'a>,
-        files: &'a dyn BotSourceFiles,
-        entities: &str,
-        item_config: &str,
-        gametype: i32,
-        max_clients: i32,
-        debug: bool,
-    ) -> Result<Self, BotsError> {
+    pub fn new(params: SourceBotDirectorParams<'a>) -> Result<Self, BotsError> {
+        let SourceBotDirectorParams {
+            host,
+            game,
+            navigation,
+            files,
+            entities,
+            item_config,
+            gametype,
+            max_clients,
+            debug,
+        } = params;
         let mut bsp_entities = AasBspEntities::new();
-        bsp_entities.load(entities)?;
+        bsp_entities.load(&entities)?;
         let mut catalog = GameBotCatalog::new();
         catalog.load(files);
         Ok(Self {
@@ -118,7 +132,7 @@ impl<'a> SourceBotDirector<'a> {
             files,
             sequences: HashMap::new(),
             random: Xorshift32::new(0x9e37_79b9),
-            item_config: item_config.to_owned(),
+            item_config,
             gametype,
             loaded: false,
             running: false,

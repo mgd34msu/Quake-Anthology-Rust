@@ -142,8 +142,7 @@ fn split_line(line: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
+    for c in line.chars() {
         if c == '"' {
             if in_quotes {
                 tokens.push(std::mem::take(&mut token));

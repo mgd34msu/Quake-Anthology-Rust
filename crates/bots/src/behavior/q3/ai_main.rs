@@ -12,7 +12,7 @@ use crate::behavior::library::actions::BotActionFlag;
 use crate::behavior::library::genetic::BotRandom;
 use crate::behavior::q3::ai_command::ConsoleMessageQueue;
 use crate::behavior::q3::ai_context::GameAiContext;
-use crate::behavior::q3::ai_decision::bot_deathmatch_ai;
+use crate::behavior::q3::ai_decision::{bot_deathmatch_ai, DeathmatchFrame};
 use crate::behavior::q3::ai_input::{
     bot_add_delta_angles, bot_change_view_angles, bot_input_to_user_command, bot_subtract_delta_angles,
 };
@@ -37,6 +37,14 @@ pub struct GameAi<'a> {
     pub commands: Vec<(i32, BotUserCommand)>,
     setup_done: bool,
     map_loaded: bool,
+}
+
+/// Clock inputs for one client think.
+#[derive(Debug, Clone, Copy)]
+struct ThinkClock {
+    milliseconds: i32,
+    time: f32,
+    intermission: bool,
 }
 
 impl<'a> GameAi<'a> {
@@ -197,9 +205,11 @@ impl<'a> GameAi<'a> {
                 game,
                 navigation,
                 client,
-                milliseconds,
-                time,
-                intermission,
+                ThinkClock {
+                    milliseconds,
+                    time,
+                    intermission,
+                },
                 random,
                 random_unit(),
             );
@@ -212,12 +222,15 @@ impl<'a> GameAi<'a> {
         game: &mut dyn SourceBotGame,
         navigation: &mut dyn BotNavigation,
         client: i32,
-        milliseconds: i32,
-        time: f32,
-        intermission: bool,
+        clock: ThinkClock,
         random: &mut dyn BotRandom,
         random_unit: f32,
     ) {
+        let ThinkClock {
+            milliseconds,
+            time,
+            intermission,
+        } = clock;
         // 100ms think cadence with residual carry.
         let residual = self
             .context
@@ -261,12 +274,14 @@ impl<'a> GameAi<'a> {
             &mut self.library,
             game,
             navigation,
-            client,
-            time,
-            intermission,
-            alive,
             random,
-            random_unit,
+            DeathmatchFrame {
+                client,
+                time,
+                intermission,
+                alive,
+                random_unit,
+            },
         );
         self.update_input(client, milliseconds, time);
     }

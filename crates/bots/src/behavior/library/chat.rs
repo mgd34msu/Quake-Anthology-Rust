@@ -420,9 +420,7 @@ fn match_template(template: &super::chat_data::MatchTemplate, unified: &str) -> 
             MatchPiece::Literal(text) => {
                 let lower = text.to_lowercase();
                 let rest = &unified[cursor.min(unified.len())..];
-                let Some(found) = rest.find(&lower) else {
-                    return None;
-                };
+                let found = rest.find(&lower)?;
                 cursor += found + lower.len();
             }
             MatchPiece::Variable(slot) => {

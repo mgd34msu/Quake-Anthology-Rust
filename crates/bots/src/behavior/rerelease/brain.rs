@@ -1013,12 +1013,13 @@ impl BotBrain {
             y: angle_mod(self.state.aim.yaw),
             z: 0.0,
         };
-        if self.state.gate_shoot_at.is_some() && target.is_none() && now - self.state.gate_fired_at >= GATE_SHOT_SECONDS
-        {
-            let gate = self.state.gate_shoot_at.expect("gate checked");
-            if angle_between(self.state.aim.pitch, self.state.aim.yaw, bvec_sub(gate, bot.eye)) <= GATE_AIM_DEGREES {
-                cmd.buttons |= BOT_BUTTON_ATTACK;
-                self.state.gate_fired_at = now;
+        if target.is_none() && now - self.state.gate_fired_at >= GATE_SHOT_SECONDS {
+            if let Some(gate) = self.state.gate_shoot_at {
+                if angle_between(self.state.aim.pitch, self.state.aim.yaw, bvec_sub(gate, bot.eye)) <= GATE_AIM_DEGREES
+                {
+                    cmd.buttons |= BOT_BUTTON_ATTACK;
+                    self.state.gate_fired_at = now;
+                }
             }
         }
         if let Some(target) = target.as_ref() {
@@ -2112,7 +2113,6 @@ impl BotBrain {
                     caps: Some(caps),
                     max_radius: None,
                     start_above: Some(self.config.movement.start_above),
-                    ..NavPlanOptions::default()
                 },
             )
         });

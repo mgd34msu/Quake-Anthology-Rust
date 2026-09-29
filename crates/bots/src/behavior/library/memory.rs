@@ -145,7 +145,9 @@ impl BotMemory {
         self.check_live()?;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
-        let bytes = if clear { vec![0u8; size] } else { vec![0u8; size] };
+        // Rust always zeroes; donor garbage on `clear == false` was never a stable contract.
+        let _ = clear;
+        let bytes = vec![0u8; size];
         self.records.insert(
             id,
             AllocationRecord {

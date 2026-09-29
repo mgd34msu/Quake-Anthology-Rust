@@ -94,7 +94,6 @@ pub fn move_to_goal(
     mover: &MoverObservation,
     travel_weapon: impl Fn() -> i32,
     avoid: &[(Vec3, f32)],
-    time: f32,
     result: &mut BotMoveResult,
 ) -> TravelOutcome {
     *result = BotMoveResult::default();
@@ -151,7 +150,6 @@ pub fn move_to_goal(
         result.move_direction = diverted;
         result.flags |= BotMoveResultFlag::BLOCKEDBYAVOIDSPOT;
     }
-    let _ = time;
     TravelOutcome::Moving
 }
 

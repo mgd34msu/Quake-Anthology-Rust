@@ -148,29 +148,12 @@ pub fn bot_get_long_term_goal(
     time: f32,
     random_unit: f32,
 ) -> Option<BotGoal> {
-    let (ltg_type, team_goal, origin, area_num, travel_flags, gs) = {
+    let (ltg_type, team_goal, area_num, travel_flags, gs) = {
         let state = context.states.get(client)?;
-        (
-            state.ltg_type,
-            state.team_goal,
-            state.origin,
-            state.area_num,
-            state.tfl,
-            state.gs,
-        )
+        (state.ltg_type, state.team_goal, state.area_num, state.tfl, state.gs)
     };
     match BotLongTermGoal::from_i32(ltg_type) {
-        BotLongTermGoal::None => bot_fuzzy_item_goal(
-            library,
-            navigation,
-            client,
-            context,
-            origin,
-            area_num,
-            travel_flags,
-            gs,
-            time,
-        ),
+        BotLongTermGoal::None => bot_fuzzy_item_goal(library, navigation, context, area_num, travel_flags, gs, time),
         BotLongTermGoal::GetFlag => {
             let team = game.entity(client).player.map(|player| player.team).unwrap_or(0);
             let flag = if team == crate::behavior::q3::game_host::Team::RED {
@@ -198,15 +181,12 @@ pub fn bot_get_long_term_goal(
 fn bot_fuzzy_item_goal(
     library: &mut BotLibrary<'_>,
     navigation: &mut dyn BotNavigation,
-    _client: i32,
     context: &mut GameAiContext,
-    origin: Vec3,
     origin_area: i32,
     travel_flags: i32,
     gs: i32,
     time: f32,
 ) -> Option<BotGoal> {
-    let _ = origin;
     let mut best: Option<(f32, BotGoal)> = None;
     for item in library.goals.level_items.clone() {
         if item.timeout > time || library.goals.is_avoided(gs, item.number, time) {
@@ -300,21 +280,32 @@ pub fn bot_get_nearby_goal(
     best.map(|(_, goal)| goal)
 }
 
+/// Per-client scalar frame for [`bot_seek_ltg`].
+#[derive(Debug, Clone, Copy)]
+pub struct SeekFrame {
+    pub client: i32,
+    pub time: f32,
+    pub random_unit: f32,
+}
+
 /// Seek the long-term goal (`BotSeekLTG`).
 pub fn bot_seek_ltg(
     context: &mut GameAiContext,
     library: &mut BotLibrary<'_>,
     game: &mut dyn SourceBotGame,
     navigation: &mut dyn BotNavigation,
-    client: i32,
+    frame: SeekFrame,
     result: &mut BotMoveResult,
-    time: f32,
-    random_unit: f32,
 ) -> AiNode {
+    let SeekFrame {
+        client,
+        time,
+        random_unit,
+    } = frame;
     // Scripted orders override fuzzy goals.
     let scripted = context.states.get(client).and_then(|state| state.scripted_order);
     if let Some(order) = scripted {
-        return bot_seek_scripted_order(context, library, game, navigation, client, order, result, time);
+        return bot_seek_scripted_order(context, game, navigation, client, order, result);
     }
     let Some(goal) = bot_get_long_term_goal(context, library, game, navigation, client, time, random_unit) else {
         return AiNode::SeekNbg;
@@ -324,13 +315,11 @@ pub fn bot_seek_ltg(
 
 fn bot_seek_scripted_order(
     context: &mut GameAiContext,
-    _library: &mut BotLibrary<'_>,
     game: &mut dyn SourceBotGame,
     navigation: &mut dyn BotNavigation,
     client: i32,
     order: crate::behavior::orders::BotOrderState,
     result: &mut BotMoveResult,
-    _time: f32,
 ) -> AiNode {
     use crate::behavior::orders::BotOrder;
     let target = match order.order {

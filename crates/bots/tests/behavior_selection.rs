@@ -16,7 +16,7 @@ use qa_bots::behavior::library::weapons::{WeaponAi, WeaponConfig, WeaponLoadResu
 use qa_bots::behavior::library::weights::{WeightConfig, WeightConfigStore};
 use qa_bots::behavior::q3::ai_definitions::BotInventory;
 use qa_bots::behavior::q3::movement_state::{BotMoveResult, BotMoveStateStore};
-use qa_bots::behavior::q3::travel::controller::{move_to_goal, TravelOutcome, TravelStep};
+use qa_bots::behavior::q3::travel::controller::{move_to_goal, TravelStep};
 use qa_bots::behavior::q3::travel::ground::GroundReachability;
 use qa_bots::behavior::q3::travel::special::MoverObservation;
 use qa_core::math::vec3;
@@ -215,7 +215,6 @@ fn travel_controller_arrives_and_blocks() {
         &mover,
         || 0,
         &[],
-        0.0,
         &mut result,
     );
     assert_eq!(
@@ -239,7 +238,6 @@ fn travel_controller_arrives_and_blocks() {
         &mover,
         || 0,
         &[],
-        0.0,
         &mut result,
     );
     assert_eq!(
@@ -255,7 +253,6 @@ fn travel_controller_arrives_and_blocks() {
         &mover,
         || 0,
         &[],
-        0.0,
         &mut result,
     );
     assert_eq!(
@@ -272,7 +269,6 @@ fn travel_controller_arrives_and_blocks() {
         &mover,
         || 0,
         &[],
-        0.0,
         &mut result,
     );
     assert_eq!(

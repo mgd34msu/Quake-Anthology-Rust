@@ -4,7 +4,7 @@
 mod fixtures;
 
 use fixtures::{behavior_files, FakeHost, FakeNav};
-use qa_bots::behavior::director::SourceBotDirector;
+use qa_bots::behavior::director::{SourceBotDirector, SourceBotDirectorParams};
 use qa_bots::behavior::orders::{
     bot_order_active, bot_order_status, same_bot_order, BotOrder, BotOrderEntity, BotOrderProgress, BotOrderState,
     BOT_GOAL_ACTIVE, BOT_GOAL_NONE, BOT_GOAL_REACHED,
@@ -49,17 +49,17 @@ fn director() -> SourceBotDirector<'static> {
     let mut game = ScriptedBotGame::new(BotProduct::BaseQ3, 0, 4);
     game.set_entity(0, player_entity(vec3(0.0, 0.0, 0.0), 0, "Grunt"));
     game.set_entity(1, player_entity(vec3(512.0, 0.0, 0.0), 0, "Major"));
-    SourceBotDirector::new(
-        Box::new(FakeHost::new()),
-        Box::new(game),
-        Box::new(FakeNav::new()),
+    SourceBotDirector::new(SourceBotDirectorParams {
+        host: Box::new(FakeHost::new()),
+        game: Box::new(game),
+        navigation: Box::new(FakeNav::new()),
         files,
-        ENTITIES,
-        "botfiles/items.c",
-        0,
-        4,
-        false,
-    )
+        entities: ENTITIES.to_string(),
+        item_config: "botfiles/items.c".to_string(),
+        gametype: 0,
+        max_clients: 4,
+        debug: false,
+    })
     .unwrap()
 }
 

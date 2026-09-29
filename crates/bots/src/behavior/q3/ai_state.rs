@@ -209,7 +209,7 @@ impl CommandButtons {
 }
 
 /// Waypoint in a checkpoint/patrol chain.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct BotWaypoint {
     /// In use.
     pub inuse: bool,
@@ -221,18 +221,6 @@ pub struct BotWaypoint {
     pub next: Option<usize>,
     /// Previous index in the heap.
     pub prev: Option<usize>,
-}
-
-impl Default for BotWaypoint {
-    fn default() -> Self {
-        Self {
-            inuse: false,
-            name: String::new(),
-            goal: BotGoal::default(),
-            next: None,
-            prev: None,
-        }
-    }
 }
 
 /// Activate goal: an entity the bot must use or shoot.
@@ -800,9 +788,8 @@ impl BotState {
         self.activate_goal_heap
             .iter()
             .position(|goal| !goal.inuse)
-            .map(|index| {
-                self.activate_goal_heap[index].inuse = true;
-                index
+            .inspect(|index| {
+                self.activate_goal_heap[*index].inuse = true;
             })
     }
 }

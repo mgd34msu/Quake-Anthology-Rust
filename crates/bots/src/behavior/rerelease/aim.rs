@@ -77,26 +77,15 @@ pub fn aim_step(
     let omega = stiffness.max(1.0).sqrt();
     let substeps = ((dt * omega / 0.25).ceil() as usize).clamp(1, 64);
     let h = dt / substeps as f32;
-    let (pitch, pitch_velocity) = advance_axis(
-        state.pitch,
-        state.pitch_velocity,
-        pitch_error,
+    let tuning = AxisTuning {
         stiffness,
         damping,
         max_speed,
         h,
         substeps,
-    );
-    let (yaw, yaw_velocity) = advance_axis(
-        state.yaw,
-        state.yaw_velocity,
-        yaw_error,
-        stiffness,
-        damping,
-        max_speed,
-        h,
-        substeps,
-    );
+    };
+    let (pitch, pitch_velocity) = advance_axis(state.pitch, state.pitch_velocity, pitch_error, tuning);
+    let (yaw, yaw_velocity) = advance_axis(state.yaw, state.yaw_velocity, yaw_error, tuning);
     state.pitch = pitch.clamp(-80.0, 80.0);
     state.pitch_velocity = if state.pitch == pitch { pitch_velocity } else { 0.0 };
     state.yaw = angle_mod(yaw);
@@ -104,16 +93,24 @@ pub fn aim_step(
     (state.pitch, state.yaw)
 }
 
-fn advance_axis(
-    angle: f32,
-    velocity: f32,
-    error_to: f32,
+/// Spring-damper tuning shared by both aim axes.
+#[derive(Debug, Clone, Copy)]
+struct AxisTuning {
     stiffness: f32,
     damping: f32,
     max_speed: f32,
     h: f32,
     substeps: usize,
-) -> (f32, f32) {
+}
+
+fn advance_axis(angle: f32, velocity: f32, error_to: f32, tuning: AxisTuning) -> (f32, f32) {
+    let AxisTuning {
+        stiffness,
+        damping,
+        max_speed,
+        h,
+        substeps,
+    } = tuning;
     let mut a = angle;
     let mut v = velocity;
     for _ in 0..substeps {

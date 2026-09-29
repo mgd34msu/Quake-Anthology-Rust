@@ -480,7 +480,7 @@ fn brain_fights_and_fires() {
     }
     assert_eq!(brain.current_target(), 2);
     assert!(fired, "brain never fired at a visible enemy");
-    assert!(brain.awareness_of(2).is_some_and(|awareness| is_aware(awareness)));
+    assert!(brain.awareness_of(2).is_some_and(is_aware));
 }
 
 #[test]
