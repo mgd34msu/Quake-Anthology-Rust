@@ -7,9 +7,12 @@
 //! (guest checkpoints), `src/world/actors/callbacks.ts` (invocation stack),
 //! `src/compat/qc/entity-host.ts` (edict fields).
 
+pub mod abi;
 pub mod checkpoint;
+pub mod core;
 pub mod error;
 pub mod fields;
+pub mod floating_point;
 pub mod registry;
 pub mod save;
 pub mod traits;
