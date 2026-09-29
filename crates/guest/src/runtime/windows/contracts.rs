@@ -348,6 +348,19 @@ impl WindowsContext {
         Ok(())
     }
 
+    /// Register a lazy unsupported trap with an explicit signature.
+    pub fn register_unsupported(
+        &self,
+        memory: &mut SparseGuestMemory,
+        library: &str,
+        name: &str,
+        signature: GuestCallSignature,
+        invoke: HostCallbackFn,
+    ) -> Result<(), GuestError> {
+        self.register_inner(memory, library, name, signature, invoke, false)?;
+        Ok(())
+    }
+
     /// Register `invoke` with a conventional signature.
     pub fn service(
         &self,

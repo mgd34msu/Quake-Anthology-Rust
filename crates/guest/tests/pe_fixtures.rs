@@ -17,188 +17,7 @@ use qa_guest::pe::exports::resolve_pe_export;
 use qa_guest::pe::image::PeImage;
 use qa_guest::pe::loader::{bind_pe_imports, map_pe_image, MapPeImageOptions};
 
-use common::{map, test_module};
-
-fn w16(bytes: &mut [u8], offset: usize, value: u16) {
-    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-}
-
-fn w32(bytes: &mut [u8], offset: usize, value: u32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-}
-
-fn w64(bytes: &mut [u8], offset: usize, value: u64) {
-    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-}
-
-fn wtext(bytes: &mut [u8], offset: usize, value: &str) {
-    bytes[offset..offset + value.len()].copy_from_slice(value.as_bytes());
-    bytes[offset + value.len()] = 0;
-}
-
-fn raw_of(rva: usize) -> usize {
-    if rva < 0x2000 {
-        rva - 0x1000 + 0x400
-    } else if rva < 0x3000 {
-        rva - 0x2000 + 0x600
-    } else if rva < 0x4000 {
-        rva - 0x3000 + 0xe00
-    } else {
-        rva - 0x4000 + 0x1000
-    }
-}
-
-fn fixture(width: usize) -> Vec<u8> {
-    let mut bytes = vec![0u8; 0x1200];
-    let base: u64 = if width == 4 { 0x1000_0000 } else { 0x1_8000_0000 };
-    let optional = 0x98usize;
-    let optional_size = if width == 4 { 224usize } else { 240usize };
-    let directories = optional + if width == 4 { 96 } else { 112 };
-    let dword = |bytes: &mut Vec<u8>, rva: usize, value: u32| w32(bytes, raw_of(rva), value);
-    let pointer = |bytes: &mut Vec<u8>, rva: usize, value: u64| {
-        if width == 4 {
-            #[allow(clippy::cast_possible_truncation)]
-            w32(bytes, raw_of(rva), value as u32);
-        } else {
-            w64(bytes, raw_of(rva), value);
-        }
-    };
-    let directory = |bytes: &mut Vec<u8>, index: usize, rva: u32, size: u32| {
-        w32(bytes, directories + index * 8, rva);
-        w32(bytes, directories + index * 8 + 4, size);
-    };
-    w16(&mut bytes, 0, 0x5a4d);
-    w32(&mut bytes, 0x3c, 0x80);
-    w32(&mut bytes, 0x80, 0x4550);
-    w16(&mut bytes, 0x84, if width == 4 { 0x14c } else { 0x8664 });
-    w16(&mut bytes, 0x86, 4);
-    w16(&mut bytes, 0x94, optional_size as u16);
-    w16(&mut bytes, 0x96, 0x2002);
-    w16(&mut bytes, optional, if width == 4 { 0x10b } else { 0x20b });
-    w32(&mut bytes, optional + 16, 0x1000);
-    if width == 4 {
-        w32(&mut bytes, optional + 28, base as u32);
-    } else {
-        w64(&mut bytes, optional + 24, base);
-    }
-    w32(&mut bytes, optional + 32, 0x1000);
-    w32(&mut bytes, optional + 36, 0x200);
-    w32(&mut bytes, optional + 56, 0x5000);
-    w32(&mut bytes, optional + 60, 0x400);
-    w32(&mut bytes, directories - 4, 16);
-    let sections = [
-        (".text", 0x1000u32, 0x80u32, 0x400u32, 0x200u32, 0x6000_0020u32),
-        (".rdata", 0x2000, 0x800, 0x600, 0x800, 0x4000_0040),
-        (".data", 0x3000, 0x1000, 0xe00, 0x200, 0xc000_0040),
-        (".reloc", 0x4000, 0x200, 0x1000, 0x200, 0x4200_0040),
-    ];
-    for (index, (name, rva, size, raw_offset, raw_size, flags)) in sections.iter().enumerate() {
-        let at = optional + optional_size + index * 40;
-        wtext(&mut bytes, at, name);
-        w32(&mut bytes, at + 8, *size);
-        w32(&mut bytes, at + 12, *rva);
-        w32(&mut bytes, at + 16, *raw_size);
-        w32(&mut bytes, at + 20, *raw_offset);
-        w32(&mut bytes, at + 36, *flags);
-    }
-    bytes[0x400..0x480].fill(0xc3);
-    directory(&mut bytes, 0, 0x2000, 0x100);
-    dword(&mut bytes, 0x200c, 0x2090);
-    dword(&mut bytes, 0x2010, 8);
-    dword(&mut bytes, 0x2014, 2);
-    dword(&mut bytes, 0x2018, 2);
-    dword(&mut bytes, 0x201c, 0x2040);
-    dword(&mut bytes, 0x2020, 0x2050);
-    dword(&mut bytes, 0x2024, 0x2058);
-    dword(&mut bytes, 0x2040, 0x1010);
-    dword(&mut bytes, 0x2044, 0x2080);
-    dword(&mut bytes, 0x2050, 0x2060);
-    dword(&mut bytes, 0x2054, 0x2070);
-    let r = raw_of(0x2058);
-    w16(&mut bytes, r, 0);
-    let r = raw_of(0x205a);
-    w16(&mut bytes, r, 1);
-    let r = raw_of(0x2060);
-    wtext(&mut bytes, r, "GetGameAPI");
-    let r = raw_of(0x2070);
-    wtext(&mut bytes, r, "Forward");
-    let r = raw_of(0x2080);
-    wtext(&mut bytes, r, "other.#8");
-    let r = raw_of(0x2090);
-    wtext(&mut bytes, r, "authored.dll");
-    directory(&mut bytes, 1, 0x2100, 40);
-    dword(&mut bytes, 0x2100, 0x2140);
-    dword(&mut bytes, 0x210c, 0x2180);
-    dword(&mut bytes, 0x2110, 0x2160);
-    pointer(&mut bytes, 0x2140, 0x21a0);
-    pointer(&mut bytes, 0x2140 + width, (1u64 << (width * 8 - 1)) | 7);
-    pointer(&mut bytes, 0x2160, 0x21a0);
-    pointer(&mut bytes, 0x2160 + width, (1u64 << (width * 8 - 1)) | 7);
-    let r = raw_of(0x2180);
-    wtext(&mut bytes, r, "guest.dll");
-    let r = raw_of(0x21a2);
-    wtext(&mut bytes, r, "Target");
-    directory(&mut bytes, 9, 0x2200, (width * 4 + 8) as u32);
-    pointer(&mut bytes, 0x2200, base + 0x3000);
-    pointer(&mut bytes, 0x2200 + width, base + 0x3004);
-    pointer(&mut bytes, 0x2200 + width * 2, base + 0x3020);
-    pointer(&mut bytes, 0x2200 + width * 3, base + 0x2240);
-    dword(&mut bytes, 0x2200 + width * 4, 12);
-    dword(&mut bytes, 0x2200 + width * 4 + 4, 0x0030_0000);
-    pointer(&mut bytes, 0x2240, base + 0x1020);
-    pointer(&mut bytes, 0x2240 + width, base + 0x1030);
-    let r = raw_of(0x3000);
-    bytes[r..r + 4].copy_from_slice(&[9, 8, 7, 6]);
-    pointer(&mut bytes, 0x3010, base + 0x1050);
-    let config_size = if width == 4 { 92u32 } else { 148u32 };
-    directory(&mut bytes, 10, 0x2280, config_size);
-    dword(&mut bytes, 0x2280, config_size);
-    let cookie = 0x2280 + if width == 4 { 60 } else { 88 };
-    let check = 0x2280 + if width == 4 { 72 } else { 112 };
-    let dispatch = 0x2280 + if width == 4 { 76 } else { 120 };
-    pointer(&mut bytes, cookie, base + 0x3040);
-    pointer(&mut bytes, check, base + 0x3060);
-    pointer(&mut bytes, dispatch, base + 0x3070);
-    dword(&mut bytes, 0x2280 + if width == 4 { 88 } else { 144 }, 0x100);
-    if width == 8 {
-        directory(&mut bytes, 3, 0x2380, 12);
-        dword(&mut bytes, 0x2380, 0x1000);
-        dword(&mut bytes, 0x2384, 0x1040);
-        dword(&mut bytes, 0x2388, 0x23a0);
-        let r = raw_of(0x23a0);
-        bytes[r..r + 8].copy_from_slice(&[1, 4, 1, 0, 4, 0x32, 0, 0]);
-    }
-    let relocation_type = if width == 4 { 3u16 } else { 10u16 };
-    let mut rdata: Vec<u16> = [0x2200, 0x2200 + width, 0x2200 + width * 2, 0x2200 + width * 3, 0x2240, 0x2240 + width, cookie, check, dispatch]
-        .iter()
-        .map(|rva| (relocation_type << 12) | ((rva - 0x2000) as u16))
-        .collect();
-    rdata.push(0);
-    let mut data = vec![(relocation_type << 12) | 0x10];
-    if width == 4 {
-        let r = raw_of(0x3018);
-        w16(&mut bytes, r, 0x1122);
-        let r = raw_of(0x301a);
-        w16(&mut bytes, r, 0x3344);
-        let r = raw_of(0x301c);
-        w16(&mut bytes, r, 0x2000);
-        data.extend([0x1018, 0x201a, 0x401c, 0x8123]);
-    }
-    data.push(0);
-    let mut relocation_bytes = 0usize;
-    for (page, entries) in [(0x2000u32, rdata), (0x3000u32, data)] {
-        let size = 8 + entries.len() * 2;
-        dword(&mut bytes, 0x4000 + relocation_bytes, page);
-        dword(&mut bytes, 0x4004 + relocation_bytes, size as u32);
-        for (index, value) in entries.iter().enumerate() {
-            let r = raw_of(0x4008 + relocation_bytes + index * 2);
-            w16(&mut bytes, r, *value);
-        }
-        relocation_bytes += size;
-    }
-    directory(&mut bytes, 5, 0x4000, relocation_bytes as u32);
-    bytes
-}
+use common::{map, pe_fixture, test_module};
 
 fn at(memory: &SparseGuestMemory, base: GuestAddress, rva: u64) -> GuestAddress {
     memory.offset(base, rva as i64).unwrap()
@@ -211,7 +30,7 @@ fn pointer_value(memory: &mut SparseGuestMemory, address: GuestAddress) -> u64 {
 #[test]
 fn pe_sections_relocations_tls_and_entry_point_share_one_address_space() {
     for width in [4usize, 8usize] {
-        let bytes = fixture(width);
+        let bytes = pe_fixture(width);
         let snapshot = bytes.clone();
         let mut memory = SparseGuestMemory::new(test_module("pe"), width, 0x10000).unwrap();
         let base = if width == 4 { 0x1012_0000 } else { 0x1_a000_0000 };
@@ -289,7 +108,7 @@ fn pe_named_and_ordinal_imports_bind_atomically_and_keep_iat_read_only() {
     for width in [4usize, 8usize] {
         let mut memory = SparseGuestMemory::new(test_module("pe"), width, 0x10000).unwrap();
         let image = map_pe_image(MapPeImageOptions {
-            bytes: &fixture(width),
+            bytes: &pe_fixture(width),
             memory: &mut memory,
             module: None,
             base: None,
@@ -327,7 +146,7 @@ fn pe_named_and_ordinal_imports_bind_atomically_and_keep_iat_read_only() {
 fn pe_named_exports_and_ordinal_forwarders_resolve_and_reject_cycles() {
     let mut memory = SparseGuestMemory::new(test_module("pe"), 4, 0x10000).unwrap();
     let image = map_pe_image(MapPeImageOptions {
-        bytes: &fixture(4),
+        bytes: &pe_fixture(4),
         memory: &mut memory,
         module: None,
         base: None,
@@ -335,7 +154,7 @@ fn pe_named_exports_and_ordinal_forwarders_resolve_and_reject_cycles() {
     })
     .unwrap();
     let other = map_pe_image(MapPeImageOptions {
-        bytes: &fixture(4),
+        bytes: &pe_fixture(4),
         memory: &mut memory,
         module: None,
         base: Some(0x2000_0000),
@@ -348,7 +167,7 @@ fn pe_named_exports_and_ordinal_forwarders_resolve_and_reject_cycles() {
     let direct = GuestSymbolName::Name { name: "GetGameAPI".to_string(), version: None };
     assert_eq!(resolve_pe_export(&image, &direct, &|_, _| None).unwrap().address.offset, 0x1000_1010);
     assert!(format!("{:?}", resolve_pe_export(&image, &requested, &|_, _| None)).contains("unresolved forwarded library"));
-    let mut cyclic = fixture(4);
+    let mut cyclic = pe_fixture(4);
     cyclic[0x680..0x680 + 14].copy_from_slice(b"other.Forward\0");
     let cycle = map_pe_image(MapPeImageOptions {
         bytes: &cyclic,
@@ -362,7 +181,7 @@ fn pe_named_exports_and_ordinal_forwarders_resolve_and_reject_cycles() {
     assert!(format!("{:?}", resolve_pe_export(&cycle, &requested, &|_, _| Some(cycled.clone()))).contains("cyclic export forwarder"));
     let mut foreign_memory = SparseGuestMemory::new(test_module("pe"), 4, 0x10000).unwrap();
     let foreign = map_pe_image(MapPeImageOptions {
-        bytes: &fixture(4),
+        bytes: &pe_fixture(4),
         memory: &mut foreign_memory,
         module: None,
         base: None,
@@ -374,7 +193,7 @@ fn pe_named_exports_and_ordinal_forwarders_resolve_and_reject_cycles() {
 
 #[test]
 fn pe_x64_unwind_chains_and_handler_locations_stay_available() {
-    let mut bytes = fixture(8);
+    let mut bytes = pe_fixture(8);
     bytes[0x9a0..0x9a4].copy_from_slice(&[0x21, 0, 0, 0]);
     bytes[0x9a4..0x9a8].copy_from_slice(&0x1000u32.to_le_bytes());
     bytes[0x9a8..0x9ac].copy_from_slice(&0x1040u32.to_le_bytes());
@@ -429,7 +248,7 @@ fn pe_truncated_overlapping_and_unsupported_input_fails_before_mapping() {
         ("unterminated import descriptors", |bytes| patch(bytes, 0x104, &20u32.to_le_bytes())),
     ];
     for (label, mutate) in cases {
-        let mut bytes = fixture(4);
+        let mut bytes = pe_fixture(4);
         mutate(&mut bytes);
         let mut memory = SparseGuestMemory::new(test_module("pe"), 4, 0x10000).unwrap();
         let sentinel = map(&mut memory, 0x10000, 8, GuestPermissions::Read, Some(vec![17]));
@@ -445,11 +264,11 @@ fn pe_truncated_overlapping_and_unsupported_input_fails_before_mapping() {
         assert_eq!(memory.mappings(), prior, "{label}");
         assert_eq!(memory.copy(sentinel, 1).unwrap(), [17], "{label}");
     }
-    let truncated = fixture(8)[..0x1100].to_vec();
+    let truncated = pe_fixture(8)[..0x1100].to_vec();
     assert!(qa_guest::pe::format::parse_pe(&truncated).is_err());
     let mut memory = SparseGuestMemory::new(test_module("pe"), 4, 0x10000).unwrap();
     let failed = map_pe_image(MapPeImageOptions {
-        bytes: &fixture(8),
+        bytes: &pe_fixture(8),
         memory: &mut memory,
         module: None,
         base: None,

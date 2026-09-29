@@ -206,6 +206,43 @@ impl WindowsGuestRuntime {
         set_last_error(memory, self.teb, value)
     }
 
+    /// Live heap allocation size, if the heap matches.
+    #[must_use]
+    pub fn allocation_size(&self, address: GuestAddress, heap: u64) -> Option<usize> {
+        self.context.allocation_size(address, heap)
+    }
+
+    /// Handle of a loaded library or service-only module, if any.
+    #[must_use]
+    pub fn library_handle(&self, library: &str) -> Option<GuestAddress> {
+        self.context.library_handle(library)
+    }
+
+    /// Add a library reference; null (with `last-error` 126) when unknown.
+    pub fn load_library(
+        &self,
+        memory: &mut SparseGuestMemory,
+        library: &str,
+    ) -> Result<Option<GuestAddress>, GuestError> {
+        self.context.load_library(memory, self.teb, library)
+    }
+
+    /// Release a library reference.
+    pub fn free_library(
+        &self,
+        memory: &mut SparseGuestMemory,
+        handle: GuestAddress,
+    ) -> Result<bool, GuestError> {
+        self.context.free_library(memory, self.teb, handle)
+    }
+
+    /// Resolve a service trap or prepared-image export, following forwarder
+    /// chains.
+    #[must_use]
+    pub fn resolve_address(&self, library: &str, name: &str) -> Option<GuestAddress> {
+        self.context.resolve_address(library, name)
+    }
+
     /// Coverage of requested and reached imports.
     #[must_use]
     pub fn coverage(&self) -> Vec<WindowsImportCoverage> {
@@ -676,7 +713,7 @@ impl GuestImportResolver for WindowsGuestRuntime {
         let invoke_name = name.clone();
         if self
             .context
-            .register(
+            .register_unsupported(
                 memory,
                 &library,
                 &name,
