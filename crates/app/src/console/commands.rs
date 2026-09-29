@@ -8,11 +8,13 @@
 //! from `src/camera/application.ts` (`loadcamera`, `startcamera`,
 //! `stopcamera`, `savecamera`).
 //!
-//! Dispatch is synchronous: text tokenizes through [`qa_core::cmd`],
-//! handlers run inline, and variables resolve through the caller's
-//! [`qa_core::cvar::CvarRegistry`]. The donor's buffered queue (`wait`,
-//! multi-frame inserts), script origins, per-seat routing, and async host
-//! queue stay out; multi-command lines still split on `;`/newline.
+//! [`ConsoleCommands::execute`] dispatches multi-command lines inline:
+//! text tokenizes through [`qa_core::cmd`], handlers run synchronously,
+//! and variables resolve through the caller's
+//! [`qa_core::cvar::CvarRegistry`]. The buffered queue in [`super::queue`]
+//! layers `wait` countdowns, script origins, per-seat routing, and
+//! multi-frame programs above this registry and reaches registered
+//! commands through [`ConsoleCommands::invoke_registered`].
 
 use std::collections::HashMap;
 
@@ -211,6 +213,21 @@ impl ConsoleCommands {
     #[must_use]
     pub fn alias_value(&self, name: &str) -> Option<&str> {
         self.aliases.get(&ascii_fold(name)).map(String::as_str)
+    }
+
+    /// Invoke one registered command without alias expansion, cvar
+    /// fallback, or server forwarding. Returns `None` when no command owns
+    /// the name; the buffered queue owns those layers per the donor
+    /// `CommandBuffer` and calls here for registered console commands.
+    pub fn invoke_registered(
+        &mut self,
+        invocation: &CommandInvocation,
+        services: &mut dyn ConsoleCommandServices,
+    ) -> Option<Result<(), ConsoleError>> {
+        let name = invocation.argv.first()?;
+        let key = ascii_fold(name);
+        let entry = self.entries.get_mut(&key)?;
+        Some((entry.handler)(invocation, services))
     }
 
     /// Execute `;`/newline-separated console text.

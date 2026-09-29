@@ -1,10 +1,10 @@
 //! Mounted-content font wiring contracts.
 //!
 //! Donor provenance: `src/text/mounted.ts`
-//! (`createMountedTextFonts`, `MountedFontReader`). The `qa-content`
-//! mount plan is not ported yet, so this module defines the sync
-//! reader traits plus an in-memory mount for fixtures; behavior
-//! follows the donor (mount-plan reads, retained DAT lifetimes).
+//! (`createMountedTextFonts`, `MountedFontReader`). Reads run through
+//! the sync reader traits below plus an in-memory mount for fixtures;
+//! the `qa-content` mount-plan adapter lands with the content lane.
+//! Behavior follows the donor (mount-plan reads, retained DAT lifetimes).
 
 use std::collections::BTreeMap;
 

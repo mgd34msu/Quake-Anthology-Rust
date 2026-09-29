@@ -1,28 +1,24 @@
-//! Playback timing: clocks, frame scheduling, hold/loop/ended.
+//! Playback timing: clocks, decoder orchestration, hold/loop/ended.
 //!
 //! Donor provenance: `src/media/playback.ts` (`CinematicPlayback`,
-//! `PlaybackClock`), `src/media/cin-playback.ts` (`CinPlayback`),
-//! `src/media/ogv-playback.ts` (`OgvPlayback`), and
-//! `src/media/roq-playback.ts` (`RoqPlayback`).
-//!
-//! Timing model over parsed containers: frame scheduling, drop-frame
-//! detection, epoch rebasing, pause clocks, and hold/loop/ended
-//! transitions match the donor. Frame pixels and audio samples need
-//! codec engines (deferred); container streams emit metadata frames
-//! (`decoded: false`) with real dimensions, indices, and times.
-//! Stills emit decoded frames.
+//! `PlaybackClock`) over the `CinPlayback`, `OgvPlayback` and
+//! `RoqPlayback` decoders.
 
-use super::containers::{
-    cin_sample_range, decode_ogg_movie, parse_cin_header, parse_roq_chunk_header, parse_roq_header, parse_theora_ident,
-    read_cin_chunk, CinChunk, RoqChunkHeader, CIN_FRAME_RATE, ROQ_AUDIO_MONO, ROQ_AUDIO_STEREO, ROQ_CODEBOOK,
-    ROQ_FRAME, ROQ_HANG, ROQ_INFO, ROQ_PACKET, ROQ_QUAD_JPEG,
-};
-use super::source::MemMedia;
+use super::cin_playback::CinPlaybackCheckpoint;
+use super::cin_playback::{CinPlayback, CinPlaybackOptions, CinPlaybackStatus, CinPlaybackUpdate};
+use super::ogv_playback::OgvPlaybackCheckpoint;
+use super::ogv_playback::{OgvPlayback, OgvPlaybackOptions, OgvPlaybackStatus, OgvPlaybackUpdate};
+use super::roq::RoqDecoderScratch;
+use super::roq_playback::RoqPlaybackCheckpoint;
+use super::roq_playback::{RoqPlayback, RoqPlaybackOptions, RoqPlaybackStatus, RoqPlaybackUpdate};
 use super::types::{
-    CinematicEndReason, CinematicFrame, CinematicHost, CinematicStatus, CinematicTarget, CinematicTick,
-    CinematicTimeline, DecoderStatus,
+    CinematicAudio, CinematicAudioSink, CinematicEndReason, CinematicFrame, CinematicHost, CinematicStatus,
+    CinematicTarget, CinematicTick, CinematicTimeline, DecoderStatus,
 };
 use crate::ClientError;
+
+/// A RoQ frame pointer (`RoqFramePointer`, page-flip offset).
+pub use super::roq_playback::RoqFramePointer;
 
 /// A playback clock (`PlaybackClock`, milliseconds).
 #[derive(Debug, Clone, PartialEq)]
@@ -114,196 +110,6 @@ pub enum PlaybackFocus {
     Menu,
 }
 
-/// A stream frame time.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StreamFrameTime {
-    /// Frame index.
-    pub index: usize,
-    /// Source time in milliseconds.
-    pub source_time: f64,
-}
-
-/// A stream timeline (timing only).
-#[derive(Debug, Clone, PartialEq)]
-pub struct StreamTimeline {
-    /// Width.
-    pub width: usize,
-    /// Height.
-    pub height: usize,
-    /// Frame times.
-    pub frames: Vec<StreamFrameTime>,
-    /// Audio format.
-    pub audio: Option<StreamAudioFormat>,
-}
-
-/// Stream audio format (timing only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamAudioFormat {
-    /// Sample rate.
-    pub sample_rate: u32,
-    /// Channels.
-    pub channels: u8,
-}
-
-/// Build a CIN timeline.
-pub fn build_cin_timeline(bytes: &[u8], source: &str) -> Result<StreamTimeline, ClientError> {
-    let mut input = MemMedia::new(bytes.to_vec(), source);
-    let header = parse_cin_header(&mut input)?;
-    let mut frames = Vec::new();
-    let mut offset = 20 + 65536;
-    let mut index = 0usize;
-    // Guard against pathological container loops.
-    for _ in 0..1_000_000 {
-        if offset >= bytes.len() {
-            break;
-        }
-        let (chunk, _) = read_cin_chunk(&mut input, offset)?;
-        match chunk {
-            CinChunk::End => break,
-            CinChunk::Frame {
-                size, offset: payload, ..
-            } => {
-                frames.push(StreamFrameTime {
-                    index,
-                    source_time: index as f64 * 1000.0 / CIN_FRAME_RATE as f64,
-                });
-                let audio = audio_bytes(&header.audio, index, payload + size, bytes.len(), source)?;
-                index += 1;
-                offset = payload + size + audio;
-            }
-        }
-    }
-    Ok(StreamTimeline {
-        width: header.width as usize,
-        height: header.height as usize,
-        frames,
-        audio: header.audio.map(|audio| StreamAudioFormat {
-            sample_rate: audio.sample_rate as u32,
-            channels: audio.channels,
-        }),
-    })
-}
-
-fn audio_bytes(
-    audio: &Option<super::containers::CinAudioFormat>,
-    frame: usize,
-    offset: usize,
-    length: usize,
-    source: &str,
-) -> Result<usize, ClientError> {
-    let Some(audio) = audio else {
-        return Ok(0);
-    };
-    let (from, to) = cin_sample_range(frame as i64, audio.sample_rate as i64)?;
-    let bytes = (to - from) as usize * usize::from(audio.channels) * usize::from(audio.sample_bytes);
-    // Validate the audio range fits; payload decode is deferred.
-    if offset + bytes > length {
-        return Err(ClientError::BadMedia(format!("{source}:{offset}: truncated CIN audio")));
-    }
-    Ok(bytes)
-}
-
-/// Build a RoQ timeline (cinematic lookahead).
-pub fn build_roq_timeline(bytes: &[u8], source: &str) -> Result<StreamTimeline, ClientError> {
-    let (header, mut offset) = parse_roq_header(bytes, source)?;
-    let mut frames = Vec::new();
-    let mut dimensions: Option<(usize, usize)> = None;
-    let mut index = 0usize;
-    let mut invalid_lookahead = false;
-    for _ in 0..1_000_000 {
-        if offset >= bytes.len() {
-            break;
-        }
-        if offset + 8 > bytes.len() {
-            break;
-        }
-        let chunk: RoqChunkHeader = parse_roq_chunk_header(bytes, offset, source)?;
-        if chunk.size > 65536 || chunk.id == super::containers::ROQ_MAGIC {
-            invalid_lookahead = true;
-            break;
-        }
-        let payload = offset + 8;
-        let header_only = matches!(chunk.id, ROQ_PACKET | ROQ_HANG);
-        if !header_only && payload + chunk.size > bytes.len() {
-            break;
-        }
-        match chunk.id {
-            ROQ_INFO => {
-                if payload + 8 > bytes.len() {
-                    return Err(ClientError::BadMedia(format!(
-                        "{source}:{payload}: truncated RoQ payload"
-                    )));
-                }
-                let width = u16::from_le_bytes([bytes[payload], bytes[payload + 1]]);
-                let height = u16::from_le_bytes([bytes[payload + 2], bytes[payload + 3]]);
-                if dimensions.is_none() {
-                    if width == 0
-                        || height == 0
-                        || !width.is_multiple_of(8)
-                        || !height.is_multiple_of(8)
-                        || u32::from(width) * u32::from(height) > 512 * 512
-                    {
-                        return Err(ClientError::BadMedia(format!(
-                            "{source}:{payload}: invalid RoQ quad dimensions"
-                        )));
-                    }
-                    dimensions = Some((width as usize, height as usize));
-                }
-            }
-            ROQ_FRAME => {
-                if dimensions.is_none() {
-                    return Err(ClientError::BadMedia(format!(
-                        "{source}:{payload}: RoQ frame precedes quad info"
-                    )));
-                }
-                frames.push(StreamFrameTime {
-                    index,
-                    source_time: index as f64 * 1000.0 / f64::from(header.frame_rate),
-                });
-                index += 1;
-            }
-            ROQ_CODEBOOK | ROQ_QUAD_JPEG | ROQ_HANG | ROQ_PACKET | ROQ_AUDIO_MONO | ROQ_AUDIO_STEREO => {}
-            _ => break,
-        }
-        offset = payload + if header_only { 0 } else { chunk.size };
-    }
-    let _ = invalid_lookahead;
-    let Some((width, height)) = dimensions else {
-        return Err(ClientError::BadMedia(format!(
-            "{source}:0: RoQ stream has no quad info"
-        )));
-    };
-    Ok(StreamTimeline {
-        width,
-        height,
-        frames,
-        audio: None,
-    })
-}
-
-/// Build an OGV timeline.
-pub fn build_ogv_timeline(bytes: &[u8]) -> Result<StreamTimeline, ClientError> {
-    let movie = decode_ogg_movie(bytes)?;
-    let Some(first) = movie.video.first() else {
-        return Err(ClientError::BadMedia(
-            "Ogg movie has no complete Theora video".to_string(),
-        ));
-    };
-    let ident = parse_theora_ident(first)?;
-    let count = movie.video.len() - 3;
-    Ok(StreamTimeline {
-        width: ident.width,
-        height: ident.height,
-        frames: (0..count)
-            .map(|index| StreamFrameTime {
-                index,
-                source_time: index as f64 * ident.frame_ms,
-            })
-            .collect(),
-        audio: None,
-    })
-}
-
 /// A cinematic source (`CinematicSource`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CinematicSource {
@@ -385,57 +191,29 @@ impl CinematicSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamState {
-    Playing,
-    Held,
-    Ended,
-    Looped,
+enum Movie {
+    Roq(RoqPlayback),
+    Cin(CinPlayback),
+    Ogv(OgvPlayback),
+    Image,
 }
 
-#[derive(Debug, Clone)]
-struct StreamRunner {
-    timeline: StreamTimeline,
-    format: &'static str,
-    epoch: f64,
-    last_time: f64,
-    decoded: i64,
-    next_index: usize,
-    picture: Option<CinematicFrame>,
-    pending: Option<CinematicFrame>,
-    pass: usize,
-    state: StreamState,
-    loop_playback: bool,
-    hold: bool,
-    shader: bool,
+struct HostSink<'a> {
+    host: &'a mut dyn CinematicHost,
+    target: &'a CinematicTarget,
 }
 
-impl StreamRunner {
-    fn frame(&self, index: usize, time: f64) -> Option<CinematicFrame> {
-        let frame = self.timeline.frames.get(index)?;
-        Some(CinematicFrame {
-            rgba: Vec::new(),
-            width: self.timeline.width,
-            height: self.timeline.height,
-            index: frame.index,
-            pass: self.pass,
-            source_time: frame.source_time,
-            time,
-            decoded: false,
-        })
+impl CinematicAudioSink for HostSink<'_> {
+    fn on_audio(&mut self, audio: &CinematicAudio) {
+        self.host.on_audio(audio, self.target);
     }
 
-    /// Read the next frame; `decoded` counts frames read like CIN's
-    /// `nextFrameIndex`.
-    fn read(&mut self) -> Option<CinematicFrame> {
-        let index = self.decoded.max(0) as usize;
-        let frame = self.frame(index, self.epoch + self.source_time(index))?;
-        self.decoded += 1;
-        Some(frame)
+    fn on_audio_reset(&mut self) {
+        self.host.on_audio_reset(self.target);
     }
 
-    fn source_time(&self, index: usize) -> f64 {
-        self.timeline.frames.get(index).map_or(0.0, |frame| frame.source_time)
+    fn developer_print(&mut self, message: &str) {
+        self.host.developer_print(message);
     }
 }
 
@@ -472,37 +250,26 @@ pub struct PlaybackCheckpoint {
     pub completed: bool,
     /// Closed.
     pub closed: bool,
-    /// Stream cursor.
+    /// Decoder checkpoints.
     pub stream: StreamCheckpoint,
 }
 
-/// A stream checkpoint.
-#[derive(Debug, Clone, PartialEq)]
+/// Decoder checkpoints by format.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct StreamCheckpoint {
-    /// Epoch.
-    pub epoch: f64,
-    /// Decoded frames.
-    pub decoded: i64,
-    /// Next index.
-    pub next_index: usize,
-    /// Picture.
-    pub picture: Option<CinematicFrame>,
-    /// Pending.
-    pub pending: Option<CinematicFrame>,
-    /// Pass.
-    pub pass: usize,
-    /// State name.
-    pub state: String,
-    /// Last time.
-    pub last_time: f64,
+    /// RoQ.
+    pub roq: Option<RoqPlaybackCheckpoint>,
+    /// CIN.
+    pub cin: Option<CinPlaybackCheckpoint>,
+    /// OGV.
+    pub ogv: Option<OgvPlaybackCheckpoint>,
 }
 
-/// Cinematic playback (`CinematicPlayback`, timing model).
+/// Cinematic playback (`CinematicPlayback`).
 pub struct CinematicPlayback {
     target: CinematicTarget,
     clock: PlaybackClock,
-    runner: Option<StreamRunner>,
-    still: Option<CinematicFrame>,
+    movie: Movie,
     state: CinematicStatus,
     decoder_status: DecoderStatus,
     picture: Option<CinematicFrame>,
@@ -554,8 +321,7 @@ impl CinematicPlayback {
                 Ok(Self {
                     target,
                     clock,
-                    runner: None,
-                    still: Some(frame.clone()),
+                    movie: Movie::Image,
                     state: CinematicStatus::Held,
                     decoder_status: DecoderStatus::Held,
                     picture: Some(frame),
@@ -571,88 +337,238 @@ impl CinematicPlayback {
                     last_wall: wall_now,
                 })
             }
-            _ => {
-                if matches!(source, CinematicSource::Roq { bytes, .. } if bytes.is_empty()) {
-                    return Err(ClientError::BadMedia(format!("Empty cinematic: {}", source.source())));
+            CinematicSource::Roq { source, bytes } => {
+                if bytes.is_empty() {
+                    return Err(ClientError::BadMedia(format!("Empty cinematic: {source}")));
                 }
-                let timeline = match source {
-                    CinematicSource::Roq { source, bytes } => build_roq_timeline(bytes, source)?,
-                    CinematicSource::Cin { source, bytes } => build_cin_timeline(bytes, source)?,
-                    CinematicSource::Ogv { bytes, .. } => build_ogv_timeline(bytes)?,
-                    CinematicSource::Image { .. } => unreachable!(),
-                };
-                let mut runner = StreamRunner {
-                    timeline,
-                    format,
-                    epoch: wall_now,
-                    last_time: wall_now,
-                    decoded: 0,
-                    next_index: 0,
-                    picture: None,
-                    pending: None,
-                    pass: 0,
-                    state: StreamState::Playing,
-                    loop_playback,
-                    hold,
-                    shader,
-                };
-                let mut state = CinematicStatus::Playing;
-                // Prefetch like the donor constructors: CIN reads one
-                // frame, OGV decodes frame zero, RoQ starts blank.
-                let picture = match format {
-                    "cin" => {
-                        let picture = runner.read();
-                        if picture.is_none() {
-                            state = CinematicStatus::Ended;
-                            runner.state = StreamState::Ended;
-                        } else {
-                            runner.picture.clone_from(&picture);
-                        }
-                        picture
-                    }
-                    "ogv" => {
-                        let picture = runner.frame(0, wall_now);
-                        if picture.is_none() {
-                            state = CinematicStatus::Ended;
-                            runner.state = StreamState::Ended;
-                        } else {
-                            runner.picture.clone_from(&picture);
-                            runner.next_index = 1;
-                        }
-                        picture
-                    }
-                    _ => {
-                        runner.decoded = -1;
-                        None
-                    }
-                };
-                let decoder_status = if state == CinematicStatus::Ended {
-                    DecoderStatus::Ended
-                } else {
-                    DecoderStatus::Playing
-                };
-                Ok(Self {
+                let playback = RoqPlayback::from_bytes(
+                    bytes.clone(),
+                    source,
+                    RoqPlaybackOptions {
+                        loop_playback,
+                        hold,
+                        silent,
+                        shader,
+                        scratch: Some(RoqDecoderScratch::new()),
+                        on_info: None,
+                        on_frame: None,
+                    },
+                    wall_now,
+                )?;
+                Ok(Self::streaming(
                     target,
                     clock,
-                    runner: Some(runner),
-                    still: None,
-                    state,
-                    decoder_status,
-                    picture,
-                    // RoQ starts blank like the donor (no prefetch).
-                    dirty: format != "roq",
-                    frame_revision: 0,
-                    completed: false,
-                    closed: false,
+                    Movie::Roq(playback),
+                    None,
+                    false,
                     source_name,
                     format,
                     loop_playback,
                     hold,
                     silent,
-                    last_wall: wall_now,
-                })
+                    wall_now,
+                ))
+            }
+            CinematicSource::Cin { source, bytes } => {
+                let playback = CinPlayback::from_bytes(
+                    bytes.clone(),
+                    source,
+                    CinPlaybackOptions {
+                        loop_playback,
+                        hold,
+                        silent,
+                    },
+                    wall_now,
+                )?;
+                let picture = playback.current_frame()?;
+                Ok(Self::streaming(
+                    target,
+                    clock,
+                    Movie::Cin(playback),
+                    picture,
+                    true,
+                    source_name,
+                    format,
+                    loop_playback,
+                    hold,
+                    silent,
+                    wall_now,
+                ))
+            }
+            CinematicSource::Ogv { bytes, .. } => {
+                let playback = OgvPlayback::new(
+                    bytes,
+                    OgvPlaybackOptions {
+                        loop_playback,
+                        hold,
+                        silent,
+                    },
+                    wall_now,
+                )?;
+                let picture = playback.current_frame();
+                Ok(Self::streaming(
+                    target,
+                    clock,
+                    Movie::Ogv(playback),
+                    picture,
+                    true,
+                    source_name,
+                    format,
+                    loop_playback,
+                    hold,
+                    silent,
+                    wall_now,
+                ))
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn streaming(
+        target: CinematicTarget,
+        clock: PlaybackClock,
+        movie: Movie,
+        picture: Option<CinematicFrame>,
+        dirty: bool,
+        source_name: String,
+        format: &'static str,
+        loop_playback: bool,
+        hold: bool,
+        silent: bool,
+        wall_now: f64,
+    ) -> Self {
+        Self {
+            target,
+            clock,
+            movie,
+            state: CinematicStatus::Playing,
+            decoder_status: DecoderStatus::Playing,
+            picture,
+            dirty,
+            frame_revision: 0,
+            completed: false,
+            closed: false,
+            source_name,
+            format,
+            loop_playback,
+            hold,
+            silent,
+            last_wall: wall_now,
+        }
+    }
+
+    /// Open playback from a checkpoint.
+    pub fn open_restored(
+        source: &CinematicSource,
+        target: CinematicTarget,
+        wall_now: f64,
+        loop_playback: bool,
+        hold: bool,
+        silent: bool,
+        checkpoint: &PlaybackCheckpoint,
+    ) -> Result<Self, ClientError> {
+        if checkpoint.version != 1 {
+            return Err(ClientError::BadMedia("unsupported cinematic checkpoint".to_string()));
+        }
+        if checkpoint.source != source.source()
+            || checkpoint.format != source.format()
+            || checkpoint.loop_playback != loop_playback
+            || checkpoint.hold != hold
+            || checkpoint.silent != silent
+            || checkpoint.shader != matches!(target, CinematicTarget::Material(_))
+        {
+            return Err(ClientError::BadMedia(
+                "cinematic checkpoint identity differs".to_string(),
+            ));
+        }
+        let clock = PlaybackClock::restore(wall_now, &checkpoint.clock)?;
+        let format = source.format();
+        let source_name = source.source().to_string();
+        let movie = match source {
+            CinematicSource::Image {
+                width, height, rgba, ..
+            } => {
+                if *width == 0 || *height == 0 || rgba.len() != width * height * 4 {
+                    return Err(ClientError::BadMedia("Invalid cinematic still image".to_string()));
+                }
+                Movie::Image
+            }
+            CinematicSource::Roq { source, bytes } => {
+                let mut playback = RoqPlayback::from_bytes(
+                    bytes.clone(),
+                    source,
+                    RoqPlaybackOptions {
+                        loop_playback,
+                        hold,
+                        silent,
+                        shader: matches!(target, CinematicTarget::Material(_)),
+                        scratch: Some(RoqDecoderScratch::new()),
+                        on_info: None,
+                        on_frame: None,
+                    },
+                    wall_now,
+                )?;
+                playback.restore_checkpoint(
+                    checkpoint
+                        .stream
+                        .roq
+                        .as_ref()
+                        .ok_or_else(|| ClientError::BadMedia("missing RoQ checkpoint".to_string()))?,
+                )?;
+                Movie::Roq(playback)
+            }
+            CinematicSource::Cin { source, bytes } => {
+                let mut playback = CinPlayback::from_bytes(
+                    bytes.clone(),
+                    source,
+                    CinPlaybackOptions {
+                        loop_playback,
+                        hold,
+                        silent,
+                    },
+                    wall_now,
+                )?;
+                playback.restore_checkpoint(
+                    checkpoint
+                        .stream
+                        .cin
+                        .as_ref()
+                        .ok_or_else(|| ClientError::BadMedia("missing CIN checkpoint".to_string()))?,
+                )?;
+                Movie::Cin(playback)
+            }
+            CinematicSource::Ogv { bytes, .. } => Movie::Ogv(OgvPlayback::open_restored(
+                bytes,
+                OgvPlaybackOptions {
+                    loop_playback,
+                    hold,
+                    silent,
+                },
+                checkpoint
+                    .stream
+                    .ogv
+                    .as_ref()
+                    .ok_or_else(|| ClientError::BadMedia("missing OGV checkpoint".to_string()))?,
+            )?),
+        };
+        Ok(Self {
+            target,
+            clock,
+            movie,
+            state: checkpoint.state,
+            decoder_status: checkpoint.decoder_status,
+            picture: checkpoint.picture.clone(),
+            dirty: checkpoint.dirty,
+            frame_revision: checkpoint.frame_revision,
+            completed: checkpoint.completed,
+            closed: checkpoint.closed,
+            source_name,
+            format,
+            loop_playback,
+            hold,
+            silent,
+            last_wall: wall_now,
+        })
     }
 
     /// Target.
@@ -726,7 +642,7 @@ impl CinematicPlayback {
         self.tick_with_focus(wall_now, host, PlaybackFocus::Game)
     }
 
-    /// Tick with an explicit focus (superset for direct CIN focus timing).
+    /// Tick with an explicit focus.
     pub fn tick_with_focus(
         &mut self,
         wall_now: f64,
@@ -736,23 +652,72 @@ impl CinematicPlayback {
         self.last_wall = wall_now;
         let mut changed = self.dirty;
         self.dirty = false;
-        if self.state == CinematicStatus::Playing {
-            if let Some(runner) = self.runner.as_mut() {
-                let now = self.clock.sample(wall_now)?;
-                let (status, update) = run_stream(runner, now, focus, host, &self.target)?;
-                self.decoder_status = status;
-                if let Some(frame) = update {
-                    self.picture = frame;
-                    self.frame_revision += 1;
-                    changed = true;
+        if self.state == CinematicStatus::Playing && !matches!(self.movie, Movie::Image) {
+            let now = self.clock.sample(wall_now)?;
+            let mut sink = HostSink {
+                host: &mut *host,
+                target: &self.target,
+            };
+            match &mut self.movie {
+                Movie::Roq(playback) => {
+                    let tick = playback.run(now, &mut sink)?;
+                    self.decoder_status = match tick.status {
+                        RoqPlaybackStatus::Playing => DecoderStatus::Playing,
+                        RoqPlaybackStatus::Held => DecoderStatus::Held,
+                        RoqPlaybackStatus::Ended => DecoderStatus::Ended,
+                        RoqPlaybackStatus::Looped => DecoderStatus::Looped,
+                    };
+                    if let RoqPlaybackUpdate::Frame(frame) = tick.update {
+                        self.picture = Some(CinematicFrame {
+                            rgba: frame.rgba,
+                            width: frame.width,
+                            height: frame.height,
+                            index: frame.index as usize,
+                            pass: frame.pass,
+                            source_time: frame.source_time,
+                            time: frame.time,
+                            decoded: true,
+                        });
+                        self.frame_revision += 1;
+                        changed = true;
+                    }
                 }
-                if status == DecoderStatus::Held {
-                    self.state = CinematicStatus::Held;
-                    self.clock.pause(true, wall_now)?;
-                } else if status == DecoderStatus::Ended {
-                    self.state = CinematicStatus::Ended;
-                    self.finish(CinematicEndReason::Finished, host)?;
+                Movie::Cin(playback) => {
+                    let tick = playback.run(now, focus, &mut sink)?;
+                    self.decoder_status = match tick.status {
+                        CinPlaybackStatus::Playing => DecoderStatus::Playing,
+                        CinPlaybackStatus::Held => DecoderStatus::Held,
+                        CinPlaybackStatus::Ended => DecoderStatus::Ended,
+                        CinPlaybackStatus::Looped => DecoderStatus::Looped,
+                    };
+                    if let CinPlaybackUpdate::Frame(frame) = tick.update {
+                        self.picture = frame;
+                        self.frame_revision += 1;
+                        changed = true;
+                    }
                 }
+                Movie::Ogv(playback) => {
+                    let tick = playback.run(now, &mut sink)?;
+                    self.decoder_status = match tick.status {
+                        OgvPlaybackStatus::Playing => DecoderStatus::Playing,
+                        OgvPlaybackStatus::Held => DecoderStatus::Held,
+                        OgvPlaybackStatus::Ended => DecoderStatus::Ended,
+                        OgvPlaybackStatus::Looped => DecoderStatus::Looped,
+                    };
+                    if let OgvPlaybackUpdate::Frame(frame) = tick.update {
+                        self.picture = frame;
+                        self.frame_revision += 1;
+                        changed = true;
+                    }
+                }
+                Movie::Image => {}
+            }
+            if self.decoder_status == DecoderStatus::Held {
+                self.state = CinematicStatus::Held;
+                self.clock.pause(true, wall_now)?;
+            } else if self.decoder_status == DecoderStatus::Ended {
+                self.state = CinematicStatus::Ended;
+                self.finish(CinematicEndReason::Finished, host)?;
             }
         }
         Ok(CinematicTick {
@@ -802,61 +767,69 @@ impl CinematicPlayback {
         }
         self.completed = true;
         self.clock.pause(true, self.last_wall)?;
+        self.release_input();
         host.on_audio_reset(&self.target);
         host.on_complete(reason, &self.target);
         Ok(())
     }
 
+    fn release_input(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        match &mut self.movie {
+            Movie::Roq(playback) => playback.close_input(),
+            Movie::Cin(playback) => playback.close(),
+            Movie::Ogv(playback) => playback.close(),
+            Movie::Image => {}
+        }
+    }
+
     /// Close.
     pub fn close(&mut self, host: &mut dyn CinematicHost) -> Result<(), ClientError> {
         self.stop(host)?;
-        self.closed = true;
+        self.release_input();
         Ok(())
     }
 
-    /// Current RoQ frame pointer (`currentPointer`, timing metadata).
+    /// Current RoQ frame pointer.
     #[must_use]
     pub fn current_pointer(&self) -> Option<RoqFramePointer> {
-        let runner = self.runner.as_ref()?;
-        if runner.format != "roq" {
-            return None;
+        match &self.movie {
+            Movie::Roq(playback) => playback.current_pointer(),
+            _ => None,
         }
-        let frame = self.picture.as_ref()?;
-        let byte_length = frame.width * frame.height * 4;
-        Some(RoqFramePointer {
-            offset: byte_length * (frame.index & 1),
-            byte_length,
-        })
+    }
+
+    /// Live RoQ scratch and pointer for presentation.
+    #[must_use]
+    pub fn roq_presentation(&self) -> Option<(&RoqDecoderScratch, RoqFramePointer)> {
+        match &self.movie {
+            Movie::Roq(playback) => playback.current_pointer().map(|pointer| (playback.scratch(), pointer)),
+            _ => None,
+        }
     }
 
     /// Capture a checkpoint.
     pub fn capture(&self, wall_now: f64) -> Result<PlaybackCheckpoint, ClientError> {
-        let stream = match &self.runner {
-            Some(runner) => StreamCheckpoint {
-                epoch: runner.epoch,
-                decoded: runner.decoded,
-                next_index: runner.next_index,
-                picture: runner.picture.clone(),
-                pending: runner.pending.clone(),
-                pass: runner.pass,
-                state: match runner.state {
-                    StreamState::Playing => "playing".to_string(),
-                    StreamState::Held => "held".to_string(),
-                    StreamState::Ended => "ended".to_string(),
-                    StreamState::Looped => "looped".to_string(),
-                },
-                last_time: runner.last_time,
+        let stream = match &self.movie {
+            Movie::Roq(playback) => StreamCheckpoint {
+                roq: Some(playback.capture_checkpoint()?),
+                cin: None,
+                ogv: None,
             },
-            None => StreamCheckpoint {
-                epoch: 0.0,
-                decoded: -1,
-                next_index: 0,
-                picture: self.still.clone(),
-                pending: None,
-                pass: 0,
-                state: "held".to_string(),
-                last_time: 0.0,
+            Movie::Cin(playback) => StreamCheckpoint {
+                roq: None,
+                cin: Some(playback.capture_checkpoint()),
+                ogv: None,
             },
+            Movie::Ogv(playback) => StreamCheckpoint {
+                roq: None,
+                cin: None,
+                ogv: Some(playback.capture_checkpoint()?),
+            },
+            Movie::Image => StreamCheckpoint::default(),
         };
         Ok(PlaybackCheckpoint {
             version: 1,
@@ -879,248 +852,85 @@ impl CinematicPlayback {
     }
 }
 
-/// A RoQ frame pointer (`RoqPlaybackFrame["pointer"]`, page-flip offset).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RoqFramePointer {
-    /// Byte offset.
-    pub offset: usize,
-    /// Frame byte length.
-    pub byte_length: usize,
-}
-
-fn run_stream(
-    runner: &mut StreamRunner,
-    now: f64,
-    focus: PlaybackFocus,
-    host: &mut dyn CinematicHost,
-    _target: &CinematicTarget,
-) -> Result<(DecoderStatus, Option<Option<CinematicFrame>>), ClientError> {
-    match runner.format {
-        "cin" => run_cin(runner, now, focus, host),
-        "roq" => run_roq(runner, now),
-        _ => run_ogv(runner, now),
-    }
-}
-
-fn run_cin(
-    runner: &mut StreamRunner,
-    now: f64,
-    focus: PlaybackFocus,
-    host: &mut dyn CinematicHost,
-) -> Result<(DecoderStatus, Option<Option<CinematicFrame>>), ClientError> {
-    if runner.state == StreamState::Ended || runner.state == StreamState::Held {
-        return Ok((stream_status(runner.state), None));
-    }
-    if !now.is_finite() || now < 0.0 || now > f64::from(i32::MAX) {
-        return Err(ClientError::BadMedia(
-            "CIN clock requires nonnegative signed milliseconds".to_string(),
-        ));
-    }
-    let now = now.trunc();
-    let decoded = runner.decoded;
-    if focus != PlaybackFocus::Game {
-        runner.epoch = now - (decoded as f64 * 1000.0 / CIN_FRAME_RATE as f64).trunc();
-        return Ok((stream_status(runner.state), None));
-    }
-    let frame = ((now - runner.epoch) * f64::from(CIN_FRAME_RATE) / 1000.0).trunc() as i64;
-    if frame <= decoded {
-        return Ok((stream_status(runner.state), None));
-    }
-    if frame > decoded + 1 {
-        host.developer_print(&format!("Dropped frame: {frame} > {}\n", decoded + 1));
-        runner.epoch = now - (decoded as f64 * 1000.0 / CIN_FRAME_RATE as f64).trunc();
-    }
-    let previous = runner.picture.clone();
-    runner.picture.clone_from(&runner.pending);
-    runner.pending = runner.read();
-    if runner.pending.is_none() {
-        if runner.hold {
-            if runner.picture.is_none() {
-                runner.picture = previous;
-            }
-            runner.state = StreamState::Held;
-        } else if runner.loop_playback {
-            runner.pass += 1;
-            runner.decoded = 0;
-            runner.epoch = now;
-            runner.pending = None;
-            runner.picture = runner.read();
-            if runner.picture.is_none() {
-                runner.state = StreamState::Ended;
-            } else {
-                runner.state = StreamState::Looped;
-            }
-        } else {
-            runner.picture = None;
-            runner.state = StreamState::Ended;
-        }
-    } else {
-        runner.state = StreamState::Playing;
-    }
-    let status = stream_status(runner.state);
-    Ok((status, Some(runner.picture.clone())))
-}
-
-fn stream_status(state: StreamState) -> DecoderStatus {
-    match state {
-        StreamState::Playing => DecoderStatus::Playing,
-        StreamState::Held => DecoderStatus::Held,
-        StreamState::Ended => DecoderStatus::Ended,
-        StreamState::Looped => DecoderStatus::Looped,
-    }
-}
-
-/// Unsigned 32-bit wrap (`>>> 0`).
-fn uint32(value: f64) -> f64 {
-    value.rem_euclid(4294967296.0)
-}
-
-fn run_roq(
-    runner: &mut StreamRunner,
-    now: f64,
-) -> Result<(DecoderStatus, Option<Option<CinematicFrame>>), ClientError> {
-    if runner.state == StreamState::Held || runner.state == StreamState::Ended {
-        return Ok((stream_status(runner.state), None));
-    }
-    let clock_time = now as f32;
-    if !now.is_finite() || clock_time > 0x7fff_ffff as f32 {
-        return Err(ClientError::BadMedia(
-            "Cinematic clock must fit finite nonnegative signed milliseconds".to_string(),
-        ));
-    }
-    // CIN_RunCinematic uses 30 fps regardless of the RoQ header's rate.
-    let target_frame = |epoch: f64| ((now - epoch) as f32 * 3.0 / 100.0).trunc() as i64;
-    let this_time = clock_time.trunc() as i64;
-    let gap = this_time.wrapping_sub(runner.last_time as i64) as i32;
-    if runner.shader && gap.abs() > 100 {
-        runner.epoch = uint32(runner.epoch + f64::from(gap));
-    }
-    let mut target = target_frame(runner.epoch);
-    let mut dirty: Option<CinematicFrame> = None;
-    while runner.state == StreamState::Playing && target != runner.decoded {
-        runner.decoded += 1;
-        let index = runner.decoded.max(0) as usize;
-        if index >= runner.timeline.frames.len() {
-            if runner.hold {
-                runner.state = StreamState::Held;
-            } else if runner.loop_playback {
-                runner.epoch = now;
-                runner.last_time = now;
-                runner.state = StreamState::Looped;
-                runner.decoded = -1;
-                runner.pass += 1;
-            } else {
-                runner.state = StreamState::Ended;
-            }
-            break;
-        }
-        let frame = runner.frame(index, runner.epoch + runner.decoded as f64 * 1000.0 / 30.0);
-        runner.picture.clone_from(&frame);
-        dirty.clone_from(&frame);
-        target = target_frame(runner.epoch);
-    }
-    runner.last_time = this_time as f64;
-    if runner.state == StreamState::Looped {
-        runner.state = StreamState::Playing;
-    }
-    if runner.state == StreamState::Ended && runner.loop_playback {
-        runner.epoch = now;
-        runner.last_time = now;
-        runner.state = StreamState::Looped;
-        runner.decoded = -1;
-        runner.pass += 1;
-    }
-    let status = stream_status(runner.state);
-    Ok((status, dirty.map(Some)))
-}
-
-fn run_ogv(
-    runner: &mut StreamRunner,
-    now: f64,
-) -> Result<(DecoderStatus, Option<Option<CinematicFrame>>), ClientError> {
-    if runner.state != StreamState::Playing {
-        return Ok((stream_status(runner.state), None));
-    }
-    if !now.is_finite() || now < runner.epoch {
-        return Err(ClientError::BadMedia(
-            "OGV clock must be finite and monotonic".to_string(),
-        ));
-    }
-    let count = runner.timeline.frames.len();
-    if count == 0 {
-        runner.state = StreamState::Ended;
-        return Ok((DecoderStatus::Ended, None));
-    }
-    let frame_ms = runner
-        .timeline
-        .frames
-        .get(1)
-        .map_or_else(|| runner.source_time(0).max(1000.0 / 30.0), |frame| frame.source_time);
-    let frame_ms = if frame_ms > 0.0 { frame_ms } else { 1000.0 / 30.0 };
-    let duration = count as f64 * frame_ms;
-    let mut elapsed = now - runner.epoch;
-    let mut looped = false;
-    if elapsed >= duration {
-        if runner.hold {
-            runner.next_index = count;
-            runner.picture = runner.frame(count - 1, now);
-            runner.state = StreamState::Held;
-            return Ok((DecoderStatus::Held, Some(runner.picture.clone())));
-        }
-        if !runner.loop_playback {
-            runner.state = StreamState::Ended;
-            return Ok((DecoderStatus::Ended, None));
-        }
-        let passes = (elapsed / duration).floor() as usize;
-        runner.pass += passes;
-        runner.epoch += passes as f64 * duration;
-        elapsed = now - runner.epoch;
-        runner.next_index = 0;
-        looped = true;
-    }
-    let target = (count - 1).min((elapsed / frame_ms).floor() as usize);
-    let mut changed = false;
-    while runner.next_index <= target {
-        let index = runner.next_index;
-        runner.picture = runner.frame(index, now);
-        runner.next_index += 1;
-        changed = true;
-    }
-    let status = if looped {
-        runner.state = StreamState::Playing;
-        DecoderStatus::Looped
-    } else {
-        DecoderStatus::Playing
-    };
-    Ok((status, changed.then(|| runner.picture.clone())))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::types::{CinematicAudio, CinematicTarget};
+    use crate::media::types::CinematicAudio;
 
-    struct NullHost;
+    struct Recorder {
+        audio: Vec<CinematicAudio>,
+        resets: usize,
+        pauses: Vec<bool>,
+        completions: Vec<CinematicEndReason>,
+        prints: Vec<String>,
+    }
 
-    impl CinematicHost for NullHost {
-        fn on_audio(&mut self, _audio: &CinematicAudio, _target: &CinematicTarget) {}
-        fn on_audio_reset(&mut self, _target: &CinematicTarget) {}
-        fn on_audio_pause(&mut self, _paused: bool, _target: &CinematicTarget) {}
-        fn on_complete(&mut self, _reason: CinematicEndReason, _target: &CinematicTarget) {}
+    impl CinematicHost for Recorder {
+        fn on_audio(&mut self, audio: &CinematicAudio, _target: &CinematicTarget) {
+            self.audio.push(audio.clone());
+        }
+
+        fn on_audio_reset(&mut self, _target: &CinematicTarget) {
+            self.resets += 1;
+        }
+
+        fn on_audio_pause(&mut self, paused: bool, _target: &CinematicTarget) {
+            self.pauses.push(paused);
+        }
+
+        fn on_complete(&mut self, reason: CinematicEndReason, _target: &CinematicTarget) {
+            self.completions.push(reason);
+        }
+
+        fn developer_print(&mut self, message: &str) {
+            self.prints.push(message.to_string());
+        }
+    }
+
+    fn recorder() -> Recorder {
+        Recorder {
+            audio: Vec::new(),
+            resets: 0,
+            pauses: Vec::new(),
+            completions: Vec::new(),
+            prints: Vec::new(),
+        }
     }
 
     fn cin_bytes(frames: usize) -> Vec<u8> {
-        let mut bytes = vec![0u8; 20 + 65536];
-        bytes[0..4].copy_from_slice(&64i32.to_le_bytes());
-        bytes[4..8].copy_from_slice(&64i32.to_le_bytes());
+        let mut header = vec![0u8; 20];
+        header[..4].copy_from_slice(&4i32.to_le_bytes());
+        header[4..8].copy_from_slice(&4i32.to_le_bytes());
+        let mut bytes = [header, vec![0u8; 65536]].concat();
         for _ in 0..frames {
-            // command 0, size 4, 4 payload bytes.
+            // Command 0, size 4, trivial Huffman payload (count only).
             bytes.extend_from_slice(&0i32.to_le_bytes());
             bytes.extend_from_slice(&4i32.to_le_bytes());
-            bytes.extend_from_slice(&[1, 2, 3, 4]);
+            bytes.extend_from_slice(&16i32.to_le_bytes());
         }
         bytes.extend_from_slice(&2i32.to_le_bytes());
         bytes
+    }
+
+    fn roq_chunk(id: u16, size: usize, flags: u16, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; 8 + payload.len()];
+        out[..2].copy_from_slice(&id.to_le_bytes());
+        out[2..6].copy_from_slice(&(size as u32).to_le_bytes());
+        out[6..8].copy_from_slice(&flags.to_le_bytes());
+        out[8..].copy_from_slice(payload);
+        out
+    }
+
+    fn roq_bytes() -> Vec<u8> {
+        [
+            vec![0x84, 0x10, 0, 0, 0, 0, 30, 0],
+            roq_chunk(0x1021, 4, 0x1234, &[1, 2, 3, 4]),
+            roq_chunk(0x1001, 8, 0, &[8, 0, 8, 0, 0, 0, 0, 0]),
+            roq_chunk(0x1002, 10, 0x0101, &[16, 32, 48, 64, 100, 200, 0, 0, 0, 0]),
+            roq_chunk(0x1011, 3, 0, &[0x00, 0x80, 0x00]),
+            roq_chunk(0x1011, 3, 0, &[0x00, 0x40, 0x88]),
+        ]
+        .concat()
     }
 
     fn target() -> CinematicTarget {
@@ -1133,15 +943,16 @@ mod tests {
             source: "test.cin".to_string(),
             bytes: cin_bytes(4),
         };
-        let mut host = NullHost;
-        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, true).unwrap();
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, false).unwrap();
         assert_eq!(playback.status(), CinematicStatus::Playing);
         assert_eq!(playback.timeline(0.0).unwrap().pass, 0);
-        // Donor prefetch order: unchanged at frame 1, blank on first
-        // advance, then index 1.
-        let tick = playback.tick(142.0, &mut host).unwrap();
+        // Donor prefetch order: the prefetched frame first, a blank
+        // on first advance, then index 1.
+        let tick = playback.tick(0.0, &mut host).unwrap();
         assert!(tick.changed);
         assert_eq!(tick.frame.as_ref().unwrap().index, 0);
+        assert!(tick.frame.as_ref().unwrap().decoded);
         let tick = playback.tick(143.0, &mut host).unwrap();
         assert!(tick.frame.is_none());
         let tick = playback.tick(215.0, &mut host).unwrap();
@@ -1156,6 +967,8 @@ mod tests {
         let tick = playback.tick(10200.0, &mut host).unwrap();
         assert_eq!(tick.status, CinematicStatus::Ended);
         assert!(tick.frame.is_none());
+        assert_eq!(host.completions, vec![CinematicEndReason::Finished]);
+        assert_eq!(host.resets, 1);
     }
 
     #[test]
@@ -1164,8 +977,8 @@ mod tests {
             source: "test.cin".to_string(),
             bytes: cin_bytes(2),
         };
-        let mut host = NullHost;
-        let mut playback = CinematicPlayback::open(&source, target(), 0.0, true, false, true).unwrap();
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, true, false, false).unwrap();
         playback.tick(80.0, &mut host).unwrap();
         let tick = playback.tick(1000.0, &mut host).unwrap();
         assert_eq!(tick.status, CinematicStatus::Playing);
@@ -1177,18 +990,91 @@ mod tests {
     }
 
     #[test]
+    fn cin_empty_ends_on_first_tick() {
+        let source = CinematicSource::Cin {
+            source: "empty.cin".to_string(),
+            bytes: cin_bytes(0),
+        };
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, false).unwrap();
+        assert_eq!(playback.status(), CinematicStatus::Playing);
+        let tick = playback.tick(0.0, &mut host).unwrap();
+        assert_eq!(tick.status, CinematicStatus::Ended);
+    }
+
+    #[test]
+    fn roq_plays_real_frames_and_audio() {
+        let source = CinematicSource::Roq {
+            source: "test.roq".to_string(),
+            bytes: roq_bytes(),
+        };
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, false).unwrap();
+        // RoQ starts blank like the donor (no prefetch).
+        let tick = playback.tick(0.0, &mut host).unwrap();
+        assert!(!tick.changed);
+        assert!(tick.frame.is_none());
+        // Early stereo audio resets the mixer lane once.
+        assert_eq!(host.audio.len(), 1);
+        assert!(host.audio[0].reset_stream);
+        let tick = playback.tick(34.0, &mut host).unwrap();
+        assert!(tick.changed);
+        let frame = tick.frame.as_ref().unwrap();
+        assert_eq!((frame.width, frame.height), (8, 8));
+        assert_eq!(frame.rgba.len(), 256);
+        assert!(frame.decoded);
+        assert!(playback.current_pointer().is_some());
+        assert!(playback.roq_presentation().is_some());
+        let tick = playback.tick(67.0, &mut host).unwrap();
+        assert_eq!(tick.status, CinematicStatus::Ended);
+        assert_eq!(host.completions, vec![CinematicEndReason::Finished]);
+        assert_eq!(host.resets, 2);
+    }
+
+    #[test]
+    fn roq_hold_and_empty() {
+        let source = CinematicSource::Roq {
+            source: "test.roq".to_string(),
+            bytes: roq_bytes(),
+        };
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, true, false).unwrap();
+        playback.tick(0.0, &mut host).unwrap();
+        playback.tick(34.0, &mut host).unwrap();
+        let tick = playback.tick(67.0, &mut host).unwrap();
+        assert_eq!(tick.status, CinematicStatus::Held);
+        let empty = CinematicSource::Roq {
+            source: "empty.roq".to_string(),
+            bytes: Vec::new(),
+        };
+        assert!(CinematicPlayback::open(&empty, target(), 0.0, false, false, false).is_err());
+    }
+
+    #[test]
+    fn ogv_rejects_fake_movie() {
+        let source = CinematicSource::Ogv {
+            source: "fake.ogv".to_string(),
+            bytes: vec![0u8; 64],
+        };
+        assert!(CinematicPlayback::open(&source, target(), 0.0, false, false, false).is_err());
+    }
+
+    #[test]
     fn pause_freezes_time() {
         let source = CinematicSource::Cin {
             source: "test.cin".to_string(),
             bytes: cin_bytes(3),
         };
-        let mut host = NullHost;
-        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, true).unwrap();
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, false).unwrap();
         playback.pause(true, 10.0, &mut host).unwrap();
         assert_eq!(playback.status(), CinematicStatus::Paused);
         assert_eq!(playback.playback_time(1000.0).unwrap(), 10.0);
         playback.pause(false, 1000.0, &mut host).unwrap();
         assert_eq!(playback.playback_time(1010.0).unwrap(), 20.0);
+        assert_eq!(host.pauses, vec![true, false]);
+        playback.skip(&mut host).unwrap();
+        assert_eq!(host.completions, vec![CinematicEndReason::Skipped]);
     }
 
     #[test]
@@ -1199,11 +1085,58 @@ mod tests {
             height: 1,
             rgba: vec![0u8; 8],
         };
-        let mut host = NullHost;
+        let mut host = recorder();
         let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, true).unwrap();
         assert_eq!(playback.status(), CinematicStatus::Held);
         let tick = playback.tick(100.0, &mut host).unwrap();
         assert!(tick.frame.as_ref().unwrap().decoded);
+    }
+
+    #[test]
+    fn checkpoint_round_trip() {
+        let source = CinematicSource::Cin {
+            source: "test.cin".to_string(),
+            bytes: cin_bytes(4),
+        };
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, false).unwrap();
+        playback.tick(0.0, &mut host).unwrap();
+        playback.tick(143.0, &mut host).unwrap();
+        let checkpoint = playback.capture(143.0).unwrap();
+        assert_eq!(checkpoint.version, 1);
+        let mut revived =
+            CinematicPlayback::open_restored(&source, target(), 143.0, false, false, false, &checkpoint).unwrap();
+        let (a, b) = (
+            playback.tick(215.0, &mut host).unwrap(),
+            revived.tick(215.0, &mut host).unwrap(),
+        );
+        assert_eq!(a, b);
+        assert_eq!(a.frame.as_ref().unwrap().index, 1);
+        let mut bad = checkpoint;
+        bad.source = "other.cin".to_string();
+        assert!(CinematicPlayback::open_restored(&source, target(), 143.0, false, false, false, &bad).is_err());
+    }
+
+    #[test]
+    fn focus_rebases_without_advancing() {
+        let source = CinematicSource::Cin {
+            source: "test.cin".to_string(),
+            bytes: cin_bytes(4),
+        };
+        let mut host = recorder();
+        let mut playback = CinematicPlayback::open(&source, target(), 0.0, false, false, false).unwrap();
+        let tick = playback.tick_with_focus(0.0, &mut host, PlaybackFocus::Game).unwrap();
+        assert_eq!(tick.frame.as_ref().unwrap().index, 0);
+        let tick = playback
+            .tick_with_focus(5000.0, &mut host, PlaybackFocus::Console)
+            .unwrap();
+        assert!(!tick.changed);
+        assert_eq!(tick.frame.as_ref().unwrap().index, 0);
+        let tick = playback
+            .tick_with_focus(5000.0, &mut host, PlaybackFocus::Game)
+            .unwrap();
+        assert!(!tick.changed);
+        assert_eq!(tick.frame.as_ref().unwrap().index, 0);
     }
 
     #[test]
@@ -1213,5 +1146,14 @@ mod tests {
         assert_eq!(checkpoint.elapsed, 50.0);
         let restored = PlaybackClock::restore(1000.0, &checkpoint).unwrap();
         assert_eq!(restored.sample(1100.0).unwrap(), 150.0);
+    }
+
+    #[test]
+    fn byte_sources_cover_formats() {
+        let bytes = vec![1, 2, 3];
+        assert!(cinematic_bytes("roq", bytes.clone(), "a").is_some());
+        assert!(cinematic_bytes("cin", bytes.clone(), "a").is_some());
+        assert!(cinematic_bytes("ogv", bytes.clone(), "a").is_some());
+        assert!(cinematic_bytes("png", bytes, "a").is_none());
     }
 }

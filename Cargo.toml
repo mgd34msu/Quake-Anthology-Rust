@@ -10,6 +10,7 @@ members = [
     "crates/client",
     "crates/app",
     "crates/platform",
+    "crates/bots",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ qa-compat = { path = "crates/compat" }
 qa-client = { path = "crates/client" }
 qa-app = { path = "crates/app" }
 qa-platform = { path = "crates/platform" }
+qa-bots = { path = "crates/bots" }
 
 [package]
 name = "qa-muse"

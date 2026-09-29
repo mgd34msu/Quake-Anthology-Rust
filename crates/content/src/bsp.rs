@@ -6,9 +6,14 @@
 //! `src/formats/q1-map/entities.ts`.
 //!
 //! Lump payloads (visibility, lighting, texture levels) are borrowed
-//! from the input; decoded records are owned. BSPX extensions, Quake64
-//! packed lighting, and external `.lit` overrides are out of scope:
-//! Quake64 files are rejected with an explicit error.
+//! from the input; decoded records are owned. Lighting selection follows
+//! `selectLighting` in `src/formats/q1-map/index.ts`: an external `.lit`
+//! file wins over BSPX RGB samples, Quake64 packed samples, and the
+//! monochrome lump (`readQ1Lit`, `BspLighting`). BSPX geometry stays out
+//! of scope, and Quake64 map geometry stays rejected with an explicit
+//! error; only its packed lighting samples are understood.
+
+use std::borrow::Cow;
 
 use qa_core::binary::{BinaryError, BinaryReader};
 
@@ -778,6 +783,125 @@ pub fn parse_q1_entities(text: &str, source: &str) -> Result<Vec<Q1Entity>, Bina
     Ok(entities)
 }
 
+/// RGB lighting source (`BspLighting` source).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightingSource {
+    /// Unpacked Quake64 samples from the lighting lump.
+    Bsp,
+    /// External `.lit` override.
+    Lit,
+    /// BSPX RGB samples.
+    Bspx,
+}
+
+/// Selected map lighting (`BspLighting`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BspLighting<'a> {
+    /// Monochrome samples borrowed from the lighting lump.
+    Luminance8 {
+        /// One byte per sample.
+        samples: &'a [u8],
+    },
+    /// RGB samples with their source.
+    Rgb8 {
+        /// Three bytes per sample.
+        samples: Cow<'a, [u8]>,
+        /// Where the samples came from.
+        source: LightingSource,
+    },
+}
+
+/// Read an external Quake `.lit` file (`readQ1Lit`).
+///
+/// `sample_count` is the lighting sample count the file must match; `None`
+/// (used when the map has no lighting samples) only requires whole RGB
+/// triples.
+pub fn read_q1_lit(data: &[u8], sample_count: Option<usize>, source: &str) -> Result<Vec<u8>, BinaryError> {
+    let mut reader = BinaryReader::new(data, source);
+    reader.expect_magic("QLIT")?;
+    let version = reader.u32()?;
+    if version != 1 {
+        return Err(BinaryError::custom(source, 4, format!("unsupported version {version}")));
+    }
+    if !reader.remaining().is_multiple_of(3) || sample_count.is_some_and(|count| reader.remaining() != count * 3) {
+        return Err(BinaryError::custom(
+            source,
+            8,
+            "RGB sample count differs from BSP lighting",
+        ));
+    }
+    reader.bytes(reader.remaining())
+}
+
+/// Expand Quake64 packed lighting samples to RGB (`selectLighting`).
+fn expand_packed_lighting(packed: &[u8]) -> Vec<u8> {
+    let mut samples = Vec::with_capacity(packed.len() / 2 * 3);
+    for pair in packed.as_chunks::<2>().0 {
+        let first = pair[0];
+        let second = pair[1];
+        samples.push(first & 0xf8);
+        samples.push(((first & 7) << 5) | ((second & 0xc0) >> 5));
+        samples.push((second & 0x3f) << 2);
+    }
+    samples
+}
+
+/// Select map lighting (`selectLighting`).
+///
+/// Priority is `.lit` override, BSPX RGB samples, Quake64 packed samples,
+/// then the monochrome lump. `packed` carries the raw Quake64 lighting
+/// lump; `monochrome` is empty for Quake64 maps.
+pub fn select_lighting<'a>(
+    monochrome: &'a [u8],
+    rgb: Option<&'a [u8]>,
+    lit: Option<&[u8]>,
+    packed: Option<&'a [u8]>,
+) -> Result<BspLighting<'a>, BinaryError> {
+    if packed.is_some_and(|samples| !samples.len().is_multiple_of(2)) {
+        return Err(BinaryError::custom(
+            "Quake64 lighting",
+            0,
+            "incomplete packed RGB sample",
+        ));
+    }
+    let sample_count = packed.map_or(monochrome.len(), |samples| samples.len() / 2);
+    if let Some(lit) = lit {
+        let expected = if sample_count > 0 { Some(sample_count) } else { None };
+        let samples = read_q1_lit(lit, expected, "Quake .lit")?;
+        return Ok(BspLighting::Rgb8 {
+            samples: Cow::Owned(samples),
+            source: LightingSource::Lit,
+        });
+    }
+    if let Some(rgb) = rgb {
+        if !rgb.len().is_multiple_of(3) || (sample_count > 0 && rgb.len() != sample_count * 3) {
+            return Err(BinaryError::custom(
+                "BSPX RGBLIGHTING",
+                0,
+                "RGB sample count differs from BSP lighting",
+            ));
+        }
+        return Ok(BspLighting::Rgb8 {
+            samples: Cow::Borrowed(rgb),
+            source: LightingSource::Bspx,
+        });
+    }
+    if let Some(packed) = packed {
+        return Ok(BspLighting::Rgb8 {
+            samples: Cow::Owned(expand_packed_lighting(packed)),
+            source: LightingSource::Bsp,
+        });
+    }
+    Ok(BspLighting::Luminance8 { samples: monochrome })
+}
+
+impl<'a> Q1Map<'a> {
+    /// Select this map's lighting, applying an external `.lit` override.
+    pub fn selected_lighting(&self, lit: Option<&[u8]>) -> Result<BspLighting<'a>, BinaryError> {
+        select_lighting(self.lighting, None, lit, None)
+    }
+}
+
 /// Look up an entity property, last write wins (`q1EntityValue`).
 #[must_use]
 pub fn q1_entity_value<'a>(entity: &'a Q1Entity, key: &str) -> Option<&'a str> {
@@ -1170,5 +1294,88 @@ mod tests {
         let faces_offset = 124 + 30 + 20 + 24 + 40;
         bad_face[faces_offset] = 9;
         assert!(read_q1_bsp(&bad_face, "<test>").is_err());
+    }
+
+    fn lit_bytes(samples: &[u8]) -> Vec<u8> {
+        let mut bytes = b"QLIT".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(samples);
+        bytes
+    }
+
+    #[test]
+    fn lit_round_trip() {
+        let samples = [10, 20, 30, 40, 50, 60];
+        assert_eq!(read_q1_lit(&lit_bytes(&samples), Some(2), "<test>").unwrap(), samples);
+        // Empty maps skip the sample-count check but still require triples.
+        assert_eq!(read_q1_lit(&lit_bytes(&samples), None, "<test>").unwrap(), samples);
+        assert!(read_q1_lit(&lit_bytes(&samples), Some(3), "<test>").is_err());
+        assert!(read_q1_lit(&lit_bytes(&[1, 2]), Some(0), "<test>").is_err());
+        assert!(read_q1_lit(b"XXXX\x01\x00\x00\x00", Some(0), "<test>").is_err());
+        let mut bad_version = lit_bytes(&samples);
+        bad_version[4] = 2;
+        let error = read_q1_lit(&bad_version, Some(2), "<test>").unwrap_err();
+        assert_eq!(error.message, "unsupported version 2");
+        assert_eq!(error.offset, 4);
+    }
+
+    #[test]
+    fn lighting_selection_prefers_lit_over_rgb_over_packed_over_mono() {
+        let mono = [7u8, 8];
+        let rgb = [1, 2, 3, 4, 5, 6];
+        let packed = [0b1111_1001u8, 0b0110_0100u8, 0x00, 0x00];
+        let lit = lit_bytes(&[9, 9, 9, 8, 8, 8]);
+        // Packed expansion: 0xf9 & f8 = f8; ((1) << 5) | (0x40 >> 5) = 34; (0x24) << 2 = 0x90.
+        let expanded = [0xf8u8, 34, 0x90, 0, 0, 0];
+        assert!(matches!(
+            select_lighting(&mono, Some(&rgb), Some(&lit), Some(&packed)).unwrap(),
+            BspLighting::Rgb8 {
+                source: LightingSource::Lit,
+                ..
+            }
+        ));
+        match select_lighting(&mono, Some(&rgb), None, Some(&packed)).unwrap() {
+            BspLighting::Rgb8 { samples, source } => {
+                assert_eq!(source, LightingSource::Bspx);
+                assert_eq!(samples.as_ref(), &rgb);
+            }
+            other => panic!("expected bspx rgb, got {other:?}"),
+        }
+        match select_lighting(&[], None, None, Some(&packed)).unwrap() {
+            BspLighting::Rgb8 { samples, source } => {
+                assert_eq!(source, LightingSource::Bsp);
+                assert_eq!(samples.as_ref(), &expanded);
+            }
+            other => panic!("expected packed rgb, got {other:?}"),
+        }
+        match select_lighting(&mono, None, None, None).unwrap() {
+            BspLighting::Luminance8 { samples } => assert_eq!(samples, &mono),
+            other => panic!("expected monochrome, got {other:?}"),
+        }
+        // A .lit override must still match the packed sample count.
+        assert!(select_lighting(&[], None, Some(&lit_bytes(&[1, 2, 3])), Some(&packed)).is_err());
+        // Odd packed input and mismatched RGB fail like the donor.
+        assert!(select_lighting(&mono, None, None, Some(&[1, 2, 3])).is_err());
+        assert!(select_lighting(&mono, Some(&[1, 2, 3, 4]), None, None).is_err());
+        assert!(select_lighting(&mono, Some(&[1, 2, 3]), None, None).is_err());
+    }
+
+    #[test]
+    fn map_applies_lit_override() {
+        let bytes = fixture();
+        let map = read_q1_bsp(&bytes, "<test>").unwrap();
+        assert!(matches!(
+            map.selected_lighting(None).unwrap(),
+            BspLighting::Luminance8 { .. }
+        ));
+        // The empty fixture lighting skips the count check.
+        let lit = lit_bytes(&[1, 2, 3]);
+        match map.selected_lighting(Some(&lit)).unwrap() {
+            BspLighting::Rgb8 { samples, source } => {
+                assert_eq!(source, LightingSource::Lit);
+                assert_eq!(samples.as_ref(), &[1, 2, 3]);
+            }
+            other => panic!("expected lit rgb, got {other:?}"),
+        }
     }
 }

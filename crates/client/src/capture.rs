@@ -5,11 +5,15 @@
 //! levelshot downsampling (`R_LevelShot`: a 512x384 grid averaged twelve
 //! samples into each 128x128 texel), screenshot filename sequencing
 //! (`shot0000`–`shot9999`), and path policy. The TGA/PNG/JPEG encoders
-//! live in the donor's `src/formats/images/*` (images are deferred in
-//! `qa-content`), so encoding arrives as injected callbacks; file
-//! sequencing and the levelshot sampler are fully owned here.
+//! live in the donor's `src/formats/images/*`, ported as the
+//! `qa-content` image codecs; encoding arrives as injected callbacks so
+//! tests and embedders can override it, with [`encode_tga_image`],
+//! [`encode_png_image`], and [`encode_jpeg_image`] as the real defaults;
+//! file sequencing and the levelshot sampler are fully owned here.
 
 use std::path::{Component, Path, PathBuf};
+
+use qa_content::images::{encode_jpeg, encode_png, encode_tga, ImageLevel, JpegImage};
 
 use crate::ClientError;
 
@@ -70,7 +74,45 @@ pub type StillEncoder = dyn Fn(&RgbaImage) -> Result<Vec<u8>, ClientError>;
 /// JPEG encoder callback (quality `0..=100`).
 pub type JpegEncoder = dyn Fn(&RgbaImage, u8) -> Result<Vec<u8>, ClientError>;
 
-/// Image encoders injected until `qa-content` ports the image formats.
+/// Default screenshot encoders over the `qa-content` image codecs.
+///
+/// These match [`StillEncoder`]/[`JpegEncoder`], so callers that want the
+/// real codecs write `ScreenshotEncoders { tga: &encode_tga_image, .. }`.
+pub fn encode_tga_image(image: &RgbaImage) -> Result<Vec<u8>, ClientError> {
+    check_frame(image)?;
+    if image.width > 65535 || image.height > 65535 {
+        return Err(ClientError::BadCapture("TGA frame exceeds 65535 pixels".to_string()));
+    }
+    Ok(encode_tga(&ImageLevel {
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels.clone(),
+    }))
+}
+
+/// PNG encoder over the `qa-content` image codecs.
+pub fn encode_png_image(image: &RgbaImage) -> Result<Vec<u8>, ClientError> {
+    check_frame(image)?;
+    encode_png(image.width, image.height, &image.pixels).map_err(|error| ClientError::BadCapture(error.to_string()))
+}
+
+/// JPEG encoder over the `qa-content` image codecs.
+pub fn encode_jpeg_image(image: &RgbaImage, quality: u8) -> Result<Vec<u8>, ClientError> {
+    check_frame(image)?;
+    if image.width > 65500 || image.height > 65500 {
+        return Err(ClientError::BadCapture("JPEG frame exceeds 65500 pixels".to_string()));
+    }
+    Ok(encode_jpeg(
+        &JpegImage {
+            width: image.width,
+            height: image.height,
+            pixels: image.pixels.clone(),
+        },
+        quality,
+    ))
+}
+
+/// Image encoders (injectable; the real codecs are the defaults above).
 pub struct ScreenshotEncoders<'a> {
     /// TGA encoder.
     pub tga: &'a StillEncoder,
@@ -78,6 +120,18 @@ pub struct ScreenshotEncoders<'a> {
     pub png: &'a StillEncoder,
     /// JPEG encoder.
     pub jpg: &'a JpegEncoder,
+}
+
+/// Default encoder triple: TGA, PNG, JPEG.
+pub type DefaultEncoders = (
+    fn(&RgbaImage) -> Result<Vec<u8>, ClientError>,
+    fn(&RgbaImage) -> Result<Vec<u8>, ClientError>,
+    fn(&RgbaImage, u8) -> Result<Vec<u8>, ClientError>,
+);
+
+/// Default encoders bound to the real `qa-content` image codecs.
+pub fn default_encoders() -> DefaultEncoders {
+    (encode_tga_image, encode_png_image, encode_jpeg_image)
 }
 
 /// Encode a screenshot (donor `encodeScreenshot`).
@@ -386,5 +440,33 @@ mod tests {
         assert_eq!((level.width, level.height), (128, 128));
         assert!(capture_path(&root, "../escape").is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_encoders_emit_real_codecs() {
+        let image = gradient(8, 8);
+        let (tga, png, jpg) = default_encoders();
+        let tga_bytes = tga(&image).unwrap();
+        let back = qa_content::images::decode_tga(&tga_bytes, "<test>").unwrap();
+        assert_eq!((back.width, back.height), (8, 8));
+        assert_eq!(back.pixels, image.pixels);
+        let png_bytes = png(&image).unwrap();
+        assert_eq!(&png_bytes[..8], &[137, 80, 78, 71, 13, 10, 26, 10]);
+        let back = qa_content::images::decode_png(&png_bytes, "<test>").unwrap();
+        assert_eq!((back.width, back.height), (8, 8));
+        assert_eq!(back.pixels, image.pixels);
+        let jpg_bytes = jpg(&image, 90).unwrap();
+        assert_eq!(&jpg_bytes[..2], &[0xff, 0xd8]);
+        assert_eq!(&jpg_bytes[jpg_bytes.len() - 2..], &[0xff, 0xd9]);
+        let back = qa_content::images::decode_jpeg(&jpg_bytes, "<test>").unwrap();
+        assert_eq!((back.width, back.height), (8, 8));
+        let bad = RgbaImage {
+            width: 0,
+            height: 4,
+            pixels: Vec::new(),
+        };
+        assert!(tga(&bad).is_err());
+        assert!(png(&bad).is_err());
+        assert!(jpg(&bad, 90).is_err());
     }
 }

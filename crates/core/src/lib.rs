@@ -3,6 +3,7 @@
 
 pub mod binary;
 pub mod cmd;
+pub mod cmd_buffer;
 pub mod cvar;
 pub mod identity;
 pub mod math;

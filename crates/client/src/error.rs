@@ -148,7 +148,4 @@ pub enum ClientError {
     /// A cinematic container or playback step failed (carries the donor message).
     #[error("{0}")]
     BadMedia(String),
-    /// An engine is deferred (needs an external codec/font engine).
-    #[error("deferred engine: {0}")]
-    DeferredEngine(&'static str),
 }

@@ -42,6 +42,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qa-bots"
+version = "0.1.0"
+dependencies = [
+ "qa-core",
+ "qa-world",
+ "thiserror",
+]
+
+[[package]]
 name = "qa-client"
 version = "0.1.0"
 dependencies = [

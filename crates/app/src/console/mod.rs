@@ -8,10 +8,11 @@
 //! Overlay drawing renders through `qa-client` text types read-only, and
 //! the LLM commands route through [`crate::llm`].
 //!
-//! Dispatch here is synchronous and single-seat: the donor's buffered
-//! `CommandBuffer` (`wait`, multi-frame inserts, script callbacks) and its
-//! async host queue stay out. Builtin command names, log behavior, history
-//! depth, and discovery output match the donor.
+//! Dispatch runs two ways: [`commands::ConsoleCommands::execute`] handles
+//! single lines inline, and the buffered queue in [`queue`] drains
+//! multi-frame programs (`wait`, multi-frame inserts, script callbacks)
+//! through the synchronous host driver. Builtin command names, log
+//! behavior, history depth, and discovery output match the donor.
 
 pub mod buffer;
 pub mod commands;
@@ -23,6 +24,7 @@ pub mod llm;
 pub mod llm_batch;
 pub mod log;
 pub mod metrics;
+pub mod queue;
 pub mod session;
 pub mod source_field;
 
