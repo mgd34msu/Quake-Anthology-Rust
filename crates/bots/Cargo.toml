@@ -1,0 +1,10 @@
+[package]
+name = "qa-bots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+qa-core = { workspace = true }
+qa-world = { workspace = true }
