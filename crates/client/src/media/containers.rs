@@ -5,9 +5,9 @@
 //! framing, end policies, INFO validation), and `src/media/ogg.ts`
 //! (RFC 3533 framing, Theora/Vorbis split).
 //!
-//! Container parsing only. Codec engines are deferred: CIN Huffman
-//! bitstream decode, RoQ VQ/codebook/audio decode, Theora video and
-//! Vorbis audio decode (need codec engines).
+//! Container parsing shared by the codec engines: CIN Huffman tables
+//! live in [`super::cin`], RoQ chunk dispatch in [`super::roq_stream`],
+//! and Theora/Vorbis decode in [`super::theora`]/[`super::vorbis`].
 
 use qa_core::binary::{BinaryError, BinaryReader};
 
@@ -288,7 +288,8 @@ pub enum RoqChunk {
     End,
 }
 
-/// Walk RoQ chunks (`RoqDecoder::nextChunk` framing, decode deferred).
+/// Walk RoQ chunks (`RoqDecoder::nextChunk` framing; pixel and audio
+/// decode live in [`super::roq`]).
 pub fn walk_roq_chunks(data: &[u8], source: &str, policy: RoqEndPolicy) -> Result<Vec<RoqChunk>, ClientError> {
     let (_, mut offset) = parse_roq_header(data, source)?;
     let mut chunks = Vec::new();
@@ -730,5 +731,49 @@ mod tests {
     fn ogg_rejects_garbage() {
         assert!(decode_ogg_movie(&[0u8; 64]).is_err());
         assert!(decode_ogg_movie(&[]).is_err());
+    }
+
+    fn ogg_page(serial: u32, sequence: u32, flags: u8, granule: i64, packets: &[&[u8]]) -> Vec<u8> {
+        let mut lacing = Vec::new();
+        let mut payload = Vec::new();
+        for packet in packets {
+            lacing.push(packet.len() as u8);
+            payload.extend_from_slice(packet);
+        }
+        let mut page = vec![0u8; 27 + lacing.len() + payload.len()];
+        page[..4].copy_from_slice(b"OggS");
+        page[4] = 0;
+        page[5] = flags;
+        page[6..14].copy_from_slice(&granule.to_le_bytes());
+        page[14..18].copy_from_slice(&serial.to_le_bytes());
+        page[18..22].copy_from_slice(&sequence.to_le_bytes());
+        page[26] = lacing.len() as u8;
+        page[27..27 + lacing.len()].copy_from_slice(&lacing);
+        page[27 + lacing.len()..].copy_from_slice(&payload);
+        let table = checksum_table();
+        let mut crc = 0u32;
+        for (index, byte) in page.iter().enumerate() {
+            let byte = if (22..26).contains(&index) { 0 } else { *byte };
+            crc = (crc << 8) ^ table[((crc >> 24) ^ u32::from(byte)) as usize & 255];
+        }
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        page
+    }
+
+    #[test]
+    fn ogg_round_trips_valid_crc_pages() {
+        let head = [vec![0x80], b"theora".to_vec()].concat();
+        let bytes = ogg_page(7, 0, 0x06, 12, &[&head, &[1, 2, 3], &[4, 5], &[6]]);
+        let movie = decode_ogg_movie(&bytes).unwrap();
+        assert_eq!(movie.video.len(), 4);
+        assert!(movie.video[0].first);
+        assert!(movie.video[3].last);
+        assert_eq!(movie.video[3].granule, 12);
+        assert!(movie.audio.is_none());
+        // A flipped payload byte fails the checksum.
+        let mut bad = bytes.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0xff;
+        assert!(decode_ogg_movie(&bad).is_err());
     }
 }

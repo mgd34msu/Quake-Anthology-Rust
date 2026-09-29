@@ -1,8 +1,8 @@
 //! Content foundation: resource paths, VFS-adjacent helpers, and Quake
 //! format decoders (BSP maps, MDL/MD2/SPR models, WAD archives).
 //!
-//! Donor provenance: `src/content` plus `src/formats` (except
-//! `src/formats/images`, which stays deferred).
+//! Donor provenance: `src/content` plus `src/formats` (including
+//! `src/formats/images`, ported to [`images`]).
 //!
 //! Quake64 (Q1 magic `0x51363420`) classifies as [`BspKind::Q1`] but stays
 //! rejected by the Q1 reader: packed lighting and BSPX extensions are out
@@ -14,6 +14,7 @@ pub mod bsp;
 pub mod bsp2;
 pub mod bsp3;
 pub mod common;
+pub mod images;
 pub mod lod;
 pub mod md2;
 pub mod md3;

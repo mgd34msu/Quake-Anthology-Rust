@@ -63,13 +63,13 @@ Selected options (full list in `--help`): `--game`, `--map-game`, `--map`,
 | Crate | Donor scope | Contents |
 | --- | --- | --- |
 | `qa-core` | `core`, contracts (math/numeric/time/identity/common) | fround-ordered `Vec3` math, numeric profiles, `Qrand`, source clocks, generational identity, command buffer, cvar registry |
-| `qa-content` | `content`, `formats` | resource paths, VFS/mounts, Q1–Q3 BSP/MDL/MD2/SPR/WAD + MD3/MD4/MD5 decoders; Q1-Quake64 support, image codecs, and game content land with the formats/content lanes |
+| `qa-content` | `content`, `formats` | resource paths, VFS/mounts, Q1–Q3 BSP/MDL/MD2/SPR/WAD + MD3/MD4/MD5 decoders, image codecs (`images/`: BMP/GIF/indexed/JPEG/MIP/palette/PNG/Q3/TGA/WAD + QLIT), Q1 packed lighting + `.lit` overrides; Q1-Quake64 geometry and game content land with the formats/content lanes |
 | `qa-world` | `world`, `movement`, `persistence` (save kernel) | actor registry, bodies, spatial index, collision, q1–q3 movement, combat/inventory, headless `Simulation` + deterministic `Server` tick, saves; lossless JSON save codec (`$qts` tags, bigint, bytes, canonical base64), records/ownership/protection, world-state snapshot/restore |
 | `qa-net` | `network` | bounded byte buffer, q1/q2/q3/quakeworld codecs, demo framing, protocol identities |
 | `qa-guest` | `guest`, `compat/qc,qvm`, `persistence` (execution) | entity fields, module registry, save/checkpoint records; x86/x64 VM, ELF/PE loaders, ABI runner landing in the guest-vm lane |
 | `qa-compat` | `compat/q2,q3` + shims | cross-family versions, demo kinds, userinfo, game adapters |
-| `qa-client` | `render`, `materials`, `text`, `media`, `audio`, `input`, `ui`, `platform`, `camera`, `capture` | headless client core: prediction histories, view/HUD, seats/bindings, mixer channel pool, `RendererBackend` + `NullRenderer`, spline cameras (`.camera` parse/playback/view override), screenshot/levelshot capture (encoders injected; image-format encoders land with the images lane), shader/material data levels (`materials/`), text layout/fonts/localization/captions (`text/`), cinematic containers/timelines/presentation (`media/`; CIN/RoQ/OGV pixel+audio decode, TrueType rasterization, and PCX/`kfont` bitmap decode complete under the undefer-media lane — `DeferredEngine` errors exist only until then) |
-| `qa-app` | `app`, `console`, `settings`, `debug`, `llm`, `main.ts`, `persistence` (providers) | CLI options, startup/config, host main loop, CLI dispatch, console core (scrollback, edit fields, dispatch + builtins, log, session, metrics, discovery, dedicated stdin), seat/server settings + restart flow, debug-line shapes/store; saved-game read/write (Q1/Q2-classic/TS/Rerelease/Q3 envelopes), per-family providers/recipes, save policy, unified save image (`QTSAVE3`/`QTSAVE2`; remaining codecs land with the undefer-media lane) |
+| `qa-client` | `render`, `materials`, `text`, `media`, `audio`, `input`, `ui`, `platform`, `camera`, `capture` | headless client core: prediction histories, view/HUD, seats/bindings, mixer channel pool, `RendererBackend` + `NullRenderer`, spline cameras (`.camera` parse/playback/view override), screenshot/levelshot capture (real TGA/PNG/JPEG encoders over `qa-content`, injectable for tests), shader/material data levels (`materials/`), text layout/fonts/localization/captions (`text/`, incl. TrueType rasterization and atlas builds), cinematic containers/timelines/presentation with full CIN/RoQ/OGV pixel+audio decode (`media/`) |
+| `qa-app` | `app`, `console`, `settings`, `debug`, `llm`, `main.ts`, `persistence` (providers) | CLI options, startup/config, host main loop, CLI dispatch, console core (scrollback, edit fields, dispatch + builtins, log, session, metrics, discovery, dedicated stdin), seat/server settings + restart flow, debug-line shapes/store; saved-game read/write (Q1/Q2-classic/TS/Rerelease/Q3 envelopes), per-family providers/recipes, save policy, unified save image (`QTSAVE3`/`QTSAVE2`) |
 
 Dependency direction is acyclic: `app` drives `world` (server),
 `client` (headless seats/render/audio), and `net` (demos); `world` never
@@ -95,11 +95,11 @@ machinery. No deferrals, no stubs left for later, no exceptions without
 explicit user authorization. Ported already: protocol codecs, BSP/model/sprite/WAD
 readers, server tick and game rules, console core, settings, debug,
 camera/capture, persistence providers and save envelopes, materials,
-and text/media data levels. Still to port: media codec engines,
-truetype rasterization, image formats, `llm/` + console draw/llm
-commands, `platform/` native backends, network transports/sessions/
-services, the guest VM (x86/x64, ELF/PE, ABI), compat bridges
-(QC/QVM/native), game content (`content/`), the renderer (scene/CPU/GL),
-remaining audio/input/movement, UI, `app/bootstrap`, `tools/`, and
-bots (navigation + behavior). `NullLogic`/`NullRenderer` and
-`DeferredEngine` stubs stand only until their owning port task lands.
+text/media data levels, media codec engines (CIN/RoQ/OGV),
+TrueType rasterization, and image formats. Still to port: `llm/` +
+console draw/llm commands, `platform/` native backends, network
+transports/sessions/services, the guest VM (x86/x64, ELF/PE, ABI),
+compat bridges (QC/QVM/native), game content (`content/`), the renderer
+(scene/CPU/GL), remaining audio/input/movement, UI, `app/bootstrap`,
+`tools/`, and bots (navigation + behavior). `NullLogic`/`NullRenderer`
+stand only until their owning port task lands.
