@@ -161,7 +161,7 @@ impl StereoReverb {
 
     /// Process interleaved stereo frames in place.
     pub fn process(&mut self, samples: &mut [f64], params: &EfxReverbParams) -> Result<(), AudioError> {
-        if samples.len() % 2 != 0 {
+        if !samples.len().is_multiple_of(2) {
             return Err(AudioError::ReverbStereo);
         }
         self.left.configure(params, self.sample_rate);

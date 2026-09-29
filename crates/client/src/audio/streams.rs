@@ -293,7 +293,7 @@ impl RawAudioStream {
             output_frames: 0,
             end: 0,
             paused: false,
-            output_rate: output_rate,
+            output_rate,
         }
     }
 

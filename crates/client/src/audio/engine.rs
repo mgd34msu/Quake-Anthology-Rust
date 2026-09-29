@@ -34,6 +34,9 @@ const UNDERWATER_GAIN: f64 = 0.25;
 /// Geometry transmission: occlusion gain for a listener and position.
 pub type GeometryTransmission = Box<dyn FnMut(&AudioListener, Vec3) -> f64>;
 
+/// Accepted one-shot notification.
+pub type OnSoundCallback = Box<dyn FnMut(&PlaySound)>;
+
 /// Output device open failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceOpenError {
@@ -216,7 +219,7 @@ pub struct UnifiedAudioOptions {
     /// Maximum actors (default 65536).
     pub max_actors: Option<usize>,
     /// Called with each accepted one-shot request.
-    pub on_sound: Option<Box<dyn FnMut(&PlaySound)>>,
+    pub on_sound: Option<OnSoundCallback>,
     /// Device factory (defaults to SDL; tests inject fakes).
     pub device_factory: Option<Rc<dyn AudioDeviceFactory>>,
 }
@@ -400,7 +403,7 @@ pub struct UnifiedAudio {
     milliseconds: Rc<dyn Fn() -> i64>,
     random: Box<dyn FnMut() -> i64>,
     max_actors: usize,
-    on_sound: Option<Box<dyn FnMut(&PlaySound)>>,
+    on_sound: Option<OnSoundCallback>,
     factory: Rc<dyn AudioDeviceFactory>,
 }
 
@@ -503,6 +506,8 @@ impl UnifiedAudio {
             pump_intervals: Vec::new(),
             milliseconds: {
                 let clock = options.milliseconds;
+                // The closure re-wraps the box; `Rc::new(clock)` would keep the box.
+                #[allow(clippy::redundant_closure)]
                 Rc::new(move || clock())
             },
             random: options.random,
@@ -1067,7 +1072,7 @@ impl UnifiedAudio {
             entities.push(self.entity(actor, owner)?);
         }
         let state = &mut self.mix.seats[index];
-        for ((key, _), entity) in removed.into_iter().zip(entities.into_iter()) {
+        for ((key, _), entity) in removed.into_iter().zip(entities) {
             state.loops.remove(&key);
             state.mixer.stop_looping_sound(entity)?;
         }
@@ -1705,10 +1710,12 @@ mod tests {
         Failed,
     }
 
+    type OpenRecord = (Option<String>, AudioOutputFormat, Option<u32>);
+
     struct FakeFactory {
         script: RefCell<VecDeque<ScriptedOpen>>,
         names: Vec<String>,
-        opens: RefCell<Vec<(Option<String>, AudioOutputFormat, Option<u32>)>>,
+        opens: RefCell<Vec<OpenRecord>>,
         spec: FakeSpec,
     }
 
@@ -1820,7 +1827,7 @@ mod tests {
         second.gain = f64::NAN;
         assert!(matches!(audio.set_listeners(&[first.clone(), second]), Err(AudioError::BadListenerGain)));
         assert!(matches!(audio.set_listeners(&[first.clone(), first.clone()]), Err(AudioError::DuplicateSeat)));
-        audio.set_listeners(&[first.clone()]).unwrap();
+        audio.set_listeners(std::slice::from_ref(&first)).unwrap();
         let mut second = listener(&owner, 1);
         second.gain = 0.5;
         audio.set_listeners(&[first, second]).unwrap();
@@ -2220,7 +2227,7 @@ mod tests {
         audio.set_effects_volume(0.3).unwrap();
         assert!(matches!(audio.set_effects_volume(-1.0), Err(AudioError::BadEffectsGain)));
         audio.reset_round().unwrap();
-        audio.set_listeners(&[seat]).unwrap();
+        audio.set_listeners(std::slice::from_ref(&seat)).unwrap();
         audio.set_geometry_transmission(None).unwrap();
         audio.stop_all().unwrap();
     }

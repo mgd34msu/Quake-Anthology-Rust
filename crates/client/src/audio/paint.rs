@@ -145,7 +145,7 @@ fn clipped(value: i32) -> i16 {
 
 /// Blast an integer paint buffer to interleaved stereo.
 pub fn write_linear_blast_stereo16(paint: &[i32], output: &mut [i16], count: usize) -> Result<(), AudioError> {
-    if count % 2 != 0 {
+    if !count.is_multiple_of(2) {
         return Err(AudioError::BlastCount);
     }
     for index in (0..count).step_by(2) {
@@ -160,7 +160,7 @@ pub fn write_linear_blast_stereo16(paint: &[i32], output: &mut [i16], count: usi
 
 /// Blast a float paint buffer to interleaved stereo.
 pub fn write_linear_blast_stereo16_float(paint: &[f64], output: &mut [i16], count: usize) -> Result<(), AudioError> {
-    if count % 2 != 0 {
+    if !count.is_multiple_of(2) {
         return Err(AudioError::BlastCount);
     }
     for index in (0..count).step_by(2) {

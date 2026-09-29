@@ -765,6 +765,7 @@ impl AudioMixer {
     }
 
     /// Start a sound with an explicit channel command.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_shared_sound(
         &mut self,
         sound: &SharedPcm,
@@ -782,7 +783,7 @@ impl AudioMixer {
             validate_sound(sound, false)?;
         }
         if matches!(origin, MixerVoiceOrigin::Fixed { .. }) {
-            if entity < -2_147_483_648 || entity > 2_147_483_647 {
+            if !(-2_147_483_648..=2_147_483_647).contains(&entity) {
                 return Err(AudioError::BadFixedEntity);
             }
         } else {
@@ -949,7 +950,7 @@ impl AudioMixer {
                 && matches!(voice.start, VoiceStart::Started { sample } if sample == self.painted_time)
         });
         if jitter {
-            if let Some(random) = random.as_deref_mut() {
+            if let Some(random) = random {
                 let value = random();
             if value < 0 {
                 return Err(AudioError::BadRandom);
@@ -2393,7 +2394,7 @@ mod tests {
         let looping = blip(64, Some(0));
         assert!(mixer.add_static_sound(&looping, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1).unwrap());
         mixer.remove_static_sound(1);
-        mixer.update_ambient(&[looping.clone()], &[1.0], 0.016, 0.3, 100.0).unwrap();
+        mixer.update_ambient(std::slice::from_ref(&looping), &[1.0], 0.016, 0.3, 100.0).unwrap();
         mixer.update_ambient(&[], &[], 0.016, 0.0, 100.0).unwrap();
         mixer
             .set_source_loop_sounds(&[SourceLoopEntry {

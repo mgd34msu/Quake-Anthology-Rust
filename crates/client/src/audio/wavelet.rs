@@ -66,7 +66,7 @@ pub fn daub4(samples: &mut [f32], size: usize, sign: i32) -> Result<(), AudioErr
     if size < 4 {
         return Ok(());
     }
-    if size % 2 != 0 {
+    if !size.is_multiple_of(2) {
         return Err(AudioError::WaveletOdd);
     }
     let read = |samples: &[f32], index: usize| -> Result<f64, AudioError> {

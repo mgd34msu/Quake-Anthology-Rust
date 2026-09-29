@@ -54,10 +54,10 @@ pub fn audio_khz_rate(value: &str) -> Option<u32> {
         i64::from_str_radix(hex, 16).ok().map(|value| value as f64)
     })?;
     match number {
-        value if value == 11.0 => Some(11025),
-        value if value == 22.0 => Some(22050),
-        value if value == 44.0 => Some(44100),
-        value if value == 48.0 => Some(48000),
+        11.0 => Some(11025),
+        22.0 => Some(22050),
+        44.0 => Some(44100),
+        48.0 => Some(48000),
         _ => None,
     }
 }
@@ -73,7 +73,7 @@ pub enum EncodedPcm<'a> {
 
 /// Encode stereo PCM for the output format.
 pub fn encode_output_pcm<'a>(stereo: &'a [i16], format: &AudioOutputFormat) -> Result<EncodedPcm<'a>, AudioError> {
-    if stereo.len() % 2 != 0 {
+    if !stereo.len().is_multiple_of(2) {
         return Err(AudioError::StereoFrames);
     }
     if format.channels == 2 && format.sample_bits == 16 {
