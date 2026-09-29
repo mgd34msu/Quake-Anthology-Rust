@@ -1570,11 +1570,13 @@ mod tests {
         }
     }
 
+    type ArmorEvent = (
+        Option<(RegularArmor, RegularArmor)>,
+        Option<(PoweredProtection, PoweredProtection)>,
+    );
+
     struct Recorder {
-        events: Vec<(
-            Option<(RegularArmor, RegularArmor)>,
-            Option<(PoweredProtection, PoweredProtection)>,
-        )>,
+        events: Vec<ArmorEvent>,
     }
 
     impl ProtectionObserver for Recorder {

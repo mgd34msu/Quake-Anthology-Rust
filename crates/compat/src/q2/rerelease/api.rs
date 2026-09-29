@@ -5,9 +5,9 @@
 
 use qa_guest::core::contracts::{GuestCallSignature, GuestLayout, GuestStorage, GuestValueLayout, NativeCallAbi};
 
-use super::layouts::{
-    export_table_layout, import_table_layout, rectangle_layout, trace_layout, vec2_layout,
-};
+use super::layouts::{export_table_layout, import_table_layout, rectangle_layout, trace_layout, vec2_layout};
+#[cfg(test)]
+use super::layouts::field_offset;
 
 /// Rerelease native ABI: 64-bit Windows PE+ with Microsoft x64 calls.
 #[must_use]

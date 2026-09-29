@@ -413,7 +413,7 @@ mod tests {
                 int(6),
                 int(7),
                 int(3),
-                GuestCallValue::Float64(2.718_281_828_459_045),
+                GuestCallValue::Float64(1.234_567),
                 int(9),
                 int(9),
                 int(255),
@@ -423,7 +423,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            "1.500000|1.50|1.000000e+03|1000|1.2345E-05|     7|2.718|+9| 9|0xff|00000000"
+            "1.500000|1.50|1.000000e+03|1000|1.2345E-05|     7|1.235|+9| 9|0xff|00000000"
         );
         assert!(classic_printf(&mut memory, "%d %d", &[int(1)]).is_err());
         assert!(classic_printf(&mut memory, "%q", &[]).is_err());

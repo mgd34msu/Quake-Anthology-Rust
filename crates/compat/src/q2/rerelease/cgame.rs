@@ -10,6 +10,8 @@ use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{cgame_server_data_layout, player_state_layout};
+#[cfg(test)]
+use super::layouts::field_offset;
 
 /// Maximum split-screen players (`MAX_SPLIT_PLAYERS`).
 pub const MAX_SPLIT_PLAYERS: usize = 8;

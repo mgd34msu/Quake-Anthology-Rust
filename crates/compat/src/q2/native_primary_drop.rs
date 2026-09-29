@@ -94,6 +94,8 @@ pub type DropAction = Box<dyn FnOnce()>;
 
 /// Canonical action replacing an original callback.
 pub type DropActionHook = Box<dyn FnMut(NativeActorId, ItemId) -> Option<DropAction>>;
+/// Consumer continuation approval hook.
+pub type DropConsumeHook = Box<dyn FnMut(NativeActorId, &mut ConsumerGate)>;
 
 /// Drop hooks owned by the caller.
 pub struct DropHooks {
@@ -106,7 +108,7 @@ pub struct DropHooks {
     /// Accepted drop notice; returns false to refuse (frees the pickup).
     pub dropped: Box<dyn FnMut(NativeActorId, NativeActorId, ItemId, i32) -> bool>,
     /// Consumer continuation approval.
-    pub consume: Box<dyn FnMut(NativeActorId, &mut ConsumerGate)>,
+    pub consume: DropConsumeHook,
     /// Canonical action replacing an original callback.
     pub action: DropActionHook,
     /// Client print.

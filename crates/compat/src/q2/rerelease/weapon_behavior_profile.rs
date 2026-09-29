@@ -855,7 +855,7 @@ mod tests {
         profile.set_time(&mut module, 5000);
         assert_eq!(module.memory.read_i64(module.time).expect("time"), 5000);
         profile.free(&mut module, slot).expect("free");
-        assert!(module.entities.get(&slot).is_none());
+        assert!(!module.entities.contains_key(&slot));
     }
 
     #[test]

@@ -777,6 +777,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_row(
         host: &mut SyntheticHost,
         profile: &NativePrimaryCommandProfile,
