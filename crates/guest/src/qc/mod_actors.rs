@@ -236,9 +236,13 @@ impl<M: QcActorMachine, H: QcModActorHost> QcModActors<M, H> {
             .copied()
             .filter(|slot| self.at(*slot).is_some_and(|current| current.id() == actor))
             .ok_or_else(|| {
-                GuestError::invalid("Mod remove requires its own actor; foreign source removal needs its owner continuation")
+                GuestError::invalid(
+                    "Mod remove requires its own actor; foreign source removal needs its owner continuation",
+                )
             })?;
-        let owned = self.slots[slot as usize].take().ok_or_else(|| GuestError::invalid("Mod actor slot is already free"))?;
+        let owned = self.slots[slot as usize]
+            .take()
+            .ok_or_else(|| GuestError::invalid("Mod actor slot is already free"))?;
         self.owned.remove(actor);
         self.scheduler.cancel(actor);
         self.host.unlink_body(&owned);
@@ -274,7 +278,11 @@ impl<M: QcActorMachine, H: QcModActorHost> QcModActors<M, H> {
     fn fire_think(&mut self, actor: &OwnedActor, frame: &FrameContext) -> Result<(), GuestError> {
         let (think, nextthink) = match (self.think_offset, self.nextthink_offset) {
             (Some(think), Some(nextthink)) => (think, nextthink),
-            _ => return Err(GuestError::invalid("Mod think needs explicit think/nextthink field mappings")),
+            _ => {
+                return Err(GuestError::invalid(
+                    "Mod think needs explicit think/nextthink field mappings",
+                ))
+            }
         };
         let slot = self
             .owned
@@ -392,7 +400,10 @@ impl<M: QcActorMachine, H: QcModActorHost> QcModActors<M, H> {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(GuestError::Callback(format!("Mod actor release failed: {}", errors.join("; "))))
+            Err(GuestError::Callback(format!(
+                "Mod actor release failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 }
@@ -463,7 +474,8 @@ mod tests {
         }
 
         fn touch(&mut self, actor: &OwnedActor, other: &ActorId) {
-            self.events.push(format!("touch {} {}", actor.id().slot(), other.slot()));
+            self.events
+                .push(format!("touch {} {}", actor.id().slot(), other.slot()));
         }
 
         fn use_on(&mut self, actor: &OwnedActor, _other: Option<&ActorId>, _activator: Option<&ActorId>) {
@@ -479,7 +491,8 @@ mod tests {
         }
 
         fn invoke(&mut self, actor: &OwnedActor, function_index: i32, _frame: &FrameContext) {
-            self.events.push(format!("invoke {}#{function_index}", actor.id().slot()));
+            self.events
+                .push(format!("invoke {}#{function_index}", actor.id().slot()));
         }
 
         fn client_frame(&mut self, slot: u32, _frame: &FrameContext) -> bool {
@@ -491,7 +504,10 @@ mod tests {
     fn fixture() -> (IdentityOwner, QcModActors<FakeMachine, FakeHost>) {
         let owner = IdentityOwner::create("actors").unwrap();
         let actors = QcModActors::new(
-            FakeMachine { slots: HashMap::new(), ints: HashMap::new() },
+            FakeMachine {
+                slots: HashMap::new(),
+                ints: HashMap::new(),
+            },
             FakeHost::default(),
             ProviderId::new("mod", "test"),
             8,
@@ -531,7 +547,9 @@ mod tests {
         let (owner, mut actors) = fixture();
         let foreign = owner.actor(5, 1);
         assert!(actors.remove(&foreign).is_err());
-        let wrong = owner.owned_actor(&owner.actor(6, 1), ProviderId::new("mod", "other")).unwrap();
+        let wrong = owner
+            .owned_actor(&owner.actor(6, 1), ProviderId::new("mod", "other"))
+            .unwrap();
         assert!(actors.spawn(wrong).is_err());
     }
 
@@ -544,7 +562,9 @@ mod tests {
         assert_eq!(first, 2);
         // Slot 1 is reserved for clients; client_frame consumes it.
         let actor2 = owner.actor(4, 1);
-        let slot = actors.spawn(owner.owned_actor(&actor2, ProviderId::new("mod", "test")).unwrap()).unwrap();
+        let slot = actors
+            .spawn(owner.owned_actor(&actor2, ProviderId::new("mod", "test")).unwrap())
+            .unwrap();
         assert_eq!(slot, 3);
         actors.machine.slots.insert((slot, 11), 9.0);
         actors.machine.ints.insert((slot, 10), 42);
@@ -562,7 +582,9 @@ mod tests {
     fn zero_nextthink_cancels_schedule() {
         let (owner, mut actors) = fixture();
         let actor = owner.actor(3, 1);
-        actors.spawn(owner.owned_actor(&actor, ProviderId::new("mod", "test")).unwrap()).unwrap();
+        actors
+            .spawn(owner.owned_actor(&actor, ProviderId::new("mod", "test")).unwrap())
+            .unwrap();
         actors.schedule(&actor).unwrap();
         assert_eq!(actors.scheduler().due(&actor), None);
     }
@@ -576,9 +598,22 @@ mod tests {
         let other = owner.actor(7, 1);
         actors.touch(&actor, &other).unwrap();
         actors.use_on(&actor, Some(&other), None).unwrap();
-        actors.pain(&QcPainReaction { target: owned.clone(), attacker: None, damage: 5.0, kick: 0.0 }).unwrap();
         actors
-            .die(&QcDeathReaction { target: owned, attacker: None, inflictor: None, damage: 50.0, kick: 0.0 })
+            .pain(&QcPainReaction {
+                target: owned.clone(),
+                attacker: None,
+                damage: 5.0,
+                kick: 0.0,
+            })
+            .unwrap();
+        actors
+            .die(&QcDeathReaction {
+                target: owned,
+                attacker: None,
+                inflictor: None,
+                damage: 50.0,
+                kick: 0.0,
+            })
             .unwrap();
         assert!(actors.touch(&other, &actor).is_err());
     }
@@ -601,7 +636,9 @@ mod tests {
         let provider = ProviderId::new("mod", "test");
         for slot in [3, 4] {
             let actor = owner.actor(slot, 1);
-            actors.spawn(owner.owned_actor(&actor, provider.clone()).unwrap()).unwrap();
+            actors
+                .spawn(owner.owned_actor(&actor, provider.clone()).unwrap())
+                .unwrap();
         }
         actors.close().unwrap();
         assert!(actors.slot_of(&owner.actor(3, 1)).is_none());

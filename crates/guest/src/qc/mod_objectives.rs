@@ -34,9 +34,15 @@ pub fn validate_qc_objective_storage(
                 )));
             }
         }
-        QcModObjectiveStorage::EntityField { global, indirections, field } => {
+        QcModObjectiveStorage::EntityField {
+            global,
+            indirections,
+            field,
+        } => {
             if program.global_type(global) != Some(QcValueType::Entity) {
-                return Err(GuestError::invalid("Objective field requires an original global entity reference"));
+                return Err(GuestError::invalid(
+                    "Objective field requires an original global entity reference",
+                ));
             }
             for name in indirections {
                 if program.field_type(name) != Some(QcValueType::Entity) {
@@ -74,17 +80,27 @@ pub fn resolve_qc_objective_storage(
 ) -> Result<QcObjectiveLocation, GuestError> {
     current(None)?;
     match storage {
-        QcModObjectiveStorage::Global(name) => {
-            Ok(QcObjectiveLocation { reference: None, on_globals: true, name: name.clone() })
-        }
-        QcModObjectiveStorage::EntityField { global, indirections, field } => {
+        QcModObjectiveStorage::Global(name) => Ok(QcObjectiveLocation {
+            reference: None,
+            on_globals: true,
+            name: name.clone(),
+        }),
+        QcModObjectiveStorage::EntityField {
+            global,
+            indirections,
+            field,
+        } => {
             let mut reference = machine.global_int(global)?;
             for name in indirections {
                 current(Some(reference))?;
                 reference = machine.entity_int(reference, name)?;
             }
             current(Some(reference))?;
-            Ok(QcObjectiveLocation { reference: Some(reference), on_globals: false, name: field.clone() })
+            Ok(QcObjectiveLocation {
+                reference: Some(reference),
+                on_globals: false,
+                name: field.clone(),
+            })
         }
     }
 }
@@ -142,26 +158,45 @@ mod tests {
         }
 
         fn entity_int(&self, reference: i32, field: &str) -> Result<i32, GuestError> {
-            self.next.get(&(reference, field.to_string())).copied().ok_or_else(|| GuestError::invalid("No such entity field"))
+            self.next
+                .get(&(reference, field.to_string()))
+                .copied()
+                .ok_or_else(|| GuestError::invalid("No such entity field"))
         }
     }
 
     fn program() -> FakeProgram {
         FakeProgram {
-            fields: [("state".to_string(), QcValueType::Float), ("owner".to_string(), QcValueType::Entity)]
-                .into_iter()
-                .collect(),
-            globals: [("quest".to_string(), QcValueType::Float), ("hero".to_string(), QcValueType::Entity)]
-                .into_iter()
-                .collect(),
+            fields: [
+                ("state".to_string(), QcValueType::Float),
+                ("owner".to_string(), QcValueType::Entity),
+            ]
+            .into_iter()
+            .collect(),
+            globals: [
+                ("quest".to_string(), QcValueType::Float),
+                ("hero".to_string(), QcValueType::Entity),
+            ]
+            .into_iter()
+            .collect(),
         }
     }
 
     #[test]
     fn validates_global_and_entity_storage() {
         let program = program();
-        assert!(validate_qc_objective_storage(&program, &QcModObjectiveStorage::Global("quest".to_string()), QcValueType::Float).is_ok());
-        assert!(validate_qc_objective_storage(&program, &QcModObjectiveStorage::Global("quest".to_string()), QcValueType::Entity).is_err());
+        assert!(validate_qc_objective_storage(
+            &program,
+            &QcModObjectiveStorage::Global("quest".to_string()),
+            QcValueType::Float
+        )
+        .is_ok());
+        assert!(validate_qc_objective_storage(
+            &program,
+            &QcModObjectiveStorage::Global("quest".to_string()),
+            QcValueType::Entity
+        )
+        .is_err());
         let entity = QcModObjectiveStorage::EntityField {
             global: "hero".to_string(),
             indirections: vec!["owner".to_string()],
@@ -178,7 +213,10 @@ mod tests {
 
     #[test]
     fn resolves_entity_path_with_currency_checks() {
-        let machine = FakeMachine { global: 5, next: [((5, "owner".to_string()), 9)].into_iter().collect() };
+        let machine = FakeMachine {
+            global: 5,
+            next: [((5, "owner".to_string()), 9)].into_iter().collect(),
+        };
         let storage = QcModObjectiveStorage::EntityField {
             global: "hero".to_string(),
             indirections: vec!["owner".to_string()],
@@ -190,15 +228,26 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(location, QcObjectiveLocation { reference: Some(9), on_globals: false, name: "state".to_string() });
+        assert_eq!(
+            location,
+            QcObjectiveLocation {
+                reference: Some(9),
+                on_globals: false,
+                name: "state".to_string()
+            }
+        );
         assert_eq!(seen, vec![None, Some(5), Some(9)]);
     }
 
     #[test]
     fn stale_currency_aborts_resolution() {
-        let machine = FakeMachine { global: 5, next: HashMap::new() };
+        let machine = FakeMachine {
+            global: 5,
+            next: HashMap::new(),
+        };
         let storage = QcModObjectiveStorage::Global("quest".to_string());
-        let error = resolve_qc_objective_storage(&machine, &storage, &|_| Err(GuestError::invalid("retired"))).unwrap_err();
+        let error =
+            resolve_qc_objective_storage(&machine, &storage, &|_| Err(GuestError::invalid("retired"))).unwrap_err();
         assert_eq!(error, GuestError::invalid("retired"));
     }
 }

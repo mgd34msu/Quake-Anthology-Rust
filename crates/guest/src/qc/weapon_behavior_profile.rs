@@ -76,7 +76,9 @@ pub fn qc_weapon_behavior_capability_error(program: &dyn QcProgramView) -> Optio
     }
     for (name, expected) in qc_weapon_behavior_globals() {
         if program.global_type(name) != Some(expected) {
-            return Some(format!("QuakeC trajectory adapter requires global {name} of type {expected:?}"));
+            return Some(format!(
+                "QuakeC trajectory adapter requires global {name} of type {expected:?}"
+            ));
         }
     }
     for (name, expected) in qc_weapon_behavior_optional_fields() {
@@ -140,8 +142,14 @@ mod tests {
 
     fn capable() -> FakeProgram {
         FakeProgram {
-            fields: qc_weapon_behavior_fields().into_iter().map(|(name, kind)| (name.to_string(), kind)).collect(),
-            globals: qc_weapon_behavior_globals().into_iter().map(|(name, kind)| (name.to_string(), kind)).collect(),
+            fields: qc_weapon_behavior_fields()
+                .into_iter()
+                .map(|(name, kind)| (name.to_string(), kind))
+                .collect(),
+            globals: qc_weapon_behavior_globals()
+                .into_iter()
+                .map(|(name, kind)| (name.to_string(), kind))
+                .collect(),
         }
     }
 

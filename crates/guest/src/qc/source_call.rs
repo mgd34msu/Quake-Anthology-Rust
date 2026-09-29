@@ -227,22 +227,24 @@ pub fn validate_qc_source_call(
     {
         if let ModCallbackValue::Input(name) = value {
             if !available.contains(name) {
-                return Err(GuestError::callback(format!(
-                    "Mod {label} cannot read {}",
-                    name.name()
-                )));
+                return Err(GuestError::callback(format!("Mod {label} cannot read {}", name.name())));
             }
         }
     }
-    let function = program
-        .function_named(&call.function)
-        .map_err(|_| GuestError::callback(format!("Mod callback {} has an incompatible source signature", call.function)))?;
+    let function = program.function_named(&call.function).map_err(|_| {
+        GuestError::callback(format!(
+            "Mod callback {} has an incompatible source signature",
+            call.function
+        ))
+    })?;
     let signature_ok = function.index != 0
         && function.first_statement > 0
         && function.parameter_sizes.len() == call.arguments.len()
-        && function.parameter_sizes.iter().zip(call.arguments.iter()).all(|(size, value)| {
-            usize::from(*size) == qc_source_value_type(value).words()
-        });
+        && function
+            .parameter_sizes
+            .iter()
+            .zip(call.arguments.iter())
+            .all(|(size, value)| usize::from(*size) == qc_source_value_type(value).words());
     if !signature_ok {
         return Err(GuestError::callback(format!(
             "Mod callback {} has an incompatible source signature",
@@ -285,7 +287,10 @@ pub fn write_qc_source_value(
                 .map_err(|error| machine.fail(error.to_string()))
         }
         ModRuntimeValue::Vector(value) => {
-            if ![value.x, value.y, value.z].iter().all(|component| component.is_finite()) {
+            if ![value.x, value.y, value.z]
+                .iter()
+                .all(|component| component.is_finite())
+            {
                 return Err(machine.fail("Mod callback vector exceeds binary32 range"));
             }
             machine
@@ -330,7 +335,11 @@ pub fn with_qc_source_call(
             ModCallbackValue::String(value) => Ok(ModRuntimeValue::String(value.clone())),
             ModCallbackValue::Vector(value) => Ok(ModRuntimeValue::Vector(*value)),
             ModCallbackValue::Input(name) => inputs.get(name).cloned().ok_or_else(|| {
-                GuestError::callback(format!("Gameplay callback {} has no {} input", call.function, name.name()))
+                GuestError::callback(format!(
+                    "Gameplay callback {} has no {} input",
+                    call.function,
+                    name.name()
+                ))
             }),
         }
     };
@@ -375,37 +384,88 @@ pub fn with_qc_source_call(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::machine::{QcBuiltinRegistry, QcMachineOptions};
     use super::super::memory::{QcEntityLayout, QcEntityMemory};
     use super::super::program::{test_program, QcDefinition, QcFunction, QcOpcode, QcStatement, QcValueType};
+    use super::*;
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
     use qa_core::numeric::NumericOps;
 
     fn fixture_machine() -> QcMachine {
         let statements = vec![
-            QcStatement { opcode: QcOpcode::Done, a: 0, b: 0, c: 0 },
-            QcStatement { opcode: QcOpcode::Return, a: 1, b: 0, c: 0 },
+            QcStatement {
+                opcode: QcOpcode::Done,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+            QcStatement {
+                opcode: QcOpcode::Return,
+                a: 1,
+                b: 0,
+                c: 0,
+            },
         ];
         let globals = vec![
-            QcDefinition { value_type: QcValueType::Entity, native_type: 4, save: false, offset: 28, name: "self".to_string() },
-            QcDefinition { value_type: QcValueType::Float, native_type: 2, save: false, offset: 29, name: "damage".to_string() },
-            QcDefinition { value_type: QcValueType::Vector, native_type: 3, save: false, offset: 30, name: "spot".to_string() },
+            QcDefinition {
+                value_type: QcValueType::Entity,
+                native_type: 4,
+                save: false,
+                offset: 28,
+                name: "self".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Float,
+                native_type: 2,
+                save: false,
+                offset: 29,
+                name: "damage".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Vector,
+                native_type: 3,
+                save: false,
+                offset: 30,
+                name: "spot".to_string(),
+            },
         ];
         let functions = vec![
             QcFunction {
-                index: 0, first_statement: 0, parameter_start: 0, local_words: 0,
-                name: "<null>".to_string(), file: String::new(), parameter_sizes: vec![], named_builtin: false,
+                index: 0,
+                first_statement: 0,
+                parameter_start: 0,
+                local_words: 0,
+                name: "<null>".to_string(),
+                file: String::new(),
+                parameter_sizes: vec![],
+                named_builtin: false,
             },
             QcFunction {
-                index: 1, first_statement: 1, parameter_start: 33, local_words: 0,
-                name: "hurt".to_string(), file: "test.qc".to_string(), parameter_sizes: vec![1, 3],
+                index: 1,
+                first_statement: 1,
+                parameter_start: 33,
+                local_words: 0,
+                name: "hurt".to_string(),
+                file: "test.qc".to_string(),
+                parameter_sizes: vec![1, 3],
                 named_builtin: false,
             },
         ];
-        let program = test_program(statements, globals, vec![], functions, b"\0".to_vec(), vec![0; 36 * 4], 1);
-        let layout = QcEntityLayout { stride_bytes: 100, variables_offset_bytes: 96, field_words: 1 };
+        let program = test_program(
+            statements,
+            globals,
+            vec![],
+            functions,
+            b"\0".to_vec(),
+            vec![0; 36 * 4],
+            1,
+        );
+        let layout = QcEntityLayout {
+            stride_bytes: 100,
+            variables_offset_bytes: 96,
+            field_words: 1,
+        };
         let entities = QcEntityMemory::new(layout, 2, 1).unwrap();
         QcMachine::new(QcMachineOptions::new(
             program,
@@ -433,18 +493,31 @@ mod tests {
 
     #[test]
     fn value_types_follow_donor_table() {
-        assert_eq!(qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Self_)), QcValueType::Entity);
-        assert_eq!(qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Point)), QcValueType::Vector);
-        assert_eq!(qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Item)), QcValueType::String);
-        assert_eq!(qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Amount)), QcValueType::Float);
+        assert_eq!(
+            qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Self_)),
+            QcValueType::Entity
+        );
+        assert_eq!(
+            qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Point)),
+            QcValueType::Vector
+        );
+        assert_eq!(
+            qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Item)),
+            QcValueType::String
+        );
+        assert_eq!(
+            qc_source_value_type(&ModCallbackValue::Input(ModCallbackInput::Amount)),
+            QcValueType::Float
+        );
         assert_eq!(qc_source_value_type(&ModCallbackValue::Float(1.0)), QcValueType::Float);
     }
 
     #[test]
     fn validation_accepts_compatible_calls() {
         let machine = fixture_machine();
-        let available: HashSet<ModCallbackInput> =
-            [ModCallbackInput::Amount, ModCallbackInput::Point].into_iter().collect();
+        let available: HashSet<ModCallbackInput> = [ModCallbackInput::Amount, ModCallbackInput::Point]
+            .into_iter()
+            .collect();
         validate_qc_source_call(machine.program(), &hurt_call(), &available, "test").unwrap();
     }
 
@@ -455,8 +528,9 @@ mod tests {
         assert!(validate_qc_source_call(machine.program(), &hurt_call(), &available, "test").is_err());
         let mut wrong = hurt_call();
         wrong.arguments.pop();
-        let available: HashSet<ModCallbackInput> =
-            [ModCallbackInput::Amount, ModCallbackInput::Point].into_iter().collect();
+        let available: HashSet<ModCallbackInput> = [ModCallbackInput::Amount, ModCallbackInput::Point]
+            .into_iter()
+            .collect();
         assert!(validate_qc_source_call(machine.program(), &wrong, &available, "test").is_err());
         let mut missing = hurt_call();
         missing.function = "nope".to_string();

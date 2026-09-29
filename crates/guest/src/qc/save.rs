@@ -144,7 +144,10 @@ pub fn parse_qc_value(
                 .field_named(text)
                 .ok_or_else(|| machine.fail(format!("cannot find field {text}")))?
                 .offset;
-            let value = machine.globals().int(field).map_err(|error| machine.fail(error.to_string()))?;
+            let value = machine
+                .globals()
+                .int(field)
+                .map_err(|error| machine.fail(error.to_string()))?;
             write_target(machine, target, offset, value)
         }
         QcValueType::Void => Ok(()),
@@ -164,9 +167,15 @@ pub fn apply_qc_entity_pairs(
     pairs: &[QcTextPair],
 ) -> Result<QcEntityParseResult, GuestError> {
     if slot != 0 {
-        machine.entities_mut().clear_slot(slot).map_err(|error| machine.fail(error.to_string()))?;
+        machine
+            .entities_mut()
+            .clear_slot(slot)
+            .map_err(|error| machine.fail(error.to_string()))?;
     } else {
-        machine.entities().field_bytes(slot).map_err(|error| machine.fail(error.to_string()))?;
+        machine
+            .entities()
+            .field_bytes(slot)
+            .map_err(|error| machine.fail(error.to_string()))?;
     }
     let netquake = !machine.program().api.is_quakeworld();
     let mut unknown = Vec::new();
@@ -188,7 +197,10 @@ pub fn apply_qc_entity_pairs(
         if key.starts_with('_') {
             continue;
         }
-        retained.push(QcTextPair { key: key.clone(), value: pair.value.clone() });
+        retained.push(QcTextPair {
+            key: key.clone(),
+            value: pair.value.clone(),
+        });
         let definition = machine.program().field_named(&key).cloned();
         match definition {
             Some(definition) => {
@@ -199,7 +211,10 @@ pub fn apply_qc_entity_pairs(
                 };
                 parse_qc_value(machine, QcSaveTarget::Entity(slot), &definition, &text)?;
             }
-            None => unknown.push(QcTextPair { key, value: pair.value.clone() }),
+            None => unknown.push(QcTextPair {
+                key,
+                value: pair.value.clone(),
+            }),
         }
     }
     Ok(QcEntityParseResult {
@@ -224,15 +239,27 @@ pub fn apply_qc_global_pairs(machine: &mut QcMachine, pairs: &[QcTextPair]) -> R
 
 fn saved_word(machine: &QcMachine, target: QcSaveTarget, offset: usize) -> Result<i32, GuestError> {
     match target {
-        QcSaveTarget::Globals => machine.globals().int(offset).map_err(|error| machine.fail(error.to_string())),
-        QcSaveTarget::Entity(slot) => machine.entities().slot_int(slot, offset).map_err(|error| machine.fail(error.to_string())),
+        QcSaveTarget::Globals => machine
+            .globals()
+            .int(offset)
+            .map_err(|error| machine.fail(error.to_string())),
+        QcSaveTarget::Entity(slot) => machine
+            .entities()
+            .slot_int(slot, offset)
+            .map_err(|error| machine.fail(error.to_string())),
     }
 }
 
 fn saved_float(machine: &QcMachine, target: QcSaveTarget, offset: usize) -> Result<f32, GuestError> {
     match target {
-        QcSaveTarget::Globals => machine.globals().float(offset).map_err(|error| machine.fail(error.to_string())),
-        QcSaveTarget::Entity(slot) => machine.entities().slot_float(slot, offset).map_err(|error| machine.fail(error.to_string())),
+        QcSaveTarget::Globals => machine
+            .globals()
+            .float(offset)
+            .map_err(|error| machine.fail(error.to_string())),
+        QcSaveTarget::Entity(slot) => machine
+            .entities()
+            .slot_float(slot, offset)
+            .map_err(|error| machine.fail(error.to_string())),
     }
 }
 
@@ -241,12 +268,14 @@ fn saved_value(machine: &QcMachine, target: QcSaveTarget, definition: &QcDefinit
     match definition.value_type {
         QcValueType::String => {
             let reference = saved_word(machine, target, offset)?;
-            machine.strings().get(reference).map_err(|error| machine.fail(error.to_string()))
+            machine
+                .strings()
+                .get(reference)
+                .map_err(|error| machine.fail(error.to_string()))
         }
         QcValueType::Float => {
             let value = saved_float(machine, target, offset)?;
-            qa_core::cvar::cvar_value_text(f64::from(value), false)
-                .map_err(|error| machine.fail(error.to_string()))
+            qa_core::cvar::cvar_value_text(f64::from(value), false).map_err(|error| machine.fail(error.to_string()))
         }
         QcValueType::Vector => {
             let mut parts = Vec::with_capacity(3);
@@ -261,7 +290,10 @@ fn saved_value(machine: &QcMachine, target: QcSaveTarget, definition: &QcDefinit
         }
         QcValueType::Entity => {
             let reference = saved_word(machine, target, offset)?;
-            let slot = machine.entities().slot(reference).map_err(|error| machine.fail(error.to_string()))?;
+            let slot = machine
+                .entities()
+                .slot(reference)
+                .map_err(|error| machine.fail(error.to_string()))?;
             Ok(slot.to_string())
         }
         QcValueType::Function => {
@@ -316,7 +348,10 @@ pub fn save_qc_entity_pairs(machine: &QcMachine, slot: u32, free: bool) -> Resul
     if free {
         return Ok(Vec::new());
     }
-    machine.entities().field_bytes(slot).map_err(|error| machine.fail(error.to_string()))?;
+    machine
+        .entities()
+        .field_bytes(slot)
+        .map_err(|error| machine.fail(error.to_string()))?;
     let mut pairs = Vec::new();
     for definition in machine.program().fields.clone().into_iter().skip(1) {
         let name = definition.name.as_bytes();
@@ -342,32 +377,97 @@ pub fn save_qc_entity_pairs(machine: &QcMachine, slot: u32, free: bool) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::machine::{QcBuiltinRegistry, QcMachineOptions};
     use super::super::memory::{QcEntityLayout, QcEntityMemory};
     use super::super::program::{test_program, QcFunction, QcOpcode, QcStatement, QcValueType};
+    use super::*;
     use qa_core::numeric::NumericOps;
     use std::rc::Rc;
 
     fn fixture_machine() -> QcMachine {
-        let statements = vec![QcStatement { opcode: QcOpcode::Done, a: 0, b: 0, c: 0 }];
+        let statements = vec![QcStatement {
+            opcode: QcOpcode::Done,
+            a: 0,
+            b: 0,
+            c: 0,
+        }];
         let globals = vec![
-            QcDefinition { value_type: QcValueType::Float, native_type: 2, save: true, offset: 28, name: "skill".to_string() },
-            QcDefinition { value_type: QcValueType::String, native_type: 1, save: true, offset: 29, name: "mapname".to_string() },
+            QcDefinition {
+                value_type: QcValueType::Float,
+                native_type: 2,
+                save: true,
+                offset: 28,
+                name: "skill".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::String,
+                native_type: 1,
+                save: true,
+                offset: 29,
+                name: "mapname".to_string(),
+            },
         ];
         let fields = vec![
-            QcDefinition { value_type: QcValueType::Void, native_type: 0, save: false, offset: 0, name: "<reserved>".to_string() },
-            QcDefinition { value_type: QcValueType::Vector, native_type: 3, save: false, offset: 0, name: "angles".to_string() },
-            QcDefinition { value_type: QcValueType::String, native_type: 1, save: false, offset: 3, name: "classname".to_string() },
-            QcDefinition { value_type: QcValueType::Float, native_type: 2, save: false, offset: 4, name: "health".to_string() },
-            QcDefinition { value_type: QcValueType::Entity, native_type: 4, save: false, offset: 5, name: "enemy".to_string() },
+            QcDefinition {
+                value_type: QcValueType::Void,
+                native_type: 0,
+                save: false,
+                offset: 0,
+                name: "<reserved>".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Vector,
+                native_type: 3,
+                save: false,
+                offset: 0,
+                name: "angles".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::String,
+                native_type: 1,
+                save: false,
+                offset: 3,
+                name: "classname".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Float,
+                native_type: 2,
+                save: false,
+                offset: 4,
+                name: "health".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Entity,
+                native_type: 4,
+                save: false,
+                offset: 5,
+                name: "enemy".to_string(),
+            },
         ];
         let functions = vec![QcFunction {
-            index: 0, first_statement: 0, parameter_start: 0, local_words: 0,
-            name: "<null>".to_string(), file: String::new(), parameter_sizes: vec![], named_builtin: false,
+            index: 0,
+            first_statement: 0,
+            parameter_start: 0,
+            local_words: 0,
+            name: "<null>".to_string(),
+            file: String::new(),
+            parameter_sizes: vec![],
+            named_builtin: false,
         }];
-        let program = test_program(statements, globals, fields, functions, b"\0".to_vec(), vec![0; 30 * 4], 6);
-        let layout = QcEntityLayout { stride_bytes: 96 + 6 * 4, variables_offset_bytes: 96, field_words: 6 };
+        let program = test_program(
+            statements,
+            globals,
+            fields,
+            functions,
+            b"\0".to_vec(),
+            vec![0; 30 * 4],
+            6,
+        );
+        let layout = QcEntityLayout {
+            stride_bytes: 96 + 6 * 4,
+            variables_offset_bytes: 96,
+            field_words: 6,
+        };
         let entities = QcEntityMemory::new(layout, 3, 2).unwrap();
         QcMachine::new(QcMachineOptions::new(
             program,
@@ -380,7 +480,10 @@ mod tests {
     }
 
     fn pair(key: &str, value: &str) -> QcTextPair {
-        QcTextPair { key: key.to_string(), value: value.to_string() }
+        QcTextPair {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
     }
 
     #[test]
@@ -389,12 +492,22 @@ mod tests {
         let result = apply_qc_entity_pairs(
             &mut machine,
             1,
-            &[pair("angle", "90"), pair("classname", "monster"), pair("_comment", "x"), pair("nope", "1")],
+            &[
+                pair("angle", "90"),
+                pair("classname", "monster"),
+                pair("_comment", "x"),
+                pair("nope", "1"),
+            ],
         )
         .unwrap();
         assert!(!result.empty);
         assert_eq!(result.unknown, vec![pair("nope", "1")]);
-        assert_eq!(machine.entity_vector(machine.entities().reference(1).unwrap(), "angles").unwrap(), qa_core::math::vec3(0.0, 90.0, 0.0));
+        assert_eq!(
+            machine
+                .entity_vector(machine.entities().reference(1).unwrap(), "angles")
+                .unwrap(),
+            qa_core::math::vec3(0.0, 90.0, 0.0)
+        );
         let reference = machine.entities().reference(1).unwrap();
         let classname = machine.entity_int(reference, "classname").unwrap();
         assert_eq!(machine.strings().get(classname).unwrap(), "monster");

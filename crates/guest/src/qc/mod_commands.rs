@@ -27,9 +27,9 @@ pub fn qc_console_call(
                 let text = argv.get(*index).map(String::as_str).unwrap_or("");
                 match arg_type {
                     ModConsoleArgType::String => Ok(ModCallbackValue::String(text.to_string())),
-                    ModConsoleArgType::Float => native_atof(text)
-                        .map(ModCallbackValue::Float)
-                        .map_err(|error| GuestError::invalid(format!("Mod console argument is not source text: {error}"))),
+                    ModConsoleArgType::Float => native_atof(text).map(ModCallbackValue::Float).map_err(|error| {
+                        GuestError::invalid(format!("Mod console argument is not source text: {error}"))
+                    }),
                 }
             }
             ModConsoleValue::ArgumentsText => Ok(ModCallbackValue::String(args_text.to_string())),
@@ -42,9 +42,16 @@ pub fn qc_console_call(
     }
     let mut globals = Vec::with_capacity(command.globals.len());
     for global in &command.globals {
-        globals.push(ModSourceGlobal { name: global.name.clone(), value: resolve(&global.value)? });
+        globals.push(ModSourceGlobal {
+            name: global.name.clone(),
+            value: resolve(&global.value)?,
+        });
     }
-    Ok(ModSourceCall { function: command.function.clone(), arguments, globals })
+    Ok(ModSourceCall {
+        function: command.function.clone(),
+        arguments,
+        globals,
+    })
 }
 
 #[cfg(test)]
@@ -57,8 +64,14 @@ mod tests {
             name: "give".to_string(),
             function: "cmd_give".to_string(),
             arguments: vec![
-                ModConsoleValue::Argument { index: 1, arg_type: ModConsoleArgType::String },
-                ModConsoleValue::Argument { index: 2, arg_type: ModConsoleArgType::Float },
+                ModConsoleValue::Argument {
+                    index: 1,
+                    arg_type: ModConsoleArgType::String,
+                },
+                ModConsoleValue::Argument {
+                    index: 2,
+                    arg_type: ModConsoleArgType::Float,
+                },
                 ModConsoleValue::ArgumentsText,
                 ModConsoleValue::ArgumentCount,
                 ModConsoleValue::Float(1.5),

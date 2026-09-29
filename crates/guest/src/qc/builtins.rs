@@ -421,7 +421,10 @@ pub fn qc_host_requirements(kind: QcHostKind) -> Vec<QcBuiltinRequirement> {
             name: QcHostBuiltinName::Setcolor,
         });
         for name in RERELEASE_NAMES {
-            requirements.push(QcBuiltinRequirement { number: None, name: *name });
+            requirements.push(QcBuiltinRequirement {
+                number: None,
+                name: *name,
+            });
         }
     }
     requirements
@@ -460,30 +463,35 @@ fn make_vectors(machine: &mut QcMachine) -> Result<(), GuestError> {
     let forward = machine.global_offset("v_forward")?;
     let right = machine.global_offset("v_right")?;
     let up = machine.global_offset("v_up")?;
-    machine.globals_mut().set_vector(
-        forward,
-        vec3(
-            numeric.mul(cp, cy) as f32,
-            numeric.mul(cp, sy) as f32,
-            (-sp) as f32,
-        ),
-    ).map_err(|error| machine.fail(error.to_string()))?;
-    machine.globals_mut().set_vector(
-        right,
-        vec3(
-            numeric.add(numeric.mul(numeric.mul(-sr, sp), cy), numeric.mul(cr, sy)) as f32,
-            numeric.sub(numeric.mul(numeric.mul(-sr, sp), sy), numeric.mul(cr, cy)) as f32,
-            numeric.mul(-sr, cp) as f32,
-        ),
-    ).map_err(|error| machine.fail(error.to_string()))?;
-    machine.globals_mut().set_vector(
-        up,
-        vec3(
-            numeric.add(numeric.mul(numeric.mul(cr, sp), cy), numeric.mul(sr, sy)) as f32,
-            numeric.sub(numeric.mul(numeric.mul(cr, sp), sy), numeric.mul(sr, cy)) as f32,
-            numeric.mul(cr, cp) as f32,
-        ),
-    ).map_err(|error| machine.fail(error.to_string()))?;
+    machine
+        .globals_mut()
+        .set_vector(
+            forward,
+            vec3(numeric.mul(cp, cy) as f32, numeric.mul(cp, sy) as f32, (-sp) as f32),
+        )
+        .map_err(|error| machine.fail(error.to_string()))?;
+    machine
+        .globals_mut()
+        .set_vector(
+            right,
+            vec3(
+                numeric.add(numeric.mul(numeric.mul(-sr, sp), cy), numeric.mul(cr, sy)) as f32,
+                numeric.sub(numeric.mul(numeric.mul(-sr, sp), sy), numeric.mul(cr, cy)) as f32,
+                numeric.mul(-sr, cp) as f32,
+            ),
+        )
+        .map_err(|error| machine.fail(error.to_string()))?;
+    machine
+        .globals_mut()
+        .set_vector(
+            up,
+            vec3(
+                numeric.add(numeric.mul(numeric.mul(cr, sp), cy), numeric.mul(sr, sy)) as f32,
+                numeric.sub(numeric.mul(numeric.mul(cr, sp), sy), numeric.mul(sr, cy)) as f32,
+                numeric.mul(cr, cp) as f32,
+            ),
+        )
+        .map_err(|error| machine.fail(error.to_string()))?;
     Ok(())
 }
 
@@ -497,9 +505,9 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
         numbered.insert(
             7,
             Rc::new(move |machine: &mut QcMachine| {
-                let mut source = random.try_borrow_mut().map_err(|_| {
-                    machine.fail("random source is already borrowed")
-                })?;
+                let mut source = random
+                    .try_borrow_mut()
+                    .map_err(|_| machine.fail("random source is already borrowed"))?;
                 let draw = f64::from(source.next_integer() & 0x7fff) / f64::from(0x7fff);
                 machine.return_float(draw as f32)
             }),
@@ -511,7 +519,11 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
             let vector = machine.arg_vector(0)?;
             let numeric = machine.numeric();
             let magnitude = vector_length(machine, vector);
-            let inverse = if magnitude == 0.0 { 0.0 } else { numeric.div(1.0, magnitude) };
+            let inverse = if magnitude == 0.0 {
+                0.0
+            } else {
+                numeric.div(1.0, magnitude)
+            };
             machine.return_vector(vec3(
                 numeric.mul(f64::from(vector.x), inverse) as f32,
                 numeric.mul(f64::from(vector.y), inverse) as f32,
@@ -549,7 +561,9 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
             } else {
                 format_float(value)
             };
-            let reference = machine.strings_mut().set_engine("pr_string_temp", &text, 128)
+            let reference = machine
+                .strings_mut()
+                .set_engine("pr_string_temp", &text, 128)
                 .map_err(|error| machine.fail(error.to_string()))?;
             machine.return_int(reference)
         }),
@@ -564,7 +578,9 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
                 format_float(f64::from(value.y)),
                 format_float(f64::from(value.z))
             );
-            let reference = machine.strings_mut().set_engine("pr_string_temp", &text, 128)
+            let reference = machine
+                .strings_mut()
+                .set_engine("pr_string_temp", &text, 128)
                 .map_err(|error| machine.fail(error.to_string()))?;
             machine.return_int(reference)
         }),
@@ -592,28 +608,26 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
     );
     numbered.insert(
         37,
-        Rc::new(|machine: &mut QcMachine| {
-            machine.return_float(f64::from(machine.arg_float(0)?).floor() as f32)
-        }),
+        Rc::new(|machine: &mut QcMachine| machine.return_float(f64::from(machine.arg_float(0)?).floor() as f32)),
     );
     numbered.insert(
         38,
-        Rc::new(|machine: &mut QcMachine| {
-            machine.return_float(f64::from(machine.arg_float(0)?).ceil() as f32)
-        }),
+        Rc::new(|machine: &mut QcMachine| machine.return_float(f64::from(machine.arg_float(0)?).ceil() as f32)),
     );
     numbered.insert(
         43,
-        Rc::new(|machine: &mut QcMachine| {
-            machine.return_float(f64::from(machine.arg_float(0)?).abs() as f32)
-        }),
+        Rc::new(|machine: &mut QcMachine| machine.return_float(f64::from(machine.arg_float(0)?).abs() as f32)),
     );
     numbered.insert(
         51,
         Rc::new(|machine: &mut QcMachine| {
             let vector = machine.arg_vector(0)?;
             let pitch = if vector.x == 0.0 && vector.y == 0.0 {
-                if vector.z > 0.0 { 90.0 } else { 270.0 }
+                if vector.z > 0.0 {
+                    90.0
+                } else {
+                    270.0
+                }
             } else {
                 let forward = (f64::from(vector.x).powi(2) + f64::from(vector.y).powi(2)).sqrt();
                 let pitch = (f64::from(vector.z).atan2(forward) * 180.0 / std::f64::consts::PI).trunc() as i32;
@@ -635,7 +649,9 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
                 let start_reference = machine.arg_int(0)?;
                 let field = machine.arg_int(1)?;
                 let matched = machine.arg_string(2)?;
-                let start = machine.entities().slot(start_reference)
+                let start = machine
+                    .entities()
+                    .slot(start_reference)
                     .map_err(|error| machine.fail(error.to_string()))?;
                 let definition = machine
                     .program()
@@ -653,11 +669,15 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
                     if is_free(slot) {
                         continue;
                     }
-                    let reference = machine.entities().reference(slot)
+                    let reference = machine
+                        .entities()
+                        .reference(slot)
                         .map_err(|error| machine.fail(error.to_string()))?;
                     let text = machine.entity_int(reference, &name)?;
                     if text != 0 {
-                        let value = machine.strings().get(text)
+                        let value = machine
+                            .strings()
+                            .get(text)
                             .map_err(|error| machine.fail(error.to_string()))?;
                         if value == matched {
                             return machine.return_int(reference);
@@ -674,11 +694,15 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
                     prepare();
                 }
                 let start_reference = machine.arg_int(0)?;
-                let start = machine.entities().slot(start_reference)
+                let start = machine
+                    .entities()
+                    .slot(start_reference)
                     .map_err(|error| machine.fail(error.to_string()))?;
                 for slot in start + 1..machine.entities().count() as u32 {
                     if !is_free_next(slot) {
-                        let reference = machine.entities().reference(slot)
+                        let reference = machine
+                            .entities()
+                            .reference(slot)
                             .map_err(|error| machine.fail(error.to_string()))?;
                         return machine.return_int(reference);
                     }
@@ -692,8 +716,7 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
             81,
             Rc::new(|machine: &mut QcMachine| {
                 let text = machine.arg_string(0)?;
-                let value = qa_core::numeric::native_atof(&text)
-                    .map_err(|error| machine.fail(error.to_string()))?;
+                let value = qa_core::numeric::native_atof(&text).map_err(|error| machine.fail(error.to_string()))?;
                 machine.return_float(value as f32)
             }),
         );
@@ -726,9 +749,9 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::machine::QcMachineOptions;
     use super::super::program::QcOpcode;
+    use super::*;
     use qa_core::numeric::NumericOps;
 
     fn test_machine() -> QcMachine {
@@ -805,7 +828,11 @@ mod tests {
     }
 
     fn invoke(registry: &QcBuiltinRegistry, machine: &mut QcMachine, number: i32) -> Result<(), GuestError> {
-        let builtin = registry.numbered.get(&number).cloned().ok_or_else(|| machine.fail("missing test builtin"))?;
+        let builtin = registry
+            .numbered
+            .get(&number)
+            .cloned()
+            .ok_or_else(|| machine.fail("missing test builtin"))?;
         builtin(machine)
     }
 
@@ -818,8 +845,9 @@ mod tests {
         assert!(!quakeworld.iter().any(|requirement| requirement.number == Some(48)));
         assert!(quakeworld.iter().any(|requirement| requirement.number == Some(79)));
         assert!(rerelease.iter().any(|requirement| requirement.number == Some(401)));
-        assert!(rerelease.iter().any(|requirement| requirement.number.is_none()
-            && requirement.name == QcHostBuiltinName::ExPrompt));
+        assert!(rerelease
+            .iter()
+            .any(|requirement| requirement.number.is_none() && requirement.name == QcHostBuiltinName::ExPrompt));
     }
 
     #[test]
@@ -880,7 +908,10 @@ mod tests {
         let mut machine = test_machine();
         machine.globals_mut().set_vector(4, vec3(0.0, 0.0, 0.0)).unwrap();
         invoke(&registry, &mut machine, 1).unwrap();
-        let forward = machine.globals().vector(machine.global_offset("v_forward").unwrap()).unwrap();
+        let forward = machine
+            .globals()
+            .vector(machine.global_offset("v_forward").unwrap())
+            .unwrap();
         assert!((forward.x - 1.0).abs() < 1e-6);
         assert!(forward.y.abs() < 1e-6);
     }
@@ -947,10 +978,16 @@ mod tests {
         let wanted = machine.strings_mut().allocate("monster").unwrap();
         machine.globals_mut().set_int(10, wanted).unwrap();
         invoke(&registry, &mut machine, 18).unwrap();
-        assert_eq!(machine.globals().int(1).unwrap(), machine.entities().reference(2).unwrap());
+        assert_eq!(
+            machine.globals().int(1).unwrap(),
+            machine.entities().reference(2).unwrap()
+        );
         machine.globals_mut().set_int(4, start).unwrap();
         invoke(&registry, &mut machine, 47).unwrap();
-        assert_eq!(machine.globals().int(1).unwrap(), machine.entities().reference(2).unwrap());
+        assert_eq!(
+            machine.globals().int(1).unwrap(),
+            machine.entities().reference(2).unwrap()
+        );
     }
 
     #[test]

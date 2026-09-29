@@ -422,7 +422,12 @@ pub fn original_team(values: &[SourceTeamValue], team: Option<&str>) -> Result<f
         .iter()
         .find(|entry| entry.team.as_deref() == team)
         .map(|entry| entry.value)
-        .ok_or_else(|| GuestError::invalid(format!("Shared team {} has no declared original value", team.unwrap_or("unassigned"))))
+        .ok_or_else(|| {
+            GuestError::invalid(format!(
+                "Shared team {} has no declared original value",
+                team.unwrap_or("unassigned")
+            ))
+        })
 }
 
 /// Validate a team/score match field.
@@ -433,16 +438,22 @@ pub fn validate_source_match_field(binding: &ModActorBinding) -> Result<(), Gues
         _ => return Err(GuestError::invalid("Match field must bind team or score")),
     };
     if values.is_empty()
-        || values.iter().any(|entry| !entry.value.is_finite() || entry.team.as_deref() == Some(""))
+        || values
+            .iter()
+            .any(|entry| !entry.value.is_finite() || entry.team.as_deref() == Some(""))
     {
-        return Err(GuestError::invalid("Team projection requires distinct original values and shared identities"));
+        return Err(GuestError::invalid(
+            "Team projection requires distinct original values and shared identities",
+        ));
     }
     let mut scalars = Vec::with_capacity(values.len());
     let mut teams = Vec::with_capacity(values.len());
     for entry in values {
         // f64 has no Hash; compare by exact equality instead.
         if scalars.iter().any(|known: &f64| *known == entry.value) || teams.contains(&entry.team) {
-            return Err(GuestError::invalid("Team projection requires distinct original values and shared identities"));
+            return Err(GuestError::invalid(
+                "Team projection requires distinct original values and shared identities",
+            ));
         }
         scalars.push(entry.value);
         teams.push(entry.team.clone());
@@ -1556,7 +1567,9 @@ pub fn validate_qc_mod(
         .as_ref()
         .ok_or_else(|| GuestError::invalid("Gameplay mod declaration requires its program artifact"))?;
     if program.digest() != program_ref.digest {
-        return Err(GuestError::invalid("Gameplay mod program differs from its declared artifact digest"));
+        return Err(GuestError::invalid(
+            "Gameplay mod program differs from its declared artifact digest",
+        ));
     }
     validate_client_outputs(program, declaration)?;
     validate_protection_storage(program, declaration)?;
@@ -1586,7 +1599,11 @@ fn validate_client_outputs(
     let output_field = |name: &str, vector: bool| -> Result<(), GuestError> {
         let field = program.field_type(name);
         let binding = declaration.actor_fields.iter().find(|value| value.field == name);
-        let expected = if vector { QcValueType::Vector } else { QcValueType::Float };
+        let expected = if vector {
+            QcValueType::Vector
+        } else {
+            QcValueType::Float
+        };
         let bound = matches!(
             binding.map(|value| &value.binding),
             Some(ModActorBinding::Private)
@@ -1622,17 +1639,26 @@ fn validate_client_outputs(
                 output_field(max, true)?;
                 let min_binding = declaration.actor_fields.iter().find(|value| value.field == *min);
                 let max_binding = declaration.actor_fields.iter().find(|value| value.field == *max);
-                if !matches!(min_binding.map(|value| &value.binding), Some(ModActorBinding::BoundsMin))
-                    || !matches!(max_binding.map(|value| &value.binding), Some(ModActorBinding::BoundsMax))
-                {
-                    return Err(GuestError::invalid("Client body shape must name its declared source mins/maxs"));
+                if !matches!(
+                    min_binding.map(|value| &value.binding),
+                    Some(ModActorBinding::BoundsMin)
+                ) || !matches!(
+                    max_binding.map(|value| &value.binding),
+                    Some(ModActorBinding::BoundsMax)
+                ) {
+                    return Err(GuestError::invalid(
+                        "Client body shape must name its declared source mins/maxs",
+                    ));
                 }
             }
             ModClientOutput::ViewOffsetField { field } => output_field(field, true)?,
             ModClientOutput::ViewOffsetHeight { height } => {
                 output_field(height, false)?;
                 let binding = declaration.actor_fields.iter().find(|value| value.field == *height);
-                if matches!(binding.map(|value| &value.binding), Some(ModActorBinding::ClientFlags { .. })) {
+                if matches!(
+                    binding.map(|value| &value.binding),
+                    Some(ModActorBinding::ClientFlags { .. })
+                ) {
                     return Err(GuestError::invalid(
                         "QC client flag outputs must name an explicit mask of source-private bits",
                     ));
@@ -1642,7 +1668,8 @@ fn validate_client_outputs(
                 output_field(field, false)?;
             }
         }
-        if let ModClientOutput::MovementMode { field, mask, .. } | ModClientOutput::Stance { field, mask, .. } = output {
+        if let ModClientOutput::MovementMode { field, mask, .. } | ModClientOutput::Stance { field, mask, .. } = output
+        {
             let binding = declaration.actor_fields.iter().find(|value| value.field == *field);
             if let Some(ModActorBinding::ClientFlags { private_mask, .. }) = binding.map(|value| &value.binding) {
                 let mask = mask.unwrap_or(0);
@@ -1657,8 +1684,15 @@ fn validate_client_outputs(
     Ok(())
 }
 
-/// Validate protection storage declarations (structural half of `qcProtectionRegions`).
+/// Validate protection declarations via the shared region check.
 fn validate_protection_storage(
+    program: &dyn QcProgramView,
+    declaration: &ModCallbackDeclaration,
+) -> Result<(), GuestError> {
+    super::mod_protection::qc_protection_regions(program, declaration).map(|_| ())}
+
+#[allow(dead_code)]
+fn replaced_validate_protection_storage_body(
     program: &dyn QcProgramView,
     declaration: &ModCallbackDeclaration,
 ) -> Result<(), GuestError> {
@@ -1666,15 +1700,31 @@ fn validate_protection_storage(
     let mut channels = HashSet::new();
     for definition in &declaration.protection {
         if declaration.clients.is_none() || !channels.insert(definition.channel) {
-            return Err(GuestError::invalid("QC protection requires clients and one declaration per channel"));
+            return Err(GuestError::invalid(
+                "QC protection requires clients and one declaration per channel",
+            ));
         }
         let (count, selection) = match (&definition.channel, &definition.regular, &definition.powered) {
-            (ProtectionChannel::Regular, Some(storage), _) => {
-                (storage.points.clone(), storage.selection.as_ref().map(|selection| (selection.field.clone(), selection.mask, selection.values.iter().map(|value| value.value).collect::<Vec<_>>())))
-            }
-            (ProtectionChannel::Powered, _, Some(storage)) => {
-                (storage.cells.clone(), storage.selection.as_ref().map(|selection| (selection.field.clone(), selection.mask, selection.values.iter().map(|value| value.value).collect::<Vec<_>>())))
-            }
+            (ProtectionChannel::Regular, Some(storage), _) => (
+                storage.points.clone(),
+                storage.selection.as_ref().map(|selection| {
+                    (
+                        selection.field.clone(),
+                        selection.mask,
+                        selection.values.iter().map(|value| value.value).collect::<Vec<_>>(),
+                    )
+                }),
+            ),
+            (ProtectionChannel::Powered, _, Some(storage)) => (
+                storage.cells.clone(),
+                storage.selection.as_ref().map(|selection| {
+                    (
+                        selection.field.clone(),
+                        selection.mask,
+                        selection.values.iter().map(|value| value.value).collect::<Vec<_>>(),
+                    )
+                }),
+            ),
             _ => return Err(GuestError::invalid("QC protection requires storage for its channel")),
         };
         let mut names = vec![count];
@@ -1687,13 +1737,17 @@ fn validate_protection_storage(
                 .iter()
                 .any(|field| field.field == *name && matches!(field.binding, ModActorBinding::Private));
             if program.field_type(name) != Some(QcValueType::Float) || !bound {
-                return Err(GuestError::invalid(format!("QC protection requires private float storage {name}")));
+                return Err(GuestError::invalid(format!(
+                    "QC protection requires private float storage {name}"
+                )));
             }
         }
         if let Some((field, mask, values)) = &selection {
             if field == &names[0]
                 || values.is_empty()
-                || values.iter().any(|value| !value.is_finite() || f64::from(*value as f32) != *value)
+                || values
+                    .iter()
+                    .any(|value| !value.is_finite() || f64::from(*value as f32) != *value)
             {
                 return Err(GuestError::invalid("QC protection selection is not representable"));
             }
@@ -1707,9 +1761,9 @@ fn validate_protection_storage(
             if let Some(mask) = mask {
                 if *mask <= 0
                     || *mask > 0x7f_ffff
-                    || values.iter().any(|value| {
-                        value.fract() != 0.0 || (*value as i32 & *mask) != *value as i32
-                    })
+                    || values
+                        .iter()
+                        .any(|value| value.fract() != 0.0 || (*value as i32 & *mask) != *value as i32)
                 {
                     return Err(GuestError::invalid("QC protection selection mask is invalid"));
                 }
@@ -1723,24 +1777,25 @@ fn validate_protection_storage(
             definition.flags.radius,
         ];
         if flags.iter().any(|mask| *mask < 0 || *mask > 0x7f_ffff) {
-            return Err(GuestError::invalid("QC protection flags exceed source integer precision"));
+            return Err(GuestError::invalid(
+                "QC protection flags exceed source integer precision",
+            ));
         }
     }
     Ok(())
 }
 
 /// Validate item storage declarations (structural half of `validateQcItems`).
-fn validate_item_storage(
-    program: &dyn QcProgramView,
-    declaration: &ModCallbackDeclaration,
-) -> Result<(), GuestError> {
+fn validate_item_storage(program: &dyn QcProgramView, declaration: &ModCallbackDeclaration) -> Result<(), GuestError> {
     use std::collections::{HashMap, HashSet};
     let items = match declaration.items.as_ref() {
         Some(items) => items,
         None => return Ok(()),
     };
     if declaration.clients.is_none() || items.definitions.is_empty() {
-        return Err(GuestError::invalid("QC source items require canonical clients and definitions"));
+        return Err(GuestError::invalid(
+            "QC source items require canonical clients and definitions",
+        ));
     }
     let mut definitions = HashMap::new();
     for definition in &items.definitions {
@@ -1755,24 +1810,36 @@ fn validate_item_storage(
                     || (input && matches!(field.binding, ModActorBinding::ClientInput { .. })))
         });
         if program.field_type(name) != Some(expected) || !bound {
-            return Err(GuestError::invalid(format!("QC item storage {name} requires declared original storage")));
+            return Err(GuestError::invalid(format!(
+                "QC item storage {name} requires declared original storage"
+            )));
         }
         Ok(())
     };
     let offset_of = |name: &str| -> usize {
-        declaration.actor_fields.iter().position(|field| field.field == name).unwrap_or(usize::MAX)
+        declaration
+            .actor_fields
+            .iter()
+            .position(|field| field.field == name)
+            .unwrap_or(usize::MAX)
     };
     let mut bound = HashSet::new();
     let mut words: HashMap<usize, &str> = HashMap::new();
     for storage in &items.storage {
         match storage {
-            ModItemStorage::Counter { field: name, item, capacity } => {
+            ModItemStorage::Counter {
+                field: name,
+                item,
+                capacity,
+            } => {
                 field(name, QcValueType::Float, false)?;
                 if words.insert(offset_of(name), "count").is_some() {
                     return Err(GuestError::invalid("QC item storage fields overlap"));
                 }
                 if !definitions.contains_key(item) || !bound.insert(item.clone()) {
-                    return Err(GuestError::invalid(format!("QC item {item} lacks distinct declared storage")));
+                    return Err(GuestError::invalid(format!(
+                        "QC item {item} lacks distinct declared storage"
+                    )));
                 }
                 match capacity {
                     ModItemCapacity::Field { field: capacity } => {
@@ -1789,21 +1856,36 @@ fn validate_item_storage(
                     }
                 }
             }
-            ModItemStorage::Bits { field: name, private_mask, items: packed } => {
+            ModItemStorage::Bits {
+                field: name,
+                private_mask,
+                items: packed,
+            } => {
                 field(name, QcValueType::Float, false)?;
                 if words.insert(offset_of(name), "count").is_some() {
                     return Err(GuestError::invalid("QC item storage fields overlap"));
                 }
                 if *private_mask < 0 || *private_mask > 0xff_ffff || packed.is_empty() {
-                    return Err(GuestError::invalid("QC packed inventory requires an exact binary32 mask"));
+                    return Err(GuestError::invalid(
+                        "QC packed inventory requires an exact binary32 mask",
+                    ));
                 }
                 let mut mask = *private_mask;
                 for entry in packed {
                     if !definitions.contains_key(&entry.item) || !bound.insert(entry.item.clone()) {
-                        return Err(GuestError::invalid(format!("QC item {} lacks distinct declared storage", entry.item)));
+                        return Err(GuestError::invalid(format!(
+                            "QC item {} lacks distinct declared storage",
+                            entry.item
+                        )));
                     }
-                    if entry.mask < 1 || entry.mask > 0x80_0000 || (entry.mask & (entry.mask - 1)) != 0 || (mask & entry.mask) != 0 {
-                        return Err(GuestError::invalid("QC packed inventory masks overlap or exceed source precision"));
+                    if entry.mask < 1
+                        || entry.mask > 0x80_0000
+                        || (entry.mask & (entry.mask - 1)) != 0
+                        || (mask & entry.mask) != 0
+                    {
+                        return Err(GuestError::invalid(
+                            "QC packed inventory masks overlap or exceed source precision",
+                        ));
                     }
                     mask |= entry.mask;
                 }
@@ -1819,16 +1901,19 @@ fn validate_item_storage(
         .filter(|definition| matches!(definition.kind, ModItemKind::Weapon { .. }))
         .collect();
     if (weapons.is_empty()) != (items.weapons.is_none()) {
-        return Err(GuestError::invalid("QC weapon definitions require their original source consumer"));
+        return Err(GuestError::invalid(
+            "QC weapon definitions require their original source consumer",
+        ));
     }
     if let Some(consumer) = items.weapons.as_ref() {
         for name in ["think", "nextthink"] {
             let bound = declaration.actor_fields.iter().any(|field| {
-                field.field == name
-                    && matches!(&field.binding, ModActorBinding::Think | ModActorBinding::Nextthink)
+                field.field == name && matches!(&field.binding, ModActorBinding::Think | ModActorBinding::Nextthink)
             });
             if !bound {
-                return Err(GuestError::invalid("QC weapons require continuing source think ownership"));
+                return Err(GuestError::invalid(
+                    "QC weapons require continuing source think ownership",
+                ));
             }
         }
         let mappings = [
@@ -1863,9 +1948,10 @@ fn validate_item_storage(
         for weapon in &weapons {
             if let ModItemKind::Weapon { ammo: Some(ammo) } = &weapon.kind {
                 let declared = definitions.contains_key(ammo)
-                    || declaration.actor_fields.iter().any(|field| {
-                        matches!(&field.binding, ModActorBinding::Inventory { item } if item == ammo)
-                    });
+                    || declaration
+                        .actor_fields
+                        .iter()
+                        .any(|field| matches!(&field.binding, ModActorBinding::Inventory { item } if item == ammo));
                 if !declared {
                     return Err(GuestError::invalid("QC weapon has no declared ammo source"));
                 }
@@ -1892,19 +1978,25 @@ fn validate_pickups(
             || pickup.offered.iter().collect::<HashSet<_>>().len() != pickup.offered.len()
             || pickup.offered.iter().any(|item| offered.contains(item))
         {
-            return Err(GuestError::invalid("QC pickups require clients, unique rule ids and distinct offered items"));
+            return Err(GuestError::invalid(
+                "QC pickups require clients, unique rule ids and distinct offered items",
+            ));
         }
         for item in &pickup.offered {
             offered.insert(item.clone());
         }
         if pickup.writes.is_empty() {
-            return Err(GuestError::invalid("QC pickup resource requires its declared source storage"));
+            return Err(GuestError::invalid(
+                "QC pickup resource requires its declared source storage",
+            ));
         }
         for write in &pickup.writes {
             match write {
                 PickupWrite::Protection { channel } => {
                     if !declaration.protection.iter().any(|value| value.channel == *channel) {
-                        return Err(GuestError::invalid("QC pickup resource requires its declared source storage"));
+                        return Err(GuestError::invalid(
+                            "QC pickup resource requires its declared source storage",
+                        ));
                     }
                 }
                 PickupWrite::Inventory { item, fields } => {
@@ -1917,7 +2009,9 @@ fn validate_pickups(
                             ModItemStorage::Bits { items: packed, .. } => {
                                 *fields == PickupFields::Count && packed.iter().any(|entry| entry.item == *item)
                             }
-                            ModItemStorage::Counter { item: stored, capacity, .. } => {
+                            ModItemStorage::Counter {
+                                item: stored, capacity, ..
+                            } => {
                                 stored == item
                                     && (*fields == PickupFields::Count
                                         || matches!(capacity, ModItemCapacity::Field { .. }))
@@ -1925,7 +2019,9 @@ fn validate_pickups(
                         })
                     });
                     if !(actor_bound || item_bound) {
-                        return Err(GuestError::invalid("QC pickup resource requires its declared source storage"));
+                        return Err(GuestError::invalid(
+                            "QC pickup resource requires its declared source storage",
+                        ));
                     }
                 }
             }
@@ -1954,10 +2050,7 @@ fn validate_pickups(
 }
 
 /// Validate actor-field bindings and their program types.
-fn validate_actor_fields(
-    program: &dyn QcProgramView,
-    declaration: &ModCallbackDeclaration,
-) -> Result<(), GuestError> {
+fn validate_actor_fields(program: &dyn QcProgramView, declaration: &ModCallbackDeclaration) -> Result<(), GuestError> {
     use std::collections::HashSet;
     for binding in ["team", "score"] {
         let count = declaration
@@ -1969,27 +2062,46 @@ fn validate_actor_fields(
             })
             .count();
         if count > 1 {
-            return Err(GuestError::invalid(format!("Duplicate original {binding} authority field")));
+            return Err(GuestError::invalid(format!(
+                "Duplicate original {binding} authority field"
+            )));
         }
     }
-    let think = declaration.actor_fields.iter().filter(|field| matches!(field.binding, ModActorBinding::Think)).count();
-    let nextthink = declaration.actor_fields.iter().filter(|field| matches!(field.binding, ModActorBinding::Nextthink)).count();
+    let think = declaration
+        .actor_fields
+        .iter()
+        .filter(|field| matches!(field.binding, ModActorBinding::Think))
+        .count();
+    let nextthink = declaration
+        .actor_fields
+        .iter()
+        .filter(|field| matches!(field.binding, ModActorBinding::Nextthink))
+        .count();
     if think != nextthink || think > 1 {
-        return Err(GuestError::invalid("Mod source scheduling requires one think and one nextthink binding together"));
+        return Err(GuestError::invalid(
+            "Mod source scheduling requires one think and one nextthink binding together",
+        ));
     }
     let mut words = HashSet::new();
     for entry in &declaration.actor_fields {
         match &entry.binding {
             ModActorBinding::Team { .. } | ModActorBinding::Score => validate_source_match_field(&entry.binding)?,
             ModActorBinding::ClientInput { input, update, scale } => {
-                if declaration.clients.as_ref().is_none_or(|clients| clients.input.is_empty())
+                if declaration
+                    .clients
+                    .as_ref()
+                    .is_none_or(|clients| clients.input.is_empty())
                     || (*update == ClientInputUpdate::Nonzero && *input == ModClientInput::ViewAngles)
                 {
-                    return Err(GuestError::invalid("Mod client input fields require declared applications and scalar nonzero updates"));
+                    return Err(GuestError::invalid(
+                        "Mod client input fields require declared applications and scalar nonzero updates",
+                    ));
                 }
                 if let Some(scale) = scale {
                     if !scale.is_finite() || *scale == 0.0 || *input == ModClientInput::ViewAngles {
-                        return Err(GuestError::invalid("QC input scale requires a finite nonzero scalar encoding"));
+                        return Err(GuestError::invalid(
+                            "QC input scale requires a finite nonzero scalar encoding",
+                        ));
                     }
                 }
             }
@@ -1997,13 +2109,17 @@ fn validate_actor_fields(
                 if let Some(mask) = private_mask {
                     let reserved = 8 | 128 | (if *grounded { 512 } else { 0 });
                     if *mask < 0 || *mask > 0x7f_ffff || (*mask & reserved) != 0 {
-                        return Err(GuestError::invalid("Mod private client flags overlap canonical flags or exceed the source flag word"));
+                        return Err(GuestError::invalid(
+                            "Mod private client flags overlap canonical flags or exceed the source flag word",
+                        ));
                     }
                 }
             }
             ModActorBinding::Userinfo { key } => {
                 if declaration.clients.is_none() || key.is_empty() || key.contains(['\\', '\0']) {
-                    return Err(GuestError::invalid("Mod userinfo field requires a declared client and valid info key"));
+                    return Err(GuestError::invalid(
+                        "Mod userinfo field requires a declared client and valid info key",
+                    ));
                 }
             }
             _ => {}
@@ -2019,7 +2135,11 @@ fn validate_actor_fields(
                 ModConstantValue::Vector(_) => QcValueType::Vector,
             },
             ModActorBinding::ClientInput { input, .. } => {
-                if *input == ModClientInput::ViewAngles { QcValueType::Vector } else { QcValueType::Float }
+                if *input == ModClientInput::ViewAngles {
+                    QcValueType::Vector
+                } else {
+                    QcValueType::Float
+                }
             }
             ModActorBinding::Classname | ModActorBinding::Userinfo { .. } => QcValueType::String,
             ModActorBinding::Think => QcValueType::Function,
@@ -2029,7 +2149,12 @@ fn validate_actor_fields(
             | ModActorBinding::Inventory { .. }
             | ModActorBinding::Nextthink
             | ModActorBinding::ClientFlags { .. } => QcValueType::Float,
-            ModActorBinding::Origin | ModActorBinding::Velocity | ModActorBinding::Angles | ModActorBinding::BoundsMin | ModActorBinding::BoundsMax | ModActorBinding::ViewOffset => QcValueType::Vector,
+            ModActorBinding::Origin
+            | ModActorBinding::Velocity
+            | ModActorBinding::Angles
+            | ModActorBinding::BoundsMin
+            | ModActorBinding::BoundsMax
+            | ModActorBinding::ViewOffset => QcValueType::Vector,
         };
         if field != expected {
             return Err(GuestError::invalid(format!(
@@ -2042,7 +2167,10 @@ fn validate_actor_fields(
         for word in 0..width {
             let key = format!("{}:{word}", entry.field);
             if !words.insert(key) {
-                return Err(GuestError::invalid(format!("Overlapping mod actor field {}", entry.field)));
+                return Err(GuestError::invalid(format!(
+                    "Overlapping mod actor field {}",
+                    entry.field
+                )));
             }
         }
     }
@@ -2090,15 +2218,25 @@ fn validate_clients(
         None => return Ok(()),
     };
     if clients.maximum < 1 || clients.maximum >= 8191 {
-        return Err(GuestError::invalid("Mod client capacity must fit reserved QuakeC edicts"));
+        return Err(GuestError::invalid(
+            "Mod client capacity must fit reserved QuakeC edicts",
+        ));
     }
     for call in clients.admit.iter().chain(&clients.userinfo).chain(&clients.disconnect) {
-        validate_call(call, &[ModCallbackInput::Self_, ModCallbackInput::Time], "client lifecycle")?;
+        validate_call(
+            call,
+            &[ModCallbackInput::Self_, ModCallbackInput::Time],
+            "client lifecycle",
+        )?;
     }
     for call in &clients.frame {
         validate_call(
             call,
-            &[ModCallbackInput::Self_, ModCallbackInput::Time, ModCallbackInput::Elapsed],
+            &[
+                ModCallbackInput::Self_,
+                ModCallbackInput::Time,
+                ModCallbackInput::Elapsed,
+            ],
             "client frame",
         )?;
     }
@@ -2131,7 +2269,9 @@ fn validate_clients(
                             && !inputs.is_empty()
                             && distinct;
                         if !valid {
-                            return Err(GuestError::invalid("QC output requires an original actor handler and distinct controls"));
+                            return Err(GuestError::invalid(
+                                "QC output requires an original actor handler and distinct controls",
+                            ));
                         }
                     }
                 }
@@ -2170,7 +2310,10 @@ fn validate_objectives(
         for storage in [&objective.carrier, &objective.target].into_iter().flatten() {
             validate_objective_storage(program, storage, QcValueType::Entity)?;
         }
-        if let QcObjectiveRole::Owned { change: Some(change), .. } = &objective.role {
+        if let QcObjectiveRole::Owned {
+            change: Some(change), ..
+        } = &objective.role
+        {
             validate_call(
                 change,
                 &[
@@ -2196,20 +2339,32 @@ fn validate_objective_storage(
     match storage {
         QcModObjectiveStorage::Global(name) => {
             if program.global_type(name) != Some(expected) {
-                return Err(GuestError::invalid(format!("Objective global {name} requires original {expected:?} storage")));
+                return Err(GuestError::invalid(format!(
+                    "Objective global {name} requires original {expected:?} storage"
+                )));
             }
         }
-        QcModObjectiveStorage::EntityField { global, indirections, field } => {
+        QcModObjectiveStorage::EntityField {
+            global,
+            indirections,
+            field,
+        } => {
             if program.global_type(global) != Some(QcValueType::Entity) {
-                return Err(GuestError::invalid("Objective field requires an original global entity reference"));
+                return Err(GuestError::invalid(
+                    "Objective field requires an original global entity reference",
+                ));
             }
             for name in indirections {
                 if program.field_type(name) != Some(QcValueType::Entity) {
-                    return Err(GuestError::invalid(format!("Objective selector {name} requires an original entity field")));
+                    return Err(GuestError::invalid(format!(
+                        "Objective selector {name} requires an original entity field"
+                    )));
                 }
             }
             if program.field_type(field) != Some(expected) {
-                return Err(GuestError::invalid(format!("Objective field {field} requires original {expected:?} storage")));
+                return Err(GuestError::invalid(format!(
+                    "Objective field {field} requires original {expected:?} storage"
+                )));
             }
         }
     }
@@ -2227,8 +2382,15 @@ fn validate_commands(
     for command in &declaration.commands {
         let name = ascii_fold(&command.name);
         let tokens = split_command_tokens(&command.name);
-        if tokens.len() != 1 || tokens.first().is_none_or(|token| *token != command.name) || command.name.contains(';') || !commands.insert(name) {
-            return Err(GuestError::invalid(format!("Invalid or duplicate mod command {}", command.name)));
+        if tokens.len() != 1
+            || tokens.first().is_none_or(|token| *token != command.name)
+            || command.name.contains(';')
+            || !commands.insert(name)
+        {
+            return Err(GuestError::invalid(format!(
+                "Invalid or duplicate mod command {}",
+                command.name
+            )));
         }
         let call = ModSourceCall {
             function: command.function.clone(),
@@ -2269,12 +2431,20 @@ fn validate_commands(
         validate_call(&call, &[], &format!("console command {}", command.name))?;
     }
     for call in &declaration.initialize {
-        validate_call(call, &[ModCallbackInput::Self_, ModCallbackInput::Time], "initialization")?;
+        validate_call(
+            call,
+            &[ModCallbackInput::Self_, ModCallbackInput::Time],
+            "initialization",
+        )?;
     }
     if let Some(frame) = declaration.frame.as_ref() {
         validate_call(
             frame,
-            &[ModCallbackInput::Self_, ModCallbackInput::Time, ModCallbackInput::Elapsed],
+            &[
+                ModCallbackInput::Self_,
+                ModCallbackInput::Time,
+                ModCallbackInput::Elapsed,
+            ],
             "source frame",
         )?;
     }
@@ -2296,7 +2466,10 @@ fn validate_callbacks(
     let mut callbacks = HashSet::new();
     for callback in &declaration.callbacks {
         if !callbacks.insert(callback.binding.id.clone()) {
-            return Err(GuestError::invalid(format!("Duplicate mod callback {}", callback.binding.id)));
+            return Err(GuestError::invalid(format!(
+                "Duplicate mod callback {}",
+                callback.binding.id
+            )));
         }
         let mut available = vec![ModCallbackInput::Self_, ModCallbackInput::Time];
         if callback.binding.stage == ModCallbackStage::Observe {
@@ -2318,9 +2491,11 @@ fn validate_callbacks(
             ModCallbackOperation::ActorUse => &[ModCallbackInput::Other, ModCallbackInput::Activator],
             ModCallbackOperation::ActorTouch => &[ModCallbackInput::Other],
             ModCallbackOperation::ActorThink => &[ModCallbackInput::Elapsed],
-            ModCallbackOperation::ActorPain => {
-                &[ModCallbackInput::Attacker, ModCallbackInput::Amount, ModCallbackInput::Knockback]
-            }
+            ModCallbackOperation::ActorPain => &[
+                ModCallbackInput::Attacker,
+                ModCallbackInput::Amount,
+                ModCallbackInput::Knockback,
+            ],
             ModCallbackOperation::ActorDie => &[
                 ModCallbackInput::Attacker,
                 ModCallbackInput::Inflictor,
@@ -2340,14 +2515,19 @@ fn validate_combat_declaration(
     program: &dyn QcProgramView,
     declaration: &ModCallbackDeclaration,
 ) -> Result<(), GuestError> {
-    let combat = declaration.combat.as_ref().ok_or_else(|| GuestError::invalid("Missing combat declaration"))?;
+    let combat = declaration
+        .combat
+        .as_ref()
+        .ok_or_else(|| GuestError::invalid("Missing combat declaration"))?;
     if let Some(empty) = combat.empty_armor.as_ref() {
         if !["q1:item_armor1", "q1:item_armor2", "q1:item_armorInv"].contains(&empty.item.as_str())
             || !empty.absorption.is_finite()
             || f64::from(empty.absorption as f32) != empty.absorption
             || empty.absorption < 0.0
         {
-            return Err(GuestError::invalid("QC points-only armor requires an authored item and finite nonnegative absorption"));
+            return Err(GuestError::invalid(
+                "QC points-only armor requires an authored item and finite nonnegative absorption",
+            ));
         }
     }
     if let Some(stage) = combat.armor_stage.as_ref() {
@@ -2358,7 +2538,14 @@ fn validate_combat_declaration(
             return Err(GuestError::invalid("QC damage scale requires a valid source region"));
         }
     }
-    for name in ["health", "takedamage", "flags", "invincible_finished", "armorvalue", "armortype"] {
+    for name in [
+        "health",
+        "takedamage",
+        "flags",
+        "invincible_finished",
+        "armorvalue",
+        "armortype",
+    ] {
         if program.field_type(name) != Some(QcValueType::Float) {
             return Err(GuestError::invalid(format!("QC combat requires float field {name}")));
         }
@@ -2586,7 +2773,9 @@ fn valid_component(id: &str) -> bool {
 /// Canonical `PRODUCT/COMPONENT_ID` key.
 pub fn mod_selection_key(selection: &ModSelection) -> Result<String, GuestError> {
     if !valid_product(&selection.product) || !valid_component(&selection.id) {
-        return Err(GuestError::invalid("Mod selection requires a package and an authored component ID"));
+        return Err(GuestError::invalid(
+            "Mod selection requires a package and an authored component ID",
+        ));
     }
     Ok(format!("{}/{}", selection.product, selection.id))
 }
@@ -2620,7 +2809,10 @@ fn percent_encode_key(key: &str) -> String {
 
 /// Provider identifier for a mod instance.
 pub fn mod_instance_provider(selection: &ModSelection) -> Result<ProviderId, GuestError> {
-    Ok(ProviderId::new("mod", &percent_encode_key(&mod_selection_key(selection)?)))
+    Ok(ProviderId::new(
+        "mod",
+        &percent_encode_key(&mod_selection_key(selection)?),
+    ))
 }
 
 /// Whether two mod identities describe the same instance.
@@ -2954,7 +3146,9 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
     ) -> Result<Self, GuestError> {
         validate_qc_mod(machine.program(), &declaration, validate_call)?;
         if declaration.items.is_some() && media.is_none() {
-            return Err(GuestError::invalid("QC source items require their prepared content owner"));
+            return Err(GuestError::invalid(
+                "QC source items require their prepared content owner",
+            ));
         }
         Ok(Self {
             machine,
@@ -3144,7 +3338,10 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         let resource = self.media.as_ref()?.resources.get(name)?;
         let prefix = format!("{kind}:");
         let index = self.precached.keys().filter(|key| key.starts_with(&prefix)).count() as u32 + 1;
-        let value = QcPrecachedResource { index, requested_path: resource.requested_path.clone() };
+        let value = QcPrecachedResource {
+            index,
+            requested_path: resource.requested_path.clone(),
+        };
         self.precached.insert(key, value.clone());
         Some(value)
     }
@@ -3152,9 +3349,10 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
     /// Resolve one call value against runtime inputs.
     fn resolve_value(&self, value: &ModCallbackValue, inputs: &QcModInputs) -> Result<ModRuntimeValue, GuestError> {
         match value {
-            ModCallbackValue::Input(name) => inputs.get(name).cloned().ok_or_else(|| {
-                GuestError::invalid(format!("Gameplay mod call is missing input {}", name.name()))
-            }),
+            ModCallbackValue::Input(name) => inputs
+                .get(name)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid(format!("Gameplay mod call is missing input {}", name.name()))),
             ModCallbackValue::Float(value) => Ok(ModRuntimeValue::Float(*value)),
             ModCallbackValue::String(value) => Ok(ModRuntimeValue::String(value.clone())),
             ModCallbackValue::Vector(value) => Ok(ModRuntimeValue::Vector(*value)),
@@ -3217,7 +3415,10 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
             globals: ["self", "other", "time"]
                 .into_iter()
                 .zip([ModCallbackInput::Self_, ModCallbackInput::Other, ModCallbackInput::Time])
-                .map(|(name, input)| ModSourceGlobal { name: name.to_string(), value: ModCallbackValue::Input(input) })
+                .map(|(name, input)| ModSourceGlobal {
+                    name: name.to_string(),
+                    value: ModCallbackValue::Input(input),
+                })
                 .collect(),
         };
         self.invoke(&call, &inputs).map(|_| ())
@@ -3242,7 +3443,9 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
     /// Run initialization calls once at an idle boundary.
     pub fn initialize(&mut self) -> Result<(), GuestError> {
         if self.initialized || self.depth != 0 {
-            return Err(GuestError::invalid("Mod source initialization must run once at an idle boundary"));
+            return Err(GuestError::invalid(
+                "Mod source initialization must run once at an idle boundary",
+            ));
         }
         self.loading = true;
         let now = self.services.now().as_seconds_f64();
@@ -3292,7 +3495,11 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         });
         let mut precached: Vec<String> = self.precached.keys().cloned().collect();
         precached.sort();
-        QcModCheckpoint { projections, precached, initialized: self.initialized }
+        QcModCheckpoint {
+            projections,
+            precached,
+            initialized: self.initialized,
+        }
     }
 
     /// Restore provider-owned state.
@@ -3309,7 +3516,8 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         let mut projections = HashMap::new();
         let mut by_slot = HashMap::new();
         for (actor, slot) in &saved.projections {
-            let live = resolve(actor).ok_or_else(|| GuestError::BadSave("Saved mod actor has no live target".to_string()))?;
+            let live =
+                resolve(actor).ok_or_else(|| GuestError::BadSave("Saved mod actor has no live target".to_string()))?;
             if *slot >= count || by_slot.contains_key(slot) || projections.contains_key(&live) {
                 return Err(GuestError::BadSave("Invalid gameplay mod actor projection".to_string()));
             }
@@ -3342,7 +3550,11 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
             if path.is_empty() {
                 continue;
             }
-            if self.media.as_ref().is_none_or(|media| !media.resources.contains_key(&path)) {
+            if self
+                .media
+                .as_ref()
+                .is_none_or(|media| !media.resources.contains_key(&path))
+            {
                 return Err(GuestError::invalid(format!("Mod model was not prepared: {path}")));
             }
             let scalar = |name: &str| -> Result<f32, GuestError> {
@@ -3375,7 +3587,9 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
     /// Client presentation frame.
     pub fn client_frame(&self, actor: &ActorId) -> Result<Option<QcClientFrame>, GuestError> {
         if self.closed || self.depth != 0 {
-            return Err(GuestError::invalid("QC client presentation requires an idle live source"));
+            return Err(GuestError::invalid(
+                "QC client presentation requires an idle live source",
+            ));
         }
         let declaration = match self.declaration.client_presentation.as_ref() {
             Some(declaration) => declaration,
@@ -3392,7 +3606,9 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
             None
         } else {
             let health = self.machine.slot_float(slot, self.machine.field_offset("health")?)?;
-            let armor = self.machine.slot_float(slot, self.machine.field_offset("armorvalue")?)?;
+            let armor = self
+                .machine
+                .slot_float(slot, self.machine.field_offset("armorvalue")?)?;
             Some(QcHudVitals { health, armor })
         };
         let view = if declaration.view == QcClientView::None {
@@ -3404,10 +3620,19 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
                 .get(&target)
                 .filter(|_| self.services.is_live(&target))
                 .ok_or_else(|| GuestError::invalid("QC client view target has no live projection"))?;
-            let origin = self.machine.slot_vector(*target_slot, self.machine.field_offset("origin")?)?;
-            let angles = self.machine.slot_vector(*target_slot, self.machine.field_offset("angles")?)?;
+            let origin = self
+                .machine
+                .slot_vector(*target_slot, self.machine.field_offset("origin")?)?;
+            let angles = self
+                .machine
+                .slot_vector(*target_slot, self.machine.field_offset("angles")?)?;
             let offset = self.machine.slot_vector(slot, self.machine.field_offset("view_ofs")?)?;
-            Some(QcViewDescription { target, origin, angles, offset })
+            Some(QcViewDescription {
+                target,
+                origin,
+                angles,
+                offset,
+            })
         };
         Ok(Some(QcClientFrame { hud, view }))
     }
@@ -3417,14 +3642,18 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         if self.match_active {
             return Ok(());
         }
-        let needs_match = self.declaration.actor_fields.iter().any(|field| {
-            matches!(field.binding, ModActorBinding::Team { .. } | ModActorBinding::Score)
-        });
+        let needs_match = self
+            .declaration
+            .actor_fields
+            .iter()
+            .any(|field| matches!(field.binding, ModActorBinding::Team { .. } | ModActorBinding::Score));
         if !needs_match {
             return Ok(());
         }
         if !self.services.match_available() {
-            return Err(GuestError::invalid("Declared match fields require destination match services"));
+            return Err(GuestError::invalid(
+                "Declared match fields require destination match services",
+            ));
         }
         self.match_active = true;
         Ok(())
@@ -3442,8 +3671,16 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
             return Ok(None);
         }
         let slot = slot.ok_or_else(|| GuestError::invalid("QuakeC match actor was retired"))?;
-        let team_binding = self.declaration.actor_fields.iter().find(|field| matches!(field.binding, ModActorBinding::Team { .. }));
-        let score_binding = self.declaration.actor_fields.iter().find(|field| matches!(field.binding, ModActorBinding::Score));
+        let team_binding = self
+            .declaration
+            .actor_fields
+            .iter()
+            .find(|field| matches!(field.binding, ModActorBinding::Team { .. }));
+        let score_binding = self
+            .declaration
+            .actor_fields
+            .iter()
+            .find(|field| matches!(field.binding, ModActorBinding::Score));
         let team = match team_binding {
             Some(field) => match &field.binding {
                 ModActorBinding::Team { values } => {
@@ -3461,12 +3698,20 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
             }
             None => 0.0,
         };
-        Ok(Some(QcMatchPlayer { owner: self.provider.clone(), team, score }))
+        Ok(Some(QcMatchPlayer {
+            owner: self.provider.clone(),
+            team,
+            score,
+        }))
     }
 
     /// Assign a shared team through the source words.
     pub fn set_match_team(&mut self, actor: &ActorId, team: Option<String>) -> Result<(), GuestError> {
-        let slot = self.projections.get(actor).copied().ok_or_else(|| GuestError::invalid("QuakeC match actor was retired"))?;
+        let slot = self
+            .projections
+            .get(actor)
+            .copied()
+            .ok_or_else(|| GuestError::invalid("QuakeC match actor was retired"))?;
         let field = self
             .declaration
             .actor_fields
@@ -3487,7 +3732,11 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         if !score.is_finite() {
             return Err(GuestError::invalid("QuakeC match actor has no finite score field"));
         }
-        let slot = self.projections.get(actor).copied().ok_or_else(|| GuestError::invalid("QuakeC match actor was retired"))?;
+        let slot = self
+            .projections
+            .get(actor)
+            .copied()
+            .ok_or_else(|| GuestError::invalid("QuakeC match actor was retired"))?;
         let field = self
             .declaration
             .actor_fields
@@ -3529,7 +3778,11 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
                 | ModActorBinding::BoundsMax
                 | ModActorBinding::ViewOffset => "vector",
                 ModActorBinding::ClientInput { input, .. } => {
-                    if *input == ModClientInput::ViewAngles { "vector" } else { "float" }
+                    if *input == ModClientInput::ViewAngles {
+                        "vector"
+                    } else {
+                        "float"
+                    }
                 }
                 _ => "float",
             };
@@ -3637,8 +3890,14 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
         let reaction = reaction.clone();
         let time = context.frame.time;
         self.dispatch_operation(ModCallbackOperation::ActorPain, time, &|inputs| {
-            inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(reaction.target.clone())));
-            inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(reaction.attacker.clone()));
+            inputs.insert(
+                ModCallbackInput::Self_,
+                ModRuntimeValue::Actor(Some(reaction.target.clone())),
+            );
+            inputs.insert(
+                ModCallbackInput::Attacker,
+                ModRuntimeValue::Actor(reaction.attacker.clone()),
+            );
             inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(reaction.damage));
             inputs.insert(ModCallbackInput::Knockback, ModRuntimeValue::Float(reaction.kick));
         })
@@ -3648,9 +3907,18 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
         let reaction = reaction.clone();
         let time = context.frame.time;
         self.dispatch_operation(ModCallbackOperation::ActorDie, time, &|inputs| {
-            inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(reaction.target.clone())));
-            inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(reaction.attacker.clone()));
-            inputs.insert(ModCallbackInput::Inflictor, ModRuntimeValue::Actor(reaction.inflictor.clone()));
+            inputs.insert(
+                ModCallbackInput::Self_,
+                ModRuntimeValue::Actor(Some(reaction.target.clone())),
+            );
+            inputs.insert(
+                ModCallbackInput::Attacker,
+                ModRuntimeValue::Actor(reaction.attacker.clone()),
+            );
+            inputs.insert(
+                ModCallbackInput::Inflictor,
+                ModRuntimeValue::Actor(reaction.inflictor.clone()),
+            );
             inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(reaction.damage));
             inputs.insert(ModCallbackInput::Knockback, ModRuntimeValue::Float(reaction.kick));
             if let Some(point) = reaction.point {
@@ -3756,11 +4024,17 @@ mod tests {
         }
 
         fn field_offset(&self, name: &str) -> Result<i32, GuestError> {
-            self.offsets.get(name).copied().ok_or_else(|| GuestError::UnknownField(name.to_string()))
+            self.offsets
+                .get(name)
+                .copied()
+                .ok_or_else(|| GuestError::UnknownField(name.to_string()))
         }
 
         fn global_offset(&self, name: &str) -> Result<i32, GuestError> {
-            self.offsets.get(name).copied().ok_or_else(|| GuestError::UnknownField(name.to_string()))
+            self.offsets
+                .get(name)
+                .copied()
+                .ok_or_else(|| GuestError::UnknownField(name.to_string()))
         }
 
         fn entity_count(&self) -> u32 {
@@ -3787,7 +4061,10 @@ mod tests {
         }
 
         fn zero_slot(&mut self, slot: u32) -> Result<(), GuestError> {
-            self.slots.get_mut(slot as usize).ok_or_else(|| GuestError::invalid("Slot is out of range"))?.clear();
+            self.slots
+                .get_mut(slot as usize)
+                .ok_or_else(|| GuestError::invalid("Slot is out of range"))?
+                .clear();
             Ok(())
         }
 
@@ -3841,7 +4118,10 @@ mod tests {
         }
 
         fn strings_get(&self, index: i32) -> Result<String, GuestError> {
-            self.strings.get(index as usize).cloned().ok_or_else(|| GuestError::invalid("String index is out of range"))
+            self.strings
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid("String index is out of range"))
         }
 
         fn strings_allocate(&mut self, text: &str) -> Result<i32, GuestError> {
@@ -3860,7 +4140,8 @@ mod tests {
             arguments: &[ModRuntimeValue],
             globals: &[(String, ModRuntimeValue)],
         ) -> Result<f64, GuestError> {
-            self.invocations.push((function.to_string(), arguments.to_vec(), globals.to_vec()));
+            self.invocations
+                .push((function.to_string(), arguments.to_vec(), globals.to_vec()));
             Ok(self.result)
         }
     }
@@ -3901,7 +4182,8 @@ mod tests {
         fn admit(&mut self, slot: u32, provider: &ProviderId) -> ActorId {
             let actor = self.owner.actor(slot, 1);
             self.live.insert(actor.clone());
-            self.owned.insert(actor.clone(), self.owner.owned_actor(&actor, provider.clone()).unwrap());
+            self.owned
+                .insert(actor.clone(), self.owner.owned_actor(&actor, provider.clone()).unwrap());
             actor
         }
     }
@@ -3957,7 +4239,12 @@ mod tests {
     }
 
     fn module() -> ModuleIdentity {
-        ModuleIdentity { id: "test:mod".to_string(), artifact_path: "progs.dat".to_string(), digest: "abc".to_string(), revision: 1 }
+        ModuleIdentity {
+            id: "test:mod".to_string(),
+            artifact_path: "progs.dat".to_string(),
+            digest: "abc".to_string(),
+            revision: 1,
+        }
     }
 
     fn provider_id() -> ProviderId {
@@ -3966,7 +4253,10 @@ mod tests {
 
     fn declaration() -> ModCallbackDeclaration {
         ModCallbackDeclaration {
-            program: Some(ModProgramRef { path: "progs.dat".to_string(), digest: "abc".to_string() }),
+            program: Some(ModProgramRef {
+                path: "progs.dat".to_string(),
+                digest: "abc".to_string(),
+            }),
             ..ModCallbackDeclaration::default()
         }
     }
@@ -3976,21 +4266,40 @@ mod tests {
     }
 
     fn fixture(declaration: ModCallbackDeclaration) -> QcModProvider<FakeMachine, FakeServices> {
-        QcModProvider::new(FakeMachine::new(), FakeServices::new(), module(), provider_id(), declaration, None, &accept_call).unwrap()
+        QcModProvider::new(
+            FakeMachine::new(),
+            FakeServices::new(),
+            module(),
+            provider_id(),
+            declaration,
+            None,
+            &accept_call,
+        )
+        .unwrap()
     }
 
     #[test]
     fn selection_key_round_trip() {
-        let selection = ModSelection { product: "id1".to_string(), id: "maps/e1m1".to_string() };
+        let selection = ModSelection {
+            product: "id1".to_string(),
+            id: "maps/e1m1".to_string(),
+        };
         assert_eq!(mod_selection_key(&selection).unwrap(), "id1/maps/e1m1");
         assert_eq!(read_mod_selection("id1/maps/e1m1").unwrap(), selection);
         assert!(read_mod_selection("no-slash").is_err());
-        assert!(mod_selection_key(&ModSelection { product: "".to_string(), id: "x".to_string() }).is_err());
+        assert!(mod_selection_key(&ModSelection {
+            product: "".to_string(),
+            id: "x".to_string()
+        })
+        .is_err());
     }
 
     #[test]
     fn instance_provider_encodes_key() {
-        let selection = ModSelection { product: "id1".to_string(), id: "a/b:c".to_string() };
+        let selection = ModSelection {
+            product: "id1".to_string(),
+            id: "a/b:c".to_string(),
+        };
         let provider = mod_instance_provider(&selection).unwrap();
         assert_eq!(provider.namespace, "mod");
         assert_eq!(provider.name, "id1%2Fa%2Fb%3Ac");
@@ -3999,11 +4308,21 @@ mod tests {
     #[test]
     fn same_identity_compares_fields() {
         let identity = || ModIdentity {
-            selection: ModSelection { product: "id1".to_string(), id: "x".to_string() },
-            source: ProviderReference { provider: provider_id(), content: "c".to_string() },
+            selection: ModSelection {
+                product: "id1".to_string(),
+                id: "x".to_string(),
+            },
+            source: ProviderReference {
+                provider: provider_id(),
+                content: "c".to_string(),
+            },
             declaration_digest: "d".to_string(),
             modules: vec![module()],
-            providers: vec![ProviderCheckpointRef { provider: provider_id(), schema: "s".to_string(), version: 1 }],
+            providers: vec![ProviderCheckpointRef {
+                provider: provider_id(),
+                schema: "s".to_string(),
+                version: 1,
+            }],
         };
         assert!(same_mod_identity(&identity(), &identity()));
         let mut other = identity();
@@ -4014,7 +4333,10 @@ mod tests {
     #[test]
     fn team_mapping_round_trip() {
         let values = vec![
-            SourceTeamValue { value: 1.0, team: Some("red".to_string()) },
+            SourceTeamValue {
+                value: 1.0,
+                team: Some("red".to_string()),
+            },
             SourceTeamValue { value: 2.0, team: None },
         ];
         assert_eq!(source_team(&values, 1.0).unwrap(), Some("red".to_string()));
@@ -4029,7 +4351,10 @@ mod tests {
     #[test]
     fn ascii_fold_and_tokenize() {
         assert_eq!(ascii_fold("AbC"), "abc");
-        assert_eq!(split_command_tokens("give \"super shotgun\" 5"), vec!["give", "super shotgun", "5"]);
+        assert_eq!(
+            split_command_tokens("give \"super shotgun\" 5"),
+            vec!["give", "super shotgun", "5"]
+        );
         assert_eq!(split_command_tokens("  solo  "), vec!["solo"]);
     }
 
@@ -4037,7 +4362,10 @@ mod tests {
     fn validation_rejects_digest_mismatch() {
         let program = FakeMachine::new().program;
         let mut bad = declaration();
-        bad.program = Some(ModProgramRef { path: "progs.dat".to_string(), digest: "other".to_string() });
+        bad.program = Some(ModProgramRef {
+            path: "progs.dat".to_string(),
+            digest: "other".to_string(),
+        });
         assert!(validate_qc_mod(&program, &bad, &accept_call).is_err());
         assert!(validate_qc_mod(&program, &declaration(), &accept_call).is_ok());
     }
@@ -4046,11 +4374,20 @@ mod tests {
     fn validation_rejects_duplicates_and_bad_clients() {
         let program = FakeMachine::new().program;
         let mut duplicated = declaration();
-        duplicated.cvars.push(ModCvar { name: "skill".to_string(), value: "1".to_string() });
-        duplicated.cvars.push(ModCvar { name: "skill".to_string(), value: "2".to_string() });
+        duplicated.cvars.push(ModCvar {
+            name: "skill".to_string(),
+            value: "1".to_string(),
+        });
+        duplicated.cvars.push(ModCvar {
+            name: "skill".to_string(),
+            value: "2".to_string(),
+        });
         assert!(validate_qc_mod(&program, &duplicated, &accept_call).is_err());
         let mut clients = declaration();
-        clients.clients = Some(ModClientDeclaration { maximum: 0, ..ModClientDeclaration::default() });
+        clients.clients = Some(ModClientDeclaration {
+            maximum: 0,
+            ..ModClientDeclaration::default()
+        });
         assert!(validate_qc_mod(&program, &clients, &accept_call).is_err());
     }
 
@@ -4059,7 +4396,11 @@ mod tests {
         let program = FakeMachine::new().program;
         let mut combat = declaration();
         combat.combat = Some(ModCombatDeclaration {
-            damage: ModSourceCall { function: "T_Damage".to_string(), arguments: vec![], globals: vec![] },
+            damage: ModSourceCall {
+                function: "T_Damage".to_string(),
+                arguments: vec![],
+                globals: vec![],
+            },
             damage_scale: None,
             armor_stage: None,
             empty_armor: None,
@@ -4076,7 +4417,10 @@ mod tests {
         assert_eq!(provider.actor(reference).unwrap(), actor);
         assert_eq!(provider.reference(Some(&actor)).unwrap(), reference);
         assert_eq!(provider.reference(None).unwrap(), 0);
-        assert_eq!(provider.release_client_projection(&actor).unwrap(), ClientRelease::Released);
+        assert_eq!(
+            provider.release_client_projection(&actor).unwrap(),
+            ClientRelease::Released
+        );
         assert!(provider.actor(reference).is_err());
     }
 
@@ -4097,8 +4441,14 @@ mod tests {
         let actor = owner.actor(1, 1);
         let call = ModSourceCall {
             function: "think".to_string(),
-            arguments: vec![ModCallbackValue::Input(ModCallbackInput::Self_), ModCallbackValue::Float(1.5)],
-            globals: vec![ModSourceGlobal { name: "time".to_string(), value: ModCallbackValue::Input(ModCallbackInput::Time) }],
+            arguments: vec![
+                ModCallbackValue::Input(ModCallbackInput::Self_),
+                ModCallbackValue::Float(1.5),
+            ],
+            globals: vec![ModSourceGlobal {
+                name: "time".to_string(),
+                value: ModCallbackValue::Input(ModCallbackInput::Time),
+            }],
         };
         let mut inputs = QcModInputs::new();
         inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
@@ -4119,17 +4469,35 @@ mod tests {
         let mut provider = fixture(declaration());
         provider.machine_mut().program.functions.insert(
             "thinker".to_string(),
-            QcFunctionView { index: 7, name: "thinker".to_string(), first_statement: 3, parameter_start: 0, parameter_sizes: vec![], named_builtin: false },
+            QcFunctionView {
+                index: 7,
+                name: "thinker".to_string(),
+                first_statement: 3,
+                parameter_start: 0,
+                parameter_sizes: vec![],
+                named_builtin: false,
+            },
         );
         provider.machine_mut().program.by_index.insert(
             7,
-            QcFunctionView { index: 7, name: "thinker".to_string(), first_statement: 3, parameter_start: 0, parameter_sizes: vec![], named_builtin: false },
+            QcFunctionView {
+                index: 7,
+                name: "thinker".to_string(),
+                first_statement: 3,
+                parameter_start: 0,
+                parameter_sizes: vec![],
+                named_builtin: false,
+            },
         );
         let owner = IdentityOwner::create("owned").unwrap();
         let actor = owner.actor(2, 1);
-        provider.invoke_owned(7, &actor, None, &SourceTime::Seconds(1.0)).unwrap();
+        provider
+            .invoke_owned(7, &actor, None, &SourceTime::Seconds(1.0))
+            .unwrap();
         assert_eq!(provider.machine().invocations.last().unwrap().0, "thinker");
-        assert!(provider.invoke_owned(9, &actor, None, &SourceTime::Seconds(1.0)).is_err());
+        assert!(provider
+            .invoke_owned(9, &actor, None, &SourceTime::Seconds(1.0))
+            .is_err());
     }
 
     #[test]
@@ -4151,7 +4519,11 @@ mod tests {
     #[test]
     fn initialize_runs_once() {
         let mut declared = declaration();
-        declared.initialize.push(ModSourceCall { function: "init".to_string(), arguments: vec![], globals: vec![] });
+        declared.initialize.push(ModSourceCall {
+            function: "init".to_string(),
+            arguments: vec![],
+            globals: vec![],
+        });
         let mut provider = fixture(declared);
         provider.initialize().unwrap();
         assert!(provider.is_initialized());
@@ -4162,10 +4534,23 @@ mod tests {
     #[test]
     fn advance_runs_frame_call_and_frametime() {
         let mut declared = declaration();
-        declared.frame = Some(ModSourceCall { function: "frame".to_string(), arguments: vec![], globals: vec![] });
+        declared.frame = Some(ModSourceCall {
+            function: "frame".to_string(),
+            arguments: vec![],
+            globals: vec![],
+        });
         let mut provider = fixture(declared);
-        provider.machine_mut().program.globals.insert("frametime".to_string(), QcValueType::Float);
-        let frame = FrameContext { frame: 3, time: SourceTime::Seconds(1.0), elapsed: SourceTime::Seconds(0.1), phase: FramePhase::FrameEntry };
+        provider
+            .machine_mut()
+            .program
+            .globals
+            .insert("frametime".to_string(), QcValueType::Float);
+        let frame = FrameContext {
+            frame: 3,
+            time: SourceTime::Seconds(1.0),
+            elapsed: SourceTime::Seconds(0.1),
+            phase: FramePhase::FrameEntry,
+        };
         provider.advance(&frame).unwrap();
         assert_eq!(provider.machine().invocations.last().unwrap().0, "frame");
         assert!((provider.machine().globals["frametime"] - 0.1).abs() < 1e-6);
@@ -4181,7 +4566,9 @@ mod tests {
         let mut revived = fixture(declaration());
         revived.machine_mut().set_entity_count(2).unwrap();
         revived.services_mut().live.insert(actor.clone());
-        revived.restore(&saved, &|saved| (saved.slot == 6).then(|| actor.clone())).unwrap();
+        revived
+            .restore(&saved, &|saved| (saved.slot == 6).then(|| actor.clone()))
+            .unwrap();
         assert!(revived.is_initialized() == provider.is_initialized());
         assert_eq!(revived.presentation_generation(), 1);
         let mut missing = fixture(declaration());
@@ -4191,10 +4578,30 @@ mod tests {
     #[test]
     fn lookup_assigns_per_kind_indices() {
         let mut media = QcModMedia::default();
-        media.resources.insert("a.mdl".to_string(), QcMediaResource { requested_path: "a.mdl".to_string(), model_bounds: None });
-        media.resources.insert("b.wav".to_string(), QcMediaResource { requested_path: "b.wav".to_string(), model_bounds: None });
-        let mut provider =
-            QcModProvider::new(FakeMachine::new(), FakeServices::new(), module(), provider_id(), declaration(), Some(media), &accept_call).unwrap();
+        media.resources.insert(
+            "a.mdl".to_string(),
+            QcMediaResource {
+                requested_path: "a.mdl".to_string(),
+                model_bounds: None,
+            },
+        );
+        media.resources.insert(
+            "b.wav".to_string(),
+            QcMediaResource {
+                requested_path: "b.wav".to_string(),
+                model_bounds: None,
+            },
+        );
+        let mut provider = QcModProvider::new(
+            FakeMachine::new(),
+            FakeServices::new(),
+            module(),
+            provider_id(),
+            declaration(),
+            Some(media),
+            &accept_call,
+        )
+        .unwrap();
         assert_eq!(provider.lookup("model", "a.mdl").unwrap().index, 1);
         assert_eq!(provider.lookup("sound", "b.wav").unwrap().index, 1);
         assert_eq!(provider.lookup("model", "a.mdl").unwrap().index, 1);
@@ -4208,13 +4615,28 @@ mod tests {
             field: "team_no".to_string(),
             binding: ModActorBinding::Team {
                 values: vec![
-                    SourceTeamValue { value: 1.0, team: Some("red".to_string()) },
-                    SourceTeamValue { value: 2.0, team: Some("blue".to_string()) },
+                    SourceTeamValue {
+                        value: 1.0,
+                        team: Some("red".to_string()),
+                    },
+                    SourceTeamValue {
+                        value: 2.0,
+                        team: Some("blue".to_string()),
+                    },
                 ],
             },
         });
         let machine = FakeMachine::new().with_field("team_no", 4, QcValueType::Float);
-        let mut provider = QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declared, None, &accept_call).unwrap();
+        let mut provider = QcModProvider::new(
+            machine,
+            FakeServices::new(),
+            module(),
+            provider_id(),
+            declared,
+            None,
+            &accept_call,
+        )
+        .unwrap();
         let actor = provider.services_mut().admit(9, &provider_id());
         let reference = provider.reference(Some(&actor)).unwrap();
         let slot = provider.machine().entity_slot(reference).unwrap();
@@ -4222,7 +4644,10 @@ mod tests {
         provider.services_mut().match_avail = true;
         provider.activate_match().unwrap();
         provider.machine_mut().set_slot_float(slot, 4, 2.0).unwrap();
-        assert_eq!(provider.match_player(&actor).unwrap().unwrap().team, Some("blue".to_string()));
+        assert_eq!(
+            provider.match_player(&actor).unwrap().unwrap().team,
+            Some("blue".to_string())
+        );
         provider.set_match_team(&actor, Some("red".to_string())).unwrap();
         assert_eq!(provider.machine().slot_float(slot, 4).unwrap(), 1.0);
         assert!(provider.set_match_team(&actor, Some("green".to_string())).is_err());
@@ -4235,9 +4660,23 @@ mod tests {
             .with_field("origin", 2, QcValueType::Vector)
             .with_field("angles", 3, QcValueType::Vector);
         let mut media = QcModMedia::default();
-        media.resources.insert("progs/player.mdl".to_string(), QcMediaResource { requested_path: "progs/player.mdl".to_string(), model_bounds: None });
-        let mut provider =
-            QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declaration(), Some(media), &accept_call).unwrap();
+        media.resources.insert(
+            "progs/player.mdl".to_string(),
+            QcMediaResource {
+                requested_path: "progs/player.mdl".to_string(),
+                model_bounds: None,
+            },
+        );
+        let mut provider = QcModProvider::new(
+            machine,
+            FakeServices::new(),
+            module(),
+            provider_id(),
+            declaration(),
+            Some(media),
+            &accept_call,
+        )
+        .unwrap();
         let actor = provider.services_mut().admit(11, &provider_id());
         let owned = provider.services().resolve_owned(&actor).unwrap();
         provider.services_mut().owned_actors.push(owned);
@@ -4246,7 +4685,10 @@ mod tests {
         provider.services_mut().source_slots.insert(actor.clone(), slot);
         let index = provider.machine_mut().strings_allocate("progs/player.mdl").unwrap();
         provider.machine_mut().set_slot_int(slot, 1, index).unwrap();
-        provider.machine_mut().set_slot_vector(slot, 2, vec3(1.0, 2.0, 3.0)).unwrap();
+        provider
+            .machine_mut()
+            .set_slot_vector(slot, 2, vec3(1.0, 2.0, 3.0))
+            .unwrap();
         let presentations = provider.presentations().unwrap();
         assert_eq!(presentations.len(), 1);
         assert_eq!(presentations[0].path, "progs/player.mdl");
@@ -4262,14 +4704,29 @@ mod tests {
             .with_field("angles", 4, QcValueType::Vector)
             .with_field("view_ofs", 5, QcValueType::Vector);
         let mut declared = declaration();
-        declared.client_presentation = Some(QcModClientPresentation { hud: QcClientHud::ReplaceVitals, view: QcClientView::SetView });
-        let mut provider = QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declared, None, &accept_call).unwrap();
+        declared.client_presentation = Some(QcModClientPresentation {
+            hud: QcClientHud::ReplaceVitals,
+            view: QcClientView::SetView,
+        });
+        let mut provider = QcModProvider::new(
+            machine,
+            FakeServices::new(),
+            module(),
+            provider_id(),
+            declared,
+            None,
+            &accept_call,
+        )
+        .unwrap();
         let actor = provider.services_mut().admit(12, &provider_id());
         let reference = provider.reference(Some(&actor)).unwrap();
         let slot = provider.machine().entity_slot(reference).unwrap();
         provider.services_mut().admitted.insert(actor.clone());
         provider.machine_mut().set_slot_float(slot, 1, 75.0).unwrap();
-        provider.machine_mut().set_slot_vector(slot, 3, vec3(4.0, 5.0, 6.0)).unwrap();
+        provider
+            .machine_mut()
+            .set_slot_vector(slot, 3, vec3(4.0, 5.0, 6.0))
+            .unwrap();
         let frame = provider.client_frame(&actor).unwrap().unwrap();
         assert_eq!(frame.hud.unwrap().health, 75.0);
         assert_eq!(frame.view.unwrap().origin, vec3(4.0, 5.0, 6.0));
@@ -4280,7 +4737,9 @@ mod tests {
         let mut declared = declaration();
         declared.actor_fields.push(ModActorField {
             field: "dmg".to_string(),
-            binding: ModActorBinding::Constant { value: ModConstantValue::Float(40.0) },
+            binding: ModActorBinding::Constant {
+                value: ModConstantValue::Float(40.0),
+            },
         });
         declared.callbacks.push(ModCallback {
             binding: ModCallbackBinding {
@@ -4289,28 +4748,69 @@ mod tests {
                 stage: ModCallbackStage::Observe,
                 result: None,
             },
-            call: ModSourceCall { function: "think_cb".to_string(), arguments: vec![], globals: vec![] },
+            call: ModSourceCall {
+                function: "think_cb".to_string(),
+                arguments: vec![],
+                globals: vec![],
+            },
         });
         let machine = FakeMachine::new().with_field("dmg", 9, QcValueType::Float);
-        let mut provider = QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declared, None, &accept_call).unwrap();
+        let mut provider = QcModProvider::new(
+            machine,
+            FakeServices::new(),
+            module(),
+            provider_id(),
+            declared,
+            None,
+            &accept_call,
+        )
+        .unwrap();
         assert_eq!(provider.name(), "test:mod");
         let actor = provider.services_mut().admit(14, &provider_id());
         let mut fields = FieldTable::new();
         let mut events = Vec::new();
-        let frame = FrameContext { frame: 0, time: SourceTime::Seconds(0.0), elapsed: SourceTime::Seconds(0.0), phase: FramePhase::EntityThink };
-        let mut context = GameContext { fields: &mut fields, events: &mut events, frame, now: SourceTime::Seconds(0.0) };
+        let frame = FrameContext {
+            frame: 0,
+            time: SourceTime::Seconds(0.0),
+            elapsed: SourceTime::Seconds(0.0),
+            phase: FramePhase::EntityThink,
+        };
+        let mut context = GameContext {
+            fields: &mut fields,
+            events: &mut events,
+            frame,
+            now: SourceTime::Seconds(0.0),
+        };
         assert!(provider.spawn(&mut context, &actor, "monster", &[]).unwrap());
-        assert_eq!(context.fields.get(&actor, "dmg").unwrap().as_float("dmg").unwrap(), 40.0);
+        assert_eq!(
+            context.fields.get(&actor, "dmg").unwrap().as_float("dmg").unwrap(),
+            40.0
+        );
         assert!(provider.think(&mut context, &actor).unwrap());
         assert_eq!(provider.machine().invocations.last().unwrap().0, "think_cb");
-        assert!(!provider.touch(&mut context, &GameTouch { target: actor.clone(), other: actor }).unwrap());
+        assert!(!provider
+            .touch(
+                &mut context,
+                &GameTouch {
+                    target: actor.clone(),
+                    other: actor
+                }
+            )
+            .unwrap());
         provider.close();
         assert!(provider.is_closed());
-        assert!(provider.invoke(&ModSourceCall { function: "x".to_string(), arguments: vec![], globals: vec![] }, &QcModInputs::new()).is_err());
+        assert!(provider
+            .invoke(
+                &ModSourceCall {
+                    function: "x".to_string(),
+                    arguments: vec![],
+                    globals: vec![]
+                },
+                &QcModInputs::new()
+            )
+            .is_err());
     }
 }
-
-
 
 /// Gameplay-mod callback declaration.
 #[derive(Debug, Clone, PartialEq, Default)]

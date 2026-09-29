@@ -659,7 +659,7 @@ impl QvmGameCombat {
     pub fn damage(
         &self,
         hit: &QvmGameDamage,
-        invoke: Option<&dyn Fn(&[i32]) -> Result<(), GuestError>>,
+        invoke: Option<&mut dyn FnMut(&[i32]) -> Result<(), GuestError>>,
     ) -> Result<(), GuestError> {
         let state = self.state(hit.target)?;
         let Some(state) = state else {
@@ -892,15 +892,11 @@ mod tests {
         };
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&seen);
-        combat
-            .damage(
-                &hit,
-                Some(&|words| {
-                    captured.borrow_mut().push(words.to_vec());
-                    Ok(())
-                }),
-            )
-            .unwrap();
+        let mut invoke = |words: &[i32]| {
+            captured.borrow_mut().push(words.to_vec());
+            Ok(())
+        };
+        combat.damage(&hit, Some(&mut invoke)).unwrap();
         let seen = seen.borrow();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0][5], 10);

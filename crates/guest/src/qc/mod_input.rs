@@ -19,7 +19,9 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
 use super::mod_clients::{client_input_values, ModClientApplication};
-use super::mod_provider::{ClientInputUpdate, ModCallbackInput, ModClientInput, ModClientInputOutput, ModQcInputOutput};
+use super::mod_provider::{
+    ClientInputUpdate, ModCallbackInput, ModClientInput, ModClientInputOutput, ModQcInputOutput,
+};
 use crate::error::GuestError;
 
 /// Entity-word access for input application.
@@ -107,7 +109,14 @@ pub struct QcModInput<M, H> {
 impl<M: QcInputMachine, H: QcInputHost> QcModInput<M, H> {
     /// Build over declared input fields.
     pub fn new(machine: M, host: H, fields: Vec<QcModInputField>) -> Self {
-        Self { machine, host, fields, frames: Vec::new(), captures: Vec::new(), next_scope: 1 }
+        Self {
+            machine,
+            host,
+            fields,
+            frames: Vec::new(),
+            captures: Vec::new(),
+            next_scope: 1,
+        }
     }
 
     /// Borrow the machine.
@@ -140,7 +149,14 @@ impl<M: QcInputMachine, H: QcInputHost> QcModInput<M, H> {
     /// Restore one field's snapshot.
     fn restore_field(words: &mut M::Words, offset: i32, width: u32, saved: &[f32]) -> Result<(), GuestError> {
         if width == 3 {
-            words.set_vector(offset, Vec3 { x: saved[0], y: saved[1], z: saved[2] })
+            words.set_vector(
+                offset,
+                Vec3 {
+                    x: saved[0],
+                    y: saved[1],
+                    z: saved[2],
+                },
+            )
         } else {
             words.set_float(offset, saved[0])
         }
@@ -168,7 +184,12 @@ impl<M: QcInputMachine, H: QcInputHost> QcModInput<M, H> {
         }
         let id = self.next_scope;
         self.next_scope += 1;
-        self.frames.push(Frame { id, actor, nested, saved });
+        self.frames.push(Frame {
+            id,
+            actor,
+            nested,
+            saved,
+        });
         Ok(id)
     }
 
@@ -220,7 +241,10 @@ impl<M: QcInputMachine, H: QcInputHost> QcModInput<M, H> {
         &self,
         application: &ModClientApplication,
     ) -> Result<HashMap<ModCallbackInput, super::mod_provider::ModRuntimeValue>, GuestError> {
-        let frame = self.frames.last().ok_or_else(|| GuestError::invalid("QuakeC client input scope is not active"))?;
+        let frame = self
+            .frames
+            .last()
+            .ok_or_else(|| GuestError::invalid("QuakeC client input scope is not active"))?;
         if frame.actor != application.actor {
             return Err(GuestError::invalid("QuakeC client input scope is not active"));
         }
@@ -234,7 +258,9 @@ impl<M: QcInputMachine, H: QcInputHost> QcModInput<M, H> {
             None => return,
         };
         let frame_matches = self.frames.last().is_some_and(|frame| frame.actor == capture.actor);
-        if frame_matches && self.machine.self_reference() == capture.reference && capture.handlers.contains_key(&call.function_index)
+        if frame_matches
+            && self.machine.self_reference() == capture.reference
+            && capture.handlers.contains_key(&call.function_index)
         {
             capture.entered.insert(call.function_index);
         }
@@ -275,9 +301,17 @@ impl<M: QcInputMachine, H: QcInputHost> QcModInput<M, H> {
                 }
             }
         }
-        self.captures.push(Capture { actor: application.actor.clone(), reference, handlers, entered: HashSet::new() });
+        self.captures.push(Capture {
+            actor: application.actor.clone(),
+            reference,
+            handlers,
+            entered: HashSet::new(),
+        });
         run(self);
-        let capture = self.captures.pop().ok_or_else(|| GuestError::invalid("QuakeC input capture is unbalanced"))?;
+        let capture = self
+            .captures
+            .pop()
+            .ok_or_else(|| GuestError::invalid("QuakeC input capture is unbalanced"))?;
         if !self.host.is_live(&application.actor) || !self.frames.iter().any(|frame| frame.actor == application.actor) {
             return Ok(Vec::new());
         }
@@ -355,7 +389,11 @@ mod tests {
         }
 
         fn vector(&self, offset: i32) -> Result<Vec3, GuestError> {
-            Ok(self.vectors.get(&offset).copied().unwrap_or_else(|| vec3(0.0, 0.0, 0.0)))
+            Ok(self
+                .vectors
+                .get(&offset)
+                .copied()
+                .unwrap_or_else(|| vec3(0.0, 0.0, 0.0)))
         }
 
         fn set_vector(&mut self, offset: i32, value: Vec3) -> Result<(), GuestError> {
@@ -378,7 +416,10 @@ mod tests {
         }
 
         fn function_index(&self, name: &str) -> Result<i32, GuestError> {
-            self.functions.get(name).copied().ok_or_else(|| GuestError::invalid(format!("Unknown function {name}")))
+            self.functions
+                .get(name)
+                .copied()
+                .ok_or_else(|| GuestError::invalid(format!("Unknown function {name}")))
         }
 
         fn self_reference(&self) -> i32 {
@@ -407,7 +448,10 @@ mod tests {
             values: [
                 (ModClientInput::Attack, ModInputValue::Float(1.0)),
                 (ModClientInput::Jump, ModInputValue::Float(0.0)),
-                (ModClientInput::ViewAngles, ModInputValue::Vector(vec3(10.0, 20.0, 30.0))),
+                (
+                    ModClientInput::ViewAngles,
+                    ModInputValue::Vector(vec3(10.0, 20.0, 30.0)),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -445,7 +489,11 @@ mod tests {
 
     fn fixture() -> (IdentityOwner, QcModInput<FakeMachine, FakeHost>) {
         let owner = IdentityOwner::create("input").unwrap();
-        let machine = FakeMachine { words: HashMap::new(), functions: [("use".to_string(), 7)].into_iter().collect(), self_reference: 3 };
+        let machine = FakeMachine {
+            words: HashMap::new(),
+            functions: [("use".to_string(), 7)].into_iter().collect(),
+            self_reference: 3,
+        };
         (owner, QcModInput::new(machine, FakeHost { live: true }, fields()))
     }
 
@@ -486,7 +534,10 @@ mod tests {
         assert!(input.values(&application).is_err());
         input.open(&application).unwrap();
         let values = input.values(&application).unwrap();
-        assert_eq!(values.get(&ModCallbackInput::Attack), Some(&super::super::mod_provider::ModRuntimeValue::Float(1.0)));
+        assert_eq!(
+            values.get(&ModCallbackInput::Attack),
+            Some(&super::super::mod_provider::ModRuntimeValue::Float(1.0))
+        );
     }
 
     #[test]
@@ -506,9 +557,16 @@ mod tests {
         let application = application(&owner);
         input.open(&application).unwrap();
         let outputs = vec![
-            ModQcInputOutput::Field { field: "attack".to_string() },
-            ModQcInputOutput::Field { field: "v_angle".to_string() },
-            ModQcInputOutput::Handler { function: "use".to_string(), inputs: vec![ModClientInput::Attack] },
+            ModQcInputOutput::Field {
+                field: "attack".to_string(),
+            },
+            ModQcInputOutput::Field {
+                field: "v_angle".to_string(),
+            },
+            ModQcInputOutput::Handler {
+                function: "use".to_string(),
+                inputs: vec![ModClientInput::Attack],
+            },
         ];
         let result = input
             .output(&outputs, &application, &mut |input| {
@@ -517,8 +575,13 @@ mod tests {
                 input.observe_call(&QcCallSite { function_index: 8 });
             })
             .unwrap();
-        assert!(result.contains(&ModClientInputOutput::SetScalar { input: ModClientInput::Attack, value: 2.0 }));
-        assert!(result.contains(&ModClientInputOutput::Consume { inputs: vec![ModClientInput::Attack] }));
+        assert!(result.contains(&ModClientInputOutput::SetScalar {
+            input: ModClientInput::Attack,
+            value: 2.0
+        }));
+        assert!(result.contains(&ModClientInputOutput::Consume {
+            inputs: vec![ModClientInput::Attack]
+        }));
         assert_eq!(result.len(), 2);
     }
 
@@ -527,7 +590,9 @@ mod tests {
         let (owner, mut input) = fixture();
         let application = application(&owner);
         input.open(&application).unwrap();
-        let outputs = vec![ModQcInputOutput::Field { field: "nope".to_string() }];
+        let outputs = vec![ModQcInputOutput::Field {
+            field: "nope".to_string(),
+        }];
         assert!(input.output(&outputs, &application, &mut |_| {}).is_err());
     }
 }

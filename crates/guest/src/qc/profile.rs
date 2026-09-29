@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use super::builtins::QcHostKind;
 use super::machine::{QcBuiltinRegistry, QcInlineRegion};
 use super::memory::QcEntityLayout;
-use super::program::{load_qc_program, QuakeCApi, QcOpcode, QcProgram, QcValueType};
+use super::program::{load_qc_program, QcOpcode, QcProgram, QcValueType, QuakeCApi};
 use super::source_call::ModSourceCall;
 use crate::core::contracts::{CallbackId, GuestFieldLayout, GuestLayout, GuestStorage};
 use crate::error::GuestError;
@@ -128,12 +128,7 @@ pub struct QuakeCHostProfile {
     pub extensions: Vec<String>,
 }
 
-fn field_layout(
-    name: &str,
-    offset_words: usize,
-    value_type: QcValueType,
-    base: usize,
-) -> GuestFieldLayout {
+fn field_layout(name: &str, offset_words: usize, value_type: QcValueType, base: usize) -> GuestFieldLayout {
     GuestFieldLayout {
         name: name.to_string(),
         byte_offset: base + offset_words * 4,
@@ -167,9 +162,7 @@ pub fn describe_qc_host(
         program
             .globals
             .iter()
-            .map(|definition| {
-                field_layout(&definition.name, definition.offset, definition.value_type, 0)
-            })
+            .map(|definition| field_layout(&definition.name, definition.offset, definition.value_type, 0))
             .collect(),
     );
     let entity_variables_layout = GuestLayout::new(
@@ -180,9 +173,7 @@ pub fn describe_qc_host(
         program
             .fields
             .iter()
-            .map(|definition| {
-                field_layout(&definition.name, definition.offset, definition.value_type, 0)
-            })
+            .map(|definition| field_layout(&definition.name, definition.offset, definition.value_type, 0))
             .collect(),
     );
     let mut builtins: Vec<QcBuiltinBinding> = registry
@@ -324,12 +315,12 @@ pub enum QcPickupScalar {
     /// Entity float field.
     Field {
         /// Field name.
-    pub name: String,
+        name: String,
     },
     /// Global word.
     Global {
         /// Word offset.
-    pub word: usize,
+        word: usize,
     },
 }
 
@@ -348,12 +339,12 @@ pub enum QcPickupResource {
     /// Protection grant.
     Protection {
         /// Channel.
-    pub channel: QcProtectionChannel,
+        channel: QcProtectionChannel,
     },
     /// Inventory grant.
     Inventory {
         /// Item id (`namespace:name`).
-    pub item: String,
+        item: String,
     },
 }
 
@@ -389,16 +380,16 @@ pub enum QcPickupDescriptor {
     /// String-field discriminator.
     String {
         /// Discriminator field.
-    pub field: String,
+        field: String,
         /// Candidate values.
-    pub values: Vec<QcPickupItemValue<String>>,
+        values: Vec<QcPickupItemValue<String>>,
     },
     /// Float-field discriminator.
     Float {
         /// Discriminator field.
-    pub field: String,
+        field: String,
         /// Candidate values.
-    pub values: Vec<QcPickupItemValue<f64>>,
+        values: Vec<QcPickupItemValue<f64>>,
     },
 }
 
@@ -408,9 +399,9 @@ pub enum QcPickupOperation {
     /// Branch decision on a global predicate word.
     Decision {
         /// Predicate word.
-    pub word: usize,
+        word: usize,
         /// Accepted value.
-    pub accepted: f64,
+        accepted: f64,
     },
     /// Recipient admission boundary.
     Admission,
@@ -465,23 +456,23 @@ pub enum QcPickupStageDescriptor {
     /// Constant item (discriminator value 0).
     Constant {
         /// Item binding.
-    pub item: QcPickupItem,
+        item: QcPickupItem,
         /// Discriminator value (always 0).
-    pub value: f64,
+        value: f64,
     },
     /// String-field discriminator.
     String {
         /// Discriminator field.
-    pub field: String,
+        field: String,
         /// Candidate values.
-    pub values: Vec<QcPickupItemValue<String>>,
+        values: Vec<QcPickupItemValue<String>>,
     },
     /// Float-field discriminator.
     Float {
         /// Discriminator field.
-    pub field: String,
+        field: String,
         /// Candidate values.
-    pub values: Vec<QcPickupItemValue<f64>>,
+        values: Vec<QcPickupItemValue<f64>>,
     },
 }
 
@@ -545,8 +536,7 @@ pub fn qc_declared_pickup_stages(
                 if !is_float {
                     return Err(pickup_fail(program, &format!("source field {field} is not float")));
                 }
-                let discriminators: Vec<String> =
-                    values.iter().map(|entry| format!("{:?}", entry.value)).collect();
+                let discriminators: Vec<String> = values.iter().map(|entry| format!("{:?}", entry.value)).collect();
                 check_discriminators(program, discriminators.iter())?;
                 if values.iter().any(|entry| !exact_source_float(entry.value)) {
                     return Err(pickup_fail(program, "item discriminator is not an exact source float"));
@@ -570,7 +560,10 @@ pub fn qc_declared_pickup_stages(
             }
             previous_end = region.exit;
             if region.statements.len() != region.exit - region.entry + 1 {
-                return Err(pickup_fail(program, "instruction proof must include the region and its join"));
+                return Err(pickup_fail(
+                    program,
+                    "instruction proof must include the region and its join",
+                ));
             }
             for (offset, expected) in region.statements.iter().enumerate() {
                 let actual = program.statements.get(region.entry + offset);
@@ -688,10 +681,7 @@ pub fn qc_declared_pickup_stages(
     Ok(stages)
 }
 
-fn check_discriminators<'a>(
-    program: &QcProgram,
-    values: impl Iterator<Item = &'a String>,
-) -> Result<(), GuestError> {
+fn check_discriminators<'a>(program: &QcProgram, values: impl Iterator<Item = &'a String>) -> Result<(), GuestError> {
     let values: Vec<&String> = values.collect();
     if values.is_empty() {
         return Err(pickup_fail(program, "empty or ambiguous source item descriptors"));
@@ -721,10 +711,7 @@ fn check_region_branches(
             _ => None,
         };
         if let Some(target) = target {
-            if (at < region.entry || at >= region.exit)
-                && target > region.entry as i64
-                && target < region.exit as i64
-            {
+            if (at < region.entry || at >= region.exit) && target > region.entry as i64 && target < region.exit as i64 {
                 return Err(pickup_fail(
                     program,
                     "source branch enters the middle of a declared region",
@@ -737,17 +724,37 @@ fn check_region_branches(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::program::{test_program, QcDefinition, QcFunction, QcStatement, QcValueType};
+    use super::*;
     use std::collections::HashMap;
 
     fn fixture_program() -> QcProgram {
         // Touch function at 1: StoreF, If on word 30 (join), Done.
         let statements = vec![
-            QcStatement { opcode: QcOpcode::Done, a: 0, b: 0, c: 0 },
-            QcStatement { opcode: QcOpcode::StoreF, a: 4, b: 30, c: 0 },
-            QcStatement { opcode: QcOpcode::If, a: 30, b: 1, c: 0 },
-            QcStatement { opcode: QcOpcode::Done, a: 0, b: 0, c: 0 },
+            QcStatement {
+                opcode: QcOpcode::Done,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+            QcStatement {
+                opcode: QcOpcode::StoreF,
+                a: 4,
+                b: 30,
+                c: 0,
+            },
+            QcStatement {
+                opcode: QcOpcode::If,
+                a: 30,
+                b: 1,
+                c: 0,
+            },
+            QcStatement {
+                opcode: QcOpcode::Done,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
         ];
         let globals = vec![QcDefinition {
             value_type: QcValueType::Float,
@@ -765,22 +772,44 @@ mod tests {
         }];
         let functions = vec![
             QcFunction {
-                index: 0, first_statement: 0, parameter_start: 0, local_words: 0,
-                name: "<null>".to_string(), file: String::new(), parameter_sizes: vec![], named_builtin: false,
+                index: 0,
+                first_statement: 0,
+                parameter_start: 0,
+                local_words: 0,
+                name: "<null>".to_string(),
+                file: String::new(),
+                parameter_sizes: vec![],
+                named_builtin: false,
             },
             QcFunction {
-                index: 1, first_statement: 1, parameter_start: 33, local_words: 0,
-                name: "touch".to_string(), file: "test.qc".to_string(), parameter_sizes: vec![],
+                index: 1,
+                first_statement: 1,
+                parameter_start: 33,
+                local_words: 0,
+                name: "touch".to_string(),
+                file: "test.qc".to_string(),
+                parameter_sizes: vec![],
                 named_builtin: false,
             },
         ];
-        test_program(statements, globals, fields, functions, b"\0".to_vec(), vec![0; 36 * 4], 1)
+        test_program(
+            statements,
+            globals,
+            fields,
+            functions,
+            b"\0".to_vec(),
+            vec![0; 36 * 4],
+            1,
+        )
     }
 
     #[test]
     fn search_order_and_layout_match_donor() {
         assert_eq!(qc_program_search_order(QcHostKind::Netquake), &["progs.dat"]);
-        assert_eq!(qc_program_search_order(QcHostKind::Quakeworld), &["qwprogs.dat", "progs.dat"]);
+        assert_eq!(
+            qc_program_search_order(QcHostKind::Quakeworld),
+            &["qwprogs.dat", "progs.dat"]
+        );
         let program = fixture_program();
         let layout = classic_qc_entity_layout(&program);
         assert_eq!(layout.variables_offset_bytes, 96);
@@ -799,13 +828,22 @@ mod tests {
         let program = fixture_program();
         let layout = classic_qc_entity_layout(&program);
         let mut registry = QcBuiltinRegistry::default();
-        registry.numbered.insert(8, std::rc::Rc::new(|machine: &mut super::super::machine::QcMachine| {
-            machine.return_float(0.0)
-        }));
-        registry.named.insert("ex_prompt".to_string(), std::rc::Rc::new(|machine: &mut super::super::machine::QcMachine| {
-            machine.return_float(0.0)
-        }));
-        let profile = describe_qc_host(&program, QcHostKind::Netquake, &layout, &registry, &["DP_TEST".to_string()]).unwrap();
+        registry.numbered.insert(
+            8,
+            std::rc::Rc::new(|machine: &mut super::super::machine::QcMachine| machine.return_float(0.0)),
+        );
+        registry.named.insert(
+            "ex_prompt".to_string(),
+            std::rc::Rc::new(|machine: &mut super::super::machine::QcMachine| machine.return_float(0.0)),
+        );
+        let profile = describe_qc_host(
+            &program,
+            QcHostKind::Netquake,
+            &layout,
+            &registry,
+            &["DP_TEST".to_string()],
+        )
+        .unwrap();
         assert_eq!(profile.api, QuakeCApi::Netquake);
         assert_eq!(profile.globals_layout.fields.len(), 1);
         assert_eq!(profile.entity_variables_layout.byte_length, 4);
@@ -838,8 +876,8 @@ mod tests {
             vec![2, 0, 27, 0, 3, 0, 0, 0],
             vec![2, 0, 0, 0, 3, 0, 0, 0],
             vec![
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0,
             ],
             strings.clone(),
             vec![0u8; 28 * 4],
@@ -869,7 +907,9 @@ mod tests {
             function: "touch".to_string(),
             descriptor: QcPickupDescriptor::Constant(QcPickupItem {
                 item: "q1:item_health".to_string(),
-                resource: Some(QcPickupResource::Inventory { item: "q1:item_health".to_string() }),
+                resource: Some(QcPickupResource::Inventory {
+                    item: "q1:item_health".to_string(),
+                }),
                 count: None,
             }),
             dropped: None,
@@ -877,10 +917,23 @@ mod tests {
                 entry: 1,
                 exit: 2,
                 statements: vec![
-                    QcProofStatement { opcode: i32::from(QcOpcode::StoreF as u16), a: 4, b: 30, c: 0 },
-                    QcProofStatement { opcode: i32::from(QcOpcode::If as u16), a: 30, b: 1, c: 0 },
+                    QcProofStatement {
+                        opcode: i32::from(QcOpcode::StoreF as u16),
+                        a: 4,
+                        b: 30,
+                        c: 0,
+                    },
+                    QcProofStatement {
+                        opcode: i32::from(QcOpcode::If as u16),
+                        a: 30,
+                        b: 1,
+                        c: 0,
+                    },
                 ],
-                operation: QcPickupOperation::Decision { word: 30, accepted: 1.0 },
+                operation: QcPickupOperation::Decision {
+                    word: 30,
+                    accepted: 1.0,
+                },
             }],
         }
     }

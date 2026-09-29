@@ -81,7 +81,11 @@ impl QcModCvars {
     /// Capture the table.
     #[must_use]
     pub fn capture(&self) -> Vec<(String, String)> {
-        let mut state: Vec<(String, String)> = self.values.iter().map(|(name, value)| (name.clone(), value.clone())).collect();
+        let mut state: Vec<(String, String)> = self
+            .values
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
         state.sort_by(|left, right| left.0.cmp(&right.0));
         state
     }
@@ -122,7 +126,12 @@ pub struct QcEnvConfig {
 
 impl Default for QcEnvConfig {
     fn default() -> Self {
-        Self { skill: 1, max_clients: 1, mode: QcEnvMode::Single, gravity: 800.0 }
+        Self {
+            skill: 1,
+            max_clients: 1,
+            mode: QcEnvMode::Single,
+            gravity: 800.0,
+        }
     }
 }
 
@@ -267,15 +276,37 @@ impl<S: QcEnvServices, V: QcClientVisibility> QcModEnvironment<S, V> {
     ) -> Result<Self, GuestError> {
         let environment = services.environment();
         let mut cvars = QcModCvars::new();
-        let max_clients = declaration.clients.as_ref().map_or(environment.max_clients as i32, |clients| clients.maximum);
+        let max_clients = declaration
+            .clients
+            .as_ref()
+            .map_or(environment.max_clients as i32, |clients| clients.maximum);
         let defaults = [
             ("skill", environment.skill.to_string()),
             ("maxclients", max_clients.to_string()),
-            ("coop", if environment.mode == QcEnvMode::Coop { "1" } else { "0" }.to_string()),
-            ("deathmatch", if environment.mode == QcEnvMode::Deathmatch { "1" } else { "0" }.to_string()),
+            (
+                "coop",
+                if environment.mode == QcEnvMode::Coop { "1" } else { "0" }.to_string(),
+            ),
+            (
+                "deathmatch",
+                if environment.mode == QcEnvMode::Deathmatch {
+                    "1"
+                } else {
+                    "0"
+                }
+                .to_string(),
+            ),
             ("teamplay", "0".to_string()),
             ("sv_gravity", environment.gravity.to_string()),
-            ("sv_aim", if program.api_kind() == QcApiKind::Q1Quakeworld { "2" } else { "0.93" }.to_string()),
+            (
+                "sv_aim",
+                if program.api_kind() == QcApiKind::Q1Quakeworld {
+                    "2"
+                } else {
+                    "0.93"
+                }
+                .to_string(),
+            ),
             ("sv_maxspeed", "320".to_string()),
             ("registered", "1".to_string()),
             ("developer", "0".to_string()),
@@ -294,7 +325,11 @@ impl<S: QcEnvServices, V: QcClientVisibility> QcModEnvironment<S, V> {
         for variable in &declaration.cvars {
             cvars.set_default(&variable.name, &variable.value)?;
         }
-        Ok(Self { services, cvars, visibility })
+        Ok(Self {
+            services,
+            cvars,
+            visibility,
+        })
     }
 
     /// Borrow the cvars.
@@ -346,7 +381,10 @@ impl<S: QcEnvServices, V: QcClientVisibility> QcModEnvironment<S, V> {
                 Ok(())
             }
             QcEnvBuiltin::Checkclient => {
-                let visibility = self.visibility.as_mut().ok_or_else(|| GuestError::invalid("Mod checkclient requires destination client visibility"))?;
+                let visibility = self
+                    .visibility
+                    .as_mut()
+                    .ok_or_else(|| GuestError::invalid("Mod checkclient requires destination client visibility"))?;
                 let reference = vm.global_int("self")?;
                 let origin = vm.entity_vector(reference, "origin")?;
                 let view_offset = vm.entity_vector(reference, "view_ofs")?;
@@ -383,14 +421,19 @@ impl<S: QcEnvServices, V: QcClientVisibility> QcModEnvironment<S, V> {
     /// Visibility client for an actor.
     pub fn client(&self, actor: &ActorId) -> Result<Option<QcVisibilityClient>, GuestError> {
         if !self.services.has_client_semantics() {
-            return Err(GuestError::invalid("Mod client field requires destination client semantics"));
+            return Err(GuestError::invalid(
+                "Mod client field requires destination client semantics",
+            ));
         }
         Ok(self.services.visibility_client(actor))
     }
 
     /// Capture environment state.
     pub fn capture(&self) -> QcEnvCheckpoint {
-        QcEnvCheckpoint { cvars: self.cvars.capture(), visibility: self.visibility.as_ref().map(QcClientVisibility::capture) }
+        QcEnvCheckpoint {
+            cvars: self.cvars.capture(),
+            visibility: self.visibility.as_ref().map(QcClientVisibility::capture),
+        }
     }
 
     /// Restore environment state.
@@ -498,7 +541,10 @@ mod tests {
         }
 
         fn restore(&mut self, state: &[u8]) -> Result<(), GuestError> {
-            self.state = state.first().copied().ok_or_else(|| GuestError::BadSave("Empty visibility state".to_string()))?;
+            self.state = state
+                .first()
+                .copied()
+                .ok_or_else(|| GuestError::BadSave("Empty visibility state".to_string()))?;
             Ok(())
         }
     }
@@ -541,7 +587,10 @@ mod tests {
 
     impl QcEnvVm for FakeVm {
         fn arg_string(&self, index: usize) -> Result<String, GuestError> {
-            self.args.get(index).cloned().ok_or_else(|| GuestError::invalid("Missing builtin argument"))
+            self.args
+                .get(index)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid("Missing builtin argument"))
         }
 
         fn var_string(&self, index: usize) -> String {
@@ -571,18 +620,37 @@ mod tests {
 
     fn declaration() -> ModCallbackDeclaration {
         ModCallbackDeclaration {
-            program: Some(ModProgramRef { path: "progs.dat".to_string(), digest: "abc".to_string() }),
-            clients: Some(ModClientDeclaration { maximum: 8, ..ModClientDeclaration::default() }),
-            cvars: vec![ModCvar { name: "skill".to_string(), value: "3".to_string() }],
+            program: Some(ModProgramRef {
+                path: "progs.dat".to_string(),
+                digest: "abc".to_string(),
+            }),
+            clients: Some(ModClientDeclaration {
+                maximum: 8,
+                ..ModClientDeclaration::default()
+            }),
+            cvars: vec![ModCvar {
+                name: "skill".to_string(),
+                value: "3".to_string(),
+            }],
             ..ModCallbackDeclaration::default()
         }
     }
 
     fn environment() -> QcModEnvironment<FakeServices, FakeVisibility> {
-        let program = FakeProgram { globals: HashMap::new() };
+        let program = FakeProgram {
+            globals: HashMap::new(),
+        };
         QcModEnvironment::new(
-            FakeServices { printed: Vec::new(), clients: HashMap::new(), references: Vec::new() },
-            Some(FakeVisibility { next: None, checks: 0, state: 0 }),
+            FakeServices {
+                printed: Vec::new(),
+                clients: HashMap::new(),
+                references: Vec::new(),
+            },
+            Some(FakeVisibility {
+                next: None,
+                checks: 0,
+                state: 0,
+            }),
             &program,
             &declaration(),
         )
@@ -603,13 +671,31 @@ mod tests {
     fn host_builtins_read_write_and_print() {
         let mut environment = environment();
         environment.cvars_mut().set("developer", "1").unwrap();
-        let mut vm = FakeVm { args: vec!["skill".to_string()], floats: Vec::new(), ints: Vec::new(), self_reference: 2, origin: vec3(0.0, 0.0, 0.0) };
+        let mut vm = FakeVm {
+            args: vec!["skill".to_string()],
+            floats: Vec::new(),
+            ints: Vec::new(),
+            self_reference: 2,
+            origin: vec3(0.0, 0.0, 0.0),
+        };
         environment.call_host(QcEnvBuiltin::Cvar, &mut vm).unwrap();
         assert_eq!(vm.floats, vec![3.0]);
-        let mut vm = FakeVm { args: vec!["skill".to_string(), "2".to_string()], floats: Vec::new(), ints: Vec::new(), self_reference: 2, origin: vec3(0.0, 0.0, 0.0) };
+        let mut vm = FakeVm {
+            args: vec!["skill".to_string(), "2".to_string()],
+            floats: Vec::new(),
+            ints: Vec::new(),
+            self_reference: 2,
+            origin: vec3(0.0, 0.0, 0.0),
+        };
         environment.call_host(QcEnvBuiltin::CvarSet, &mut vm).unwrap();
         assert_eq!(environment.cvars().variable_value("skill"), 2.0);
-        let mut vm = FakeVm { args: vec!["hello".to_string()], floats: Vec::new(), ints: Vec::new(), self_reference: 2, origin: vec3(0.0, 0.0, 0.0) };
+        let mut vm = FakeVm {
+            args: vec!["hello".to_string()],
+            floats: Vec::new(),
+            ints: Vec::new(),
+            self_reference: 2,
+            origin: vec3(0.0, 0.0, 0.0),
+        };
         environment.call_host(QcEnvBuiltin::Dprint, &mut vm).unwrap();
         assert_eq!(environment.services().printed, vec!["hello".to_string()]);
         assert_eq!(QcEnvBuiltin::from_name("checkclient"), Some(QcEnvBuiltin::Checkclient));
@@ -621,13 +707,29 @@ mod tests {
         let owner = IdentityOwner::create("env").unwrap();
         let actor = owner.actor(5, 1);
         let mut with_target = QcModEnvironment::new(
-            FakeServices { printed: Vec::new(), clients: HashMap::new(), references: Vec::new() },
-            Some(FakeVisibility { next: Some(actor), checks: 0, state: 0 }),
-            &FakeProgram { globals: HashMap::new() },
+            FakeServices {
+                printed: Vec::new(),
+                clients: HashMap::new(),
+                references: Vec::new(),
+            },
+            Some(FakeVisibility {
+                next: Some(actor),
+                checks: 0,
+                state: 0,
+            }),
+            &FakeProgram {
+                globals: HashMap::new(),
+            },
             &declaration(),
         )
         .unwrap();
-        let mut vm = FakeVm { args: Vec::new(), floats: Vec::new(), ints: Vec::new(), self_reference: 2, origin: vec3(1.0, 2.0, 3.0) };
+        let mut vm = FakeVm {
+            args: Vec::new(),
+            floats: Vec::new(),
+            ints: Vec::new(),
+            self_reference: 2,
+            origin: vec3(1.0, 2.0, 3.0),
+        };
         with_target.call_host(QcEnvBuiltin::Checkclient, &mut vm).unwrap();
         assert_eq!(vm.ints, vec![5]);
         assert_eq!(with_target.services().references.len(), 1);
@@ -635,15 +737,27 @@ mod tests {
 
     #[test]
     fn checkclient_requires_visibility() {
-        let program = FakeProgram { globals: HashMap::new() };
+        let program = FakeProgram {
+            globals: HashMap::new(),
+        };
         let mut environment: QcModEnvironment<FakeServices, FakeVisibility> = QcModEnvironment::new(
-            FakeServices { printed: Vec::new(), clients: HashMap::new(), references: Vec::new() },
+            FakeServices {
+                printed: Vec::new(),
+                clients: HashMap::new(),
+                references: Vec::new(),
+            },
             None,
             &program,
             &declaration(),
         )
         .unwrap();
-        let mut vm = FakeVm { args: Vec::new(), floats: Vec::new(), ints: Vec::new(), self_reference: 2, origin: vec3(0.0, 0.0, 0.0) };
+        let mut vm = FakeVm {
+            args: Vec::new(),
+            floats: Vec::new(),
+            ints: Vec::new(),
+            self_reference: 2,
+            origin: vec3(0.0, 0.0, 0.0),
+        };
         assert!(environment.call_host(QcEnvBuiltin::Checkclient, &mut vm).is_err());
     }
 
@@ -677,7 +791,11 @@ mod tests {
         let mut environment = environment();
         environment.services_mut().clients.insert(
             actor.clone(),
-            QcVisibilityClient { actor: actor.clone(), view_offset: vec3(0.0, 0.0, 8.0), notarget: true },
+            QcVisibilityClient {
+                actor: actor.clone(),
+                view_offset: vec3(0.0, 0.0, 8.0),
+                notarget: true,
+            },
         );
         let client = environment.client(&actor).unwrap().unwrap();
         assert!(client.notarget);

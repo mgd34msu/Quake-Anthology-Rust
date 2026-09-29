@@ -19,9 +19,9 @@ use qa_core::math::vec3;
 use qa_world::save::json::{parse_source_json, SourceJson};
 
 use super::profile::{
-    QcClientCall, QcPickupCallerDeclaration, QcPickupDescriptor, QcPickupItemValue, QcPickupOperation,
-    QcPickupRegion, QcPickupResource, QcPickupScalar, QcPrimaryWeaponStage, QcProofStatement,
-    QcProtectionChannel, QcWeaponClient, QcWeaponObjectives, QcWeaponRepeat, QcWeaponResult,
+    QcClientCall, QcPickupCallerDeclaration, QcPickupDescriptor, QcPickupItemValue, QcPickupOperation, QcPickupRegion,
+    QcPickupResource, QcPickupScalar, QcPrimaryWeaponStage, QcProofStatement, QcProtectionChannel, QcWeaponClient,
+    QcWeaponObjectives, QcWeaponRepeat, QcWeaponResult,
 };
 use super::source_call::{ModCallbackInput, ModCallbackValue, ModSourceCall, ModSourceGlobal};
 use crate::error::GuestError;
@@ -91,15 +91,15 @@ pub enum QcArmorFlags {
     /// Bit flags in a global word.
     Bits {
         /// Flag word.
-    pub word: usize,
+        word: usize,
         /// No-armor bit.
-    pub no_armor: i64,
+        no_armor: i64,
         /// No-power-armor bit.
-    pub no_power_armor: i64,
+        no_power_armor: i64,
         /// No-regular-armor bit.
-    pub no_regular_armor: i64,
+        no_regular_armor: i64,
         /// Energy bit.
-    pub energy: i64,
+        energy: i64,
     },
 }
 
@@ -303,16 +303,29 @@ fn read_vector(value: &SourceJson, path: &str) -> Result<qa_core::math::Vec3, Gu
 
 /// Read a mod source value (`content/mods/source-call.ts`).
 pub fn read_mod_source_value(value: &SourceJson, path: &str) -> Result<ModCallbackValue, GuestError> {
-    match as_choice(field(value, path, "kind")?, &format!("{path}.kind"), &["input", "float", "string", "vector"])? {
+    match as_choice(
+        field(value, path, "kind")?,
+        &format!("{path}.kind"),
+        &["input", "float", "string", "vector"],
+    )? {
         "input" => {
             let name = as_string(field(value, path, "name")?, &format!("{path}.name"))?;
             ModCallbackInput::parse(&name)
                 .map(ModCallbackValue::Input)
                 .ok_or_else(|| fail(&format!("{path}.name"), "unknown callback input"))
         }
-        "float" => Ok(ModCallbackValue::Float(as_number(field(value, path, "value")?, &format!("{path}.value"))?)),
-        "string" => Ok(ModCallbackValue::String(as_string(field(value, path, "value")?, &format!("{path}.value"))?)),
-        _ => Ok(ModCallbackValue::Vector(read_vector(field(value, path, "value")?, &format!("{path}.value"))?)),
+        "float" => Ok(ModCallbackValue::Float(as_number(
+            field(value, path, "value")?,
+            &format!("{path}.value"),
+        )?)),
+        "string" => Ok(ModCallbackValue::String(as_string(
+            field(value, path, "value")?,
+            &format!("{path}.value"),
+        )?)),
+        _ => Ok(ModCallbackValue::Vector(read_vector(
+            field(value, path, "value")?,
+            &format!("{path}.value"),
+        )?)),
     }
 }
 
@@ -320,13 +333,21 @@ pub fn read_mod_source_value(value: &SourceJson, path: &str) -> Result<ModCallba
 pub fn read_mod_source_call(value: &SourceJson, path: &str) -> Result<ModSourceCall, GuestError> {
     Ok(ModSourceCall {
         function: as_string(field(value, path, "function")?, &format!("{path}.function"))?,
-        arguments: as_list(field(value, path, "arguments")?, &format!("{path}.arguments"), read_mod_source_value)?,
-        globals: as_list(field(value, path, "globals")?, &format!("{path}.globals"), |entry, entry_path| {
-            Ok(ModSourceGlobal {
-                name: as_string(field(entry, entry_path, "name")?, &format!("{entry_path}.name"))?,
-                value: read_mod_source_value(field(entry, entry_path, "value")?, &format!("{entry_path}.value"))?,
-            })
-        })?,
+        arguments: as_list(
+            field(value, path, "arguments")?,
+            &format!("{path}.arguments"),
+            read_mod_source_value,
+        )?,
+        globals: as_list(
+            field(value, path, "globals")?,
+            &format!("{path}.globals"),
+            |entry, entry_path| {
+                Ok(ModSourceGlobal {
+                    name: as_string(field(entry, entry_path, "name")?, &format!("{entry_path}.name"))?,
+                    value: read_mod_source_value(field(entry, entry_path, "value")?, &format!("{entry_path}.value"))?,
+                })
+            },
+        )?,
     })
 }
 
@@ -341,7 +362,11 @@ fn read_weapon_repeats(value: &SourceJson, path: &str) -> Result<Vec<QcWeaponRep
     as_list(value, path, |entry, entry_path| {
         let result = field(entry, entry_path, "result")?;
         let result_path = format!("{entry_path}.result");
-        let accepted = as_integer(field(result, &result_path, "value")?, &format!("{result_path}.value"), 0)?;
+        let accepted = as_integer(
+            field(result, &result_path, "value")?,
+            &format!("{result_path}.value"),
+            0,
+        )?;
         if accepted != 0 && accepted != 1 {
             return Err(fail(&format!("{result_path}.value"), "unexpected choice"));
         }
@@ -368,9 +393,16 @@ pub fn read_primary_weapon_stage(value: &SourceJson, path: &str) -> Result<QcPri
     let client_path = format!("{path}.client");
     let objectives = field(client, &client_path, "objectives")?;
     let objectives_path = format!("{client_path}.objectives");
-    let kind = as_choice(field(objectives, &objectives_path, "kind")?, &format!("{objectives_path}.kind"), &["none", "call"])?;
+    let kind = as_choice(
+        field(objectives, &objectives_path, "kind")?,
+        &format!("{objectives_path}.kind"),
+        &["none", "call"],
+    )?;
     if kind == "call" && opt(objectives, "call").is_some() && opt(objectives, "function").is_some() {
-        return Err(fail(&objectives_path, "client objectives must declare one original call"));
+        return Err(fail(
+            &objectives_path,
+            "client objectives must declare one original call",
+        ));
     }
     let objectives = match kind {
         "none" => QcWeaponObjectives::None,
@@ -385,20 +417,29 @@ pub fn read_primary_weapon_stage(value: &SourceJson, path: &str) -> Result<QcPri
     };
     Ok(QcPrimaryWeaponStage {
         dispatcher: as_string(field(value, path, "dispatcher")?, &format!("{path}.dispatcher"))?,
-        continuations: as_list(field(value, path, "continuations")?, &format!("{path}.continuations"), |entry, entry_path| {
-            as_string(entry, entry_path)
-        })?,
+        continuations: as_list(
+            field(value, path, "continuations")?,
+            &format!("{path}.continuations"),
+            |entry, entry_path| as_string(entry, entry_path),
+        )?,
         repeats: read_weapon_repeats(field(value, path, "repeats")?, &format!("{path}.repeats"))?,
         client: QcWeaponClient {
             spawn: read_client_call(field(client, &client_path, "spawn")?, &format!("{client_path}.spawn"))?,
-            select_spawn: read_client_call(field(client, &client_path, "selectSpawn")?, &format!("{client_path}.selectSpawn"))?,
+            select_spawn: read_client_call(
+                field(client, &client_path, "selectSpawn")?,
+                &format!("{client_path}.selectSpawn"),
+            )?,
             objectives,
         },
     })
 }
 
 fn read_pickup_scalar(value: &SourceJson, path: &str) -> Result<QcPickupScalar, GuestError> {
-    match as_choice(field(value, path, "kind")?, &format!("{path}.kind"), &["field", "global"])? {
+    match as_choice(
+        field(value, path, "kind")?,
+        &format!("{path}.kind"),
+        &["field", "global"],
+    )? {
         "field" => Ok(QcPickupScalar::Field {
             name: as_string(field(value, path, "name")?, &format!("{path}.name"))?,
         }),
@@ -409,9 +450,17 @@ fn read_pickup_scalar(value: &SourceJson, path: &str) -> Result<QcPickupScalar, 
 }
 
 fn read_pickup_resource(value: &SourceJson, path: &str) -> Result<QcPickupResource, GuestError> {
-    match as_choice(field(value, path, "kind")?, &format!("{path}.kind"), &["protection", "inventory"])? {
+    match as_choice(
+        field(value, path, "kind")?,
+        &format!("{path}.kind"),
+        &["protection", "inventory"],
+    )? {
         "protection" => {
-            let channel = as_choice(field(value, path, "channel")?, &format!("{path}.channel"), &["regular", "powered"])?;
+            let channel = as_choice(
+                field(value, path, "channel")?,
+                &format!("{path}.channel"),
+                &["regular", "powered"],
+            )?;
             Ok(QcPickupResource::Protection {
                 channel: if channel == "regular" {
                     QcProtectionChannel::Regular
@@ -438,7 +487,11 @@ fn read_pickup_item(
         None => None,
         Some(count) => Some(read_pickup_scalar(count, &format!("{path}.count"))?),
     };
-    Ok((as_namespaced(field(value, path, "item")?, &format!("{path}.item"))?, resource, count))
+    Ok((
+        as_namespaced(field(value, path, "item")?, &format!("{path}.item"))?,
+        resource,
+        count,
+    ))
 }
 
 /// Read a pickup caller (`content/q1/quakec/pickup-callers.ts`).
@@ -473,7 +526,10 @@ pub fn read_pickup_caller(value: &SourceJson, path: &str) -> Result<QcPickupCall
                     })
                 },
             )?;
-            QcPickupDescriptor::String { field: field_name, values }
+            QcPickupDescriptor::String {
+                field: field_name,
+                values,
+            }
         }
         _ => {
             let field_name = as_string(
@@ -493,40 +549,54 @@ pub fn read_pickup_caller(value: &SourceJson, path: &str) -> Result<QcPickupCall
                     })
                 },
             )?;
-            QcPickupDescriptor::Float { field: field_name, values }
+            QcPickupDescriptor::Float {
+                field: field_name,
+                values,
+            }
         }
     };
     let dropped = match opt(value, "dropped") {
         None => None,
         Some(dropped) => Some(read_pickup_scalar(dropped, &format!("{path}.dropped"))?),
     };
-    let regions = as_list(field(value, path, "regions")?, &format!("{path}.regions"), |region, region_path| {
-        let operation = field(region, region_path, "operation")?;
-        let operation_path = format!("{region_path}.operation");
-        let kind = as_choice(
-            field(operation, &operation_path, "kind")?,
-            &format!("{operation_path}.kind"),
-            &["decision", "admission", "grant", "consume"],
-        )?;
-        Ok(QcPickupRegion {
-            entry: as_usize(field(region, region_path, "entry")?, &format!("{region_path}.entry"), 0)?,
-            exit: as_usize(field(region, region_path, "exit")?, &format!("{region_path}.exit"), 0)?,
-            statements: as_list(
-                field(region, region_path, "statements")?,
-                &format!("{region_path}.statements"),
-                read_proof_statement,
-            )?,
-            operation: match kind {
-                "decision" => QcPickupOperation::Decision {
-                    word: as_usize(field(operation, &operation_path, "word")?, &format!("{operation_path}.word"), 0)?,
-                    accepted: as_finite(field(operation, &operation_path, "accepted")?, &format!("{operation_path}.accepted"))?,
+    let regions = as_list(
+        field(value, path, "regions")?,
+        &format!("{path}.regions"),
+        |region, region_path| {
+            let operation = field(region, region_path, "operation")?;
+            let operation_path = format!("{region_path}.operation");
+            let kind = as_choice(
+                field(operation, &operation_path, "kind")?,
+                &format!("{operation_path}.kind"),
+                &["decision", "admission", "grant", "consume"],
+            )?;
+            Ok(QcPickupRegion {
+                entry: as_usize(field(region, region_path, "entry")?, &format!("{region_path}.entry"), 0)?,
+                exit: as_usize(field(region, region_path, "exit")?, &format!("{region_path}.exit"), 0)?,
+                statements: as_list(
+                    field(region, region_path, "statements")?,
+                    &format!("{region_path}.statements"),
+                    read_proof_statement,
+                )?,
+                operation: match kind {
+                    "decision" => QcPickupOperation::Decision {
+                        word: as_usize(
+                            field(operation, &operation_path, "word")?,
+                            &format!("{operation_path}.word"),
+                            0,
+                        )?,
+                        accepted: as_finite(
+                            field(operation, &operation_path, "accepted")?,
+                            &format!("{operation_path}.accepted"),
+                        )?,
+                    },
+                    "admission" => QcPickupOperation::Admission,
+                    "grant" => QcPickupOperation::Grant,
+                    _ => QcPickupOperation::Consume,
                 },
-                "admission" => QcPickupOperation::Admission,
-                "grant" => QcPickupOperation::Grant,
-                _ => QcPickupOperation::Consume,
-            },
-        })
-    })?;
+            })
+        },
+    )?;
     Ok(QcPickupCallerDeclaration {
         function: as_string(field(value, path, "function")?, &format!("{path}.function"))?,
         descriptor,
@@ -552,9 +622,14 @@ fn read_team_aliases(value: &SourceJson, path: &str) -> Result<Vec<SourceTeamAli
     let teams: HashSet<Option<&String>> = values.iter().map(|alias| alias.team.as_ref()).collect();
     if sources.len() != values.len()
         || teams.len() != values.len()
-        || values.iter().any(|alias| alias.source.as_deref() == Some("") || alias.team.as_deref() == Some(""))
+        || values
+            .iter()
+            .any(|alias| alias.source.as_deref() == Some("") || alias.team.as_deref() == Some(""))
     {
-        return Err(fail(path, "team aliases require distinct original and shared identities"));
+        return Err(fail(
+            path,
+            "team aliases require distinct original and shared identities",
+        ));
     }
     Ok(values)
 }
@@ -562,11 +637,13 @@ fn read_team_aliases(value: &SourceJson, path: &str) -> Result<Vec<SourceTeamAli
 fn read_damage_scale(value: &SourceJson, path: &str) -> Result<QcDamageScale, GuestError> {
     let kind = match opt(value, "kind") {
         None => None,
-        Some(kind) => Some(match as_choice(kind, &format!("{path}.kind"), &["multiplier", "identity", "transform"])? {
-            "multiplier" => QcDamageScaleKind::Multiplier,
-            "identity" => QcDamageScaleKind::Identity,
-            _ => QcDamageScaleKind::Transform,
-        }),
+        Some(kind) => Some(
+            match as_choice(kind, &format!("{path}.kind"), &["multiplier", "identity", "transform"])? {
+                "multiplier" => QcDamageScaleKind::Multiplier,
+                "identity" => QcDamageScaleKind::Identity,
+                _ => QcDamageScaleKind::Transform,
+            },
+        ),
     };
     Ok(QcDamageScale {
         kind,
@@ -574,16 +651,22 @@ fn read_damage_scale(value: &SourceJson, path: &str) -> Result<QcDamageScale, Gu
         entry: as_usize(field(value, path, "entry")?, &format!("{path}.entry"), 0)?,
         exit: as_usize(field(value, path, "exit")?, &format!("{path}.exit"), 0)?,
         damage: as_usize(field(value, path, "damage")?, &format!("{path}.damage"), 28)?,
-        statements: as_list(field(value, path, "statements")?, &format!("{path}.statements"), |entry, entry_path| {
-            read_proof_statement_with(entry, entry_path, i64::MIN)
-        })?,
+        statements: as_list(
+            field(value, path, "statements")?,
+            &format!("{path}.statements"),
+            |entry, entry_path| read_proof_statement_with(entry, entry_path, i64::MIN),
+        )?,
     })
 }
 
 fn read_armor_stage(value: &SourceJson, path: &str) -> Result<QcArmorStage, GuestError> {
     let flags = field(value, path, "flags")?;
     let flags_path = format!("{path}.flags");
-    let flag_kind = as_choice(field(flags, &flags_path, "kind")?, &format!("{flags_path}.kind"), &["none", "bits"])?;
+    let flag_kind = as_choice(
+        field(flags, &flags_path, "kind")?,
+        &format!("{flags_path}.kind"),
+        &["none", "bits"],
+    )?;
     Ok(QcArmorStage {
         function: as_string(field(value, path, "function")?, &format!("{path}.function"))?,
         entry: as_usize(field(value, path, "entry")?, &format!("{path}.entry"), 0)?,
@@ -596,7 +679,11 @@ fn read_armor_stage(value: &SourceJson, path: &str) -> Result<QcArmorStage, Gues
             Some(scale) => as_list(scale, &format!("{path}.regularScale"), |site, site_path| {
                 Ok(QcArmorRegularScale {
                     caller: as_string(field(site, site_path, "caller")?, &format!("{site_path}.caller"))?,
-                    statement: as_usize(field(site, site_path, "statement")?, &format!("{site_path}.statement"), 0)?,
+                    statement: as_usize(
+                        field(site, site_path, "statement")?,
+                        &format!("{site_path}.statement"),
+                        0,
+                    )?,
                     scale: as_number(field(site, site_path, "scale")?, &format!("{site_path}.scale"))?,
                 })
             })?,
@@ -606,13 +693,29 @@ fn read_armor_stage(value: &SourceJson, path: &str) -> Result<QcArmorStage, Gues
         } else {
             QcArmorFlags::Bits {
                 word: as_usize(field(flags, &flags_path, "word")?, &format!("{flags_path}.word"), 0)?,
-                no_armor: as_integer(field(flags, &flags_path, "noArmor")?, &format!("{flags_path}.noArmor"), 0)?,
-                no_power_armor: as_integer(field(flags, &flags_path, "noPowerArmor")?, &format!("{flags_path}.noPowerArmor"), 0)?,
-                no_regular_armor: as_integer(field(flags, &flags_path, "noRegularArmor")?, &format!("{flags_path}.noRegularArmor"), 0)?,
+                no_armor: as_integer(
+                    field(flags, &flags_path, "noArmor")?,
+                    &format!("{flags_path}.noArmor"),
+                    0,
+                )?,
+                no_power_armor: as_integer(
+                    field(flags, &flags_path, "noPowerArmor")?,
+                    &format!("{flags_path}.noPowerArmor"),
+                    0,
+                )?,
+                no_regular_armor: as_integer(
+                    field(flags, &flags_path, "noRegularArmor")?,
+                    &format!("{flags_path}.noRegularArmor"),
+                    0,
+                )?,
                 energy: as_integer(field(flags, &flags_path, "energy")?, &format!("{flags_path}.energy"), 0)?,
             }
         },
-        statements: as_list(field(value, path, "statements")?, &format!("{path}.statements"), read_proof_statement)?,
+        statements: as_list(
+            field(value, path, "statements")?,
+            &format!("{path}.statements"),
+            read_proof_statement,
+        )?,
     })
 }
 
@@ -638,7 +741,10 @@ fn read_combat(value: &SourceJson, path: &str) -> Result<QcCombatDeclaration, Gu
                 )?;
                 Some(QcEmptyArmor {
                     item: item.to_string(),
-                    absorption: as_finite(field(armor, &armor_path, "absorption")?, &format!("{armor_path}.absorption"))?,
+                    absorption: as_finite(
+                        field(armor, &armor_path, "absorption")?,
+                        &format!("{armor_path}.absorption"),
+                    )?,
                 })
             }
         },
@@ -660,13 +766,20 @@ pub fn read_quake_c_compatibility(
             pickup_callers: Vec::new(),
         });
     };
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| GuestError::BadSave(format!("{DOCUMENT}: invalid UTF-8")))?;
+    let text = std::str::from_utf8(bytes).map_err(|_| GuestError::BadSave(format!("{DOCUMENT}: invalid UTF-8")))?;
     let document = parse_source_json(text).map_err(GuestError::from)?;
-    if as_integer(field(&document, DOCUMENT, "version")?, &format!("{DOCUMENT}.version"), 0)? != 1 {
+    if as_integer(
+        field(&document, DOCUMENT, "version")?,
+        &format!("{DOCUMENT}.version"),
+        0,
+    )? != 1
+    {
         return Err(fail(&format!("{DOCUMENT}.version"), "unsupported version"));
     }
-    let digest = as_string(field(&document, DOCUMENT, "artifactDigest")?, &format!("{DOCUMENT}.artifactDigest"))?;
+    let digest = as_string(
+        field(&document, DOCUMENT, "artifactDigest")?,
+        &format!("{DOCUMENT}.artifactDigest"),
+    )?;
     if digest != artifact_digest {
         return Err(fail(&format!("{DOCUMENT}.artifactDigest"), "artifact digest mismatch"));
     }
@@ -685,7 +798,11 @@ pub fn read_quake_c_compatibility(
         },
         message_dialect: match opt(&document, "messageDialect") {
             None => QcMessageDialect::KnownRetail,
-            Some(dialect) => match as_choice(dialect, &format!("{DOCUMENT}.messageDialect"), &["known-retail", "quake-1-re-ts-private"])? {
+            Some(dialect) => match as_choice(
+                dialect,
+                &format!("{DOCUMENT}.messageDialect"),
+                &["known-retail", "quake-1-re-ts-private"],
+            )? {
                 "known-retail" => QcMessageDialect::KnownRetail,
                 _ => QcMessageDialect::ReTsPrivate,
             },
@@ -717,7 +834,8 @@ mod tests {
 
     #[test]
     fn minimal_document_parses() {
-        let compatibility = read_quake_c_compatibility(Some(&document("\"messageDialect\":\"known-retail\"")), DIGEST).unwrap();
+        let compatibility =
+            read_quake_c_compatibility(Some(&document("\"messageDialect\":\"known-retail\"")), DIGEST).unwrap();
         assert_eq!(compatibility.message_dialect, QcMessageDialect::KnownRetail);
     }
 
@@ -777,7 +895,10 @@ mod tests {
             ModCallbackValue::Input(ModCallbackInput::Amount)
         ));
         let parsed = parse_source_json("{\"kind\":\"vector\",\"value\":{\"x\":1,\"y\":2,\"z\":3}}").unwrap();
-        assert!(matches!(read_mod_source_value(&parsed, "test").unwrap(), ModCallbackValue::Vector(_)));
+        assert!(matches!(
+            read_mod_source_value(&parsed, "test").unwrap(),
+            ModCallbackValue::Vector(_)
+        ));
         let parsed = parse_source_json("{\"kind\":\"input\",\"name\":\"bogus\"}").unwrap();
         assert!(read_mod_source_value(&parsed, "test").is_err());
     }

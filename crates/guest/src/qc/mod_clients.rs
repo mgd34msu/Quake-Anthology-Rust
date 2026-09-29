@@ -133,7 +133,8 @@ pub trait QcClientDispatch {
     /// Release a client actor's bindings.
     fn release(&mut self, actor: &ActorId) -> Result<ClientBindingRelease, GuestError>;
     /// Invoke a source call for a client actor.
-    fn invoke(&mut self, call: &ModSourceCall, actor: &ActorId, frame: Option<&FrameContext>) -> Result<(), GuestError>;
+    fn invoke(&mut self, call: &ModSourceCall, actor: &ActorId, frame: Option<&FrameContext>)
+        -> Result<(), GuestError>;
     /// Run a client think; defaults to no think.
     fn think(&mut self, _actor: &ActorId, _frame: &FrameContext, _live: &dyn Fn() -> bool) -> Result<(), GuestError> {
         Ok(())
@@ -152,11 +153,15 @@ pub trait QcClientDispatch {
     }
     /// Open a client-input scope; returns its closer.
     fn input_open(&mut self, _application: &ModClientApplication) -> Result<Box<dyn FnOnce()>, GuestError> {
-        Err(GuestError::invalid("QuakeC client input requires a source application owner"))
+        Err(GuestError::invalid(
+            "QuakeC client input requires a source application owner",
+        ))
     }
     /// Invoke a client-input call.
     fn input_invoke(&mut self, _call: &ModSourceCall, _application: &ModClientApplication) -> Result<(), GuestError> {
-        Err(GuestError::invalid("QuakeC client input requires a source application owner"))
+        Err(GuestError::invalid(
+            "QuakeC client input requires a source application owner",
+        ))
     }
     /// Run source with output capture.
     fn input_output(
@@ -165,7 +170,9 @@ pub trait QcClientDispatch {
         _application: &ModClientApplication,
         _run: &mut dyn FnMut(),
     ) -> Result<Vec<ModClientInputOutput>, GuestError> {
-        Err(GuestError::invalid("QuakeC client input requires a source application owner"))
+        Err(GuestError::invalid(
+            "QuakeC client input requires a source application owner",
+        ))
     }
 }
 
@@ -189,7 +196,13 @@ pub struct QcModClientBindings<S, O> {
 impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
     /// Build over client services and source dispatch.
     pub fn new(services: S, ops: O, declaration: ModClientDeclaration) -> Self {
-        Self { services, ops, declaration, entries: HashMap::new(), started: false }
+        Self {
+            services,
+            ops,
+            declaration,
+            entries: HashMap::new(),
+            started: false,
+        }
     }
 
     /// Borrow the services.
@@ -233,22 +246,40 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
             return Err(GuestError::invalid("QuakeC component source client capacity exceeded"));
         }
         let client = client.ok_or_else(|| GuestError::invalid("QuakeC component admission requires a live client"))?;
-        self.entries.insert(actor.clone(), Entry { actor: actor.clone(), client: Some(client), slot, admitted: false });
+        self.entries.insert(
+            actor.clone(),
+            Entry {
+                actor: actor.clone(),
+                client: Some(client),
+                slot,
+                admitted: false,
+            },
+        );
         Ok(Some(slot))
     }
 
     /// Require a live client entry, binding its handle.
     fn require(&mut self, actor: &ActorId) -> Result<Entry, GuestError> {
         let client = self.services.for_actor(actor);
-        let entry = self.entries.get(actor).cloned().ok_or_else(|| GuestError::invalid("QuakeC component client identity is no longer live"))?;
-        let current = client.ok_or_else(|| GuestError::invalid("QuakeC component client identity is no longer live"))?;
+        let entry = self
+            .entries
+            .get(actor)
+            .cloned()
+            .ok_or_else(|| GuestError::invalid("QuakeC component client identity is no longer live"))?;
+        let current =
+            client.ok_or_else(|| GuestError::invalid("QuakeC component client identity is no longer live"))?;
         if entry.client.as_ref().is_some_and(|bound| bound != &current)
             || self.services.actor(&current).as_ref() != Some(actor)
         {
-            return Err(GuestError::invalid("QuakeC component client identity is no longer live"));
+            return Err(GuestError::invalid(
+                "QuakeC component client identity is no longer live",
+            ));
         }
         if entry.client.is_none() {
-            let bound = Entry { client: Some(current), ..entry };
+            let bound = Entry {
+                client: Some(current),
+                ..entry
+            };
             self.entries.insert(actor.clone(), bound.clone());
             return Ok(bound);
         }
@@ -294,7 +325,9 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
             self.admit(&actor)?;
         }
         if !self.declaration.input.is_empty() && !self.ops.has_input_owner() {
-            return Err(GuestError::invalid("QuakeC client input requires a source application owner"));
+            return Err(GuestError::invalid(
+                "QuakeC client input requires a source application owner",
+            ));
         }
         Ok(())
     }
@@ -326,7 +359,9 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
     /// Read a userinfo key.
     pub fn userinfo(&mut self, actor: &ActorId, key: &str) -> Result<String, GuestError> {
         let entry = self.require(actor)?;
-        let client = entry.client.ok_or_else(|| GuestError::invalid("QuakeC component userinfo requires a restored client"))?;
+        let client = entry
+            .client
+            .ok_or_else(|| GuestError::invalid("QuakeC component userinfo requires a restored client"))?;
         Ok(info_value_for_key(&self.services.userinfo(&client), key))
     }
 
@@ -340,7 +375,9 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
             None => return Ok(false),
         };
         let calls = self.declaration.frame.clone();
-        let Self { services, entries, ops, .. } = self;
+        let Self {
+            services, entries, ops, ..
+        } = self;
         let (services, entries, ops) = (&*services, &*entries, &mut *ops);
         let live = || entry_is_live(services, entries, &entry);
         if live() {
@@ -358,10 +395,14 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
     /// Assign a userinfo key.
     pub fn set_userinfo(&mut self, actor: &ActorId, key: &str, value: &str) -> Result<(), GuestError> {
         if value.contains(['\\', '\0']) {
-            return Err(GuestError::invalid("QuakeC component userinfo field cannot contain a delimiter or NUL"));
+            return Err(GuestError::invalid(
+                "QuakeC component userinfo field cannot contain a delimiter or NUL",
+            ));
         }
         let entry = self.require(actor)?;
-        let client = entry.client.ok_or_else(|| GuestError::invalid("QuakeC component userinfo requires a restored client"))?;
+        let client = entry
+            .client
+            .ok_or_else(|| GuestError::invalid("QuakeC component userinfo requires a restored client"))?;
         let source = self.services.userinfo(&client);
         let fields: Vec<&str> = source.split('\\').collect();
         let mut result: Vec<&str> = Vec::new();
@@ -379,7 +420,11 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
             result.push(key);
             result.push(value);
         }
-        let info = if result.is_empty() { String::new() } else { format!("\\{}", result.join("\\")) };
+        let info = if result.is_empty() {
+            String::new()
+        } else {
+            format!("\\{}", result.join("\\"))
+        };
         self.services.set_userinfo(&client, info);
         Ok(())
     }
@@ -417,7 +462,11 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
         let mut slots: Vec<QcModClientSlot> = self
             .entries
             .values()
-            .map(|entry| QcModClientSlot { actor: entry.actor.clone(), slot: entry.slot, admitted: entry.admitted })
+            .map(|entry| QcModClientSlot {
+                actor: entry.actor.clone(),
+                slot: entry.slot,
+                admitted: entry.admitted,
+            })
             .collect();
         slots.sort_by_key(|slot| slot.slot);
         slots
@@ -438,7 +487,12 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
             let client = self.services.for_actor(&entry.actor);
             self.entries.insert(
                 entry.actor.clone(),
-                Entry { actor: entry.actor.clone(), client, slot: entry.slot, admitted: entry.admitted },
+                Entry {
+                    actor: entry.actor.clone(),
+                    client,
+                    slot: entry.slot,
+                    admitted: entry.admitted,
+                },
             );
         }
         Ok(())
@@ -460,7 +514,9 @@ impl<S: ModClientServices, O: QcClientDispatch> QcModClientBindings<S, O> {
 fn entry_is_live<S: ModClientServices>(services: &S, entries: &HashMap<ActorId, Entry>, entry: &Entry) -> bool {
     let client = services.for_actor(&entry.actor);
     entry.admitted
-        && entries.get(&entry.actor).is_some_and(|current| current.slot == entry.slot && current.admitted)
+        && entries
+            .get(&entry.actor)
+            .is_some_and(|current| current.slot == entry.slot && current.admitted)
         && client.as_ref().is_some_and(|client| {
             entry.client.as_ref().is_none_or(|bound| bound == client)
                 && services.actor(client).as_ref() == Some(&entry.actor)
@@ -495,7 +551,11 @@ mod tests {
 
     impl FakeServices {
         fn new() -> Self {
-            Self { owner: IdentityOwner::create("clients").unwrap(), by_actor: HashMap::new(), infos: HashMap::new() }
+            Self {
+                owner: IdentityOwner::create("clients").unwrap(),
+                by_actor: HashMap::new(),
+                infos: HashMap::new(),
+            }
         }
 
         fn join(&mut self, slot: u32) -> ActorId {
@@ -513,11 +573,20 @@ mod tests {
         }
 
         fn actor(&self, client: &ClientId) -> Option<ActorId> {
-            self.by_actor.iter().find(|(_, bound)| *bound == client).map(|(actor, _)| actor.clone())
+            self.by_actor
+                .iter()
+                .find(|(_, bound)| *bound == client)
+                .map(|(actor, _)| actor.clone())
         }
 
         fn clients(&self) -> Vec<ModClientRef> {
-            self.by_actor.iter().map(|(actor, client)| ModClientRef { client: client.clone(), actor: actor.clone() }).collect()
+            self.by_actor
+                .iter()
+                .map(|(actor, client)| ModClientRef {
+                    client: client.clone(),
+                    actor: actor.clone(),
+                })
+                .collect()
         }
 
         fn userinfo(&self, client: &ClientId) -> String {
@@ -544,10 +613,19 @@ mod tests {
 
         fn release(&mut self, actor: &ActorId) -> Result<ClientBindingRelease, GuestError> {
             self.events.push(format!("release {}", actor.slot()));
-            Ok(if self.deferred { ClientBindingRelease::Deferred } else { ClientBindingRelease::Released })
+            Ok(if self.deferred {
+                ClientBindingRelease::Deferred
+            } else {
+                ClientBindingRelease::Released
+            })
         }
 
-        fn invoke(&mut self, call: &ModSourceCall, actor: &ActorId, _frame: Option<&FrameContext>) -> Result<(), GuestError> {
+        fn invoke(
+            &mut self,
+            call: &ModSourceCall,
+            actor: &ActorId,
+            _frame: Option<&FrameContext>,
+        ) -> Result<(), GuestError> {
             self.events.push(format!("invoke {} {}", call.function, actor.slot()));
             Ok(())
         }
@@ -573,7 +651,11 @@ mod tests {
     }
 
     fn call(name: &str) -> ModSourceCall {
-        ModSourceCall { function: name.to_string(), arguments: vec![], globals: vec![] }
+        ModSourceCall {
+            function: name.to_string(),
+            arguments: vec![],
+            globals: vec![],
+        }
     }
 
     fn declaration() -> ModClientDeclaration {
@@ -605,9 +687,13 @@ mod tests {
         assert!(bindings.admitted(&actor));
         assert_eq!(bindings.slot(&actor).unwrap(), Some(1));
         assert!(bindings.ops().events.iter().any(|event| event == "invoke admit 1"));
-        bindings.deliver(&ModClientEvent::Userinfo { actor: actor.clone() }).unwrap();
+        bindings
+            .deliver(&ModClientEvent::Userinfo { actor: actor.clone() })
+            .unwrap();
         assert!(bindings.ops().events.iter().any(|event| event == "invoke userinfo 1"));
-        bindings.deliver(&ModClientEvent::Gone { actor: actor.clone() }).unwrap();
+        bindings
+            .deliver(&ModClientEvent::Gone { actor: actor.clone() })
+            .unwrap();
         assert!(bindings.ops().events.iter().any(|event| event == "invoke disconnect 1"));
         assert!(!bindings.admitted(&actor));
     }
@@ -616,9 +702,18 @@ mod tests {
     fn deferred_release_keeps_entry() {
         let mut services = FakeServices::new();
         let actor = services.join(1);
-        let mut bindings = QcModClientBindings::new(services, FakeOps { deferred: true, ..FakeOps::default() }, declaration());
+        let mut bindings = QcModClientBindings::new(
+            services,
+            FakeOps {
+                deferred: true,
+                ..FakeOps::default()
+            },
+            declaration(),
+        );
         bindings.start().unwrap();
-        bindings.deliver(&ModClientEvent::Gone { actor: actor.clone() }).unwrap();
+        bindings
+            .deliver(&ModClientEvent::Gone { actor: actor.clone() })
+            .unwrap();
         assert!(bindings.admitted(&actor));
     }
 
@@ -627,10 +722,15 @@ mod tests {
         let mut bindings = QcModClientBindings::new(
             FakeServices::new(),
             FakeOps::default(),
-            ModClientDeclaration { maximum: 1, ..ModClientDeclaration::default() },
+            ModClientDeclaration {
+                maximum: 1,
+                ..ModClientDeclaration::default()
+            },
         );
         let actor = bindings.services_mut().join(1);
-        bindings.deliver(&ModClientEvent::Admitted { actor: actor.clone() }).unwrap();
+        bindings
+            .deliver(&ModClientEvent::Admitted { actor: actor.clone() })
+            .unwrap();
         assert_eq!(bindings.slot(&actor).unwrap(), Some(1));
         let other = bindings.services_mut().join(2);
         assert!(bindings.deliver(&ModClientEvent::Admitted { actor: other }).is_err());
@@ -671,13 +771,32 @@ mod tests {
         let mut bindings = QcModClientBindings::new(services, FakeOps::default(), declaration());
         bindings.start().unwrap();
         let saved = bindings.checkpoint();
-        assert_eq!(saved, vec![QcModClientSlot { actor: actor.clone(), slot: 1, admitted: true }]);
+        assert_eq!(
+            saved,
+            vec![QcModClientSlot {
+                actor: actor.clone(),
+                slot: 1,
+                admitted: true
+            }]
+        );
         let mut revived = QcModClientBindings::new(FakeServices::new(), FakeOps::default(), declaration());
         let joined = revived.services_mut().join(1);
         assert_eq!(joined.slot(), actor.slot());
-        revived.restore(&[QcModClientSlot { actor: joined.clone(), slot: 1, admitted: true }]).unwrap();
+        revived
+            .restore(&[QcModClientSlot {
+                actor: joined.clone(),
+                slot: 1,
+                admitted: true,
+            }])
+            .unwrap();
         assert!(revived.admitted(&joined));
-        assert!(revived.restore(&[QcModClientSlot { actor: joined, slot: 9, admitted: true }]).is_err());
+        assert!(revived
+            .restore(&[QcModClientSlot {
+                actor: joined,
+                slot: 9,
+                admitted: true
+            }])
+            .is_err());
     }
 
     #[test]
@@ -700,9 +819,14 @@ mod tests {
         let application = ModClientApplication {
             actor: owner.actor(1, 1),
             client: owner.client(1, 1),
-            values: [(ModClientInput::Attack, ModInputValue::Float(1.0))].into_iter().collect(),
+            values: [(ModClientInput::Attack, ModInputValue::Float(1.0))]
+                .into_iter()
+                .collect(),
         };
         let values = client_input_values(&application);
-        assert_eq!(values.get(&ModCallbackInput::Attack), Some(&ModRuntimeValue::Float(1.0)));
+        assert_eq!(
+            values.get(&ModCallbackInput::Attack),
+            Some(&ModRuntimeValue::Float(1.0))
+        );
     }
 }

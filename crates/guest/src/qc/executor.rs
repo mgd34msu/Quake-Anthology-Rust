@@ -19,11 +19,11 @@ use qa_core::numeric::NumericProfile;
 use qa_world::save::shared::SaveRandomState;
 
 use super::machine::{QcMachine, QcMachineSnapshot};
-use super::program::QuakeCApi;
 use super::profile::QuakeCHostProfile;
+use super::program::QuakeCApi;
 use crate::core::contracts::{
-    fresh_address_space, GuestAddress, GuestCallContext, GuestCallbackReference, GuestCallResult,
-    GuestCallValue, GuestLayout, ModuleIdentity, RawEntityView, SavedGuestCallbackBinding,
+    fresh_address_space, GuestAddress, GuestCallContext, GuestCallResult, GuestCallValue, GuestCallbackReference,
+    GuestLayout, ModuleIdentity, RawEntityView, SavedGuestCallbackBinding,
 };
 use crate::error::GuestError;
 
@@ -159,11 +159,7 @@ impl<'a> QuakeCExecutor<'a> {
         {
             return Err(machine.fail("execution profile disagrees with loaded program"));
         }
-        Ok(Self {
-            profile,
-            machine,
-            host,
-        })
+        Ok(Self { profile, machine, host })
     }
 
     /// Borrow the bound machine.
@@ -195,7 +191,7 @@ impl GuestExecutor for QuakeCExecutor<'_> {
         else {
             return Err(self.machine.fail("callback belongs to another guest module"));
         };
-        if *context.module != self.profile.module || *callback_module != self.profile.module {
+        if context.module != self.profile.module || *callback_module != self.profile.module {
             return Err(self.machine.fail("callback belongs to another guest module"));
         }
         if arguments.len() > 8 {
@@ -311,9 +307,7 @@ pub fn capture_qc_checkpoint(
         return Err(machine.fail("host checkpoint belongs to another module"));
     }
     let format = saved.state.format.as_bytes();
-    let mut writer = BinaryWriter::new(
-        24 + snapshot.profiling.len() * 4 + format.len() + saved.state.bytes.len(),
-    );
+    let mut writer = BinaryWriter::new(24 + snapshot.profiling.len() * 4 + format.len() + saved.state.bytes.len());
     let mut write = |writer: &mut BinaryWriter| -> Result<(), qa_core::binary::BinaryError> {
         writer.u32(QC_HOST_CHECKPOINT_MAGIC)?;
         writer.u32(u32::from(snapshot.trace_enabled))?;
@@ -538,11 +532,11 @@ pub fn create_qc_raw_entity_table<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::machine::{QcBuiltinRegistry, QcMachineOptions};
     use super::super::memory::{QcEntityLayout, QcEntityMemory};
     use super::super::profile::describe_qc_host;
     use super::super::program::{test_program, QcDefinition, QcFunction, QcOpcode, QcStatement, QcValueType};
+    use super::*;
     use crate::core::contracts::ContentDigest;
     use qa_core::identity::{IdentityOwner, ProviderId};
     use qa_core::numeric::NumericOps;
@@ -550,28 +544,84 @@ mod tests {
     fn fixture_machine() -> QcMachine {
         // Function 1: temp = arg0.
         let statements = vec![
-            QcStatement { opcode: QcOpcode::Done, a: 0, b: 0, c: 0 },
-            QcStatement { opcode: QcOpcode::StoreF, a: 4, b: 30, c: 0 },
-            QcStatement { opcode: QcOpcode::Return, a: 30, b: 0, c: 0 },
+            QcStatement {
+                opcode: QcOpcode::Done,
+                a: 0,
+                b: 0,
+                c: 0,
+            },
+            QcStatement {
+                opcode: QcOpcode::StoreF,
+                a: 4,
+                b: 30,
+                c: 0,
+            },
+            QcStatement {
+                opcode: QcOpcode::Return,
+                a: 30,
+                b: 0,
+                c: 0,
+            },
         ];
         let globals = vec![
-            QcDefinition { value_type: QcValueType::Entity, native_type: 4, save: false, offset: 28, name: "self".to_string() },
-            QcDefinition { value_type: QcValueType::Entity, native_type: 4, save: false, offset: 29, name: "other".to_string() },
-            QcDefinition { value_type: QcValueType::Float, native_type: 2, save: false, offset: 30, name: "temp".to_string() },
+            QcDefinition {
+                value_type: QcValueType::Entity,
+                native_type: 4,
+                save: false,
+                offset: 28,
+                name: "self".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Entity,
+                native_type: 4,
+                save: false,
+                offset: 29,
+                name: "other".to_string(),
+            },
+            QcDefinition {
+                value_type: QcValueType::Float,
+                native_type: 2,
+                save: false,
+                offset: 30,
+                name: "temp".to_string(),
+            },
         ];
         let functions = vec![
             QcFunction {
-                index: 0, first_statement: 0, parameter_start: 0, local_words: 0,
-                name: "<null>".to_string(), file: String::new(), parameter_sizes: vec![], named_builtin: false,
+                index: 0,
+                first_statement: 0,
+                parameter_start: 0,
+                local_words: 0,
+                name: "<null>".to_string(),
+                file: String::new(),
+                parameter_sizes: vec![],
+                named_builtin: false,
             },
             QcFunction {
-                index: 1, first_statement: 1, parameter_start: 33, local_words: 0,
-                name: "main".to_string(), file: "test.qc".to_string(), parameter_sizes: vec![1],
+                index: 1,
+                first_statement: 1,
+                parameter_start: 33,
+                local_words: 0,
+                name: "main".to_string(),
+                file: "test.qc".to_string(),
+                parameter_sizes: vec![1],
                 named_builtin: false,
             },
         ];
-        let program = test_program(statements, globals, vec![], functions, b"\0".to_vec(), vec![0; 36 * 4], 1);
-        let layout = QcEntityLayout { stride_bytes: 100, variables_offset_bytes: 96, field_words: 1 };
+        let program = test_program(
+            statements,
+            globals,
+            vec![],
+            functions,
+            b"\0".to_vec(),
+            vec![0; 36 * 4],
+            1,
+        );
+        let layout = QcEntityLayout {
+            stride_bytes: 100,
+            variables_offset_bytes: 96,
+            field_words: 1,
+        };
         let entities = QcEntityMemory::new(layout, 4, 2).unwrap();
         QcMachine::new(QcMachineOptions::new(
             program,
@@ -595,7 +645,14 @@ mod tests {
     fn fixture_profile(machine: &QcMachine) -> QuakeCExecutionProfile {
         let module = fixture_module(machine);
         let layout = machine.entities().layout();
-        let host = describe_qc_host(machine.program(), super::super::builtins::QcHostKind::Netquake, &layout, &QcBuiltinRegistry::default(), &[]).unwrap();
+        let host = describe_qc_host(
+            machine.program(),
+            super::super::builtins::QcHostKind::Netquake,
+            &layout,
+            &QcBuiltinRegistry::default(),
+            &[],
+        )
+        .unwrap();
         QuakeCExecutionProfile {
             module,
             host,
@@ -639,12 +696,19 @@ mod tests {
         let profile = fixture_profile(&machine);
         let module = profile.module.clone();
         let mut host = FakeHost {
-            state: GuestPrivateState { module: module.clone(), format: "test:host".to_string(), bytes: vec![9] },
+            state: GuestPrivateState {
+                module: module.clone(),
+                format: "test:host".to_string(),
+                bytes: vec![9],
+            },
         };
         let mut executor = QuakeCExecutor::new(profile, &mut machine, &mut host).unwrap();
         let context = GuestCallContext {
             module: module.clone(),
-            callback: GuestCallbackReference::QuakeC { module: module.clone(), function_index: 1 },
+            callback: GuestCallbackReference::QuakeC {
+                module: module.clone(),
+                function_index: 1,
+            },
             parent: None,
             itself: Some(return_view(&module)),
             other: None,
@@ -667,12 +731,19 @@ mod tests {
         let mut other_module = module.clone();
         other_module.revision = "other".to_string();
         let mut host = FakeHost {
-            state: GuestPrivateState { module: module.clone(), format: "test:host".to_string(), bytes: Vec::new() },
+            state: GuestPrivateState {
+                module: module.clone(),
+                format: "test:host".to_string(),
+                bytes: Vec::new(),
+            },
         };
         let mut executor = QuakeCExecutor::new(profile, &mut machine, &mut host).unwrap();
         let foreign = GuestCallContext {
             module: other_module.clone(),
-            callback: GuestCallbackReference::QuakeC { module: module.clone(), function_index: 1 },
+            callback: GuestCallbackReference::QuakeC {
+                module: module.clone(),
+                function_index: 1,
+            },
             parent: None,
             itself: None,
             other: None,
@@ -680,7 +751,10 @@ mod tests {
         assert!(executor.invoke(&foreign, &[]).is_err());
         let local = GuestCallContext {
             module: module.clone(),
-            callback: GuestCallbackReference::QuakeC { module: module.clone(), function_index: 1 },
+            callback: GuestCallbackReference::QuakeC {
+                module: module.clone(),
+                function_index: 1,
+            },
             parent: None,
             itself: None,
             other: None,
@@ -695,10 +769,17 @@ mod tests {
         machine.globals_mut().set_float(30, 6.0).unwrap();
         let module = fixture_module(&machine);
         let mut host = FakeHost {
-            state: GuestPrivateState { module: module.clone(), format: "test:host".to_string(), bytes: vec![1, 2, 3] },
+            state: GuestPrivateState {
+                module: module.clone(),
+                format: "test:host".to_string(),
+                bytes: vec![1, 2, 3],
+            },
         };
         let checkpoint = capture_qc_checkpoint(&machine, &module, &mut host).unwrap();
-        assert_eq!(&checkpoint.host_state.bytes[..4], &QC_HOST_CHECKPOINT_MAGIC.to_le_bytes());
+        assert_eq!(
+            &checkpoint.host_state.bytes[..4],
+            &QC_HOST_CHECKPOINT_MAGIC.to_le_bytes()
+        );
         assert_eq!(checkpoint.host_state.format, QC_HOST_CHECKPOINT_FORMAT);
         machine.globals_mut().set_float(30, 0.0).unwrap();
         host.state.bytes = vec![9];
@@ -713,7 +794,11 @@ mod tests {
         let mut machine = fixture_machine();
         let module = fixture_module(&machine);
         let mut host = FakeHost {
-            state: GuestPrivateState { module: module.clone(), format: "test:host".to_string(), bytes: Vec::new() },
+            state: GuestPrivateState {
+                module: module.clone(),
+                format: "test:host".to_string(),
+                bytes: Vec::new(),
+            },
         };
         let checkpoint = capture_qc_checkpoint(&machine, &module, &mut host).unwrap();
         let mut bad_magic = checkpoint.clone();

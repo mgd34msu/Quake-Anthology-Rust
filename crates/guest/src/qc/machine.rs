@@ -368,11 +368,7 @@ impl QcMachine {
                 inline_regions.insert(region.entry, *region);
             }
         }
-        for limit in [
-            options.statement_limit,
-            options.stack_limit,
-            options.local_stack_words,
-        ] {
+        for limit in [options.statement_limit, options.stack_limit, options.local_stack_words] {
             if limit == 0 {
                 return Err(GuestError::invalid("Invalid QuakeC execution limits"));
             }
@@ -517,30 +513,39 @@ impl QcMachine {
     pub fn entity_float(&self, reference: i32, field: &str) -> Result<f32, GuestError> {
         let word = self.field_offset(field)?;
         self.validate_entity(reference, word, 1, QcAccessKind::Read)?;
-        let slot = self.entities.slot(reference).map_err(|_| {
-            self.fail(format!("invalid entity reference {reference}"))
-        })?;
-        self.entities.slot_float(slot, word).map_err(|error| self.fail(error.to_string()))
+        let slot = self
+            .entities
+            .slot(reference)
+            .map_err(|_| self.fail(format!("invalid entity reference {reference}")))?;
+        self.entities
+            .slot_float(slot, word)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Read an entity int field.
     pub fn entity_int(&self, reference: i32, field: &str) -> Result<i32, GuestError> {
         let word = self.field_offset(field)?;
         self.validate_entity(reference, word, 1, QcAccessKind::Read)?;
-        let slot = self.entities.slot(reference).map_err(|_| {
-            self.fail(format!("invalid entity reference {reference}"))
-        })?;
-        self.entities.slot_int(slot, word).map_err(|error| self.fail(error.to_string()))
+        let slot = self
+            .entities
+            .slot(reference)
+            .map_err(|_| self.fail(format!("invalid entity reference {reference}")))?;
+        self.entities
+            .slot_int(slot, word)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Read an entity vector field.
     pub fn entity_vector(&self, reference: i32, field: &str) -> Result<Vec3, GuestError> {
         let word = self.field_offset(field)?;
         self.validate_entity(reference, word, 3, QcAccessKind::Read)?;
-        let slot = self.entities.slot(reference).map_err(|_| {
-            self.fail(format!("invalid entity reference {reference}"))
-        })?;
-        self.entities.slot_vector(slot, word).map_err(|error| self.fail(error.to_string()))
+        let slot = self
+            .entities
+            .slot(reference)
+            .map_err(|_| self.fail(format!("invalid entity reference {reference}")))?;
+        self.entities
+            .slot_vector(slot, word)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Write an entity float field, observing the store.
@@ -567,13 +572,7 @@ impl QcMachine {
         })
     }
 
-    fn validate_entity(
-        &self,
-        reference: i32,
-        word: usize,
-        words: u8,
-        kind: QcAccessKind,
-    ) -> Result<(), GuestError> {
+    fn validate_entity(&self, reference: i32, word: usize, words: u8, kind: QcAccessKind) -> Result<(), GuestError> {
         if let Some(validate) = self.validate_entity_access.clone() {
             validate(reference, word, words, kind).map_err(|error| self.fail(error.to_string()))?;
         }
@@ -591,19 +590,26 @@ impl QcMachine {
         if word + words as usize > self.entities.layout().field_words {
             return Err(self.fail(format!("entity word {word} outside variable storage")));
         }
-        let slot = self.entities.slot(reference).map_err(|_| {
-            self.fail(format!("invalid entity reference {reference}"))
-        })?;
+        let slot = self
+            .entities
+            .slot(reference)
+            .map_err(|_| self.fail(format!("invalid entity reference {reference}")))?;
         let observe = self.observe_entity_store.clone();
         let before = if observe.is_some() {
-            let fields = self.entities.field_bytes(slot).map_err(|error| self.fail(error.to_string()))?;
+            let fields = self
+                .entities
+                .field_bytes(slot)
+                .map_err(|error| self.fail(error.to_string()))?;
             Some(fields[word * 4..(word + words as usize) * 4].to_vec())
         } else {
             None
         };
         store(&mut self.entities, slot).map_err(|error| self.fail(error.to_string()))?;
         if let (Some(observe), Some(before)) = (observe, before) {
-            let fields = self.entities.field_bytes(slot).map_err(|error| self.fail(error.to_string()))?;
+            let fields = self
+                .entities
+                .field_bytes(slot)
+                .map_err(|error| self.fail(error.to_string()))?;
             observe(&QcEntityStoreObservation {
                 function_index: self.function_index,
                 statement: self.statement,
@@ -638,28 +644,38 @@ impl QcMachine {
     /// Read vector argument `index`.
     pub fn arg_vector(&self, index: usize) -> Result<Vec3, GuestError> {
         let offset = self.parameter_offset(index)?;
-        self.globals.vector(offset).map_err(|error| self.fail(error.to_string()))
+        self.globals
+            .vector(offset)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Read string argument `index`.
     pub fn arg_string(&self, index: usize) -> Result<String, GuestError> {
         let reference = self.arg_int(index)?;
-        self.strings.get(reference).map_err(|error| self.fail(error.to_string()))
+        self.strings
+            .get(reference)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Return a float (words 1..=3 hold the single value at word 1).
     pub fn return_float(&mut self, value: f32) -> Result<(), GuestError> {
-        self.globals.set_float(1, value).map_err(|error| self.fail(error.to_string()))
+        self.globals
+            .set_float(1, value)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Return an int.
     pub fn return_int(&mut self, value: i32) -> Result<(), GuestError> {
-        self.globals.set_int(1, value).map_err(|error| self.fail(error.to_string()))
+        self.globals
+            .set_int(1, value)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Return a vector.
     pub fn return_vector(&mut self, value: Vec3) -> Result<(), GuestError> {
-        self.globals.set_vector(1, value).map_err(|error| self.fail(error.to_string()))
+        self.globals
+            .set_vector(1, value)
+            .map_err(|error| self.fail(error.to_string()))
     }
 
     /// Concatenate string arguments from `first`.
@@ -673,17 +689,20 @@ impl QcMachine {
 
     /// Entity slot of the `self` global.
     pub fn self_slot(&self) -> Result<u32, GuestError> {
-        let reference = self.globals.int(self.global_offset("self")?).map_err(|error| self.fail(error.to_string()))?;
-        self.entities.slot(reference).map_err(|_| self.fail(format!("invalid entity reference {reference}")))
+        let reference = self
+            .globals
+            .int(self.global_offset("self")?)
+            .map_err(|error| self.fail(error.to_string()))?;
+        self.entities
+            .slot(reference)
+            .map_err(|_| self.fail(format!("invalid entity reference {reference}")))
     }
 
     /// Builtins the program needs but the registry does not bind.
     pub fn missing_builtins(&self) -> Vec<QcMissingBuiltin> {
         let mut missing = Vec::new();
         for function in &self.program.functions {
-            if function.first_statement < 0
-                && !self.builtins.numbered.contains_key(&-function.first_statement)
-            {
+            if function.first_statement < 0 && !self.builtins.numbered.contains_key(&-function.first_statement) {
                 missing.push(QcMissingBuiltin {
                     function_index: function.index,
                     name: function.name.clone(),
@@ -782,7 +801,10 @@ impl QcMachine {
             .function_at(self.function_index)
             .map_err(|_| Flow::Guest(self.fail("stack underflow")))?
             .clone();
-        let frame = self.frames.pop().ok_or_else(|| Flow::Guest(self.fail("stack underflow")))?;
+        let frame = self
+            .frames
+            .pop()
+            .ok_or_else(|| Flow::Guest(self.fail("stack underflow")))?;
         let begin = function.parameter_start * 4;
         if begin + frame.locals.len() > self.globals.bytes().len() {
             return Err(Flow::Guest(self.fail("stack underflow")));
@@ -835,9 +857,11 @@ impl QcMachine {
     /// Execute an admitted standalone inline region, returning its result
     /// word. Global results are restored afterwards.
     pub fn execute_region(&mut self, region: &QcInlineRegion, argument_count: usize) -> Result<f32, GuestError> {
-        let admitted = self.inline_regions.get(&region.entry).copied().filter(|admitted| {
-            admitted.function_index == region.function_index && admitted.exit == region.exit
-        });
+        let admitted = self
+            .inline_regions
+            .get(&region.entry)
+            .copied()
+            .filter(|admitted| admitted.function_index == region.function_index && admitted.exit == region.exit);
         let Some(admitted) = admitted else {
             return Err(self.fail("standalone inline execution requires an admitted source region"));
         };
@@ -854,7 +878,11 @@ impl QcMachine {
         }
         let global_result = standalone.scope == QcInlineScope::Global;
         let previous = if global_result {
-            Some(self.globals.int(standalone.saved).map_err(|error| self.fail(error.to_string()))?)
+            Some(
+                self.globals
+                    .int(standalone.saved)
+                    .map_err(|error| self.fail(error.to_string()))?,
+            )
         } else {
             None
         };
@@ -977,12 +1005,7 @@ impl QcMachine {
         outcome
     }
 
-    fn run_function(
-        &mut self,
-        function: &QcFunction,
-        budget: &mut usize,
-        run: Option<u64>,
-    ) -> FlowResult<()> {
+    fn run_function(&mut self, function: &QcFunction, budget: &mut usize, run: Option<u64>) -> FlowResult<()> {
         let exit_depth = self.frames.len();
         if let Some(builtin) = self.builtin(function)? {
             self.call_builtin(builtin)?;
@@ -1048,9 +1071,8 @@ impl QcMachine {
                 .ok_or_else(|| Flow::Guest(self.fail("statement outside program")))?;
             if let Some(boundary) = &inline_boundary {
                 if let Some(region) = self.inline_regions.get(&self.statement).copied() {
-                    let own_stop = stop.is_some_and(|stop| {
-                        self.frames.len() == stop.depth && stop.entry == self.statement
-                    });
+                    let own_stop =
+                        stop.is_some_and(|stop| self.frames.len() == stop.depth && stop.entry == self.statement);
                     if region.function_index == self.function_index && !own_stop {
                         if self.frames.is_empty() {
                             return Err(Flow::Guest(self.fail("inline source region has no frame")));
@@ -1173,11 +1195,19 @@ impl QcMachine {
                 }
                 QcOpcode::NotS => {
                     let reference = self.global_int(a)?;
-                    let empty = reference == 0 || self.strings.get(reference).map(|text| text.is_empty()).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let empty = reference == 0
+                        || self
+                            .strings
+                            .get(reference)
+                            .map(|text| text.is_empty())
+                            .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     self.set_global_float(c, f32::from(empty))?;
                 }
                 QcOpcode::NotEnt => {
-                    let slot = self.entities.slot(self.global_int(a)?).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let slot = self
+                        .entities
+                        .slot(self.global_int(a)?)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     self.set_global_float(c, f32::from(slot == 0))?;
                 }
                 QcOpcode::NotFn => {
@@ -1217,8 +1247,14 @@ impl QcMachine {
                     let field = self.global_int(b)?;
                     let word = self.checked_word(field)?;
                     self.validate_entity(reference, word, 1, QcAccessKind::Read)?;
-                    let slot = self.entities.slot(reference).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
-                    let value = self.entities.slot_int(slot, word).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let slot = self
+                        .entities
+                        .slot(reference)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let value = self
+                        .entities
+                        .slot_int(slot, word)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     self.set_global_int(c, value)?;
                 }
                 QcOpcode::LoadV => {
@@ -1226,20 +1262,32 @@ impl QcMachine {
                     let field = self.global_int(b)?;
                     let word = self.checked_word(field)?;
                     self.validate_entity(reference, word, 3, QcAccessKind::Read)?;
-                    let slot = self.entities.slot(reference).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let slot = self
+                        .entities
+                        .slot(reference)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     for index in 0..3 {
-                        let value = self.entities.slot_int(slot, word + index).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                        let value = self
+                            .entities
+                            .slot_int(slot, word + index)
+                            .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                         self.set_global_int(c + index, value)?;
                     }
                 }
                 QcOpcode::Address => {
                     let reference = self.global_int(a)?;
                     let field = self.global_int(b)?;
-                    let slot = self.entities.slot(reference).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let slot = self
+                        .entities
+                        .slot(reference)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     if slot == 0 && (self.server_active)() {
                         return Err(Flow::Guest(self.fail("assignment to world entity")));
                     }
-                    let pointer = self.entities.pointer(reference, field).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let pointer = self
+                        .entities
+                        .pointer(reference, field)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     self.set_global_int(c, pointer)?;
                 }
                 QcOpcode::StorePF
@@ -1260,7 +1308,10 @@ impl QcMachine {
                     self.validate_entity(reference, word, words, QcAccessKind::Write)?;
                     let observe = self.observe_entity_store.clone();
                     let before = if observe.is_some() {
-                        let fields = self.entities.field_bytes(slot).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                        let fields = self
+                            .entities
+                            .field_bytes(slot)
+                            .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                         Some(fields[word * 4..(word + words as usize) * 4].to_vec())
                     } else {
                         None
@@ -1272,7 +1323,10 @@ impl QcMachine {
                             .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     }
                     if let (Some(observe), Some(before)) = (observe, before) {
-                        let fields = self.entities.field_bytes(slot).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                        let fields = self
+                            .entities
+                            .field_bytes(slot)
+                            .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                         observe(&QcEntityStoreObservation {
                             function_index: self.function_index,
                             statement: self.statement,
@@ -1334,7 +1388,9 @@ impl QcMachine {
                 QcOpcode::State => self.op_state(a, b)?,
                 QcOpcode::Done | QcOpcode::Return => {
                     if stop.is_some_and(|stop| self.frames.len() == stop.depth) {
-                        return Err(Flow::Guest(self.fail("inline source region returned before its continuation")));
+                        return Err(Flow::Guest(
+                            self.fail("inline source region returned before its continuation"),
+                        ));
                     }
                     self.globals
                         .copy_within(a, 1, 3)
@@ -1356,32 +1412,50 @@ impl QcMachine {
     }
 
     fn global_int(&self, word: usize) -> FlowResult<i32> {
-        self.globals.int(word).map_err(|error| Flow::Guest(self.fail(error.to_string())))
+        self.globals
+            .int(word)
+            .map_err(|error| Flow::Guest(self.fail(error.to_string())))
     }
 
     fn global_float(&self, word: usize) -> FlowResult<f32> {
-        self.globals.float(word).map_err(|error| Flow::Guest(self.fail(error.to_string())))
+        self.globals
+            .float(word)
+            .map_err(|error| Flow::Guest(self.fail(error.to_string())))
     }
 
     fn global_triple(&self, word: usize) -> FlowResult<(f32, f32, f32)> {
-        Ok((self.global_float(word)?, self.global_float(word + 1)?, self.global_float(word + 2)?))
+        Ok((
+            self.global_float(word)?,
+            self.global_float(word + 1)?,
+            self.global_float(word + 2)?,
+        ))
     }
 
     fn global_string(&self, word: usize) -> FlowResult<String> {
         let reference = self.global_int(word)?;
-        self.strings.get(reference).map_err(|error| Flow::Guest(self.fail(error.to_string())))
+        self.strings
+            .get(reference)
+            .map_err(|error| Flow::Guest(self.fail(error.to_string())))
     }
 
     fn set_global_int(&mut self, word: usize, value: i32) -> FlowResult<()> {
-        self.globals.set_int(word, value).map_err(|error| Flow::Guest(self.fail(error.to_string())))
+        self.globals
+            .set_int(word, value)
+            .map_err(|error| Flow::Guest(self.fail(error.to_string())))
     }
 
     fn set_global_float(&mut self, word: usize, value: f32) -> FlowResult<()> {
-        self.globals.set_float(word, value).map_err(|error| Flow::Guest(self.fail(error.to_string())))
+        self.globals
+            .set_float(word, value)
+            .map_err(|error| Flow::Guest(self.fail(error.to_string())))
     }
 
     fn alu2(&mut self, a: usize, b: usize, c: usize, op: impl Fn(NumericOps, f64, f64) -> f64) -> FlowResult<()> {
-        let value = op(self.numeric, f64::from(self.global_float(a)?), f64::from(self.global_float(b)?));
+        let value = op(
+            self.numeric,
+            f64::from(self.global_float(a)?),
+            f64::from(self.global_float(b)?),
+        );
         self.set_global_float(c, value as f32)
     }
 
@@ -1425,7 +1499,10 @@ impl QcMachine {
         let time = f64::from(self.global_float(time_offset)?);
         let frame_value = self.global_float(a)?;
         let think_value = self.global_int(b)?;
-        let slot = self.entities.slot(reference).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+        let slot = self
+            .entities
+            .slot(reference)
+            .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
         if self.validate_entity_access.is_some() {
             for (word, value, is_float) in [
                 (nextthink, self.numeric.add(time, 0.1) as f32, true),
@@ -1435,18 +1512,28 @@ impl QcMachine {
                 self.validate_entity(reference, word, 1, QcAccessKind::Write)?;
                 let observe = self.observe_entity_store.clone();
                 let before = if observe.is_some() {
-                    let fields = self.entities.field_bytes(slot).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let fields = self
+                        .entities
+                        .field_bytes(slot)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     Some(fields[word * 4..(word + 1) * 4].to_vec())
                 } else {
                     None
                 };
                 if is_float {
-                    self.entities.set_slot_float(slot, word, value).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    self.entities
+                        .set_slot_float(slot, word, value)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                 } else {
-                    self.entities.set_slot_int(slot, word, value.to_bits() as i32).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    self.entities
+                        .set_slot_int(slot, word, value.to_bits() as i32)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                 }
                 if let (Some(observe), Some(before)) = (observe, before) {
-                    let fields = self.entities.field_bytes(slot).map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
+                    let fields = self
+                        .entities
+                        .field_bytes(slot)
+                        .map_err(|error| Flow::Guest(self.fail(error.to_string())))?;
                     observe(&QcEntityStoreObservation {
                         function_index: self.function_index,
                         statement: self.statement,
@@ -1501,7 +1588,9 @@ impl QcMachine {
         {
             return Err(self.fail("incompatible machine checkpoint"));
         }
-        self.strings.restore(&snapshot.strings).map_err(|error| self.fail(error.to_string()))?;
+        self.strings
+            .restore(&snapshot.strings)
+            .map_err(|error| self.fail(error.to_string()))?;
         self.entities
             .restore(&snapshot.entities, snapshot.entity_count)
             .map_err(|error| self.fail(error.to_string()))?;
@@ -1525,8 +1614,8 @@ fn byte_compare(left: &str, right: &str) -> i32 {
     let left = left.as_bytes();
     let right = right.as_bytes();
     for index in 0..=left.len().min(right.len()) {
-        let difference = i32::from(left.get(index).copied().unwrap_or(0))
-            - i32::from(right.get(index).copied().unwrap_or(0));
+        let difference =
+            i32::from(left.get(index).copied().unwrap_or(0)) - i32::from(right.get(index).copied().unwrap_or(0));
         if difference != 0 {
             return difference;
         }
@@ -1590,14 +1679,7 @@ mod tests {
         blobs.push(function_blob);
         blobs.push(strings.to_vec());
         blobs.push(vec![0u8; 33 * 4]);
-        let counts = [
-            statements.len() as i32,
-            3,
-            3,
-            2,
-            strings.len() as i32,
-            33,
-        ];
+        let counts = [statements.len() as i32, 3, 3, 2, strings.len() as i32, 33];
         let mut offset = header_len;
         let mut sections = Vec::new();
         for (blob, count) in blobs.iter().zip(counts) {
@@ -1692,10 +1774,7 @@ mod tests {
 
     #[test]
     fn runaway_loop_is_bounded() {
-        let statements = vec![
-            (QcOpcode::Done as u16, 0, 0, 0),
-            (QcOpcode::Goto as u16, 0, 0, 0),
-        ];
+        let statements = vec![(QcOpcode::Done as u16, 0, 0, 0), (QcOpcode::Goto as u16, 0, 0, 0)];
         let program = fixture_program_with(&statements, 1);
         let entities = fixture_entities(&program, 2, 1);
         let numeric = NumericOps::select(qa_core::numeric::Q1_DONOR_PROFILE).unwrap();
@@ -1714,10 +1793,7 @@ mod tests {
 
     #[test]
     fn deep_recursion_overflows_the_frame_stack() {
-        let statements = vec![
-            (QcOpcode::Done as u16, 0, 0, 0),
-            (QcOpcode::Call0 as u16, 30, 0, 0),
-        ];
+        let statements = vec![(QcOpcode::Done as u16, 0, 0, 0), (QcOpcode::Call0 as u16, 30, 0, 0)];
         let program = fixture_program_with(&statements, 1);
         let entities = fixture_entities(&program, 2, 1);
         let numeric = NumericOps::select(qa_core::numeric::Q1_DONOR_PROFILE).unwrap();
@@ -1785,7 +1861,9 @@ mod tests {
                 function_index == 1
             }
             fn run(&self, _machine: &mut QcMachine, _call: &QcCallSite) -> Result<QcBoundaryAction, GuestError> {
-                Ok(QcBoundaryAction::Skip { return_words: [11, 0, 0] })
+                Ok(QcBoundaryAction::Skip {
+                    return_words: [11, 0, 0],
+                })
             }
         }
         let program = fixture_program();

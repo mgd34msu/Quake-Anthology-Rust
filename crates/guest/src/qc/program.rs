@@ -461,9 +461,7 @@ impl QcProgram {
     /// Look up an entity-field definition by name.
     #[must_use]
     pub fn field_named(&self, name: &str) -> Option<&QcDefinition> {
-        self.fields_by_name
-            .get(name)
-            .and_then(|index| self.fields.get(*index))
+        self.fields_by_name.get(name).and_then(|index| self.fields.get(*index))
     }
 
     /// Exclusive end statement of `function` (next function's entry, or
@@ -577,14 +575,14 @@ fn crc16(bytes: &[u8]) -> u16 {
 /// Self-contained SHA-256 (FIPS 180-4); the workspace has no hash crate.
 fn sha256(message: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+        0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+        0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+        0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
     let mut state: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -665,11 +663,7 @@ fn map_reader(source: &str, error: qa_core::binary::BinaryError) -> GuestError {
 }
 
 /// Load a version-6 `progs.dat` image, selecting the API by system CRC.
-pub fn load_qc_program(
-    bytes: &[u8],
-    expected_api: Option<QuakeCApi>,
-    source: &str,
-) -> Result<QcProgram, GuestError> {
+pub fn load_qc_program(bytes: &[u8], expected_api: Option<QuakeCApi>, source: &str) -> Result<QcProgram, GuestError> {
     let mut reader = BinaryReader::new(bytes, source);
     let version = reader.i32().map_err(|error| map_reader(source, error))?;
     let crc = reader.i32().map_err(|error| map_reader(source, error))?;
@@ -680,10 +674,7 @@ pub fn load_qc_program(
         5927 => QuakeCApi::Netquake,
         54730 => QuakeCApi::Quakeworld,
         _ => {
-            return Err(image_error(
-                source,
-                format!("unknown system layout CRC {crc}"),
-            ));
+            return Err(image_error(source, format!("unknown system layout CRC {crc}")));
         }
     };
     if let Some(expected) = expected_api {
@@ -738,91 +729,62 @@ pub fn load_qc_program(
     if initial_globals.len() < 28 * 4 {
         return Err(image_error(source, "missing reserved global words"));
     }
-    let mut definitions =
-        |input: &mut BinaryReader<'_>, field: bool| -> Result<Vec<QcDefinition>, GuestError> {
-            let mut result = Vec::new();
-            while input.remaining() > 0 {
-                let raw = input.u16().map_err(|error| map_reader(source, error))?;
-                let offset = input.u16().map_err(|error| map_reader(source, error))?;
-                let name_offset = input.i32().map_err(|error| map_reader(source, error))?;
-                let name = qc_byte_string(&strings, i64::from(name_offset)).map_err(|_| {
-                    image_error(source, format!("invalid definition name at {name_offset}"))
-                })?;
-                let value_type = QcValueType::from_raw(raw & 0x7fff);
-                if field && raw & 0x8000 != 0 {
-                    return Err(image_error(source, format!("invalid definition {name}")));
-                }
-                let limit = if field {
-                    entity_field_words
-                } else {
-                    initial_globals.len() / 4
-                };
-                if usize::from(offset) + value_type.words() > limit {
-                    return Err(image_error(
-                        source,
-                        format!("definition {name} exceeds its memory"),
-                    ));
-                }
-                result.push(QcDefinition {
-                    value_type,
-                    native_type: raw & 0x7fff,
-                    save: raw & 0x8000 != 0,
-                    offset: usize::from(offset),
-                    name,
-                });
+    let mut definitions = |input: &mut BinaryReader<'_>, field: bool| -> Result<Vec<QcDefinition>, GuestError> {
+        let mut result = Vec::new();
+        while input.remaining() > 0 {
+            let raw = input.u16().map_err(|error| map_reader(source, error))?;
+            let offset = input.u16().map_err(|error| map_reader(source, error))?;
+            let name_offset = input.i32().map_err(|error| map_reader(source, error))?;
+            let name = qc_byte_string(&strings, i64::from(name_offset))
+                .map_err(|_| image_error(source, format!("invalid definition name at {name_offset}")))?;
+            let value_type = QcValueType::from_raw(raw & 0x7fff);
+            if field && raw & 0x8000 != 0 {
+                return Err(image_error(source, format!("invalid definition {name}")));
             }
-            Ok(result)
-        };
+            let limit = if field {
+                entity_field_words
+            } else {
+                initial_globals.len() / 4
+            };
+            if usize::from(offset) + value_type.words() > limit {
+                return Err(image_error(source, format!("definition {name} exceeds its memory")));
+            }
+            result.push(QcDefinition {
+                value_type,
+                native_type: raw & 0x7fff,
+                save: raw & 0x8000 != 0,
+                offset: usize::from(offset),
+                name,
+            });
+        }
+        Ok(result)
+    };
     let globals = definitions(&mut globals_reader, false)?;
     let fields = definitions(&mut fields_reader, true)?;
     let mut statements = Vec::new();
     while statements_reader.remaining() > 0 {
-        let opcode = statements_reader
-            .u16()
-            .map_err(|error| map_reader(source, error))?;
-        let opcode = QcOpcode::try_from(opcode)
-            .map_err(|raw| image_error(source, format!("unsupported opcode {raw}")))?;
-        let a = statements_reader
-            .u16()
-            .map_err(|error| map_reader(source, error))?;
-        let b = statements_reader
-            .u16()
-            .map_err(|error| map_reader(source, error))?;
-        let c = statements_reader
-            .u16()
-            .map_err(|error| map_reader(source, error))?;
+        let opcode = statements_reader.u16().map_err(|error| map_reader(source, error))?;
+        let opcode =
+            QcOpcode::try_from(opcode).map_err(|raw| image_error(source, format!("unsupported opcode {raw}")))?;
+        let a = statements_reader.u16().map_err(|error| map_reader(source, error))?;
+        let b = statements_reader.u16().map_err(|error| map_reader(source, error))?;
+        let c = statements_reader.u16().map_err(|error| map_reader(source, error))?;
         statements.push(QcStatement { opcode, a, b, c });
     }
     let mut functions = Vec::new();
     while functions_reader.remaining() > 0 {
-        let first_statement = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
-        let parameter_start = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
-        let local_words = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
-        let _profile = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
-        let name_offset = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
-        let file_offset = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
+        let first_statement = functions_reader.i32().map_err(|error| map_reader(source, error))?;
+        let parameter_start = functions_reader.i32().map_err(|error| map_reader(source, error))?;
+        let local_words = functions_reader.i32().map_err(|error| map_reader(source, error))?;
+        let _profile = functions_reader.i32().map_err(|error| map_reader(source, error))?;
+        let name_offset = functions_reader.i32().map_err(|error| map_reader(source, error))?;
+        let file_offset = functions_reader.i32().map_err(|error| map_reader(source, error))?;
         let name = qc_byte_string(&strings, i64::from(name_offset))
             .map_err(|_| image_error(source, "invalid function name"))?;
         let file = qc_byte_string(&strings, i64::from(file_offset))
             .map_err(|_| image_error(source, "invalid function file"))?;
-        let count = functions_reader
-            .i32()
-            .map_err(|error| map_reader(source, error))?;
-        let sizes = functions_reader
-            .bytes(8)
-            .map_err(|error| map_reader(source, error))?;
+        let count = functions_reader.i32().map_err(|error| map_reader(source, error))?;
+        let sizes = functions_reader.bytes(8).map_err(|error| map_reader(source, error))?;
         if count < 0
             || count > 8
             || local_words < 0
@@ -837,22 +799,15 @@ pub fn load_qc_program(
         let mut parameter_sizes = Vec::new();
         for size in sizes.iter().take(count as usize) {
             if first_statement > 0 && *size != 1 && *size != 3 {
-                return Err(image_error(
-                    source,
-                    format!("invalid parameter size for {name}"),
-                ));
+                return Err(image_error(source, format!("invalid parameter size for {name}")));
             }
             parameter_sizes.push(*size);
         }
         let parameter_words: usize = parameter_sizes.iter().map(|size| *size as usize).sum();
         if first_statement >= statements.len() as i32
-            || first_statement > 0
-                && parameter_start as usize + parameter_words > initial_globals.len() / 4
+            || first_statement > 0 && parameter_start as usize + parameter_words > initial_globals.len() / 4
         {
-            return Err(image_error(
-                source,
-                format!("invalid entry point for {name}"),
-            ));
+            return Err(image_error(source, format!("invalid entry point for {name}")));
         }
         let index = functions.len();
         functions.push(QcFunction {
@@ -863,10 +818,7 @@ pub fn load_qc_program(
             name,
             file,
             parameter_sizes,
-            named_builtin: index > 0
-                && first_statement == 0
-                && parameter_start == 0
-                && local_words == 0,
+            named_builtin: index > 0 && first_statement == 0 && parameter_start == 0 && local_words == 0,
         });
     }
     if functions.is_empty() || statements.is_empty() {
@@ -882,9 +834,7 @@ pub fn load_qc_program(
     }
     let mut functions_by_name = HashMap::new();
     for (index, function) in functions.iter().enumerate() {
-        functions_by_name
-            .entry(function.name.clone())
-            .or_insert(index);
+        functions_by_name.entry(function.name.clone()).or_insert(index);
     }
     Ok(QcProgram {
         source: source.to_string(),

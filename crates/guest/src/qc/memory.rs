@@ -125,11 +125,7 @@ impl QcWords {
 
     /// Read a three-word vector.
     pub fn vector(&self, word: usize) -> Result<Vec3, GuestError> {
-        Ok(vec3(
-            self.float(word)?,
-            self.float(word + 1)?,
-            self.float(word + 2)?,
-        ))
+        Ok(vec3(self.float(word)?, self.float(word + 1)?, self.float(word + 2)?))
     }
 
     /// Write a three-word vector.
@@ -141,12 +137,7 @@ impl QcWords {
 
     /// Copy `count` words forward within this buffer, matching the
     /// interpreter's sequential stores including deliberate overlap.
-    pub fn copy_within(
-        &mut self,
-        source: usize,
-        destination: usize,
-        count: usize,
-    ) -> Result<(), GuestError> {
+    pub fn copy_within(&mut self, source: usize, destination: usize, count: usize) -> Result<(), GuestError> {
         self.check(source, count)?;
         self.check(destination, count)?;
         for index in 0..count {
@@ -341,10 +332,15 @@ impl QcEntityMemory {
     /// Read a variable word of a slot.
     pub fn slot_int(&self, slot: u32, word: usize) -> Result<i32, GuestError> {
         let fields = self.field_bytes(slot)?;
-        let at = word.checked_mul(4).filter(|at| at + 4 <= fields.len())
-            .ok_or_else(|| {
-                GuestError::memory_fault("word-range", word as u64 * 4, 4, "read", "entity word outside variable storage")
-            })?;
+        let at = word.checked_mul(4).filter(|at| at + 4 <= fields.len()).ok_or_else(|| {
+            GuestError::memory_fault(
+                "word-range",
+                word as u64 * 4,
+                4,
+                "read",
+                "entity word outside variable storage",
+            )
+        })?;
         Ok(i32::from_le_bytes([
             fields[at],
             fields[at + 1],
@@ -362,9 +358,17 @@ impl QcEntityMemory {
     pub fn set_slot_int(&mut self, slot: u32, word: usize, value: i32) -> Result<(), GuestError> {
         let field_words = self.layout.field_words;
         let fields = self.field_bytes_mut(slot)?;
-        let at = word.checked_mul(4).filter(|at| at + 4 <= field_words * 4)
+        let at = word
+            .checked_mul(4)
+            .filter(|at| at + 4 <= field_words * 4)
             .ok_or_else(|| {
-                GuestError::memory_fault("word-range", word as u64 * 4, 4, "write", "entity word outside variable storage")
+                GuestError::memory_fault(
+                    "word-range",
+                    word as u64 * 4,
+                    4,
+                    "write",
+                    "entity word outside variable storage",
+                )
             })?;
         fields[at..at + 4].copy_from_slice(&value.to_le_bytes());
         Ok(())
@@ -472,9 +476,9 @@ impl QcStrings {
 
     fn reserve(&mut self, length: usize) -> Result<usize, GuestError> {
         let offset = self.used;
-        let required = offset.checked_add(length).ok_or_else(|| {
-            GuestError::invalid("string arena overflow")
-        })?;
+        let required = offset
+            .checked_add(length)
+            .ok_or_else(|| GuestError::invalid("string arena overflow"))?;
         if required > 0x7fff_ffff {
             return Err(GuestError::invalid("string arena overflow"));
         }
@@ -552,9 +556,10 @@ impl QcStrings {
                 return Err(GuestError::invalid(format!("invalid engine string {reference}")));
             }
             let index = (-(reference as i64) - 1) as usize;
-            self.engines.get(index).map(|entry| entry.offset).ok_or_else(|| {
-                GuestError::invalid(format!("invalid engine string {reference}"))
-            })?
+            self.engines
+                .get(index)
+                .map(|entry| entry.offset)
+                .ok_or_else(|| GuestError::invalid(format!("invalid engine string {reference}")))?
         } else {
             reference as usize
         };
@@ -571,14 +576,8 @@ impl QcStrings {
 
     /// Snapshot the arena and engine buffers.
     pub fn snapshot(&self) -> Result<Vec<u8>, GuestError> {
-        let mut writer = BinaryWriter::new(
-            16 + self.used
-                + self
-                    .engines
-                    .iter()
-                    .map(|entry| 12 + entry.name.len())
-                    .sum::<usize>(),
-        );
+        let mut writer =
+            BinaryWriter::new(16 + self.used + self.engines.iter().map(|entry| 12 + entry.name.len()).sum::<usize>());
         let mut write = |writer: &mut BinaryWriter| -> Result<(), qa_core::binary::BinaryError> {
             writer.u32(QC_STRINGS_MAGIC)?;
             writer.u32(u32::from(self.quakeworld))?;
@@ -620,11 +619,7 @@ impl QcStrings {
             if capacity < 1 || offset + capacity > arena.len() {
                 return Err(invalid("invalid engine string checkpoint"));
             }
-            entries.push(EngineString {
-                name,
-                offset,
-                capacity,
-            });
+            entries.push(EngineString { name, offset, capacity });
         }
         if reader.remaining() != 0 {
             return Err(invalid("trailing string checkpoint bytes"));

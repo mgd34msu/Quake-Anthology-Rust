@@ -116,16 +116,20 @@ fn is_cancel_for(error: &GuestError, call_id: u64) -> bool {
 }
 
 /// Host entry: handles one engine trap synchronously.
+///
+/// Shared (`&self`) so recursive guest calls reenter the same host exactly
+/// like the donor's plain functions; hosts keep mutable state in their own
+/// interior mutability.
 pub trait QvmSystemCallHandler {
     /// Handle `call` and return the trap result.
-    fn handle_syscall(&mut self, call: &mut QvmSyscall<'_, '_>) -> Result<i32, GuestError>;
+    fn handle_syscall(&self, call: &mut QvmSyscall<'_, '_>) -> Result<i32, GuestError>;
 }
 
 impl<F> QvmSystemCallHandler for F
 where
-    F: for<'a, 'c> FnMut(&mut QvmSyscall<'a, 'c>) -> Result<i32, GuestError>,
+    F: for<'a, 'c> Fn(&mut QvmSyscall<'a, 'c>) -> Result<i32, GuestError>,
 {
-    fn handle_syscall(&mut self, call: &mut QvmSyscall<'_, '_>) -> Result<i32, GuestError> {
+    fn handle_syscall(&self, call: &mut QvmSyscall<'_, '_>) -> Result<i32, GuestError> {
         self(call)
     }
 }
@@ -356,7 +360,7 @@ struct InterpCtx<'c> {
 /// Shared recursive-call and cancellation control carried by every host handle.
 pub struct HostControl<'a, 'c> {
     ctx: &'a mut InterpCtx<'c>,
-    host: &'a mut dyn QvmSystemCallHandler,
+    host: &'a dyn QvmSystemCallHandler,
     scope: Option<u64>,
 }
 
@@ -373,7 +377,7 @@ impl<'a, 'c> HostControl<'a, 'c> {
         let debug = self.ctx.core.debug;
         let mut ops = OperandStack::new(debug);
         run_loop(
-            self.ctx,
+            &mut *self.ctx,
             self.host,
             &mut ops,
             args,
@@ -694,14 +698,16 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
         });
         let entry = self.instruction_index;
         let call_id = self.call_id;
+        let scope = self.control.scope;
+        let host = self.control.host;
         run_loop(
-            self.control.ctx,
-            self.control.host,
-            self.ops,
+            &mut *self.control.ctx,
+            host,
+            &mut *self.ops,
             &[],
             entry,
             Some(call_id),
-            self.control.scope,
+            scope,
             None,
             None,
         )
@@ -722,14 +728,16 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
         self.begin()?;
         let entry = self.instruction_index;
         let call_id = self.call_id;
+        let scope = self.control.scope;
+        let host = self.control.host;
         run_loop(
-            self.control.ctx,
-            self.control.host,
-            self.ops,
+            &mut *self.control.ctx,
+            host,
+            &mut *self.ops,
             &[],
             entry,
             Some(call_id),
-            self.control.scope,
+            scope,
             None,
             None,
         )
@@ -1692,4 +1700,445 @@ struct QualifiedReadOnly {
     inputs: Vec<i32>,
     frame_size: usize,
     stack: Option<QvmEvaluationStack>,
+}
+
+struct DriveEvaluation {
+    region: QvmRegionEvaluation,
+    inputs: Vec<i32>,
+    frame_size: usize,
+}
+
+struct Drive<'a, 'c, 'o> {
+    ctx: &'a mut InterpCtx<'c>,
+    host: &'a mut dyn QvmSystemCallHandler,
+    ops: &'o mut OperandStack,
+    sp: usize,
+    pc: i32,
+    entry: usize,
+    scope: Option<u64>,
+    source_call: Option<u64>,
+    source_operand_depth: usize,
+    evaluation: Option<DriveEvaluation>,
+    eval_stack: usize,
+    evaluation_started: bool,
+    returns: Option<Vec<(usize, i32)>>,
+    profile_symbol: Option<usize>,
+    trace: u8,
+    break_function: i32,
+    debug: bool,
+    evaluation_floor: Option<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_loop(
+    ctx: &mut InterpCtx<'_>,
+    host: &mut dyn QvmSystemCallHandler,
+    ops: &mut OperandStack,
+    args: &[i32],
+    entry: usize,
+    source_call: Option<u64>,
+    parent_scope: Option<u64>,
+    read_only: Option<QualifiedReadOnly>,
+    profile: Option<QvmExecutionProfile>,
+) -> Result<i32, GuestError> {
+    if source_call.is_none() {
+        if entry == 0 {
+            if args.len() != 10 {
+                return Err(GuestError::invalid("QVM vmMain requires ten public argument words"));
+            }
+        } else {
+            if args.len() > QVM_MAX_PRIVATE_ARGUMENT_WORDS {
+                return Err(GuestError::invalid(
+                    "QVM private call exceeds OP_ARG argument capacity",
+                ));
+            }
+            if ctx.program.instructions.get(entry).map(|instruction| instruction.opcode)
+                != Some(QvmOpcode::OpEnter)
+            {
+                return Err(GuestError::invalid(
+                    "QVM private invocation requires an original function entry",
+                ));
+            }
+        }
+    }
+    let profile = profile.unwrap_or_else(|| {
+        ctx.core
+            .registration
+            .as_ref()
+            .map(|registration| registration.execution_profile())
+            .unwrap_or(QvmExecutionProfile::Release)
+    });
+    let debug = matches!(profile, QvmExecutionProfile::Debug { .. });
+    let (trace, break_function) = match profile {
+        QvmExecutionProfile::Release => (0, 0),
+        QvmExecutionProfile::Debug { trace, break_function } => (trace, break_function),
+    };
+    if source_call.is_none() {
+        if let Some(registration) = ctx.core.registration.as_ref() {
+            registration.print_call(args.first().copied().unwrap_or(0));
+        }
+    }
+    let evaluation_floor = if let Some(counter) = ctx.core.counter.as_ref() {
+        Some(counter.stack_start)
+    } else if let Some(qualified) = read_only.as_ref() {
+        Some(ctx.core.evaluation_stack_start(qualified.stack)?)
+    } else {
+        None
+    };
+    let entry_stack = ctx.core.program_stack;
+    let previous_call_level = ctx.core.call_level;
+    let previous_debug = ctx.core.debug;
+    let argument_words = 10.max(args.len());
+    let sp = if let Some(call_id) = source_call {
+        let position = find_call(&ctx.core.calls, call_id)
+            .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
+        ctx.core.calls[position].stack
+    } else {
+        let raw = entry_stack as i64 - 8 - argument_words as i64 * 4;
+        if raw < 0 || raw % 4 != 0 {
+            return Err(GuestError::invalid("QVM program stack is misaligned"));
+        }
+        raw as usize
+    };
+    if let Some(floor) = evaluation_floor {
+        if sp < floor {
+            return Err(GuestError::invalid("QVM evaluation stack would overlap source data"));
+        }
+    }
+    ctx.core.debug = debug;
+    let eval_stack = sp;
+    let scope = source_call.or(parent_scope);
+    let evaluation = if let Some(qualified) = read_only {
+        Some(DriveEvaluation {
+            region: qualified.region,
+            inputs: qualified.inputs,
+            frame_size: qualified.frame_size,
+        })
+    } else if let Some(call_id) = source_call {
+        let position = find_call(&ctx.core.calls, call_id)
+            .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
+        ctx.core.calls[position].evaluation.as_ref().map(|evaluation| DriveEvaluation {
+            region: evaluation.region.clone(),
+            inputs: evaluation.inputs.clone(),
+            frame_size: evaluation.frame_size,
+        })
+    } else {
+        None
+    };
+    let source_operand_depth = source_call
+        .and_then(|call_id| find_call(&ctx.core.calls, call_id))
+        .map_or(0, |position| ctx.core.calls[position].operand_depth);
+    let mut returns: Option<Vec<(usize, i32)>> = None;
+    if ctx.core.semantics == QvmSemantics::Compiled {
+        let return_pc = source_call
+            .and_then(|call_id| find_call(&ctx.core.calls, call_id))
+            .map_or(-1, |position| ctx.core.calls[position].return_pc);
+        returns = Some(vec![(sp, return_pc)]);
+    }
+    if source_call.is_none() {
+        write_word(ctx.core, sp, sp, -1)?;
+        write_word(ctx.core, sp, sp + 4, 0)?;
+        for index in 0..argument_words {
+            write_word(ctx.core, sp, sp + 8 + index * 4, args.get(index).copied().unwrap_or(0))?;
+        }
+        ctx.core.call_level = 0;
+        if let Some(registration) = ctx.core.registration.as_ref() {
+            registration.debug(0);
+        }
+        let hook = ctx
+            .core
+            .hooks
+            .get(&entry)
+            .filter(|binding| {
+                binding.scope == HookScope::Invocations && evaluation.is_none() && ctx.core.counter.is_none()
+            })
+            .map(|binding| Rc::clone(&binding.hook));
+        if let Some(hook) = hook {
+            ctx.core.program_stack = sp.saturating_sub(4);
+            let result = intercept(ctx, host, ops, sp, -1, entry, Some(hook), Vec::new(), Some(argument_words * 4));
+            ctx.core.program_stack = entry_stack;
+            return result;
+        }
+    }
+    let pc = target_pc(ctx.program, entry)?;
+    let profile_symbol = if debug {
+        ctx.core.symbols.function_symbol_index(0)?
+    } else {
+        None
+    };
+    let mut drive = Drive {
+        ctx,
+        host,
+        ops,
+        sp,
+        pc,
+        entry,
+        scope,
+        source_call,
+        source_operand_depth,
+        evaluation,
+        eval_stack,
+        evaluation_started: false,
+        returns,
+        profile_symbol,
+        trace,
+        break_function,
+        debug,
+        evaluation_floor,
+    };
+    let result = drive_loop(&mut drive);
+    drive.ctx.core.program_stack = entry_stack;
+    if drive.source_call.is_some() || parent_scope.is_some() {
+        drive.ctx.core.debug = previous_debug;
+        drive.ctx.core.call_level = previous_call_level;
+    }
+    result
+}
+
+fn drive_loop(drive: &mut Drive<'_, '_, '_>) -> Result<i32, GuestError> {
+    loop {
+        if let Some(counter) = drive.ctx.core.counter.as_mut() {
+            counter.remaining -= 1;
+            let pc = drive.pc;
+            if counter.remaining < 0
+                || !counter.ranges.iter().any(|(start, end)| pc >= *start && pc < *end)
+            {
+                return Err(GuestError::invalid(
+                    "QVM counter evaluation escaped its admitted original functions or instruction budget",
+                ));
+            }
+        }
+        let in_counter = drive.ctx.core.counter.is_some();
+        let owner = if in_counter { None } else { drive.scope };
+        if let Some(evaluation) = drive.evaluation.as_ref() {
+            let join_pc = target_pc(drive.ctx.program, evaluation.region.join)?;
+            if drive.sp == drive.eval_stack.wrapping_sub(evaluation.frame_size) && drive.pc == join_pc
+            {
+                if drive.ops.count() != drive.source_operand_depth {
+                    return Err(GuestError::invalid("QVM region evaluation lost its caller operands"));
+                }
+                return match evaluation.region.result {
+                    None => Ok(0),
+                    Some(offset) => read_word(drive.ctx.core, drive.sp + offset),
+                };
+            }
+        }
+        if let Some(owner_id) = owner {
+            if region_step(drive, owner_id)? {
+                continue;
+            }
+        }
+        if drive.debug {
+            if drive.pc < 0 || drive.pc as usize >= drive.ctx.program.code.len() {
+                return Err(qvm_drop_error("VM pc out of range"));
+            }
+            if drive.sp <= drive.ctx.core.memory.len().saturating_sub(0x20000) {
+                return Err(qvm_drop_error("VM stack overflow"));
+            }
+            if drive.sp % 4 != 0 {
+                return Err(qvm_drop_error("VM program stack misaligned"));
+            }
+        }
+        let opcode_value = code_word(drive.ctx.program, drive.pc)?;
+        drive.pc += 1;
+        let opcode = u8::try_from(opcode_value)
+            .ok()
+            .and_then(|byte| QvmOpcode::from_u8(byte).ok());
+        if drive.profile_symbol.is_some() {
+            if drive.trace > 1 {
+                let Some(opcode) = opcode else {
+                    return Err(qvm_drop_error("Bad VM instruction"));
+                };
+                let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
+                let text = format!("{indent}{} {}\n", drive.ops.count(), opcode.name());
+                if let Some(registration) = drive.ctx.core.registration.as_ref() {
+                    registration.print(&text);
+                }
+            }
+            if let Some(symbol) = drive.profile_symbol {
+                drive.ctx.core.symbols.add_profile_count(symbol, 1);
+            }
+        }
+        let Some(opcode) = opcode else {
+            // The release interpreter has no default trap. A return into an
+            // operand slot can encounter a non-opcode integer as a nop.
+            if drive.debug {
+                return Err(qvm_drop_error("Bad VM instruction"));
+            }
+            continue;
+        };
+        match opcode {
+            QvmOpcode::OpUndef | QvmOpcode::OpIgnore => {
+                if drive.debug {
+                    return Err(qvm_drop_error("Bad VM instruction"));
+                }
+            }
+            QvmOpcode::OpBreak => {
+                if in_counter {
+                    return Err(GuestError::invalid("QVM counter evaluation cannot trigger a debug break"));
+                }
+                drive.ctx.core.breaks = drive.ctx.core.breaks.wrapping_add(1);
+            }
+            QvmOpcode::OpConst => {
+                let word = code_word(drive.ctx.program, drive.pc)?;
+                drive.pc += 4;
+                drive.ops.push(word)?;
+            }
+            QvmOpcode::OpLocal => {
+                let word = code_word(drive.ctx.program, drive.pc)?;
+                drive.pc += 4;
+                drive.ops.push((drive.sp as i32).wrapping_add(word))?;
+            }
+            QvmOpcode::OpPush => {
+                drive.ops.reserve()?;
+            }
+            QvmOpcode::OpPop => {
+                drive.ops.drop_top()?;
+            }
+            QvmOpcode::OpEnter => {
+                op_enter(drive)?;
+            }
+            QvmOpcode::OpLeave => {
+                if let Some(value) = op_leave(drive)? {
+                    return Ok(value);
+                }
+            }
+            QvmOpcode::OpCall => {
+                op_call(drive, in_counter)?;
+            }
+            QvmOpcode::OpJump => {
+                let target = drive.ops.pop()?;
+                let index = usize::try_from(target).map_err(|_| {
+                    GuestError::invalid(format!(
+                        "{}: invalid QVM instruction index {target}",
+                        drive.ctx.program.source
+                    ))
+                })?;
+                drive.pc = target_pc(drive.ctx.program, index)?;
+            }
+            QvmOpcode::OpLoad1 => {
+                let address = mask_address(drive.ops.peek()?, drive.ctx.program.data_mask);
+                counter_narrow_read(drive.ctx.core, address, 1)?;
+                let value = drive.ctx.core.memory.get_u8(address)?;
+                drive.ops.set(i32::from(value));
+            }
+            QvmOpcode::OpLoad2 => {
+                let address = mask_address(drive.ops.peek()?, drive.ctx.program.data_mask);
+                drive.ctx.core.memory.data_view(address, 2)?;
+                counter_narrow_read(drive.ctx.core, address, 2)?;
+                let value = drive.ctx.core.memory.get_u16(address)?;
+                drive.ops.set(i32::from(value));
+            }
+            QvmOpcode::OpLoad4 => {
+                let word = drive.ops.peek()?;
+                if drive.debug && word & 3 != 0 {
+                    return Err(qvm_drop_error("OP_LOAD4 misaligned"));
+                }
+                let value = read_word(drive.ctx.core, mask_address(word, drive.ctx.program.data_mask))?;
+                drive.ops.set(value);
+            }
+            QvmOpcode::OpStore1 => {
+                let value = drive.ops.pop()?;
+                let address = mask_address(drive.ops.pop()?, drive.ctx.program.data_mask);
+                let sp = drive.sp;
+                let handled = counter_narrow_write(drive.ctx.core, sp, address, 1, value)?;
+                if !handled {
+                    if in_counter {
+                        drive.ctx.core.memory.set_u8_unobserved(address, value as u8)?;
+                    } else {
+                        drive.ctx.core.memory.set_u8(address, value as u8)?;
+                    }
+                }
+            }
+            QvmOpcode::OpStore2 => {
+                let value = drive.ops.pop()?;
+                let address = mask_address(drive.ops.pop()?, drive.ctx.program.data_mask & !1);
+                drive.ctx.core.memory.data_view(address, 2)?;
+                let sp = drive.sp;
+                let handled = counter_narrow_write(drive.ctx.core, sp, address, 2, value)?;
+                if !handled {
+                    if in_counter {
+                        drive.ctx.core.memory.set_u16_unobserved(address, value as u16)?;
+                    } else {
+                        drive.ctx.core.memory.set_u16(address, value as u16)?;
+                    }
+                }
+            }
+            QvmOpcode::OpStore4 => {
+                let value = drive.ops.pop()?;
+                let address = mask_address(drive.ops.pop()?, drive.ctx.program.data_mask & !3);
+                let sp = drive.sp;
+                write_word(drive.ctx.core, sp, address, value)?;
+            }
+            QvmOpcode::OpArg => {
+                let offset = code_word(drive.ctx.program, drive.pc)?;
+                drive.pc += 1;
+                let value = drive.ops.pop()?;
+                let at = drive.sp as i64 + i64::from(offset);
+                if at < 0 {
+                    return Err(GuestError::memory_fault(
+                        "out-of-bounds",
+                        0,
+                        4,
+                        "write",
+                        "QVM raw memory range exceeds allocation",
+                    ));
+                }
+                let sp = drive.sp;
+                write_word(drive.ctx.core, sp, at as usize, value)?;
+            }
+            QvmOpcode::OpBlockCopy => {
+                op_block_copy(drive, in_counter)?;
+            }
+            QvmOpcode::OpBcom => {
+                if drive.ctx.core.semantics == QvmSemantics::Compiled {
+                    let top = drive.ops.peek()?;
+                    drive.ops.set(!top);
+                } else {
+                    drive.ops.complement_previous()?;
+                }
+            }
+            QvmOpcode::OpSex8
+            | QvmOpcode::OpSex16
+            | QvmOpcode::OpNegi
+            | QvmOpcode::OpNegf
+            | QvmOpcode::OpCvif
+            | QvmOpcode::OpCvfi => {
+                let top = drive.ops.peek()?;
+                let value = evaluate_unary(opcode, top)?;
+                drive.ops.set(value);
+            }
+            QvmOpcode::OpAdd
+            | QvmOpcode::OpSub
+            | QvmOpcode::OpDivi
+            | QvmOpcode::OpDivu
+            | QvmOpcode::OpModi
+            | QvmOpcode::OpModu
+            | QvmOpcode::OpMuli
+            | QvmOpcode::OpMulu
+            | QvmOpcode::OpBand
+            | QvmOpcode::OpBor
+            | QvmOpcode::OpBxor
+            | QvmOpcode::OpLsh
+            | QvmOpcode::OpRshi
+            | QvmOpcode::OpRshu
+            | QvmOpcode::OpAddf
+            | QvmOpcode::OpSubf
+            | QvmOpcode::OpDivf
+            | QvmOpcode::OpMulf => {
+                let right = drive.ops.pop()?;
+                let left = drive.ops.peek()?;
+                let value = evaluate_binary(opcode, left, right)?;
+                drive.ops.set(value);
+            }
+            _ if opcode.is_branch() => {
+                op_branch(drive, opcode, owner)?;
+            }
+            _ => {
+                if drive.debug {
+                    return Err(qvm_drop_error("Bad VM instruction"));
+                }
+            }
+        }
+    }
 }

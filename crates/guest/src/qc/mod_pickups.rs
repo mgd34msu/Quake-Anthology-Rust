@@ -93,7 +93,12 @@ pub trait QcPickupServices {
     /// Actor for a client handle.
     fn actor_for_client(&self, client: &ClientId) -> Option<ActorId>;
     /// Bind inventory pickup rules; returns a binding id.
-    fn bind_pickup(&mut self, owner: &OwnedActor, provider: &ProviderId, rules: &[QcPickupRule]) -> Result<u64, GuestError>;
+    fn bind_pickup(
+        &mut self,
+        owner: &OwnedActor,
+        provider: &ProviderId,
+        rules: &[QcPickupRule],
+    ) -> Result<u64, GuestError>;
     /// Release an inventory pickup binding.
     fn unbind_pickup(&mut self, binding: u64) -> Result<(), GuestError>;
 }
@@ -132,7 +137,14 @@ pub struct QcModPickups<S, D> {
 impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
     /// Build over a declaration and host services.
     pub fn new(declaration: ModCallbackDeclaration, provider: ProviderId, services: S, dispatch: D) -> Self {
-        Self { declaration, provider, services, dispatch, rules: HashMap::new(), entries: HashMap::new() }
+        Self {
+            declaration,
+            provider,
+            services,
+            dispatch,
+            rules: HashMap::new(),
+            entries: HashMap::new(),
+        }
     }
 
     /// Borrow the services.
@@ -162,12 +174,19 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
             return Err(GuestError::invalid("QC pickups require a live canonical client"));
         }
         let (owner, client) = (owner.unwrap(), client.unwrap());
-        let mut entry = Entry { client, bindings: Vec::new() };
+        let mut entry = Entry {
+            client,
+            bindings: Vec::new(),
+        };
         self.entries.insert(actor.clone(), entry.clone());
         let rules: Vec<QcPickupRule> = self
             .actor_rules(actor)
             .into_iter()
-            .filter(|rule| rule.writes.iter().any(|write| matches!(write, PickupWrite::Inventory { .. })))
+            .filter(|rule| {
+                rule.writes
+                    .iter()
+                    .any(|write| matches!(write, PickupWrite::Inventory { .. }))
+            })
             .collect();
         if !rules.is_empty() {
             match self.services.bind_pickup(&owner, &self.provider, &rules) {
@@ -179,7 +198,10 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
                     let cleanup = self.release(actor).err().map(|cleanup| cleanup.to_string());
                     let mut causes = vec![error.to_string()];
                     causes.extend(cleanup);
-                    return Err(GuestError::Callback(format!("QC pickup admission failed: {}", causes.join("; "))));
+                    return Err(GuestError::Callback(format!(
+                        "QC pickup admission failed: {}",
+                        causes.join("; ")
+                    )));
                 }
             }
         }
@@ -205,7 +227,9 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
         self.actor_rules(actor)
             .into_iter()
             .filter(|rule| {
-                rule.writes.iter().any(|write| matches!(write, PickupWrite::Protection { channel: bound } if *bound == channel))
+                rule.writes
+                    .iter()
+                    .any(|write| matches!(write, PickupWrite::Protection { channel: bound } if *bound == channel))
             })
             .collect()
     }
@@ -238,9 +262,14 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
     ) -> Result<PickupDecision, GuestError> {
         let actor = rule.actor.clone();
         let entry = self.entries.get(&actor).cloned();
-        let admitted = self.rules.get(&actor).is_some_and(|rules| rules.iter().any(|bound| bound.id == rule.id));
+        let admitted = self
+            .rules
+            .get(&actor)
+            .is_some_and(|rules| rules.iter().any(|bound| bound.id == rule.id));
         let Some(entry) = entry else {
-            return Err(GuestError::invalid("QC pickup invocation differs from its admitted source binding"));
+            return Err(GuestError::invalid(
+                "QC pickup invocation differs from its admitted source binding",
+            ));
         };
         if !admitted
             || !execution.current()
@@ -249,7 +278,9 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
             || !self.services.is_live(&offer.pickup)
             || !rule.offered.contains(&offer.item)
         {
-            return Err(GuestError::invalid("QC pickup invocation differs from its admitted source binding"));
+            return Err(GuestError::invalid(
+                "QC pickup invocation differs from its admitted source binding",
+            ));
         }
         let count = match offer.count {
             PickupCount::Override(amount) => amount,
@@ -261,18 +292,33 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
         }
         let mut inputs = QcModInputs::new();
         inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
-        inputs.insert(ModCallbackInput::Other, ModRuntimeValue::Actor(Some(offer.pickup.clone())));
+        inputs.insert(
+            ModCallbackInput::Other,
+            ModRuntimeValue::Actor(Some(offer.pickup.clone())),
+        );
         inputs.insert(ModCallbackInput::Item, ModRuntimeValue::String(offer.item.clone()));
         inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(time));
         inputs.insert(ModCallbackInput::PickupCount, ModRuntimeValue::Float(count));
         inputs.insert(
             ModCallbackInput::PickupHasCount,
-            ModRuntimeValue::Float(if matches!(offer.count, PickupCount::Override(_)) { 1.0 } else { 0.0 }),
+            ModRuntimeValue::Float(if matches!(offer.count, PickupCount::Override(_)) {
+                1.0
+            } else {
+                0.0
+            }),
         );
-        inputs.insert(ModCallbackInput::PickupDropped, ModRuntimeValue::Float(if offer.dropped { 1.0 } else { 0.0 }));
+        inputs.insert(
+            ModCallbackInput::PickupDropped,
+            ModRuntimeValue::Float(if offer.dropped { 1.0 } else { 0.0 }),
+        );
         let operation = rule.operation.clone();
         let pickup = offer.pickup.clone();
-        let Self { services, entries, dispatch, .. } = self;
+        let Self {
+            services,
+            entries,
+            dispatch,
+            ..
+        } = self;
         let (services_shared, entries_shared) = (&*services, &*entries);
         dispatch.watch(&actor, execution, &mut |dispatch| {
             let live = || {
@@ -281,10 +327,16 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
                     && services_shared.is_live(&pickup)
             };
             match &operation {
-                PickupOperation::BooleanGrant { grant } => {
-                    Ok(if accepts(dispatch.invoke(grant, &inputs)?)? { PickupDecision::Accepted } else { PickupDecision::Refused })
-                }
-                PickupOperation::GateThenGrant { gate, grant, grant_accepts } => {
+                PickupOperation::BooleanGrant { grant } => Ok(if accepts(dispatch.invoke(grant, &inputs)?)? {
+                    PickupDecision::Accepted
+                } else {
+                    PickupDecision::Refused
+                }),
+                PickupOperation::GateThenGrant {
+                    gate,
+                    grant,
+                    grant_accepts,
+                } => {
                     if !accepts(dispatch.invoke(gate, &inputs)?)? || !live() {
                         return Ok(PickupDecision::Refused);
                     }
@@ -315,7 +367,10 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(GuestError::Callback(format!("QC pickup release failed: {}", errors.join("; "))))
+            Err(GuestError::Callback(format!(
+                "QC pickup release failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 
@@ -332,7 +387,10 @@ impl<S: QcPickupServices, D: QcPickupDispatch> QcModPickups<S, D> {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(GuestError::Callback(format!("QC pickup close failed: {}", errors.join("; "))))
+            Err(GuestError::Callback(format!(
+                "QC pickup close failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 }
@@ -367,9 +425,10 @@ mod tests {
 
     impl QcPickupServices for FakeServices {
         fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
-            self.live.iter().find(|live| *live == actor).and_then(|actor| {
-                self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok()
-            })
+            self.live
+                .iter()
+                .find(|live| *live == actor)
+                .and_then(|actor| self.owner.owned_actor(actor, ProviderId::new("mod", "test")).ok())
         }
 
         fn is_live(&self, actor: &ActorId) -> bool {
@@ -381,10 +440,18 @@ mod tests {
         }
 
         fn actor_for_client(&self, client: &ClientId) -> Option<ActorId> {
-            self.clients.iter().find(|(_, bound)| *bound == client).map(|(actor, _)| actor.clone())
+            self.clients
+                .iter()
+                .find(|(_, bound)| *bound == client)
+                .map(|(actor, _)| actor.clone())
         }
 
-        fn bind_pickup(&mut self, _owner: &OwnedActor, _provider: &ProviderId, rules: &[QcPickupRule]) -> Result<u64, GuestError> {
+        fn bind_pickup(
+            &mut self,
+            _owner: &OwnedActor,
+            _provider: &ProviderId,
+            rules: &[QcPickupRule],
+        ) -> Result<u64, GuestError> {
             let id = self.next_binding;
             self.next_binding += 1;
             self.bindings.insert(id, rules.to_vec());
@@ -392,7 +459,9 @@ mod tests {
         }
 
         fn unbind_pickup(&mut self, binding: u64) -> Result<(), GuestError> {
-            self.bindings.remove(&binding).ok_or_else(|| GuestError::invalid("Unknown pickup binding"))?;
+            self.bindings
+                .remove(&binding)
+                .ok_or_else(|| GuestError::invalid("Unknown pickup binding"))?;
             self.unbound.push(binding);
             Ok(())
         }
@@ -406,7 +475,11 @@ mod tests {
 
     impl QcPickupDispatch for FakeDispatch {
         fn invoke(&mut self, call: &ModSourceCall, inputs: &QcModInputs) -> Result<f64, GuestError> {
-            self.calls.push(format!("{} self={:?}", call.function, inputs.get(&ModCallbackInput::Self_)));
+            self.calls.push(format!(
+                "{} self={:?}",
+                call.function,
+                inputs.get(&ModCallbackInput::Self_)
+            ));
             Ok(self.results.pop().unwrap_or(0.0))
         }
 
@@ -439,18 +512,32 @@ mod tests {
     fn gate_grant_rule() -> ModPickupRule {
         ModPickupRule {
             id: "shells".to_string(),
-            writes: vec![PickupWrite::Inventory { item: "q1:item_shells".to_string(), fields: PickupFields::Count }],
+            writes: vec![PickupWrite::Inventory {
+                item: "q1:item_shells".to_string(),
+                fields: PickupFields::Count,
+            }],
             offered: vec!["q1:item_shells".to_string()],
             operation: PickupOperation::GateThenGrant {
-                gate: ModSourceCall { function: "gate".to_string(), arguments: vec![], globals: vec![] },
-                grant: ModSourceCall { function: "grant".to_string(), arguments: vec![], globals: vec![] },
+                gate: ModSourceCall {
+                    function: "gate".to_string(),
+                    arguments: vec![],
+                    globals: vec![],
+                },
+                grant: ModSourceCall {
+                    function: "grant".to_string(),
+                    arguments: vec![],
+                    globals: vec![],
+                },
                 grant_accepts: GrantAccepts::Nonzero,
             },
         }
     }
 
     fn fixture() -> QcModPickups<FakeServices, FakeDispatch> {
-        let declaration = ModCallbackDeclaration { pickups: vec![gate_grant_rule()], ..ModCallbackDeclaration::default() };
+        let declaration = ModCallbackDeclaration {
+            pickups: vec![gate_grant_rule()],
+            ..ModCallbackDeclaration::default()
+        };
         let services = FakeServices {
             owner: IdentityOwner::create("pickups").unwrap(),
             live: Vec::new(),
@@ -459,7 +546,16 @@ mod tests {
             next_binding: 1,
             unbound: Vec::new(),
         };
-        QcModPickups::new(declaration, ProviderId::new("mod", "test"), services, FakeDispatch { results: Vec::new(), calls: Vec::new(), watched: 0 })
+        QcModPickups::new(
+            declaration,
+            ProviderId::new("mod", "test"),
+            services,
+            FakeDispatch {
+                results: Vec::new(),
+                calls: Vec::new(),
+                watched: 0,
+            },
+        )
     }
 
     fn join(pickups: &mut QcModPickups<FakeServices, FakeDispatch>) -> (ActorId, ActorId) {
@@ -490,7 +586,10 @@ mod tests {
         pickups.admit(&recipient).unwrap();
         pickups.dispatch.results = vec![1.0, 1.0];
         let rule = pickups.actor_rules(&recipient).pop().unwrap();
-        let execution = FakeExecution { writes: rule.writes.clone(), live: true };
+        let execution = FakeExecution {
+            writes: rule.writes.clone(),
+            live: true,
+        };
         let offer = PickupOffer {
             recipient: recipient.clone(),
             pickup: offered,
@@ -500,7 +599,10 @@ mod tests {
             dropped: false,
             time: SourceTime::Seconds(3.0),
         };
-        assert_eq!(pickups.take(&rule, &offer, &execution).unwrap(), PickupDecision::Accepted);
+        assert_eq!(
+            pickups.take(&rule, &offer, &execution).unwrap(),
+            PickupDecision::Accepted
+        );
         assert_eq!(pickups.dispatch.watched, 1);
         assert_eq!(pickups.dispatch.calls.len(), 2);
         assert_eq!(execution.writes(), rule.writes.as_slice());
@@ -513,7 +615,10 @@ mod tests {
         pickups.admit(&recipient).unwrap();
         pickups.dispatch.results = vec![0.0];
         let rule = pickups.actor_rules(&recipient).pop().unwrap();
-        let execution = FakeExecution { writes: rule.writes.clone(), live: true };
+        let execution = FakeExecution {
+            writes: rule.writes.clone(),
+            live: true,
+        };
         let offer = PickupOffer {
             recipient: recipient.clone(),
             pickup: offered,
@@ -523,7 +628,10 @@ mod tests {
             dropped: true,
             time: SourceTime::Seconds(3.0),
         };
-        assert_eq!(pickups.take(&rule, &offer, &execution).unwrap(), PickupDecision::Refused);
+        assert_eq!(
+            pickups.take(&rule, &offer, &execution).unwrap(),
+            PickupDecision::Refused
+        );
         assert_eq!(pickups.dispatch.calls.len(), 1);
     }
 
@@ -534,7 +642,10 @@ mod tests {
         pickups.admit(&recipient).unwrap();
         let rule = pickups.actor_rules(&recipient).pop().unwrap();
         let foreign = pickups.services.owner.actor(7, 1);
-        let execution = FakeExecution { writes: rule.writes.clone(), live: false };
+        let execution = FakeExecution {
+            writes: rule.writes.clone(),
+            live: false,
+        };
         let offer = PickupOffer {
             recipient: foreign,
             pickup: offered.clone(),
@@ -545,8 +656,16 @@ mod tests {
             time: SourceTime::Seconds(3.0),
         };
         assert!(pickups.take(&rule, &offer, &execution).is_err());
-        let live_execution = FakeExecution { writes: rule.writes.clone(), live: true };
-        let wrong_item = PickupOffer { recipient: recipient.clone(), pickup: offered, item: "q1:item_nails".to_string(), ..offer.clone() };
+        let live_execution = FakeExecution {
+            writes: rule.writes.clone(),
+            live: true,
+        };
+        let wrong_item = PickupOffer {
+            recipient: recipient.clone(),
+            pickup: offered,
+            item: "q1:item_nails".to_string(),
+            ..offer.clone()
+        };
         assert!(pickups.take(&rule, &wrong_item, &live_execution).is_err());
     }
 
