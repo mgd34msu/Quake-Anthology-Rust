@@ -132,11 +132,6 @@ pub struct SourceTokenContext {
     pub leading_whitespace: String,
 }
 
-
-
-
-
-
 /// Checkpoint of one retained token (donor `captureSaveState` record).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTokenSaveState {
@@ -1028,7 +1023,7 @@ mod tests {
 
     #[test]
     fn records_round_trip_all_kinds() {
-        let cases: Vec<(ScriptToken, i32, u32, f64)> = vec![
+        let cases: Vec<(ScriptToken, u32, u32, f64)> = vec![
             (
                 ScriptToken::Primitive {
                     text: "primitive-word".to_string(),
