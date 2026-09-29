@@ -1,17 +1,12 @@
-//! Console core: line buffer, edit fields, dispatch, log, history, discovery.
+//! Console core: line buffer, edit fields, dispatch, log, history, discovery,
+//! overlay drawing, and LLM commands.
 //!
 //! Donor provenance: `src/console/{buffer,field,commands,log,session,
-//! metrics,discovery,dedicated,source-field}.ts`. Command text uses
-//! [`qa_core::cmd`] and variable storage uses
+//! metrics,discovery,dedicated,source-field,draw,llm,llm-batch}.ts`.
+//! Command text uses [`qa_core::cmd`] and variable storage uses
 //! [`qa_core::cvar::CvarRegistry`]; nothing here duplicates those cores.
-//!
-//! Explicitly out of scope (recorded, not ported):
-//!
-//! - `src/console/draw.ts`: display rendering of the console overlay; it
-//!   needs the text atlas and renderer backends that stay headless here.
-//! - `src/console/llm*.ts` and `src/llm/*`: developer-tool LLM edges,
-//!   deferred with the rest of `llm/` (external API clients, not game
-//!   behavior).
+//! Overlay drawing renders through `qa-client` text types read-only, and
+//! the LLM commands route through [`crate::llm`].
 //!
 //! Dispatch here is synchronous and single-seat: the donor's buffered
 //! `CommandBuffer` (`wait`, multi-frame inserts, script callbacks) and its
@@ -22,7 +17,10 @@ pub mod buffer;
 pub mod commands;
 pub mod dedicated;
 pub mod discovery;
+pub mod draw;
 pub mod field;
+pub mod llm;
+pub mod llm_batch;
 pub mod log;
 pub mod metrics;
 pub mod session;

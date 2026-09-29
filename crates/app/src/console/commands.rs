@@ -46,6 +46,8 @@ pub struct CommandInvocation {
     pub dialect: Dialect,
     /// Raw segment text (for server forwarding).
     pub raw: String,
+    /// Whether the line reached dispatch without alias expansion.
+    pub direct: bool,
 }
 
 /// Host services behind console command handlers.
@@ -100,6 +102,12 @@ pub trait ConsoleCommandServices {
     fn discovery_entries(&self) -> Vec<super::discovery::ConsoleDiscoveryEntry> {
         Vec::new()
     }
+    /// Registry snapshot for `llm_exec` validation, refreshed before each line.
+    fn llm_batch_registry(&self) -> super::llm_batch::LlmBatchRegistry {
+        super::llm_batch::LlmBatchRegistry::for_dialect(Dialect::Q3)
+    }
+    /// Execute an `llm_exec` batch the handler already validated and printed.
+    fn execute_llm_batch(&mut self, _batch: &str) {}
 }
 
 type Handler = Box<dyn FnMut(&CommandInvocation, &mut dyn ConsoleCommandServices) -> Result<(), ConsoleError>>;
@@ -269,6 +277,7 @@ impl ConsoleCommands {
             args_text: tokens.args_text.clone(),
             dialect,
             raw: segment.to_string(),
+            direct: expansions == 0,
         };
         if self.entries.contains_key(&ascii_fold(&name)) {
             let entry = self
