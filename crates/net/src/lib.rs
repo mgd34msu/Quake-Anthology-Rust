@@ -15,6 +15,7 @@ pub mod q1_net;
 pub mod q1_wide;
 pub mod q2;
 pub mod q2_net;
+pub mod q2_solid;
 pub mod q2_svc;
 pub mod q2_variants;
 pub mod q3;

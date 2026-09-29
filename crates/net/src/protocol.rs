@@ -709,6 +709,58 @@ pub mod q2 {
     /// Quit error.
     pub const ERR_QUIT: u8 = 2;
 
+    /// Quake II console error carrying an `ERR_*` code (`ComError` in
+    /// `src/network/q2/constants.ts`, thrown by `Com_Error` in
+    /// `src/network/q2/errors.ts`).
+    ///
+    /// Lane error types (`Q2CodecError`, `Q2NetError`) carry wire messages
+    /// but no `ERR_*` code; this struct fills that gap without duplicating
+    /// them. Callers return it through their own error type instead of
+    /// throwing.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ComError {
+        code: i32,
+        message: String,
+    }
+
+    impl ComError {
+        /// Build a code-carrying error.
+        #[must_use]
+        pub fn new(code: i32, message: impl Into<String>) -> Self {
+            Self {
+                code,
+                message: message.into(),
+            }
+        }
+
+        /// Error code (`ERR_FATAL`, `ERR_DROP`, or `ERR_QUIT`).
+        #[must_use]
+        pub fn code(&self) -> i32 {
+            self.code
+        }
+
+        /// Error message.
+        #[must_use]
+        pub fn message(&self) -> &str {
+            &self.message
+        }
+    }
+
+    impl std::fmt::Display for ComError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.message)
+        }
+    }
+
+    impl std::error::Error for ComError {}
+
+    /// Build a code-carrying error (`Com_Error`); the donor throws the
+    /// value, while Rust callers return it.
+    #[must_use]
+    pub fn com_error(code: i32, message: impl Into<String>) -> ComError {
+        ComError::new(code, message)
+    }
+
     /// Server-to-client opcodes.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[repr(u8)]
@@ -937,5 +989,16 @@ mod tests {
         assert_eq!(q2::PS_RR_VIEWHEIGHT, 1 << 15);
         assert_eq!(q2::MAX_MSGLEN, 1400);
         assert_eq!(q3::MAX_MESSAGE_LENGTH, 16384);
+    }
+
+    #[test]
+    fn com_error_carries_code_and_message() {
+        let error = q2::com_error(i32::from(q2::ERR_DROP), "CL_ParseFrame: not packetentities");
+        assert_eq!(error.code(), 1);
+        assert_eq!(error.message(), "CL_ParseFrame: not packetentities");
+        assert_eq!(error.to_string(), "CL_ParseFrame: not packetentities");
+        let boxed: Box<dyn std::error::Error> = Box::new(error.clone());
+        assert_eq!(boxed.to_string(), error.to_string());
+        assert_eq!(q2::ComError::new(0, "fatal"), q2::com_error(0, "fatal"));
     }
 }
