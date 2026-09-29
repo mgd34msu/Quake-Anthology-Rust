@@ -7824,3 +7824,303 @@ impl<'a> Q3ServerConnection<'a> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::write_delta_user_command;
+    use qa_core::identity::IdentityOwner;
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn fixture_entity() -> Q3EntityState {
+        let mut to = Q3EntityState::default();
+        to.number = 7;
+        to.e_type = 1;
+        to.e_flags = 4;
+        to.pos.base = [100.0, -50.0, 12.5];
+        to.origin = [100.0, -50.0, 12.5];
+        to.angles = [0.0, 90.0, 0.0];
+        to.modelindex = 3;
+        to.client_num = 1;
+        to.solid = 0x0001_0203;
+        to.event = 5;
+        to.event_parm = 9;
+        to.weapon = 4;
+        to
+    }
+
+    fn fixture_player_full() -> Q3PlayerState {
+        let mut to = Q3PlayerState::new(Q3Product::Base);
+        to.command_time = 1234;
+        to.bob_cycle = 7;
+        to.pm_flags = 0x4101;
+        to.origin = [10.0, 20.0, 30.0];
+        to.velocity = [1.0, -2.0, 3.0];
+        to.weapon_time = -300;
+        to.gravity = 800;
+        to.speed = 320;
+        to.ground_entity_num = 1022;
+        to.legs_anim = 9;
+        to.torso_anim = 12;
+        to.e_flags = 3;
+        to.event_sequence = 44;
+        to.events = [71, 0];
+        to.event_parms = [0, 8];
+        to.client_num = 2;
+        to.viewangles = [10.0, 200.0, 0.0];
+        to.stats.set(0, 100).unwrap();
+        to.stats.set(3, -5).unwrap();
+        to.persistant.set(1, 7).unwrap();
+        to.ammo.set(4, 50).unwrap();
+        to.powerups.set(0, 9999).unwrap();
+        to.generic1 = 6;
+        to.ping = 42;
+        to
+    }
+
+    fn delta_hex(
+        from_entity: Option<&Q3EntityState>,
+        to_entity: Option<&Q3EntityState>,
+        force: bool,
+    ) -> String {
+        let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+        write_delta_entity(&mut writer, from_entity, to_entity, force).unwrap();
+        hex(writer.to_bytes())
+    }
+
+    #[test]
+    fn delta_entity_byte_exact() {
+        let from = Q3EntityState::default();
+        let to = fixture_entity();
+        assert_eq!(
+            delta_hex(Some(&from), Some(&to), false),
+            "6f9f18e9cf21b8f684e2b6b76998ead0f7349391fe1ce2da133a1bb9cd06"
+        );
+        let mut gone = Q3EntityState::default();
+        gone.number = 9;
+        assert_eq!(delta_hex(Some(&gone), None, false), "2103");
+        let mut base = Q3EntityState::default();
+        base.number = 2;
+        base.e_type = 2;
+        assert_eq!(delta_hex(None, Some(&base), true), "ea04002301");
+    }
+
+    #[test]
+    fn delta_player_byte_exact() {
+        let to = fixture_player_full();
+        let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+        write_delta_player_state(&mut writer, None, &to).unwrap();
+        assert_eq!(
+            hex(writer.to_bytes()),
+            "aced2654535ff4fb17be7c391490fa36f4ca7f8d8f717a229c3437b4a46cbdd99f372004ac91d3bc246a64a4bf4bbe7bcbaa7905"
+        );
+        let mut from = Q3PlayerState::new(Q3Product::Base);
+        from.command_time = 1000;
+        from.origin = [10.0, 20.0, 30.0];
+        let mut small = from.clone();
+        small.command_time = 1050;
+        small.origin = [11.0, 20.0, 30.0];
+        small.viewangles = [0.0, 5.0, 0.0];
+        let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+        write_delta_player_state(&mut writer, Some(&from), &small).unwrap();
+        assert_eq!(hex(writer.to_bytes()), "ff5542b5f541e503");
+    }
+
+    fn encode_context<'a>(
+        baseline: &'a dyn Fn(i32) -> Option<Q3EntityState>,
+        history: &'a dyn Fn(i32) -> Option<SnapshotHistoryEntry>,
+    ) -> ServerMessageContext<'a> {
+        ServerMessageContext {
+            product: Q3Product::Base,
+            message_number: 1,
+            reliable_sequence: 4,
+            server_command_sequence: 9,
+            parse_entities_number: 0,
+            baseline,
+            history,
+        }
+    }
+
+    #[test]
+    fn server_gamestate_byte_exact() {
+        let mut baseline = Q3EntityState::default();
+        baseline.number = 1;
+        baseline.e_type = 3;
+        let operations = vec![
+            ServerOperation::Nop,
+            ServerOperation::Command { sequence: 9, text: "cs 5 \"hello\"".to_string() },
+            ServerOperation::Gamestate(Gamestate {
+                command_sequence: 9,
+                entries: vec![
+                    GamestateEntry::Configstring {
+                        index: 0,
+                        value: "sv_hostname\\q3test".to_string(),
+                    },
+                    GamestateEntry::Configstring {
+                        index: 1,
+                        value: "\\sv_serverid\\42\\sv_hostname\\q3".to_string(),
+                    },
+                    GamestateEntry::Baseline { number: 1, entity: baseline },
+                ],
+                client_number: 2,
+                checksum_feed: 0x1234_5678,
+            }),
+        ];
+        let no_baseline = |_: i32| Some(Q3EntityState::default());
+        let no_history = |_: i32| None;
+        let bytes = encode_server_message(4, &operations, &encode_context(&no_baseline, &no_history))
+            .unwrap();
+        assert_eq!(
+            hex(&bytes),
+            "a1ea8ea0a98ff3eed89b0807c3c49c252292a6b235ef029b9bcdcb32f03c821d63bc9c85e565656f8fe55d60e7c18e2e604728978e4dbd1fcbbbc0e666f3b20c3c8f60c7182f1b9a4e0030bb22d5a5f1a6e003"
+        );
+        let message = decode_server_message(&bytes, &encode_context(&no_baseline, &no_history)).unwrap();
+        assert_eq!(message.reliable_acknowledge, 4);
+        assert_eq!(message.operations.len(), 3);
+        assert!(matches!(message.operations[0], ServerOperation::Nop));
+    }
+
+    fn fixture_snapshot_old() -> Snapshot {
+        let mut player_state = Q3PlayerState::new(Q3Product::Base);
+        player_state.command_time = 1900;
+        player_state.origin = [1.0, 2.0, 3.0];
+        let mut entity = Q3EntityState::default();
+        entity.number = 5;
+        entity.e_type = 1;
+        entity.origin = [7.0, 8.0, 9.0];
+        Snapshot {
+            message_number: 11,
+            server_time: 1900,
+            delta_number: -1,
+            flags: 0,
+            server_command_number: 9,
+            parse_entities_number: 0,
+            area_mask: vec![3, 0],
+            player_state,
+            entities: vec![entity],
+        }
+    }
+
+    #[test]
+    fn server_snapshot_nodelta_byte_exact() {
+        let mut player_state = Q3PlayerState::new(Q3Product::Base);
+        player_state.command_time = 2000;
+        player_state.origin = [1.0, 2.0, 3.0];
+        let mut entity = Q3EntityState::default();
+        entity.number = 5;
+        entity.e_type = 1;
+        entity.origin = [7.0, 8.0, 9.0];
+        let operations = vec![ServerOperation::Snapshot {
+            validity: SnapshotValidity::Valid,
+            snapshot: Snapshot {
+                message_number: 12,
+                server_time: 2000,
+                delta_number: -1,
+                flags: 0,
+                server_command_number: 9,
+                parse_entities_number: 0,
+                area_mask: vec![3, 0],
+                player_state,
+                entities: vec![entity],
+            },
+        }];
+        let no_baseline = |_: i32| Some(Q3EntityState::default());
+        let no_history = |_: i32| None;
+        let mut context = encode_context(&no_baseline, &no_history);
+        context.message_number = 12;
+        let bytes = encode_server_message(9, &operations, &context).unwrap();
+        assert_eq!(
+            hex(&bytes),
+            "34f507f0ab22d9a603f8b5f0253ea0f1693b3600de00b0f30d7d4bdf24"
+        );
+        let message = decode_server_message(&bytes, &context).unwrap();
+        let ServerOperation::Snapshot { validity, snapshot } = &message.operations[0] else {
+            panic!("expected snapshot");
+        };
+        assert_eq!(*validity, SnapshotValidity::Valid);
+        assert_eq!(snapshot.server_time, 2000);
+        assert_eq!(snapshot.entities.len(), 1);
+    }
+
+    #[test]
+    fn server_snapshot_delta_byte_exact() {
+        let old = fixture_snapshot_old();
+        let mut player_state = old.player_state.clone();
+        player_state.command_time = 1950;
+        player_state.origin = [2.0, 2.0, 3.0];
+        let mut entity = old.entities[0].clone();
+        entity.origin = [8.0, 8.0, 9.0];
+        let mut added = Q3EntityState::default();
+        added.number = 6;
+        added.e_type = 2;
+        let operations = vec![ServerOperation::Snapshot {
+            validity: SnapshotValidity::Valid,
+            snapshot: Snapshot {
+                message_number: 12,
+                server_time: 1950,
+                delta_number: 11,
+                flags: 0,
+                server_command_number: 9,
+                parse_entities_number: 1,
+                area_mask: vec![3, 0],
+                player_state,
+                entities: vec![entity, added],
+            },
+        }];
+        let no_baseline = |_: i32| Some(Q3EntityState::default());
+        let history = |number: i32| {
+            (number == 11).then(|| SnapshotHistoryEntry {
+                status: SnapshotStatus::Valid,
+                snapshot: old.clone(),
+            })
+        };
+        let mut context = encode_context(&no_baseline, &history);
+        context.message_number = 12;
+        context.parse_entities_number = 1;
+        let bytes = encode_server_message(9, &operations, &context).unwrap();
+        assert_eq!(hex(&bytes), "34f55fffd72d922df2fabf263e6d1b03000018fadc4e00307212");
+        let message = decode_server_message(&bytes, &context).unwrap();
+        let ServerOperation::Snapshot { validity, snapshot } = &message.operations[0] else {
+            panic!("expected snapshot");
+        };
+        assert_eq!(*validity, SnapshotValidity::Valid);
+        assert_eq!(snapshot.delta_number, 11);
+        assert_eq!(snapshot.entities.len(), 2);
+        assert_eq!(snapshot.entities[1].number, 6);
+    }
+
+    #[test]
+    fn server_download_byte_exact() {
+        let operations = vec![
+            ServerOperation::Download(DownloadBlock::Start {
+                file_size: 66,
+                data: vec![1, 2, 3, 4],
+            }),
+            ServerOperation::Download(DownloadBlock::Chunk { number: 1, data: vec![5, 6] }),
+        ];
+        let no_baseline = |_: i32| Some(Q3EntityState::default());
+        let no_history = |_: i32| None;
+        let mut context = encode_context(&no_baseline, &no_history);
+        context.message_number = 3;
+        let bytes = encode_server_message(9, &operations, &context).unwrap();
+        assert_eq!(hex(&bytes), "3415a27c35d48d648742b648232000");
+        let error = vec![ServerOperation::Download(DownloadBlock::Error {
+            file_size: -1,
+            message: "nope".to_string(),
+        })];
+        let bytes = encode_server_message(9, &error, &context).unwrap();
+        assert_eq!(hex(&bytes), "3415a22449920cb3853001");
+        let message = decode_server_message(&bytes, &context).unwrap();
+        assert_eq!(message.terminal, ServerTerminal::DownloadError);
+    }
+}
+
