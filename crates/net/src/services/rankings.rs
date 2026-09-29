@@ -179,13 +179,16 @@ pub enum RankingPlayerState {
     },
 }
 
+/// Player-change callback.
+type RankingChangedCallback<'a> = Box<dyn FnMut(i32, &RankingPlayerState) + 'a>;
+
 /// Ranking lifecycle (`RankingLifecycle`).
 pub struct RankingLifecycle<'a> {
     provider: Option<&'a mut dyn RankingServiceProvider>,
     current: RankingServiceState,
     current_match: Option<RankingMatch>,
     players: HashMap<i32, RankingPlayerState>,
-    changed: Box<dyn FnMut(i32, &RankingPlayerState) + 'a>,
+    changed: RankingChangedCallback<'a>,
     service_changed: Box<dyn FnMut(&RankingServiceState) + 'a>,
 }
 

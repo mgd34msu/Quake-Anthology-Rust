@@ -72,7 +72,7 @@ impl Sha256 {
         self.update(&bit_length.to_be_bytes());
         debug_assert_eq!(self.buffered, 0);
         let mut digest = [0u8; 32];
-        for (word, slot) in self.state.iter().zip(digest.chunks_exact_mut(4)) {
+        for (word, slot) in self.state.iter().zip(digest.as_chunks_mut::<4>().0) {
             slot.copy_from_slice(&word.to_be_bytes());
         }
         digest
@@ -156,7 +156,7 @@ pub fn hex_lower(bytes: &[u8]) -> String {
 
 /// Decode lowercase or uppercase hex into `out`. Returns bytes written.
 pub fn hex_decode(text: &str, out: &mut [u8]) -> Option<usize> {
-    if text.len() % 2 != 0 || text.len() / 2 > out.len() {
+    if !text.len().is_multiple_of(2) || text.len() / 2 > out.len() {
         return None;
     }
     for (index, slot) in out.iter_mut().take(text.len() / 2).enumerate() {
@@ -204,7 +204,7 @@ pub fn md4(bytes: &[u8]) -> [u8; 16] {
     }
     padded.extend_from_slice(&bit_length.to_le_bytes());
     let mut state = [0x67452301u32, 0xefcdab89, 0x98badcfe, 0x10325476];
-    for block in padded.chunks_exact(64) {
+    for block in padded.as_chunks::<64>().0 {
         let mut x = [0u32; 16];
         for (index, word) in x.iter_mut().enumerate() {
             *word = u32::from_le_bytes([
@@ -302,7 +302,7 @@ pub fn md4(bytes: &[u8]) -> [u8; 16] {
         state[3] = state[3].wrapping_add(d);
     }
     let mut digest = [0u8; 16];
-    for (word, slot) in state.iter().zip(digest.chunks_exact_mut(4)) {
+    for (word, slot) in state.iter().zip(digest.as_chunks_mut::<4>().0) {
         slot.copy_from_slice(&word.to_le_bytes());
     }
     digest

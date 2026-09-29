@@ -227,7 +227,7 @@ impl LocalAuthorization {
                 Json::Object(row)
             })
             .collect();
-        accounts.sort_by(|a, b| canonical(a).unwrap_or_default().cmp(&canonical(b).unwrap_or_default()));
+        accounts.sort_by_key(|a| canonical(a).unwrap_or_default());
         let mut root = BTreeMap::new();
         root.insert("version".to_owned(), Json::Number(1.0));
         root.insert("accounts".to_owned(), Json::Array(accounts));
@@ -696,7 +696,7 @@ impl LocalRankingService {
                 Json::Object(row)
             })
             .collect();
-        rows.sort_by(|a, b| canonical(a).unwrap_or_default().cmp(&canonical(b).unwrap_or_default()));
+        rows.sort_by_key(|a| canonical(a).unwrap_or_default());
         canonical(&Json::Array(rows)).unwrap_or_else(|_| String::new())
     }
 

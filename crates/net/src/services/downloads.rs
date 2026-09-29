@@ -467,8 +467,7 @@ impl DownloadSink {
             }
             hasher.update(&buffer[..count]);
         }
-        Ok(ContentDigest::new(&crate::common::hash::hex_lower(&hasher.finish()))
-            .map_err(|_| DownloadError::DigestMismatch)?)
+        ContentDigest::new(&crate::common::hash::hex_lower(&hasher.finish())).map_err(|_| DownloadError::DigestMismatch)
     }
 
     /// Verify and publish the download (`finish`).

@@ -164,7 +164,7 @@ fn fragment_count(total_bytes: u32, fragment_bytes: u32) -> u32 {
     if fragment_bytes == 0 {
         return 0;
     }
-    ((total_bytes + fragment_bytes - 1) / fragment_bytes).max(1)
+    total_bytes.div_ceil(fragment_bytes).max(1)
 }
 
 fn fragment_length(total_bytes: u32, fragment_bytes: u32, fragment: u16) -> usize {
@@ -536,11 +536,11 @@ impl UnifiedChannel {
 
     fn outgoing(&self, payload: &[u8], sequence: u32, required: u32) -> Result<Outgoing, UnifiedError> {
         let fragment_bytes = self.limits.datagram_bytes - UNIFIED_PACKET_HEADER_BYTES;
-        let fragments = ((payload.len() + fragment_bytes - 1) / fragment_bytes).max(1);
+        let fragments = payload.len().div_ceil(fragment_bytes).max(1);
         if payload.len() > self.limits.message_bytes || fragments > self.limits.fragments {
             return Err(UnifiedError::TooLarge);
         }
-        if sequence > UNIFIED_SEQUENCE_MAX {
+        if sequence == UNIFIED_SEQUENCE_MAX {
             return Err(UnifiedError::Exhausted);
         }
         Ok(Outgoing {

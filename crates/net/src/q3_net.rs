@@ -1989,7 +1989,7 @@ fn config_string_number(text: &str) -> Result<i32, Q3NetError> {
 }
 
 /// Reliable command ring (`ReliableRing`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ReliableRing {
     current_sequence: i32,
     acknowledged_sequence: i32,
@@ -2079,9 +2079,15 @@ impl ReliableRing {
 }
 
 /// Client reliable commands (`ClientReliableCommands`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ClientReliableCommands {
     ring: ReliableRing,
+}
+
+impl Default for ClientReliableCommands {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClientReliableCommands {
@@ -2166,9 +2172,15 @@ impl ClientReliableCommands {
 }
 
 /// Server reliable commands (`ServerReliableCommands`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ServerReliableCommands {
     ring: ReliableRing,
+}
+
+impl Default for ServerReliableCommands {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ServerReliableCommands {
@@ -3511,8 +3523,7 @@ fn read_snapshot<'d, 'x>(
     if header.delta_number > 0 {
         let stale_entities = slot.as_ref().is_some_and(|slot| {
             let current = parse_entities.as_ref().map_or(parse_number, |ring| ring.number);
-            current.wrapping_sub(slot.snapshot.parse_entities_number)
-                > MAX_PARSE_ENTITIES as i32 - 128
+            current.wrapping_sub(slot.snapshot.parse_entities_number) > MAX_PARSE_ENTITIES as i32 - 128
         });
         if slot.is_none() {
             validity = SnapshotValidity::Invalid(SnapshotInvalid::MissingDelta);
@@ -4047,7 +4058,10 @@ fn write_gamestate(writer: &mut Q3MsgWriter, gamestate: &Gamestate) -> Result<()
                 writer.write_byte(ServerOpcode::Baseline as i32)?;
                 // The entity number rides inside `writeDeltaEntity`.
                 if entity.number == ENTITY_SENTINEL && *number != ENTITY_SENTINEL {
-                    let removed = Q3EntityState { number: *number, ..Default::default() };
+                    let removed = Q3EntityState {
+                        number: *number,
+                        ..Default::default()
+                    };
                     write_delta_entity(writer, Some(&removed), None, false)?;
                 } else {
                     if entity.number != *number {
@@ -4351,7 +4365,7 @@ impl<'a> SnapshotHistory<'a> {
             return Ok(false);
         }
         let previous_number = self.current.as_ref().map_or(0, |current| current.message_number);
-        let incoming = snapshot.clone();
+        let incoming = snapshot.as_ref().clone();
         let mut skipped = previous_number.wrapping_add(1);
         if incoming.message_number.wrapping_sub(skipped) >= SNAPSHOT_BACKUP as i32 {
             skipped = incoming.message_number - (SNAPSHOT_BACKUP as i32 - 1);
@@ -5106,6 +5120,10 @@ impl<'a> ClientMessageReader<'a> {
     }
 
     /// Next part; a returned command must be admitted before continuing.
+    ///
+    /// Named after the donor cursor; it cannot implement `Iterator` because
+    /// the terminal EOF is a yielded value rather than stream exhaustion.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<ClientMessagePart, Q3NetError> {
         let ClientReadPhase::Commands(header) = self.phase else {
             return Err(Q3NetError::Protocol("Cannot read next client part during phase"));
@@ -7840,7 +7858,10 @@ mod tests {
             number: 7,
             e_type: 1,
             e_flags: 4,
-            pos: Q3Trajectory { base: [100.0, -50.0, 12.5], ..Default::default() },
+            pos: Q3Trajectory {
+                base: [100.0, -50.0, 12.5],
+                ..Default::default()
+            },
             origin: [100.0, -50.0, 12.5],
             angles: [0.0, 90.0, 0.0],
             modelindex: 3,
@@ -7896,9 +7917,16 @@ mod tests {
             delta_hex(Some(&from), Some(&to), false),
             "6f9f18e9cf21b8f684e2b6b76998ead0f7349391fe1ce2da133a1bb9cd06"
         );
-        let gone = Q3EntityState { number: 9, ..Default::default() };
+        let gone = Q3EntityState {
+            number: 9,
+            ..Default::default()
+        };
         assert_eq!(delta_hex(Some(&gone), None, false), "2103");
-        let base = Q3EntityState { number: 2, e_type: 2, ..Default::default() };
+        let base = Q3EntityState {
+            number: 2,
+            e_type: 2,
+            ..Default::default()
+        };
         assert_eq!(delta_hex(None, Some(&base), true), "ea04002301");
     }
 
@@ -7940,14 +7968,18 @@ mod tests {
 
     #[test]
     fn server_gamestate_byte_exact() {
-        let baseline = Q3EntityState { number: 1, e_type: 3, ..Default::default() };
+        let baseline = Q3EntityState {
+            number: 1,
+            e_type: 3,
+            ..Default::default()
+        };
         let operations = vec![
             ServerOperation::Nop,
             ServerOperation::Command {
                 sequence: 9,
                 text: "cs 5 \"hello\"".to_string(),
             },
-            ServerOperation::Gamestate(Gamestate {
+            ServerOperation::Gamestate(Box::new(Gamestate {
                 command_sequence: 9,
                 entries: vec![
                     GamestateEntry::Configstring {
@@ -7965,7 +7997,7 @@ mod tests {
                 ],
                 client_number: 2,
                 checksum_feed: 0x1234_5678,
-            }),
+            })),
         ];
         let no_baseline = |_: i32| Some(Q3EntityState::default());
         let no_history = |_: i32| None;
@@ -8018,7 +8050,7 @@ mod tests {
         };
         let operations = vec![ServerOperation::Snapshot {
             validity: SnapshotValidity::Valid,
-            snapshot: Snapshot {
+            snapshot: Box::new(Snapshot {
                 message_number: 12,
                 server_time: 2000,
                 delta_number: -1,
@@ -8028,7 +8060,7 @@ mod tests {
                 area_mask: vec![3, 0],
                 player_state,
                 entities: vec![entity],
-            },
+            }),
         }];
         let no_baseline = |_: i32| Some(Q3EntityState::default());
         let no_history = |_: i32| None;
@@ -8056,10 +8088,14 @@ mod tests {
         player_state.origin = [2.0, 2.0, 3.0];
         let mut entity = old.entities[0].clone();
         entity.origin = [8.0, 8.0, 9.0];
-        let added = Q3EntityState { number: 6, e_type: 2, ..Default::default() };
+        let added = Q3EntityState {
+            number: 6,
+            e_type: 2,
+            ..Default::default()
+        };
         let operations = vec![ServerOperation::Snapshot {
             validity: SnapshotValidity::Valid,
-            snapshot: Snapshot {
+            snapshot: Box::new(Snapshot {
                 message_number: 12,
                 server_time: 1950,
                 delta_number: 11,
@@ -8069,7 +8105,7 @@ mod tests {
                 area_mask: vec![3, 0],
                 player_state,
                 entities: vec![entity, added],
-            },
+            }),
         }];
         let no_baseline = |_: i32| Some(Q3EntityState::default());
         let history = |number: i32| {
@@ -8375,7 +8411,7 @@ mod tests {
         snapshot.message_number = 11;
         let operation = ServerOperation::Snapshot {
             validity: SnapshotValidity::Valid,
-            snapshot: snapshot.clone(),
+            snapshot: Box::new(snapshot.clone()),
         };
         assert!(history.publish(&operation).unwrap());
         let entry = history.read_slot(11).unwrap().expect("slot");
@@ -8384,7 +8420,7 @@ mod tests {
         assert_eq!(history.latest().expect("latest").message_number, 11);
         let stale = ServerOperation::Snapshot {
             validity: SnapshotValidity::Invalid(SnapshotInvalid::MissingDelta),
-            snapshot,
+            snapshot: Box::new(snapshot),
         };
         assert!(!history.publish(&stale).unwrap());
     }

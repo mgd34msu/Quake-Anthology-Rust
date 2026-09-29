@@ -500,7 +500,7 @@ pub struct Q2DownloadSender {
 impl Q2DownloadSender {
     /// Build a sender over a source at an offset.
     pub fn new(source: Box<dyn DownloadSource>, offset: u64, block_bytes: usize) -> Result<Self, Q2NetError> {
-        if offset > source.byte_length() || block_bytes < 1 || block_bytes > 32767 {
+        if offset > source.byte_length() || !(1..=32767).contains(&block_bytes) {
             return Err(Q2NetError::Range("Invalid Q2 download range"));
         }
         Ok(Self {
@@ -512,6 +512,10 @@ impl Q2DownloadSender {
     }
 
     /// Next download chunk, or `None` once the terminal marker was emitted.
+    ///
+    /// Named after the donor pump; it cannot implement `Iterator` because
+    /// fallible reads return `Result`.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Q2ServerEvent>, Q2NetError> {
         if self.ended {
             return Ok(None);
@@ -1046,7 +1050,7 @@ pub fn encode_mvd_emission(event: &MvdEmission) -> Result<Vec<u8>, Q2NetError> {
         }
         MvdRecipient::All => {}
         MvdRecipient::Pvs(leaf) | MvdRecipient::Phs(leaf) => {
-            if leaf >= 65535 {
+            if leaf == 65535 {
                 return Err(Q2NetError::Range("Invalid MVD leaf"));
             }
             writer.write_short(leaf as i16)?;
@@ -1500,9 +1504,12 @@ pub fn frame_mvd_message(bytes: &[u8]) -> Result<Vec<u8>, Q2NetError> {
     Ok(result)
 }
 
+/// Packet sink callback.
+pub type MvdPacketSink = Box<dyn FnMut(&[u8])>;
+
 /// Append-only MVD recording (`MvdRecording`).
 pub struct MvdRecording {
-    write: Box<dyn FnMut(&[u8])>,
+    write: MvdPacketSink,
     started: bool,
     closed: bool,
 }
@@ -1557,7 +1564,7 @@ pub struct MvdMessageFramer {
 impl MvdMessageFramer {
     /// Build a framer; `magic` requires the leading magic.
     pub fn new(magic: bool, limit: usize) -> Result<Self, Q2NetError> {
-        if limit < 1 || limit > MVD_MAX_MESSAGE {
+        if !(1..=MVD_MAX_MESSAGE).contains(&limit) {
             return Err(Q2NetError::Range("Invalid MVD/GTV frame limit"));
         }
         Ok(Self {
@@ -1821,7 +1828,7 @@ impl MvdPlayback {
                     self.embedded
                         .accept_q2pro_features(revision, if header.profile.v2 { 24 } else { 8 })?;
                 }
-                self.profile = header.profile.clone();
+                self.profile = header.profile;
                 self.config_strings.clear();
                 self.players.clear();
                 self.entities.clear();
@@ -1857,7 +1864,7 @@ impl MvdPlayback {
                     seat: 0,
                     opcode: 12,
                     raw: raw.clone(),
-                    event: Q2ServerEvent::ServerData { data },
+                    event: Q2ServerEvent::ServerData { data: Box::new(data) },
                 });
                 for (index, value) in &header.config_strings {
                     records.push(Q2ServerRecord {
@@ -1882,7 +1889,9 @@ impl MvdPlayback {
                     seat: 0,
                     opcode: 20,
                     raw,
-                    event: Q2ServerEvent::Frame { frame: self.frame() },
+                    event: Q2ServerEvent::Frame {
+                        frame: Box::new(self.frame()),
+                    },
                 });
                 continue;
             }
@@ -1906,7 +1915,9 @@ impl MvdPlayback {
                     seat: 0,
                     opcode: 20,
                     raw: self.wire.raw_slice(start).to_vec(),
-                    event: Q2ServerEvent::Frame { frame: self.frame() },
+                    event: Q2ServerEvent::Frame {
+                        frame: Box::new(self.frame()),
+                    },
                 });
                 continue;
             }
@@ -1997,7 +2008,7 @@ impl MvdPlayback {
         let (flags, index, volume, attenuation, delay_seconds, channel) = self.wire.with_reader(|reader| {
             let flags = reader.byte()?;
             let index = if (flags & 32) != 0 {
-                u16::from(reader.word()?)
+                reader.word()?
             } else {
                 u16::from(reader.byte()?)
             };
@@ -2413,9 +2424,12 @@ enum GtvPhase {
     Closed,
 }
 
+/// Fallible packet sink callback.
+pub type GtvPacketSink = Box<dyn FnMut(&[u8]) -> Result<(), Q2NetError>>;
+
 /// GTV client (`GtvClient`).
 pub struct GtvClient {
-    send: Box<dyn FnMut(&[u8]) -> Result<(), Q2NetError>>,
+    send: GtvPacketSink,
     identity: GtvIdentity,
     requested_flags: u32,
     phase: GtvPhase,
@@ -2914,14 +2928,20 @@ fn mvd_server_data(header: &MvdHeader, selected: u8) -> Q2ServerData {
     }
 }
 
+/// Viewer authorization callback.
+pub type GtvAuthorizeFn = Box<dyn Fn(&GtvClientHello) -> bool>;
+
+/// Console command callback.
+pub type MvdCommandSink = Box<dyn FnMut(&str)>;
+
 /// Options for [`MvdBroadcast`].
 pub struct MvdBroadcastOptions {
     /// Authorize a viewer hello.
-    pub authorize: Box<dyn Fn(&GtvClientHello) -> bool>,
+    pub authorize: GtvAuthorizeFn,
     /// Handle a forwarded console command.
-    pub command: Option<Box<dyn FnMut(&str)>>,
+    pub command: Option<MvdCommandSink>,
     /// Record every packet.
-    pub record: Option<Box<dyn FnMut(&[u8])>>,
+    pub record: Option<MvdPacketSink>,
     /// Viewer limit.
     pub max_viewers: usize,
 }
@@ -3417,13 +3437,14 @@ impl GtvConnection {
         if self.closed {
             return Ok(Vec::new());
         }
-        if self.opened && self.last_send.elapsed() >= Duration::from_secs(60) {
-            if self.client.ping().is_err() || self.flush().is_err() {
-                self.close();
-                return Ok(vec![GtvEvent::Closed {
-                    reason: "GTV keepalive failed".to_string(),
-                }]);
-            }
+        if self.opened
+            && self.last_send.elapsed() >= Duration::from_secs(60)
+            && (self.client.ping().is_err() || self.flush().is_err())
+        {
+            self.close();
+            return Ok(vec![GtvEvent::Closed {
+                reason: "GTV keepalive failed".to_string(),
+            }]);
         }
         let mut buf = [0u8; 4096];
         let mut events = Vec::new();
@@ -3708,9 +3729,11 @@ mod tests {
             },
         };
         assert_eq!(encode(&mut wire, &rich), "091f2c7f80324b00080010001800");
-        let mut base = EntityState::default();
-        base.number = 41;
-        base.origin = [10.0, 20.0, 30.0];
+        let base = EntityState {
+            number: 41,
+            origin: [10.0, 20.0, 30.0],
+            ..Default::default()
+        };
         assert_eq!(
             encode(&mut wire, &Q2ServerEvent::Baseline { entity: base }),
             "0e83828001295000a000f000000000000000"
@@ -4196,10 +4219,12 @@ mod tests {
         player.viewangles = [90.0, 180.0, 0.0];
         player.stats[3] = 25;
         player.gunindex = 4;
-        let mut entity = EntityState::default();
-        entity.number = 5;
-        entity.origin = [1.0, 2.0, 3.0];
-        entity.modelindex = 7;
+        let entity = EntityState {
+            number: 5,
+            origin: [1.0, 2.0, 3.0],
+            modelindex: 7,
+            ..Default::default()
+        };
         MvdCapture {
             revision,
             flags,
@@ -4286,7 +4311,7 @@ mod tests {
         };
         let Q2ServerData::Vanilla(ServerData {
             servercount, gamedir, ..
-        }) = data
+        }) = data.as_ref()
         else {
             panic!("expected vanilla data");
         };
@@ -4490,7 +4515,10 @@ mod tests {
         let Q2ServerEvent::ServerData { data } = &records[0].event else {
             panic!("expected gamestate server-data");
         };
-        assert!(matches!(data, Q2ServerData::Vanilla(ServerData { servercount: 2, .. })));
+        assert!(matches!(
+            data.as_ref(),
+            Q2ServerData::Vanilla(ServerData { servercount: 2, .. })
+        ));
         socket.write_all(&framed(GtvClientOp::StreamStop as u8, &[])).unwrap();
         for _ in 0..4 {
             broadcast.poll().unwrap();

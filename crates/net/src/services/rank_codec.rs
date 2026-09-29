@@ -68,7 +68,7 @@ fn decode_ascii(destination: &mut [u8], source: &[u8]) -> Result<DecodeResult, R
     let mut index = 0;
     while index < source.len() {
         let mut text = [0u8; 4];
-        for character in 0..4 {
+        for (character, slot) in text.iter_mut().enumerate() {
             let position = index + character;
             let value = if position >= source.len() {
                 0
@@ -87,7 +87,7 @@ fn decode_ascii(destination: &mut [u8], source: &[u8]) -> Result<DecodeResult, R
                     }
                 }
             };
-            text[character] = value;
+            *slot = value;
         }
         let bytes = [
             (text[0] << 2) | (text[1] >> 4),

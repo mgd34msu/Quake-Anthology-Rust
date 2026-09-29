@@ -1267,7 +1267,7 @@ impl<'a> QuakeWorldConnectionlessServer<'a> {
         }
         let qport = args.get(2).and_then(|arg| parse_int_prefix(arg)).unwrap_or(-1);
         let challenge = args.get(3).and_then(|arg| parse_int_prefix(arg)).unwrap_or(-1);
-        if qport < 0 || qport > 65535 || challenge < 0 || !self.challenges.validate(from, challenge as u32) {
+        if !(0..=65535).contains(&qport) || challenge < 0 || !self.challenges.validate(from, challenge as u32) {
             return Ok(vec![quake_world_out_of_band("n\nBad challenge.\n", false)]);
         }
         let raw = args.get(4).map(String::as_str).unwrap_or("");
@@ -1508,7 +1508,7 @@ impl NetQuakeConnectClient {
         if let NetQuakeControl::Reject { reason } = message {
             self.state = NetQuakeConnectState::Rejected { reason };
         } else if let NetQuakeControl::Accept { port } = message {
-            if port < 1 || port > 65535 {
+            if !(1..=65535).contains(&port) {
                 return Err(Q1NetError::BadAcceptedPort);
             }
             self.state = NetQuakeConnectState::Connected { port };
@@ -1857,7 +1857,7 @@ impl<'a> QuakeWorldSignonServer<'a> {
             });
         }
         if op == "spawn" {
-            if start < 0 || start > 32 {
+            if !(0..=32).contains(&start) {
                 return Ok(SignonCommand::Handled {
                     messages: self.fresh()?,
                 });
@@ -1895,7 +1895,9 @@ impl<'a> QuakeWorldSignonServer<'a> {
                     },
                 )?;
                 if self.download_offset == length {
-                    self.download.take().map(|mut source| source.close());
+                    if let Some(mut source) = self.download.take() {
+                        source.close();
+                    }
                 }
             }
         }
@@ -3181,12 +3183,19 @@ impl NetQuakeDecoder {
             state.effects = reader.byte()?;
         }
         let angle_bits = [protocol::U_ANGLE1, protocol::U_ANGLE2, protocol::U_ANGLE3];
-        for axis in 0..3 {
-            if bits & (protocol::U_ORIGIN1 << axis) != 0 {
-                state.origin[axis] = self.coord(reader)?;
+        let origin_bits = [protocol::U_ORIGIN1, protocol::U_ORIGIN2, protocol::U_ORIGIN3];
+        for (((origin, angles), angle_bit), origin_bit) in state
+            .origin
+            .iter_mut()
+            .zip(state.angles.iter_mut())
+            .zip(angle_bits.iter())
+            .zip(origin_bits.iter())
+        {
+            if bits & origin_bit != 0 {
+                *origin = self.coord(reader)?;
             }
-            if bits & angle_bits[axis] != 0 {
-                state.angles[axis] = self.angle(reader)?;
+            if bits & angle_bit != 0 {
+                *angles = self.angle(reader)?;
             }
         }
         let tail = crate::q1_wide::read_wide_entity_tail(reader, bits)?;
@@ -3531,17 +3540,19 @@ impl NetQuakeDecoder {
                         let number = if baseline { u32::from(reader.short()? as u16) } else { 0 };
                         let state = match self.protocol {
                             NqProfile::Netquake => {
-                                let mut state = WideEntityState::default();
-                                state.modelindex = u16::from(reader.byte()?);
-                                state.frame = u16::from(reader.byte()?);
-                                state.colormap = reader.byte()?;
-                                state.skin = reader.byte()?;
-                                for axis in 0..3 {
-                                    state.origin[axis] = reader.float()? as f64;
-                                    state.angles[axis] = f64::from(reader.char()?) * 360.0 / 256.0;
+                                let mut state = WideEntityState {
+                                    modelindex: u16::from(reader.byte()?),
+                                    frame: u16::from(reader.byte()?),
+                                    colormap: reader.byte()?,
+                                    skin: reader.byte()?,
+                                    alpha: protocol::ENTALPHA_DEFAULT,
+                                    scale: protocol::ENTSCALE_DEFAULT,
+                                    ..Default::default()
+                                };
+                                for (origin, angles) in state.origin.iter_mut().zip(state.angles.iter_mut()) {
+                                    *origin = reader.float()? as f64;
+                                    *angles = f64::from(reader.char()?) * 360.0 / 256.0;
                                 }
-                                state.alpha = protocol::ENTALPHA_DEFAULT;
-                                state.scale = protocol::ENTSCALE_DEFAULT;
                                 state
                             }
                             _ => crate::q1_wide::read_wide_baseline(
@@ -3973,10 +3984,10 @@ fn nq_write_text(writer: &mut MsgWriter, op: u8, value: &str) -> Result<(), Q1Ne
 }
 
 fn nq_write_vec(writer: &mut MsgWriter, profile: NqProfile, flags: u32, origin: [f64; 3]) -> Result<(), Q1NetError> {
-    for axis in 0..3 {
+    for value in origin {
         match profile {
-            NqProfile::Netquake => writer.write_float(origin[axis] as f32)?,
-            _ => writer.write_coord_flags(origin[axis], flags)?,
+            NqProfile::Netquake => writer.write_float(value as f32)?,
+            _ => writer.write_coord_flags(value, flags)?,
         }
     }
     Ok(())
@@ -4051,10 +4062,10 @@ pub fn write_net_quake_message(
         }
         NetQuakeMessage::SetAngle { angles } => {
             writer.write_byte(10)?;
-            for axis in 0..3 {
+            for &value in angles {
                 match profile {
-                    NqProfile::Netquake => writer.write_angle(angles[axis])?,
-                    _ => writer.write_angle_flags(angles[axis], flags)?,
+                    NqProfile::Netquake => writer.write_angle(value)?,
+                    _ => writer.write_angle_flags(value, flags)?,
                 }
             }
         }
@@ -4158,8 +4169,8 @@ pub fn write_net_quake_message(
         } => {
             writer.write_byte(18)?;
             nq_write_vec(writer, profile, flags, *origin)?;
-            for axis in 0..3 {
-                writer.write_byte((direction[axis] * 16.0).trunc() as u8)?;
+            for &value in direction {
+                writer.write_byte((value * 16.0).trunc() as u8)?;
             }
             writer.write_byte(*count)?;
             writer.write_byte(*color)?;
@@ -4216,8 +4227,8 @@ pub fn write_net_quake_message(
         } => {
             writer.write_byte(41)?;
             writer.write_byte((density * 255.0) as u8)?;
-            for axis in 0..3 {
-                writer.write_byte((color[axis] * 255.0) as u8)?;
+            for &value in color {
+                writer.write_byte((value * 255.0) as u8)?;
             }
             writer.write_short((transition_seconds * 100.0) as i16)?;
         }
@@ -4346,8 +4357,8 @@ pub fn decode_net_quake_client(bytes: &[u8], profile: NqProfile) -> Result<Vec<N
             3 => {
                 let acknowledged = reader.float()?;
                 let mut view_angles = [0.0; 3];
-                for axis in 0..3 {
-                    view_angles[axis] = if matches!(profile, NqProfile::Netquake) {
+                for slot in view_angles.iter_mut() {
+                    *slot = if matches!(profile, NqProfile::Netquake) {
                         f64::from(reader.char()?) * 360.0 / 256.0
                     } else {
                         reader.move_angle16(flags)?
@@ -5601,7 +5612,7 @@ pub fn write_quake_world_server_data(writer: &mut MsgWriter, message: &QuakeWorl
     }
     writer.write_long(*server_count as i32)?;
     writer.write_string(game_directory)?;
-    writer.write_byte(player_slot | u8::from(*spectator) * 128)?;
+    writer.write_byte(player_slot | (u8::from(*spectator) * 128))?;
     writer.write_string(level)?;
     for value in [
         move_variables.gravity,
@@ -5647,20 +5658,20 @@ fn qw_write_text(writer: &mut MsgWriter, op: u8, value: &str) -> Result<(), Q1Ne
 }
 
 fn qw_write_coord(writer: &mut MsgWriter, profile: QwProfile, flags: u32, origin: [f64; 3]) -> Result<(), Q1NetError> {
-    for axis in 0..3 {
+    for value in origin {
         match profile {
-            QwProfile::Quakeworld => writer.write_float(origin[axis] as f32)?,
-            QwProfile::Wide { .. } => writer.write_coord_flags(origin[axis], flags)?,
+            QwProfile::Quakeworld => writer.write_float(value as f32)?,
+            QwProfile::Wide { .. } => writer.write_coord_flags(value, flags)?,
         }
     }
     Ok(())
 }
 
 fn qw_write_angle(writer: &mut MsgWriter, profile: QwProfile, flags: u32, angles: [f64; 3]) -> Result<(), Q1NetError> {
-    for axis in 0..3 {
+    for value in angles {
         match profile {
-            QwProfile::Quakeworld => writer.write_float(angles[axis] as f32)?,
-            QwProfile::Wide { .. } => writer.write_angle_flags(angles[axis], flags)?,
+            QwProfile::Quakeworld => writer.write_float(value as f32)?,
+            QwProfile::Wide { .. } => writer.write_angle_flags(value, flags)?,
         }
     }
     Ok(())

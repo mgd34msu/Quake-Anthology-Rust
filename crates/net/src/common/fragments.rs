@@ -116,9 +116,13 @@ impl FragmentSender {
         self.offset = 0;
         Ok(())
     }
+}
+
+impl Iterator for FragmentSender {
+    type Item = MessageFragment;
 
     /// Next fragment, or `None` when the message is complete.
-    pub fn next(&mut self) -> Option<MessageFragment> {
+    fn next(&mut self) -> Option<MessageFragment> {
         let bytes = self.bytes.as_ref()?;
         let offset = self.offset;
         let end = bytes.len().min(offset + self.fragment_bytes);

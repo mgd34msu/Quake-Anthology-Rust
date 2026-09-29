@@ -1262,7 +1262,7 @@ pub fn read_q2pro_int23(reader: &mut MsgReader<'_>, previous: i32) -> Result<i32
 
 /// Write a Q2Pro 23-bit fixed-point integer (`writeQ2ProInt23`).
 pub fn write_q2pro_int23(writer: &mut MsgWriter, current: i32, previous: i32) -> Result<(), VariantError> {
-    if current < -4_194_304 || current > 4_194_303 {
+    if !(-4_194_304..=4_194_303).contains(&current) {
         return Err(VariantError::CoordinateRange(current));
     }
     let delta = current - previous;
@@ -1601,22 +1601,23 @@ pub fn write_q2pro_entity(
     write_q2pro_width(writer, bits, to.skinnum, Q2P_SKIN8, Q2P_SKIN32)?;
     write_q2pro_width(writer, bits, to.effects, Q2P_EFFECTS8, Q2P_EFFECTS32)?;
     write_q2pro_width(writer, bits, to.renderfx, Q2P_RENDERFX8, Q2P_RENDERFX32)?;
-    for i in 0..3 {
-        if (bits & Q2P_ORIGIN_BITS[i]) != 0 {
-            let current = scaled_trunc(to.origin[i], 8.0);
+    for ((bit, current_origin), previous_origin) in Q2P_ORIGIN_BITS.iter().zip(to.origin.iter()).zip(from.origin.iter())
+    {
+        if (bits & *bit) != 0 {
+            let current = scaled_trunc(*current_origin, 8.0);
             if v2 {
-                write_q2pro_int23(writer, current, scaled_trunc(from.origin[i], 8.0))?;
+                write_q2pro_int23(writer, current, scaled_trunc(*previous_origin, 8.0))?;
             } else {
                 writer.write_short(current as i16)?;
             }
         }
     }
-    for i in 0..3 {
-        if (bits & Q2P_ANGLE_BITS[i]) != 0 {
+    for (bit, angle) in Q2P_ANGLE_BITS.iter().zip(to.angles.iter()) {
+        if (bits & *bit) != 0 {
             if (bits & Q2P_ANGLE16) != 0 {
-                writer.write_q2_angle16(to.angles[i])?;
+                writer.write_q2_angle16(*angle)?;
             } else {
-                writer.write_q2_angle(to.angles[i])?;
+                writer.write_q2_angle(*angle)?;
             }
         }
     }
@@ -1710,19 +1711,19 @@ pub fn read_q2pro_entity(
     to.skinnum = read_q2pro_width(reader, bits, to.skinnum, Q2P_SKIN8, Q2P_SKIN32)?;
     to.effects = read_q2pro_width(reader, bits, to.effects, Q2P_EFFECTS8, Q2P_EFFECTS32)?;
     to.renderfx = read_q2pro_width(reader, bits, to.renderfx, Q2P_RENDERFX8, Q2P_RENDERFX32)?;
-    for i in 0..3 {
-        if (bits & Q2P_ORIGIN_BITS[i]) != 0 {
+    for ((bit, slot), previous) in Q2P_ORIGIN_BITS.iter().zip(to.origin.iter_mut()).zip(from.origin.iter()) {
+        if (bits & *bit) != 0 {
             let raw = if v2 {
-                read_q2pro_int23(reader, scaled_trunc(from.origin[i], 8.0))?
+                read_q2pro_int23(reader, scaled_trunc(*previous, 8.0))?
             } else {
                 i32::from(reader.short()?)
             };
-            to.origin[i] = f64::from(raw) / 8.0;
+            *slot = f64::from(raw) / 8.0;
         }
     }
-    for i in 0..3 {
-        if (bits & Q2P_ANGLE_BITS[i]) != 0 {
-            to.angles[i] = if (bits & Q2P_ANGLE16) != 0 {
+    for (bit, slot) in Q2P_ANGLE_BITS.iter().zip(to.angles.iter_mut()) {
+        if (bits & *bit) != 0 {
+            *slot = if (bits & Q2P_ANGLE16) != 0 {
                 short_to_angle(reader.short()?)
             } else {
                 reader.q2_angle()?
@@ -2489,7 +2490,7 @@ impl Q2ProCodec {
             .map_or(0, |cmd| cmd.lightlevel);
         writer.write_byte(lightlevel)?;
         let mut bits = BatchBitWriter::new(writer);
-        write_batch_move_frames(&mut bits, frames, |bw, cmd, prev| encode_q2pro_batch_cmd(bw, cmd, prev))
+        write_batch_move_frames(&mut bits, frames, encode_q2pro_batch_cmd)
     }
 
     /// Read a batched move (`readBatchMove`); `opcode_extra` carries `num_dups`.
@@ -2506,7 +2507,7 @@ impl Q2ProCodec {
         let lightlevel = reader.byte()?;
         let _ = lightlevel;
         let mut bits = BatchBitReader::new(reader);
-        let frames = read_batch_move_frames(&mut bits, num_dups, |br, prev| decode_q2pro_batch_cmd(br, prev))?;
+        let frames = read_batch_move_frames(&mut bits, num_dups, decode_q2pro_batch_cmd)?;
         Ok(BatchMove {
             lastframe,
             num_dups,
@@ -3674,8 +3675,8 @@ impl RereleaseCodec {
                 origin[2] = reader.float()?;
             }
             to.pmove.origin_f = origin;
-            for i in 0..3 {
-                to.pmove.origin[i] = i32::from(pm_float_to_short(origin[i]));
+            for (slot, value) in to.pmove.origin.iter_mut().zip(origin.iter()) {
+                *slot = i32::from(pm_float_to_short(*value));
             }
         }
         if (flags & protocol::PS_M_VELOCITY) != 0 || (extraflags & protocol::EPS_M_VELOCITY2) != 0 {
@@ -3688,8 +3689,8 @@ impl RereleaseCodec {
                 velocity[2] = reader.float()?;
             }
             to.pmove.velocity_f = velocity;
-            for i in 0..3 {
-                to.pmove.velocity[i] = i32::from(pm_float_to_short(velocity[i]));
+            for (slot, value) in to.pmove.velocity.iter_mut().zip(velocity.iter()) {
+                *slot = i32::from(pm_float_to_short(*value));
             }
         }
         if (flags & protocol::PS_M_TIME) != 0 {
@@ -4339,7 +4340,7 @@ impl KexCodec {
         let mut clientnums = Vec::new();
         if clientnum == -2 {
             let count = reader.short()?;
-            if count < 1 || count > 8 {
+            if !(1..=8).contains(&count) {
                 return Err(VariantError::BadSplitCount(count));
             }
             for _ in 0..count {
@@ -5382,7 +5383,7 @@ const ZPACKET_HEADER_SIZE: usize = 5;
 /// the header layout and the round-trip are wire guarantees.
 pub fn try_wrap_zpacket(data: &[u8], max_out: usize) -> Option<Vec<u8>> {
     let len = data.len();
-    if len < ZPACKET_MIN_COMPRESS_SIZE || len > 0xffff {
+    if !(ZPACKET_MIN_COMPRESS_SIZE..=0xffff).contains(&len) {
         return None;
     }
     if !data.is_empty() && data[0] == protocol::Svc::Serverdata as u8 {
@@ -6613,7 +6614,7 @@ mod tests {
     use crate::q2::Q2ProFog;
 
     fn decode_hex(text: &str) -> Vec<u8> {
-        assert!(text.len() % 2 == 0, "odd hex length");
+        assert!(text.len().is_multiple_of(2), "odd hex length");
         (0..text.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
@@ -6812,9 +6813,11 @@ mod tests {
         let codec = R1q2Codec::new(1903);
         assert!(!codec.long_solid());
         assert!(!codec.compressed_movements());
-        let mut to = EntityState::default();
-        to.number = 9;
-        to.solid = 0x1234;
+        let to = EntityState {
+            number: 9,
+            solid: 0x1234,
+            ..Default::default()
+        };
         let mut out = writer();
         codec
             .write_delta_entity(&mut out, &EntityState::default(), &to, false, false)
@@ -6859,9 +6862,11 @@ mod tests {
 
     #[test]
     fn r1q2_frame_byte_exact() {
-        let mut ps = PlayerState::default();
-        ps.viewangles = [45.0, 0.0, 0.0];
-        ps.gunindex = 3;
+        let ps = PlayerState {
+            viewangles: [45.0, 0.0, 0.0],
+            gunindex: 3,
+            ..Default::default()
+        };
         let mut out = writer();
         R1q2Codec::write_frame(
             &mut out,
@@ -7088,11 +7093,13 @@ mod tests {
             revision: 1015,
             flags: 0,
         });
-        let mut to = EntityState::default();
-        to.number = 9;
-        to.angles = [0.0, 90.0, 0.0];
-        to.renderfx = RF_BEAM;
-        to.old_origin = [4.0, 5.0, 6.0];
+        let to = EntityState {
+            number: 9,
+            angles: [0.0, 90.0, 0.0],
+            renderfx: RF_BEAM,
+            old_origin: [4.0, 5.0, 6.0],
+            ..Default::default()
+        };
         let mut out = writer();
         codec
             .write_delta_entity(&mut out, &EntityState::default(), &to, false, false)
@@ -7129,9 +7136,11 @@ mod tests {
             revision: 1015,
             flags: 0,
         });
-        let mut wide = EntityState::default();
-        wide.number = 5;
-        wide.modelindex = 300;
+        let wide = EntityState {
+            number: 5,
+            modelindex: 300,
+            ..Default::default()
+        };
         assert_eq!(
             plain.write_delta_entity(&mut out, &EntityState::default(), &wide, true, false),
             Err(VariantError::ExtensionsRequired)
@@ -7176,9 +7185,11 @@ mod tests {
     #[test]
     fn q2pro_frame_byte_exact() {
         let codec = q2pro_codec();
-        let mut ps = PlayerState::default();
-        ps.viewangles = [30.0, 60.0, 90.0];
-        ps.gunindex = 7;
+        let ps = PlayerState {
+            viewangles: [30.0, 60.0, 90.0],
+            gunindex: 7,
+            ..Default::default()
+        };
         let mut out = writer();
         codec
             .write_frame(
@@ -7413,8 +7424,10 @@ mod tests {
 
     #[test]
     fn rerelease_frame_byte_exact() {
-        let mut ps = PlayerState::default();
-        ps.fov = 110;
+        let ps = PlayerState {
+            fov: 110,
+            ..Default::default()
+        };
         let mut out = writer();
         RereleaseCodec::write_frame(
             &mut out,
@@ -7489,11 +7502,13 @@ mod tests {
 
     #[test]
     fn rerelease_batch_classic_byte_exact() {
-        let mut cmd = Usercmd::default();
-        cmd.upmove = 100;
-        cmd.buttons = 5;
-        cmd.msec = 40;
-        cmd.lightlevel = 150;
+        let cmd = Usercmd {
+            upmove: 100,
+            buttons: 5,
+            msec: 40,
+            lightlevel: 150,
+            ..Default::default()
+        };
         let codec = RereleaseCodec::new(true);
         let mut out = writer();
         codec
@@ -7517,8 +7532,10 @@ mod tests {
     fn rerelease_usercmd_restrictions() {
         let codec = RereleaseCodec::new(false);
         let classic = RereleaseCodec::new(true);
-        let mut cmd = Usercmd::default();
-        cmd.upmove = 10;
+        let cmd = Usercmd {
+            upmove: 10,
+            ..Default::default()
+        };
         let mut out = writer();
         assert_eq!(
             codec.write_delta_usercmd(&mut out, &Usercmd::default(), &cmd),
@@ -7753,8 +7770,10 @@ mod tests {
 
     #[test]
     fn kex_frame_byte_exact() {
-        let mut ps = PlayerState::default();
-        ps.fov = 100;
+        let ps = PlayerState {
+            fov: 100,
+            ..Default::default()
+        };
         let mut out = writer();
         KexCodec::write_frame(
             &mut out,
@@ -7898,11 +7917,14 @@ mod tests {
     fn kex_codec_errors() {
         let mut out = writer();
         assert_eq!(
-            KexCodec::write_player_state_delta(&mut out, &PlayerState::default(), &{
-                let mut ps = PlayerState::default();
-                ps.gunframe = 512;
-                ps
-            }),
+            KexCodec::write_player_state_delta(
+                &mut out,
+                &PlayerState::default(),
+                &PlayerState {
+                    gunframe: 512,
+                    ..Default::default()
+                },
+            ),
             Err(VariantError::GunRange(512))
         );
         let codec = KexCodec::new(PROTOCOL_KEX);

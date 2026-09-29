@@ -271,11 +271,11 @@ impl Parser<'_> {
 fn utf8_length(first: u8) -> Option<usize> {
     if first < 0x80 {
         Some(1)
-    } else if first >= 0xc2 && first < 0xe0 {
+    } else if (0xc2..0xe0).contains(&first) {
         Some(2)
-    } else if first >= 0xe0 && first < 0xf0 {
+    } else if (0xe0..0xf0).contains(&first) {
         Some(3)
-    } else if first >= 0xf0 && first < 0xf5 {
+    } else if (0xf0..0xf5).contains(&first) {
         Some(4)
     } else {
         None

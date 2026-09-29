@@ -509,14 +509,13 @@ impl DatagramTransport for UdpTransport {
         ) = (event.clone(), relay)
         {
             if same_address(&from, &relay, true) && from.kind() == "ipv4" {
-                return Ok(match read_socks_datagram(&payload) {
-                    Some((decoded_from, decoded)) => Some(ReceiveEvent::Packet {
+                return Ok(
+                    read_socks_datagram(&payload).map(|(decoded_from, decoded)| ReceiveEvent::Packet {
                         from: decoded_from,
                         payload: decoded,
                         received_at,
                     }),
-                    None => None,
-                });
+                );
             }
             return Ok(Some(ReceiveEvent::Packet {
                 from,

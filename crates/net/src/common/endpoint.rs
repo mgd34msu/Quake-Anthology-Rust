@@ -316,11 +316,11 @@ pub fn resolve_address(text: &str, default_port: u32, family: ResolveFamily) -> 
         .to_socket_addrs()
         .map_err(|_| AddressError::Unresolved(host.to_owned()))?;
     for addr in &mut addrs {
-        let matches = match (&addr.ip(), family) {
+        let matches = matches!(
+            (&addr.ip(), family),
             (IpAddr::V4(_), ResolveFamily::V4 | ResolveFamily::Any)
-            | (IpAddr::V6(_), ResolveFamily::V6 | ResolveFamily::Any) => true,
-            _ => false,
-        };
+                | (IpAddr::V6(_), ResolveFamily::V6 | ResolveFamily::Any)
+        );
         if matches {
             return ip_address(&addr.ip().to_string(), u32::from(addr.port()), false);
         }

@@ -475,34 +475,45 @@ pub fn write_wide_baseline(
 /// Read a wide baseline (`readBaseline`).
 pub fn read_wide_baseline(reader: &mut MsgReader<'_>, version: u8, flags: u32) -> Result<WideEntityState, MsgError> {
     let bits = if version == 2 { u32::from(reader.byte()?) } else { 0 };
-    let mut baseline = WideEntityState::default();
-    baseline.modelindex = if (bits & protocol::B_LARGEMODEL) != 0 {
+    let modelindex = if (bits & protocol::B_LARGEMODEL) != 0 {
         reader.short()? as u16
     } else {
         u16::from(reader.byte()?)
     };
-    baseline.frame = if (bits & protocol::B_LARGEFRAME) != 0 {
+    let frame = if (bits & protocol::B_LARGEFRAME) != 0 {
         reader.short()? as u16
     } else {
         u16::from(reader.byte()?)
     };
-    baseline.colormap = reader.byte()?;
-    baseline.skin = reader.byte()?;
-    for axis in 0..3 {
-        baseline.origin[axis] = reader.coord_flags(flags)?;
-        baseline.angles[axis] = reader.angle_flags(flags)?;
+    let colormap = reader.byte()?;
+    let skin = reader.byte()?;
+    let mut origin = [0.0; 3];
+    let mut angles = [0.0; 3];
+    for (origin_axis, angles_axis) in origin.iter_mut().zip(angles.iter_mut()) {
+        *origin_axis = reader.coord_flags(flags)?;
+        *angles_axis = reader.angle_flags(flags)?;
     }
-    baseline.alpha = if (bits & protocol::B_ALPHA) != 0 {
+    let alpha = if (bits & protocol::B_ALPHA) != 0 {
         reader.byte()?
     } else {
         protocol::ENTALPHA_DEFAULT
     };
-    baseline.scale = if (bits & protocol::B_SCALE) != 0 {
+    let scale = if (bits & protocol::B_SCALE) != 0 {
         reader.byte()?
     } else {
         protocol::ENTSCALE_DEFAULT
     };
-    Ok(baseline)
+    Ok(WideEntityState {
+        modelindex,
+        frame,
+        colormap,
+        skin,
+        origin,
+        angles,
+        alpha,
+        scale,
+        ..Default::default()
+    })
 }
 
 /// Write a wide static (`writeStatic`).
@@ -571,8 +582,8 @@ pub fn write_wide_static_sound(
     } else {
         writer.write_byte(protocol::Svc::Spawnstaticsound as u8)?;
     }
-    for axis in 0..3 {
-        writer.write_coord_flags(origin[axis], flags)?;
+    for value in origin {
+        writer.write_coord_flags(value, flags)?;
     }
     if large {
         writer.write_short(sound_num as i16)?;
@@ -1239,16 +1250,18 @@ pub fn write_qw29_baseline(writer: &mut MsgWriter, state: &QwWideEntityState, fl
 
 /// Read a QuakeWorld wide baseline (`readQwBaseline`).
 pub fn read_qw29_baseline(reader: &mut MsgReader<'_>, flags: u32) -> Result<QwWideEntityState, MsgError> {
-    let mut state = QwWideEntityState::default();
-    state.modelindex = reader.short()? as u16;
-    state.frame = reader.short()? as u16;
-    state.colormap = reader.byte()?;
-    state.skinnum = reader.byte()?;
-    state.alpha = reader.byte()?;
-    state.scale = reader.byte()?;
-    for axis in 0..3 {
-        state.origin[axis] = reader.coord_flags(flags)?;
-        state.angles[axis] = reader.angle_flags(flags)?;
+    let mut state = QwWideEntityState {
+        modelindex: reader.short()? as u16,
+        frame: reader.short()? as u16,
+        colormap: reader.byte()?,
+        skinnum: reader.byte()?,
+        alpha: reader.byte()?,
+        scale: reader.byte()?,
+        ..Default::default()
+    };
+    for (origin, angles) in state.origin.iter_mut().zip(state.angles.iter_mut()) {
+        *origin = reader.coord_flags(flags)?;
+        *angles = reader.angle_flags(flags)?;
     }
     Ok(state)
 }
@@ -1327,8 +1340,8 @@ pub fn write_qw29_static_sound(
         return Ok(false);
     }
     writer.write_byte(qw_protocol::Svc::Spawnstaticsound as u8)?;
-    for axis in 0..3 {
-        writer.write_coord_flags(origin[axis], flags)?;
+    for value in origin {
+        writer.write_coord_flags(value, flags)?;
     }
     writer.write_short(sound_num as i16)?;
     writer.write_byte((volume * 255.0) as u8)?;
@@ -1373,11 +1386,13 @@ mod tests {
     use super::*;
 
     fn wide_update() -> WideEntityUpdate {
-        let mut state = WideEntityState::default();
-        state.modelindex = 300;
-        state.frame = 512;
-        state.origin = [16.0, 0.0, 0.0];
-        state.alpha = 128;
+        let state = WideEntityState {
+            modelindex: 300,
+            frame: 512,
+            origin: [16.0, 0.0, 0.0],
+            alpha: 128,
+            ..Default::default()
+        };
         WideEntityUpdate {
             state,
             baseline: WideEntityState::default(),
@@ -1407,9 +1422,11 @@ mod tests {
 
     #[test]
     fn wide_baseline_selects_version2() {
-        let mut baseline = WideEntityState::default();
-        baseline.modelindex = 300;
-        baseline.alpha = 200;
+        let baseline = WideEntityState {
+            modelindex: 300,
+            alpha: 200,
+            ..Default::default()
+        };
         let mut writer = MsgWriter::new(WIDE_MAX_MSGLEN, false);
         write_wide_baseline(&mut writer, 7, &baseline, 0).unwrap();
         let bytes = writer.bytes().to_vec();
@@ -1477,11 +1494,13 @@ mod tests {
     #[test]
     fn qw29_delta_entity_round_trips() {
         let from = QwWideEntityState::default();
-        let mut to = QwWideEntityState::default();
-        to.number = 600;
-        to.modelindex = 300;
-        to.frame = 511;
-        to.origin = [24.0, 0.0, 0.0];
+        let to = QwWideEntityState {
+            number: 600,
+            modelindex: 300,
+            frame: 511,
+            origin: [24.0, 0.0, 0.0],
+            ..Default::default()
+        };
         let mut writer = MsgWriter::new(WIDE_MAX_MSGLEN, false);
         assert!(write_qw29_delta_entity(&mut writer, &from, &to, false, QW29_DEFAULT_FLAGS).unwrap());
         let bytes = writer.bytes().to_vec();

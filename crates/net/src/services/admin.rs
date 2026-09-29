@@ -65,7 +65,7 @@ pub fn cidr_ipv4_filter(address: &[u8; 4], prefix_bits: u32) -> Result<Ipv4Filte
         } else if prefix_bits <= index * 8 {
             0
         } else {
-            (255u32 << (8 - (prefix_bits - index * 8))) as u8 & 255
+            (255u32 << (8 - (prefix_bits - index * 8))) as u8
         };
     }
     let mask_value = u32::from_le_bytes(mask);

@@ -153,7 +153,7 @@ pub enum DiscoveryRequestResult {
         /// Send time.
         sent_at: f64,
         /// Status.
-        status: ServerStatus,
+        status: Box<ServerStatus>,
         /// Ping in milliseconds.
         ping_milliseconds: f64,
         /// Completion time.
@@ -500,7 +500,7 @@ impl<'a> ServerBrowser<'a> {
                     address: direct.address.clone(),
                     request_kind: direct.request_kind,
                     sent_at: direct.sent_at,
-                    status,
+                    status: Box::new(status),
                     ping_milliseconds,
                     completed_at: now,
                 },

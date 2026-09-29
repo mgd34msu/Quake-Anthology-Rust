@@ -174,7 +174,7 @@ impl Default for PmoveState {
 }
 
 /// Q2Pro player fog state (`Q2ProPlayerFog`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Q2ProFog {
     /// Fog color.
     pub color: [u8; 3],
@@ -194,22 +194,6 @@ pub struct Q2ProFog {
     pub height_start_distance: i32,
     /// Height-fog end distance (eighths).
     pub height_end_distance: i32,
-}
-
-impl Default for Q2ProFog {
-    fn default() -> Self {
-        Self {
-            color: [0; 3],
-            density: 0,
-            sky_factor: 0,
-            height_density: 0,
-            height_falloff: 0,
-            height_start_color: [0; 3],
-            height_end_color: [0; 3],
-            height_start_distance: 0,
-            height_end_distance: 0,
-        }
-    }
 }
 
 /// Quake II player state (`PlayerStateT`, all protocol fields).
@@ -1451,9 +1435,11 @@ mod tests {
 
     #[test]
     fn frame_byte_exact() {
-        let mut ps = PlayerState::default();
-        ps.gunframe = 7;
-        ps.fov = 90;
+        let ps = PlayerState {
+            gunframe: 7,
+            fov: 90,
+            ..Default::default()
+        };
         let mut writer = MsgWriter::new(4096, false);
         write_frame(
             &mut writer,

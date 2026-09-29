@@ -94,6 +94,15 @@ pub enum HttpDownloadError {
     StaleEpoch,
 }
 
+/// Staged download validator.
+pub type HttpDownloadValidator = Box<dyn Fn(&Path) -> Result<(), HttpDownloadError>>;
+
+/// Package refresh callback.
+pub type HttpPackageRefresh = Box<dyn FnMut(&str) -> Result<(), HttpDownloadError>>;
+
+/// Progress report callback.
+pub type HttpDownloadProgress = Box<dyn FnMut(&str, u64, Option<u64>)>;
+
 /// Download request (`HttpDownloadRequest`).
 pub struct HttpDownloadRequest {
     /// Contained destination path.
@@ -105,7 +114,7 @@ pub struct HttpDownloadRequest {
     /// Size/digest expectation.
     pub expected: SinkExpectation,
     /// Staged validator with an identity tag for conflict checks.
-    pub validate: Option<(u64, Box<dyn Fn(&Path) -> Result<(), HttpDownloadError>>)>,
+    pub validate: Option<(u64, HttpDownloadValidator)>,
 }
 
 /// Request kind: asset or package.
@@ -547,7 +556,7 @@ struct Entry {
     kind: HttpDownloadKind,
     expected: SinkExpectation,
     validator_tag: Option<u64>,
-    validate: Option<Box<dyn Fn(&Path) -> Result<(), HttpDownloadError>>>,
+    validate: Option<HttpDownloadValidator>,
     state: EntryState,
     received: u64,
     total: Option<u64>,
@@ -577,9 +586,9 @@ pub struct HttpQueueCallbacks {
     /// True when the path is already resolved.
     pub resolved: Box<dyn FnMut(&str) -> bool>,
     /// Refresh a published package.
-    pub refresh_package: Box<dyn FnMut(&str) -> Result<(), HttpDownloadError>>,
+    pub refresh_package: HttpPackageRefresh,
     /// Progress reports.
-    pub progress: Box<dyn FnMut(&str, u64, Option<u64>)>,
+    pub progress: HttpDownloadProgress,
 }
 
 /// HTTP download queue (`HttpDownloadQueue`).
@@ -611,7 +620,7 @@ impl HttpDownloadQueue {
             client,
             callbacks,
             concurrency,
-            range_streams: range_streams.max(1).min(8),
+            range_streams: range_streams.clamp(1, 8),
             entries: HashMap::new(),
             closed: false,
             generation: 0,
@@ -810,12 +819,10 @@ impl HttpDownloadQueue {
             self.run_entry(&pack);
             return;
         }
-        let mut started = 0;
-        for path in pending {
+        for (started, path) in pending.into_iter().enumerate() {
             if started >= self.concurrency {
                 break;
             }
-            started += 1;
             let failed = self.run_entry(&path);
             if failed {
                 self.cancel();

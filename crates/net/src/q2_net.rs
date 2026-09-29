@@ -342,7 +342,7 @@ impl Q2Channel {
             });
         }
         let datagram_bytes = options.max_datagram_bytes.unwrap_or(65507);
-        if datagram_bytes < 524 || datagram_bytes > 65507 {
+        if !(524..=65507).contains(&datagram_bytes) {
             return Err(Q2NetError::Range("Invalid Q2 transport datagram limit"));
         }
         let payload_bytes = options.payload_bytes.unwrap_or(1390).min(datagram_bytes - 12);
@@ -367,7 +367,7 @@ impl Q2Channel {
         } else {
             capacity.min(datagram_bytes - 10)
         };
-        if payload_bytes < 512 || payload_bytes > 4086 || capacity < 1 || capacity > 32768 {
+        if !(512..=4086).contains(&payload_bytes) || !(1..=32768).contains(&capacity) {
             return Err(Q2NetError::Range("Invalid Q2 channel limits"));
         }
         if options.qport > 65535 {
@@ -1072,7 +1072,7 @@ pub fn read_q2_connect(message: &Q2ConnectionlessMessage) -> Result<Q2ConnectReq
     let args = &message.arguments;
     if args.first().is_some_and(|version| version == "2023") {
         let count = decimal(args.get(1).map(String::as_str), None)?;
-        if count < 1 || count > 8 || args.len() < 3 + count as usize {
+        if !(1..=8).contains(&count) || args.len() < 3 + count as usize {
             return Err(Q2NetError::Protocol("Invalid KEX connection players"));
         }
         let count = count as usize;
@@ -1703,7 +1703,7 @@ pub fn read_q2_master_reply(bytes: &[u8]) -> Result<Option<Vec<NetworkAddress>>,
         return Ok(None);
     }
     start += 8;
-    if (bytes.len() - start) % 6 != 0 {
+    if !(bytes.len() - start).is_multiple_of(6) {
         return Err(Q2NetError::Protocol("Partial Q2 master address"));
     }
     let mut found: HashMap<String, NetworkAddress> = HashMap::new();
@@ -3586,10 +3586,7 @@ impl Q2FrameHistory {
                 return Err(Q2NetError::Protocol("Unordered Q2 entity delta"));
             }
             last_number = header_bits.number;
-            loop {
-                let Some(from) = previous.get(cursor) else {
-                    break;
-                };
+            while let Some(from) = previous.get(cursor) {
                 if from.number >= header_bits.number {
                     break;
                 }
@@ -3722,7 +3719,7 @@ pub enum Q2ServerEvent {
     /// Server data.
     ServerData {
         /// Parsed server data.
-        data: Q2ServerData,
+        data: Box<Q2ServerData>,
     },
     /// Print.
     Print {
@@ -3766,7 +3763,7 @@ pub enum Q2ServerEvent {
     /// Frame.
     Frame {
         /// Frame.
-        frame: Q2WireFrame,
+        frame: Box<Q2WireFrame>,
     },
     /// Sound.
     Sound {
@@ -3926,12 +3923,16 @@ pub struct Q2ServerMessageReader {
     compressed_download: Vec<u8>,
     inflated_download_bytes: usize,
     private_opcodes: HashSet<u8>,
+    // Donor callback shape; an alias would force a lifetime parameter through
+    // the public reader API.
+    #[allow(clippy::type_complexity)]
     private_message:
         Option<Box<dyn FnMut(u8, &mut MsgReader<'_>, ProtocolIdentity) -> Result<Q2PrivateMessage, Q2NetError>>>,
 }
 
 impl Q2ServerMessageReader {
     /// Build a reader.
+    #[allow(clippy::type_complexity)]
     pub fn new(
         protocol: ProtocolIdentity,
         options: Q2ServerMessageOptions,
@@ -3994,7 +3995,7 @@ impl Q2ServerMessageReader {
                     }
                 }
                 Q2ServerEvent::Frame { frame } => {
-                    self.history(record.seat).accept(frame.clone());
+                    self.history(record.seat).accept(frame.as_ref().clone());
                 }
                 _ => {}
             }
@@ -4316,7 +4317,7 @@ impl Q2ServerMessageReader {
                     self.wire.accept_server_revision(reported)?;
                     self.reset();
                     self.legacy_demo26 = legacy_demo26;
-                    records.push(self.record(opcode, start, Q2ServerEvent::ServerData { data }));
+                    records.push(self.record(opcode, start, Q2ServerEvent::ServerData { data: Box::new(data) }));
                 }
                 13 => {
                     let Some(event) = self.config()? else {
@@ -4340,7 +4341,7 @@ impl Q2ServerMessageReader {
                         .or_insert_with(|| Q2FrameHistory::new(64).expect("nonzero capacity"));
                     entry.seed_baselines(&base);
                     let frame = entry.read(&mut self.wire, suppress)?;
-                    records.push(self.record(opcode, start, Q2ServerEvent::Frame { frame }));
+                    records.push(self.record(opcode, start, Q2ServerEvent::Frame { frame: Box::new(frame) }));
                 }
                 9 => {
                     let sound = self.sound()?;
