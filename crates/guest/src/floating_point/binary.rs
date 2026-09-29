@@ -516,6 +516,9 @@ impl BigInt {
         for index in (0..left_bits).rev() {
             remainder = remainder.shl_bits(1);
             if left[(index / 32) as usize] & (1 << (index % 32)) != 0 {
+                if remainder.limbs.is_empty() {
+                    remainder.limbs.push(0);
+                }
                 remainder.limbs[0] |= 1;
             }
             if Self::cmp_mag(&remainder.limbs, right) != Ordering::Less {

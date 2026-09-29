@@ -135,4 +135,16 @@ impl Fixture {
         let (state, memory) = self.cpu.parts();
         f(state, memory)
     }
+
+    /// Reset the instruction and stack pointers for another pass.
+    pub fn reset(&mut self, start: u64) {
+        use qa_guest::core::contracts::{GuestIntegerWidth, GuestRegister};
+        self.with(|state, _| {
+            state.instruction_pointer = start;
+            state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false)
+                .unwrap();
+        });
+    }
 }

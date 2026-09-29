@@ -316,9 +316,10 @@ mod tests {
 
     #[test]
     fn system_fields_known_instant() {
-        // 2023-11-14T22:13:20.123Z.
+        // 2023-11-14T22:13:20.123Z (Tuesday): year, month, weekday,
+        // day, hour, minute, second, milliseconds.
         let fields = system_time_fields(1_700_000_000_123, 0);
-        assert_eq!(fields, [2023, 11, 14, 2, 22, 13, 20, 123]);
+        assert_eq!(fields, [2023, 11, 2, 14, 22, 13, 20, 123]);
     }
 
     #[test]

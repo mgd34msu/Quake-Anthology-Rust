@@ -18,8 +18,10 @@ const FRACTION_BITS: u32 = 256;
 
 /// 256-bit approximation of pi.
 fn pi() -> BigInt {
-    BigInt::from_u128(0x3243_f6a8_885a_308d_3131_98a2_e037_0734)
-        .shl_bits(128)
+    // Donor pi is 258 bits: 0x3243f6a8885a308d313198a2e03707344a4093822299f31d0082efa98ec4e6c89.
+    BigInt::from_u128(0x3_243f_6a88_85a3_08d3)
+        .shl_bits(192)
+        .add(&BigInt::from_u128(0x1319_8a2e_0370_7344).shl_bits(128))
         .add(&BigInt::from_u128(0xa409_3822_299f_31d0_082e_fa98_ec4e_6c89))
 }
 
@@ -303,7 +305,7 @@ pub(crate) fn binary80_format() -> BinaryFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::binary::{decode_binary, encode_binary, BinaryWidth};
+    use super::super::binary::{decode_binary, encode_binary, BinaryWidth, BINARY64, convert_binary};
 
     fn f80(value: f64) -> BinaryValue {
         decode_binary(
@@ -344,12 +346,18 @@ mod tests {
     }
 
     #[test]
-    fn atan_unit_diagonal_is_pi_over_8() {
+    fn atan_unit_diagonal_is_pi_over_4() {
         let one = f80(1.0);
         let result = x87_arctangent(&one, &one, Rounding::Nearest).unwrap();
-        // atan(1,1) = pi/4.
-        let bits = encode_binary(&result.value, BinaryWidth::W64);
-        let pi_over_4 = std::f64::consts::FRAC_PI_4;
-        assert_eq!(bits.low_u64(), pi_over_4.to_bits());
+        // atan(1,1) = pi/4. The 80-bit result is donor-exact; the f64
+        // comparison rounds through binary64 like readX87Return.
+        let bits80 = encode_binary(&result.value, BinaryWidth::W80);
+        assert_eq!(
+            bits80.to_bytes_le(10),
+            [0x35, 0xc2, 0x68, 0x21, 0xa2, 0xda, 0x0f, 0xc9, 0xfe, 0x3f]
+        );
+        let rounded = convert_binary(&result.value, BINARY64, Rounding::Nearest).unwrap();
+        let bits = encode_binary(&rounded.value, BinaryWidth::W64);
+        assert_eq!(bits.low_u64(), std::f64::consts::FRAC_PI_4.to_bits());
     }
 }

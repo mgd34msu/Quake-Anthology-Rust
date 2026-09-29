@@ -449,3 +449,123 @@ fn wait_dispatches_x87_and_preserves_pending_exception() {
         assert_eq!(state.x87.status_word, 1);
     });
 }
+
+#[test]
+fn synthetic_linked_list_initializer_runs_head_insert() {
+    // Synthetic stand-in for the donor's retail-DLL `.text+0` case, which
+    // needs ambient artifacts: mov rbx,[A]; mov [B],rbx; lea rcx,[B-0x18];
+    // mov [A],rcx; ret with A=0x50000 and B=0x50020.
+    let mut f = Fixture::new(&[
+        0x48, 0x8b, 0x1d, 0xf9, 0xff, 0x03, 0x00, //
+        0x48, 0x89, 0x1d, 0x12, 0x00, 0x04, 0x00, //
+        0x48, 0x8d, 0x0d, 0xf3, 0xff, 0x03, 0x00, //
+        0x48, 0x89, 0x0d, 0xe4, 0xff, 0x03, 0x00, //
+        0xc3,
+    ]);
+    f.with(|_, memory| {
+        map(memory, 0x50000, 0x40, GuestPermissions::ReadWrite, None);
+        memory.write_u64(addr(memory, 0x50000), 0x1234_5678_9abc_def0).unwrap();
+    });
+    assert_eq!(f.run(32).kind(), "return");
+    f.with(|_, memory| {
+        assert_eq!(memory.read_u64(addr(memory, 0x50020)).unwrap(), 0x1234_5678_9abc_def0);
+        assert_eq!(memory.read_u64(addr(memory, 0x50000)).unwrap(), 0x50008);
+    });
+    assert_eq!(read(&mut f, GuestRegister::Rcx, GuestIntegerWidth::B64), 0x50008);
+    assert_eq!(read(&mut f, GuestRegister::Rsp, GuestIntegerWidth::B64), STACK + 8);
+}
+
+#[test]
+fn synthetic_relocated_image_returns_tables_through_integer_and_sse() {
+    // Synthetic stand-in for the donor's retail GetGameAPI case: code at a
+    // high canonical base reads a version word and a float through
+    // RIP-relative addressing, publishes the version, and accumulates SSE.
+    let image = 0xffff_8000_1800_0000u64;
+    let code = vec![
+        0x8b, 0x05, 0xfa, 0x0f, 0x00, 0x00, // mov eax,[rip+0xffa] (version)
+        0x89, 0x05, 0xf4, 0x1f, 0x00, 0x00, // mov [rip+0x1ff4],eax (table)
+        0xf3, 0x0f, 0x58, 0x05, 0xf0, 0x0f, 0x00, 0x00, // addss xmm0,[rip+0xff0]
+        0xc3,
+    ];
+    let (mut state, mut memory) = build(&code, image, common::test_module("x64"));
+    map(&mut memory, RETURNED, 8, GuestPermissions::ReadExecute, None);
+    map(&mut memory, image + 0x1000, 0x10, GuestPermissions::ReadWrite, None);
+    map(&mut memory, image + 0x2000, 0x10, GuestPermissions::ReadWrite, None);
+    let returned = addr(&memory, RETURNED);
+    memory.write_u32(addr(&memory, image + 0x1000), 2023).unwrap();
+    memory.write_f32(addr(&memory, image + 0x1004), 0.025).unwrap();
+    state.simd.xmm[0..4].copy_from_slice(&1.5f32.to_le_bytes());
+    let mut cpu = qa_guest::x64::cpu::X64Cpu::new(state, memory).unwrap();
+    let stopped = cpu.run(512, Some(returned));
+    assert_eq!(stopped.kind(), "return");
+    let (state, memory) = cpu.parts();
+    assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 2023);
+    assert_eq!(memory.read_u32(addr(memory, image + 0x2000)).unwrap(), 2023);
+    assert_eq!(f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()), 1.5 + 0.025);
+    assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK + 8);
+}
+
+#[test]
+fn canonical_address_range_sign_wrap_and_fault_boundaries() {
+    use qa_guest::x64::decoder::canonical_address;
+    use qa_guest::x86::decoder::X86Error;
+
+    let values: [i128; 16] = [
+        0, 1, -1,
+        -(1 << 47), -(1 << 47) - 1,
+        (1 << 47) - 1, 1 << 47, (1 << 47) + 1,
+        0xffff_7fff_ffff_ffff, 0xffff_8000_0000_0000, 0xffff_8000_0000_0001,
+        (1 << 64) - 1, 1 << 64, (1 << 64) + 1, -(1 << 64), -(1 << 64) - 1,
+    ];
+    for value in values {
+        for offset in [-1i128, 0, 1] {
+            let raw = value.wrapping_add(offset) as u64;
+            let high = raw >> 47;
+            if high == 0 || high == 0x1ffff {
+                assert_eq!(canonical_address(raw).unwrap(), raw, "input {value}+{offset}");
+            } else {
+                match canonical_address(raw) {
+                    Err(X86Error::Fault { vector, detail, .. }) => {
+                        assert_eq!(vector, 13);
+                        assert_eq!(detail, format!("Noncanonical 48-bit virtual address 0x{raw:x}"));
+                    }
+                    other => panic!("expected canonical fault for {raw:#x}, got {other:?}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn instruction_sequence_preserves_fetch_fault_order() {
+    use qa_guest::x86::decoder::X86Error;
+
+    for start in [0x7fff_ffff_ffffu64, 0xffff_ffff_ffff_ffff, 0x1000] {
+        let (mut state, mut memory) = build(&[0xb8], start, common::test_module("x64"));
+        let mut cursor = X64DecodeCursor::new(&mut memory, &mut state, None).unwrap();
+        assert_eq!(cursor.opcode(), 0xb8);
+        assert_eq!(cursor.bytes(), &[0xb8]);
+        match cursor.read_byte() {
+            Err(X86Error::Fault { detail, .. }) => {
+                assert!(detail.contains("Noncanonical"), "start {start:#x}: {detail}");
+            }
+            Err(X86Error::Memory { detail, .. }) => {
+                let expected = if start == 0xffff_ffff_ffff_ffff { "null" } else { "unmapped" };
+                assert!(detail.contains(expected), "start {start:#x}: {detail}");
+            }
+            other => panic!("expected fetch fault at {start:#x}, got {other:?}"),
+        }
+        assert_eq!(cursor.bytes(), &[0xb8]);
+    }
+    for start in [0x1000u64, 0x7fff_ffff_fff1, 0xffff_ffff_ffff_fff1] {
+        let (mut state, mut memory) = build(&[0x66; 15], start, common::test_module("x64"));
+        match X64DecodeCursor::new(&mut memory, &mut state, None) {
+            Err(X86Error::Fault { vector, detail, .. }) => {
+                assert_eq!(vector, 13);
+                assert!(detail.contains("15 bytes"), "start {start:#x}: {detail}");
+            }
+            Ok(_) => panic!("expected 15-byte fault at {start:#x}, cursor decoded"),
+            Err(other) => panic!("expected 15-byte fault at {start:#x}, got {other:?}"),
+        }
+    }
+}

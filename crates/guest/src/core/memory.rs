@@ -102,8 +102,8 @@ struct Mapping {
 }
 
 impl Mapping {
-    fn end(&self) -> u64 {
-        self.base + self.byte_length as u64
+    fn end(&self) -> u128 {
+        u128::from(self.base) + self.byte_length as u128
     }
 }
 
@@ -364,8 +364,14 @@ impl SparseGuestMemory {
             if base.saturating_add(length) <= mapping.base {
                 break;
             }
-            if base < mapping.end() {
-                base = mapping.end().next_multiple_of(alignment);
+            if u128::from(base) < mapping.end() {
+                // A mapping ending past u64::MAX is necessarily last, so no
+                // later gap can fit once alignment leaves the address space.
+                let next = mapping.end().next_multiple_of(u128::from(alignment));
+                if next > u128::from(u64::MAX) {
+                    break;
+                }
+                base = next as u64;
             }
             index = self.first_end_after(base);
         }
@@ -377,7 +383,7 @@ impl SparseGuestMemory {
             bytes: None,
         })?;
         self.allocation_hints
-            .insert(alignment, (base + length, options.byte_length));
+            .insert(alignment, (base.saturating_add(length), options.byte_length));
         Ok(address)
     }
 
@@ -1033,9 +1039,9 @@ impl SparseGuestMemory {
                 "mapping must contain at least one byte",
             ));
         }
-        let end = base + byte_length as u64;
+        let end = u128::from(base) + byte_length as u128;
         if let Some(overlapping) = self.mappings.get(self.first_end_after(base)) {
-            if overlapping.base < end {
+            if u128::from(overlapping.base) < end {
                 return Err(fault(
                     "overlap",
                     base,
@@ -1080,7 +1086,7 @@ impl SparseGuestMemory {
         let (mut low, mut high) = (0, self.mappings.len());
         while low < high {
             let middle = (low + high) / 2;
-            if self.mappings[middle].end() <= address {
+            if self.mappings[middle].end() <= u128::from(address) {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -1112,7 +1118,7 @@ impl SparseGuestMemory {
                 if let Some(recent) = self.mappings.get(index) {
                     if recent.active
                         && address.offset >= recent.base
-                        && address.offset + byte_length as u64 <= recent.end()
+                        && u128::from(address.offset) + byte_length as u128 <= recent.end()
                     {
                         if let Some(access) = access {
                             if !recent.permissions.allows(access) {
@@ -1147,7 +1153,7 @@ impl SparseGuestMemory {
                 break;
             }
             let mapping = self.mappings[index].clone();
-            if cursor >= mapping.end() {
+            if u128::from(cursor) >= mapping.end() {
                 continue;
             }
             if cursor < mapping.base {
@@ -1177,7 +1183,9 @@ impl SparseGuestMemory {
             });
             self.remember(access, index);
             remaining -= length;
-            cursor += length as u64;
+            // The range check admits ends at exactly 2^64; saturation only
+            // bites when `remaining` already reached zero.
+            cursor = cursor.saturating_add(length as u64);
         }
         if remaining != 0 {
             return Err(fault(
@@ -1241,19 +1249,19 @@ impl SparseGuestMemory {
         if byte_length == 0 {
             return;
         }
-        let end = base + byte_length as u64;
+        let end = u128::from(base) + byte_length as u128;
         let first = self.first_end_after(base);
         let mut next: Vec<Mapping> = Vec::new();
         let mut last = first;
         while last < self.mappings.len() {
-            if self.mappings[last].base >= end {
+            if u128::from(self.mappings[last].base) >= end {
                 break;
             }
             self.mappings[last].active = false;
             let mapping = self.mappings[last].clone();
             let mapping_end = mapping.end();
             let start_offset = (base.max(mapping.base) - mapping.base) as usize;
-            let end_offset = (end.min(mapping_end) - mapping.base) as usize;
+            let end_offset = (end.min(mapping_end) - u128::from(mapping.base)) as usize;
             if start_offset > 0 {
                 next.push(Mapping {
                     id: self.fresh_mapping_id(),
@@ -1294,7 +1302,7 @@ impl SparseGuestMemory {
             let gap_start = match (&touched, &previous) {
                 (Some(touched), _) if touched.base < base => base,
                 (_, None) => self.allocation_base,
-                (_, Some(previous)) => previous.base + previous.byte_length as u64,
+                (_, Some(previous)) => previous.end().min(u128::from(u64::MAX)) as u64,
             };
             let lower_bound = gap_start.max(self.allocation_base);
             for hint in self.allocation_hints.values_mut() {
@@ -1334,7 +1342,7 @@ impl SparseGuestMemory {
                 if let Some(recent) = self.mappings.get(index).cloned() {
                     if recent.active
                         && address.offset >= recent.base
-                        && address.offset + byte_length as u64 <= recent.end()
+                        && u128::from(address.offset) + byte_length as u128 <= recent.end()
                     {
                         if !recent.permissions.allows(access) {
                             return Err(fault(
@@ -1363,7 +1371,7 @@ impl SparseGuestMemory {
                 };
                 if !mapping.active
                     || address.offset < mapping.base
-                    || address.offset + byte_length as u64 > mapping.end()
+                    || u128::from(address.offset) + byte_length as u128 > mapping.end()
                 {
                     continue;
                 }
@@ -1393,7 +1401,7 @@ impl SparseGuestMemory {
         let Some(mapping) = self.mappings.get(index).cloned() else {
             return Ok(None);
         };
-        if address.offset < mapping.base || address.offset + byte_length as u64 > mapping.end() {
+        if address.offset < mapping.base || u128::from(address.offset) + byte_length as u128 > mapping.end() {
             return Ok(None);
         }
         if !mapping.permissions.allows(access) {
@@ -1417,7 +1425,7 @@ impl SparseGuestMemory {
     fn execute_mapping(&mut self, byte_offset: u64) -> Result<usize, GuestError> {
         if let Some(index) = self.recent[Self::access_slot(Some(GuestAccess::Execute))] {
             if let Some(recent) = self.mappings.get(index) {
-                if recent.active && byte_offset >= recent.base && byte_offset < recent.end() {
+                if recent.active && byte_offset >= recent.base && u128::from(byte_offset) < recent.end() {
                     if !recent.permissions.allows(GuestAccess::Execute) {
                         return Err(fault(
                             "permission",
