@@ -353,6 +353,7 @@ impl VmRegistry {
             table_length: 0,
             data_length: 1,
         };
+        drop(state);
         Ok(VmRegistration {
             inner,
             slot,

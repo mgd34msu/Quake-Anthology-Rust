@@ -365,6 +365,11 @@ impl<'a, 'c> HostControl<'a, 'c> {
         self.ctx.core.live()?;
         self.check_cancellation()?;
         let debug = self.ctx.core.debug;
+        let program = self.ctx.program;
+        let qualified = match evaluation {
+            Some(evaluation) => Some(qualify_evaluation(&mut *self.ctx.core, program, entry, evaluation)?),
+            None => None,
+        };
         let mut ops = OperandStack::new(debug);
         run_loop(
             &mut *self.ctx,
@@ -374,7 +379,7 @@ impl<'a, 'c> HostControl<'a, 'c> {
             entry,
             None,
             self.scope,
-            evaluation,
+            qualified,
             None,
         )
     }
@@ -528,7 +533,7 @@ impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
 
     /// Reenter the current invocation as a syscall frame over detached `words`
     /// (used to dispatch engine services from source callbacks).
-    pub fn reenter_as_syscall(&mut self, words: QvmWritableView) -> QvmSyscall<'_, '_> {
+    pub fn reenter_as_syscall(&mut self, words: QvmWritableView) -> QvmSyscall<'_, 'c> {
         QvmSyscall {
             words,
             memory: self.memory.clone(),
@@ -1633,37 +1638,7 @@ impl QvmInterpreter {
         entry: usize,
         evaluation: QvmReadOnlyEvaluation,
     ) -> Result<QualifiedReadOnly, GuestError> {
-        let key = RegionEvalKey {
-            instruction: entry,
-            entry: evaluation.region.entry,
-            join: evaluation.region.join,
-            inputs: evaluation.region.inputs.clone(),
-            result: evaluation.region.result,
-        };
-        let frame_size = match self.core.read_only_regions.get(&key) {
-            Some(size) => *size,
-            None => {
-                let size = qualify_qvm_region_evaluation(
-                    &self.program.instructions,
-                    entry,
-                    &evaluation.region,
-                    QvmRegionAccess::ReadOnly,
-                )?;
-                self.core.read_only_regions.insert(key, size);
-                size
-            }
-        };
-        if evaluation.inputs.len() != evaluation.region.inputs.len() {
-            return Err(GuestError::invalid(
-                "Read-only QVM region live-ins differ from its qualified frame",
-            ));
-        }
-        Ok(QualifiedReadOnly {
-            region: evaluation.region,
-            inputs: evaluation.inputs,
-            frame_size: frame_size as usize,
-            stack: evaluation.stack,
-        })
+        qualify_evaluation(&mut self.core, &self.program, entry, evaluation)
     }
 
     /// Run an original counter leaf with one virtual word; no source stores or
@@ -1767,6 +1742,47 @@ struct QualifiedReadOnly {
     inputs: Vec<i32>,
     frame_size: usize,
     stack: Option<QvmEvaluationStack>,
+}
+
+/// Qualify a read-only region evaluation against the program, caching the
+/// frame size on the core. Shared by root entry and recursive host entry.
+fn qualify_evaluation(
+    core: &mut QvmCore,
+    program: &QvmProgram,
+    entry: usize,
+    evaluation: QvmReadOnlyEvaluation,
+) -> Result<QualifiedReadOnly, GuestError> {
+    let key = RegionEvalKey {
+        instruction: entry,
+        entry: evaluation.region.entry,
+        join: evaluation.region.join,
+        inputs: evaluation.region.inputs.clone(),
+        result: evaluation.region.result,
+    };
+    let frame_size = match core.read_only_regions.get(&key) {
+        Some(size) => *size,
+        None => {
+            let size = qualify_qvm_region_evaluation(
+                &program.instructions,
+                entry,
+                &evaluation.region,
+                QvmRegionAccess::ReadOnly,
+            )?;
+            core.read_only_regions.insert(key, size);
+            size
+        }
+    };
+    if evaluation.inputs.len() != evaluation.region.inputs.len() {
+        return Err(GuestError::invalid(
+            "Read-only QVM region live-ins differ from its qualified frame",
+        ));
+    }
+    Ok(QualifiedReadOnly {
+        region: evaluation.region,
+        inputs: evaluation.inputs,
+        frame_size: frame_size as usize,
+        stack: evaluation.stack,
+    })
 }
 
 struct DriveEvaluation {

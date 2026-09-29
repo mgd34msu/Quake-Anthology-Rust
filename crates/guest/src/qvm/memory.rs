@@ -433,7 +433,8 @@ impl QvmMemory {
             None
         };
         inner.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
-        let (writes, raw) = (&mut inner.writes, &inner.bytes);
+        let fields: &mut MemoryInner = &mut inner;
+        let (writes, raw) = (&mut fields.writes, &fields.bytes);
         writes.after(raw, captures)
     }
 
@@ -448,7 +449,8 @@ impl QvmMemory {
             None
         };
         inner.bytes[offset..offset + len].fill(value);
-        let (writes, raw) = (&mut inner.writes, &inner.bytes);
+        let fields: &mut MemoryInner = &mut inner;
+        let (writes, raw) = (&mut fields.writes, &fields.bytes);
         writes.after(raw, captures)
     }
 
@@ -464,7 +466,8 @@ impl QvmMemory {
             None
         };
         inner.bytes.copy_within(source..source + len, destination);
-        let (writes, raw) = (&mut inner.writes, &inner.bytes);
+        let fields: &mut MemoryInner = &mut inner;
+        let (writes, raw) = (&mut fields.writes, &fields.bytes);
         writes.after(raw, captures)
     }
 
@@ -540,7 +543,8 @@ impl QvmMemory {
             None
         };
         q_strncpyz(&mut inner.bytes[span.start..span.start + capacity], text, capacity)?;
-        let (writes, raw) = (&mut inner.writes, &inner.bytes);
+        let fields: &mut MemoryInner = &mut inner;
+        let (writes, raw) = (&mut fields.writes, &fields.bytes);
         writes.after(raw, captures)
     }
 
@@ -562,7 +566,8 @@ impl QvmMemory {
             None
         };
         q_strncpyz(&mut inner.bytes[span.start..span.start + capacity], text, capacity)?;
-        let (writes, raw) = (&mut inner.writes, &inner.bytes);
+        let fields: &mut MemoryInner = &mut inner;
+        let (writes, raw) = (&mut fields.writes, &fields.bytes);
         writes.after(raw, captures)
     }
 
@@ -640,7 +645,8 @@ impl QvmMemory {
         inner.writes.assert_writable()?;
         let captures = inner.writes.before(&inner.bytes, offset, bytes.len())?;
         inner.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
-        let (writes, raw) = (&mut inner.writes, &inner.bytes);
+        let fields: &mut MemoryInner = &mut inner;
+        let (writes, raw) = (&mut fields.writes, &fields.bytes);
         writes.after(raw, captures)
     }
 
