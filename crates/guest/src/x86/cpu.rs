@@ -21,7 +21,10 @@ use crate::floating_point::contracts::{
     NumericPrefix,
 };
 use crate::floating_point::execute_numeric_instruction;
-use crate::x86::arithmetic::{alu, condition, result_flags, shift, signed_multiply};
+use crate::x86::arithmetic::{
+    alu, condition, quotient_fits_signed, result_flags, shift, sign_extend, sign_extend_double,
+    signed_multiply,
+};
 use crate::x86::arithmetic::{AluOperation, ShiftOperation};
 use crate::x86::decoder::{
     guest_address, register_operand, RepeatPrefix, SegmentName, X86Decoder, X86Error,
@@ -404,9 +407,7 @@ fn unary(decoder: &mut X86Decoder, width: X86Width) -> Result<(), X86Error> {
     let low = decoder.read(register_operand(0, width)?, width)?;
     if decoded.group == 4 || decoded.group == 5 {
         let signed = decoded.group == 5;
-        let extend = |value: u64| -> i128 {
-            (((value & mask_for(width)) << (128 - width.bits())) as i128) >> (128 - width.bits())
-        };
+        let extend = |value: u64| -> i128 { sign_extend(value, width.bits()) };
         let product = if signed {
             extend(low) * extend(operand)
         } else {
@@ -447,13 +448,13 @@ fn unary(decoder: &mut X86Decoder, width: X86Width) -> Result<(), X86Error> {
     };
     let signed = decoded.group == 7;
     let divisor = if signed {
-        (((operand & mask_for(width)) << (128 - width.bits())) as i128) >> (128 - width.bits())
+        sign_extend(operand, width.bits())
     } else {
         (operand & mask_for(width)) as i128
     };
     let double_bits = width.bits() * 2;
     let dividend = if signed {
-        (((raw_dividend) << (128 - double_bits)) as i128) >> (128 - double_bits)
+        sign_extend_double(u128::from(raw_dividend), double_bits)
     } else {
         raw_dividend as i128
     };
@@ -463,8 +464,7 @@ fn unary(decoder: &mut X86Decoder, width: X86Width) -> Result<(), X86Error> {
     let quotient = dividend / divisor;
     let remainder = dividend % divisor;
     let fits = if signed {
-        let truncated = (((quotient as u64) << (128 - width.bits())) as i128) >> (128 - width.bits());
-        truncated == quotient
+        quotient_fits_signed(quotient, width.bits())
     } else {
         quotient >= 0 && (quotient as u64 & !mask_for(width)) == 0
     };

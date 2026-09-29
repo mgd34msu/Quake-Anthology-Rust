@@ -72,6 +72,35 @@ fn result_bits(width: u32, result: u64) -> u32 {
         | parity_flag(result as u8)
 }
 
+/// Sign-extend the low `width` bits of `value` to 128 bits.
+#[must_use]
+pub fn sign_extend(value: u64, width: u32) -> i128 {
+    debug_assert!((1..=64).contains(&width));
+    let shift = 64 - width;
+    (((value & mask(width)) << shift) as i64 >> shift) as i128
+}
+
+/// Sign-extend the low `bits` bits of a double-width raw dividend to 128
+/// bits. The caller guarantees `raw` holds fewer than `bits` bits.
+#[must_use]
+pub fn sign_extend_double(raw: u128, bits: u32) -> i128 {
+    debug_assert!((2..=128).contains(&bits));
+    debug_assert!(bits >= 128 || raw >> bits == 0);
+    if bits >= 128 {
+        raw as i128
+    } else {
+        ((raw << (128 - bits)) as i128) >> (128 - bits)
+    }
+}
+
+/// Whether `quotient` fits in a signed `width`-bit range.
+#[must_use]
+pub fn quotient_fits_signed(quotient: i128, width: u32) -> bool {
+    debug_assert!((1..=64).contains(&width));
+    let limit = 1i128 << (width - 1);
+    quotient >= -limit && quotient < limit
+}
+
 /// Update ZF/SF/PF from a raw result, preserving the other flags.
 pub fn result_flags(width: u32, value: u64, flags: &mut ProcessorFlags) {
     let current = flags.value();

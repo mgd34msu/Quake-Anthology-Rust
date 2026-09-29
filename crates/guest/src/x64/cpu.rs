@@ -31,7 +31,10 @@ use crate::x64::plan::{
     execute_x64_plan, make_x64_plan, x64_lock, NumericInstructionBase, X64Flow, X64PlanOperation,
     X64PlanSource, X64SemanticPlan, X64SseOperand, X64ShiftCount, X64_ADVANCE,
 };
-use crate::x86::arithmetic::{alu, result_flags, AluOperation, ShiftOperation};
+use crate::x86::arithmetic::{
+    alu, quotient_fits_signed, result_flags, sign_extend, sign_extend_double, AluOperation,
+    ShiftOperation,
+};
 use crate::x86::decoder::X86Error;
 use crate::error::GuestError;
 
@@ -531,10 +534,11 @@ impl GuestCpu for X64Cpu {
                 };
                 let had_reuse = reuse.is_some();
                 let mut cursor = X64DecodeCursor::new(&mut self.memory, &mut self.state, reuse)?;
-                let flow = execute_cursor(&mut cursor)?;
+                let flow = execute_cursor(&mut cursor);
                 let next_ip = cursor.next_ip();
                 cursor_opcode = Some(cursor.opcode());
                 cursor_bytes = cursor.bytes().to_vec();
+                let flow = flow?;
                 if !had_reuse {
                     let prepared = cursor.cache();
                     if self.instructions.len() >= CACHE_CAPACITY {
@@ -1386,7 +1390,7 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         let signed = decoded.extension == 5;
         let accumulator = cursor.state.registers.read(GuestRegister::Rax, width, false)?;
         let full: i128 = if signed {
-            let extend = |value: u64| (((value & mask(width)) << (128 - width.bits())) as i128) >> (128 - width.bits());
+            let extend = |value: u64| sign_extend(value, width.bits());
             extend(accumulator) * extend(value)
         } else {
             (accumulator & mask(width)) as i128 * (value & mask(width)) as i128
@@ -1400,8 +1404,7 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             cursor.state.registers.write(GuestRegister::Rdx, width, high, false)?;
         }
         let overflow = if signed {
-            let truncated = ((((low) << (128 - width.bits())) as i128) >> (128 - width.bits())) as i128;
-            truncated != full
+            sign_extend(low, width.bits()) != full
         } else {
             high != 0
         };
@@ -1418,12 +1421,12 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
     };
     let double_bits = width.bits() * 2;
     let dividend: i128 = if signed {
-        ((raw_dividend << (128 - double_bits)) as i128) >> (128 - double_bits)
+        sign_extend_double(raw_dividend, double_bits)
     } else {
         raw_dividend as i128
     };
     let divisor: i128 = if signed {
-        (((value & mask(width)) << (128 - width.bits())) as i128) >> (128 - width.bits())
+        sign_extend(value, width.bits())
     } else {
         (value & mask(width)) as i128
     };
@@ -1433,7 +1436,7 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
     let quotient = dividend / divisor;
     let remainder = dividend % divisor;
     let fits = if signed {
-        (((quotient as u64) << (128 - width.bits())) as i128) >> (128 - width.bits()) == quotient
+        quotient_fits_signed(quotient, width.bits())
     } else {
         quotient >= 0 && (quotient as u64 & !mask(width)) == 0
     };
