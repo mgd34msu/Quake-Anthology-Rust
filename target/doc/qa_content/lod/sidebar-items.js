@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["Md3LodSlot"],"fn":["load_md3_lods","md3_at_lod","md3_lod_paths"],"struct":["Md3LodModel"],"trait":["Md3ModelReader"]};

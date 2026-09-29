@@ -1,1 +1,0 @@
-rd_("jqa_content")

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["Q3_ANIMATION_NAMES"],"enum":["PlayerFootsteps","PlayerGender"],"fn":["parse_player_animation_config"],"struct":["PlayerAnimation","PlayerAnimationConfig"]};

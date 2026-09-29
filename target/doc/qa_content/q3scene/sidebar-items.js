@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["CharacterAttachmentAnchor","CharacterFamily"],"fn":["joint_attachment_tag","to_scene_md3"],"struct":["CharacterAnimationClip","CharacterAttachment","CharacterModelMetadata","CharacterModelPart","JointAttachmentTag","ModelTransform","SceneMd3","SceneMd3Frame","SceneMd3Surface","SceneMd3Tag"]};

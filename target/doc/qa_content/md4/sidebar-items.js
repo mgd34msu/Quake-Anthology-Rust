@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["MD4_IDENT","MD4_VERSION"],"fn":["parse_md4","skin_md4_surface"],"struct":["DecodedMd4Model","Md4Bone","Md4Frame","Md4Lod","Md4Model","Md4SkinnedVertex","Md4Surface","Md4Triangle","Md4Vertex","Md4Weight"]};

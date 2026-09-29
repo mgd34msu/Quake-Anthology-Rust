@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["BspKind"],"fn":["classify_bsp"],"mod":["bsp","bsp2","bsp3","common","lod","md2","md3","md4","md5","mdl","model_text","normals","paths","q3anim","q3scene","quaternion","replacements","spr","wad"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["GroupType","SyncType","TimedFrames"],"fn":["bounds_from_points","check_index","count","expand_position","fail","group_type","intervals","packed_position","packed_vertex","read_timed","sync_type","union_bounds","vector","version"],"struct":["Bounds","PackedVertex","TimedFrame"]};

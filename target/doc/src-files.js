@@ -1,2 +1,0 @@
-createSrcSidebar('[["qa_content",["",[],["bsp.rs","bsp2.rs","bsp3.rs","common.rs","lib.rs","lod.rs","md2.rs","md3.rs","md4.rs","md5.rs","mdl.rs","model_text.rs","normals.rs","paths.rs","q3anim.rs","q3scene.rs","quaternion.rs","replacements.rs","spr.rs","wad.rs"]]]]');
-//{"start":19,"fragment_lengths":[245]}
