@@ -27,6 +27,7 @@ pub mod q2_svc;
 pub mod q2_variants;
 pub mod q3;
 pub mod q3_authorization;
+pub mod q3_browser_view;
 pub mod q3_client_authorization;
 pub mod q3_content;
 pub mod q3_net;
