@@ -17,12 +17,18 @@ use qa_client::audio::ChannelPool;
 use qa_client::prediction::CommandRing;
 use qa_client::render::{FrameStats as RenderFrameStats, ModelPose, RenderView, RendererBackend, SceneEntity};
 use qa_client::view::{CameraClip, ModelTransform, Rect, SceneCamera};
+use qa_core::cmd::Dialect;
+use qa_core::cmd_buffer::{CommandContext, CommandOrigin};
+use qa_core::cvar::CvarRegistry;
+use qa_core::identity::IdentityOwner;
 use qa_core::math::{vec3, vec4, Axis, Vec3};
 use qa_core::rng::Qrand;
 use qa_core::time::SourceTime;
 use qa_world::client::{apply_scalar, ClientCommand, ClientFamily, ScalarInput};
 use qa_world::server::{NullLogic, Server};
 
+use crate::console::commands::{register_console_commands, ConsoleCommandServices, ConsoleCommands};
+use crate::console::queue::ConsoleQueue;
 use crate::error::AppError;
 use crate::startup::{load_stub_map, open_server, spawn_stub_map, StartupConfig};
 
@@ -95,6 +101,69 @@ pub struct Application<R: RendererBackend> {
     height: i32,
     client_family: ClientFamily,
     scratch_entities: Vec<SceneEntity>,
+    console_owner: IdentityOwner,
+    console_queue: ConsoleQueue,
+    console_commands: ConsoleCommands,
+    console_cvars: CvarRegistry,
+    console_log: Vec<String>,
+    console_forwarded: Vec<String>,
+    map_name: String,
+}
+
+/// Headless console services: prints and server forwards land in the
+/// application log vectors.
+struct AppConsoleServices<'a> {
+    log: &'a mut Vec<String>,
+    forwarded: &'a mut Vec<String>,
+    map: &'a str,
+}
+
+impl ConsoleCommandServices for AppConsoleServices<'_> {
+    fn print(&mut self, text: &str) {
+        self.log.push(text.to_string());
+    }
+
+    fn forward_to_server(&mut self, line: &str) {
+        self.forwarded.push(line.to_string());
+    }
+
+    fn toggle_console(&mut self) {}
+
+    fn clear_console(&mut self) {
+        self.log.clear();
+    }
+
+    fn message_mode(&mut self, _team: bool) {}
+
+    fn can_chat(&self) -> bool {
+        false
+    }
+
+    fn console_dump(&self) -> String {
+        self.log.concat()
+    }
+
+    fn write_file(&mut self, _path: &str, _contents: &str) -> Result<(), String> {
+        Err("Headless application has no writable console root".to_string())
+    }
+
+    fn configuration_text(&mut self, _argv: &[String]) -> String {
+        String::new()
+    }
+
+    fn map_name(&self) -> String {
+        self.map.to_string()
+    }
+}
+
+fn console_dialect_for(family: ClientFamily) -> Dialect {
+    match family {
+        ClientFamily::Q1Netquake => Dialect::Q1Netquake,
+        ClientFamily::Q1Quakeworld => Dialect::Q1Quakeworld,
+        ClientFamily::Q2Classic => Dialect::Q2Classic,
+        ClientFamily::Q2Rerelease => Dialect::Q2Rerelease,
+        ClientFamily::Q3 => Dialect::Q3,
+    }
 }
 
 impl<R: RendererBackend> Application<R> {
@@ -112,6 +181,16 @@ impl<R: RendererBackend> Application<R> {
                 .map_or(UNBOUND_SEAT, |actor| actor.id().slot());
             seats.push(HeadlessSeat::new(config.client_family, slot));
         }
+        let console_owner = IdentityOwner::create(&format!("{}:console", config.session_name))
+            .map_err(|error| AppError::Startup(error.to_string()))?;
+        let dialect = console_dialect_for(config.client_family);
+        let console_queue = ConsoleQueue::new(
+            dialect,
+            CommandContext::new(console_owner.session().clone(), CommandOrigin::LocalConsole),
+        )
+        .map_err(|error| AppError::Console(error.to_string()))?;
+        let mut console_commands = ConsoleCommands::new();
+        register_console_commands(&mut console_commands);
         Ok(Self {
             server,
             renderer,
@@ -128,6 +207,13 @@ impl<R: RendererBackend> Application<R> {
             height: config.height as i32,
             client_family: config.client_family,
             scratch_entities: Vec::with_capacity(actors.len()),
+            console_owner,
+            console_queue,
+            console_commands,
+            console_cvars: CvarRegistry::new(dialect),
+            console_log: Vec::new(),
+            console_forwarded: Vec::new(),
+            map_name: config.map.clone(),
         })
     }
 
@@ -184,6 +270,72 @@ impl<R: RendererBackend> Application<R> {
         self.ticks
     }
 
+    /// Queue console text on the host program; [`Application::step_frame`]
+    /// drains one frame of it per host frame.
+    pub fn submit_console(&mut self, text: &str) -> Result<(), AppError> {
+        self.console_queue
+            .submit(text)
+            .map_err(|error| AppError::Console(error.to_string()))
+    }
+
+    /// Queue console text as a local seat's input.
+    pub fn submit_console_as_seat(&mut self, seat: usize, text: &str) -> Result<(), AppError> {
+        if seat >= self.seats.len() {
+            return Err(AppError::Console(format!("No console seat {seat}")));
+        }
+        let source = CommandContext::new(
+            self.console_owner.session().clone(),
+            CommandOrigin::LocalSeat {
+                seat: self.console_owner.seat(seat as u32),
+                client: self.console_owner.client(seat as u32, 0),
+            },
+        );
+        self.console_queue
+            .submit_as(text, &source)
+            .map_err(|error| AppError::Console(error.to_string()))
+    }
+
+    /// Supply `exec` script text (`None` means missing).
+    pub fn provide_console_script(&mut self, name: &str, text: Option<String>) {
+        self.console_queue.set_script(name, text);
+    }
+
+    /// Park an `exec` script name until [`Application::provide_console_script`]
+    /// supplies it.
+    pub fn stage_console_script(&mut self, name: &str) {
+        self.console_queue.stage_pending_script(name);
+    }
+
+    /// Console output lines collected so far.
+    #[must_use]
+    pub fn console_log(&self) -> &[String] {
+        &self.console_log
+    }
+
+    /// Lines the console forwarded to the server so far.
+    #[must_use]
+    pub fn console_forwarded(&self) -> &[String] {
+        &self.console_forwarded
+    }
+
+    /// Console program revision.
+    #[must_use]
+    pub fn console_program_revision(&self) -> u64 {
+        self.console_queue.buffer().program_revision()
+    }
+
+    /// Whether the console program still holds queued work.
+    #[must_use]
+    pub fn console_has_pending(&self) -> bool {
+        self.console_queue.buffer().has_pending_commands()
+    }
+
+    /// Current console variable text, or empty when unregistered.
+    #[must_use]
+    pub fn console_cvar(&self, name: &str) -> String {
+        self.console_cvars.variable_string(name)
+    }
+
     /// Run host frames until quit is requested or the frame limit lands.
     pub fn run(&mut self) -> Result<RunStats, AppError> {
         while !self.finished {
@@ -197,12 +349,13 @@ impl<R: RendererBackend> Application<R> {
         })
     }
 
-    /// Run one host frame: seat commands, server tick, scene submission,
-    /// and audio refresh.
+    /// Run one host frame: console drain, seat commands, server tick,
+    /// scene submission, and audio refresh.
     pub fn step_frame(&mut self) -> Result<HostFrame, AppError> {
         if self.finished {
             return Err(AppError::Finished);
         }
+        self.drive_console()?;
         let frame = self.frames;
         for seat in &mut self.seats {
             if seat.slot == UNBOUND_SEAT {
@@ -233,6 +386,23 @@ impl<R: RendererBackend> Application<R> {
                 lights: 0,
             },
         })
+    }
+
+    fn drive_console(&mut self) -> Result<(), AppError> {
+        let mut services = AppConsoleServices {
+            log: &mut self.console_log,
+            forwarded: &mut self.console_forwarded,
+            map: &self.map_name,
+        };
+        self.console_queue
+            .drive_frame(
+                &mut self.console_commands,
+                &mut self.console_cvars,
+                &mut services,
+                &mut || {},
+            )
+            .map_err(|error| AppError::Console(error.to_string()))?;
+        Ok(())
     }
 
     fn submit_scene(&mut self) {
