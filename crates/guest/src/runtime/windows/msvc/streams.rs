@@ -167,7 +167,10 @@ impl MsvcStreams {
             call = ctx.memory().read_pointer(entry)?;
         }
         for offset in [48, 56] {
-            let mut node = ctx.memory().read_pointer(ctx.memory().offset(object, offset)?)?;
+            let mut node = {
+                let memory = ctx.memory();
+                memory.read_pointer(memory.offset(object, offset)?)?
+            };
             while let Some(entry) = node {
                 let next = ctx.memory().read_pointer(entry)?;
                 if !self.context.free(ctx.memory(), self.teb, Some(entry), 0)? {
@@ -213,7 +216,9 @@ impl MsvcStreams {
         object: GuestAddress,
         offset: i64,
     ) -> Result<Option<GuestAddress>, GuestError> {
-        memory.read_pointer(ref_pointer(memory, memory.offset(object, offset)?)?)
+        let slot = memory.offset(object, offset)?;
+        let inner = ref_pointer(memory, slot)?;
+        memory.read_pointer(inner)
     }
 
     fn available(
@@ -240,7 +245,8 @@ impl MsvcStreams {
         let next = ref_pointer(memory, next_slot)?;
         let count_slot = ref_pointer(memory, memory.offset(object, if input { 80 } else { 88 })?)?;
         memory.write_pointer(next_slot, Some(memory.offset(next, amount)?))?;
-        memory.write_i32(count_slot, memory.read_i32(count_slot)? - amount as i32)?;
+        let count = memory.read_i32(count_slot)?;
+        memory.write_i32(count_slot, count - amount as i32)?;
         Ok(next)
     }
 
@@ -256,7 +262,7 @@ impl MsvcStreams {
             let address = if consume {
                 self.bump(memory, object, 1, true)?
             } else {
-                ref_pointer(memory, ref_pointer(memory, memory.offset(object, 56)?)?)?
+                ref_at(memory, object, 56)?
             };
             return Ok(i128::from(memory.read_u8(address)?));
         }
@@ -306,8 +312,9 @@ impl MsvcStreams {
         let unlock = self.virtual_call(ctx, context, buffer, 2, &[], None, vec![]);
         match (inner, unlock) {
             (Err(_), Err(unlock)) => Err(unlock),
-            (Err(inner), Ok(())) => Err(inner),
-            (Ok(()), result) => result,
+            (Err(inner), Ok(_)) => Err(inner),
+            (Ok(()), Err(unlock)) => Err(unlock),
+            (Ok(()), Ok(_)) => Ok(()),
         }
     }
 
@@ -319,8 +326,15 @@ impl MsvcStreams {
         base: GuestAddress,
         buffer: GuestAddress,
     ) -> Result<(), GuestError> {
-        if ctx.memory().read_i32(ctx.memory().offset(base, 16)?)? == 0 {
-            let tied = ctx.memory().read_pointer(ctx.memory().offset(base, 80)?)?;
+        let state = {
+            let memory = ctx.memory();
+            memory.read_i32(memory.offset(base, 16)?)?
+        };
+        if state == 0 {
+            let tied = {
+                let memory = ctx.memory();
+                memory.read_pointer(memory.offset(base, 80)?)?
+            };
             if let Some(tied) = tied {
                 if tied.offset != object.offset {
                     self.flush(ctx, context, tied)?;
@@ -361,32 +375,15 @@ impl MsvcStreams {
     }
 }
 
-fn direct(memory: &mut SparseGuestMemory, byte_length: usize, label: &str) -> Result<GuestAddress, GuestError> {
-    memory.allocate(&GuestAllocationOptions {
-        byte_length,
-        alignment: 16,
-        permissions: GuestPermissions::ReadWrite,
-        label: label.to_string(),
-    })
-}
-
-fn build_table(
-    context: &WindowsContext,
+fn ref_at(
     memory: &mut SparseGuestMemory,
-    names: &[String],
-    label: &str,
+    object: GuestAddress,
+    offset: i64,
 ) -> Result<GuestAddress, GuestError> {
-    let result = direct(memory, names.len() * 8, label)?;
-    for (index, name) in names.iter().enumerate() {
-        let target = context
-            .resolve_address(LIBRARY, name)
-            .ok_or_else(|| GuestError::callback(format!("Missing MSVC method {name}")))?;
-        memory.write_pointer(memory.offset(result, (index * 8) as i64)?, Some(target))?;
-    }
-    memory.protect(result, names.len() * 8, GuestPermissions::Read)?;
-    Ok(result)
+    let slot = memory.offset(object, offset)?;
+    let inner = ref_pointer(memory, slot)?;
+    ref_pointer(memory, inner)
 }
-
 
 fn direct(memory: &mut SparseGuestMemory, byte_length: usize, label: &str) -> Result<GuestAddress, GuestError> {
     memory.allocate(&GuestAllocationOptions {
@@ -396,6 +393,7 @@ fn direct(memory: &mut SparseGuestMemory, byte_length: usize, label: &str) -> Re
         label: label.to_string(),
     })
 }
+
 
 fn fill_table(
     context: &WindowsContext,
@@ -732,7 +730,8 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
                     return Ok(ptr_value(None));
                 };
                 let count = ref_pointer(memory, memory.offset(object, if input { 80 } else { 88 })?)?;
-                let end = memory.offset(next, i64::from(memory.read_i32(count)?))?;
+                let remaining = memory.read_i32(count)?;
+                let end = memory.offset(next, i64::from(remaining))?;
                 Ok(ptr_value(Some(end)))
             },
         ))?;
@@ -851,96 +850,6 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
         ))?;
     }
     Ok(())
-}
-
-impl MsvcStreams {
-    fn flush(
-        &self,
-        host: &HostCallContext,
-        nested: &WindowsContext,
-        object: GuestAddress,
-    ) -> Result<(), GuestError> {
-        let buffer = {
-            let memory = host.memory();
-            let base = self.virtual_ios(memory, object)?;
-            memory.read_pointer(memory.offset(base, 72)?)?
-        };
-        let Some(buffer) = buffer else {
-            return Ok(());
-        };
-        self.virtual_call(host, nested, buffer, 1, &[], None, vec![])?;
-        let outcome = self.flush_body(host, nested, object, buffer);
-        let unlock = self.virtual_call(host, nested, buffer, 2, &[], None, vec![]);
-        outcome.and(unlock.map(|_| ()))
-    }
-
-    fn flush_body(
-        &self,
-        host: &HostCallContext,
-        nested: &WindowsContext,
-        object: GuestAddress,
-        buffer: GuestAddress,
-    ) -> Result<(), GuestError> {
-        let base = {
-            let memory = host.memory();
-            self.virtual_ios(memory, object)?
-        };
-        let state = {
-            let memory = host.memory();
-            memory.read_i32(memory.offset(base, 16)?)?
-        };
-        if state == 0 {
-            let tied = {
-                let memory = host.memory();
-                memory.read_pointer(memory.offset(base, 80)?)?
-            };
-            if let Some(tied) = tied {
-                if tied != object {
-                    self.flush(host, nested, tied)?;
-                }
-            }
-            let state = {
-                let memory = host.memory();
-                memory.read_i32(memory.offset(base, 16)?)?
-            };
-            if state == 0 {
-                let synced = self.virtual_call(host, nested, buffer, 13, &[], Some(GuestStorage::Int32), vec![])?;
-                if result_integer(synced)? == -1 {
-                    self.setstate(host.memory(), base, 4)?;
-                }
-            }
-        }
-        self.suffix(host, nested, object)
-    }
-
-    fn suffix(
-        &self,
-        host: &HostCallContext,
-        nested: &WindowsContext,
-        object: GuestAddress,
-    ) -> Result<(), GuestError> {
-        let (base, state, flags) = {
-            let memory = host.memory();
-            let base = self.virtual_ios(memory, object)?;
-            let state = memory.read_i32(memory.offset(base, 16)?)?;
-            let flags = memory.read_i32(memory.offset(base, 24)?)?;
-            (base, state, flags)
-        };
-        if state != 0 || flags & 2 == 0 {
-            return Ok(());
-        }
-        let buffer = {
-            let memory = host.memory();
-            memory.read_pointer(memory.offset(base, 72)?)?
-        };
-        if let Some(buffer) = buffer {
-            let synced = self.virtual_call(host, nested, buffer, 13, &[], Some(GuestStorage::Int32), vec![])?;
-            if result_integer(synced)? == -1 {
-                self.setstate(host.memory(), base, 4)?;
-            }
-        }
-        Ok(())
-    }
 }
 
 fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams) -> Result<(), GuestError> {
@@ -1069,43 +978,43 @@ fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStre
     Ok(())
 }
 
-fn read_state(host: &HostCallContext, base: GuestAddress) -> Result<i32, GuestError> {
-    let memory = host.memory();
+fn read_state(ctx: &mut HostCallContext<'_, '_>, base: GuestAddress) -> Result<i32, GuestError> {
+    let memory = ctx.memory();
     Ok(memory.read_i32(memory.offset(base, 16)?)?)
 }
 
 fn insert_integer(
     streams: &MsvcStreams,
-    host: &HostCallContext,
-    nested: &WindowsContext,
+    ctx: &mut HostCallContext<'_, '_>,
+    context: &GuestCallContext,
     object: GuestAddress,
     base: GuestAddress,
     buffer: Option<GuestAddress>,
     bits: u32,
     raw: i128,
 ) -> Result<(), GuestError> {
-    if read_state(host, base)? == 0 {
+    if read_state(ctx, base)? == 0 {
         if let Some(buffer) = buffer {
             let tied = {
-                let memory = host.memory();
+                let memory = ctx.memory();
                 memory.read_pointer(memory.offset(base, 80)?)?
             };
             if let Some(tied) = tied {
                 if tied != object {
-                    streams.flush(host, nested, tied)?;
+                    streams.flush(ctx, context, tied)?;
                 }
             }
-            if read_state(host, base)? == 0 {
+            if read_state(ctx, base)? == 0 {
                 let (implementation, flags, width, fill) = {
-                    let memory = host.memory();
-                    let implementation = ref_pointer(memory, ref_pointer(memory, memory.offset(base, 64)?)?)?;
+                    let memory = ctx.memory();
+                    let implementation = ref_at(memory, base, 64)?;
                     let flags = memory.read_i32(memory.offset(base, 24)?)?;
                     let width = memory.read_i64(memory.offset(base, 40)?)?;
                     let fill = memory.read_u8(memory.offset(base, 88)?)?;
                     (implementation, flags, width, fill)
                 };
                 let global_count = {
-                    let memory = host.memory();
+                    let memory = ctx.memory();
                     memory.read_u64(memory.offset(implementation, 24)?)?
                 };
                 if implementation != streams.locale.global || global_count != 0 {
@@ -1161,24 +1070,24 @@ fn insert_integer(
                     _ => format!("{fill}{prefix}{digits}"),
                 };
                 for byte in text.bytes() {
-                    if streams.stream_put(host, nested, buffer, i128::from(byte))? == -1 {
-                        streams.setstate(host.memory(), base, 4)?;
+                    if streams.stream_put(ctx, context, buffer, i128::from(byte))? == -1 {
+                        streams.setstate(ctx.memory(), base, 4)?;
                         break;
                     }
                 }
-                let memory = host.memory();
+                let memory = ctx.memory();
                 memory.write_i64(memory.offset(base, 40)?, 0)?;
             }
         }
     }
-    streams.setstate(host.memory(), base, 0)?;
-    streams.suffix(host, nested, object)
+    streams.setstate(ctx.memory(), base, 0)?;
+    streams.suffix(ctx, context, object)
 }
 
 fn insert_buffer(
     streams: &MsvcStreams,
-    host: &HostCallContext,
-    nested: &WindowsContext,
+    ctx: &mut HostCallContext<'_, '_>,
+    context: &GuestCallContext,
     object: GuestAddress,
     base: GuestAddress,
     target: Option<GuestAddress>,
@@ -1186,39 +1095,39 @@ fn insert_buffer(
 ) -> Result<(), GuestError> {
     let mut copied = false;
     let mut state = 0;
-    if read_state(host, base)? == 0 {
+    if read_state(ctx, base)? == 0 {
         if let (Some(target), Some(source)) = (target, source) {
             let tied = {
-                let memory = host.memory();
+                let memory = ctx.memory();
                 memory.read_pointer(memory.offset(base, 80)?)?
             };
             if let Some(tied) = tied {
                 if tied != object {
-                    streams.flush(host, nested, tied)?;
+                    streams.flush(ctx, context, tied)?;
                 }
             }
-            if read_state(host, base)? == 0 {
+            if read_state(ctx, base)? == 0 {
                 loop {
-                    let character = streams.stream_get(host, nested, source, false)?;
+                    let character = streams.stream_get(ctx, context, source, false)?;
                     if character == -1 {
                         break;
                     }
-                    if streams.stream_put(host, nested, target, character)? == -1 {
+                    if streams.stream_put(ctx, context, target, character)? == -1 {
                         state |= 4;
                         break;
                     }
-                    streams.stream_get(host, nested, source, true)?;
+                    streams.stream_get(ctx, context, source, true)?;
                     copied = true;
                 }
             }
         }
     }
-    let memory = host.memory();
+    let memory = ctx.memory();
     memory.write_i64(memory.offset(base, 40)?, 0)?;
     streams.setstate(
-        host.memory(),
+        ctx.memory(),
         base,
         if source.is_none() { 4 } else { state | if copied { 0 } else { 2 } },
     )?;
-    streams.suffix(host, nested, object)
+    streams.suffix(ctx, context, object)
 }

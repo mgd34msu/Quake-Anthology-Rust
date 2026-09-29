@@ -10,4 +10,6 @@ pub mod kernel;
 #[allow(dead_code)]
 pub mod msvc;
 #[allow(dead_code)]
+pub mod runtime;
+#[allow(dead_code)]
 pub mod time;
