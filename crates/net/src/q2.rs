@@ -712,6 +712,11 @@ pub fn write_entity_remove(writer: &mut MsgWriter, number: u16) -> Result<(), Ms
     Ok(())
 }
 
+/// Write the packet-entities opcode (`writePacketEntitiesBegin`).
+pub fn write_packet_entities_begin(writer: &mut MsgWriter) -> Result<(), MsgError> {
+    writer.write_byte(protocol::Svc::Packetentities as u8)
+}
+
 /// Write the packet-entities terminator (`writePacketEntitiesEnd`).
 pub fn write_packet_entities_end(writer: &mut MsgWriter) -> Result<(), MsgError> {
     writer.write_short(0)

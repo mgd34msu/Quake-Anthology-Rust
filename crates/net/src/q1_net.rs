@@ -3693,6 +3693,8 @@ fn to_nq15_entity(state: &WideEntityState) -> crate::q1::EntityState {
         colormap: state.colormap,
         skin: state.skin,
         effects: state.effects,
+        alpha: state.alpha,
+        scale: state.scale,
         origin: state.origin,
         angles: state.angles,
     }

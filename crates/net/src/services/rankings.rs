@@ -490,13 +490,13 @@ impl<'a> RankingLifecycle<'a> {
 mod tests {
     use super::*;
 
-    struct Stub {
+    struct Fake {
         game: u64,
     }
 
-    impl RankingServiceProvider for Stub {
+    impl RankingServiceProvider for Fake {
         fn endpoint(&self) -> &str {
-            "stub://rankings"
+            "fake://rankings"
         }
 
         fn begin(&mut self, _game_key: &str) -> Result<RankingMatch, RankingError> {
@@ -536,8 +536,8 @@ mod tests {
 
     #[test]
     fn lifecycle_runs_a_match() {
-        let mut stub = Stub { game: 42 };
-        let mut lifecycle = RankingLifecycle::new(Some(&mut stub), |_, _| {}, |_| {});
+        let mut fake = Fake { game: 42 };
+        let mut lifecycle = RankingLifecycle::new(Some(&mut fake), |_, _| {}, |_| {});
         lifecycle.begin(true, false, "q3").unwrap();
         assert!(matches!(lifecycle.state(), RankingServiceState::Active { .. }));
         lifecycle

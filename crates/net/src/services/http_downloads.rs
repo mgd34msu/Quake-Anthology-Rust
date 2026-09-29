@@ -1093,11 +1093,11 @@ impl HttpDownloadQueue {
 mod tests {
     use super::*;
 
-    struct StubClient {
+    struct FakeClient {
         body: Vec<u8>,
     }
 
-    impl HttpClient for StubClient {
+    impl HttpClient for FakeClient {
         fn request(
             &mut self,
             method: HttpMethod,
@@ -1128,7 +1128,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("qa-net-http-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let client = Box::new(StubClient {
+        let client = Box::new(FakeClient {
             body: b"hello".to_vec(),
         });
         let callbacks = HttpQueueCallbacks {

@@ -5,7 +5,7 @@
 //! helpers from `src/network/q1/message.ts`.
 //!
 //! The protocol 29 / wide variants (`qw29.ts`, `wide.ts`) reuse these
-//! shapes with wider precache counts; they are future work.
+//! shapes with wider precache counts; see [`crate::q1_wide`].
 
 use qa_core::numeric::float_to_wrapped_i32;
 
@@ -59,6 +59,12 @@ pub struct QwEntityState {
     pub skinnum: u8,
     /// Effects.
     pub effects: u8,
+    /// Entity flags (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub flags: u16,
+    /// Entity alpha (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub alpha: u8,
+    /// Entity scale (decoder checkpoint only; see [`crate::q1_checkpoint`]).
+    pub scale: u8,
     /// Solid for prediction (`U_SOLID`).
     pub solid: bool,
 }
@@ -528,6 +534,9 @@ mod tests {
             colormap: 11,
             skinnum: 2,
             effects: 5,
+            flags: 0,
+            alpha: 0,
+            scale: 16,
             solid: true,
         }
     }
