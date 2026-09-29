@@ -2927,7 +2927,7 @@ mod tests {
         );
         let mut memory = SparseGuestMemory::new(module, 4, 0x100000).unwrap();
         let image_base = memory
-            .map(&GuestMapOptions::new(0x0, 0x4000, GuestPermissions::ReadWriteExecute))
+            .map(&GuestMapOptions::new(0x10000, 0x4000, GuestPermissions::ReadWriteExecute))
             .unwrap();
         let table_base = memory
             .map(&GuestMapOptions::new(0x20000, 256 * 16, GuestPermissions::ReadWrite))

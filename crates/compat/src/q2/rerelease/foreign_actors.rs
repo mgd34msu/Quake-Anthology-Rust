@@ -620,10 +620,9 @@ impl RereleaseForeignActors {
             if !has {
                 continue;
             }
-            if channel == ProtectionChannel::Powered
-                && !self.is_live(target) {
-                    return Err(ForeignActorError::StaleActor);
-                }
+            if channel == ProtectionChannel::Powered && !self.is_live(target) {
+                return Err(ForeignActorError::StaleActor);
+            }
             let saved = {
                 let binding = self.armor_bindings.get_mut(&target).expect("binding");
                 let intercept = match channel {

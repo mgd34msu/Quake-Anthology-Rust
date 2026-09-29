@@ -267,7 +267,7 @@ mod tests {
 
     fn document_json() -> String {
         format!(
-            r#"{{"version":1,"modules":[{{"artifactPath":"GAME\\\\xatrix.dll",
+            r#"{{"version":1,"modules":[{{"artifactPath":"GAME\\xatrix.dll",
             "artifactDigest":"{CLASSIC_DIGEST}","apiVersion":3,
             "primary":{{"weapons":{},"player":{},"commands":{},"inventory":{},"drop":{},"pickups":{},"world":{}}}}}]}}"#,
             weapons_json(),

@@ -407,7 +407,7 @@ fn export(name: &'static str, offset: u32, signature: GuestCallSignature) -> Cla
     }
 }
 
-/// The 14-entry game export table in donor order.
+/// The 15-entry game export table in donor order.
 #[must_use]
 pub fn classic_q2_exports() -> Vec<ClassicQ2Export> {
     vec![
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!(classic_q2_export("Init").unwrap().offset, 4);
         assert_eq!(classic_q2_export("ClientThink").unwrap().offset, 52);
         assert_eq!(classic_q2_export("ServerCommand").unwrap().offset, 60);
-        assert_eq!(classic_q2_exports().len(), 14);
+        assert_eq!(classic_q2_exports().len(), 15);
         assert!(classic_q2_export("Missing").is_none());
         let connect = classic_q2_export("ClientConnect").unwrap();
         assert_eq!(connect.signature.parameters.len(), 2);

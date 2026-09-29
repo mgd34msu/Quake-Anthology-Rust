@@ -359,6 +359,7 @@ mod tests {
             .unwrap();
         host.edicts =
             Some(ClassicQ2Edicts::new(&mut host.memory, exports, ProviderId::new("q2", "classic"), None).unwrap());
+        host.observe_edict(one).unwrap();
         image
     }
 

@@ -12,16 +12,16 @@ use qa_world::combat::ItemId;
 use super::native_combat_call::{
     read_native_combat_call, stock_native_combat_call, validate_native_combat_call, CombatOperation, NativeCombatCall,
 };
+use super::native_pickups::{
+    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
+    PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
+};
 use super::native_primary_command_profile::native_primary_command_profile;
 use super::native_primary_commands::NativePrimaryCommandProfile;
 use super::native_primary_drop::NativePrimaryDropProfile;
 use super::native_primary_drop_profile::native_primary_drop_profile;
 use super::native_primary_inventory::NativePrimaryInventoryProfile;
 use super::native_primary_inventory_profile::native_primary_inventory_profile;
-use super::native_pickups::{
-    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
-    PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
-};
 use super::native_primary_player::NativePrimaryPlayerProfile;
 use super::native_primary_player_profile::native_primary_player_profile;
 use super::native_primary_reader::{
@@ -424,7 +424,9 @@ pub fn validate_classic_combat(profile: &ClassicPrimaryWorldProfile) -> Result<(
             return Err("classic armor item field exceeds its original item record".to_string());
         }
     }
-    if !profile.armor_info.normal_protection.is_multiple_of(4) || !profile.armor_info.energy_protection.is_multiple_of(4) {
+    if !profile.armor_info.normal_protection.is_multiple_of(4)
+        || !profile.armor_info.energy_protection.is_multiple_of(4)
+    {
         return Err("classic armor information is unaligned".to_string());
     }
     if profile.armor_info.normal_protection == profile.armor_info.energy_protection

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use qa_core::math::Vec3;
 use qa_guest::core::contracts::{
-    ContentDigest, GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestMapOptions,
-    GuestPermissions, GuestRegister, ModuleIdentity, NativeAbi,
+    ContentDigest, GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestRegister,
+    ModuleIdentity, NativeAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::error::GuestError;
@@ -340,10 +340,10 @@ impl SyntheticHost {
             ContentDigest::new(algorithm, value),
             "synthetic",
         );
-        let mut memory = SparseGuestMemory::new(module, pointer_bytes, image_bytes as u64)?;
-        let mut options = GuestMapOptions::new(0, image_bytes.max(1), GuestPermissions::ReadWriteExecute);
+        let mut memory = SparseGuestMemory::new(module, pointer_bytes, 0x1_0000)?;
+        let mut options = GuestAllocationOptions::bytes(image_bytes.max(1));
         options.label = "synthetic image".to_string();
-        let image = memory.map(&options)?;
+        let image = memory.allocate(&options)?;
         Ok(Self {
             core: HostCore {
                 memory,

@@ -1969,9 +1969,17 @@ mod tests {
         assert!(host.release_pickup_supply(&lease).is_err());
         host.set_model_name(3, "*4").unwrap();
         assert!(host.set_model_name(300, "x").is_err());
+        let plain = allocate_classic_string(&mut host.memory, "plain").unwrap();
         let layouts = host
-            .variadic_layouts("bprintf", &[GuestCallValue::Int32(0), GuestCallValue::Pointer(None)])
+            .variadic_layouts(
+                "bprintf",
+                &[GuestCallValue::Int32(0), GuestCallValue::Pointer(Some(plain))],
+            )
             .unwrap();
         assert_eq!(layouts, vec![]);
+        assert!(
+            host.variadic_layouts("bprintf", &[GuestCallValue::Int32(0), GuestCallValue::Pointer(None)])
+                .is_err()
+        );
     }
 }

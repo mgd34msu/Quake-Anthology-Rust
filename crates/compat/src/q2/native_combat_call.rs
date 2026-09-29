@@ -643,8 +643,15 @@ mod tests {
             &values[0]
         );
         let image = host.core.image;
-        let lowered = lower_native_combat_arguments(&call, CombatOperation::DeferredReaction, &semantic, &mut host, Some(image), None)
-            .expect("lower");
+        let lowered = lower_native_combat_arguments(
+            &call,
+            CombatOperation::DeferredReaction,
+            &semantic,
+            &mut host,
+            Some(image),
+            None,
+        )
+        .expect("lower");
         assert_eq!(lowered, values);
     }
 
