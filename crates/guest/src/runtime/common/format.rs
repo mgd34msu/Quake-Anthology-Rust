@@ -7,6 +7,7 @@
 pub mod arguments;
 pub mod float;
 pub mod scan;
+pub mod services;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};

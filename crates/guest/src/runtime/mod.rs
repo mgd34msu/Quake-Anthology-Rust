@@ -3,3 +3,7 @@
 //! Donor: `src/guest/runtime/`.
 #[allow(dead_code)]
 pub mod common;
+#[allow(dead_code)]
+pub mod system_v;
+#[allow(dead_code)]
+pub mod windows;
