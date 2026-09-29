@@ -4,9 +4,7 @@
 //! through CS with limit checks; memory operands resolve through segment
 //! bases with limit checks (`#SS` for stack segments, `#GP` otherwise).
 
-use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestIntegerWidth, GuestRegister,
-};
+use crate::core::contracts::{GuestAccess, GuestAddress, GuestIntegerWidth, GuestRegister};
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
 use crate::error::GuestError;
@@ -232,12 +230,12 @@ pub fn guest_address(
     access: GuestAccess,
     length: usize,
 ) -> Result<GuestAddress, X86Error> {
-    Ok(memory.pointer(raw)?.ok_or_else(|| X86Error::Memory {
+    memory.pointer(raw)?.ok_or_else(|| X86Error::Memory {
         access,
         address: raw,
         byte_length: length,
         detail: "null guest address".to_string(),
-    })?)
+    })
 }
 
 /// Decode a ModRM register index at `width`.
@@ -290,10 +288,7 @@ pub struct X86Decoder<'a> {
 
 impl<'a> X86Decoder<'a> {
     /// Decode prefixes and the opcode at the current IP.
-    pub fn new(
-        state: &'a mut GuestProcessorState,
-        memory: &'a mut SparseGuestMemory,
-    ) -> Result<Self, X86Error> {
+    pub fn new(state: &'a mut GuestProcessorState, memory: &'a mut SparseGuestMemory) -> Result<Self, X86Error> {
         let start = state.instruction_pointer;
         let mut decoder = Self {
             state,
@@ -341,8 +336,9 @@ impl<'a> X86Decoder<'a> {
         if self.cursor > self.state.segments[GuestProcessorState::CS].limit {
             return Err(X86Error::fault_code(13, "Instruction exceeds CS limit", 0));
         }
-        let address =
-            (self.state.segments[GuestProcessorState::CS].base.wrapping_add(self.cursor)) as u32;
+        let address = (self.state.segments[GuestProcessorState::CS]
+            .base
+            .wrapping_add(self.cursor)) as u32;
         let byte = self.memory.fetch_byte(u64::from(address))?;
         self.bytes.push(byte);
         self.cursor = self.cursor.wrapping_add(1) as u32 as u64;
@@ -372,9 +368,7 @@ impl<'a> X86Decoder<'a> {
     pub fn register_value(&mut self, index: usize, width: X86Width) -> Result<u64, X86Error> {
         let operand = register_operand(index, width)?;
         let X86Operand::Register {
-            register,
-            high_byte,
-            ..
+            register, high_byte, ..
         } = operand
         else {
             return Err(X86Error::unsupported("Expected decoded register"));
@@ -443,8 +437,7 @@ impl<'a> X86Decoder<'a> {
                     let index = (sib >> 3) & 7;
                     let base = sib & 7;
                     if index != 4 {
-                        offset += (self.register_value(index as usize, X86Width::W32)? as i64)
-                            << scale;
+                        offset += (self.register_value(index as usize, X86Width::W32)? as i64) << scale;
                     }
                     if base == 5 && mode == 0 {
                         offset += self.immediate(X86Width::W32)? as i64;
@@ -478,11 +471,9 @@ impl<'a> X86Decoder<'a> {
             register,
             operand: X86Operand::Memory {
                 offset: wrapped,
-                segment: self.segment.unwrap_or(if stack {
-                    SegmentName::Ss
-                } else {
-                    SegmentName::Ds
-                }),
+                segment: self
+                    .segment
+                    .unwrap_or(if stack { SegmentName::Ss } else { SegmentName::Ds }),
                 stack_pointer_base,
             },
         })
@@ -495,10 +486,7 @@ impl<'a> X86Decoder<'a> {
         width_bytes: usize,
         access: GuestAccess,
     ) -> Result<GuestAddress, X86Error> {
-        let X86Operand::Memory {
-            offset, segment, ..
-        } = operand
-        else {
+        let X86Operand::Memory { offset, segment, .. } = operand else {
             return Err(X86Error::unsupported("Expected memory operand"));
         };
         let descriptor = self.state.segments[segment.index()];
@@ -521,9 +509,7 @@ impl<'a> X86Decoder<'a> {
     pub fn read(&mut self, operand: X86Operand, width: X86Width) -> Result<u64, X86Error> {
         match operand {
             X86Operand::Register {
-                register,
-                high_byte,
-                ..
+                register, high_byte, ..
             } => Ok(self.state.registers.read(register, width.register_width(), high_byte)?),
             X86Operand::Memory { .. } => {
                 let address = self.address(operand, width.bytes(), GuestAccess::Read)?;
@@ -546,23 +532,14 @@ impl<'a> X86Decoder<'a> {
     }
 
     /// Write an operand at `width`.
-    pub fn write(
-        &mut self,
-        operand: X86Operand,
-        width: X86Width,
-        value: u64,
-    ) -> Result<(), X86Error> {
+    pub fn write(&mut self, operand: X86Operand, width: X86Width, value: u64) -> Result<(), X86Error> {
         match operand {
             X86Operand::Register {
-                register,
-                high_byte,
-                ..
-            } => Ok(self.state.registers.write(
-                register,
-                width.register_width(),
-                value,
-                high_byte,
-            )?),
+                register, high_byte, ..
+            } => Ok(self
+                .state
+                .registers
+                .write(register, width.register_width(), value, high_byte)?),
             X86Operand::Memory { .. } => {
                 let address = self.address(operand, width.bytes(), GuestAccess::Write)?;
                 match width {

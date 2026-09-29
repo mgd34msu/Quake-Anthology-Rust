@@ -455,10 +455,7 @@ impl GuestPermissions {
                 Self::Read | Self::ReadWrite | Self::ReadExecute | Self::ReadWriteExecute
             ),
             GuestAccess::Write => matches!(self, Self::ReadWrite | Self::ReadWriteExecute),
-            GuestAccess::Execute => matches!(
-                self,
-                Self::Execute | Self::ReadExecute | Self::ReadWriteExecute
-            ),
+            GuestAccess::Execute => matches!(self, Self::Execute | Self::ReadExecute | Self::ReadWriteExecute),
         }
     }
 

@@ -37,17 +37,16 @@ use crate::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner};
 use crate::abi::GuestCpu;
 use crate::core::callbacks::HookState;
 use crate::core::contracts::{
-    GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext, GuestCallResult,
-    GuestCallSignature, GuestCallValue, GuestCallbackReference, GuestExport, GuestExportTarget,
-    GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage, GuestSymbolName,
-    GuestValueLayout, ModuleIdentity, NativeAbi, NativeCallAbi,
+    GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature,
+    GuestCallValue, GuestCallbackReference, GuestExport, GuestExportTarget, GuestIntegerWidth, GuestPermissions,
+    GuestRegister, GuestStorage, GuestSymbolName, GuestValueLayout, ModuleIdentity, NativeAbi, NativeCallAbi,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::{GuestProcessorInitialState, GuestProcessorState};
 use crate::elf::parse::inspect_elf;
 use crate::error::GuestError;
 use crate::pe::format::parse_pe;
-use crate::pe::loader::{MapPeImageOptions, map_pe_image};
+use crate::pe::loader::{map_pe_image, MapPeImageOptions};
 use crate::runtime::common::memory::write_unsigned;
 use crate::runtime::system_v::contracts::{SystemVInitializeOptions, SystemVRuntimeOptions};
 use crate::runtime::system_v::runtime::SystemVGuestRuntime;
@@ -104,6 +103,7 @@ impl ServerCpu {
 }
 
 /// Game runtime: format follows the loaded image.
+#[allow(clippy::large_enum_variant)]
 enum ServerRuntime {
     /// ELF game.
     SystemV(SystemVGuestRuntime),
@@ -230,7 +230,9 @@ impl GuestServerLogic {
 
     fn load_elf(&mut self, bytes: &[u8]) -> Result<(), GuestError> {
         let image = {
-            let Self { cpu, runtime, module, .. } = &mut *self;
+            let Self {
+                cpu, runtime, module, ..
+            } = &mut *self;
             let ServerRuntime::SystemV(runtime) = runtime else {
                 unreachable!("system-v guest rebuilds a system-v runtime");
             };
@@ -240,16 +242,25 @@ impl GuestServerLogic {
         self.vmmain = find_vmmain(&image.image.exports);
         let context = self.root_context(image.image.base);
         let budget = self.instruction_budget;
-        let Self { cpu, runtime, hooks, return_address, module, .. } = &mut *self;
+        let Self {
+            cpu,
+            runtime,
+            hooks,
+            return_address,
+            module,
+            ..
+        } = &mut *self;
         let ServerRuntime::SystemV(runtime) = runtime else {
             unreachable!("system-v guest rebuilds a system-v runtime");
         };
-        let mut runner =
-            GuestCallRunner::new(cpu.as_cpu(), Rc::clone(hooks), *return_address, None)?;
+        let mut runner = GuestCallRunner::new(cpu.as_cpu(), Rc::clone(hooks), *return_address, None)?;
         runtime.initialize(
             &mut runner,
             module,
-            &SystemVInitializeOptions { context, instruction_budget: budget },
+            &SystemVInitializeOptions {
+                context,
+                instruction_budget: budget,
+            },
         )
     }
 
@@ -276,16 +287,24 @@ impl GuestServerLogic {
         self.vmmain = find_vmmain(&image.image.exports);
         let context = self.root_context(image.image.base);
         let budget = self.instruction_budget;
-        let Self { cpu, runtime, hooks, return_address, .. } = &mut *self;
+        let Self {
+            cpu,
+            runtime,
+            hooks,
+            return_address,
+            ..
+        } = &mut *self;
         let ServerRuntime::Windows(runtime) = runtime else {
             unreachable!("windows guest rebuilds a windows runtime");
         };
-        let mut runner =
-            GuestCallRunner::new(cpu.as_cpu(), Rc::clone(hooks), *return_address, None)?;
+        let mut runner = GuestCallRunner::new(cpu.as_cpu(), Rc::clone(hooks), *return_address, None)?;
         runtime.initialize(
             &mut runner,
             &image,
-            &WindowsInitializeOptions { context, instruction_budget: budget },
+            &WindowsInitializeOptions {
+                context,
+                instruction_budget: budget,
+            },
         )
     }
 
@@ -323,10 +342,7 @@ impl GuestServerLogic {
         let request = GuestCallRequest {
             target: vmmain,
             signature: signature.clone(),
-            arguments: vec![
-                GuestCallValue::Int32(command),
-                GuestCallValue::Pointer(Some(*scratch)),
-            ],
+            arguments: vec![GuestCallValue::Int32(command), GuestCallValue::Pointer(Some(*scratch))],
             context: GuestCallContext {
                 module: module.clone(),
                 callback: GuestCallbackReference::NativeGuest {
@@ -367,7 +383,14 @@ impl GuestServerLogic {
     /// Map the stack, return trap, and scratch block, then attach the
     /// runtime to the fresh CPU.
     fn finish_reset(&mut self) -> Result<(), GuestError> {
-        let Self { cpu, runtime, hooks, return_address, scratch, .. } = &mut *self;
+        let Self {
+            cpu,
+            runtime,
+            hooks,
+            return_address,
+            scratch,
+            ..
+        } = &mut *self;
         let width = cpu.width();
         let stack_top = {
             let (_, memory) = cpu.as_cpu().parts();
@@ -395,7 +418,11 @@ impl GuestServerLogic {
             let (state, _) = cpu.as_cpu().parts();
             state.registers.write(
                 GuestRegister::Rsp,
-                if width == 8 { GuestIntegerWidth::B64 } else { GuestIntegerWidth::B32 },
+                if width == 8 {
+                    GuestIntegerWidth::B64
+                } else {
+                    GuestIntegerWidth::B32
+                },
                 stack_top,
                 false,
             )?;
@@ -488,8 +515,7 @@ impl ServerLogic for GuestServerLogic {
 }
 
 fn game_abi(bytes: &[u8]) -> Result<NativeAbi, GuestError> {
-    if bytes.len() >= 4 && bytes[0] == 0x7f && bytes[1] == b'E' && bytes[2] == b'L' && bytes[3] == b'F'
-    {
+    if bytes.len() >= 4 && bytes[0] == 0x7f && bytes[1] == b'E' && bytes[2] == b'L' && bytes[3] == b'F' {
         return Ok(inspect_elf(bytes)?.abi);
     }
     if bytes.len() >= 2 && bytes[0] == b'M' && bytes[1] == b'Z' {
@@ -499,13 +525,14 @@ fn game_abi(bytes: &[u8]) -> Result<NativeAbi, GuestError> {
 }
 
 fn find_vmmain(exports: &[GuestExport]) -> Option<GuestAddress> {
-    exports.iter().find_map(|export| match (&export.symbol, &export.target) {
-        (
-            GuestSymbolName::Name { name, .. },
-            GuestExportTarget::Address(address),
-        ) if name == "vmMain" => Some(*address),
-        _ => None,
-    })
+    exports
+        .iter()
+        .find_map(|export| match (&export.symbol, &export.target) {
+            (GuestSymbolName::Name { name, .. }, GuestExportTarget::Address(address)) if name == "vmMain" => {
+                Some(*address)
+            }
+            _ => None,
+        })
 }
 
 fn build_cpu(module: &ModuleIdentity, width: usize) -> Result<ServerCpu, GuestError> {
@@ -531,11 +558,7 @@ fn build_cpu(module: &ModuleIdentity, width: usize) -> Result<ServerCpu, GuestEr
     }
 }
 
-fn build_runtime(
-    hooks: &Rc<HookState>,
-    cpu: &mut ServerCpu,
-    system_v: bool,
-) -> Result<ServerRuntime, GuestError> {
+fn build_runtime(hooks: &Rc<HookState>, cpu: &mut ServerCpu, system_v: bool) -> Result<ServerRuntime, GuestError> {
     let (_, memory) = cpu.as_cpu().parts();
     if system_v {
         Ok(ServerRuntime::SystemV(SystemVGuestRuntime::new(
@@ -597,8 +620,6 @@ fn time_seconds(time: SourceTime) -> f64 {
 fn map_failure(failure: GuestCallFailure) -> GuestError {
     match failure {
         GuestCallFailure::Guest(error) => error,
-        GuestCallFailure::Stopped { stop, .. } => {
-            GuestError::callback(format!("game vmMain call stopped: {stop:?}"))
-        }
+        GuestCallFailure::Stopped { stop, .. } => GuestError::callback(format!("game vmMain call stopped: {stop:?}")),
     }
 }

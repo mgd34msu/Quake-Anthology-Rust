@@ -259,10 +259,8 @@ impl SystemVStdio {
         let slot = self.field(memory, file, 5)?;
         memory.write_pointer(slot, Some(memory.offset(next, 1)?))?;
         let flags = memory.read_u32(file)?;
-        if flags & 2 != 0 || (flags & 0x200 != 0 && value == 10) {
-            if self.flush(ctx, shared, file)? != 0 {
-                return Ok(-1);
-            }
+        if (flags & 2 != 0 || (flags & 0x200 != 0 && value == 10)) && self.flush(ctx, shared, file)? != 0 {
+            return Ok(-1);
         }
         Ok(i32::from(value))
     }
@@ -280,7 +278,7 @@ impl SystemVStdio {
         if !self.orient(ctx.memory(), file, wide)? {
             return Ok(-1);
         }
-        if wide && (value < 0 || value > 127) {
+        if wide && (!(0..=127).contains(&value)) {
             return self.error(ctx.memory(), file, 84);
         }
         if self.put_byte(ctx, shared, file, (value & 255) as u8)? < 0 {
@@ -426,7 +424,11 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
         ..stdio
     };
     let version = if pointer_bytes == 4 { "GLIBC_2.0" } else { "GLIBC_2.2.5" };
-    for (name, file) in [("stdin", stdio.stdin), ("stdout", stdio.stdout), ("stderr", stdio.stderr)] {
+    for (name, file) in [
+        ("stdin", stdio.stdin),
+        ("stdout", stdio.stdout),
+        ("stderr", stdio.stderr),
+    ] {
         let slot = host.allocate(pointer_bytes)?;
         host.memory.write_pointer(slot, Some(file))?;
         host.data("libc.so.6", name, Some(version), slot, pointer_bytes)?;
@@ -441,59 +443,105 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
     {
         let stdio = stdio.clone();
         let shared = Rc::clone(&host.shared);
-        host.service("libc.so.6", "fflush", &[Some(version), None], &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "libc.so.6",
+            "fflush",
+            &[Some(version), None],
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
                 let value = match pointer(args, 0)? {
                     Some(file) => stdio.flush(ctx, &shared, file)?,
                     None => {
                         let first = stdio.flush(ctx, &shared, stdio.stdout)?;
                         let second = stdio.flush(ctx, &shared, stdio.stderr)?;
-                        if first == 0 && second == 0 { 0 } else { -1 }
+                        if first == 0 && second == 0 {
+                            0
+                        } else {
+                            -1
+                        }
                     }
                 };
                 Ok(GuestCallResult::Value(GuestCallValue::Int32(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
     for name in ["fputc", "putc"] {
         let stdio = stdio.clone();
         let shared = Rc::clone(&host.shared);
-        host.service("libc.so.6", name, &[Some(version), None], &[GuestStorage::Int32, GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
-                let value = stdio.put(ctx, &shared, required_pointer(args, 1)?, ((integer(args, 0)? & 255) as u8) as i32, false)?;
+        host.service(
+            "libc.so.6",
+            name,
+            &[Some(version), None],
+            &[GuestStorage::Int32, GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
+                let value = stdio.put(
+                    ctx,
+                    &shared,
+                    required_pointer(args, 1)?,
+                    ((integer(args, 0)? & 255) as u8) as i32,
+                    false,
+                )?;
                 Ok(GuestCallResult::Value(GuestCallValue::Int32(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
     for name in ["fgetc", "getc"] {
         let stdio = stdio.clone();
         let shared = Rc::clone(&host.shared);
-        host.service("libc.so.6", name, &[Some(version), None], &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "libc.so.6",
+            name,
+            &[Some(version), None],
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
                 let value = stdio.get(ctx, &shared, required_pointer(args, 0)?, false)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Int32(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let stdio = stdio.clone();
-        host.service("libc.so.6", "ungetc", &[Some(version), None], &[GuestStorage::Int32, GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
-                let value = stdio.unget(ctx.memory(), required_pointer(args, 1)?, integer(args, 0)? as i64, false)?;
+        host.service(
+            "libc.so.6",
+            "ungetc",
+            &[Some(version), None],
+            &[GuestStorage::Int32, GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
+                let value = stdio.unget(
+                    ctx.memory(),
+                    required_pointer(args, 1)?,
+                    integer(args, 0)? as i64,
+                    false,
+                )?;
                 Ok(GuestCallResult::Value(GuestCallValue::Int32(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let stdio = stdio.clone();
         let shared = Rc::clone(&host.shared);
         let pointer_storage = host.pointer_storage();
-        host.service("libc.so.6", "fwrite", &[Some(version), None], &[GuestStorage::Pointer, pointer_storage, pointer_storage, GuestStorage::Pointer], Some(pointer_storage), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "libc.so.6",
+            "fwrite",
+            &[Some(version), None],
+            &[
+                GuestStorage::Pointer,
+                pointer_storage,
+                pointer_storage,
+                GuestStorage::Pointer,
+            ],
+            Some(pointer_storage),
+            Rc::new(move |ctx, _, args| {
                 let size = count(args, 1)?;
-                let total = size.checked_mul(count(args, 2)?).filter(|total| *total <= 0x1000_0000).ok_or_else(|| {
-                    GuestError::invalid("Guest fwrite extent exceeds runtime limit")
-                })?;
+                let total = size
+                    .checked_mul(count(args, 2)?)
+                    .filter(|total| *total <= 0x1000_0000)
+                    .ok_or_else(|| GuestError::invalid("Guest fwrite extent exceeds runtime limit"))?;
                 let memory = ctx.memory();
                 let bytes = if total == 0 {
                     Vec::new()
@@ -501,21 +549,36 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
                     memory.copy(required_pointer(args, 0)?, total)?
                 };
                 let file = required_pointer(args, 3)?;
-                let written = if total == 0 { 0 } else { stdio.write(ctx, &shared, file, &bytes)? };
-                Ok(stdio.size_result(if size == 0 { 0 } else { written / size }))
-            },
-        ))?;
+                let written = if total == 0 {
+                    0
+                } else {
+                    stdio.write(ctx, &shared, file, &bytes)?
+                };
+                Ok(stdio.size_result(written.checked_div(size).unwrap_or(0)))
+            }),
+        )?;
     }
     {
         let stdio = stdio.clone();
         let shared = Rc::clone(&host.shared);
         let pointer_storage = host.pointer_storage();
-        host.service("libc.so.6", "fread", &[Some(version), None], &[GuestStorage::Pointer, pointer_storage, pointer_storage, GuestStorage::Pointer], Some(pointer_storage), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "libc.so.6",
+            "fread",
+            &[Some(version), None],
+            &[
+                GuestStorage::Pointer,
+                pointer_storage,
+                pointer_storage,
+                GuestStorage::Pointer,
+            ],
+            Some(pointer_storage),
+            Rc::new(move |ctx, _, args| {
                 let size = count(args, 1)?;
-                let total = size.checked_mul(count(args, 2)?).filter(|total| *total <= 0x1000_0000).ok_or_else(|| {
-                    GuestError::invalid("Guest fread extent exceeds runtime limit")
-                })?;
+                let total = size
+                    .checked_mul(count(args, 2)?)
+                    .filter(|total| *total <= 0x1000_0000)
+                    .ok_or_else(|| GuestError::invalid("Guest fread extent exceeds runtime limit"))?;
                 if total == 0 {
                     return Ok(stdio.size_result(0));
                 }
@@ -532,11 +595,16 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
                     read += 1;
                 }
                 Ok(stdio.size_result(read / size))
-            },
-        ))?;
+            }),
+        )?;
     }
-    host.service("libc.so.6", "fwide", &[Some(if pointer_bytes == 4 { "GLIBC_2.1" } else { version }), None], &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Int32), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        "libc.so.6",
+        "fwide",
+        &[Some(if pointer_bytes == 4 { "GLIBC_2.1" } else { version }), None],
+        &[GuestStorage::Pointer, GuestStorage::Int32],
+        Some(GuestStorage::Int32),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let file = required_pointer(args, 0)?;
             let slot = memory.offset(file, layout.mode)?;
@@ -544,8 +612,8 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
                 memory.write_i32(slot, (integer(args, 1)? as i64).signum() as i32)?;
             }
             Ok(GuestCallResult::Value(GuestCallValue::Int32(memory.read_i32(slot)?)))
-        },
-    ))?;
+        }),
+    )?;
     let table = host.allocate(21 * pointer_bytes)?;
     host.data(
         "libc.so.6",
@@ -555,38 +623,68 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
         21 * pointer_bytes,
     )?;
     let operations = [
-        "finish", "overflow", "underflow", "uflow", "pbackfail", "xsputn", "xsgetn", "seekoff",
-        "seekpos", "setbuf", "sync", "doallocate", "read", "write", "seek", "close", "stat",
-        "showmanyc", "imbue",
+        "finish",
+        "overflow",
+        "underflow",
+        "uflow",
+        "pbackfail",
+        "xsputn",
+        "xsgetn",
+        "seekoff",
+        "seekpos",
+        "setbuf",
+        "sync",
+        "doallocate",
+        "read",
+        "write",
+        "seek",
+        "close",
+        "stat",
+        "showmanyc",
+        "imbue",
     ];
     for (index, operation) in operations.iter().enumerate() {
         let name = format!("__guest_IO_file_{operation}");
         let address = if *operation == "sync" {
             let stdio = stdio.clone();
             let shared = Rc::clone(&host.shared);
-            host.service("libc.so.6", &name, &[None], &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-                move |ctx, _, args| {
+            host.service(
+                "libc.so.6",
+                &name,
+                &[None],
+                &[GuestStorage::Pointer],
+                Some(GuestStorage::Int32),
+                Rc::new(move |ctx, _, args| {
                     let value = stdio.flush(ctx, &shared, required_pointer(args, 0)?)?;
                     Ok(GuestCallResult::Value(GuestCallValue::Int32(value)))
-                },
-            ))?;
+                }),
+            )?;
             host.resolve_address("libc.so.6", &name, None)
                 .ok_or_else(|| GuestError::callback("Missing FILE sync"))?
         } else if *operation == "overflow" {
             let stdio = stdio.clone();
             let shared = Rc::clone(&host.shared);
-            host.service("libc.so.6", &name, &[None], &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Int32), Rc::new(
-                move |ctx, _, args| {
+            host.service(
+                "libc.so.6",
+                &name,
+                &[None],
+                &[GuestStorage::Pointer, GuestStorage::Int32],
+                Some(GuestStorage::Int32),
+                Rc::new(move |ctx, _, args| {
                     let file = required_pointer(args, 0)?;
                     let value = integer(args, 1)? as i64;
                     let result = if value == -1 {
-                        if stdio.flush(ctx, &shared, file)? == 0 { 0 } else { -1 }
+                        if stdio.flush(ctx, &shared, file)? == 0 {
+                            0
+                        } else {
+                            -1
+                        }
                     } else {
                         stdio.put(ctx, &shared, file, (value & 255) as i32, false)?
                     };
                     Ok(GuestCallResult::Value(GuestCallValue::Int32(result)))
-                },
-            ))?;
+                }),
+            )?;
             host.resolve_address("libc.so.6", &name, None)
                 .ok_or_else(|| GuestError::callback("Missing FILE overflow"))?
         } else {
@@ -598,7 +696,8 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
                 "this FILE virtual operation is not implemented",
             )?
         };
-        host.memory.write_pointer(host.memory.offset(table, (index as i64 + 2) * word)?, Some(address))?;
+        host.memory
+            .write_pointer(host.memory.offset(table, (index as i64 + 2) * word)?, Some(address))?;
     }
     let wide_table = host.allocate(21 * pointer_bytes)?;
     host.data(
@@ -610,7 +709,8 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
     )?;
     for (index, operation) in operations.iter().enumerate() {
         let address = if *operation == "sync" {
-            host.memory.read_pointer(host.memory.offset(table, (index as i64 + 2) * word)?)?
+            host.memory
+                .read_pointer(host.memory.offset(table, (index as i64 + 2) * word)?)?
         } else {
             Some(host.unavailable(
                 "libc.so.6",
@@ -620,13 +720,20 @@ pub fn build_stdio(host: &mut SystemVServiceRegistrar<'_>) -> Result<SystemVStdi
                 "this wide FILE virtual operation is not implemented",
             )?)
         };
-        host.memory.write_pointer(host.memory.offset(wide_table, (index as i64 + 2) * word)?, address)?;
+        host.memory
+            .write_pointer(host.memory.offset(wide_table, (index as i64 + 2) * word)?, address)?;
     }
     for file in [stdio.stdin, stdio.stdout, stdio.stderr] {
-        host.memory.write_pointer(host.memory.offset(file, layout.size as i64)?, Some(table))?;
-        let wide = host.memory.read_pointer(host.memory.offset(file, layout.wide_data)?)?
+        host.memory
+            .write_pointer(host.memory.offset(file, layout.size as i64)?, Some(table))?;
+        let wide = host
+            .memory
+            .read_pointer(host.memory.offset(file, layout.wide_data)?)?
             .ok_or_else(|| GuestError::callback("Missing wide FILE data"))?;
-        host.memory.write_pointer(host.memory.offset(wide, if pointer_bytes == 4 { 176 } else { 304 })?, Some(wide_table))?;
+        host.memory.write_pointer(
+            host.memory.offset(wide, if pointer_bytes == 4 { 176 } else { 304 })?,
+            Some(wide_table),
+        )?;
     }
     Ok(stdio)
 }
@@ -642,17 +749,22 @@ fn create_file(
     let flags = 0xfbad_0000u32 | 0x2080 | if descriptor == 0 { 8 } else { 4 } | if descriptor == 2 { 2 } else { 0 };
     host.memory.write_u32(file, flags)?;
     host.memory.write_pointer(host.memory.offset(file, 13 * word)?, chain)?;
-    host.memory.write_i32(host.memory.offset(file, layout.descriptor)?, descriptor)?;
+    host.memory
+        .write_i32(host.memory.offset(file, layout.descriptor)?, descriptor)?;
     host.memory.write_i64(host.memory.offset(file, layout.offset)?, -1)?;
     if host.pointer_bytes == 8 {
-        host.memory.write_i64(host.memory.offset(file, layout.old_offset)?, -1)?;
+        host.memory
+            .write_i64(host.memory.offset(file, layout.old_offset)?, -1)?;
     } else {
-        host.memory.write_i32(host.memory.offset(file, layout.old_offset)?, -1)?;
+        host.memory
+            .write_i32(host.memory.offset(file, layout.old_offset)?, -1)?;
     }
     let lock = host.allocate(word as usize * 2 + 8)?;
-    host.memory.write_pointer(host.memory.offset(file, layout.lock)?, Some(lock))?;
+    host.memory
+        .write_pointer(host.memory.offset(file, layout.lock)?, Some(lock))?;
     // _IO_wide_data starts with eleven wchar_t pointers and an mbstate_t.
     let wide = host.allocate(if host.pointer_bytes == 8 { 312 } else { 180 })?;
-    host.memory.write_pointer(host.memory.offset(file, layout.wide_data)?, Some(wide))?;
+    host.memory
+        .write_pointer(host.memory.offset(file, layout.wide_data)?, Some(wide))?;
     Ok(file)
 }

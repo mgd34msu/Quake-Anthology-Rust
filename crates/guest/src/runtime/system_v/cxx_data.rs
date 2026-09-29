@@ -40,20 +40,12 @@ pub struct CxxAbiData {
 pub type SharedAbi = Rc<RefCell<CxxAbiData>>;
 
 /// Guest address plus `offset` bytes.
-pub fn abi_slot(
-    memory: &SparseGuestMemory,
-    address: GuestAddress,
-    offset: i64,
-) -> Result<GuestAddress, GuestError> {
+pub fn abi_slot(memory: &SparseGuestMemory, address: GuestAddress, offset: i64) -> Result<GuestAddress, GuestError> {
     memory.offset(address, offset)
 }
 
 /// Allocate and write a guest copy of `text`.
-pub fn abi_bytes(
-    ctx: &SystemVContext,
-    memory: &mut SparseGuestMemory,
-    text: &str,
-) -> Result<GuestAddress, GuestError> {
+pub fn abi_bytes(ctx: &SystemVContext, memory: &mut SparseGuestMemory, text: &str) -> Result<GuestAddress, GuestError> {
     let bytes = string_bytes(text, false);
     let address = ctx.allocate(memory, bytes.len())?;
     memory.write(address, &bytes)?;
@@ -70,7 +62,15 @@ pub fn abi_function(
     invoke: HostCallbackFn,
     version: &str,
 ) -> Result<GuestAddress, GuestError> {
-    ctx.service(memory, "libstdc++.so.6", name, &[Some(version), None], parameters, result, invoke)?;
+    ctx.service(
+        memory,
+        "libstdc++.so.6",
+        name,
+        &[Some(version), None],
+        parameters,
+        result,
+        invoke,
+    )?;
     ctx.resolve_address("libstdc++.so.6", name, Some(version))
         .ok_or_else(|| GuestError::callback(format!("Unbound C++ service {name}")))
 }
@@ -105,19 +105,34 @@ pub fn abi_data(
 }
 
 /// Build the root RTTI graph.
-pub fn build_abi(
-    ctx: &SystemVContext,
-    memory: &mut SparseGuestMemory,
-) -> Result<CxxAbiData, GuestError> {
+pub fn build_abi(ctx: &SystemVContext, memory: &mut SparseGuestMemory) -> Result<CxxAbiData, GuestError> {
     let mut abi = CxxAbiData::default();
     let pointer = ctx.pointer_bytes as i64;
     let class_name = "N10__cxxabiv117__class_type_infoE";
     let single_name = "N10__cxxabiv120__si_class_type_infoE";
     let multiple_name = "N10__cxxabiv121__vmi_class_type_infoE";
     let base = abi_data(ctx, memory, "_ZTISt9type_info", 2 * pointer as usize, "GLIBCXX_3.4")?;
-    let class_info = abi_data(ctx, memory, &format!("_ZTI{class_name}"), 3 * pointer as usize, "CXXABI_1.3")?;
-    let single_info = abi_data(ctx, memory, &format!("_ZTI{single_name}"), 3 * pointer as usize, "CXXABI_1.3")?;
-    let multiple_info = abi_data(ctx, memory, &format!("_ZTI{multiple_name}"), 3 * pointer as usize, "CXXABI_1.3")?;
+    let class_info = abi_data(
+        ctx,
+        memory,
+        &format!("_ZTI{class_name}"),
+        3 * pointer as usize,
+        "CXXABI_1.3",
+    )?;
+    let single_info = abi_data(
+        ctx,
+        memory,
+        &format!("_ZTI{single_name}"),
+        3 * pointer as usize,
+        "CXXABI_1.3",
+    )?;
+    let multiple_info = abi_data(
+        ctx,
+        memory,
+        &format!("_ZTI{multiple_name}"),
+        3 * pointer as usize,
+        "CXXABI_1.3",
+    )?;
     let pointer_test = abi_function(
         ctx,
         memory,
@@ -153,7 +168,8 @@ pub fn build_abi(
             };
             memory.write_pointer(abi_slot(memory, table, (index + 2) * pointer)?, Some(method))?;
         }
-        abi.class_info_vtables.insert(form.to_string(), abi_slot(memory, table, 2 * pointer)?);
+        abi.class_info_vtables
+            .insert(form.to_string(), abi_slot(memory, table, 2 * pointer)?);
     }
     let class_vtable = abi.class_info_vtables.get("class").copied();
     let single_vtable = abi.class_info_vtables.get("si").copied();
@@ -257,10 +273,7 @@ pub fn abi_vtable(
     )?;
     memory.write_pointer(abi_slot(memory, table, pointer)?, Some(info))?;
     for (index, entry) in entries.iter().enumerate() {
-        memory.write_pointer(
-            abi_slot(memory, table, (index as i64 + 2) * pointer)?,
-            Some(*entry),
-        )?;
+        memory.write_pointer(abi_slot(memory, table, (index as i64 + 2) * pointer)?, Some(*entry))?;
     }
     abi_slot(memory, table, 2 * pointer)
 }

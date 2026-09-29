@@ -10,30 +10,25 @@ use std::rc::Rc;
 use crate::abi::GuestCpu;
 use crate::core::callbacks::HookState;
 use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestException, GuestExecutionStop, GuestFlag, GuestInstruction,
-    GuestRegister,
+    GuestAccess, GuestAddress, GuestException, GuestExecutionStop, GuestFlag, GuestInstruction, GuestRegister,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
 use crate::error::GuestError;
 use crate::floating_point::contracts::{
-    NumericExecutionContext, NumericExecutionResult, NumericInstruction, NumericOperand,
-    NumericPrefix,
+    NumericExecutionContext, NumericExecutionResult, NumericInstruction, NumericOperand, NumericPrefix,
 };
 use crate::floating_point::execute_numeric_instruction;
 use crate::x86::arithmetic::{
-    alu, condition, quotient_fits_signed, result_flags, shift, sign_extend, sign_extend_double,
-    signed_multiply,
+    alu, condition, quotient_fits_signed, result_flags, shift, sign_extend, sign_extend_double, signed_multiply,
 };
 use crate::x86::arithmetic::{AluOperation, ShiftOperation};
 use crate::x86::decoder::{
-    guest_address, register_operand, RepeatPrefix, SegmentName, X86Decoder, X86Error,
-    X86Operand, X86Width,
+    guest_address, register_operand, RepeatPrefix, SegmentName, X86Decoder, X86Error, X86Operand, X86Width,
 };
 
 /// Numeric executor hook (defaults to the exact x87/SSE executor).
-pub type NumericExecutor =
-    fn(NumericExecutionContext) -> Result<NumericExecutionResult, crate::error::GuestError>;
+pub type NumericExecutor = fn(NumericExecutionContext) -> Result<NumericExecutionResult, crate::error::GuestError>;
 
 fn arithmetic_operation(index: usize) -> Result<AluOperation, X86Error> {
     match index {
@@ -81,20 +76,13 @@ fn push(decoder: &mut X86Decoder, width: X86Width, value: u64) -> Result<(), X86
     let pointer = decoder
         .state
         .registers
-        .read(GuestRegister::Rsp, X86Width::W32.register_width(), false)
-        ?
+        .read(GuestRegister::Rsp, X86Width::W32.register_width(), false)?
         .wrapping_sub(width.bytes() as u64) as u32 as u64;
     decoder.write(stack_operand(pointer), width, value)?;
     decoder
         .state
         .registers
-        .write(
-            GuestRegister::Rsp,
-            X86Width::W32.register_width(),
-            pointer,
-            false,
-        )
-        ?;
+        .write(GuestRegister::Rsp, X86Width::W32.register_width(), pointer, false)?;
     Ok(())
 }
 
@@ -102,27 +90,18 @@ fn pop(decoder: &mut X86Decoder, width: X86Width) -> Result<u64, X86Error> {
     let pointer = decoder
         .state
         .registers
-        .read(GuestRegister::Rsp, X86Width::W32.register_width(), false)
-        ?;
+        .read(GuestRegister::Rsp, X86Width::W32.register_width(), false)?;
     let value = decoder.read(stack_operand(pointer), width)?;
-    decoder
-        .state
-        .registers
-        .write(
-            GuestRegister::Rsp,
-            X86Width::W32.register_width(),
-            pointer.wrapping_add(width.bytes() as u64),
-            false,
-        )
-        ?;
+    decoder.state.registers.write(
+        GuestRegister::Rsp,
+        X86Width::W32.register_width(),
+        pointer.wrapping_add(width.bytes() as u64),
+        false,
+    )?;
     Ok(value)
 }
 
-fn lock(
-    decoder: &X86Decoder,
-    operand: X86Operand,
-    allowed: bool,
-) -> Result<(), X86Error> {
+fn lock(decoder: &X86Decoder, operand: X86Operand, allowed: bool) -> Result<(), X86Error> {
     if decoder.lock && (!allowed || !matches!(operand, X86Operand::Memory { .. })) {
         return Err(X86Error::fault(
             6,
@@ -145,25 +124,14 @@ fn execute_alu(
     if write {
         decoder.check_write(destination, width)?;
     }
-    let value = alu(
-        operation,
-        width.bits(),
-        left,
-        right,
-        &mut decoder.state.flags,
-    );
+    let value = alu(operation, width.bits(), left, right, &mut decoder.state.flags);
     if write {
         decoder.write(destination, width, value)?;
     }
     Ok(())
 }
 
-fn incdec(
-    decoder: &mut X86Decoder,
-    operand: X86Operand,
-    width: X86Width,
-    decrement: bool,
-) -> Result<(), X86Error> {
+fn incdec(decoder: &mut X86Decoder, operand: X86Operand, width: X86Width, decrement: bool) -> Result<(), X86Error> {
     let carry = decoder.state.flags.get(GuestFlag::Carry);
     execute_alu(
         decoder,
@@ -192,11 +160,7 @@ fn segment(index: usize) -> Result<SegmentName, X86Error> {
     }
 }
 
-fn set_selector(
-    decoder: &mut X86Decoder,
-    segment: SegmentName,
-    selector: u16,
-) -> Result<(), X86Error> {
+fn set_selector(decoder: &mut X86Decoder, segment: SegmentName, selector: u16) -> Result<(), X86Error> {
     if segment == SegmentName::Cs {
         return Err(X86Error::fault(6, "MOV cannot load CS"));
     }
@@ -233,8 +197,7 @@ fn enter(decoder: &mut X86Decoder) -> Result<(), X86Error> {
         values.push(frame);
     }
     let rsp = decoder.register_value(4, X86Width::W32)?;
-    let final_stack =
-        rsp.wrapping_sub(values.len() as u64 * width.bytes() as u64) as u32 as u64;
+    let final_stack = rsp.wrapping_sub(values.len() as u64 * width.bytes() as u64) as u32 as u64;
     let operand = stack_operand(final_stack);
     let address = decoder.address(operand, values.len() * width.bytes(), GuestAccess::Write)?;
     decoder
@@ -246,23 +209,13 @@ fn enter(decoder: &mut X86Decoder) -> Result<(), X86Error> {
     decoder
         .state
         .registers
-        .write(
-            GuestRegister::Rbp,
-            width.register_width(),
-            frame,
-            false,
-        )
-        ?;
-    decoder
-        .state
-        .registers
-        .write(
-            GuestRegister::Rsp,
-            X86Width::W32.register_width(),
-            final_stack.wrapping_sub(allocation),
-            false,
-        )
-        ?;
+        .write(GuestRegister::Rbp, width.register_width(), frame, false)?;
+    decoder.state.registers.write(
+        GuestRegister::Rsp,
+        X86Width::W32.register_width(),
+        final_stack.wrapping_sub(allocation),
+        false,
+    )?;
     Ok(())
 }
 
@@ -293,11 +246,12 @@ fn string_op(decoder: &mut X86Decoder) -> Result<(), X86Error> {
         segment: SegmentName::Es,
         stack_pointer_base: false,
     };
-    let step = width.bytes() as i64 * if decoder.state.flags.get(GuestFlag::Direction) {
-        -1
-    } else {
-        1
-    };
+    let step = width.bytes() as i64
+        * if decoder.state.flags.get(GuestFlag::Direction) {
+            -1
+        } else {
+            1
+        };
     let category = op & 0xfe;
     match category {
         0xa4 => {
@@ -332,46 +286,33 @@ fn string_op(decoder: &mut X86Decoder) -> Result<(), X86Error> {
         let X86Operand::Memory { offset, .. } = source else {
             unreachable!("source is memory");
         };
-        decoder
-            .state
-            .registers
-            .write(
-                GuestRegister::Rsi,
-                addr_width.register_width(),
-                offset.wrapping_add(step as u64) & wrap,
-                false,
-            )
-            ?;
+        decoder.state.registers.write(
+            GuestRegister::Rsi,
+            addr_width.register_width(),
+            offset.wrapping_add(step as u64) & wrap,
+            false,
+        )?;
     }
     if category != 0xac {
         let X86Operand::Memory { offset, .. } = destination else {
             unreachable!("destination is memory");
         };
-        decoder
-            .state
-            .registers
-            .write(
-                GuestRegister::Rdi,
-                addr_width.register_width(),
-                offset.wrapping_add(step as u64) & wrap,
-                false,
-            )
-            ?;
+        decoder.state.registers.write(
+            GuestRegister::Rdi,
+            addr_width.register_width(),
+            offset.wrapping_add(step as u64) & wrap,
+            false,
+        )?;
     }
     if repeated {
-        decoder
-            .state
-            .registers
-            .write(
-                GuestRegister::Rcx,
-                addr_width.register_width(),
-                count.wrapping_sub(1) & wrap,
-                false,
-            )
-            ?;
+        decoder.state.registers.write(
+            GuestRegister::Rcx,
+            addr_width.register_width(),
+            count.wrapping_sub(1) & wrap,
+            false,
+        )?;
         let compare = category == 0xa6 || category == 0xae;
-        if count != 1
-            && (!compare || decoder.state.flags.get(GuestFlag::Zero) == (decoder.repeat == RepeatPrefix::F3))
+        if count != 1 && (!compare || decoder.state.flags.get(GuestFlag::Zero) == (decoder.repeat == RepeatPrefix::F3))
         {
             decoder.cursor = decoder.start;
         }
@@ -381,11 +322,7 @@ fn string_op(decoder: &mut X86Decoder) -> Result<(), X86Error> {
 
 fn unary(decoder: &mut X86Decoder, width: X86Width) -> Result<(), X86Error> {
     let decoded = decoder.modrm(width)?;
-    lock(
-        decoder,
-        decoded.operand,
-        decoded.group == 2 || decoded.group == 3,
-    )?;
+    lock(decoder, decoded.operand, decoded.group == 2 || decoded.group == 3)?;
     let operand = decoder.read(decoded.operand, width)?;
     if decoded.group == 0 || decoded.group == 1 {
         let immediate = decoder.immediate(width)?;
@@ -396,13 +333,7 @@ fn unary(decoder: &mut X86Decoder, width: X86Width) -> Result<(), X86Error> {
     }
     if decoded.group == 3 {
         decoder.check_write(decoded.operand, width)?;
-        let value = alu(
-            AluOperation::Sub,
-            width.bits(),
-            0,
-            operand,
-            &mut decoder.state.flags,
-        );
+        let value = alu(AluOperation::Sub, width.bits(), 0, operand, &mut decoder.state.flags);
         return decoder.write(decoded.operand, width, value);
     }
     let low = decoder.read(register_operand(0, width)?, width)?;
@@ -422,16 +353,12 @@ fn unary(decoder: &mut X86Decoder, width: X86Width) -> Result<(), X86Error> {
         decoder.state.flags.set(GuestFlag::Carry, overflow);
         decoder.state.flags.set(GuestFlag::Overflow, overflow);
         if width == X86Width::W8 {
-            decoder
-                .state
-                .registers
-                .write(
-                    GuestRegister::Rax,
-                    X86Width::W16.register_width(),
-                    product as u64,
-                    false,
-                )
-                ?;
+            decoder.state.registers.write(
+                GuestRegister::Rax,
+                X86Width::W16.register_width(),
+                product as u64,
+                false,
+            )?;
         } else {
             decoder.write(register_operand(0, width)?, width, product as u64)?;
             decoder.write(
@@ -527,11 +454,20 @@ fn bit_op(decoder: &mut X86Decoder, op: u8) -> Result<(), X86Error> {
     let bit = (index as u64) & ((1 << bit_bits) - 1);
     let mut operand = decoded.operand;
     if matches!(operand, X86Operand::Memory { .. }) && op != 0xba {
-        let X86Operand::Memory { offset, segment, stack_pointer_base } = operand else {
+        let X86Operand::Memory {
+            offset,
+            segment,
+            stack_pointer_base,
+        } = operand
+        else {
             unreachable!("memory checked above");
         };
         let delta = (index - bit as i64) / width.bits() as i64 * (width.bytes() as i64);
-        let wrap = if decoder.address_bits == 16 { 0xffff } else { 0xffff_ffff };
+        let wrap = if decoder.address_bits == 16 {
+            0xffff
+        } else {
+            0xffff_ffff
+        };
         operand = X86Operand::Memory {
             offset: offset.wrapping_add(delta as u64) & wrap,
             segment,
@@ -593,13 +529,7 @@ fn double_shift(decoder: &mut X86Decoder, op: u8) -> Result<(), X86Error> {
         != 0;
     let old_overflow = decoder.state.flags.get(GuestFlag::Overflow);
     let old_auxiliary = decoder.state.flags.get(GuestFlag::AuxiliaryCarry);
-    alu(
-        AluOperation::Or,
-        width.bits(),
-        result,
-        0,
-        &mut decoder.state.flags,
-    );
+    alu(AluOperation::Or, width.bits(), result, 0, &mut decoder.state.flags);
     decoder.state.flags.set(GuestFlag::Carry, carry);
     decoder.state.flags.set(GuestFlag::AuxiliaryCarry, old_auxiliary);
     decoder.state.flags.set(
@@ -641,11 +571,7 @@ fn compare_exchange8(decoder: &mut X86Decoder) -> Result<(), X86Error> {
     Ok(())
 }
 
-fn floating(
-    decoder: &mut X86Decoder,
-    numeric: NumericExecutor,
-    secondary_opcode: Option<u8>,
-) -> Result<(), X86Error> {
+fn floating(decoder: &mut X86Decoder, numeric: NumericExecutor, secondary_opcode: Option<u8>) -> Result<(), X86Error> {
     let decoded = if decoder.opcode == 0x9b || secondary_opcode == Some(0x77) {
         None
     } else {
@@ -654,16 +580,15 @@ fn floating(
     let mut operand: Option<NumericOperand> = None;
     if let Some(decoded) = &decoded {
         operand = Some(match decoded.operand {
-            X86Operand::Memory { .. } => NumericOperand::Memory(decoder.address(decoded.operand, 1, GuestAccess::Read)?),
+            X86Operand::Memory { .. } => {
+                NumericOperand::Memory(decoder.address(decoded.operand, 1, GuestAccess::Read)?)
+            }
             X86Operand::Register { index, .. } => NumericOperand::Register(index),
         });
     }
-    let needs_immediate = secondary_opcode.is_some_and(|op| matches!(op, 0x70 | 0x71 | 0x72 | 0x73 | 0xc2 | 0xc4 | 0xc5 | 0xc6));
-    let immediate = if needs_immediate {
-        Some(decoder.byte()?)
-    } else {
-        None
-    };
+    let needs_immediate =
+        secondary_opcode.is_some_and(|op| matches!(op, 0x70 | 0x71 | 0x72 | 0x73 | 0xc2 | 0xc4 | 0xc5 | 0xc6));
+    let immediate = if needs_immediate { Some(decoder.byte()?) } else { None };
     let instruction = NumericInstruction {
         opcode: decoder.opcode,
         secondary_opcode,
@@ -692,9 +617,7 @@ fn floating(
     match result {
         NumericExecutionResult::Executed => Ok(()),
         NumericExecutionResult::Unsupported { detail } => Err(X86Error::Unsupported(detail)),
-        NumericExecutionResult::Exception { vector, detail } => {
-            Err(X86Error::fault(u32::from(vector), detail))
-        }
+        NumericExecutionResult::Exception { vector, detail } => Err(X86Error::fault(u32::from(vector), detail)),
     }
 }
 
@@ -706,25 +629,21 @@ fn extended(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<(), X8
     }
     if (0x80..=0x8f).contains(&op) {
         let relative = decoder.signed(width)?;
-        let take = condition(op & 15, &decoder.state.flags)
-            ?;
+        let take = condition(op & 15, &decoder.state.flags)?;
         if take {
-            decoder.cursor =
-                (decoder.cursor as i64).wrapping_add(relative) as u64 & mask_for(width);
+            decoder.cursor = (decoder.cursor as i64).wrapping_add(relative) as u64 & mask_for(width);
         }
         return Ok(());
     }
     if (0x90..=0x9f).contains(&op) {
         let decoded = decoder.modrm(X86Width::W8)?;
-        let take = condition(op & 15, &decoder.state.flags)
-            ?;
+        let take = condition(op & 15, &decoder.state.flags)?;
         return decoder.write(decoded.operand, X86Width::W8, u64::from(take));
     }
     if (0x40..=0x4f).contains(&op) {
         let decoded = decoder.modrm(width)?;
         let value = decoder.read(decoded.operand, width)?;
-        let take = condition(op & 15, &decoder.state.flags)
-            ?;
+        let take = condition(op & 15, &decoder.state.flags)?;
         if take {
             decoder.write(decoded.register, width, value)?;
         }
@@ -732,17 +651,16 @@ fn extended(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<(), X8
     }
     if (0xc8..=0xcf).contains(&op) {
         if width != X86Width::W32 {
-            return Err(X86Error::unsupported("16-bit BSWAP has undefined architectural behavior"));
+            return Err(X86Error::unsupported(
+                "16-bit BSWAP has undefined architectural behavior",
+            ));
         }
         let operand = register_operand((op & 7) as usize, X86Width::W32)?;
         let value = decoder.read(operand, X86Width::W32)?;
         return decoder.write(
             operand,
             X86Width::W32,
-            ((value & 0xff) << 24)
-                | ((value & 0xff00) << 8)
-                | ((value >> 8) & 0xff00)
-                | ((value >> 24) & 0xff),
+            ((value & 0xff) << 24) | ((value & 0xff00) << 8) | ((value >> 8) & 0xff00) | ((value >> 24) & 0xff),
         );
     }
     match op {
@@ -902,8 +820,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
     }
     if (0x70..=0x7f).contains(&op) {
         let relative = decoder.signed(X86Width::W8)?;
-        let take = condition(op & 15, &decoder.state.flags)
-            ?;
+        let take = condition(op & 15, &decoder.state.flags)?;
         if take {
             decoder.cursor = (decoder.cursor as i64).wrapping_add(relative) as u64 & mask_for(width);
         }
@@ -967,7 +884,9 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             let stack = decoder.register_value(4, X86Width::W32)?;
             let target = stack_operand(stack.wrapping_sub(width.bits() as u64));
             let address = decoder.address(target, width.bits() as usize, GuestAccess::Write)?;
-            decoder.memory.check(address, width.bits() as usize, GuestAccess::Write)?;
+            decoder
+                .memory
+                .check(address, width.bits() as usize, GuestAccess::Write)?;
             for index in 0..8 {
                 let value = if index == 4 {
                     initial_sp
@@ -1013,19 +932,21 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             decoder.write(decoded.register, width, value)?;
             Ok(false)
         }
-        0x80 | 0x81 | 0x82 | 0x83 => {
-            let bits = if op == 0x80 || op == 0x82 {
-                X86Width::W8
-            } else {
-                width
-            };
+        0x80..=0x83 => {
+            let bits = if op == 0x80 || op == 0x82 { X86Width::W8 } else { width };
             let decoded = decoder.modrm(bits)?;
             let immediate = if op == 0x83 {
                 decoder.signed(X86Width::W8)? as u64
             } else {
                 decoder.immediate(bits)?
             };
-            execute_alu(decoder, arithmetic_operation(decoded.group)?, bits, decoded.operand, immediate)?;
+            execute_alu(
+                decoder,
+                arithmetic_operation(decoded.group)?,
+                bits,
+                decoded.operand,
+                immediate,
+            )?;
             Ok(false)
         }
         0x84 | 0x85 => {
@@ -1045,7 +966,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             decoder.write(decoded.register, bits, old)?;
             Ok(false)
         }
-        0x88 | 0x89 | 0x8a | 0x8b => {
+        0x88..=0x8b => {
             let bits = if op & 1 == 0 { X86Width::W8 } else { width };
             let decoded = decoder.modrm(bits)?;
             let (destination, source) = if op < 0x8a {
@@ -1097,7 +1018,11 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
                     segment,
                     stack_pointer_base: true,
                 } => {
-                    let wrap = if decoder.address_bits == 16 { 0xffff } else { 0xffff_ffff };
+                    let wrap = if decoder.address_bits == 16 {
+                        0xffff
+                    } else {
+                        0xffff_ffff
+                    };
                     X86Operand::Memory {
                         offset: offset.wrapping_add(width.bytes() as u64) & wrap,
                         segment,
@@ -1138,16 +1063,18 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
         0x9d => {
             let value = pop(decoder, width)?;
             let mask = if width == X86Width::W16 { 0x4dd5 } else { 0x244dd5 };
-            decoder.state.flags.set_value(
-                ((decoder.state.flags.value() & !mask) | (value & mask) | 2) & !0x10000,
-            );
+            decoder
+                .state
+                .flags
+                .set_value(((decoder.state.flags.value() & !mask) | (value & mask) | 2) & !0x10000);
             Ok(false)
         }
         0x9e => {
             let value = decoder.read(register_operand(4, X86Width::W8)?, X86Width::W8)?;
-            decoder.state.flags.set_value(
-                (decoder.state.flags.value() & !0xd5) | (value & 0xd5),
-            );
+            decoder
+                .state
+                .flags
+                .set_value((decoder.state.flags.value() & !0xd5) | (value & 0xd5));
             Ok(false)
         }
         0x9f => decoder
@@ -1157,7 +1084,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
                 (decoder.state.flags.value() & 0xd5) | 2,
             )
             .map(|()| false),
-        0xa0 | 0xa1 | 0xa2 | 0xa3 => {
+        0xa0..=0xa3 => {
             let bits = if op & 1 == 0 { X86Width::W8 } else { width };
             let operand = X86Operand::Memory {
                 offset: decoder.immediate(address_width_bits(decoder))?,
@@ -1215,16 +1142,12 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             let target = pop(decoder, width)?;
             decoder.cursor = target & mask_for(width);
             let rsp = decoder.register_value(4, X86Width::W32)?;
-            decoder
-                .state
-                .registers
-                .write(
-                    GuestRegister::Rsp,
-                    X86Width::W32.register_width(),
-                    rsp.wrapping_add(adjustment),
-                    false,
-                )
-                ?;
+            decoder.state.registers.write(
+                GuestRegister::Rsp,
+                X86Width::W32.register_width(),
+                rsp.wrapping_add(adjustment),
+                false,
+            )?;
             Ok(false)
         }
         0xc6 | 0xc7 => {
@@ -1246,13 +1169,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             decoder
                 .state
                 .registers
-                .write(
-                    GuestRegister::Rsp,
-                    X86Width::W32.register_width(),
-                    rbp,
-                    false,
-                )
-                ?;
+                .write(GuestRegister::Rsp, X86Width::W32.register_width(), rbp, false)?;
             let value = pop(decoder, width)?;
             decoder.write(register_operand(5, width)?, width, value)?;
             Ok(false)
@@ -1290,9 +1207,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             let base = u64::from(decoder.byte()?);
             let result = decoder
                 .read(register_operand(0, X86Width::W8)?, X86Width::W8)?
-                .wrapping_add(
-                    decoder.read(register_operand(4, X86Width::W8)?, X86Width::W8)? * base,
-                )
+                .wrapping_add(decoder.read(register_operand(4, X86Width::W8)?, X86Width::W8)? * base)
                 & 0xff;
             decoder.write(register_operand(0, X86Width::W16)?, X86Width::W16, result)?;
             result_flags(8, result, &mut decoder.state.flags);
@@ -1300,7 +1215,11 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
         }
         0xd7 => {
             let addr_width = address_width_bits(decoder);
-            let wrap = if decoder.address_bits == 16 { 0xffff } else { 0xffff_ffff };
+            let wrap = if decoder.address_bits == 16 {
+                0xffff
+            } else {
+                0xffff_ffff
+            };
             let offset = decoder
                 .register_value(3, addr_width)?
                 .wrapping_add(decoder.read(register_operand(0, X86Width::W8)?, X86Width::W8)?)
@@ -1316,7 +1235,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             decoder.write(register_operand(0, X86Width::W8)?, X86Width::W8, value)?;
             Ok(false)
         }
-        0xe0 | 0xe1 | 0xe2 | 0xe3 => {
+        0xe0..=0xe3 => {
             let displacement = decoder.signed(X86Width::W8)?;
             let addr_width = address_width_bits(decoder);
             let mut count = decoder.register_value(1, addr_width)?;
@@ -1330,8 +1249,7 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
                 count != 0 && (op == 0xe2 || decoder.state.flags.get(GuestFlag::Zero) == (op == 0xe1))
             };
             if take {
-                decoder.cursor =
-                    (decoder.cursor as i64).wrapping_add(displacement) as u64 & mask_for(width);
+                decoder.cursor = (decoder.cursor as i64).wrapping_add(displacement) as u64 & mask_for(width);
             }
             Ok(false)
         }
@@ -1343,13 +1261,8 @@ fn execute(decoder: &mut X86Decoder, numeric: NumericExecutor) -> Result<bool, X
             Ok(false)
         }
         0xe9 | 0xeb => {
-            let displacement = decoder.signed(if op == 0xeb {
-                X86Width::W8
-            } else {
-                width
-            })?;
-            decoder.cursor =
-                (decoder.cursor as i64).wrapping_add(displacement) as u64 & mask_for(width);
+            let displacement = decoder.signed(if op == 0xeb { X86Width::W8 } else { width })?;
+            decoder.cursor = (decoder.cursor as i64).wrapping_add(displacement) as u64 & mask_for(width);
             Ok(false)
         }
         0xf4 => Ok(true),
@@ -1439,10 +1352,10 @@ impl I386Cpu {
         memory: SparseGuestMemory,
         numeric: NumericExecutor,
     ) -> Result<Self, GuestError> {
-        if state.architecture != crate::core::contracts::GuestArchitecture::I386
-            || memory.pointer_bytes() != 4
-        {
-            return Err(GuestError::cpu("I386Cpu requires i386 state and a 32-bit guest address space"));
+        if state.architecture != crate::core::contracts::GuestArchitecture::I386 || memory.pointer_bytes() != 4 {
+            return Err(GuestError::cpu(
+                "I386Cpu requires i386 state and a 32-bit guest address space",
+            ));
         }
         Ok(Self {
             state,
@@ -1468,11 +1381,7 @@ impl GuestCpu for I386Cpu {
         self.hooks = hooks;
     }
 
-    fn run(
-        &mut self,
-        instruction_budget: u64,
-        return_address: Option<GuestAddress>,
-    ) -> GuestExecutionStop {
+    fn run(&mut self, instruction_budget: u64, return_address: Option<GuestAddress>) -> GuestExecutionStop {
         if let Some(address) = return_address {
             if address.space != self.memory.address_space() {
                 return GuestExecutionStop::Unsupported {
@@ -1495,7 +1404,11 @@ impl GuestCpu for I386Cpu {
             match step {
                 StepOutcome::Continue => {}
                 StepOutcome::Stop(stop) => return stop,
-                StepOutcome::Fault { error, decoded_cursor, decoded_bytes } => {
+                StepOutcome::Fault {
+                    error,
+                    decoded_cursor,
+                    decoded_bytes,
+                } => {
                     self.state.registers.restore(&registers).ok();
                     self.state.flags.set_value(flags);
                     self.state.instruction_pointer = original_ip;
@@ -1516,10 +1429,7 @@ impl GuestCpu for I386Cpu {
                                 instructions,
                                 exception: GuestException::Memory {
                                     access,
-                                    address: GuestAddress::new(
-                                        self.memory.address_space(),
-                                        address,
-                                    ),
+                                    address: GuestAddress::new(self.memory.address_space(), address),
                                     byte_length,
                                     detail,
                                 },
@@ -1531,8 +1441,7 @@ impl GuestCpu for I386Cpu {
                             detail,
                         } => {
                             if (vector == 3 || vector == 4) && decoded_cursor.is_some() {
-                                self.state.instruction_pointer =
-                                    decoded_cursor.unwrap_or(original_ip);
+                                self.state.instruction_pointer = decoded_cursor.unwrap_or(original_ip);
                                 instructions += 1;
                             }
                             return GuestExecutionStop::Exception {
@@ -1575,11 +1484,7 @@ enum StepOutcome {
 }
 
 impl I386Cpu {
-    fn step(
-        &mut self,
-        return_address: Option<GuestAddress>,
-        instructions: &mut u64,
-    ) -> StepOutcome {
+    fn step(&mut self, return_address: Option<GuestAddress>, instructions: &mut u64) -> StepOutcome {
         let cs_base = self.state.segments[GuestProcessorState::CS].base;
         let offset = cs_base.wrapping_add(self.state.instruction_pointer) as u32 as u64;
         let address = match guest_address(&mut self.memory, offset, GuestAccess::Execute, 1) {

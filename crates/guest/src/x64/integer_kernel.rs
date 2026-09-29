@@ -10,17 +10,17 @@
 use crate::core::contracts::{GuestAccess, GuestIntegerWidth, GuestRegister};
 use crate::core::memory::{ExecutableBlock, SparseGuestMemory};
 use crate::core::registers::GuestProcessorState;
+use crate::floating_point::raw_sse::RawSseOperation;
 use crate::x64::decoder::{
-    canonical_address, guest_address, operand_address, read_memory, write_memory, X64MemoryOperand,
-    X64Operand, X64RegisterOperand,
+    canonical_address, guest_address, operand_address, read_memory, write_memory, X64MemoryOperand, X64Operand,
+    X64RegisterOperand,
 };
 use crate::x64::plan::{
-    execute_x64_plan, x64_lock, NumericInstructionBase, X64Flow, X64PlanOperation, X64PlanSource,
-    X64SemanticPlan, X64SseOperand, X64ShiftCount, X64_ADVANCE,
+    execute_x64_plan, x64_lock, NumericInstructionBase, X64Flow, X64PlanOperation, X64PlanSource, X64SemanticPlan,
+    X64ShiftCount, X64SseOperand, X64_ADVANCE,
 };
 use crate::x86::arithmetic::{alu, condition, AluOperation, ShiftOperation};
 use crate::x86::decoder::X86Error;
-use crate::floating_point::raw_sse::RawSseOperation;
 
 /// Kernel operand: register slot or unresolved memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,9 +326,7 @@ pub fn x64_integer_block_safe(plan: &X64IntegerPlan) -> bool {
             )
         }
         KernelOperation::Multiply { .. } => true,
-        KernelOperation::Numeric { instruction } => {
-            numeric_safe(instruction.opcode, instruction.secondary_opcode)
-        }
+        KernelOperation::Numeric { instruction } => numeric_safe(instruction.opcode, instruction.secondary_opcode),
         KernelOperation::NumericMemory { instruction, .. } => {
             numeric_safe(instruction.opcode, instruction.secondary_opcode)
         }
@@ -351,9 +349,7 @@ pub fn x64_integer_block_safe(plan: &X64IntegerPlan) -> bool {
             matches!(destination, KernelOperand::Register { .. })
         }
         KernelOperation::Alu {
-            operation,
-            destination,
-            ..
+            operation, destination, ..
         } => {
             matches!(destination, KernelOperand::Register { .. })
                 || matches!(operation, AluOperation::Cmp | AluOperation::Test)
@@ -366,8 +362,22 @@ fn numeric_safe(opcode: u8, secondary: Option<u8>) -> bool {
         && secondary.is_some_and(|op| {
             matches!(
                 op,
-                0x2a | 0x2c | 0x2d | 0x2e | 0x2f | 0x50 | 0x51 | 0x58 | 0x59 | 0x5a | 0x5b | 0x5c
-                    | 0x5d | 0x5e | 0x5f | 0xc2 | 0xe6
+                0x2a | 0x2c
+                    | 0x2d
+                    | 0x2e
+                    | 0x2f
+                    | 0x50
+                    | 0x51
+                    | 0x58
+                    | 0x59
+                    | 0x5a
+                    | 0x5b
+                    | 0x5c
+                    | 0x5d
+                    | 0x5e
+                    | 0x5f
+                    | 0xc2
+                    | 0xe6
             )
         })
 }
@@ -396,15 +406,11 @@ fn kernel_source(value: &X64PlanSource) -> KernelSource {
 fn constant_target(value: u64) -> ControlTarget {
     ControlTarget::Constant {
         value,
-        canonical: value <= crate::x64::decoder::CANONICAL_LOW_MAX
-            || value >= crate::x64::decoder::CANONICAL_HIGH_MIN,
+        canonical: value <= crate::x64::decoder::CANONICAL_LOW_MAX || value >= crate::x64::decoder::CANONICAL_HIGH_MIN,
     }
 }
 
-fn register_operation(
-    destination: KernelOperand,
-    source: KernelSource,
-) -> Option<(WordDestination, WordSource)> {
+fn register_operation(destination: KernelOperand, source: KernelSource) -> Option<(WordDestination, WordSource)> {
     let KernelOperand::Register {
         register,
         width,
@@ -419,8 +425,7 @@ fn register_operation(
     match source {
         KernelSource::Operand(KernelOperand::Memory { .. }) => None,
         KernelSource::Operand(KernelOperand::Register {
-            width: source_width,
-            ..
+            width: source_width, ..
         }) if source_width != width => None,
         KernelSource::Operand(KernelOperand::Register {
             register: source_register,
@@ -455,10 +460,7 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
         X64PlanOperation::Numeric { instruction } => KernelOperation::Numeric {
             instruction: *instruction,
         },
-        X64PlanOperation::NumericMemory {
-            instruction,
-            operand,
-        } => KernelOperation::NumericMemory {
+        X64PlanOperation::NumericMemory { instruction, operand } => KernelOperation::NumericMemory {
             instruction: *instruction,
             operand: *operand,
         },
@@ -478,7 +480,7 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
         } => KernelOperation::Multiply {
             destination: *destination,
             left: *left,
-            right: right.clone(),
+            right: *right,
         },
         X64PlanOperation::ConditionalMove {
             destination,
@@ -489,10 +491,7 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
             source: kernel_operand(*source),
             condition: *code,
         },
-        X64PlanOperation::SetCondition {
-            destination,
-            condition,
-        } => KernelOperation::SetCondition {
+        X64PlanOperation::SetCondition { destination, condition } => KernelOperation::SetCondition {
             destination: kernel_operand(*destination),
             condition: *condition,
         },
@@ -511,24 +510,15 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
                 signed: *signed,
             }
         }
-        X64PlanOperation::Increment {
-            destination,
-            subtract,
-        } => KernelOperation::Increment {
+        X64PlanOperation::Increment { destination, subtract } => KernelOperation::Increment {
             destination: kernel_operand(*destination),
             subtract: *subtract,
         },
-        X64PlanOperation::Move {
-            destination,
-            source,
-        } => {
+        X64PlanOperation::Move { destination, source } => {
             let destination = kernel_operand(*destination);
             let input = kernel_source(source);
             match register_operation(destination, input) {
-                Some((destination, source)) => KernelOperation::RegisterMove {
-                    destination,
-                    source,
-                },
+                Some((destination, source)) => KernelOperation::RegisterMove { destination, source },
                 None => KernelOperation::Move {
                     destination,
                     source: input,
@@ -565,9 +555,7 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
         X64PlanOperation::Jump { target } | X64PlanOperation::Call { target } => {
             let target = match target {
                 X64PlanSource::Immediate(value) => constant_target(*value),
-                X64PlanSource::Operand(operand) => {
-                    ControlTarget::Operand(kernel_operand(*operand))
-                }
+                X64PlanSource::Operand(operand) => ControlTarget::Operand(kernel_operand(*operand)),
             };
             if matches!(plan.operation, X64PlanOperation::Jump { .. }) {
                 KernelOperation::Jump { target }
@@ -584,10 +572,7 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
             width: *width,
         },
         X64PlanOperation::Return { discard } => KernelOperation::Return { discard: *discard },
-        X64PlanOperation::Lea {
-            destination,
-            source,
-        } => {
+        X64PlanOperation::Lea { destination, source } => {
             let destination = kernel_operand(X64Operand::Register(*destination));
             if !matches!(destination, KernelOperand::Register { .. }) {
                 return None;
@@ -599,16 +584,12 @@ pub fn prepare_x64_integer_plan(plan: &X64SemanticPlan) -> Option<X64IntegerPlan
                 8 => 3,
                 _ => return None,
             };
-            let displacement = (source.displacement as u64)
-                .wrapping_add(if source.rip_relative { plan.next_ip } else { 0 });
+            let displacement =
+                (source.displacement as u64).wrapping_add(if source.rip_relative { plan.next_ip } else { 0 });
             KernelOperation::Lea {
                 destination,
                 source: EffectiveAddress {
-                    base: if source.rip_relative {
-                        None
-                    } else {
-                        source.base
-                    },
+                    base: if source.rip_relative { None } else { source.base },
                     index: source.index,
                     shift,
                     displacement,
@@ -660,9 +641,8 @@ impl X64IntegerKernel {
         let mut instructions = 0;
         let mut current = state.instruction_pointer;
         let mut next = current;
-        let after_store = |memory: &SparseGuestMemory| -> bool {
-            guard.map_or(true, |guard| guard.after_store(memory))
-        };
+        let after_store =
+            |memory: &SparseGuestMemory| -> bool { guard.map_or(true, |guard| guard.after_store(memory)) };
         for step in steps {
             if instructions == budget {
                 break;
@@ -702,10 +682,7 @@ impl X64IntegerKernel {
                         }
                         Err(error) => {
                             state.instruction_pointer = current;
-                            return X64IntegerBlockResult::Fault {
-                                instructions,
-                                error,
-                            };
+                            return X64IntegerBlockResult::Fault { instructions, error };
                         }
                     }
                 }
@@ -724,10 +701,7 @@ impl X64IntegerKernel {
                         state.registers.restore(&registers).ok();
                         state.flags.set_value(flags);
                         state.instruction_pointer = current;
-                        return X64IntegerBlockResult::Fault {
-                            instructions,
-                            error,
-                        };
+                        return X64IntegerBlockResult::Fault { instructions, error };
                     }
                 }
                 instructions += 1;
@@ -743,10 +717,7 @@ impl X64IntegerKernel {
                 }
                 Err(error) => {
                     state.instruction_pointer = current;
-                    return X64IntegerBlockResult::Fault {
-                        instructions,
-                        error,
-                    };
+                    return X64IntegerBlockResult::Fault { instructions, error };
                 }
             }
             instructions += 1;
@@ -764,10 +735,7 @@ impl X64IntegerKernel {
     ) -> Result<X64Flow, X86Error> {
         let original = &plan.original;
         match &plan.operation {
-            KernelOperation::RegisterMove {
-                destination,
-                source,
-            } => {
+            KernelOperation::RegisterMove { destination, source } => {
                 x64_lock(original.lock, None, false)?;
                 self.register_move(destination, source, state)?;
                 Ok(X64_ADVANCE)
@@ -816,10 +784,7 @@ impl X64IntegerKernel {
                 self.extend(destination, source, *signed, original.next_ip, state, memory)?;
                 Ok(X64_ADVANCE)
             }
-            KernelOperation::Increment {
-                destination,
-                subtract,
-            } => {
+            KernelOperation::Increment { destination, subtract } => {
                 let x64_destination = kernel_to_x64(*destination);
                 x64_lock(original.lock, x64_destination, true)?;
                 let address = self.precheck(destination, original.next_ip, true, state, memory)?;
@@ -847,19 +812,13 @@ impl X64IntegerKernel {
                 state.flags.set(crate::core::contracts::GuestFlag::Carry, carry);
                 Ok(X64_ADVANCE)
             }
-            KernelOperation::Move {
-                destination,
-                source,
-            } => {
+            KernelOperation::Move { destination, source } => {
                 x64_lock(original.lock, None, false)?;
                 self.read_source(source, original.next_ip, state, memory)?;
                 self.write_operand(destination, original.next_ip, state, memory)?;
                 Ok(X64_ADVANCE)
             }
-            KernelOperation::Lea {
-                destination,
-                source,
-            } => {
+            KernelOperation::Lea { destination, source } => {
                 x64_lock(original.lock, None, false)?;
                 self.address(source, state)?;
                 self.write_operand(destination, original.next_ip, state, memory)?;
@@ -898,7 +857,10 @@ impl X64IntegerKernel {
                 }
                 Ok(X64_ADVANCE)
             }
-            KernelOperation::Branch { condition: selected, target } => {
+            KernelOperation::Branch {
+                condition: selected,
+                target,
+            } => {
                 x64_lock(original.lock, None, false)?;
                 if selected.map_or(Ok(true), |code| condition(code, &state.flags))? {
                     Ok(X64Flow::Branch {
@@ -923,16 +885,10 @@ impl X64IntegerKernel {
                         .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?
                         .wrapping_sub(8);
                     let space = memory.address_space();
-                    memory.write_u64(
-                        guest_address(space, stack, GuestAccess::Write)?,
-                        original.next_ip,
-                    )?;
-                    state.registers.write(
-                        GuestRegister::Rsp,
-                        GuestIntegerWidth::B64,
-                        stack,
-                        false,
-                    )?;
+                    memory.write_u64(guest_address(space, stack, GuestAccess::Write)?, original.next_ip)?;
+                    state
+                        .registers
+                        .write(GuestRegister::Rsp, GuestIntegerWidth::B64, stack, false)?;
                 }
                 Ok(X64Flow::Branch { target })
             }
@@ -944,17 +900,10 @@ impl X64IntegerKernel {
                     .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?
                     .wrapping_sub(width.bytes() as u64);
                 let space = memory.address_space();
-                self.write_memory(
-                    guest_address(space, stack, GuestAccess::Write)?,
-                    *width,
-                    memory,
-                )?;
-                state.registers.write(
-                    GuestRegister::Rsp,
-                    GuestIntegerWidth::B64,
-                    stack,
-                    false,
-                )?;
+                self.write_memory(guest_address(space, stack, GuestAccess::Write)?, *width, memory)?;
+                state
+                    .registers
+                    .write(GuestRegister::Rsp, GuestIntegerWidth::B64, stack, false)?;
                 Ok(X64_ADVANCE)
             }
             KernelOperation::Pop { destination, width } => {
@@ -976,10 +925,7 @@ impl X64IntegerKernel {
         memory: &mut SparseGuestMemory,
     ) -> Result<SafeFlow, X86Error> {
         match operation {
-            KernelOperation::RegisterMove {
-                destination,
-                source,
-            } => {
+            KernelOperation::RegisterMove { destination, source } => {
                 x64_lock(original.lock, None, false)?;
                 self.register_move(destination, source, state)?;
             }
@@ -1023,10 +969,7 @@ impl X64IntegerKernel {
                 x64_lock(original.lock, None, false)?;
                 self.extend(destination, source, *signed, original.next_ip, state, memory)?;
             }
-            KernelOperation::Increment {
-                destination,
-                subtract,
-            } => {
+            KernelOperation::Increment { destination, subtract } => {
                 x64_lock(original.lock, kernel_to_x64(*destination), true)?;
                 let carry = state.flags.get(crate::core::contracts::GuestFlag::Carry);
                 self.read_operand(destination, original.next_ip, state, memory)?;
@@ -1045,18 +988,12 @@ impl X64IntegerKernel {
                 self.write_operand(destination, original.next_ip, state, memory)?;
                 state.flags.set(crate::core::contracts::GuestFlag::Carry, carry);
             }
-            KernelOperation::Move {
-                destination,
-                source,
-            } => {
+            KernelOperation::Move { destination, source } => {
                 x64_lock(original.lock, None, false)?;
                 self.read_source(source, original.next_ip, state, memory)?;
                 self.write_operand(destination, original.next_ip, state, memory)?;
             }
-            KernelOperation::Lea {
-                destination,
-                source,
-            } => {
+            KernelOperation::Lea { destination, source } => {
                 x64_lock(original.lock, None, false)?;
                 self.address(source, state)?;
                 self.write_operand(destination, original.next_ip, state, memory)?;
@@ -1083,7 +1020,10 @@ impl X64IntegerKernel {
                     self.write_operand(destination, original.next_ip, state, memory)?;
                 }
             }
-            KernelOperation::Branch { condition: selected, target } => {
+            KernelOperation::Branch {
+                condition: selected,
+                target,
+            } => {
                 x64_lock(original.lock, None, false)?;
                 if selected.map_or(Ok(true), |code| condition(code, &state.flags))? {
                     return Ok(SafeFlow::Goto(self.target(target, original.next_ip, state, memory)?));
@@ -1122,11 +1062,7 @@ impl X64IntegerKernel {
         let KernelOperand::Memory { source, width } = destination else {
             return Ok(None);
         };
-        let access = if write {
-            GuestAccess::Write
-        } else {
-            GuestAccess::Read
-        };
+        let access = if write { GuestAccess::Write } else { GuestAccess::Read };
         let address = operand_address(memory, state, source, next_ip, access)?;
         if write {
             memory.check(address, width.bytes(), GuestAccess::Write)?;
@@ -1140,13 +1076,11 @@ impl X64IntegerKernel {
         state: &mut GuestProcessorState,
         memory: &mut SparseGuestMemory,
     ) -> Result<u64, X86Error> {
-        let stack = state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
+        let stack = state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
         let space = memory.address_space();
-        let target = canonical_address(memory.read_u64(guest_address(
-            space,
-            stack,
-            GuestAccess::Read,
-        )?)?)?;
+        let target = canonical_address(memory.read_u64(guest_address(space, stack, GuestAccess::Read)?)?)?;
         state.registers.write(
             GuestRegister::Rsp,
             GuestIntegerWidth::B64,
@@ -1174,12 +1108,16 @@ impl X64IntegerKernel {
             ControlTarget::Operand(operand) => {
                 if operand.width() == GuestIntegerWidth::B64 {
                     match operand {
-                        KernelOperand::Register { register, .. } => canonical_address(
-                            state.registers.read(*register, GuestIntegerWidth::B64, false)?,
-                        ),
-                        KernelOperand::Memory { source, .. } => canonical_address(memory.read_u64(
-                            operand_address(memory, state, source, next_ip, GuestAccess::Read)?,
-                        )?),
+                        KernelOperand::Register { register, .. } => {
+                            canonical_address(state.registers.read(*register, GuestIntegerWidth::B64, false)?)
+                        }
+                        KernelOperand::Memory { source, .. } => canonical_address(memory.read_u64(operand_address(
+                            memory,
+                            state,
+                            source,
+                            next_ip,
+                            GuestAccess::Read,
+                        )?)?),
                     }
                 } else {
                     self.read_operand(operand, next_ip, state, memory)?;
@@ -1201,8 +1139,7 @@ impl X64IntegerKernel {
         self.read_operand(source, next_ip, state, memory)?;
         if signed {
             let bits = source.width().bits();
-            self.value = ((((self.value & mask(source.width())) << (64 - bits)) as i64)
-                >> (64 - bits)) as u64;
+            self.value = ((((self.value & mask(source.width())) << (64 - bits)) as i64) >> (64 - bits)) as u64;
         }
         self.write_operand(destination, next_ip, state, memory)
     }
@@ -1233,13 +1170,11 @@ impl X64IntegerKernel {
         state: &mut GuestProcessorState,
         memory: &mut SparseGuestMemory,
     ) -> Result<(), X86Error> {
-        let stack = state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
+        let stack = state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
         let space = memory.address_space();
-        self.read_memory(
-            guest_address(space, stack, GuestAccess::Read)?,
-            width,
-            memory,
-        )?;
+        self.read_memory(guest_address(space, stack, GuestAccess::Read)?, width, memory)?;
         state.registers.write(
             GuestRegister::Rsp,
             GuestIntegerWidth::B64,
@@ -1326,7 +1261,9 @@ impl X64IntegerKernel {
         } else {
             value
         };
-        state.registers.write(destination.register, destination.width, value, false)?;
+        state
+            .registers
+            .write(destination.register, destination.width, value, false)?;
         Ok(())
     }
 
@@ -1349,15 +1286,11 @@ impl X64IntegerKernel {
         };
         x64_lock(lock, None, false)?;
         let left = state.registers.read(destination.register, destination.width, false)?;
-        let value = alu(
-            operation,
-            destination.width.bits(),
-            left,
-            right,
-            &mut state.flags,
-        );
+        let value = alu(operation, destination.width.bits(), left, right, &mut state.flags);
         if !matches!(operation, AluOperation::Cmp | AluOperation::Test) {
-            state.registers.write(destination.register, destination.width, value, false)?;
+            state
+                .registers
+                .write(destination.register, destination.width, value, false)?;
         }
         Ok(())
     }
@@ -1382,11 +1315,7 @@ impl X64IntegerKernel {
         Ok(())
     }
 
-    fn address(
-        &mut self,
-        address: &EffectiveAddress,
-        state: &GuestProcessorState,
-    ) -> Result<(), X86Error> {
+    fn address(&mut self, address: &EffectiveAddress, state: &GuestProcessorState) -> Result<(), X86Error> {
         let base = match address.base {
             Some(base) => state.registers.read(
                 base,

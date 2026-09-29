@@ -39,17 +39,12 @@ pub fn argument_bytes(layout: &GuestValueLayout, pointer_bytes: usize) -> usize 
 pub fn value_alignment(layout: &GuestValueLayout, pointer_bytes: usize) -> usize {
     match layout {
         GuestValueLayout::Aggregate(layout) => layout.alignment,
-        GuestValueLayout::Scalar(storage) => {
-            storage_bytes(*storage, pointer_bytes).min(pointer_bytes)
-        }
+        GuestValueLayout::Scalar(storage) => storage_bytes(*storage, pointer_bytes).min(pointer_bytes),
     }
 }
 
 /// Validate an aggregate layout against the pointer width.
-pub fn validate_value_layout(
-    layout: &GuestValueLayout,
-    pointer_bytes: usize,
-) -> Result<(), GuestError> {
+pub fn validate_value_layout(layout: &GuestValueLayout, pointer_bytes: usize) -> Result<(), GuestError> {
     let GuestValueLayout::Aggregate(record) = layout else {
         return Ok(());
     };
@@ -265,9 +260,7 @@ pub fn encode_argument_value(
     }
     let signed = matches!(
         layout,
-        GuestValueLayout::Scalar(
-            GuestStorage::Int8 | GuestStorage::Int16 | GuestStorage::Int32 | GuestStorage::Int64
-        )
+        GuestValueLayout::Scalar(GuestStorage::Int8 | GuestStorage::Int16 | GuestStorage::Int32 | GuestStorage::Int64)
     );
     let fill = if signed && bytes.last().is_some_and(|last| last & 0x80 != 0) {
         0xff

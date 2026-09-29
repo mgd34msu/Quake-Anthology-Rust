@@ -42,22 +42,31 @@ pub fn resolve_pe_export(
         // disjoint, so distinct loads never collide.
         let visit = format!(
             "{}:{}:{:x}:{key}",
-            current.image.module.artifact_path,
-            current.image.module.digest.value,
-            current.image.base.offset
+            current.image.module.artifact_path, current.image.module.digest.value, current.image.base.offset
         );
         if !seen.insert(visit) {
             return Err(pe_error(PeStage::Exports, "cyclic export forwarder"));
         }
         let requested = name.clone();
-        let exported = current.image.exports.iter().find(|entry| match (&entry.symbol, &requested) {
-            (GuestSymbolName::Ordinal(left), GuestSymbolName::Ordinal(right)) => left == right,
-            (
-                GuestSymbolName::Name { name: left, version: left_version },
-                GuestSymbolName::Name { name: right, version: right_version },
-            ) => left == right && left_version == right_version,
-            _ => false,
-        }).cloned();
+        let exported = current
+            .image
+            .exports
+            .iter()
+            .find(|entry| match (&entry.symbol, &requested) {
+                (GuestSymbolName::Ordinal(left), GuestSymbolName::Ordinal(right)) => left == right,
+                (
+                    GuestSymbolName::Name {
+                        name: left,
+                        version: left_version,
+                    },
+                    GuestSymbolName::Name {
+                        name: right,
+                        version: right_version,
+                    },
+                ) => left == right && left_version == right_version,
+                _ => false,
+            })
+            .cloned();
         let Some(exported) = exported else {
             return Err(pe_error(
                 PeStage::Exports,
@@ -91,8 +100,5 @@ pub fn resolve_pe_export(
             }
         }
     }
-    Err(pe_error(
-        PeStage::Exports,
-        "export forwarder chain exceeds 128 entries",
-    ))
+    Err(pe_error(PeStage::Exports, "export forwarder chain exceeds 128 entries"))
 }

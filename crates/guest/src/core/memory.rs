@@ -14,9 +14,8 @@ use std::rc::Rc;
 use qa_core::math::Vec3;
 
 use crate::core::contracts::{
-    fresh_address_space, GuestAccess, GuestAddress, GuestAllocationOptions, GuestMapOptions,
-    GuestMapping, GuestMemorySnapshot, GuestPermissions, GuestSnapshotMapping, GuestWrittenRange,
-    ModuleIdentity,
+    fresh_address_space, GuestAccess, GuestAddress, GuestAllocationOptions, GuestMapOptions, GuestMapping,
+    GuestMemorySnapshot, GuestPermissions, GuestSnapshotMapping, GuestWrittenRange, ModuleIdentity,
 };
 use crate::error::GuestError;
 
@@ -173,12 +172,7 @@ impl ExecutableBlock {
             return false;
         }
         for (backing, page, checked) in &mut self.pages {
-            *checked = backing
-                .borrow()
-                .pages
-                .get(page)
-                .copied()
-                .unwrap_or(*checked);
+            *checked = backing.borrow().pages.get(page).copied().unwrap_or(*checked);
         }
         true
     }
@@ -190,15 +184,19 @@ impl ExecutableBlock {
             return false;
         };
         mapping.active
-            && self.pages.iter().all(|(backing, page, checked)| {
-                backing.borrow().pages.get(page).copied() == Some(*checked)
-            })
+            && self
+                .pages
+                .iter()
+                .all(|(backing, page, checked)| backing.borrow().pages.get(page).copied() == Some(*checked))
     }
 }
 
+/// Committed-store notification callback.
+type WriteNotification = Box<dyn Fn(&[GuestWrittenRange])>;
+
 struct WriteObserver {
     chunks: Vec<WatchedChunk>,
-    notify: Box<dyn Fn(&[GuestWrittenRange])>,
+    notify: WriteNotification,
 }
 
 /// Watched backing range, resolved at observe time so later mapping edits
@@ -240,11 +238,7 @@ pub struct SparseGuestMemory {
 
 impl SparseGuestMemory {
     /// Fresh memory for `module` with `pointer_bytes` (4 or 8).
-    pub fn new(
-        module: ModuleIdentity,
-        pointer_bytes: usize,
-        allocation_base: u64,
-    ) -> Result<Self, GuestError> {
+    pub fn new(module: ModuleIdentity, pointer_bytes: usize, allocation_base: u64) -> Result<Self, GuestError> {
         if pointer_bytes != 4 && pointer_bytes != 8 {
             return Err(GuestError::invalid("Guest pointer width must be 4 or 8 bytes"));
         }
@@ -356,9 +350,7 @@ impl SparseGuestMemory {
         }
         self.check_range(self.allocation_base, options.byte_length, "map")?;
         if options.byte_length == 0 {
-            return Err(GuestError::invalid(
-                "Guest allocations must contain at least one byte",
-            ));
+            return Err(GuestError::invalid("Guest allocations must contain at least one byte"));
         }
         let start = match self.allocation_hints.get(&alignment) {
             Some((base, hint_len)) if options.byte_length >= *hint_len => *base,
@@ -452,12 +444,7 @@ impl SparseGuestMemory {
     }
 
     /// Check that a range is mapped with `access`.
-    pub fn check(
-        &mut self,
-        address: GuestAddress,
-        byte_length: usize,
-        access: GuestAccess,
-    ) -> Result<(), GuestError> {
+    pub fn check(&mut self, address: GuestAddress, byte_length: usize, access: GuestAccess) -> Result<(), GuestError> {
         if self.single_mapping(address, byte_length, access)?.is_none() {
             self.chunks(address, byte_length, Some(access))?;
         }
@@ -470,9 +457,9 @@ impl SparseGuestMemory {
             let offset = self.lookup_offset;
             let mapping = &self.mappings[index];
             let backing = mapping.backing.borrow();
-            return Ok(backing.bytes[mapping.backing_start + offset
-                ..mapping.backing_start + offset + byte_length]
-                .to_vec());
+            return Ok(
+                backing.bytes[mapping.backing_start + offset..mapping.backing_start + offset + byte_length].to_vec(),
+            );
         }
         let chunks = self.chunks(address, byte_length, Some(GuestAccess::Read))?;
         Ok(self.copy_chunks(&chunks, byte_length))
@@ -493,11 +480,9 @@ impl SparseGuestMemory {
             let offset = self.lookup_offset;
             let mapping = &self.mappings[index].clone();
             let backing = mapping.backing.borrow();
-            destination[destination_offset..destination_offset + byte_length]
-                .copy_from_slice(
-                    &backing.bytes[mapping.backing_start + offset
-                        ..mapping.backing_start + offset + byte_length],
-                );
+            destination[destination_offset..destination_offset + byte_length].copy_from_slice(
+                &backing.bytes[mapping.backing_start + offset..mapping.backing_start + offset + byte_length],
+            );
             return Ok(());
         }
         let chunks = self.chunks(address, byte_length, Some(GuestAccess::Read))?;
@@ -527,8 +512,7 @@ impl SparseGuestMemory {
             let mapping = &self.mappings[index];
             let length = (maximum - consumed).min(mapping.byte_length - offset);
             let backing = mapping.backing.borrow();
-            let window = &backing.bytes
-                [mapping.backing_start + offset..mapping.backing_start + offset + length];
+            let window = &backing.bytes[mapping.backing_start + offset..mapping.backing_start + offset + length];
             if let Some(terminator) = window.iter().position(|byte| *byte == 0) {
                 return Ok((consumed + terminator) as isize);
             }
@@ -557,24 +541,20 @@ impl SparseGuestMemory {
     /// Fetch one byte, tracking a cursor for sequential decode.
     pub fn fetch_sequence_byte(&mut self, cursor: &mut FetchCursor) -> Result<u8, GuestError> {
         if cursor.generation != self.generation
-            || cursor.mapping.map_or(true, |id| {
-                self.find_mapping(id).map_or(true, |mapping| {
-                    cursor.offset >= mapping.byte_length
-                })
+            || cursor.mapping.is_none_or(|id| {
+                self.find_mapping(id)
+                    .is_none_or(|mapping| cursor.offset >= mapping.byte_length)
             })
         {
-            let address = cursor
-                .base
-                .checked_add(cursor.consumed)
-                .ok_or_else(|| {
-                    fault(
-                        "address-overflow",
-                        cursor.base,
-                        1,
-                        GuestAccess::Execute,
-                        "fetch sequence overflowed",
-                    )
-                })?;
+            let address = cursor.base.checked_add(cursor.consumed).ok_or_else(|| {
+                fault(
+                    "address-overflow",
+                    cursor.base,
+                    1,
+                    GuestAccess::Execute,
+                    "fetch sequence overflowed",
+                )
+            })?;
             let byte = self.fetch_byte(address)?;
             let mapping = self.recent[GuestAccess::Execute as usize]
                 .and_then(|index| self.mappings.get(index))
@@ -585,8 +565,13 @@ impl SparseGuestMemory {
             cursor.consumed += 1;
             return Ok(byte);
         }
-        let id = cursor.mapping.ok_or_else(|| GuestError::cpu("Guest execute mapping is missing"))?;
-        let mapping = self.find_mapping(id).ok_or_else(|| GuestError::cpu("Guest execute mapping is missing"))?.clone();
+        let id = cursor
+            .mapping
+            .ok_or_else(|| GuestError::cpu("Guest execute mapping is missing"))?;
+        let mapping = self
+            .find_mapping(id)
+            .ok_or_else(|| GuestError::cpu("Guest execute mapping is missing"))?
+            .clone();
         let byte = mapping.backing.borrow().bytes[mapping.backing_start + cursor.offset];
         cursor.offset += 1;
         cursor.consumed += 1;
@@ -595,11 +580,7 @@ impl SparseGuestMemory {
 
     /// Cache guard for decoded bytes (at most 15). Retired mappings or any
     /// live byte change invalidate it.
-    pub fn retain_executable_bytes(
-        &mut self,
-        byte_offset: u64,
-        bytes: &[u8],
-    ) -> Option<ExecutableRetention> {
+    pub fn retain_executable_bytes(&mut self, byte_offset: u64, bytes: &[u8]) -> Option<ExecutableRetention> {
         if bytes.is_empty() || bytes.len() > 15 {
             return None;
         }
@@ -607,11 +588,7 @@ impl SparseGuestMemory {
     }
 
     /// Retention guard for a decoded range of any length.
-    pub fn retain_executable_range(
-        &mut self,
-        byte_offset: u64,
-        bytes: &[u8],
-    ) -> Option<ExecutableRetention> {
+    pub fn retain_executable_range(&mut self, byte_offset: u64, bytes: &[u8]) -> Option<ExecutableRetention> {
         if bytes.is_empty() {
             return None;
         }
@@ -645,11 +622,7 @@ impl SparseGuestMemory {
     }
 
     /// Block retention: entry check plus cheap post-store checks.
-    pub fn retain_executable_block(
-        &mut self,
-        byte_offset: u64,
-        bytes: &[u8],
-    ) -> Option<ExecutableBlock> {
+    pub fn retain_executable_block(&mut self, byte_offset: u64, bytes: &[u8]) -> Option<ExecutableBlock> {
         let retention = self.retain_executable_range(byte_offset, bytes)?;
         let index = self.first_end_after(byte_offset);
         let mapping = self.mappings.get(index)?.clone();
@@ -700,12 +673,7 @@ impl SparseGuestMemory {
     }
 
     /// Fill a range with one byte value.
-    pub fn fill(
-        &mut self,
-        address: GuestAddress,
-        byte_length: usize,
-        value: u8,
-    ) -> Result<(), GuestError> {
+    pub fn fill(&mut self, address: GuestAddress, byte_length: usize, value: u8) -> Result<(), GuestError> {
         if let Some(index) = self.single_mapping(address, byte_length, GuestAccess::Write)? {
             let offset = self.lookup_offset;
             let mapping = self.mappings[index].clone();
@@ -741,7 +709,7 @@ impl SparseGuestMemory {
         &mut self,
         address: GuestAddress,
         byte_length: usize,
-        after_write: Box<dyn Fn(&[GuestWrittenRange])>,
+        after_write: WriteNotification,
     ) -> Result<u64, GuestError> {
         let chunks = self.chunks(address, byte_length, Some(GuestAccess::Read))?;
         let watched = chunks
@@ -757,7 +725,13 @@ impl SparseGuestMemory {
             .collect();
         let id = self.next_observer;
         self.next_observer += 1;
-        self.observers.insert(id, WriteObserver { chunks: watched, notify: after_write });
+        self.observers.insert(
+            id,
+            WriteObserver {
+                chunks: watched,
+                notify: after_write,
+            },
+        );
         Ok(id)
     }
 
@@ -880,12 +854,7 @@ impl SparseGuestMemory {
         self.write(address, &value.to_le_bytes())
     }
     /// Scalar stores.
-    pub fn write_u64_words(
-        &mut self,
-        address: GuestAddress,
-        low: u32,
-        high: u32,
-    ) -> Result<(), GuestError> {
+    pub fn write_u64_words(&mut self, address: GuestAddress, low: u32, high: u32) -> Result<(), GuestError> {
         let mut bytes = [0u8; 8];
         bytes[..4].copy_from_slice(&low.to_le_bytes());
         bytes[4..].copy_from_slice(&high.to_le_bytes());
@@ -900,11 +869,7 @@ impl SparseGuestMemory {
         self.write(address, &value.to_le_bytes())
     }
     /// Encode a pointer, mapping `None` to null.
-    pub fn write_pointer(
-        &mut self,
-        address: GuestAddress,
-        value: Option<GuestAddress>,
-    ) -> Result<(), GuestError> {
+    pub fn write_pointer(&mut self, address: GuestAddress, value: Option<GuestAddress>) -> Result<(), GuestError> {
         if let Some(target) = value {
             self.check_owned(target, 0, "write")?;
         }
@@ -949,10 +914,7 @@ impl SparseGuestMemory {
 
     /// Restore a snapshot. Restored pointers get a fresh address-space
     /// token; raw offsets and alias relationships survive.
-    pub fn restore(
-        module: ModuleIdentity,
-        snapshot: &GuestMemorySnapshot,
-    ) -> Result<Self, GuestError> {
+    pub fn restore(module: ModuleIdentity, snapshot: &GuestMemorySnapshot) -> Result<Self, GuestError> {
         if module.id != snapshot.module.id
             || module.digest != snapshot.module.digest
             || module.revision != snapshot.module.revision
@@ -978,9 +940,9 @@ impl SparseGuestMemory {
             .collect();
         for mapping in &snapshot.mappings {
             memory.check_available(mapping.base, mapping.byte_length)?;
-            let backing = backings.get(mapping.backing).ok_or_else(|| {
-                GuestError::invalid("Invalid guest snapshot backing range")
-            })?;
+            let backing = backings
+                .get(mapping.backing)
+                .ok_or_else(|| GuestError::invalid("Invalid guest snapshot backing range"))?;
             if mapping.backing_offset + mapping.byte_length > backing.borrow().bytes.len() {
                 return Err(GuestError::invalid("Invalid guest snapshot backing range"));
             }
@@ -1008,11 +970,15 @@ impl SparseGuestMemory {
             _ => GuestAccess::Read,
         };
         if base == 0 {
-            return Err(fault("null-address", base, byte_length, access, "null is not a mapped address"));
+            return Err(fault(
+                "null-address",
+                base,
+                byte_length,
+                access,
+                "null is not a mapped address",
+            ));
         }
-        if u128::from(base) >= self.limit
-            || (byte_length != 0 && u128::from(base) + byte_length as u128 > self.limit)
-        {
+        if u128::from(base) >= self.limit || (byte_length != 0 && u128::from(base) + byte_length as u128 > self.limit) {
             return Err(fault(
                 "address-overflow",
                 base,
@@ -1024,12 +990,7 @@ impl SparseGuestMemory {
         Ok(())
     }
 
-    fn check_owned(
-        &self,
-        address: GuestAddress,
-        byte_length: usize,
-        access: &'static str,
-    ) -> Result<(), GuestError> {
+    fn check_owned(&self, address: GuestAddress, byte_length: usize, access: &'static str) -> Result<(), GuestError> {
         if address.space != self.space {
             let access = match access {
                 "write" => GuestAccess::Write,
@@ -1146,11 +1107,7 @@ impl SparseGuestMemory {
                                     address.offset,
                                     byte_length,
                                     access,
-                                    format!(
-                                        "mapping '{}' permits {}",
-                                        recent.label,
-                                        recent.permissions.label()
-                                    ),
+                                    format!("mapping '{}' permits {}", recent.label, recent.permissions.label()),
                                 ));
                             }
                         }
@@ -1185,11 +1142,7 @@ impl SparseGuestMemory {
                         cursor,
                         remaining,
                         access,
-                        format!(
-                            "mapping '{}' permits {}",
-                            mapping.label,
-                            mapping.permissions.label()
-                        ),
+                        format!("mapping '{}' permits {}", mapping.label, mapping.permissions.label()),
                     ));
                 }
             }
@@ -1233,9 +1186,7 @@ impl SparseGuestMemory {
         let mut consumed = 0;
         for chunk in chunks {
             let mapping = &self.mappings[chunk.mapping_id];
-            if !Rc::ptr_eq(&mapping.backing, &backing)
-                || mapping.backing_start + chunk.offset != start + consumed
-            {
+            if !Rc::ptr_eq(&mapping.backing, &backing) || mapping.backing_start + chunk.offset != start + consumed {
                 return Err(fault(
                     "noncontiguous-borrow",
                     address.offset,
@@ -1369,11 +1320,7 @@ impl SparseGuestMemory {
                                 address.offset,
                                 byte_length,
                                 access,
-                                format!(
-                                    "mapping '{}' permits {}",
-                                    recent.label,
-                                    recent.permissions.label()
-                                ),
+                                format!("mapping '{}' permits {}", recent.label, recent.permissions.label()),
                             ));
                         }
                         self.lookup_offset = (address.offset - recent.base) as usize;
@@ -1400,11 +1347,7 @@ impl SparseGuestMemory {
                         address.offset,
                         byte_length,
                         access,
-                        format!(
-                            "mapping '{}' permits {}",
-                            mapping.label,
-                            mapping.permissions.label()
-                        ),
+                        format!("mapping '{}' permits {}", mapping.label, mapping.permissions.label()),
                     ));
                 }
                 self.recent[slot] = Some(candidate);
@@ -1429,11 +1372,7 @@ impl SparseGuestMemory {
                 address.offset,
                 byte_length,
                 access,
-                format!(
-                    "mapping '{}' permits {}",
-                    mapping.label,
-                    mapping.permissions.label()
-                ),
+                format!("mapping '{}' permits {}", mapping.label, mapping.permissions.label()),
             ));
         }
         self.remember(Some(access), index);
@@ -1451,11 +1390,7 @@ impl SparseGuestMemory {
                             byte_offset,
                             1,
                             GuestAccess::Execute,
-                            format!(
-                                "mapping '{}' permits {}",
-                                recent.label,
-                                recent.permissions.label()
-                            ),
+                            format!("mapping '{}' permits {}", recent.label, recent.permissions.label()),
                         ));
                     }
                     return Ok(index);
@@ -1488,11 +1423,7 @@ impl SparseGuestMemory {
                 byte_offset,
                 1,
                 GuestAccess::Execute,
-                format!(
-                    "mapping '{}' permits {}",
-                    mapping.label,
-                    mapping.permissions.label()
-                ),
+                format!("mapping '{}' permits {}", mapping.label, mapping.permissions.label()),
             ));
         }
         self.remember(Some(GuestAccess::Execute), index);
@@ -1579,14 +1510,13 @@ impl SparseGuestMemory {
                 }
                 displacement += watched.byte_length;
             }
-            if !ranges.is_empty() {
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !ranges.is_empty()
+                && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     (observer.notify)(&ranges);
                 }))
                 .is_err()
-                {
-                    failures.push(format!("Guest write observer {id} failed"));
-                }
+            {
+                failures.push(format!("Guest write observer {id} failed"));
             }
         }
         if failures.is_empty() {

@@ -67,9 +67,7 @@ fn mask(width: u32) -> u64 {
 
 fn result_bits(width: u32, result: u64) -> u32 {
     let result = result & mask(width);
-    (u32::from(result == 0) << 6)
-        | (u32::from(result & (1u64 << (width - 1)) != 0) << 7)
-        | parity_flag(result as u8)
+    (u32::from(result == 0) << 6) | (u32::from(result & (1u64 << (width - 1)) != 0) << 7) | parity_flag(result as u8)
 }
 
 /// Sign-extend the low `width` bits of `value` to 128 bits.
@@ -108,13 +106,7 @@ pub fn result_flags(width: u32, value: u64, flags: &mut ProcessorFlags) {
 }
 
 /// Execute one ALU operation, updating flags. Returns the masked result.
-pub fn alu(
-    operation: AluOperation,
-    width: u32,
-    left: u64,
-    right: u64,
-    flags: &mut ProcessorFlags,
-) -> u64 {
+pub fn alu(operation: AluOperation, width: u32, left: u64, right: u64, flags: &mut ProcessorFlags) -> u64 {
     let mask = mask(width);
     let sign = 1u64 << (width - 1);
     let a = left & mask;
@@ -162,13 +154,7 @@ pub fn alu(
 
 /// Execute one shift/rotate with a masked count. Undefined flags retain
 /// their prior bits; defined flags follow Intel's masked-count rules.
-pub fn shift(
-    operation: ShiftOperation,
-    width: u32,
-    value: u64,
-    count: u32,
-    flags: &mut ProcessorFlags,
-) -> u64 {
+pub fn shift(operation: ShiftOperation, width: u32, value: u64, count: u32, flags: &mut ProcessorFlags) -> u64 {
     let masked = count & if width == 64 { 63 } else { 31 };
     let rotate = matches!(
         operation,
@@ -205,11 +191,7 @@ pub fn shift(
         ShiftOperation::Rcl | ShiftOperation::Rcr => {
             let extended = (u128::from(result) << 1) | u128::from(carry);
             let total = width + 1;
-            let wide_mask = if total >= 128 {
-                u128::MAX
-            } else {
-                (1u128 << total) - 1
-            };
+            let wide_mask = if total >= 128 { u128::MAX } else { (1u128 << total) - 1 };
             let rotated = if operation == ShiftOperation::Rcl {
                 ((extended << effective) | (extended >> (total - effective))) & wide_mask
             } else {
@@ -251,10 +233,7 @@ pub fn shift(
                 flags.set(GuestFlag::Overflow, (result & sign != 0) != carry);
             }
             ShiftOperation::Ror | ShiftOperation::Rcr => {
-                flags.set(
-                    GuestFlag::Overflow,
-                    (result & sign != 0) != (result & (sign >> 1) != 0),
-                );
+                flags.set(GuestFlag::Overflow, (result & sign != 0) != (result & (sign >> 1) != 0));
             }
             ShiftOperation::Shr => flags.set(GuestFlag::Overflow, original_sign),
             ShiftOperation::Sar => flags.set(GuestFlag::Overflow, false),
@@ -264,12 +243,7 @@ pub fn shift(
 }
 
 /// Signed multiply with CF/OF overflow reporting. Returns the masked result.
-pub fn signed_multiply(
-    width: u32,
-    left: u64,
-    right: u64,
-    flags: &mut ProcessorFlags,
-) -> u64 {
+pub fn signed_multiply(width: u32, left: u64, right: u64, flags: &mut ProcessorFlags) -> u64 {
     let extend = |value: u64| ((value << (64 - width)) as i64) as i128;
     let full = extend(left) * extend(right);
     let result = full as u64 & mask(width);

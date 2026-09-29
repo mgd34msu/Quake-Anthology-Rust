@@ -8,10 +8,9 @@
 use crate::core::contracts::GuestFlag;
 
 use super::binary::{
-    arithmetic, compare_binary, convert_binary, decode_binary, encode_binary, format_for,
-    from_integer, indefinite, integer_conversion, read_bits, round_integral, rounding,
-    square_root, write_bits, zero, BigInt, BinaryComparison, BinaryFormat, BinaryOperation,
-    BinaryResult, BinaryValue, BinaryWidth, Rounding, BINARY80, FLAG_DENORMAL_OPERAND,
+    arithmetic, compare_binary, convert_binary, decode_binary, encode_binary, format_for, from_integer, indefinite,
+    integer_conversion, read_bits, round_integral, rounding, square_root, write_bits, zero, BigInt, BinaryComparison,
+    BinaryFormat, BinaryOperation, BinaryResult, BinaryValue, BinaryWidth, Rounding, BINARY80, FLAG_DENORMAL_OPERAND,
     FLAG_INVALID, FLAG_OVERFLOW, FLAG_PRECISION, FLAG_UNDERFLOW,
 };
 use super::contracts::{NumericError, NumericExecutionContext, NumericOperand};
@@ -63,14 +62,8 @@ fn set_top(state: &mut GuestX87State, value: usize) {
 
 /// Raise status flags; unmasked non-precision exceptions defer, aborting the
 /// instruction while still retiring it.
-fn raise(
-    state: &mut GuestX87State,
-    flags: u32,
-    rounded_up: bool,
-    register_wrapped: bool,
-) -> Result<(), X87Error> {
-    state.status_word =
-        (state.status_word & !0x200) | (u16::from(rounded_up) << 9) | flags as u16;
+fn raise(state: &mut GuestX87State, flags: u32, rounded_up: bool, register_wrapped: bool) -> Result<(), X87Error> {
+    state.status_word = (state.status_word & !0x200) | (u16::from(rounded_up) << 9) | flags as u16;
     let unmasked = flags & !(state.control_word as u32) & 63;
     if unmasked != 0 {
         state.status_word |= 0x8080;
@@ -94,10 +87,7 @@ fn stack_fault(state: &mut GuestX87State, overflowed: bool) -> Result<(), X87Err
 }
 
 /// Read stack register `index` (0 is TOP).
-pub fn read_x87_register(
-    state: &mut GuestX87State,
-    index: usize,
-) -> Result<BinaryValue, NumericError> {
+pub fn read_x87_register(state: &mut GuestX87State, index: usize) -> Result<BinaryValue, NumericError> {
     read_register(state, index).map_err(|error| match error {
         X87Error::Deferred => NumericError::fault(16, "Deferred x87 stack fault"),
         X87Error::Numeric(error) => error,
@@ -124,9 +114,7 @@ pub fn write_x87_register(state: &mut GuestX87State, index: usize, value: &Binar
     state.registers[slot * 10..slot * 10 + 10].copy_from_slice(&bytes);
     let tag_value = match value {
         BinaryValue::Finite {
-            coefficient,
-            denormal,
-            ..
+            coefficient, denormal, ..
         } => {
             if coefficient.is_zero() {
                 1
@@ -228,9 +216,7 @@ fn result_format(state: &GuestX87State) -> Result<BinaryFormat, NumericError> {
             ..BINARY80
         }),
         3 => Ok(BINARY80),
-        _ => Err(NumericError::unsupported(
-            "Reserved x87 precision-control encoding",
-        )),
+        _ => Err(NumericError::unsupported("Reserved x87 precision-control encoding")),
     }
 }
 
@@ -246,23 +232,12 @@ fn commit(
 }
 
 /// Push an ABI floating-point return value.
-pub fn write_x87_return(
-    state: &mut GuestX87State,
-    value: f64,
-    storage: BinaryWidth,
-) -> Result<(), NumericError> {
+pub fn write_x87_return(state: &mut GuestX87State, value: f64, storage: BinaryWidth) -> Result<(), NumericError> {
     let decoded = match storage {
-        BinaryWidth::W32 => decode_binary(
-            &BigInt::from_u64(u64::from((value as f32).to_bits())),
-            BinaryWidth::W32,
-        ),
+        BinaryWidth::W32 => decode_binary(&BigInt::from_u64(u64::from((value as f32).to_bits())), BinaryWidth::W32),
         _ => decode_binary(&BigInt::from_u64(value.to_bits()), BinaryWidth::W64),
     };
-    let converted = convert_binary(
-        &decoded,
-        BINARY80,
-        rounding(u32::from(state.control_word >> 10)),
-    )?;
+    let converted = convert_binary(&decoded, BINARY80, rounding(u32::from(state.control_word >> 10)))?;
     raise(state, converted.flags, false, false).map_err(|error| match error {
         X87Error::Deferred => NumericError::fault(16, "Unmasked x87 return exception"),
         X87Error::Numeric(error) => error,
@@ -271,10 +246,7 @@ pub fn write_x87_return(
 }
 
 /// Read and convert the ABI floating-point return value (the caller pops).
-pub fn read_x87_return(
-    state: &mut GuestX87State,
-    storage: BinaryWidth,
-) -> Result<f64, NumericError> {
+pub fn read_x87_return(state: &mut GuestX87State, storage: BinaryWidth) -> Result<f64, NumericError> {
     let value = read_x87_register(state, 0)?;
     let result = convert_binary(
         &value,
@@ -368,16 +340,10 @@ fn binary_instruction(
     let reverse = (group == 5 || group == 7) != reversed;
     let format = result_format(&context.state.x87)?;
     let mode = rounding(u32::from(context.state.x87.control_word >> 10));
-    let (first, second) = if reverse {
-        (right, &left)
-    } else {
-        (&left, right)
-    };
+    let (first, second) = if reverse { (right, &left) } else { (&left, right) };
     let mut result = arithmetic(operation, first, second, format, mode, false)?;
     let mut wrapped = false;
-    if context.state.x87.control_word as u32 & (FLAG_OVERFLOW | FLAG_UNDERFLOW)
-        != FLAG_OVERFLOW | FLAG_UNDERFLOW
-    {
+    if context.state.x87.control_word as u32 & (FLAG_OVERFLOW | FLAG_UNDERFLOW) != FLAG_OVERFLOW | FLAG_UNDERFLOW {
         let unlimited = arithmetic(
             operation,
             first,
@@ -391,9 +357,7 @@ fn binary_instruction(
             false,
         )?;
         if let BinaryValue::Finite {
-            coefficient,
-            exponent,
-            ..
+            coefficient, exponent, ..
         } = &unlimited.value
         {
             if !coefficient.is_zero() {
@@ -415,12 +379,7 @@ fn binary_instruction(
                         } => BinaryValue::Finite {
                             negative: *negative,
                             coefficient: coefficient.clone(),
-                            exponent: exponent
-                                + if exception == FLAG_OVERFLOW {
-                                    -24_576
-                                } else {
-                                    24_576
-                                },
+                            exponent: exponent + if exception == FLAG_OVERFLOW { -24_576 } else { 24_576 },
                             denormal: *denormal,
                         },
                         _ => unlimited.value.clone(),
@@ -468,11 +427,7 @@ fn environment_bytes(state: &GuestX87State, short: bool) -> Vec<u8> {
     bytes
 }
 
-fn restore_environment(
-    state: &mut GuestX87State,
-    bytes: &[u8],
-    short: bool,
-) -> Result<(), NumericError> {
+fn restore_environment(state: &mut GuestX87State, bytes: &[u8], short: bool) -> Result<(), NumericError> {
     let get16 = |offset: usize| -> Result<u16, NumericError> {
         bytes
             .get(offset..offset + 2)
@@ -516,7 +471,7 @@ fn sync_exception_summary(state: &mut GuestX87State) {
 }
 
 fn execute(context: &mut NumericExecutionContext) -> Result<(), X87Error> {
-    let instruction = context.instruction.clone();
+    let instruction = context.instruction;
     let opcode = instruction.opcode;
     let modrm = instruction.modrm;
     let group = modrm.map_or(0, |modrm| (modrm >> 3) & 7);
@@ -525,10 +480,7 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), X87Error> {
         || ((opcode == 0xd9 || opcode == 0xdd)
             && matches!(instruction.operand, Some(NumericOperand::Memory(_)))
             && (group == 6 || group == 7));
-    if !no_wait
-        && context.state.x87.status_word as u32 & !(context.state.x87.control_word as u32) & 63
-            != 0
-    {
+    if !no_wait && context.state.x87.status_word as u32 & !(context.state.x87.control_word as u32) & 63 != 0 {
         return Err(NumericError::fault(16, "Pending x87 floating-point exception").into());
     }
     if opcode == 0x9b {
@@ -559,9 +511,8 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), X87Error> {
             .map_err(NumericError::Guest)?;
         return Ok(());
     }
-    let control_memory = matches!(operand, NumericOperand::Memory(_))
-        && (opcode == 0xd9 || opcode == 0xdd)
-        && group >= 4;
+    let control_memory =
+        matches!(operand, NumericOperand::Memory(_)) && (opcode == 0xd9 || opcode == 0xdd) && group >= 4;
     if !control_memory {
         let ip = context.state.instruction_pointer;
         let cs = context.state.segments[crate::core::registers::GuestProcessorState::CS].selector;
@@ -581,7 +532,7 @@ fn execute_memory(
     address: crate::core::contracts::GuestAddress,
     group: u8,
 ) -> Result<(), X87Error> {
-    let instruction = context.instruction.clone();
+    let instruction = context.instruction;
     let opcode = instruction.opcode;
     let short = instruction.operand_bits == 16;
     if (opcode == 0xd9 || opcode == 0xdd) && (group == 4 || group == 6) {
@@ -596,8 +547,7 @@ fn execute_memory(
                 for index in 0..8 {
                     let chunk = regs[index * 10..index * 10 + 10].to_vec();
                     let slot = physical(&context.state.x87, index);
-                    context.state.x87.registers[slot * 10..slot * 10 + 10]
-                        .copy_from_slice(&chunk);
+                    context.state.x87.registers[slot * 10..slot * 10 + 10].copy_from_slice(&chunk);
                 }
             }
         } else {
@@ -631,10 +581,9 @@ fn execute_memory(
         } else {
             context.state.x87.status_word
         };
-        context.memory.write(
-            address,
-            &write_bits(&BigInt::from_u64(u64::from(value)), 2),
-        )?;
+        context
+            .memory
+            .write(address, &write_bits(&BigInt::from_u64(u64::from(value)), 2))?;
         return Ok(());
     }
     let ds = context.state.segments[crate::core::registers::GuestProcessorState::DS].selector;
@@ -673,15 +622,9 @@ fn execute_memory(
     };
     let real = opcode == 0xd9 || opcode == 0xdd || (opcode == 0xdb && (group == 5 || group == 7));
     let load = group == 0 || (group == 5 && (opcode == 0xdb || opcode == 0xdf));
-    let store = group == 2
-        || group == 3
-        || group == 7
-        || (group == 1 && matches!(opcode, 0xdb | 0xdd | 0xdf));
+    let store = group == 2 || group == 3 || group == 7 || (group == 1 && matches!(opcode, 0xdb | 0xdd | 0xdf));
     if !load && !store {
-        return Err(NumericError::unsupported(format!(
-            "Unsupported x87 memory opcode {opcode:x}/{group}"
-        ))
-        .into());
+        return Err(NumericError::unsupported(format!("Unsupported x87 memory opcode {opcode:x}/{group}")).into());
     }
     if load {
         if real_width == 80 && real {
@@ -753,9 +696,7 @@ fn execute_memory(
                     },
                 )
             };
-            context
-                .memory
-                .write(address, &write_bits(&bits, real_width / 8))?;
+            context.memory.write(address, &write_bits(&bits, real_width / 8))?;
         } else {
             let width = if opcode == 0xdd && group == 1 {
                 64
@@ -769,10 +710,9 @@ fn execute_memory(
             };
             let result = integer_conversion(&value, width as u32, mode)?;
             raise(&mut context.state.x87, result.flags, result.rounded_up, false)?;
-            context.memory.write(
-                address,
-                &write_bits(&result.value.as_uint_n(width as u32), width / 8),
-            )?;
+            context
+                .memory
+                .write(address, &write_bits(&result.value.as_uint_n(width as u32), width / 8))?;
         }
         if group == 1 || group == 3 || group == 7 {
             pop_x87(&mut context.state.x87);
@@ -781,11 +721,7 @@ fn execute_memory(
     Ok(())
 }
 
-fn execute_register(
-    context: &mut NumericExecutionContext,
-    modrm: u8,
-    group: u8,
-) -> Result<(), X87Error> {
+fn execute_register(context: &mut NumericExecutionContext, modrm: u8, group: u8) -> Result<(), X87Error> {
     let opcode = context.instruction.opcode;
     let index = (modrm & 7) as usize;
     if opcode == 0xd8 {
@@ -802,9 +738,7 @@ fn execute_register(
             return Ok(());
         }
         if group == 2 || group == 3 {
-            return Err(
-                NumericError::unsupported("Reserved x87 register comparison encoding").into(),
-            );
+            return Err(NumericError::unsupported("Reserved x87 register comparison encoding").into());
         }
         let right = read_register(&mut context.state.x87, 0)?;
         binary_instruction(context, group, &right, index, true, opcode == 0xde)?;
@@ -922,9 +856,7 @@ fn execute_d9_special(
                     BinaryValue::Nan { .. } => 0x100,
                     BinaryValue::Infinity { .. } => 0x500,
                     BinaryValue::Finite {
-                        coefficient,
-                        denormal,
-                        ..
+                        coefficient, denormal, ..
                     } => {
                         if coefficient.is_zero() {
                             0x4000
@@ -937,16 +869,13 @@ fn execute_d9_special(
                 }
             };
             let state = &mut context.state.x87;
-            state.status_word =
-                (state.status_word & !0x4700) | bits | (u16::from(value.negative()) << 9);
+            state.status_word = (state.status_word & !0x4700) | bits | (u16::from(value.negative()) << 9);
             Ok(())
         }
         0xeb => {
             let constant = BinaryValue::Finite {
                 negative: false,
-                coefficient: BigInt::from_bytes_le(&[
-                    0x4c, 0x23, 0x8c, 0x16, 0x22, 0xaa, 0xfd, 0x90, 0x0c,
-                ]),
+                coefficient: BigInt::from_bytes_le(&[0x4c, 0x23, 0x8c, 0x16, 0x22, 0xaa, 0xfd, 0x90, 0x0c]),
                 exponent: -66,
                 denormal: false,
             };
@@ -1012,10 +941,7 @@ fn execute_d9_special(
             commit(&mut context.state.x87, 0, &result, false)?;
             Ok(())
         }
-        _ => Err(NumericError::unsupported(format!(
-            "Unsupported x87 special opcode d9 {modrm:x}"
-        ))
-        .into()),
+        _ => Err(NumericError::unsupported(format!("Unsupported x87 special opcode d9 {modrm:x}")).into()),
     }
 }
 

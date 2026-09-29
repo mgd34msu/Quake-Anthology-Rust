@@ -28,7 +28,11 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = if month_prime < 10 { month_prime + 3 } else { month_prime - 9 };
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
@@ -122,7 +126,10 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn new(text: &'a str) -> Self {
-        Self { bytes: text.as_bytes(), at: 0 }
+        Self {
+            bytes: text.as_bytes(),
+            at: 0,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -145,7 +152,11 @@ impl<'a> Cursor<'a> {
         while self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
             self.at += 1;
         }
-        if self.at > start { Some(()) } else { None }
+        if self.at > start {
+            Some(())
+        } else {
+            None
+        }
     }
 
     fn number(&mut self) -> Option<i64> {
@@ -194,7 +205,11 @@ impl<'a> Cursor<'a> {
             if self.take() != Some(b'.') {
                 return None;
             }
-            DstRule::Month { month, week, day: self.number()? }
+            DstRule::Month {
+                month,
+                week,
+                day: self.number()?,
+            }
         } else if self.peek() == Some(b'J') {
             self.take();
             DstRule::Julian { day: self.number()? }
@@ -217,7 +232,12 @@ fn parse_posix_zone(footer: &str) -> Option<PosixZone> {
     // POSIX offsets run west of UTC; negate to seconds east.
     let std_east = -cursor.offset()?;
     if cursor.peek().is_none() || cursor.peek() == Some(b',') {
-        return Some(PosixZone { std_east, dst_east: None, start: None, end: None });
+        return Some(PosixZone {
+            std_east,
+            dst_east: None,
+            start: None,
+            end: None,
+        });
     }
     cursor.name()?;
     let dst_east = if cursor.peek().is_some_and(|c| c != b',') {
@@ -233,7 +253,12 @@ fn parse_posix_zone(footer: &str) -> Option<PosixZone> {
         return None;
     }
     let end = cursor.rule()?;
-    Some(PosixZone { std_east, dst_east: Some(dst_east), start: Some(start), end: Some(end) })
+    Some(PosixZone {
+        std_east,
+        dst_east: Some(dst_east),
+        start: Some(start),
+        end: Some(end),
+    })
 }
 
 fn transition_days(year: i64, transition: &Transition) -> i64 {

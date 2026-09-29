@@ -6,13 +6,12 @@
 use std::rc::Rc;
 
 use crate::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue, GuestStorage};
+use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
 use crate::runtime::common::memory::{integer, required_pointer, write_unsigned};
-use crate::core::memory::SparseGuestMemory;
 use crate::runtime::system_v::contracts::{SystemVContext, SystemVServiceRegistrar};
 use crate::runtime::system_v::cxx_data::{
-    abi_bytes, abi_data, abi_function, abi_slot, abi_type, abi_unsupported, abi_vtable,
-    CxxBase, SharedAbi,
+    abi_bytes, abi_data, abi_function, abi_slot, abi_type, abi_unsupported, abi_vtable, CxxBase, SharedAbi,
 };
 
 fn mask(value: i32) -> u16 {
@@ -82,10 +81,7 @@ pub struct SystemVClassicLocale {
 
 impl SystemVClassicLocale {
     /// Retain the implementation; returns it.
-    pub fn retain(
-        &self,
-        memory: &mut crate::core::memory::SparseGuestMemory,
-    ) -> Result<GuestAddress, GuestError> {
+    pub fn retain(&self, memory: &mut crate::core::memory::SparseGuestMemory) -> Result<GuestAddress, GuestError> {
         let count = memory.read_i32(self.implementation)?;
         memory.write_i32(self.implementation, count + 1)?;
         Ok(self.implementation)
@@ -150,8 +146,7 @@ fn locale_text(
     let chars: Vec<char> = value.chars().collect();
     let address = ctx.allocate(memory, (chars.len() + 1) * 4)?;
     for (index, character) in chars.iter().enumerate() {
-        memory
-            .write_u32(abi_slot(memory, address, index as i64 * 4)?, *character as u32)?;
+        memory.write_u32(abi_slot(memory, address, index as i64 * 4)?, *character as u32)?;
     }
     Ok(address)
 }
@@ -183,10 +178,28 @@ fn locale_cache(
         };
     }
     if kind == CacheKind::Time {
-        let days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        let days = [
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+        ];
         let months = [
-            "January", "February", "March", "April", "May", "June", "July", "August", "September",
-            "October", "November", "December",
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
         ];
         let mut texts = vec![
             "%m/%d/%y".to_string(),
@@ -235,25 +248,45 @@ fn locale_cache(
             memory.write_pointer(abi_slot(memory, result, cursor)?, Some(address))?;
             cursor += pointer;
             align!(pointer);
-            write_unsigned(memory, abi_slot(memory, result, cursor)?, ctx.pointer_bytes, size as i128)?;
+            write_unsigned(
+                memory,
+                abi_slot(memory, result, cursor)?,
+                ctx.pointer_bytes,
+                size as i128,
+            )?;
             cursor += pointer;
         }
         for character in [46u32, 44u32] {
             align!(width);
-            write_unsigned(memory, abi_slot(memory, result, cursor)?, width as usize, i128::from(character))?;
+            write_unsigned(
+                memory,
+                abi_slot(memory, result, cursor)?,
+                width as usize,
+                i128::from(character),
+            )?;
             cursor += width;
         }
         for text in ["-+xX0123456789abcdef0123456789ABCDEF", "-+xX0123456789abcdefABCDEF"] {
             for character in text.chars() {
                 align!(width);
-                write_unsigned(memory, abi_slot(memory, result, cursor)?, width as usize, i128::from(character as u32))?;
+                write_unsigned(
+                    memory,
+                    abi_slot(memory, result, cursor)?,
+                    width as usize,
+                    i128::from(character as u32),
+                )?;
                 cursor += width;
             }
         }
     } else {
         for character in [46u32, 44u32] {
             align!(width);
-            write_unsigned(memory, abi_slot(memory, result, cursor)?, width as usize, i128::from(character))?;
+            write_unsigned(
+                memory,
+                abi_slot(memory, result, cursor)?,
+                width as usize,
+                i128::from(character),
+            )?;
             cursor += width;
         }
         for _ in 0..3 {
@@ -271,7 +304,12 @@ fn locale_cache(
         cursor += 8;
         for character in "-0123456789".chars() {
             align!(width);
-            write_unsigned(memory, abi_slot(memory, result, cursor)?, width as usize, i128::from(character as u32))?;
+            write_unsigned(
+                memory,
+                abi_slot(memory, result, cursor)?,
+                width as usize,
+                i128::from(character as u32),
+            )?;
             cursor += width;
         }
     }
@@ -289,7 +327,11 @@ fn ctype_methods(
 ) -> Result<Vec<GuestAddress>, GuestError> {
     let pointer_bytes = ctx.pointer_bytes;
     let pointer = pointer_bytes as i64;
-    let character_storage = if wide { GuestStorage::Uint32 } else { GuestStorage::Int32 };
+    let character_storage = if wide {
+        GuestStorage::Uint32
+    } else {
+        GuestStorage::Int32
+    };
     let ch = if wide { "w" } else { "c" };
     let width: i64 = if wide { 4 } else { 1 };
     let mut methods = Vec::new();
@@ -341,7 +383,11 @@ fn ctype_methods(
         )?;
         methods.push(method);
         for operation in ["is_range", "scan_is", "scan_not"] {
-            methods.push(abi_unsupported(ctx, memory, &format!("__guest_ctype_{ch}_{operation}"))?);
+            methods.push(abi_unsupported(
+                ctx,
+                memory,
+                &format!("__guest_ctype_{ch}_{operation}"),
+            )?);
         }
     }
     for operation in ["toupper", "tolower"] {
@@ -360,7 +406,11 @@ fn ctype_methods(
                 let value = if wide {
                     let c = c as u32;
                     if to_upper {
-                        if (97..=122).contains(&c) { c - 32 } else { c }
+                        if (97..=122).contains(&c) {
+                            c - 32
+                        } else {
+                            c
+                        }
                     } else if (65..=90).contains(&c) {
                         c + 32
                     } else {
@@ -403,7 +453,11 @@ fn ctype_methods(
                     let value = if wide {
                         let c = c as u32;
                         if to_upper {
-                            if (97..=122).contains(&c) { c - 32 } else { c }
+                            if (97..=122).contains(&c) {
+                                c - 32
+                            } else {
+                                c
+                            }
                         } else if (65..=90).contains(&c) {
                             c + 32
                         } else {
@@ -461,7 +515,12 @@ fn ctype_methods(
             ctx,
             memory,
             &format!("__guest_ctype_{ch}_widen_range"),
-            &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Pointer],
+            &[
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+            ],
             Some(GuestStorage::Pointer),
             Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
@@ -503,10 +562,7 @@ fn ctype_methods(
                 let object = required_pointer(args, 0)?;
                 let input = integer(args, 1)? as u32;
                 let narrow = 3 * pointer;
-                let value = if wide
-                    && input < 128
-                    && memory.read_u8(memory.offset(object, narrow)?)? != 0
-                {
+                let value = if wide && input < 128 && memory.read_u8(memory.offset(object, narrow)?)? != 0 {
                     u32::from(memory.read_u8(memory.offset(object, narrow + 1 + input as i64)?)?)
                 } else if wide && input > 127 {
                     integer(args, 2)? as u32
@@ -521,7 +577,11 @@ fn ctype_methods(
         )?;
         methods.push(method);
     }
-    methods.push(abi_unsupported(ctx, memory, &format!("__guest_ctype_{ch}_narrow_range"))?);
+    methods.push(abi_unsupported(
+        ctx,
+        memory,
+        &format!("__guest_ctype_{ch}_narrow_range"),
+    )?);
     Ok(methods)
 }
 
@@ -531,6 +591,7 @@ struct FacetSet {
     num_put: GuestAddress,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn construct_facets(
     ctx: &SystemVContext,
     memory: &mut SparseGuestMemory,
@@ -574,7 +635,11 @@ fn construct_facets(
         };
         let size = if index == 0 {
             if wide {
-                if ctx.pointer_bytes == 4 { 1264 } else { 1344 }
+                if ctx.pointer_bytes == 4 {
+                    1264
+                } else {
+                    1344
+                }
             } else {
                 ceil_div(7 * pointer + 514, pointer) as usize * pointer as usize
             }
@@ -676,7 +741,11 @@ fn construct_facets(
     else {
         return Err(GuestError::callback("Missing standard C locale facets"));
     };
-    Ok(FacetSet { ctype, num_get, num_put })
+    Ok(FacetSet {
+        ctype,
+        num_get,
+        num_put,
+    })
 }
 
 /// Build the classic locale and its facets.
@@ -719,9 +788,15 @@ pub fn build_classic_locale(
     ] {
         let slot = ctx.allocate(memory, pointer as usize)?;
         memory.write_pointer(slot, Some(table))?;
-        ctx.service(memory, "libc.so.6", name, &[Some("GLIBC_2.3"), None], &[], Some(GuestStorage::Pointer), Rc::new(
-            move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(slot)))),
-        ))?;
+        ctx.service(
+            memory,
+            "libc.so.6",
+            name,
+            &[Some("GLIBC_2.3"), None],
+            &[],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(slot))))),
+        )?;
     }
     let facets = ctx.allocate(memory, 28 * pointer as usize)?;
     let caches = ctx.allocate(memory, 28 * pointer as usize)?;
@@ -730,7 +805,12 @@ pub fn build_classic_locale(
     let implementation = ctx.allocate(memory, 5 * pointer as usize)?;
     memory.write_i32(implementation, 2)?;
     memory.write_pointer(abi_slot(memory, implementation, pointer)?, Some(facets))?;
-    write_unsigned(memory, abi_slot(memory, implementation, 2 * pointer)?, ctx.pointer_bytes, 28)?;
+    write_unsigned(
+        memory,
+        abi_slot(memory, implementation, 2 * pointer)?,
+        ctx.pointer_bytes,
+        28,
+    )?;
     memory.write_pointer(abi_slot(memory, implementation, 3 * pointer)?, Some(caches))?;
     memory.write_pointer(abi_slot(memory, implementation, 4 * pointer)?, Some(names))?;
     let mut locale = SystemVClassicLocale {
@@ -741,8 +821,30 @@ pub fn build_classic_locale(
         num_get: [classification, classification],
         facet_base,
     };
-    let narrow = construct_facets(ctx, memory, abi, &locale, false, facets, caches, classification, lower, upper)?;
-    let wide = construct_facets(ctx, memory, abi, &locale, true, facets, caches, classification, lower, upper)?;
+    let narrow = construct_facets(
+        ctx,
+        memory,
+        abi,
+        &locale,
+        false,
+        facets,
+        caches,
+        classification,
+        lower,
+        upper,
+    )?;
+    let wide = construct_facets(
+        ctx,
+        memory,
+        abi,
+        &locale,
+        true,
+        facets,
+        caches,
+        classification,
+        lower,
+        upper,
+    )?;
     locale.ctype = [narrow.ctype, wide.ctype];
     locale.num_put = [narrow.num_put, wide.num_put];
     locale.num_get = [narrow.num_get, wide.num_get];

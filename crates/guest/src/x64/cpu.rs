@@ -12,31 +12,29 @@ use std::rc::Rc;
 use crate::abi::GuestCpu;
 use crate::core::callbacks::HookState;
 use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestException, GuestExecutionStop, GuestFlag, GuestInstruction,
-    GuestIntegerWidth, GuestRegister,
+    GuestAccess, GuestAddress, GuestException, GuestExecutionStop, GuestFlag, GuestInstruction, GuestIntegerWidth,
+    GuestRegister,
 };
 use crate::core::memory::{ExecutableBlock, SparseGuestMemory};
 use crate::core::registers::GuestProcessorState;
+use crate::error::GuestError;
 use crate::floating_point::contracts::NumericOperand;
 use crate::floating_point::raw_sse::prepare_raw_sse;
 use crate::x64::decoder::{
-    canonical_address, guest_address, read_memory, write_memory, X64DecodeCursor, X64Operand,
-    X64Repeat, X64Segment,
+    canonical_address, guest_address, read_memory, write_memory, X64DecodeCursor, X64Operand, X64Repeat, X64Segment,
 };
 use crate::x64::integer_kernel::{
-    prepare_x64_integer_plan, x64_integer_block_safe, X64IntegerBlockResult, X64IntegerKernel,
-    X64IntegerPlan, X64IntegerStep,
+    prepare_x64_integer_plan, x64_integer_block_safe, X64IntegerBlockResult, X64IntegerKernel, X64IntegerPlan,
+    X64IntegerStep,
 };
 use crate::x64::plan::{
-    execute_x64_plan, make_x64_plan, x64_lock, NumericInstructionBase, X64Flow, X64PlanOperation,
-    X64PlanSource, X64SemanticPlan, X64SseOperand, X64ShiftCount, X64_ADVANCE,
+    execute_x64_plan, make_x64_plan, x64_lock, NumericInstructionBase, X64Flow, X64PlanOperation, X64PlanSource,
+    X64SemanticPlan, X64ShiftCount, X64SseOperand, X64_ADVANCE,
 };
 use crate::x86::arithmetic::{
-    alu, quotient_fits_signed, result_flags, sign_extend, sign_extend_double, AluOperation,
-    ShiftOperation,
+    alu, quotient_fits_signed, result_flags, sign_extend, sign_extend_double, AluOperation, ShiftOperation,
 };
 use crate::x86::decoder::X86Error;
-use crate::error::GuestError;
 
 /// Decode-cache capacity before a full clear.
 const CACHE_CAPACITY: usize = 32768;
@@ -116,9 +114,7 @@ pub struct X64Cpu {
 impl X64Cpu {
     /// CPU over `state` and `memory`.
     pub fn new(state: GuestProcessorState, memory: SparseGuestMemory) -> Result<Self, GuestError> {
-        if state.architecture != crate::core::contracts::GuestArchitecture::X86_64
-            || memory.pointer_bytes() != 8
-        {
+        if state.architecture != crate::core::contracts::GuestArchitecture::X86_64 || memory.pointer_bytes() != 8 {
             return Err(GuestError::cpu(
                 "X64Cpu requires x86-64 processor state and 64-bit guest memory",
             ));
@@ -144,7 +140,9 @@ impl X64Cpu {
     }
 
     fn hook_revision(&self) -> u64 {
-        self.hooks.as_ref().map_or(0, |hooks| hooks.callbacks.borrow().entry_revision())
+        self.hooks
+            .as_ref()
+            .map_or(0, |hooks| hooks.callbacks.borrow().entry_revision())
     }
 
     fn is_host_call(&mut self, address: GuestAddress) -> Result<bool, GuestError> {
@@ -170,9 +168,10 @@ impl X64Cpu {
         if cached.unhooked_revision == Some(revision) {
             return true;
         }
-        let unhooked = self.hooks.as_ref().map_or(true, |hooks| {
-            hooks.callbacks.borrow().instruction_unhooked(start)
-        });
+        let unhooked = self
+            .hooks
+            .as_ref()
+            .map_or(true, |hooks| hooks.callbacks.borrow().instruction_unhooked(start));
         if !unhooked {
             return false;
         }
@@ -291,11 +290,7 @@ impl X64Cpu {
             return None;
         }
         let guard = self.memory.retain_executable_block(first, &bytes)?;
-        let block = ManagedBlock {
-            revision,
-            steps,
-            guard,
-        };
+        let block = ManagedBlock { revision, steps, guard };
         if complete {
             self.managed_blocks.insert(first, block.clone());
             if let Some(cached) = self.instructions.get_mut(&first) {
@@ -306,7 +301,11 @@ impl X64Cpu {
     }
 
     fn push_stack(&mut self, value: u64, width: GuestIntegerWidth) -> Result<(), X86Error> {
-        let next = self.state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?.wrapping_sub(width.bytes() as u64);
+        let next = self
+            .state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?
+            .wrapping_sub(width.bytes() as u64);
         let space = self.memory.address_space();
         write_memory(
             &mut self.memory,
@@ -314,12 +313,17 @@ impl X64Cpu {
             width,
             value,
         )?;
-        self.state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, next, false)?;
+        self.state
+            .registers
+            .write(GuestRegister::Rsp, GuestIntegerWidth::B64, next, false)?;
         Ok(())
     }
 
     fn pop_stack(&mut self, width: GuestIntegerWidth) -> Result<u64, X86Error> {
-        let stack = self.state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
+        let stack = self
+            .state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
         let space = self.memory.address_space();
         let value = read_memory(&mut self.memory, guest_address(space, stack, GuestAccess::Read)?, width)?;
         self.state.registers.write(
@@ -341,11 +345,7 @@ impl GuestCpu for X64Cpu {
         self.hooks = hooks;
     }
 
-    fn run(
-        &mut self,
-        instruction_budget: u64,
-        return_address: Option<GuestAddress>,
-    ) -> GuestExecutionStop {
+    fn run(&mut self, instruction_budget: u64, return_address: Option<GuestAddress>) -> GuestExecutionStop {
         if let Some(address) = return_address {
             if address.space != self.memory.address_space() {
                 return GuestExecutionStop::Unsupported {
@@ -372,9 +372,10 @@ impl GuestCpu for X64Cpu {
                 };
             }
             let revision = self.hook_revision();
-            if block.as_ref().is_none_or(|block| {
-                block.revision != revision || block.starts.get(block_index) != Some(&start)
-            }) {
+            if block
+                .as_ref()
+                .is_none_or(|block| block.revision != revision || block.starts.get(block_index) != Some(&start))
+            {
                 block = None;
             }
             // Integer-block fast path over retained executable bytes.
@@ -421,8 +422,7 @@ impl GuestCpu for X64Cpu {
                                     instructions += retired;
                                     return GuestExecutionStop::Return {
                                         instructions,
-                                        address: self
-                                            .evidence_address(self.state.instruction_pointer),
+                                        address: self.evidence_address(self.state.instruction_pointer),
                                     };
                                 }
                                 X64IntegerBlockResult::Complete { instructions: retired } => {
@@ -430,7 +430,10 @@ impl GuestCpu for X64Cpu {
                                     block = None;
                                     continue;
                                 }
-                                X64IntegerBlockResult::Fault { instructions: retired, error } => {
+                                X64IntegerBlockResult::Fault {
+                                    instructions: retired,
+                                    error,
+                                } => {
                                     instructions += retired;
                                     return self.map_fault(
                                         error,
@@ -475,9 +478,7 @@ impl GuestCpu for X64Cpu {
                     .and_then(|at| self.instructions.get(&at))
                     .or_else(|| self.instructions.get(&start));
                 let retained_start = retained.map(|cached| cached.start);
-                if block.is_none()
-                    && retained_start.is_none_or(|at| !self.entry_unhooked(at, revision))
-                {
+                if block.is_none() && retained_start.is_none_or(|at| !self.entry_unhooked(at, revision)) {
                     let address = self.evidence_address(start);
                     if self.is_host_call(address)? {
                         return Ok(Step::HostCall(address));
@@ -489,17 +490,13 @@ impl GuestCpu for X64Cpu {
                 };
                 let reused = retained
                     .filter(|cached| {
-                        self.state.instruction_pointer == start
-                            && cached.decoded.retention.unchanged(&self.memory)
+                        self.state.instruction_pointer == start && cached.decoded.retention.unchanged(&self.memory)
                     })
                     .map(|cached| (cached.decoded.clone(), cached.plan.clone(), cached.integer.clone()));
                 if reused.is_none() && block.is_some() {
                     if let Some(owner) = block.as_ref().and_then(|block| block.starts.first()) {
                         let key = *owner;
-                        let invalidate = self
-                            .instructions
-                            .get(&key)
-                            .and_then(|cached| cached.block_key)
+                        let invalidate = self.instructions.get(&key).and_then(|cached| cached.block_key)
                             == block.as_ref().and_then(|_| Some(key));
                         if invalidate {
                             if let Some(cached) = self.instructions.get_mut(&key) {
@@ -549,10 +546,7 @@ impl GuestCpu for X64Cpu {
                     if prepared.is_none() || cursor.start() != start {
                         self.instructions.remove(&start);
                     } else if let Some(prepared) = prepared {
-                        let integer = cursor
-                            .plan
-                            .as_ref()
-                            .and_then(prepare_x64_integer_plan);
+                        let integer = cursor.plan.as_ref().and_then(prepare_x64_integer_plan);
                         self.instructions.insert(
                             start,
                             CachedInstruction {
@@ -575,10 +569,7 @@ impl GuestCpu for X64Cpu {
             })();
             match step {
                 Ok(Step::HostCall(address)) => {
-                    return GuestExecutionStop::HostCall {
-                        instructions,
-                        address,
-                    };
+                    return GuestExecutionStop::HostCall { instructions, address };
                 }
                 Ok(Step::Executed {
                     flow,
@@ -624,23 +615,14 @@ impl GuestCpu for X64Cpu {
                         cursor_bytes
                     };
                     let opcode = cursor_opcode.or(prepared_opcode);
-                    return self.map_fault(
-                        error,
-                        instructions,
-                        self.evidence_address(start),
-                        bytes,
-                        opcode,
-                    );
+                    return self.map_fault(error, instructions, self.evidence_address(start), bytes, opcode);
                 }
             }
             instructions += 1;
         }
         let address = self.evidence_address(self.state.instruction_pointer);
         if return_address.map_or(false, |target| target.offset == address.offset) {
-            return GuestExecutionStop::Return {
-                instructions,
-                address,
-            };
+            return GuestExecutionStop::Return { instructions, address };
         }
         GuestExecutionStop::Budget { instructions }
     }
@@ -670,11 +652,7 @@ impl X64Cpu {
                     detail,
                 },
             },
-            X86Error::Fault {
-                vector,
-                detail,
-                ..
-            } => GuestExecutionStop::Exception {
+            X86Error::Fault { vector, detail, .. } => GuestExecutionStop::Exception {
                 instructions,
                 exception: GuestException::Processor {
                     vector,
@@ -688,7 +666,10 @@ impl X64Cpu {
                 instruction: GuestInstruction {
                     address,
                     bytes,
-                    mnemonic: format!("opcode {}", opcode.map_or("unknown".to_string(), |op| format!("{op:x}"))),
+                    mnemonic: format!(
+                        "opcode {}",
+                        opcode.map_or("unknown".to_string(), |op| format!("{op:x}"))
+                    ),
                 },
                 detail,
             },
@@ -696,10 +677,7 @@ impl X64Cpu {
     }
 }
 
-fn planned(
-    cursor: &mut X64DecodeCursor,
-    operation: X64PlanOperation,
-) -> Result<X64Flow, X86Error> {
+fn planned(cursor: &mut X64DecodeCursor, operation: X64PlanOperation) -> Result<X64Flow, X86Error> {
     let plan = make_x64_plan(operation, cursor.next_ip(), cursor.lock);
     let flow = execute_x64_plan(&plan, &mut *cursor.memory, &mut *cursor.state)?;
     cursor.plan = Some(plan);
@@ -719,20 +697,13 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
     if op < 0x40 && (op & 7) <= 5 {
         let operation = ARITHMETIC[(op >> 3) as usize];
         let form = op & 7;
-        let bits = if form & 1 == 0 {
-            GuestIntegerWidth::B8
-        } else {
-            width
-        };
+        let bits = if form & 1 == 0 { GuestIntegerWidth::B8 } else { width };
         if form < 4 {
             let decoded = cursor.decode_modrm(bits)?;
             let (destination, source) = if form < 2 {
                 (decoded.rm, X64PlanSource::Operand(X64Operand::Register(decoded.reg)))
             } else {
-                (
-                    X64Operand::Register(decoded.reg),
-                    X64PlanSource::Operand(decoded.rm),
-                )
+                (X64Operand::Register(decoded.reg), X64PlanSource::Operand(decoded.rm))
             };
             return planned(
                 cursor,
@@ -803,11 +774,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
     }
     if (0xb0..=0xbf).contains(&op) {
         x64_lock(cursor.lock, None, false)?;
-        let bits = if op < 0xb8 {
-            GuestIntegerWidth::B8
-        } else {
-            width
-        };
+        let bits = if op < 0xb8 { GuestIntegerWidth::B8 } else { width };
         let value = cursor.read_unsigned(bits.bytes())?;
         let destination = cursor.register((op & 7) as usize + cursor.rex_b(), bits)?;
         return planned(
@@ -878,11 +845,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             )
         }
         0x80 | 0x81 | 0x83 => {
-            let decoded = cursor.decode_modrm(if op == 0x80 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op == 0x80 { GuestIntegerWidth::B8 } else { width })?;
             let operation = ARITHMETIC[decoded.extension];
             let immediate = if op == 0x83 {
                 cursor.read_signed(1)? as u64
@@ -899,11 +862,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             )
         }
         0x84 | 0x85 => {
-            let decoded = cursor.decode_modrm(if op == 0x84 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op == 0x84 { GuestIntegerWidth::B8 } else { width })?;
             planned(
                 cursor,
                 X64PlanOperation::Alu {
@@ -914,11 +873,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             )
         }
         0x86 | 0x87 => {
-            let decoded = cursor.decode_modrm(if op == 0x86 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op == 0x86 { GuestIntegerWidth::B8 } else { width })?;
             x64_lock(cursor.lock, Some(decoded.rm), true)?;
             cursor.writable(&decoded.rm)?;
             let value = cursor.read(&decoded.rm)?;
@@ -927,23 +882,13 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             cursor.write(&X64Operand::Register(decoded.reg), value)?;
             Ok(X64_ADVANCE)
         }
-        0x88 | 0x89 | 0x8a | 0x8b => {
+        0x88..=0x8b => {
             x64_lock(cursor.lock, None, false)?;
-            let decoded = cursor.decode_modrm(if op & 1 == 0 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op & 1 == 0 { GuestIntegerWidth::B8 } else { width })?;
             let (destination, source) = if op < 0x8a {
-                (
-                    decoded.rm,
-                    X64PlanSource::Operand(X64Operand::Register(decoded.reg)),
-                )
+                (decoded.rm, X64PlanSource::Operand(X64Operand::Register(decoded.reg)))
             } else {
-                (
-                    X64Operand::Register(decoded.reg),
-                    X64PlanSource::Operand(decoded.rm),
-                )
+                (X64Operand::Register(decoded.reg), X64PlanSource::Operand(decoded.rm))
             };
             planned(cursor, X64PlanOperation::Move { destination, source })
         }
@@ -966,10 +911,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             let stack_width = cursor.stack_width();
             let decoded = cursor.decode_modrm(stack_width)?;
             if decoded.extension != 0 {
-                return Err(X86Error::unsupported(format!(
-                    "POP/XOP group /{}",
-                    decoded.extension
-                )));
+                return Err(X86Error::unsupported(format!("POP/XOP group /{}", decoded.extension)));
             }
             planned(
                 cursor,
@@ -989,19 +931,20 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             let value = cursor.state.registers.read(GuestRegister::Rax, source_width, false)?;
             let extended = ((((value & mask(source_width)) << (64 - source_width.bits())) as i64)
                 >> (64 - source_width.bits())) as u64;
-            cursor.state.registers.write(GuestRegister::Rax, width, extended, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rax, width, extended, false)?;
             Ok(X64_ADVANCE)
         }
         0x99 => {
             x64_lock(cursor.lock, None, false)?;
             let value = cursor.state.registers.read(GuestRegister::Rax, width, false)? & mask(width);
             let negative = value & (1u64 << (width.bits() - 1)) != 0;
-            cursor.state.registers.write(
-                GuestRegister::Rdx,
-                width,
-                if negative { mask(width) } else { 0 },
-                false,
-            )?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rdx, width, if negative { mask(width) } else { 0 }, false)?;
             Ok(X64_ADVANCE)
         }
         0x9b => {
@@ -1012,7 +955,11 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             x64_lock(cursor.lock, None, false)?;
             let stack_width = cursor.stack_width();
             let value = cursor.state.flags.value() & !0x30000;
-            let next = cursor.state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?.wrapping_sub(stack_width.bytes() as u64);
+            let next = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?
+                .wrapping_sub(stack_width.bytes() as u64);
             let space = cursor.memory.address_space();
             write_memory(
                 &mut *cursor.memory,
@@ -1020,13 +967,19 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
                 stack_width,
                 value,
             )?;
-            cursor.state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, next, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, next, false)?;
             Ok(X64_ADVANCE)
         }
         0x9d => {
             x64_lock(cursor.lock, None, false)?;
             let stack_width = cursor.stack_width();
-            let stack = cursor.state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
+            let stack = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
             let space = cursor.memory.address_space();
             let value = read_memory(
                 &mut *cursor.memory,
@@ -1052,7 +1005,10 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         }
         0x9e => {
             x64_lock(cursor.lock, None, false)?;
-            let value = cursor.state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B8, true)?;
+            let value = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B8, true)?;
             cursor
                 .state
                 .flags
@@ -1062,16 +1018,15 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         0x9f => {
             x64_lock(cursor.lock, None, false)?;
             let value = (cursor.state.flags.value() & 0xd5) | 2;
-            cursor.state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B8, value, true)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rax, GuestIntegerWidth::B8, value, true)?;
             Ok(X64_ADVANCE)
         }
-        0xa0 | 0xa1 | 0xa2 | 0xa3 => {
+        0xa0..=0xa3 => {
             x64_lock(cursor.lock, None, false)?;
-            let bits = if op & 1 == 0 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            };
+            let bits = if op & 1 == 0 { GuestIntegerWidth::B8 } else { width };
             let raw = cursor.read_unsigned(cursor.address_bits() as usize / 8)?;
             let segment_base = cursor.segment.map_or(0, |segment| {
                 cursor.state.segments[match segment {
@@ -1101,11 +1056,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         }
         0xa4 | 0xa5 | 0xa6 | 0xa7 | 0xaa | 0xab | 0xac | 0xad | 0xae | 0xaf => string_op(cursor),
         0xa8 | 0xa9 => {
-            let bits = if op == 0xa8 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            };
+            let bits = if op == 0xa8 { GuestIntegerWidth::B8 } else { width };
             let destination = cursor.register(0, bits)?;
             let source = cursor.immediate(bits)?;
             planned(
@@ -1118,11 +1069,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             )
         }
         0xc0 | 0xc1 | 0xd0 | 0xd1 | 0xd2 | 0xd3 => {
-            let bits = if op & 1 == 0 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            };
+            let bits = if op & 1 == 0 { GuestIntegerWidth::B8 } else { width };
             let decoded = cursor.decode_modrm(bits)?;
             let count = if op < 0xd0 {
                 X64ShiftCount::Immediate(u32::from(cursor.read_byte()?))
@@ -1142,20 +1089,12 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         }
         0xc2 | 0xc3 => {
             x64_lock(cursor.lock, None, false)?;
-            let discard = if op == 0xc2 {
-                cursor.read_unsigned(2)?
-            } else {
-                0
-            };
+            let discard = if op == 0xc2 { cursor.read_unsigned(2)? } else { 0 };
             planned(cursor, X64PlanOperation::Return { discard })
         }
         0xc6 | 0xc7 => {
             x64_lock(cursor.lock, None, false)?;
-            let decoded = cursor.decode_modrm(if op == 0xc6 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op == 0xc6 { GuestIntegerWidth::B8 } else { width })?;
             if decoded.extension != 0 {
                 return Err(X86Error::unsupported(format!(
                     "MOV/transactional group /{}",
@@ -1173,10 +1112,19 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         }
         0xc9 => {
             x64_lock(cursor.lock, None, false)?;
-            let rbp = cursor.state.registers.read(GuestRegister::Rbp, GuestIntegerWidth::B64, false)?;
-            cursor.state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, rbp, false)?;
+            let rbp = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rbp, GuestIntegerWidth::B64, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, rbp, false)?;
             let stack_width = cursor.stack_width();
-            let stack = cursor.state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
+            let stack = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)?;
             let space = cursor.memory.address_space();
             let value = read_memory(
                 &mut *cursor.memory,
@@ -1189,7 +1137,10 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
                 stack.wrapping_add(stack_width.bytes() as u64),
                 false,
             )?;
-            cursor.state.registers.write(GuestRegister::Rbp, stack_width, value, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rbp, stack_width, value, false)?;
             Ok(X64_ADVANCE)
         }
         0xcc => {
@@ -1201,7 +1152,7 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             let vector = cursor.read_byte()?;
             Err(X86Error::unsupported(format!("Software interrupt 0x{vector:x}")))
         }
-        0xe0 | 0xe1 | 0xe2 | 0xe3 => {
+        0xe0..=0xe3 => {
             x64_lock(cursor.lock, None, false)?;
             let displacement = cursor.read_signed(1)?;
             let address_width = if cursor.address_bits() == 32 {
@@ -1212,7 +1163,10 @@ fn execute_cursor(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             let mut count = cursor.state.registers.read(GuestRegister::Rcx, address_width, false)?;
             if op != 0xe3 {
                 count = count.wrapping_sub(1) & mask(address_width);
-                cursor.state.registers.write(GuestRegister::Rcx, address_width, count, false)?;
+                cursor
+                    .state
+                    .registers
+                    .write(GuestRegister::Rcx, address_width, count, false)?;
             }
             let taken = if op == 0xe3 {
                 count == 0
@@ -1398,7 +1352,10 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         let low = full as u64 & mask(width);
         let high = (full >> width.bits()) as u64 & mask(width);
         if width == GuestIntegerWidth::B8 {
-            cursor.state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B16, full as u64, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rax, GuestIntegerWidth::B16, full as u64, false)?;
         } else {
             cursor.state.registers.write(GuestRegister::Rax, width, low, false)?;
             cursor.state.registers.write(GuestRegister::Rdx, width, high, false)?;
@@ -1414,7 +1371,12 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
     }
     let signed = decoded.extension == 7;
     let raw_dividend: u128 = if width == GuestIntegerWidth::B8 {
-        u128::from(cursor.state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B16, false)?)
+        u128::from(
+            cursor
+                .state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B16, false)?,
+        )
     } else {
         (u128::from(cursor.state.registers.read(GuestRegister::Rdx, width, false)? & mask(width)) << width.bits())
             | u128::from(cursor.state.registers.read(GuestRegister::Rax, width, false)? & mask(width))
@@ -1444,11 +1406,23 @@ fn unary(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         return Err(X86Error::fault(0, "Integer quotient overflow"));
     }
     if width == GuestIntegerWidth::B8 {
-        cursor.state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B8, quotient as u64, false)?;
-        cursor.state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B8, remainder as u64, true)?;
+        cursor
+            .state
+            .registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B8, quotient as u64, false)?;
+        cursor
+            .state
+            .registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B8, remainder as u64, true)?;
     } else {
-        cursor.state.registers.write(GuestRegister::Rax, width, quotient as u64, false)?;
-        cursor.state.registers.write(GuestRegister::Rdx, width, remainder as u64, false)?;
+        cursor
+            .state
+            .registers
+            .write(GuestRegister::Rax, width, quotient as u64, false)?;
+        cursor
+            .state
+            .registers
+            .write(GuestRegister::Rdx, width, remainder as u64, false)?;
     }
     Ok(X64_ADVANCE)
 }
@@ -1473,7 +1447,12 @@ fn string_op(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
     }
     let source_offset = cursor.state.registers.read(GuestRegister::Rsi, address_width, false)?;
     let destination_offset = cursor.state.registers.read(GuestRegister::Rdi, address_width, false)?;
-    let delta = width.bytes() as i64 * if cursor.state.flags.get(GuestFlag::Direction) { -1 } else { 1 };
+    let delta = width.bytes() as i64
+        * if cursor.state.flags.get(GuestFlag::Direction) {
+            -1
+        } else {
+            1
+        };
     let reads_source = matches!(op, 0xa4 | 0xa5 | 0xa6 | 0xa7 | 0xac | 0xad);
     let uses_destination = !matches!(op, 0xac | 0xad);
     let mut source = 0;
@@ -1549,7 +1528,10 @@ fn string_op(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         return Ok(X64_ADVANCE);
     }
     count = count.wrapping_sub(1) & mask(address_width);
-    cursor.state.registers.write(GuestRegister::Rcx, address_width, count, false)?;
+    cursor
+        .state
+        .registers
+        .write(GuestRegister::Rcx, address_width, count, false)?;
     let compares = matches!(op, 0xa6 | 0xa7 | 0xae | 0xaf);
     let keep = count != 0 && (!compares || cursor.state.flags.get(GuestFlag::Zero) == (cursor.repeat == X64Repeat::F3));
     // Each repeated element consumes one budget unit and is restartable at
@@ -1623,7 +1605,10 @@ fn extended(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
             x64_lock(cursor.lock, None, false)?;
             // Virtual CPU feature enumeration, independent of the host.
             // CPUID register/feature encoding: Intel SDM Vol. 2A.
-            let leaf = cursor.state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B32, false)?;
+            let leaf = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B32, false)?;
             let (mut eax, mut ebx, mut ecx, mut edx) = (0, 0, 0, 0);
             if leaf == 0 {
                 eax = 7;
@@ -1642,10 +1627,22 @@ fn extended(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
                 ecx = 1;
                 edx = 0x2000_0000;
             }
-            cursor.state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B32, eax, false)?;
-            cursor.state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B32, ebx, false)?;
-            cursor.state.registers.write(GuestRegister::Rcx, GuestIntegerWidth::B32, ecx, false)?;
-            cursor.state.registers.write(GuestRegister::Rdx, GuestIntegerWidth::B32, edx, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rax, GuestIntegerWidth::B32, eax, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rbx, GuestIntegerWidth::B32, ebx, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rcx, GuestIntegerWidth::B32, ecx, false)?;
+            cursor
+                .state
+                .registers
+                .write(GuestRegister::Rdx, GuestIntegerWidth::B32, edx, false)?;
             Ok(X64_ADVANCE)
         }
         0x1e => {
@@ -1696,15 +1693,14 @@ fn extended(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         }
         0xb0 | 0xb1 => {
             let width = cursor.width();
-            let decoded = cursor.decode_modrm(if op == 0xb0 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op == 0xb0 { GuestIntegerWidth::B8 } else { width })?;
             x64_lock(cursor.lock, Some(decoded.rm), true)?;
             cursor.writable(&decoded.rm)?;
             let destination = cursor.read(&decoded.rm)?;
-            let accumulator = cursor.state.registers.read(GuestRegister::Rax, decoded.rm.width(), false)?;
+            let accumulator = cursor
+                .state
+                .registers
+                .read(GuestRegister::Rax, decoded.rm.width(), false)?;
             alu(
                 AluOperation::Cmp,
                 decoded.rm.width().bits(),
@@ -1717,17 +1713,16 @@ fn extended(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
                 cursor.write(&decoded.rm, source)?;
             } else {
                 cursor.write(&decoded.rm, destination)?;
-                cursor.state.registers.write(GuestRegister::Rax, decoded.rm.width(), destination, false)?;
+                cursor
+                    .state
+                    .registers
+                    .write(GuestRegister::Rax, decoded.rm.width(), destination, false)?;
             }
             Ok(X64_ADVANCE)
         }
         0xc0 | 0xc1 => {
             let width = cursor.width();
-            let decoded = cursor.decode_modrm(if op == 0xc0 {
-                GuestIntegerWidth::B8
-            } else {
-                width
-            })?;
+            let decoded = cursor.decode_modrm(if op == 0xc0 { GuestIntegerWidth::B8 } else { width })?;
             x64_lock(cursor.lock, Some(decoded.rm), true)?;
             cursor.writable(&decoded.rm)?;
             let destination = cursor.read(&decoded.rm)?;
@@ -1753,7 +1748,9 @@ fn extended(cursor: &mut X64DecodeCursor) -> Result<X64Flow, X86Error> {
         0xbc | 0xbd => {
             x64_lock(cursor.lock, None, false)?;
             if cursor.repeat == X64Repeat::F3 {
-                return Err(X86Error::unsupported("TZCNT/LZCNT require an explicit CPU feature profile"));
+                return Err(X86Error::unsupported(
+                    "TZCNT/LZCNT require an explicit CPU feature profile",
+                ));
             }
             let width = cursor.width();
             let decoded = cursor.decode_modrm(width)?;
@@ -1810,7 +1807,7 @@ fn bit_op(cursor: &mut X64DecodeCursor, opcode: u8) -> Result<X64Flow, X86Error>
     } else {
         7
     };
-    if operation < 4 || operation > 7 {
+    if !(4..=7).contains(&operation) {
         return Err(X86Error::fault(6, "Invalid bit-test group"));
     }
     let raw_index = if opcode == 0xba {
@@ -1863,7 +1860,10 @@ fn double_shift(cursor: &mut X64DecodeCursor, opcode: u8) -> Result<X64Flow, X86
     let count = (if opcode & 1 == 0 {
         u32::from(cursor.read_byte()?)
     } else {
-        cursor.state.registers.read(GuestRegister::Rcx, GuestIntegerWidth::B8, false)? as u32
+        cursor
+            .state
+            .registers
+            .read(GuestRegister::Rcx, GuestIntegerWidth::B8, false)? as u32
     }) & if width == GuestIntegerWidth::B64 { 63 } else { 31 };
     if count == 0 {
         cursor.read(&decoded.rm)?;
@@ -1917,14 +1917,9 @@ fn numeric(cursor: &mut X64DecodeCursor, secondary_opcode: Option<u8>) -> Result
             return Ok(());
         }
     }
-    let immediate = secondary_opcode.is_some_and(|op| {
-        matches!(op, 0x70 | 0x71 | 0x72 | 0x73 | 0xc2 | 0xc4 | 0xc5 | 0xc6)
-    });
-    let immediate = if immediate {
-        Some(cursor.read_byte()?)
-    } else {
-        None
-    };
+    let immediate =
+        secondary_opcode.is_some_and(|op| matches!(op, 0x70 | 0x71 | 0x72 | 0x73 | 0xc2 | 0xc4 | 0xc5 | 0xc6));
+    let immediate = if immediate { Some(cursor.read_byte()?) } else { None };
     let width = cursor.width();
     let prefix = cursor.numeric_prefix();
     let opcode = cursor.opcode();

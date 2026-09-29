@@ -14,9 +14,9 @@ use qa_guest::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner,
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::HookState;
 use qa_guest::core::contracts::{
-    GuestAccess, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature,
-    GuestCallValue, GuestCallbackReference, GuestExecutionStop, GuestIntegerWidth, GuestPermissions,
-    GuestRegister, GuestStorage, GuestValueLayout, NativeCallAbi,
+    GuestAccess, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
+    GuestCallbackReference, GuestExecutionStop, GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage,
+    GuestValueLayout, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::core::registers::{GuestProcessorInitialState, GuestProcessorState};
@@ -28,7 +28,11 @@ use common::{addr, map, test_module};
 const CODE: [u8; 12] = [0xb8, 1, 0, 0, 0, 0x83, 0xc0, 2, 0x83, 0xc0, 4, 0xc3];
 
 fn abi_for(wide: bool) -> NativeCallAbi {
-    if wide { NativeCallAbi::MicrosoftX64 } else { NativeCallAbi::Cdecl }
+    if wide {
+        NativeCallAbi::MicrosoftX64
+    } else {
+        NativeCallAbi::Cdecl
+    }
 }
 
 fn signature(abi: NativeCallAbi) -> GuestCallSignature {
@@ -51,7 +55,11 @@ fn build_cpu(wide: bool) -> (Box<dyn GuestCpu>, Rc<HookState>) {
         .protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute)
         .unwrap();
     let state = GuestProcessorState::create(GuestProcessorInitialState {
-        architecture: if wide { GuestArchitecture::X86_64 } else { GuestArchitecture::I386 },
+        architecture: if wide {
+            GuestArchitecture::X86_64
+        } else {
+            GuestArchitecture::I386
+        },
         instruction_pointer: 0x1000,
         stack_pointer: 0x20000,
         flags: 2,
@@ -118,8 +126,7 @@ fn callback_probes_retain_execute_faults_and_observer_ownership() {
         // Entry probes belong to their address space: entering the observed
         // address against a foreign memory is rejected.
         let mut foreign =
-            SparseGuestMemory::new(test_module("foreign"), abi_for(wide).pointer_bytes(), 0x10000)
-                .unwrap();
+            SparseGuestMemory::new(test_module("foreign"), abi_for(wide).pointer_bytes(), 0x10000).unwrap();
         let rejected = hooks.callbacks.borrow_mut().enter(&mut foreign, entry);
         assert!(rejected.is_err());
         assert!(format!("{:?}", rejected.unwrap_err()).contains("another execution owner"));
@@ -132,7 +139,13 @@ fn callback_probes_retain_execute_faults_and_observer_ownership() {
         let budgeted = cpu.run(1, None);
         assert!(matches!(budgeted, GuestExecutionStop::Budget { .. }), "{budgeted:?}");
         let (state, _) = cpu.parts();
-        assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B32, false).unwrap(), 1);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B32, false)
+                .unwrap(),
+            1
+        );
     }
 }
 
@@ -148,7 +161,11 @@ fn build_runner(wide: bool) -> (GuestCallRunner<'static>, GuestCallRequest, Nati
         .protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute)
         .unwrap();
     let state = GuestProcessorState::create(GuestProcessorInitialState {
-        architecture: if wide { GuestArchitecture::X86_64 } else { GuestArchitecture::I386 },
+        architecture: if wide {
+            GuestArchitecture::X86_64
+        } else {
+            GuestArchitecture::I386
+        },
         instruction_pointer: 0x1800,
         stack_pointer: 0x20000,
         flags: 2,
@@ -194,7 +211,11 @@ fn int_result(result: &GuestCallResult) -> i128 {
 }
 
 fn result_register(runner: &mut GuestCallRunner<'_>, abi: NativeCallAbi) -> i128 {
-    let width = if abi.pointer_bytes() == 8 { GuestIntegerWidth::B64 } else { GuestIntegerWidth::B32 };
+    let width = if abi.pointer_bytes() == 8 {
+        GuestIntegerWidth::B64
+    } else {
+        GuestIntegerWidth::B32
+    };
     let register = GuestRegister::Rax;
     let (state, _) = runner.cpu_parts();
     state.registers.read(register, width, false).unwrap() as i128
@@ -240,7 +261,11 @@ fn inline_continuations_execute_or_skip_the_region_body() {
                     .registers
                     .read(
                         GuestRegister::Rsp,
-                        if wide { GuestIntegerWidth::B64 } else { GuestIntegerWidth::B32 },
+                        if wide {
+                            GuestIntegerWidth::B64
+                        } else {
+                            GuestIntegerWidth::B32
+                        },
                         false,
                     )
                     .unwrap();

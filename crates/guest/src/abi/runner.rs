@@ -18,14 +18,14 @@ use crate::abi::values::inferred_layout;
 use crate::abi::GuestCpu;
 use crate::core::callbacks::{CallbackHandle, GuestHostCallback, HookState, HostCallContext};
 use crate::core::contracts::{
-    CallbackId, GuestAccess, GuestAddress, GuestCallContext, GuestCallResult,
-    GuestCallbackReference, GuestCallSignature, GuestCallValue, GuestExecutionStop,
-    GuestIntegerWidth, GuestRegister, GuestValueLayout, NativeCallAbi,
+    CallbackId, GuestAccess, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
+    GuestCallbackReference, GuestExecutionStop, GuestIntegerWidth, GuestRegister, GuestValueLayout, NativeCallAbi,
 };
 use crate::error::GuestError;
 
 /// Guest call failure: an execution stop or an underlying guest error.
 #[derive(Debug, Error)]
+#[allow(clippy::large_enum_variant)]
 pub enum GuestCallFailure {
     /// Execution stopped before returning (budget, halt, exception,
     /// unsupported instruction).
@@ -75,10 +75,16 @@ struct RegionRuntime {
     executing: Vec<(u64, u64)>,
 }
 
+/// Inline-region interceptor.
+type InlineIntercept = Box<dyn FnMut(&mut dyn GuestInlineContinuation) -> Result<(), GuestError>>;
+
+/// Variadic layout resolver.
+type VariadicLayouts = Rc<dyn Fn(&CallbackHandle, &[GuestCallValue], &GuestCallContext) -> Vec<GuestValueLayout>>;
+
 struct InlineRegion {
     entry: GuestAddress,
     join: GuestAddress,
-    intercept: Box<dyn FnMut(&mut dyn GuestInlineContinuation) -> Result<(), GuestError>>,
+    intercept: InlineIntercept,
     runtime: Rc<RefCell<RegionRuntime>>,
 }
 
@@ -110,9 +116,7 @@ pub struct GuestCallRunner<'a> {
     cpu: &'a mut dyn GuestCpu,
     hooks: Rc<HookState>,
     return_address: GuestAddress,
-    variadic_layouts: Option<
-        Rc<dyn Fn(&CallbackHandle, &[GuestCallValue], &GuestCallContext) -> Vec<GuestValueLayout>>,
-    >,
+    variadic_layouts: Option<VariadicLayouts>,
     active: Vec<ActiveCall>,
     regions: HashMap<u64, InlineRegion>,
     next_call_id: u64,
@@ -129,9 +133,7 @@ impl<'a> GuestCallRunner<'a> {
         cpu: &'a mut dyn GuestCpu,
         hooks: Rc<HookState>,
         return_address: GuestAddress,
-        variadic_layouts: Option<
-            Rc<dyn Fn(&CallbackHandle, &[GuestCallValue], &GuestCallContext) -> Vec<GuestValueLayout>>,
-        >,
+        variadic_layouts: Option<VariadicLayouts>,
     ) -> Result<Self, GuestError> {
         cpu.set_hook_state(Some(Rc::clone(&hooks)));
         let (_, memory) = cpu.parts();
@@ -194,10 +196,7 @@ impl<'a> GuestCallRunner<'a> {
     }
 
     /// Invoke a guest call synchronously.
-    pub fn invoke(
-        &mut self,
-        request: &GuestCallRequest,
-    ) -> Result<GuestCallResult, GuestCallFailure> {
+    pub fn invoke(&mut self, request: &GuestCallRequest) -> Result<GuestCallResult, GuestCallFailure> {
         if self.loading_suspended {
             return Err(GuestError::callback("Guest loading call is suspended").into());
         }
@@ -230,9 +229,7 @@ impl<'a> GuestCallRunner<'a> {
             if request.context.module.id != memory.module().id
                 || request.context.module.digest != memory.module().digest
             {
-                return Err(
-                    GuestError::callback("Call context belongs to a different guest module").into(),
-                );
+                return Err(GuestError::callback("Call context belongs to a different guest module").into());
             }
         }
         let enclosing_remaining = self.active.last().map(|call| call.remaining);
@@ -275,24 +272,23 @@ impl<'a> GuestCallRunner<'a> {
             let (state, _) = self.cpu.parts();
             state.registers.read(GuestRegister::Rsp, width, false)?
         };
-        let layouts: Vec<GuestValueLayout> =
-            if request.arguments.len() == request.signature.parameters.len() {
-                request.signature.parameters.clone()
-            } else {
-                request
-                    .arguments
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        request
-                            .signature
-                            .parameters
-                            .get(index)
-                            .cloned()
-                            .unwrap_or_else(|| inferred_layout(value, request.signature.variadic))
-                    })
-                    .collect()
-            };
+        let layouts: Vec<GuestValueLayout> = if request.arguments.len() == request.signature.parameters.len() {
+            request.signature.parameters.clone()
+        } else {
+            request
+                .arguments
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    request
+                        .signature
+                        .parameters
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| inferred_layout(value, request.signature.variadic))
+                })
+                .collect()
+        };
         let plan = plan_guest_call_layouts(&request.signature, &layouts)?;
         self.hooks.call_id.set(call_id);
         self.active.push(ActiveCall {
@@ -310,25 +306,18 @@ impl<'a> GuestCallRunner<'a> {
         {
             let (state, memory) = self.cpu.parts();
             let restored_stack = state.registers.read(GuestRegister::Rsp, width, false)?;
-            let expected = entry_stack
-                .wrapping_add((memory.pointer_bytes() + plan.callee_pop_bytes) as u64);
+            let expected = entry_stack.wrapping_add((memory.pointer_bytes() + plan.callee_pop_bytes) as u64);
             if restored_stack != expected {
-                return Err(GuestError::callback(
-                    "Guest returned with incorrect ABI stack cleanup",
-                )
-                .into());
+                return Err(GuestError::callback("Guest returned with incorrect ABI stack cleanup").into());
             }
         }
-        let result = X86AbiAdapter::new(request.signature.abi)
-            .return_value(self.cpu, &request.signature)?;
+        let result = X86AbiAdapter::new(request.signature.abi).return_value(self.cpu, &request.signature)?;
         {
             let (state, _) = self.cpu.parts();
             if let Some(saved) = saved {
                 *state = saved;
             } else {
-                state
-                    .registers
-                    .write(GuestRegister::Rsp, width, caller_stack, false)?;
+                state.registers.write(GuestRegister::Rsp, width, caller_stack, false)?;
                 state.instruction_pointer = caller_instruction;
             }
         }
@@ -358,8 +347,7 @@ impl<'a> GuestCallRunner<'a> {
                     }
                 }
                 let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-                self.maximum_loading_slice_ms =
-                    self.maximum_loading_slice_ms.max(elapsed);
+                self.maximum_loading_slice_ms = self.maximum_loading_slice_ms.max(elapsed);
                 slice_remaining = slice;
                 continue;
             }
@@ -391,8 +379,7 @@ impl<'a> GuestCallRunner<'a> {
             match stop {
                 GuestExecutionStop::Return { .. } => return Ok(()),
                 GuestExecutionStop::Budget { .. }
-                    if self.active.last().map_or(false, |call| call.remaining > 0)
-                        && slice_remaining == 0 =>
+                    if self.active.last().is_some_and(|call| call.remaining > 0) && slice_remaining == 0 =>
                 {
                     continue;
                 }
@@ -408,9 +395,7 @@ impl<'a> GuestCallRunner<'a> {
                         .active
                         .last()
                         .map(|call| call.context.clone())
-                        .ok_or_else(|| {
-                            GuestError::callback("Guest stopped with no active call")
-                        })?;
+                        .ok_or_else(|| GuestError::callback("Guest stopped with no active call"))?;
                     return Err(GuestCallFailure::Stopped { stop, context });
                 }
             }
@@ -435,10 +420,7 @@ impl<'a> GuestCallRunner<'a> {
         }
         let handle = {
             let (_, memory) = self.cpu.parts();
-            self.hooks
-                .callbacks
-                .borrow_mut()
-                .handle(memory, address)?
+            self.hooks.callbacks.borrow_mut().handle(memory, address)?
         }
         .ok_or_else(|| GuestError::callback(format!("Unknown guest callback at 0x{:x}", address.offset)))?;
         let context = {
@@ -515,10 +497,10 @@ impl<'a> GuestCallRunner<'a> {
         let gate_runtime = Rc::clone(&runtime);
         let gate: Rc<dyn Fn() -> bool> = Rc::new(move || {
             accepts()
-                && !gate_runtime.borrow().executing.contains(&(
-                    hooks.call_id.get(),
-                    hooks.entry_rsp.get(),
-                ))
+                && !gate_runtime
+                    .borrow()
+                    .executing
+                    .contains(&(hooks.call_id.get(), hooks.entry_rsp.get()))
         });
         {
             let (_, memory) = self.cpu.parts();
@@ -579,9 +561,10 @@ impl<'a> GuestCallRunner<'a> {
             let (state, _) = self.cpu.parts();
             let call_id = self.active.last().map_or(0, |call| call.id);
             let stack = state.registers.read(GuestRegister::Rsp, width, false)?;
-            let region = self.regions.get(&address.offset).ok_or_else(|| {
-                GuestError::callback("Inline region disappeared during dispatch")
-            })?;
+            let region = self
+                .regions
+                .get(&address.offset)
+                .ok_or_else(|| GuestError::callback("Inline region disappeared during dispatch"))?;
             (call_id, stack, region.entry, region.join)
         };
         let mut continuation = RecordingContinuation {
@@ -589,9 +572,10 @@ impl<'a> GuestCallRunner<'a> {
             failed: None,
         };
         {
-            let region = self.regions.get_mut(&address.offset).ok_or_else(|| {
-                GuestError::callback("Inline region disappeared during dispatch")
-            })?;
+            let region = self
+                .regions
+                .get_mut(&address.offset)
+                .ok_or_else(|| GuestError::callback("Inline region disappeared during dispatch"))?;
             (region.intercept)(&mut continuation)?;
         }
         if let Some(failure) = continuation.failed {
@@ -600,16 +584,18 @@ impl<'a> GuestCallRunner<'a> {
         match continuation.choice {
             Some(true) => {
                 {
-                    let region = self.regions.get(&address.offset).ok_or_else(|| {
-                        GuestError::callback("Inline region disappeared during dispatch")
-                    })?;
+                    let region = self
+                        .regions
+                        .get(&address.offset)
+                        .ok_or_else(|| GuestError::callback("Inline region disappeared during dispatch"))?;
                     region.runtime.borrow_mut().executing.push((call_id, stack));
                 }
                 let outcome = self.run_loop(join, u64::MAX, None);
                 {
-                    let region = self.regions.get(&address.offset).ok_or_else(|| {
-                        GuestError::callback("Inline region disappeared during dispatch")
-                    })?;
+                    let region = self
+                        .regions
+                        .get(&address.offset)
+                        .ok_or_else(|| GuestError::callback("Inline region disappeared during dispatch"))?;
                     region.runtime.borrow_mut().executing.pop();
                 }
                 outcome?;
@@ -619,28 +605,19 @@ impl<'a> GuestCallRunner<'a> {
                     || live_stack != stack
                     || state.instruction_pointer != join.offset
                 {
-                    return Err(GuestError::callback(
-                        "Inline interceptor did not join its source frame",
-                    )
-                    .into());
+                    return Err(GuestError::callback("Inline interceptor did not join its source frame").into());
                 }
             }
             Some(false) => {
                 let (state, _) = self.cpu.parts();
                 let live_stack = state.registers.read(GuestRegister::Rsp, width, false)?;
                 if state.instruction_pointer != entry.offset || live_stack != stack {
-                    return Err(GuestError::callback(
-                        "Inline continuation is not at its active source frame",
-                    )
-                    .into());
+                    return Err(GuestError::callback("Inline continuation is not at its active source frame").into());
                 }
                 state.instruction_pointer = join.offset;
             }
             None => {
-                return Err(GuestError::callback(
-                    "Inline interceptor did not join its source frame",
-                )
-                .into());
+                return Err(GuestError::callback("Inline interceptor did not join its source frame").into());
             }
         }
         Ok(())

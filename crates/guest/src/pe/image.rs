@@ -161,10 +161,7 @@ impl<'a> ImageReader<'a> {
     /// Convert a VA to an RVA.
     pub fn rva(&self, va: u64, size: usize) -> Result<u32, GuestError> {
         if va < self.base || va - self.base > u64::from(self.pe.image_size) {
-            return Err(pe_error(
-                self.stage,
-                format!("VA 0x{va:x} is outside the image"),
-            ));
+            return Err(pe_error(self.stage, format!("VA 0x{va:x} is outside the image")));
         }
         let rva = (va - self.base) as u32;
         self.range(rva, size)?;
@@ -187,7 +184,10 @@ impl<'a> ImageReader<'a> {
     /// Checked `u16` image load.
     pub fn u16(&self, rva: u32) -> Result<u16, GuestError> {
         self.range(rva, 2)?;
-        Ok(u16::from_le_bytes([self.bytes[rva as usize], self.bytes[rva as usize + 1]]))
+        Ok(u16::from_le_bytes([
+            self.bytes[rva as usize],
+            self.bytes[rva as usize + 1],
+        ]))
     }
 
     /// Checked `u32` image load.
@@ -226,8 +226,7 @@ impl<'a> ImageReader<'a> {
         if bound < rva {
             return Err(pe_error(self.stage, "string bound precedes RVA"));
         }
-        crate::pe::format::PeReader::new(&self.bytes, self.stage)
-            .text(rva as usize, (bound - rva) as usize)
+        crate::pe::format::PeReader::new(&self.bytes, self.stage).text(rva as usize, (bound - rva) as usize)
     }
 
     /// Copy image bytes.

@@ -18,9 +18,7 @@ use self::contracts::{NumericError, NumericExecutionContext, NumericExecutionRes
 
 /// Dispatch one numeric instruction to the x87 or SSE executor. Guest
 /// memory failures propagate to the caller like any other CPU fault.
-pub fn execute_numeric_instruction(
-    context: NumericExecutionContext,
-) -> Result<NumericExecutionResult, GuestError> {
+pub fn execute_numeric_instruction(context: NumericExecutionContext) -> Result<NumericExecutionResult, GuestError> {
     let opcode = context.instruction.opcode;
     let result = if opcode == 0x9b || (0xd8..=0xdf).contains(&opcode) {
         x87::execute_x87(context).map(|()| NumericExecutionResult::Executed)
@@ -34,9 +32,7 @@ pub fn execute_numeric_instruction(
     match result {
         Ok(done) => Ok(done),
         Err(NumericError::Unsupported(detail)) => Ok(NumericExecutionResult::Unsupported { detail }),
-        Err(NumericError::Fault { vector, detail }) => {
-            Ok(NumericExecutionResult::Exception { vector, detail })
-        }
+        Err(NumericError::Fault { vector, detail }) => Ok(NumericExecutionResult::Exception { vector, detail }),
         Err(NumericError::Guest(error)) => Err(error),
     }
 }

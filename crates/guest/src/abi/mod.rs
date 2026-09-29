@@ -26,9 +26,5 @@ pub trait GuestCpu {
 
     /// Run until the budget exhausts, `return_address` is reached, a trap
     /// fires, or execution faults.
-    fn run(
-        &mut self,
-        instruction_budget: u64,
-        return_address: Option<GuestAddress>,
-    ) -> GuestExecutionStop;
+    fn run(&mut self, instruction_budget: u64, return_address: Option<GuestAddress>) -> GuestExecutionStop;
 }

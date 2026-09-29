@@ -32,12 +32,7 @@ impl IntegerRegisterFile {
     }
 
     /// Read `width` bits of `register`. `high_byte` selects AH/CH/DH/BH.
-    pub fn read(
-        &self,
-        register: GuestRegister,
-        width: GuestIntegerWidth,
-        high_byte: bool,
-    ) -> Result<u64, GuestError> {
+    pub fn read(&self, register: GuestRegister, width: GuestIntegerWidth, high_byte: bool) -> Result<u64, GuestError> {
         self.check(register, width, high_byte)?;
         let slot = self.slots[register.index()];
         Ok(match width {
@@ -96,9 +91,7 @@ impl IntegerRegisterFile {
             word.copy_from_slice(chunk);
             let value = u64::from_le_bytes(word);
             if self.architecture == GuestArchitecture::I386 && value > 0xffff_ffff {
-                return Err(GuestError::cpu(
-                    "i386 snapshot has nonzero upper register bits",
-                ));
+                return Err(GuestError::cpu("i386 snapshot has nonzero upper register bits"));
             }
             self.slots[index] = value;
         }
@@ -122,16 +115,9 @@ impl IntegerRegisterFile {
         self.slot_count() * 8
     }
 
-    fn check(
-        &self,
-        register: GuestRegister,
-        width: GuestIntegerWidth,
-        high_byte: bool,
-    ) -> Result<(), GuestError> {
+    fn check(&self, register: GuestRegister, width: GuestIntegerWidth, high_byte: bool) -> Result<(), GuestError> {
         let index = register.index();
-        if self.architecture == GuestArchitecture::I386
-            && (index >= 8 || width == GuestIntegerWidth::B64)
-        {
+        if self.architecture == GuestArchitecture::I386 && (index >= 8 || width == GuestIntegerWidth::B64) {
             return Err(GuestError::cpu("Register is not available in i386 mode"));
         }
         if high_byte && (width != GuestIntegerWidth::B8 || index > 3) {
@@ -139,11 +125,7 @@ impl IntegerRegisterFile {
                 "Only AH, CH, DH, and BH have high-byte register aliases",
             ));
         }
-        if self.architecture == GuestArchitecture::I386
-            && width == GuestIntegerWidth::B8
-            && index > 3
-            && index < 8
-        {
+        if self.architecture == GuestArchitecture::I386 && width == GuestIntegerWidth::B8 && index > 3 && index < 8 {
             return Err(GuestError::cpu("SPL, BPL, SIL, and DIL require x86-64 mode"));
         }
         Ok(())
@@ -360,9 +342,7 @@ impl GuestProcessorState {
         } else {
             1u128 << width
         };
-        if u128::from(initial.instruction_pointer) >= limit
-            || u128::from(initial.stack_pointer) >= limit
-        {
+        if u128::from(initial.instruction_pointer) >= limit || u128::from(initial.stack_pointer) >= limit {
             return Err(GuestError::cpu(
                 "Initial guest IP or stack pointer exceeds its architecture",
             ));
@@ -372,12 +352,7 @@ impl GuestProcessorState {
             GuestArchitecture::I386 => GuestIntegerWidth::B32,
             GuestArchitecture::X86_64 => GuestIntegerWidth::B64,
         };
-        registers.write(
-            GuestRegister::Rsp,
-            stack_width,
-            initial.stack_pointer,
-            false,
-        )?;
+        registers.write(GuestRegister::Rsp, stack_width, initial.stack_pointer, false)?;
         let segment = crate::core::contracts::GuestSegment::flat((limit - 1) as u64);
         Ok(Self {
             architecture: initial.architecture,
@@ -403,15 +378,13 @@ mod tests {
         regs.write(GuestRegister::Rax, GuestIntegerWidth::B32, 0x1234_5678, false)
             .unwrap();
         assert_eq!(
-            regs.read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
-                .unwrap(),
+            regs.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(),
             0x1234_5678
         );
         regs.write(GuestRegister::Rax, GuestIntegerWidth::B8, 0xaa, true)
             .unwrap();
         assert_eq!(
-            regs.read(GuestRegister::Rax, GuestIntegerWidth::B16, false)
-                .unwrap(),
+            regs.read(GuestRegister::Rax, GuestIntegerWidth::B16, false).unwrap(),
             0xaa78
         );
     }
@@ -419,9 +392,7 @@ mod tests {
     #[test]
     fn i386_rejects_upper_slots_and_snapshot_bits() {
         let mut regs = IntegerRegisterFile::new(GuestArchitecture::I386);
-        assert!(regs
-            .read(GuestRegister::R8, GuestIntegerWidth::B32, false)
-            .is_err());
+        assert!(regs.read(GuestRegister::R8, GuestIntegerWidth::B32, false).is_err());
         let mut snapshot = regs.checkpoint();
         assert_eq!(snapshot.len(), 64);
         snapshot[4] = 1;

@@ -123,9 +123,7 @@ impl<'a> DwarfReader<'a> {
                 i64::from_le_bytes(word)
             }
             _ => {
-                return Err(elf_error(format!(
-                    "unsupported DWARF pointer encoding 0x{encoding:x}"
-                )));
+                return Err(elf_error(format!("unsupported DWARF pointer encoding 0x{encoding:x}")));
             }
         };
         if relative {
@@ -134,9 +132,7 @@ impl<'a> DwarfReader<'a> {
                 0x10 => value = value.wrapping_add(address as i64),
                 0x30 => {
                     let Some(base) = self.data_relative_base else {
-                        return Err(elf_error(
-                            "DWARF data-relative pointer requires an explicit base",
-                        ));
+                        return Err(elf_error("DWARF data-relative pointer requires an explicit base"));
                     };
                     value = value.wrapping_add(base as i64);
                 }
@@ -216,15 +212,12 @@ pub fn read_elf_unwind(
             let frame_address = r.encoded(&mut cursor, encoding, true)?;
             let original = frame_address.wrapping_sub(load_bias);
             let segment = elf.segments.iter().find(|item| {
-                item.segment_type == 1
-                    && original >= item.address
-                    && original < item.address + item.file_size as u64
+                item.segment_type == 1 && original >= item.address && original < item.address + item.file_size as u64
             });
             let Some(segment) = segment else {
                 return Err(elf_error("GNU EH frame pointer has no load segment"));
             };
-            let available =
-                segment.file_size - checked_number(original - segment.address, "EH frame displacement")?;
+            let available = segment.file_size - checked_number(original - segment.address, "EH frame displacement")?;
             elf_file_offset(&elf.segments, original, available)?;
             let bytes = memory.copy(elf_address(memory, frame_address)?, available)?;
             regions.extend(read_frames(&bytes, frame_address, elf, memory, load_bias, false)?);
@@ -294,8 +287,7 @@ fn read_frames(
                 augmentation.push(c as char);
             }
             if version == 4
-                && (reader.byte(&mut cursor)? as usize != elf.abi.pointer_bytes()
-                    || reader.byte(&mut cursor)? != 0)
+                && (reader.byte(&mut cursor)? as usize != elf.abi.pointer_bytes() || reader.byte(&mut cursor)? != 0)
             {
                 return Err(elf_error("unsupported CIE address or segment size"));
             }
@@ -309,10 +301,7 @@ fn read_frames(
             let mut encoding = 0;
             let has_augmentation = augmentation.starts_with('z');
             if has_augmentation {
-                let size = checked_number(
-                    reader.leb(&mut cursor, false)? as u64,
-                    "CIE augmentation size",
-                )?;
+                let size = checked_number(reader.leb(&mut cursor, false)? as u64, "CIE augmentation size")?;
                 let augmentation_end = cursor.position + size;
                 if augmentation_end > end {
                     return Err(elf_error("CIE augmentation exceeds record"));
@@ -370,8 +359,7 @@ fn read_frames(
                 pc = pc.wrapping_add(load_bias);
             }
             if cie.augmentation {
-                let size =
-                    checked_number(reader.leb(&mut cursor, false)? as u64, "FDE augmentation size")?;
+                let size = checked_number(reader.leb(&mut cursor, false)? as u64, "FDE augmentation size")?;
                 reader.require(&mut cursor, size, end)?;
             }
             if range < 0 {

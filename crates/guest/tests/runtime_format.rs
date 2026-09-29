@@ -13,15 +13,15 @@ use qa_guest::abi::runner::{GuestCallRequest, GuestCallRunner};
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::HookState;
 use qa_guest::core::contracts::{
-    CallbackId, GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext,
-    GuestCallResult, GuestCallValue, GuestCallbackReference, GuestPermissions,
+    CallbackId, GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext, GuestCallResult,
+    GuestCallValue, GuestCallbackReference, GuestPermissions,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::core::registers::{GuestProcessorInitialState, GuestProcessorState};
 use qa_guest::floating_point::binary::{decode_binary, BigInt, BinaryWidth, Rounding};
+use qa_guest::runtime::common::format::arguments::FormatDialect;
 use qa_guest::runtime::common::format::float::{format_float, FormatRounding};
 use qa_guest::runtime::common::format::{format_guest_buffer, FormatTermination, GuestFormatRequest};
-use qa_guest::runtime::common::format::arguments::FormatDialect;
 use qa_guest::runtime::common::memory::{read_string, string_bytes};
 use qa_guest::runtime::system_v::contracts::SystemVRuntimeOptions;
 use qa_guest::runtime::system_v::runtime::SystemVGuestRuntime;
@@ -62,7 +62,11 @@ fn fixture(width: usize) -> Fixture {
     let stack = allocate(&mut memory, 65536, GuestPermissions::ReadWrite, 16);
     let sentinel = allocate(&mut memory, 16, GuestPermissions::ReadExecute, 16);
     let state = GuestProcessorState::create(GuestProcessorInitialState {
-        architecture: if wide { GuestArchitecture::X86_64 } else { GuestArchitecture::I386 },
+        architecture: if wide {
+            GuestArchitecture::X86_64
+        } else {
+            GuestArchitecture::I386
+        },
         instruction_pointer: sentinel.offset,
         stack_pointer: stack.offset + 65536,
         flags: 2,
@@ -89,7 +93,12 @@ fn fixture(width: usize) -> Fixture {
         itself: None,
         other: None,
     };
-    Fixture { runner, hooks, context, width }
+    Fixture {
+        runner,
+        hooks,
+        context,
+        width,
+    }
 }
 
 fn text(fixture: &mut Fixture, value: &str) -> GuestAddress {
@@ -112,11 +121,7 @@ fn service_address(fixture: &Fixture, namespace: &str, key: &str) -> GuestAddres
         .unwrap_or_else(|| panic!("missing service {namespace}:{key}"))
 }
 
-fn invoke(
-    fixture: &mut Fixture,
-    address: GuestAddress,
-    args: Vec<GuestCallValue>,
-) -> GuestCallResult {
+fn invoke(fixture: &mut Fixture, address: GuestAddress, args: Vec<GuestCallValue>) -> GuestCallResult {
     let signature = {
         let (_, memory) = fixture.runner.cpu_parts();
         fixture
@@ -135,7 +140,10 @@ fn invoke(
         context: fixture.context.clone(),
         instruction_budget: 1000,
     };
-    fixture.runner.invoke(&request).unwrap_or_else(|failure| panic!("service failed: {failure:?}"))
+    fixture
+        .runner
+        .invoke(&request)
+        .unwrap_or_else(|failure| panic!("service failed: {failure:?}"))
 }
 
 fn invoke_result(fixture: &mut Fixture, address: GuestAddress, args: Vec<GuestCallValue>) -> i32 {
@@ -220,9 +228,14 @@ fn ucrt_numeric_save_arguments_and_crt_buffer_options() {
         let literal = text(&mut fixture, "abcde");
         {
             let (_, memory) = fixture.runner.cpu_parts();
-            memory.write(buffer, &vec![0x7f; 64]).unwrap();
+            memory.write(buffer, &[0x7f; 64]).unwrap();
         }
-        let call = |fixture: &mut Fixture, options: u64, capacity: u64, format: GuestAddress, list: Option<GuestAddress>, destination: Option<GuestAddress>| {
+        let call = |fixture: &mut Fixture,
+                    options: u64,
+                    capacity: u64,
+                    format: GuestAddress,
+                    list: Option<GuestAddress>,
+                    destination: Option<GuestAddress>| {
             invoke_result(
                 fixture,
                 service,
@@ -242,7 +255,7 @@ fn ucrt_numeric_save_arguments_and_crt_buffer_options() {
         assert_eq!(call(&mut fixture, 2, 0, literal, None, None), 5);
         {
             let (_, memory) = fixture.runner.cpu_parts();
-            memory.write(buffer, &vec![0x7f; 64]).unwrap();
+            memory.write(buffer, &[0x7f; 64]).unwrap();
         }
         assert_eq!(call(&mut fixture, 1, 5, literal, None, Some(buffer)), 5);
         let (_, memory) = fixture.runner.cpu_parts();
@@ -373,7 +386,10 @@ fn glibc_varargs_stack_overflow_fortify_and_positional_conversions() {
         };
         assert_eq!(call(&mut fixture, literal, 256, 256, 0), 36);
         let (_, memory) = fixture.runner.cpu_parts();
-        assert_eq!(read_string(memory, buffer, false).unwrap(), "------- Game Initialization -------\n");
+        assert_eq!(
+            read_string(memory, buffer, false).unwrap(),
+            "------- Game Initialization -------\n"
+        );
         reset(&mut fixture);
         let format = text(&mut fixture, "%+06d|%.0f|%.3s|%#llx|%.2f%n");
         let expected = "-00042|2|gue|0xffffffffffffffff|1.25";
@@ -440,7 +456,9 @@ fn glibc_varargs_stack_overflow_fortify_and_positional_conversions() {
         {
             let (_, memory) = fixture.runner.cpu_parts();
             let format_bytes = string_bytes("%+06d|%.0f|%.3s|%#llx|%.2f%n", false);
-            memory.protect(format, format_bytes.len(), GuestPermissions::Read).unwrap();
+            memory
+                .protect(format, format_bytes.len(), GuestPermissions::Read)
+                .unwrap();
         }
         assert_eq!(call(&mut fixture, format, 256, 256, 1), expected.len() as i32);
         reset(&mut fixture);
@@ -455,13 +473,31 @@ fn glibc_varargs_stack_overflow_fortify_and_positional_conversions() {
 fn float_conversion_rounds_without_host_semantics() {
     let number = |value: f64| decode_binary(&BigInt::from_u64(value.to_bits()), BinaryWidth::W64);
     let format = |value: f64, code: char, precision: Option<usize>, alternate: bool| {
-        format_float(&number(value), code, precision, alternate, FormatRounding::Ieee(Rounding::Nearest), false, false, 2)
+        format_float(
+            &number(value),
+            code,
+            precision,
+            alternate,
+            FormatRounding::Ieee(Rounding::Nearest),
+            false,
+            false,
+            2,
+        )
     };
     assert_eq!(format(2.5, 'f', Some(0), false), "2");
     assert_eq!(format(3.5, 'f', Some(0), false), "4");
     assert_eq!(format(2.25, 'f', Some(1), false), "2.2");
     assert_eq!(
-        format_float(&number(2.25), 'f', Some(1), false, FormatRounding::LegacyNearest, true, false, 2),
+        format_float(
+            &number(2.25),
+            'f',
+            Some(1),
+            false,
+            FormatRounding::LegacyNearest,
+            true,
+            false,
+            2
+        ),
         "2.3"
     );
     assert_eq!(format(1e21, 'f', Some(1), false), "1000000000000000000000.0");
@@ -474,16 +510,43 @@ fn float_conversion_rounds_without_host_semantics() {
     assert_eq!(format(1.5, 'a', Some(0), false), "0x2p+0");
     assert_eq!(format(f64::from_bits(1), 'a', None, false), "0x0.0000000000001p-1022");
     assert_eq!(
-        format_float(&number(-2.25), 'f', Some(1), false, FormatRounding::Ieee(Rounding::Down), false, false, 2),
+        format_float(
+            &number(-2.25),
+            'f',
+            Some(1),
+            false,
+            FormatRounding::Ieee(Rounding::Down),
+            false,
+            false,
+            2
+        ),
         "2.3"
     );
     let extended = decode_binary(&BigInt::from_u128(0x3fff_8000_0000_0000_0001), BinaryWidth::W80);
     assert_eq!(
-        format_float(&extended, 'g', Some(21), false, FormatRounding::Ieee(Rounding::Nearest), false, true, 2),
+        format_float(
+            &extended,
+            'g',
+            Some(21),
+            false,
+            FormatRounding::Ieee(Rounding::Nearest),
+            false,
+            true,
+            2
+        ),
         "1.00000000000000000011"
     );
     assert_eq!(
-        format_float(&extended, 'a', None, false, FormatRounding::Ieee(Rounding::Nearest), false, true, 2),
+        format_float(
+            &extended,
+            'a',
+            None,
+            false,
+            FormatRounding::Ieee(Rounding::Nearest),
+            false,
+            true,
+            2
+        ),
         "0x8.000000000000001p-3"
     );
 }
@@ -504,9 +567,13 @@ fn integer_lengths_dynamic_width_pointer_dialect_and_byte_strings() {
         memory.write_i32(args, -8).unwrap();
         memory.write_i32(memory.offset(args, 8).unwrap(), 3).unwrap();
         memory.write_i32(memory.offset(args, 16).unwrap(), -7).unwrap();
-        memory.write_u64(memory.offset(args, 24).unwrap(), 0x1234_5678_ffff_ffff).unwrap();
+        memory
+            .write_u64(memory.offset(args, 24).unwrap(), 0x1234_5678_ffff_ffff)
+            .unwrap();
         memory.write_u64(memory.offset(args, 32).unwrap(), 255).unwrap();
-        memory.write_pointer(memory.offset(args, 40).unwrap(), Some(latin)).unwrap();
+        memory
+            .write_pointer(memory.offset(args, 40).unwrap(), Some(latin))
+            .unwrap();
         memory.write_u64(memory.offset(args, 48).unwrap(), 0x1234).unwrap();
     }
     let format = text(&mut fixture, "%*.*d|%ld|%hhd|%.2s|%p");
@@ -530,7 +597,10 @@ fn integer_lengths_dynamic_width_pointer_dialect_and_byte_strings() {
     assert_eq!(outcome.result, 34);
     assert_eq!(outcome.errno, None);
     let (_, memory) = fixture.runner.cpu_parts();
-    assert_eq!(read_string(memory, buffer, false).unwrap(), "-007    |-1|-1|ÿa|0000000000001234");
+    assert_eq!(
+        read_string(memory, buffer, false).unwrap(),
+        "-007    |-1|-1|ÿa|0000000000001234"
+    );
     let huge = text(&mut fixture, "%2147483647d!");
     let outcome = {
         let (_, memory) = fixture.runner.cpu_parts();
@@ -590,7 +660,12 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
             let (_, memory) = fixture.runner.cpu_parts();
             memory.write_pointer(slot, Some(target)).unwrap();
         }
-        let scan = |fixture: &mut Fixture, input: &str, format: &str, capacity: u64, options: u64, locale: Option<GuestAddress>| {
+        let scan = |fixture: &mut Fixture,
+                    input: &str,
+                    format: &str,
+                    capacity: u64,
+                    options: u64,
+                    locale: Option<GuestAddress>| {
             let input_address = text(fixture, input);
             let format_address = text(fixture, format);
             invoke_result(
@@ -656,7 +731,7 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
         assert_eq!(memory.read_f64(destinations).unwrap(), 1.5);
         {
             let (_, memory) = fixture.runner.cpu_parts();
-            memory.write(destinations, &vec![0x7f; 32]).unwrap();
+            memory.write(destinations, &[0x7f; 32]).unwrap();
         }
         for input in ["", " \t\n"] {
             assert_eq!(scan(&mut fixture, input, "%lf", max, 2, None), -1);
@@ -676,7 +751,14 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
             let format_address = text(&mut fixture, format);
             let signature = {
                 let (_, memory) = fixture.runner.cpu_parts();
-                fixture.hooks.callbacks.borrow_mut().handle(memory, service).unwrap().unwrap().signature
+                fixture
+                    .hooks
+                    .callbacks
+                    .borrow_mut()
+                    .handle(memory, service)
+                    .unwrap()
+                    .unwrap()
+                    .signature
             };
             let request = GuestCallRequest {
                 target: service,
@@ -705,7 +787,14 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
             let format_address = text(&mut fixture, format);
             let signature = {
                 let (_, memory) = fixture.runner.cpu_parts();
-                fixture.hooks.callbacks.borrow_mut().handle(memory, service).unwrap().unwrap().signature
+                fixture
+                    .hooks
+                    .callbacks
+                    .borrow_mut()
+                    .handle(memory, service)
+                    .unwrap()
+                    .unwrap()
+                    .signature
             };
             let request = GuestCallRequest {
                 target: service,
@@ -722,7 +811,10 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
                 instruction_budget: 1000,
             };
             let failure = fixture.runner.invoke(&request).unwrap_err();
-            assert!(format!("{failure:?}").contains("supported"), "{input} {format}: {failure:?}");
+            assert!(
+                format!("{failure:?}").contains("supported"),
+                "{input} {format}: {failure:?}"
+            );
         }
         {
             let destinations_copy = destinations;
@@ -730,7 +822,14 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
             let format_address = text(&mut fixture, "%lf");
             let signature = {
                 let (_, memory) = fixture.runner.cpu_parts();
-                fixture.hooks.callbacks.borrow_mut().handle(memory, service).unwrap().unwrap().signature
+                fixture
+                    .hooks
+                    .callbacks
+                    .borrow_mut()
+                    .handle(memory, service)
+                    .unwrap()
+                    .unwrap()
+                    .signature
             };
             let request = GuestCallRequest {
                 target: service,
@@ -752,7 +851,17 @@ fn ucrt_scanner_abi_destination_precision_and_assignment_counts() {
         assert_eq!(scan(&mut fixture, "-0", "%lf", max, 2, None), 1);
         let (_, memory) = fixture.runner.cpu_parts();
         assert_eq!(memory.read_u64(destinations).unwrap(), 0x8000_0000_0000_0000);
-        assert_eq!(scan(&mut fixture, "1.00000005960464477539062500000000001", "%f", max, 2, None), 1);
+        assert_eq!(
+            scan(
+                &mut fixture,
+                "1.00000005960464477539062500000000001",
+                "%f",
+                max,
+                2,
+                None
+            ),
+            1
+        );
         let (_, memory) = fixture.runner.cpu_parts();
         assert_eq!(memory.read_u32(destinations).unwrap(), 0x3f80_0001);
         assert_eq!(scan(&mut fixture, "1.000000059604644775390625", "%f", max, 2, None), 1);

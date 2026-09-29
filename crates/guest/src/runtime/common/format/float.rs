@@ -58,9 +58,7 @@ fn to_radix(value: &BigInt, radix: u32) -> String {
     let mut digits = Vec::new();
     let mut current = value.clone();
     while !current.is_zero() {
-        let (quotient, remainder) = current
-            .divmod(&divisor)
-            .expect("nonzero radix divisor");
+        let (quotient, remainder) = current.divmod(&divisor).expect("nonzero radix divisor");
         let digit = remainder.low_u64() as u32;
         digits.push(char::from_digit(digit, radix).expect("radix digit"));
         current = quotient;
@@ -72,35 +70,30 @@ fn decimal(value: &BigInt) -> String {
     to_radix(value, 10)
 }
 
-fn quotient(
-    numerator: &BigInt,
-    denominator: &BigInt,
-    negative: bool,
-    mode: FormatRounding,
-) -> BigInt {
+fn quotient(numerator: &BigInt, denominator: &BigInt, negative: bool, mode: FormatRounding) -> BigInt {
     let (value, remainder) = numerator.divmod(denominator).expect("nonzero divisor");
     let two = BigInt::from_u64(2);
     let doubled = remainder.mul(&two);
     let up = !remainder.is_zero()
         && match mode {
             FormatRounding::Ieee(Rounding::Nearest) => {
-                doubled > *denominator
-                    || (doubled == *denominator && (value.low_u64() & 1) != 0)
+                doubled > *denominator || (doubled == *denominator && (value.low_u64() & 1) != 0)
             }
             FormatRounding::LegacyNearest => doubled >= *denominator,
             FormatRounding::Ieee(Rounding::Up) => !negative,
             FormatRounding::Ieee(Rounding::Down) => negative,
             FormatRounding::Ieee(Rounding::Zero) => false,
         };
-    if up { value.add(&BigInt::one()) } else { value }
+    if up {
+        value.add(&BigInt::one())
+    } else {
+        value
+    }
 }
 
 fn ratio(value: &Finite<'_>) -> (BigInt, BigInt) {
     if value.exponent >= 0 {
-        (
-            value.coefficient.shl_bits(value.exponent as u32),
-            BigInt::one(),
-        )
+        (value.coefficient.shl_bits(value.exponent as u32), BigInt::one())
     } else {
         (
             value.coefficient.clone(),
@@ -146,7 +139,11 @@ fn fixed_digits(digits: &str, places: usize, point: bool) -> String {
         };
     }
     let padded = format!("{digits:0>width$}", width = places + 1);
-    format!("{}.{}", &padded[..padded.len() - places], &padded[padded.len() - places..])
+    format!(
+        "{}.{}",
+        &padded[..padded.len() - places],
+        &padded[padded.len() - places..]
+    )
 }
 
 fn exponent_suffix(exponent: i64, marker: char, minimum: usize) -> String {
@@ -155,17 +152,9 @@ fn exponent_suffix(exponent: i64, marker: char, minimum: usize) -> String {
     format!("{marker}{sign}{digits:0>minimum$}")
 }
 
-fn significant(
-    value: &Finite<'_>,
-    precision: usize,
-    mode: FormatRounding,
-) -> (String, i64) {
+fn significant(value: &Finite<'_>, precision: usize, mode: FormatRounding) -> (String, i64) {
     let mut exponent = decimal_exponent(value);
-    let mut digits = decimal(&scaled(
-        value,
-        precision as i64 - 1 - exponent,
-        mode,
-    ));
+    let mut digits = decimal(&scaled(value, precision as i64 - 1 - exponent, mode));
     if digits.len() > precision {
         exponent += 1;
         digits.truncate(precision);
@@ -185,7 +174,11 @@ fn hex(
     let mut exponent = if value.coefficient.is_zero() {
         0
     } else if value.denormal {
-        if extended { -16382 } else { -1022 }
+        if extended {
+            -16382
+        } else {
+            -1022
+        }
     } else {
         i64::from(value.exponent) + fraction_bits
     };
@@ -268,7 +261,11 @@ pub fn format_float(
     let text = if matches!(value, BinaryValue::Infinity { .. }) {
         "inf".to_string()
     } else if matches!(value, BinaryValue::Unsupported { .. }) {
-        if windows { "nan(ind)".to_string() } else { "nan".to_string() }
+        if windows {
+            "nan(ind)".to_string()
+        } else {
+            "nan".to_string()
+        }
     } else if let BinaryValue::Nan {
         negative,
         payload,
@@ -319,5 +316,9 @@ pub fn format_float(
             text
         }
     };
-    if upper { text.to_uppercase() } else { text }
+    if upper {
+        text.to_uppercase()
+    } else {
+        text
+    }
 }

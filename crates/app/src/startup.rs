@@ -11,9 +11,9 @@
 use qa_core::identity::ProviderId;
 use qa_core::math::{vec3, Bounds};
 use qa_core::time::{ClockProfile, SourceTime};
-use qa_world::client::ClientFamily;
 use qa_guest::core::contracts::{ContentDigest, ModuleIdentity};
 use qa_guest::server::GuestServerLogic;
+use qa_world::client::ClientFamily;
 use qa_world::server::{plan_for_profile, Server, TickPlan};
 use qa_world::session::Simulation;
 use qa_world::spawn::{SpawnFields, SpawnRegistry, SpawnRequest};

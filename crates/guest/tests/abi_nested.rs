@@ -14,10 +14,9 @@ use qa_guest::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner}
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::{GuestHostCallback, HookState};
 use qa_guest::core::contracts::{
-    CallbackId, GuestAddress, GuestArchitecture, GuestCallContext, GuestCallResult,
-    GuestCallSignature, GuestCallValue, GuestCallbackReference, GuestExecutionStop,
-    GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage, GuestValueLayout,
-    ModuleIdentity, NativeCallAbi,
+    CallbackId, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
+    GuestCallbackReference, GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage,
+    GuestValueLayout, ModuleIdentity, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::core::registers::{GuestProcessorInitialState, GuestProcessorState};
@@ -69,7 +68,11 @@ fn root_context(module: &ModuleIdentity, memory: &SparseGuestMemory, abi: Native
     let address = addr(memory, 0x1000);
     GuestCallContext {
         module: module.clone(),
-        callback: GuestCallbackReference::NativeGuest { module: module.clone(), address, abi },
+        callback: GuestCallbackReference::NativeGuest {
+            module: module.clone(),
+            address,
+            abi,
+        },
         parent: None,
         itself: None,
         other: None,
@@ -151,17 +154,31 @@ fn nested_case(abi: NativeCallAbi) {
             result
         }),
     };
-    let callback_address = hooks.callbacks.borrow_mut().bind(&mut memory, callback.clone()).unwrap();
+    let callback_address = hooks
+        .callbacks
+        .borrow_mut()
+        .bind(&mut memory, callback.clone())
+        .unwrap();
     assert!(hooks.callbacks.borrow().has_bound_trap(callback_address.offset));
     assert!(!hooks.callbacks.borrow().has_bound_trap(0x1000));
-    memory.write(addr(&memory, 0x1000), &call_bytes(abi, callback_address.offset, 3)).unwrap();
-    memory.write(addr(&memory, 0x1100), &call_bytes(abi, callback_address.offset, 1)).unwrap();
+    memory
+        .write(addr(&memory, 0x1000), &call_bytes(abi, callback_address.offset, 3))
+        .unwrap();
+    memory
+        .write(addr(&memory, 0x1100), &call_bytes(abi, callback_address.offset, 1))
+        .unwrap();
     memory.write(addr(&memory, 0x1800), &[0xcc]).unwrap();
-    memory.protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute).unwrap();
+    memory
+        .protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute)
+        .unwrap();
     let entry = addr(&memory, 0x1800);
     let mut probe = callback.clone();
     probe.id = CallbackId::new("test", "nested-entry");
-    hooks.callbacks.borrow_mut().bind_entry(&mut memory, entry, probe, Rc::new(|| true)).unwrap();
+    hooks
+        .callbacks
+        .borrow_mut()
+        .bind_entry(&mut memory, entry, probe, Rc::new(|| true))
+        .unwrap();
     assert!(!hooks.callbacks.borrow().has_bound_trap(0x1800));
     hooks.callbacks.borrow_mut().unhook_entry(entry);
     let state = processor_state(abi);
@@ -197,7 +214,11 @@ fn run_nested_case(
     assert_eq!(result, GuestCallResult::Value(GuestCallValue::Int32(88)));
     let (state, memory) = runner.cpu_parts();
     assert_eq!(memory.read_u32(addr(memory, 0x19000)).unwrap(), 84);
-    let width = if memory.pointer_bytes() == 4 { GuestIntegerWidth::B32 } else { GuestIntegerWidth::B64 };
+    let width = if memory.pointer_bytes() == 4 {
+        GuestIntegerWidth::B32
+    } else {
+        GuestIntegerWidth::B64
+    };
     assert_eq!(state.registers.read(GuestRegister::Rsp, width, false).unwrap(), 0x20000);
     drop(state);
     drop(memory);
@@ -208,7 +229,10 @@ fn run_nested_case(
     };
     {
         let (state, _) = runner.cpu_parts();
-        state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B32, 999, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B32, 999, false)
+            .unwrap();
         state.simd.xmm.fill(123);
     }
     {
@@ -218,7 +242,13 @@ fn run_nested_case(
     }
     {
         let (state, _) = runner.cpu_parts();
-        assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B32, false).unwrap(), 88);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B32, false)
+                .unwrap(),
+            88
+        );
         assert_eq!(state.simd.xmm, saved_xmm);
     }
 }
@@ -249,9 +279,17 @@ fn rebind_after_unbind_restores_the_same_trap() {
         signature: signature.clone(),
         invoke: Rc::new(|_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Int32(0)))),
     };
-    let address = hooks.callbacks.borrow_mut().bind(&mut memory, callback.clone()).unwrap();
-    memory.write(addr(&memory, 0x1000), &call_bytes(abi, address.offset, 3)).unwrap();
-    memory.protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute).unwrap();
+    let address = hooks
+        .callbacks
+        .borrow_mut()
+        .bind(&mut memory, callback.clone())
+        .unwrap();
+    memory
+        .write(addr(&memory, 0x1000), &call_bytes(abi, address.offset, 3))
+        .unwrap();
+    memory
+        .protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute)
+        .unwrap();
     let state = processor_state(abi);
     let context = root_context(&module, &memory, abi);
     let mut cpu = X64Cpu::new(state, memory).unwrap();
@@ -269,7 +307,11 @@ fn rebind_after_unbind_restores_the_same_trap() {
     };
     let error = runner.invoke(&request).unwrap_err();
     assert!(format!("{error:?}").contains("unbound"), "unexpected: {error:?}");
-    let rebound = hooks.callbacks.borrow_mut().bind(runner.cpu_parts().1, callback).unwrap();
+    let rebound = hooks
+        .callbacks
+        .borrow_mut()
+        .bind(runner.cpu_parts().1, callback)
+        .unwrap();
     assert_eq!(rebound, address);
     assert!(hooks.callbacks.borrow().has_bound_trap(address.offset));
 }
@@ -279,7 +321,13 @@ fn processor_exception_preserves_the_guest_frame() {
     let abi = NativeCallAbi::MicrosoftX64;
     let module = module();
     let mut memory = SparseGuestMemory::new(module.clone(), 8, 0x10000).unwrap();
-    map(&mut memory, 0x1000, 4096, GuestPermissions::ReadExecute, Some(vec![0xcc]));
+    map(
+        &mut memory,
+        0x1000,
+        4096,
+        GuestPermissions::ReadExecute,
+        Some(vec![0xcc]),
+    );
     map(&mut memory, 0x10000, 65536, GuestPermissions::ReadWrite, None);
     let state = processor_state(abi);
     let context = root_context(&module, &memory, abi);
@@ -290,7 +338,12 @@ fn processor_exception_preserves_the_guest_frame() {
     let target = runner.cpu_parts().1.pointer(0x1000).unwrap().unwrap();
     let request = GuestCallRequest {
         target,
-        signature: GuestCallSignature { abi, parameters: vec![], result: None, variadic: false },
+        signature: GuestCallSignature {
+            abi,
+            parameters: vec![],
+            result: None,
+            variadic: false,
+        },
         arguments: vec![],
         context,
         instruction_budget: 8,
@@ -300,7 +353,13 @@ fn processor_exception_preserves_the_guest_frame() {
         other => panic!("expected a stopped exception, got {other:?}"),
     }
     let (state, _) = runner.cpu_parts();
-    assert_ne!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), 0x20000);
+    assert_ne!(
+        state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        0x20000
+    );
     drop(state);
     assert_eq!(runner.depth(), 0);
 }
@@ -324,25 +383,35 @@ fn saved_code_and_callback_identities_rebind_before_execution() {
             Ok(GuestCallResult::Value(GuestCallValue::Int32(value + 1)))
         }),
     };
-    let old_address = hooks.callbacks.borrow_mut().bind(&mut memory, callback.clone()).unwrap();
-    memory.write(addr(&memory, 0x1000), &call_bytes(abi, old_address.offset, 3)).unwrap();
-    memory.protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute).unwrap();
+    let old_address = hooks
+        .callbacks
+        .borrow_mut()
+        .bind(&mut memory, callback.clone())
+        .unwrap();
+    memory
+        .write(addr(&memory, 0x1000), &call_bytes(abi, old_address.offset, 3))
+        .unwrap();
+    memory
+        .protect(addr(&memory, 0x1000), 4096, GuestPermissions::ReadExecute)
+        .unwrap();
     let saved_memory = memory.checkpoint();
     let saved_callbacks = hooks.callbacks.borrow().checkpoint();
     hooks.callbacks.borrow_mut().unbind(&callback.id);
     let mut restored = SparseGuestMemory::restore(module.clone(), &saved_memory).unwrap();
-    let rebound_table = qa_guest::core::callbacks::GuestCallbackTable::restore(
-        &mut restored,
-        &saved_callbacks,
-        |id| (id == &callback.id).then(|| callback.clone()),
-    )
+    let rebound_table = qa_guest::core::callbacks::GuestCallbackTable::restore(&mut restored, &saved_callbacks, |id| {
+        (id == &callback.id).then(|| callback.clone())
+    })
     .unwrap();
     let rebound = Rc::new(HookState {
         callbacks: RefCell::new(rebound_table),
         call_id: Cell::new(0),
         entry_rsp: Cell::new(0),
     });
-    let restored_address = rebound.callbacks.borrow().address(&callback.id).expect("rebound address");
+    let restored_address = rebound
+        .callbacks
+        .borrow()
+        .address(&callback.id)
+        .expect("rebound address");
     assert_eq!(restored_address.offset, old_address.offset);
     assert!(rebound.callbacks.borrow().has_bound_trap(restored_address.offset));
     assert_ne!(restored_address.space, old_address.space);
@@ -364,8 +433,15 @@ fn saved_code_and_callback_identities_rebind_before_execution() {
         GuestCallResult::Value(GuestCallValue::Int32(9))
     );
     let hooks = Rc::clone(runner.hooks());
-    let error = hooks.callbacks.borrow_mut().resolve(runner.cpu_parts().1, old_address).unwrap_err();
-    assert!(format!("{error:?}").contains("another execution owner"), "unexpected: {error:?}");
+    let error = hooks
+        .callbacks
+        .borrow_mut()
+        .resolve(runner.cpu_parts().1, old_address)
+        .unwrap_err();
+    assert!(
+        format!("{error:?}").contains("another execution owner"),
+        "unexpected: {error:?}"
+    );
 }
 
 #[test]
@@ -401,15 +477,25 @@ fn win32_stdcall_ret_immediate_must_match_cleanup() {
         context,
         instruction_budget: 8,
     };
-    assert_eq!(runner.invoke(&request).unwrap(), GuestCallResult::Value(GuestCallValue::Int32(42)));
+    assert_eq!(
+        runner.invoke(&request).unwrap(),
+        GuestCallResult::Value(GuestCallValue::Int32(42))
+    );
     {
         let (_, memory) = runner.cpu_parts();
-        memory.protect(addr(memory, 0x1000), 4096, GuestPermissions::ReadWrite).unwrap();
+        memory
+            .protect(addr(memory, 0x1000), 4096, GuestPermissions::ReadWrite)
+            .unwrap();
         memory.write(addr(memory, 0x1005), &[0xc3]).unwrap();
-        memory.protect(addr(memory, 0x1000), 4096, GuestPermissions::ReadExecute).unwrap();
+        memory
+            .protect(addr(memory, 0x1000), 4096, GuestPermissions::ReadExecute)
+            .unwrap();
     }
     let error = runner.invoke(&request).unwrap_err();
-    assert!(format!("{error:?}").contains("incorrect ABI stack cleanup"), "unexpected: {error:?}");
+    assert!(
+        format!("{error:?}").contains("incorrect ABI stack cleanup"),
+        "unexpected: {error:?}"
+    );
 }
 
 fn i32_layout() -> GuestValueLayout {
@@ -421,7 +507,13 @@ fn ret_on_the_last_budgeted_instruction_completes() {
     let abi = NativeCallAbi::Cdecl;
     let module = module();
     let mut memory = SparseGuestMemory::new(module.clone(), 4, 0x10000).unwrap();
-    map(&mut memory, 0x1000, 4096, GuestPermissions::ReadExecute, Some(vec![0xc3]));
+    map(
+        &mut memory,
+        0x1000,
+        4096,
+        GuestPermissions::ReadExecute,
+        Some(vec![0xc3]),
+    );
     map(&mut memory, 0x10000, 65536, GuestPermissions::ReadWrite, None);
     let state = processor_state(abi);
     let context = root_context(&module, &memory, abi);
@@ -432,7 +524,12 @@ fn ret_on_the_last_budgeted_instruction_completes() {
     let target = runner.cpu_parts().1.pointer(0x1000).unwrap().unwrap();
     let request = GuestCallRequest {
         target,
-        signature: GuestCallSignature { abi, parameters: vec![], result: None, variadic: false },
+        signature: GuestCallSignature {
+            abi,
+            parameters: vec![],
+            result: None,
+            variadic: false,
+        },
         arguments: vec![],
         context,
         instruction_budget: 1,

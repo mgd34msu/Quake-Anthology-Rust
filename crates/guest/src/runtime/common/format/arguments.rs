@@ -7,9 +7,7 @@
 use crate::core::contracts::GuestAddress;
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
-use crate::floating_point::binary::{
-    decode_binary, read_bits, BigInt, BinaryValue, BinaryWidth,
-};
+use crate::floating_point::binary::{decode_binary, read_bits, BigInt, BinaryValue, BinaryWidth};
 use crate::runtime::common::memory::read_unsigned;
 
 /// Runtime dialect selecting varargs and conversion rules.
@@ -84,15 +82,8 @@ impl FormatArguments {
             args.fp = memory.read_u32(memory.offset(descriptor, 4)?)?;
             args.cursor = memory.read_pointer(memory.offset(descriptor, 8)?)?;
             args.registers = memory.read_pointer(memory.offset(descriptor, 16)?)?;
-            if args.gp > 48
-                || args.gp % 8 != 0
-                || args.fp < 48
-                || args.fp > 176
-                || (args.fp - 48) % 16 != 0
-            {
-                return Err(GuestError::invalid(
-                    "Invalid System V x64 va_list register offsets",
-                ));
+            if args.gp > 48 || !args.gp.is_multiple_of(8) || args.fp < 48 || args.fp > 176 || !(args.fp - 48).is_multiple_of(16) {
+                return Err(GuestError::invalid("Invalid System V x64 va_list register offsets"));
             }
         } else {
             args.cursor = address;
@@ -106,12 +97,14 @@ impl FormatArguments {
         memory: &mut SparseGuestMemory,
         argument_type: FormatArgumentType,
     ) -> Result<FormatArgument, GuestError> {
-        let extended =
-            argument_type == FormatArgumentType::LongDouble && self.dialect == FormatDialect::SystemV;
-        let floating = argument_type == FormatArgumentType::Double
-            || argument_type == FormatArgumentType::LongDouble;
+        let extended = argument_type == FormatArgumentType::LongDouble && self.dialect == FormatDialect::SystemV;
+        let floating = argument_type == FormatArgumentType::Double || argument_type == FormatArgumentType::LongDouble;
         let size = if extended {
-            if self.pointer_bytes == 8 { 16 } else { 12 }
+            if self.pointer_bytes == 8 {
+                16
+            } else {
+                12
+            }
         } else if floating || argument_type == FormatArgumentType::Int64 {
             8
         } else if argument_type == FormatArgumentType::Pointer {
@@ -119,18 +112,15 @@ impl FormatArguments {
         } else {
             4
         };
-        let address = if self.descriptor.is_some()
-            && !extended
-            && (if floating { self.fp < 176 } else { self.gp < 48 })
+        let address = if self.descriptor.is_some() && !extended && (if floating { self.fp < 176 } else { self.gp < 48 })
         {
             let registers = self
                 .registers
                 .ok_or_else(|| GuestError::invalid("va_list register save area is null"))?;
-            let address = memory.offset(
-                registers,
-                i64::from(if floating { self.fp } else { self.gp }),
-            )?;
-            let descriptor = self.descriptor.expect("descriptor checked above");
+            let address = memory.offset(registers, i64::from(if floating { self.fp } else { self.gp }))?;
+            let Some(descriptor) = self.descriptor else {
+                unreachable!("descriptor checked above");
+            };
             if floating {
                 self.fp += 16;
                 memory.write_u32(memory.offset(descriptor, 4)?, self.fp)?;
@@ -148,7 +138,7 @@ impl FormatArguments {
             } else {
                 self.pointer_bytes as u64
             };
-            let aligned = (cursor.offset + alignment - 1) / alignment * alignment;
+            let aligned = cursor.offset.div_ceil(alignment) * alignment;
             let address = memory.offset(cursor, (aligned - cursor.offset) as i64)?;
             let slot = if self.pointer_bytes == 8 {
                 size.div_ceil(8) * 8
@@ -169,16 +159,10 @@ impl FormatArguments {
             };
             Ok(FormatArgument::Float(decode_binary(
                 &bits,
-                if extended {
-                    BinaryWidth::W80
-                } else {
-                    BinaryWidth::W64
-                },
+                if extended { BinaryWidth::W80 } else { BinaryWidth::W64 },
             )))
         } else {
-            Ok(FormatArgument::Integer(read_unsigned(
-                memory, address, size,
-            )?))
+            Ok(FormatArgument::Integer(read_unsigned(memory, address, size)?))
         }
     }
 }

@@ -7,12 +7,14 @@
 use crate::core::contracts::{GuestAccess, GuestIntegerWidth};
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
-use crate::floating_point::contracts::{NumericExecutionContext, NumericExecutionResult, NumericInstruction, NumericOperand};
+use crate::floating_point::contracts::{
+    NumericExecutionContext, NumericExecutionResult, NumericInstruction, NumericOperand,
+};
 use crate::floating_point::execute_numeric_instruction;
 use crate::floating_point::raw_sse::{execute_raw_sse, RawSseOperation};
 use crate::x64::decoder::{
-    canonical_address, guest_address, operand_address, read_operand,
-    write_operand, writable_operand, X64MemoryOperand, X64Operand, X64RegisterOperand,
+    canonical_address, guest_address, operand_address, read_operand, writable_operand, write_operand, X64MemoryOperand,
+    X64Operand, X64RegisterOperand,
 };
 use crate::x86::arithmetic::{alu, condition, shift, signed_multiply, AluOperation, ShiftOperation};
 use crate::x86::decoder::X86Error;
@@ -263,11 +265,7 @@ pub fn x64_lock(lock: bool, destination: Option<X64Operand>, permitted: bool) ->
 
 /// Lower an operation with its next IP, deriving the block boundary.
 #[must_use]
-pub fn make_x64_plan(
-    operation: X64PlanOperation,
-    next_ip: u64,
-    lock: bool,
-) -> X64SemanticPlan {
+pub fn make_x64_plan(operation: X64PlanOperation, next_ip: u64, lock: bool) -> X64SemanticPlan {
     let ends_block = match &operation {
         X64PlanOperation::Branch { .. }
         | X64PlanOperation::Return { .. }
@@ -281,26 +279,20 @@ pub fn make_x64_plan(
         X64PlanOperation::Increment { destination, .. } => {
             matches!(destination, X64Operand::Memory(_))
         }
-        X64PlanOperation::Shift { destination, .. }
-        | X64PlanOperation::SetCondition { destination, .. } => {
+        X64PlanOperation::Shift { destination, .. } | X64PlanOperation::SetCondition { destination, .. } => {
             matches!(destination, X64Operand::Memory(_))
         }
         X64PlanOperation::RawSse { operation, operand } => {
-            matches!(
-                operation,
-                RawSseOperation::Move { store: true, .. }
-            ) && matches!(operand, X64SseOperand::Memory(_))
+            matches!(operation, RawSseOperation::Move { store: true, .. })
+                && matches!(operand, X64SseOperand::Memory(_))
         }
         X64PlanOperation::Move { destination, .. } => {
             matches!(destination, X64Operand::Memory(_))
         }
         X64PlanOperation::Alu {
-            operation,
-            destination,
-            ..
+            operation, destination, ..
         } => {
-            matches!(destination, X64Operand::Memory(_))
-                && !matches!(operation, AluOperation::Cmp | AluOperation::Test)
+            matches!(destination, X64Operand::Memory(_)) && !matches!(operation, AluOperation::Cmp | AluOperation::Test)
         }
         _ => false,
     };
@@ -342,22 +334,17 @@ pub fn execute_x64_plan(
         } => {
             let count = match count {
                 X64ShiftCount::Immediate(count) => *count,
-                X64ShiftCount::Cl => state.registers.read(
-                    crate::core::contracts::GuestRegister::Rcx,
-                    GuestIntegerWidth::B8,
-                    false,
-                )? as u32,
+                X64ShiftCount::Cl => {
+                    state
+                        .registers
+                        .read(crate::core::contracts::GuestRegister::Rcx, GuestIntegerWidth::B8, false)?
+                        as u32
+                }
             };
             x64_lock(plan.lock, None, false)?;
             writable_operand(memory, state, destination, plan.next_ip)?;
             let value = read_operand(memory, state, destination, plan.next_ip)?;
-            let result = shift(
-                *operation,
-                destination.width().bits(),
-                value,
-                count,
-                &mut state.flags,
-            );
+            let result = shift(*operation, destination.width().bits(), value, count, &mut state.flags);
             write_operand(memory, state, destination, plan.next_ip, result)?;
             Ok(X64_ADVANCE)
         }
@@ -369,19 +356,8 @@ pub fn execute_x64_plan(
             x64_lock(plan.lock, None, false)?;
             let left = read_operand(memory, state, left, plan.next_ip)?;
             let right = plan_source(memory, state, right, plan.next_ip)?;
-            let value = signed_multiply(
-                destination.width.bits(),
-                left,
-                right,
-                &mut state.flags,
-            );
-            write_operand(
-                memory,
-                state,
-                &X64Operand::Register(*destination),
-                plan.next_ip,
-                value,
-            )?;
+            let value = signed_multiply(destination.width.bits(), left, right, &mut state.flags);
+            write_operand(memory, state, &X64Operand::Register(*destination), plan.next_ip, value)?;
             Ok(X64_ADVANCE)
         }
         X64PlanOperation::ConditionalMove {
@@ -392,21 +368,10 @@ pub fn execute_x64_plan(
             x64_lock(plan.lock, None, false)?;
             let value = read_operand(memory, state, source, plan.next_ip)?;
             if condition(*code, &state.flags)? {
-                write_operand(
-                    memory,
-                    state,
-                    &X64Operand::Register(*destination),
-                    plan.next_ip,
-                    value,
-                )?;
+                write_operand(memory, state, &X64Operand::Register(*destination), plan.next_ip, value)?;
             } else if destination.width == GuestIntegerWidth::B32 {
                 // A declined 32-bit CMOV still clears the upper half.
-                let current = read_operand(
-                    memory,
-                    state,
-                    &X64Operand::Register(*destination),
-                    plan.next_ip,
-                )?;
+                let current = read_operand(memory, state, &X64Operand::Register(*destination), plan.next_ip)?;
                 write_operand(
                     memory,
                     state,
@@ -448,10 +413,7 @@ pub fn execute_x64_plan(
             )?;
             Ok(X64_ADVANCE)
         }
-        X64PlanOperation::Increment {
-            destination,
-            subtract,
-        } => {
+        X64PlanOperation::Increment { destination, subtract } => {
             x64_lock(plan.lock, Some(*destination), true)?;
             writable_operand(memory, state, destination, plan.next_ip)?;
             let carry = state.flags.get(crate::core::contracts::GuestFlag::Carry);
@@ -474,13 +436,14 @@ pub fn execute_x64_plan(
             x64_lock(plan.lock, None, false)?;
             run_numeric(memory, state, *instruction)
         }
-        X64PlanOperation::NumericMemory {
-            instruction,
-            operand,
-        } => {
+        X64PlanOperation::NumericMemory { instruction, operand } => {
             x64_lock(plan.lock, None, false)?;
             let address = operand_address(memory, state, operand, plan.next_ip, GuestAccess::Read)?;
-            run_numeric(memory, state, instruction.with_operand(Some(NumericOperand::Memory(address))))
+            run_numeric(
+                memory,
+                state,
+                instruction.with_operand(Some(NumericOperand::Memory(address))),
+            )
         }
         X64PlanOperation::RawSse { operation, operand } => {
             x64_lock(plan.lock, None, false)?;
@@ -495,40 +458,24 @@ pub fn execute_x64_plan(
                 )?),
             };
             execute_raw_sse(*operation, operand, state, memory).map_err(|error| match error {
-                crate::floating_point::contracts::NumericError::Unsupported(detail) => {
-                    X86Error::unsupported(detail)
-                }
+                crate::floating_point::contracts::NumericError::Unsupported(detail) => X86Error::unsupported(detail),
                 crate::floating_point::contracts::NumericError::Fault { vector, detail } => {
                     X86Error::fault(u32::from(vector), detail)
                 }
-                crate::floating_point::contracts::NumericError::Guest(error) => {
-                    X86Error::from(error)
-                }
+                crate::floating_point::contracts::NumericError::Guest(error) => X86Error::from(error),
             })?;
             Ok(X64_ADVANCE)
         }
-        X64PlanOperation::Move {
-            destination,
-            source,
-        } => {
+        X64PlanOperation::Move { destination, source } => {
             x64_lock(plan.lock, None, false)?;
             let value = plan_source(memory, state, source, plan.next_ip)?;
             write_operand(memory, state, destination, plan.next_ip, value)?;
             Ok(X64_ADVANCE)
         }
-        X64PlanOperation::Lea {
-            destination,
-            source,
-        } => {
+        X64PlanOperation::Lea { destination, source } => {
             x64_lock(plan.lock, None, false)?;
             let offset = crate::x64::decoder::effective_operand_offset(state, source, plan.next_ip)?;
-            write_operand(
-                memory,
-                state,
-                &X64Operand::Register(*destination),
-                plan.next_ip,
-                offset,
-            )?;
+            write_operand(memory, state, &X64Operand::Register(*destination), plan.next_ip, offset)?;
             Ok(X64_ADVANCE)
         }
         X64PlanOperation::Alu {
@@ -565,9 +512,7 @@ pub fn execute_x64_plan(
             };
             if taken {
                 Ok(X64Flow::Branch {
-                    target: canonical_address(
-                        plan.next_ip.wrapping_add(*displacement as u64),
-                    )?,
+                    target: canonical_address(plan.next_ip.wrapping_add(*displacement as u64))?,
                 })
             } else {
                 Ok(X64_ADVANCE)
@@ -579,7 +524,11 @@ pub fn execute_x64_plan(
             if matches!(plan.operation, X64PlanOperation::Call { .. }) {
                 let stack = state
                     .registers
-                    .read(crate::core::contracts::GuestRegister::Rsp, GuestIntegerWidth::B64, false)?
+                    .read(
+                        crate::core::contracts::GuestRegister::Rsp,
+                        GuestIntegerWidth::B64,
+                        false,
+                    )?
                     .wrapping_sub(8);
                 let space = memory.address_space();
                 memory.write_u64(guest_address(space, stack, GuestAccess::Write)?, plan.next_ip)?;
@@ -597,7 +546,11 @@ pub fn execute_x64_plan(
             let value = plan_source(memory, state, source, plan.next_ip)?;
             let stack = state
                 .registers
-                .read(crate::core::contracts::GuestRegister::Rsp, GuestIntegerWidth::B64, false)?
+                .read(
+                    crate::core::contracts::GuestRegister::Rsp,
+                    GuestIntegerWidth::B64,
+                    false,
+                )?
                 .wrapping_sub(width.bytes() as u64);
             let space = memory.address_space();
             let address = guest_address(space, stack, GuestAccess::Write)?;
@@ -680,9 +633,7 @@ fn run_numeric(
         instruction,
     })? {
         NumericExecutionResult::Executed => Ok(X64_ADVANCE),
-        NumericExecutionResult::Exception { vector, detail } => {
-            Err(X86Error::fault(u32::from(vector), detail))
-        }
+        NumericExecutionResult::Exception { vector, detail } => Err(X86Error::fault(u32::from(vector), detail)),
         NumericExecutionResult::Unsupported { detail } => Err(X86Error::unsupported(detail)),
     }
 }

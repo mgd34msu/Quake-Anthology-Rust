@@ -292,7 +292,9 @@ pub fn read_operand(
 ) -> Result<u64, X86Error> {
     match operand {
         X64Operand::Register(operand) => {
-            Ok(state.registers.read(operand.register, operand.width, operand.high_byte)?)
+            Ok(state
+                .registers
+                .read(operand.register, operand.width, operand.high_byte)?)
         }
         X64Operand::Memory(operand) => {
             let address = operand_address(memory, state, operand, next_ip, GuestAccess::Read)?;
@@ -311,7 +313,9 @@ pub fn write_operand(
 ) -> Result<(), X86Error> {
     match operand {
         X64Operand::Register(operand) => {
-            Ok(state.registers.write(operand.register, operand.width, value, operand.high_byte)?)
+            Ok(state
+                .registers
+                .write(operand.register, operand.width, value, operand.high_byte)?)
         }
         X64Operand::Memory(operand) => {
             let address = operand_address(memory, state, operand, next_ip, GuestAccess::Write)?;
@@ -597,9 +601,11 @@ impl<'a> X64DecodeCursor<'a> {
             return Err(X86Error::fault(13, "Instruction exceeds 15 bytes"));
         }
         if let Some(decoded) = &self.decoded {
-            let byte = decoded.bytes.get(self.position).copied().ok_or_else(|| {
-                X86Error::unsupported("Decoded instruction byte is missing")
-            })?;
+            let byte = decoded
+                .bytes
+                .get(self.position)
+                .copied()
+                .ok_or_else(|| X86Error::unsupported("Decoded instruction byte is missing"))?;
             self.position += 1;
             return Ok(byte);
         }
@@ -682,11 +688,7 @@ impl<'a> X64DecodeCursor<'a> {
     }
 
     /// Decode a register operand at full `index` with REX high-byte rules.
-    pub fn register(
-        &self,
-        index: usize,
-        width: GuestIntegerWidth,
-    ) -> Result<X64RegisterOperand, X86Error> {
+    pub fn register(&self, index: usize, width: GuestIntegerWidth) -> Result<X64RegisterOperand, X86Error> {
         if width == GuestIntegerWidth::B8 && self.rex.is_none() && (4..8).contains(&index) {
             return Ok(X64RegisterOperand {
                 register: GuestRegister::decode((index - 4) as u8, false),
@@ -800,25 +802,13 @@ impl<'a> X64DecodeCursor<'a> {
         effective_operand_offset(
             self.state,
             operand,
-            if operand.rip_relative {
-                self.next_ip()
-            } else {
-                0
-            },
+            if operand.rip_relative { self.next_ip() } else { 0 },
         )
     }
 
     /// Resolve a memory operand address.
-    pub fn address(
-        &mut self,
-        operand: &X64MemoryOperand,
-        access: GuestAccess,
-    ) -> Result<GuestAddress, X86Error> {
-        let next_ip = if operand.rip_relative {
-            self.next_ip()
-        } else {
-            0
-        };
+    pub fn address(&mut self, operand: &X64MemoryOperand, access: GuestAccess) -> Result<GuestAddress, X86Error> {
+        let next_ip = if operand.rip_relative { self.next_ip() } else { 0 };
         operand_address(&*self.memory, &*self.state, operand, next_ip, access)
     }
 

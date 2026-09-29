@@ -5,9 +5,7 @@
 //! including System V eightbyte classification, hidden aggregate-result
 //! pointers, and callee stack cleanup.
 
-use crate::core::contracts::{
-    GuestCallSignature, GuestRegister, GuestStorage, GuestValueLayout, NativeCallAbi,
-};
+use crate::core::contracts::{GuestCallSignature, GuestRegister, GuestStorage, GuestValueLayout, NativeCallAbi};
 use crate::error::GuestError;
 
 use super::values::{align_up, argument_bytes, storage_bytes, validate_value_layout, value_alignment, value_bytes};
@@ -49,9 +47,7 @@ impl AbiLocation {
     #[must_use]
     pub const fn offset(&self) -> usize {
         match self {
-            Self::Integer { offset, .. } | Self::Sse { offset, .. } | Self::Stack { offset, .. } => {
-                *offset
-            }
+            Self::Integer { offset, .. } | Self::Sse { offset, .. } | Self::Stack { offset, .. } => *offset,
         }
     }
 
@@ -59,9 +55,7 @@ impl AbiLocation {
     #[must_use]
     pub const fn bytes(&self) -> usize {
         match self {
-            Self::Integer { bytes, .. } | Self::Sse { bytes, .. } | Self::Stack { bytes, .. } => {
-                *bytes
-            }
+            Self::Integer { bytes, .. } | Self::Sse { bytes, .. } | Self::Stack { bytes, .. } => *bytes,
         }
     }
 }
@@ -136,9 +130,7 @@ pub enum EightbyteClass {
 /// Classify an aggregate into System V eightbyte classes, or `None` for
 /// memory classification. Layouts describe POD aggregates of scalar fields,
 /// including overlapping union fields.
-pub fn classify_system_v_aggregate(
-    layout: &GuestValueLayout,
-) -> Result<Option<Vec<EightbyteClass>>, GuestError> {
+pub fn classify_system_v_aggregate(layout: &GuestValueLayout) -> Result<Option<Vec<EightbyteClass>>, GuestError> {
     validate_value_layout(layout, 8)?;
     if let GuestValueLayout::Scalar(storage) = layout {
         return Ok(Some(vec![if storage.is_float() {
@@ -171,8 +163,7 @@ pub fn classify_system_v_aggregate(
                 } else {
                     EightbyteClass::Integer
                 };
-                classes[slot] = if prior == EightbyteClass::Integer || next == EightbyteClass::Integer
-                {
+                classes[slot] = if prior == EightbyteClass::Integer || next == EightbyteClass::Integer {
                     EightbyteClass::Integer
                 } else {
                     EightbyteClass::Sse
@@ -276,8 +267,7 @@ impl Planner<'_> {
         if self.microsoft64 {
             let position = self.ordinal;
             self.ordinal += 1;
-            let indirect = matches!(&layout, GuestValueLayout::Aggregate(_))
-                && ![1, 2, 4, 8].contains(&size);
+            let indirect = matches!(&layout, GuestValueLayout::Aggregate(_)) && ![1, 2, 4, 8].contains(&size);
             let Some(register) = self.integer_registers.get(position).copied() else {
                 return Ok(self.stack(layout, indirect));
             };
@@ -314,7 +304,10 @@ impl Planner<'_> {
             let Some(classes) = classify_system_v_aggregate(&layout)? else {
                 return Ok(self.stack(layout, false));
             };
-            let needed_integers = classes.iter().filter(|class| **class == EightbyteClass::Integer).count();
+            let needed_integers = classes
+                .iter()
+                .filter(|class| **class == EightbyteClass::Integer)
+                .count();
             let needed_vectors = classes.iter().filter(|class| **class == EightbyteClass::Sse).count();
             if self.integer_count + needed_integers > self.integer_registers.len()
                 || self.vector_count + needed_vectors > 8
@@ -327,12 +320,8 @@ impl Planner<'_> {
                 let bytes = 8.min(size - offset);
                 match class {
                     EightbyteClass::Integer => {
-                        let Some(register) =
-                            self.integer_registers.get(self.integer_count).copied()
-                        else {
-                            return Err(GuestError::abi(
-                                "System V integer register allocation overflow",
-                            ));
+                        let Some(register) = self.integer_registers.get(self.integer_count).copied() else {
+                            return Err(GuestError::abi("System V integer register allocation overflow"));
                         };
                         self.integer_count += 1;
                         locations.push(AbiLocation::Integer {
@@ -360,20 +349,11 @@ impl Planner<'_> {
         }
         if matches!(
             self.signature.abi,
-            NativeCallAbi::Cdecl
-                | NativeCallAbi::Stdcall
-                | NativeCallAbi::Thiscall
-                | NativeCallAbi::Fastcall
+            NativeCallAbi::Cdecl | NativeCallAbi::Stdcall | NativeCallAbi::Thiscall | NativeCallAbi::Fastcall
         ) && !self.signature.variadic
         {
-            if self.signature.abi == NativeCallAbi::Thiscall
-                && parameter_index == 0
-                && !is_hidden
-            {
-                if !matches!(
-                    &layout,
-                    GuestValueLayout::Scalar(GuestStorage::Pointer)
-                ) {
+            if self.signature.abi == NativeCallAbi::Thiscall && parameter_index == 0 && !is_hidden {
+                if !matches!(&layout, GuestValueLayout::Scalar(GuestStorage::Pointer)) {
                     return Err(GuestError::abi(
                         "thiscall's first explicit argument must be the this pointer",
                     ));
@@ -415,10 +395,7 @@ impl Planner<'_> {
     }
 }
 
-fn build_call_plan(
-    signature: &GuestCallSignature,
-    layouts: &[GuestValueLayout],
-) -> Result<AbiCallPlan, GuestError> {
+fn build_call_plan(signature: &GuestCallSignature, layouts: &[GuestValueLayout]) -> Result<AbiCallPlan, GuestError> {
     let abi = signature.abi;
     let word = abi.pointer_bytes();
     let hidden = hidden_result(signature)?;
@@ -436,7 +413,12 @@ fn build_call_plan(
     let microsoft64 = abi == NativeCallAbi::MicrosoftX64;
     let system64 = abi == NativeCallAbi::SystemVX86_64;
     let integer_registers: &[GuestRegister] = if microsoft64 {
-        &[GuestRegister::Rcx, GuestRegister::Rdx, GuestRegister::R8, GuestRegister::R9]
+        &[
+            GuestRegister::Rcx,
+            GuestRegister::Rdx,
+            GuestRegister::R8,
+            GuestRegister::R9,
+        ]
     } else if system64 {
         &[
             GuestRegister::Rdi,
@@ -465,14 +447,8 @@ fn build_call_plan(
             4
         },
     };
-    let this_before_hidden =
-        hidden && abi == NativeCallAbi::Thiscall && signature.variadic;
-    if this_before_hidden
-        && !matches!(
-            layouts.first(),
-            Some(GuestValueLayout::Scalar(GuestStorage::Pointer))
-        )
-    {
+    let this_before_hidden = hidden && abi == NativeCallAbi::Thiscall && signature.variadic;
+    if this_before_hidden && !matches!(layouts.first(), Some(GuestValueLayout::Scalar(GuestStorage::Pointer))) {
         return Err(GuestError::abi("Variadic thiscall requires an explicit this pointer"));
     }
     let first_argument = if this_before_hidden {
@@ -482,11 +458,7 @@ fn build_call_plan(
         None
     };
     let hidden_pointer = if hidden {
-        Some(planner.assign(
-            GuestValueLayout::Scalar(GuestStorage::Pointer),
-            true,
-            usize::MAX,
-        )?)
+        Some(planner.assign(GuestValueLayout::Scalar(GuestStorage::Pointer), true, usize::MAX)?)
     } else {
         None
     };
@@ -619,10 +591,7 @@ mod tests {
 
     #[test]
     fn system_v_assigns_registers_then_stack() {
-        let signature = scalar_signature(
-            NativeCallAbi::SystemVX86_64,
-            vec![GuestStorage::Int32; 8],
-        );
+        let signature = scalar_signature(NativeCallAbi::SystemVX86_64, vec![GuestStorage::Int32; 8]);
         let plan = plan_guest_call(&signature, None).unwrap();
         assert!(matches!(
             plan.arguments[0].locations[0],
@@ -631,14 +600,8 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(
-            plan.arguments[6].locations[0],
-            AbiLocation::Stack { .. }
-        ));
-        assert!(matches!(
-            plan.result,
-            AbiResult::Registers { .. }
-        ));
+        assert!(matches!(plan.arguments[6].locations[0], AbiLocation::Stack { .. }));
+        assert!(matches!(plan.result, AbiResult::Registers { .. }));
     }
 
     #[test]

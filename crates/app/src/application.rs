@@ -20,8 +20,8 @@ use qa_client::view::{CameraClip, ModelTransform, Rect, SceneCamera};
 use qa_core::math::{vec3, vec4, Axis, Vec3};
 use qa_core::rng::Qrand;
 use qa_core::time::SourceTime;
-use qa_world::client::{apply_scalar, ClientCommand, ClientFamily, ScalarInput};
 use qa_guest::server::GuestServerLogic;
+use qa_world::client::{apply_scalar, ClientCommand, ClientFamily, ScalarInput};
 use qa_world::server::Server;
 
 use crate::error::AppError;

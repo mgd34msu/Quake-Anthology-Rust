@@ -8,9 +8,8 @@
 use crate::error::GuestError;
 
 use super::binary::{
-    arithmetic, convert_binary, from_integer, round_rational, zero, BigInt, BinaryFormat,
-    BinaryOperation, BinaryResult, BinaryValue, Rounding, BINARY80, FLAG_DENORMAL_OPERAND,
-    FLAG_INVALID, FLAG_PRECISION,
+    arithmetic, convert_binary, from_integer, round_rational, zero, BigInt, BinaryFormat, BinaryOperation,
+    BinaryResult, BinaryValue, Rounding, BINARY80, FLAG_DENORMAL_OPERAND, FLAG_INVALID, FLAG_PRECISION,
 };
 
 /// Fixed-point fraction bits.
@@ -68,9 +67,7 @@ pub fn x87_trigonometric(
         denormal,
     } = value
     else {
-        return Ok(X87TrigonometricResult::Result(convert_binary(
-            value, BINARY80, mode,
-        )?));
+        return Ok(X87TrigonometricResult::Result(convert_binary(value, BINARY80, mode)?));
     };
     if coefficient.is_zero() {
         return Ok(X87TrigonometricResult::Result(BinaryResult {
@@ -99,10 +96,7 @@ pub fn x87_trigonometric(
         } else {
             BinaryValue::Finite {
                 negative: *negative,
-                coefficient: coefficient
-                    .mul(&pi())
-                    .shl_bits(128)
-                    .div(&source_pi())?,
+                coefficient: coefficient.mul(&pi()).shl_bits(128).div(&source_pi())?,
                 exponent: exponent - 318,
                 denormal: false,
             }
@@ -135,9 +129,7 @@ pub fn x87_trigonometric(
     let two = BigInt::from_u64(2);
     while !term.is_zero() {
         let denominator = if cosine {
-            two.mul(&index)
-                .sub(&BigInt::one())
-                .mul(&two.mul(&index))
+            two.mul(&index).sub(&BigInt::one()).mul(&two.mul(&index))
         } else {
             two.mul(&index).mul(&two.mul(&index).add(&BigInt::one()))
         };
@@ -165,24 +157,19 @@ pub fn x87_trigonometric(
 }
 
 /// FPATAN over Cartesian (y, x), including signed axes and infinities.
-pub fn x87_arctangent(
-    y: &BinaryValue,
-    x: &BinaryValue,
-    mode: Rounding,
-) -> Result<BinaryResult, GuestError> {
+pub fn x87_arctangent(y: &BinaryValue, x: &BinaryValue, mode: Rounding) -> Result<BinaryResult, GuestError> {
     if matches!(y, BinaryValue::Nan { .. } | BinaryValue::Unsupported { .. })
         || matches!(x, BinaryValue::Nan { .. } | BinaryValue::Unsupported { .. })
     {
         return arithmetic(BinaryOperation::Add, y, x, BINARY80, mode, false);
     }
-    let source_flags =
-        if matches!(y, BinaryValue::Finite { denormal: true, .. })
-            || matches!(x, BinaryValue::Finite { denormal: true, .. })
-        {
-            FLAG_DENORMAL_OPERAND
-        } else {
-            0
-        };
+    let source_flags = if matches!(y, BinaryValue::Finite { denormal: true, .. })
+        || matches!(x, BinaryValue::Finite { denormal: true, .. })
+    {
+        FLAG_DENORMAL_OPERAND
+    } else {
+        0
+    };
     let angle_result = |angle: &BigInt| -> Result<BinaryResult, GuestError> {
         let result = round_rational(y.negative(), angle, &scale(), 0, BINARY80, mode)?;
         Ok(BinaryResult {
@@ -277,10 +264,7 @@ pub fn x87_arctangent(
     let mut index = BigInt::one();
     let two = BigInt::from_u64(2);
     while !power.is_zero() {
-        power = power
-            .negated()
-            .mul(&squared)
-            .div(&scale().mul(&scale()))?;
+        power = power.negated().mul(&squared).div(&scale().mul(&scale()))?;
         angle = angle.add(&power.div(&two.mul(&index).add(&BigInt::one()))?);
         index = index.add(&BigInt::one());
     }
@@ -304,14 +288,11 @@ pub(crate) fn binary80_format() -> BinaryFormat {
 
 #[cfg(test)]
 mod tests {
+    use super::super::binary::{convert_binary, decode_binary, encode_binary, BinaryWidth, BINARY64};
     use super::*;
-    use super::super::binary::{decode_binary, encode_binary, BinaryWidth, BINARY64, convert_binary};
 
     fn f80(value: f64) -> BinaryValue {
-        decode_binary(
-            &BigInt::from_bytes_le(&value.to_le_bytes()),
-            BinaryWidth::W64,
-        )
+        decode_binary(&BigInt::from_bytes_le(&value.to_le_bytes()), BinaryWidth::W64)
     }
 
     #[test]

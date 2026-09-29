@@ -10,9 +10,9 @@ use std::rc::Rc;
 use crate::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner};
 use crate::core::callbacks::HookState;
 use crate::core::contracts::{
-    GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallValue,
-    GuestCallbackReference, GuestImage, GuestImport, GuestImportResolution, GuestImportResolver,
-    GuestPermissions, GuestStorage, GuestSymbolName, ModuleIdentity,
+    GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallValue, GuestCallbackReference,
+    GuestImage, GuestImport, GuestImportResolution, GuestImportResolver, GuestPermissions, GuestStorage,
+    GuestSymbolName, ModuleIdentity,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
@@ -22,9 +22,8 @@ use crate::elf::relocate::{ElfTlsBindings, ElfTlsModule, ElfTlsResolution};
 use crate::error::GuestError;
 use crate::runtime::common::memory::{string_bytes, write_unsigned};
 use crate::runtime::system_v::contracts::{
-    invoke_nested, symbol_key, unsupported_system_v, SharedSystemV, SystemVContext,
-    SystemVImportCoverage, SystemVInitializeOptions, SystemVRuntimeOptions, SystemVServiceRegistrar,
-    SystemVSupport, SystemVTlsBlock,
+    invoke_nested, symbol_key, unsupported_system_v, SharedSystemV, SystemVContext, SystemVImportCoverage,
+    SystemVInitializeOptions, SystemVRuntimeOptions, SystemVServiceRegistrar, SystemVSupport, SystemVTlsBlock,
 };
 use crate::runtime::system_v::cxx::install_cxx;
 use crate::runtime::system_v::cxx_data::{build_abi, SharedAbi};
@@ -105,11 +104,7 @@ impl ElfTlsBindings for LoadTlsBindings {
         }
     }
 
-    fn resolve(
-        &self,
-        import: &GuestImport,
-        _requesting: &GuestImage,
-    ) -> Result<Option<ElfTlsResolution>, GuestError> {
+    fn resolve(&self, import: &GuestImport, _requesting: &GuestImage) -> Result<Option<ElfTlsResolution>, GuestError> {
         let GuestSymbolName::Name { name, version } = &import.symbol else {
             return Ok(None);
         };
@@ -134,9 +129,7 @@ impl ElfTlsBindings for LoadTlsBindings {
             if let (Some(entry), Some(block)) = (entry, block) {
                 return Ok(Some(ElfTlsResolution {
                     module_id: block.module_id,
-                    thread_pointer_offset: Some(
-                        block.address.offset as i64 - self.thread_pointer.offset as i64,
-                    ),
+                    thread_pointer_offset: Some(block.address.offset as i64 - self.thread_pointer.offset as i64),
                     offset: entry.offset,
                 }));
             }
@@ -189,7 +182,10 @@ impl SystemVGuestRuntime {
         })?;
         let thread_pointer = memory.offset(tls_area, 0x10000)?;
         memory.write_pointer(thread_pointer, Some(thread_pointer))?;
-        memory.write_pointer(memory.offset(thread_pointer, 2 * pointer_bytes as i64)?, Some(thread_pointer))?;
+        memory.write_pointer(
+            memory.offset(thread_pointer, 2 * pointer_bytes as i64)?,
+            Some(thread_pointer),
+        )?;
         let dtv_allocation = memory.allocate(&GuestAllocationOptions {
             byte_length: 1026 * 2 * pointer_bytes,
             alignment: 16,
@@ -206,8 +202,18 @@ impl SystemVGuestRuntime {
             permissions: GuestPermissions::ReadWrite,
             label: "System V thread errno".to_string(),
         })?;
-        let argv_address = write_strings(memory, &options.argv, "System V argument vector", "System V argument string")?;
-        let envp_address = write_strings(memory, &options.environment, "System V argument vector", "System V argument string")?;
+        let argv_address = write_strings(
+            memory,
+            &options.argv,
+            "System V argument vector",
+            "System V argument string",
+        )?;
+        let envp_address = write_strings(
+            memory,
+            &options.environment,
+            "System V argument vector",
+            "System V argument string",
+        )?;
         let empty_string = memory.allocate(&GuestAllocationOptions {
             byte_length: pointer_bytes * 4,
             alignment: 16,
@@ -416,7 +422,7 @@ impl SystemVGuestRuntime {
             ));
         }
         let tls_used = self.context.shared.borrow().tls_used;
-        let next = (tls_used + size + alignment - 1) / alignment * alignment;
+        let next = (tls_used + size).div_ceil(alignment) * alignment;
         if next > 0x10000 {
             return Err(GuestError::invalid("System V static TLS exceeds thread allocation"));
         }
@@ -551,7 +557,10 @@ impl SystemVGuestRuntime {
         }
         let needed = self.images[index].image.needed_libraries.clone();
         for dependency in needed {
-            let other = self.images.iter().position(|entry| entry.image.soname.as_deref() == Some(dependency.as_str()));
+            let other = self
+                .images
+                .iter()
+                .position(|entry| entry.image.soname.as_deref() == Some(dependency.as_str()));
             if let Some(other) = other {
                 let module = self.images[other].image.image.module.clone();
                 self.initialize(runner, &module, options)?;
@@ -601,7 +610,7 @@ impl SystemVGuestRuntime {
     ) -> Result<(), GuestError> {
         let index = self.images.iter().position(|entry| entry.image.image.module == *module);
         match index {
-            Some(index) if self.images[index].state == SystemVImageState::Finalized => return Ok(()),
+            Some(index) if self.images[index].state == SystemVImageState::Finalized => Ok(()),
             Some(index) if self.images[index].state == SystemVImageState::Initialized => {
                 self.context.shared.borrow_mut().budget = options.instruction_budget;
                 self.images[index].state = SystemVImageState::Finalizing;
@@ -644,8 +653,7 @@ impl SystemVGuestRuntime {
             let next = {
                 let mut shared = self.context.shared.borrow_mut();
                 let index = shared.destructors.iter().rposition(|entry| {
-                    !entry.called
-                        && (dso.is_none() || entry.dso.map(|dso_| dso_.offset) == dso.map(|dso_| dso_.offset))
+                    !entry.called && (dso.is_none() || entry.dso.map(|dso_| dso_.offset) == dso.map(|dso_| dso_.offset))
                 });
                 match index {
                     Some(index) => {
@@ -737,7 +745,8 @@ impl GuestImportResolver for SystemVGuestRuntime {
                 })
                 .map(|(address, callback)| GuestImportResolution::Host { address, callback })
         } else {
-            self.context.resolution(memory, &import.library, &name, version.as_deref())
+            self.context
+                .resolution(memory, &import.library, &name, version.as_deref())
         };
         if let Some(provider) = provider {
             return provider;
@@ -745,10 +754,7 @@ impl GuestImportResolver for SystemVGuestRuntime {
         if import.weak
             || (import.library.is_empty()
                 && requesting.exports.iter().any(|export| match &export.symbol {
-                    GuestSymbolName::Name {
-                        name: candidate,
-                        ..
-                    } => candidate == &name,
+                    GuestSymbolName::Name { name: candidate, .. } => candidate == &name,
                     GuestSymbolName::Ordinal(_) => false,
                 }))
         {
@@ -810,7 +816,12 @@ impl GuestImportResolver for SystemVGuestRuntime {
             None,
             Rc::new(move |_, context, _| {
                 let _ = context;
-                Err(unsupported_system_v(&invoke_library, &invoke_symbol, invoke_version.as_deref(), detail.clone()))
+                Err(unsupported_system_v(
+                    &invoke_library,
+                    &invoke_symbol,
+                    invoke_version.as_deref(),
+                    detail.clone(),
+                ))
             }),
         ) {
             Ok(()) => self

@@ -4,14 +4,12 @@
 //! imports bind through [`bind_pe_imports`] with rollback on failure.
 
 use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestImage, GuestImportResolution, GuestImportResolver, GuestMapping,
-    GuestUnwindFormat, GuestUnwindRegion, ModuleIdentity,
+    GuestAccess, GuestAddress, GuestImage, GuestImportResolution, GuestImportResolver, GuestMapping, GuestUnwindFormat,
+    GuestUnwindRegion, ModuleIdentity,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
-use crate::pe::directories::{
-    read_exports, read_imports, read_load_configuration, read_tls, read_unwind,
-};
+use crate::pe::directories::{read_exports, read_imports, read_load_configuration, read_tls, read_unwind};
 use crate::pe::format::{directory, parse_pe, pe_error, PeFile, PeReader, PeStage};
 use crate::pe::image::{ImageReader, PeImage};
 
@@ -56,12 +54,8 @@ pub fn relocate_pe(image: &mut ImageReader) -> Result<(), GuestError> {
     while block < table.byte_length as usize {
         let page = source.u32(block)?;
         let size = source.u32(block + 4)? as usize;
-        if page % 4096 != 0 || size < 8 || size % 2 != 0 || size > table.byte_length as usize - block
-        {
-            return Err(pe_error(
-                PeStage::Relocation,
-                "invalid relocation block size/page",
-            ));
+        if !page.is_multiple_of(4096) || size < 8 || !size.is_multiple_of(2) || size > table.byte_length as usize - block {
+            return Err(pe_error(PeStage::Relocation, "invalid relocation block size/page"));
         }
         let mut at = block + 8;
         while at < block + size {
@@ -84,21 +78,15 @@ pub fn relocate_pe(image: &mut ImageReader) -> Result<(), GuestError> {
                         width: 4,
                         value: reader.u32(rva)? as i128 + delta,
                     });
-                } else if reader.pe.abi.pointer_bytes() == 4
-                    && (relocation_type == 1 || relocation_type == 2)
-                {
+                } else if reader.pe.abi.pointer_bytes() == 4 && (relocation_type == 1 || relocation_type == 2) {
                     patches.push(Patch {
                         rva,
                         width: 2,
-                        value: reader.u16(rva)? as i128
-                            + if relocation_type == 1 { delta >> 16 } else { delta },
+                        value: reader.u16(rva)? as i128 + if relocation_type == 1 { delta >> 16 } else { delta },
                     });
                 } else if reader.pe.abi.pointer_bytes() == 4 && relocation_type == 4 {
                     if at + 2 >= block + size {
-                        return Err(pe_error(
-                            PeStage::Relocation,
-                            "HIGHADJ lacks its signed low word",
-                        ));
+                        return Err(pe_error(PeStage::Relocation, "HIGHADJ lacks its signed low word"));
                     }
                     at += 2;
                     let low = source.u16(at)? as i16 as i128;
@@ -155,11 +143,14 @@ pub fn map_pe_image(options: MapPeImageOptions) -> Result<PeImage, GuestError> {
     let base = options.base.unwrap_or(pe.preferred_base);
     let maximum = options.maximum_image_bytes.unwrap_or(256 * 1024 * 1024);
     if maximum == 0 || pe.image_size as usize > maximum {
-        return Err(pe_error(PeStage::Mapping, "image exceeds the explicit allocation limit"));
+        return Err(pe_error(
+            PeStage::Mapping,
+            "image exceeds the explicit allocation limit",
+        ));
     }
     if memory.pointer_bytes() != pe.abi.pointer_bytes()
         || base == 0
-        || base % 65536 != 0
+        || !base.is_multiple_of(65536)
         || base as u128 + u64::from(pe.image_size) as u128 > 1u128 << (pe.abi.pointer_bytes() * 8)
     {
         return Err(pe_error(
@@ -174,12 +165,10 @@ pub fn map_pe_image(options: MapPeImageOptions) -> Result<PeImage, GuestError> {
         ));
     }
     let mut bytes = vec![0u8; pe.image_size as usize];
-    bytes[..pe.header_size as usize]
-        .copy_from_slice(&options.bytes[..pe.header_size as usize]);
+    bytes[..pe.header_size as usize].copy_from_slice(&options.bytes[..pe.header_size as usize]);
     for section in &pe.sections {
         bytes[section.rva as usize..section.rva as usize + section.raw_size as usize].copy_from_slice(
-            &options.bytes
-                [section.raw_offset as usize..section.raw_offset as usize + section.raw_size as usize],
+            &options.bytes[section.raw_offset as usize..section.raw_offset as usize + section.raw_size as usize],
         );
     }
     let mut reader = ImageReader::new(bytes, pe.clone(), base, memory, module.clone(), PeStage::Mapping);
@@ -201,8 +190,7 @@ pub fn map_pe_image(options: MapPeImageOptions) -> Result<PeImage, GuestError> {
         Some(reader.executable(pe.entry_point_rva)?)
     };
     let address = reader.address(0, 1)?;
-    let header_mapped_size =
-        (pe.header_size as usize).next_multiple_of(pe.section_alignment as usize);
+    let header_mapped_size = (pe.header_size as usize).next_multiple_of(pe.section_alignment as usize);
     let mut image_mappings = vec![GuestMapping {
         base,
         byte_length: header_mapped_size,
@@ -229,7 +217,11 @@ pub fn map_pe_image(options: MapPeImageOptions) -> Result<PeImage, GuestError> {
         bytes: Some(staged),
     })?;
     let rollback = (|| -> Result<(), GuestError> {
-        memory.protect(address, pe.image_size as usize, crate::core::contracts::GuestPermissions::None)?;
+        memory.protect(
+            address,
+            pe.image_size as usize,
+            crate::core::contracts::GuestPermissions::None,
+        )?;
         for mapping in &image_mappings {
             let at = memory.offset(address, (mapping.base - base) as i64)?;
             memory.protect(at, mapping.byte_length, mapping.permissions)?;
@@ -289,10 +281,11 @@ pub fn bind_pe_imports(
     memory: &mut SparseGuestMemory,
     resolver: &dyn GuestImportResolver,
 ) -> Result<Vec<GuestImportResolution>, GuestError> {
-    if memory.address_space() != image.image.base.space
-        || memory.pointer_bytes() != image.image.abi.pointer_bytes()
-    {
-        return Err(pe_error(PeStage::Imports, "image belongs to another guest address space"));
+    if memory.address_space() != image.image.base.space || memory.pointer_bytes() != image.image.abi.pointer_bytes() {
+        return Err(pe_error(
+            PeStage::Imports,
+            "image belongs to another guest address space",
+        ));
     }
     let mut resolutions = Vec::new();
     let mut writes: Vec<(GuestAddress, Vec<u8>, Vec<u8>)> = Vec::new();
@@ -300,37 +293,33 @@ pub fn bind_pe_imports(
         let resolution = resolver.resolve(memory, import, &image.image);
         match &resolution {
             GuestImportResolution::Unresolved { detail, .. } => {
-                return Err(pe_error(
-                    PeStage::Imports,
-                    format!("{}: {detail}", import.library),
-                ));
+                return Err(pe_error(PeStage::Imports, format!("{}: {detail}", import.library)));
             }
-            GuestImportResolution::Guest { address, .. }
-            | GuestImportResolution::Host { address, .. } => {
+            GuestImportResolution::Guest { address, .. } | GuestImportResolution::Host { address, .. } => {
                 let address = *address;
-            if address.space != memory.address_space()
-                || address.offset == 0
-                || u128::from(address.offset) >= 1u128 << (memory.pointer_bytes() * 8)
-                || !memory.mappings().iter().any(|mapping| {
-                    address.offset >= mapping.base
-                        && address.offset < mapping.base + mapping.byte_length as u64
-                        && mapping.permissions != crate::core::contracts::GuestPermissions::None
-                })
-            {
-                return Err(pe_error(
-                    PeStage::Imports,
-                    "resolved symbol is not a mapped address in this guest space",
-                ));
-            }
-            let mut bytes = vec![0u8; memory.pointer_bytes()];
-            if memory.pointer_bytes() == 4 {
-                bytes.copy_from_slice(&(address.offset as u32).to_le_bytes());
-            } else {
-                bytes.copy_from_slice(&address.offset.to_le_bytes());
-            }
-            let previous = memory.copy(import.slot, memory.pointer_bytes())?;
-            writes.push((import.slot, bytes, previous));
-            resolutions.push(resolution);
+                if address.space != memory.address_space()
+                    || address.offset == 0
+                    || u128::from(address.offset) >= 1u128 << (memory.pointer_bytes() * 8)
+                    || !memory.mappings().iter().any(|mapping| {
+                        address.offset >= mapping.base
+                            && address.offset < mapping.base + mapping.byte_length as u64
+                            && mapping.permissions != crate::core::contracts::GuestPermissions::None
+                    })
+                {
+                    return Err(pe_error(
+                        PeStage::Imports,
+                        "resolved symbol is not a mapped address in this guest space",
+                    ));
+                }
+                let mut bytes = vec![0u8; memory.pointer_bytes()];
+                if memory.pointer_bytes() == 4 {
+                    bytes.copy_from_slice(&(address.offset as u32).to_le_bytes());
+                } else {
+                    bytes.copy_from_slice(&address.offset.to_le_bytes());
+                }
+                let previous = memory.copy(import.slot, memory.pointer_bytes())?;
+                writes.push((import.slot, bytes, previous));
+                resolutions.push(resolution);
             }
         }
     }

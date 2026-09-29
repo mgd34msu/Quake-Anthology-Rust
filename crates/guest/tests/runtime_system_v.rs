@@ -14,15 +14,16 @@ use qa_guest::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner}
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::{GuestHostCallback, HookState};
 use qa_guest::core::contracts::{
-    CallbackId, GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext,
-    GuestCallResult, GuestCallValue, GuestCallbackReference, GuestImage, GuestImport,
-    GuestImportResolution, GuestPermissions, GuestStorage, GuestSymbolName, ModuleIdentity,
-    NativeCallAbi,
+    CallbackId, GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext, GuestCallResult,
+    GuestCallValue, GuestCallbackReference, GuestImport, GuestImportResolution, GuestPermissions,
+    GuestStorage, GuestSymbolName, ModuleIdentity, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
-use qa_guest::core::registers::GuestProcessorState;
 use qa_guest::core::registers::GuestProcessorInitialState;
-use qa_guest::runtime::system_v::contracts::{symbol_key, system_v_signature, SystemVCapabilities, SystemVInitializeOptions, SystemVRuntimeOptions, SystemVStream};
+use qa_guest::core::registers::GuestProcessorState;
+use qa_guest::runtime::system_v::contracts::{
+    symbol_key, system_v_signature, SystemVCapabilities, SystemVInitializeOptions, SystemVRuntimeOptions, SystemVStream,
+};
 use qa_guest::runtime::system_v::runtime::SystemVGuestRuntime;
 use qa_guest::x64::cpu::X64Cpu;
 use qa_guest::x86::cpu::I386Cpu;
@@ -61,16 +62,30 @@ fn setup(width: usize, capabilities: SystemVCapabilities) -> Setup {
     let module = test_module("system-v");
     let mut memory = SparseGuestMemory::new(module.clone(), width, 0x5000_0000).unwrap();
     map(&mut memory, 0x10000, 65536, GuestPermissions::ReadWrite, None);
-    let sentinel = map(&mut memory, 0x30000, 4096, GuestPermissions::ReadExecute, Some(vec![0xcc]));
+    let sentinel = map(
+        &mut memory,
+        0x30000,
+        4096,
+        GuestPermissions::ReadExecute,
+        Some(vec![0xcc]),
+    );
     let hooks = Rc::new(HookState::new());
     let runtime = SystemVGuestRuntime::new(
         Rc::clone(&hooks),
         &mut memory,
-        SystemVRuntimeOptions { capabilities, argv: vec![], environment: vec![] },
+        SystemVRuntimeOptions {
+            capabilities,
+            argv: vec![],
+            environment: vec![],
+        },
     )
     .unwrap();
     let state = GuestProcessorState::create(GuestProcessorInitialState {
-        architecture: if wide { GuestArchitecture::X86_64 } else { GuestArchitecture::I386 },
+        architecture: if wide {
+            GuestArchitecture::X86_64
+        } else {
+            GuestArchitecture::I386
+        },
         instruction_pointer: sentinel.offset,
         stack_pointer: 0x20000,
         flags: 2,
@@ -87,22 +102,43 @@ fn setup(width: usize, capabilities: SystemVCapabilities) -> Setup {
     let leaked: &'static mut dyn GuestCpu = Box::leak(boxed);
     let mut runner = GuestCallRunner::new(leaked, Rc::clone(&hooks), sentinel, None).unwrap();
     runtime.attach_runner(&mut runner).unwrap();
-    let abi = if wide { NativeCallAbi::SystemVX86_64 } else { NativeCallAbi::SystemVI386 };
+    let abi = if wide {
+        NativeCallAbi::SystemVX86_64
+    } else {
+        NativeCallAbi::SystemVI386
+    };
     let context = GuestCallContext {
         module: module.clone(),
-        callback: GuestCallbackReference::NativeGuest { module: module.clone(), address: sentinel, abi },
+        callback: GuestCallbackReference::NativeGuest {
+            module: module.clone(),
+            address: sentinel,
+            abi,
+        },
         parent: None,
         itself: None,
         other: None,
     };
-    Setup { runner, hooks, runtime, context, module, width }
+    Setup {
+        runner,
+        hooks,
+        runtime,
+        context,
+        module,
+        width,
+    }
 }
 
 fn service_key(library: &str, name: &str, version: Option<&str>) -> String {
     symbol_key(library, name, version)
 }
 
-fn call(setup: &mut Setup, library: &str, name: &str, version: Option<&str>, args: Vec<GuestCallValue>) -> GuestCallResult {
+fn call(
+    setup: &mut Setup,
+    library: &str,
+    name: &str,
+    version: Option<&str>,
+    args: Vec<GuestCallValue>,
+) -> GuestCallResult {
     let key = service_key(library, name, version);
     let address = setup
         .hooks
@@ -112,7 +148,14 @@ fn call(setup: &mut Setup, library: &str, name: &str, version: Option<&str>, arg
         .unwrap_or_else(|| panic!("missing service {key}"));
     let signature = {
         let (_, memory) = setup.runner.cpu_parts();
-        setup.hooks.callbacks.borrow_mut().handle(memory, address).unwrap().unwrap().signature
+        setup
+            .hooks
+            .callbacks
+            .borrow_mut()
+            .handle(memory, address)
+            .unwrap()
+            .unwrap()
+            .signature
     };
     let request = GuestCallRequest {
         target: address,
@@ -121,10 +164,19 @@ fn call(setup: &mut Setup, library: &str, name: &str, version: Option<&str>, arg
         context: setup.context.clone(),
         instruction_budget: 1000,
     };
-    setup.runner.invoke(&request).unwrap_or_else(|failure| panic!("{library}!{name} failed: {failure:?}"))
+    setup
+        .runner
+        .invoke(&request)
+        .unwrap_or_else(|failure| panic!("{library}!{name} failed: {failure:?}"))
 }
 
-fn call_failure(setup: &mut Setup, library: &str, name: &str, version: Option<&str>, args: Vec<GuestCallValue>) -> GuestCallFailure {
+fn call_failure(
+    setup: &mut Setup,
+    library: &str,
+    name: &str,
+    version: Option<&str>,
+    args: Vec<GuestCallValue>,
+) -> GuestCallFailure {
     let key = service_key(library, name, version);
     let address = setup
         .hooks
@@ -134,7 +186,14 @@ fn call_failure(setup: &mut Setup, library: &str, name: &str, version: Option<&s
         .unwrap_or_else(|| panic!("missing service {key}"));
     let signature = {
         let (_, memory) = setup.runner.cpu_parts();
-        setup.hooks.callbacks.borrow_mut().handle(memory, address).unwrap().unwrap().signature
+        setup
+            .hooks
+            .callbacks
+            .borrow_mut()
+            .handle(memory, address)
+            .unwrap()
+            .unwrap()
+            .signature
     };
     let request = GuestCallRequest {
         target: address,
@@ -176,7 +235,10 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
             standard_output: Some({
                 let output = Rc::clone(&output);
                 Rc::new(move |stream: SystemVStream, bytes: &[u8]| {
-                    output.borrow_mut().push((output_name(stream).to_string(), String::from_utf8_lossy(bytes).into_owned()));
+                    output.borrow_mut().push((
+                        output_name(stream).to_string(),
+                        String::from_utf8_lossy(bytes).into_owned(),
+                    ));
                     bytes.len()
                 })
             }),
@@ -194,12 +256,24 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
             let (_, memory) = setup.runner.cpu_parts();
             allocate(memory, 1)
         };
-        call(&mut setup, "libstdc++.so.6", "_ZNSt8ios_base4InitC1Ev", Some("GLIBCXX_3.4"), vec![ptr(Some(object))]);
+        call(
+            &mut setup,
+            "libstdc++.so.6",
+            "_ZNSt8ios_base4InitC1Ev",
+            Some("GLIBCXX_3.4"),
+            vec![ptr(Some(object))],
+        );
         let refcount = setup.runtime.iostreams.refcount;
         let (_, memory) = setup.runner.cpu_parts();
         assert_eq!(memory.read_i32(refcount).unwrap(), 2);
         let stream_address = |setup: &mut Setup, name: &str| {
-            let found = setup.runtime.iostreams.streams.iter().find(|stream| stream.name == name).unwrap_or_else(|| panic!("missing {name}"));
+            let found = setup
+                .runtime
+                .iostreams
+                .streams
+                .iter()
+                .find(|stream| stream.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
             (found.address, found.ios, found.wide)
         };
         let (cout_address, cout_ios, _) = stream_address(&mut setup, "cout");
@@ -207,7 +281,11 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
         let (_, cerr_ios, _) = stream_address(&mut setup, "cerr");
         let (_, clog_ios, _) = stream_address(&mut setup, "clog");
         let (wcerr_address, wcerr_ios, wcerr_wide) = stream_address(&mut setup, "wcerr");
-        let (tie, flags, buffer_offset) = if width == 4 { (112i64, 12i64, 120i64) } else { (216i64, 24i64, 232i64) };
+        let (tie, flags, buffer_offset) = if width == 4 {
+            (112i64, 12i64, 120i64)
+        } else {
+            (216i64, 24i64, 232i64)
+        };
         let (_, memory) = setup.runner.cpu_parts();
         let slot = memory.offset(cin_ios, tie).unwrap();
         assert_eq!(memory.read_pointer(slot).unwrap(), Some(cout_address));
@@ -219,8 +297,11 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
         assert_eq!(memory.read_u32(slot).unwrap(), 0x1002);
         let cerr_buffer = memory.offset(cerr_ios, buffer_offset).unwrap();
         let clog_buffer = memory.offset(clog_ios, buffer_offset).unwrap();
-        assert_eq!(memory.read_pointer(cerr_buffer).unwrap(), memory.read_pointer(clog_buffer).unwrap());
-        let locale = setup.runtime.iostreams.locale().clone();
+        assert_eq!(
+            memory.read_pointer(cerr_buffer).unwrap(),
+            memory.read_pointer(clog_buffer).unwrap()
+        );
+        let locale = *setup.runtime.iostreams.locale();
         let (_, memory) = setup.runner.cpu_parts();
         assert_eq!(memory.read_i32(locale.implementation).unwrap(), 16);
 
@@ -229,12 +310,25 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
                 let (_, memory) = setup.runner.cpu_parts();
                 let table = memory.read_pointer(object).unwrap().expect("missing vtable");
                 let slot_address = memory.offset(table, (slot * width) as i64).unwrap();
-                (table, memory.read_pointer(slot_address).unwrap().expect("missing virtual method"))
+                (
+                    table,
+                    memory
+                        .read_pointer(slot_address)
+                        .unwrap()
+                        .expect("missing virtual method"),
+                )
             };
             let _ = table;
             let signature = {
                 let (_, memory) = setup.runner.cpu_parts();
-                setup.hooks.callbacks.borrow_mut().handle(memory, target).unwrap().unwrap().signature
+                setup
+                    .hooks
+                    .callbacks
+                    .borrow_mut()
+                    .handle(memory, target)
+                    .unwrap()
+                    .unwrap()
+                    .signature
             };
             let mut arguments = vec![ptr(Some(object))];
             arguments.extend(args);
@@ -245,12 +339,18 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
                 context: setup.context.clone(),
                 instruction_budget: 1000,
             };
-            setup.runner.invoke(&request).unwrap_or_else(|failure| panic!("virtual call failed: {failure:?}"))
+            setup
+                .runner
+                .invoke(&request)
+                .unwrap_or_else(|failure| panic!("virtual call failed: {failure:?}"))
         };
         let upper = {
             let (_, memory) = setup.runner.cpu_parts();
             let slot = memory.offset(locale.ctype[0], (4 * width) as i64).unwrap();
-            memory.read_pointer(slot).unwrap().expect("missing ctype uppercase table")
+            memory
+                .read_pointer(slot)
+                .unwrap()
+                .expect("missing ctype uppercase table")
         };
         let result = invoke_virtual(&mut setup, locale.ctype[0], 2, vec![GuestCallValue::Int32(97)]);
         assert_eq!(int32(&result), 65);
@@ -264,20 +364,37 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
             let (_, memory) = setup.runner.cpu_parts();
             memory.write_i32(memory.offset(upper, 97 * 4).unwrap(), 65).unwrap();
         }
-        let result = invoke_virtual(&mut setup, locale.ctype[1], 2, vec![GuestCallValue::Uint32(0x2000), GuestCallValue::Uint32(32)]);
+        let result = invoke_virtual(
+            &mut setup,
+            locale.ctype[1],
+            2,
+            vec![GuestCallValue::Uint32(0x2000), GuestCallValue::Uint32(32)],
+        );
         assert_eq!(int32(&result), 1);
-        let result = invoke_virtual(&mut setup, locale.ctype[1], 2, vec![GuestCallValue::Uint32(0x2000), GuestCallValue::Uint32(65)]);
+        let result = invoke_virtual(
+            &mut setup,
+            locale.ctype[1],
+            2,
+            vec![GuestCallValue::Uint32(0x2000), GuestCallValue::Uint32(65)],
+        );
         assert_eq!(int32(&result), 0);
         let widen = if width == 4 { 144 } else { 156 } + 65 * 4;
         {
             let (_, memory) = setup.runner.cpu_parts();
-            memory.write_u32(memory.offset(locale.ctype[1], widen).unwrap(), 66).unwrap();
+            memory
+                .write_u32(memory.offset(locale.ctype[1], widen).unwrap(), 66)
+                .unwrap();
         }
         let result = invoke_virtual(&mut setup, locale.ctype[1], 10, vec![GuestCallValue::Int32(65)]);
-        assert!(matches!(result, GuestCallResult::Value(GuestCallValue::Uint32(66))), "{result:?}");
+        assert!(
+            matches!(result, GuestCallResult::Value(GuestCallValue::Uint32(66))),
+            "{result:?}"
+        );
         {
             let (_, memory) = setup.runner.cpu_parts();
-            memory.write_u32(memory.offset(locale.ctype[1], widen).unwrap(), 65).unwrap();
+            memory
+                .write_u32(memory.offset(locale.ctype[1], widen).unwrap(), 65)
+                .unwrap();
         }
         let bytes = {
             let (_, memory) = setup.runner.cpu_parts();
@@ -285,16 +402,37 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
             memory.write(bytes, &[65, 66]).unwrap();
             bytes
         };
-        let count = if width == 4 { GuestCallValue::Int32(2) } else { GuestCallValue::Int64(2) };
+        let count = if width == 4 {
+            GuestCallValue::Int32(2)
+        } else {
+            GuestCallValue::Int64(2)
+        };
         // Borrow-safe virtual dispatch via a macro to avoid closure captures.
         macro_rules! vcall {
             ($setup:expr, $name:expr, $slot:expr, $args:expr) => {{
-                let found = $setup.runtime.iostreams.streams.iter().find(|stream| stream.name == $name).unwrap();
+                let found = $setup
+                    .runtime
+                    .iostreams
+                    .streams
+                    .iter()
+                    .find(|stream| stream.name == $name)
+                    .unwrap();
                 let (ios, wide_flag) = (found.ios, found.wide);
-                let offset = if width == 4 { if wide_flag { 124 } else { 120 } } else { 232 };
+                let offset = if width == 4 {
+                    if wide_flag {
+                        124
+                    } else {
+                        120
+                    }
+                } else {
+                    232
+                };
                 let buffer = {
                     let (_, memory) = $setup.runner.cpu_parts();
-                    memory.read_pointer(memory.offset(ios, offset).unwrap()).unwrap().expect("missing stream buffer")
+                    memory
+                        .read_pointer(memory.offset(ios, offset).unwrap())
+                        .unwrap()
+                        .expect("missing stream buffer")
                 };
                 invoke_virtual($setup, buffer, $slot, $args)
             }};
@@ -302,8 +440,20 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
         vcall!(&mut setup, "cout", 12, vec![ptr(Some(bytes)), count]);
         assert!(output.borrow().is_empty());
         let stdout = setup.runtime.iostreams.stdio.stdout;
-        call(&mut setup, "libc.so.6", "fputc", None, vec![GuestCallValue::Int32(67), ptr(Some(stdout))]);
-        call(&mut setup, "libstdc++.so.6", "_ZNSo5flushEv", Some("GLIBCXX_3.4"), vec![ptr(Some(cout_address))]);
+        call(
+            &mut setup,
+            "libc.so.6",
+            "fputc",
+            None,
+            vec![GuestCallValue::Int32(67), ptr(Some(stdout))],
+        );
+        call(
+            &mut setup,
+            "libstdc++.so.6",
+            "_ZNSo5flushEv",
+            Some("GLIBCXX_3.4"),
+            vec![ptr(Some(cout_address))],
+        );
         assert_eq!(*output.borrow(), [("stdout".to_string(), "ABC".to_string())]);
         let result = vcall!(&mut setup, "cin", 9, vec![]);
         assert_eq!(int32(&result), 104);
@@ -316,21 +466,42 @@ fn glibcxx_streams_share_file_bytes_virtuals_and_final_flushing() {
         let result = vcall!(&mut setup, "cin", 10, vec![]);
         assert_eq!(int32(&result), 105);
         let result = vcall!(&mut setup, "wcerr", 13, vec![GuestCallValue::Uint32(90)]);
-        assert!(matches!(result, GuestCallResult::Value(GuestCallValue::Uint32(90))), "{result:?}");
+        assert!(
+            matches!(result, GuestCallResult::Value(GuestCallValue::Uint32(90))),
+            "{result:?}"
+        );
         assert_eq!(output.borrow()[1], ("stderr".to_string(), "Z".to_string()));
         let preserved = {
             let (_, memory) = setup.runner.cpu_parts();
             memory.read_pointer(wcerr_address).unwrap()
         };
-        call(&mut setup, "libstdc++.so.6", "_ZNSt8ios_base4InitC1Ev", Some("GLIBCXX_3.4"), vec![ptr(Some(object))]);
+        call(
+            &mut setup,
+            "libstdc++.so.6",
+            "_ZNSt8ios_base4InitC1Ev",
+            Some("GLIBCXX_3.4"),
+            vec![ptr(Some(object))],
+        );
         let (_, memory) = setup.runner.cpu_parts();
         assert_eq!(memory.read_pointer(wcerr_address).unwrap(), preserved);
         assert_eq!(memory.read_i32(locale.implementation).unwrap(), 16);
         let _ = (wcerr_ios, wcerr_wide);
         let before = flushes.borrow().len();
-        call(&mut setup, "libstdc++.so.6", "_ZNSt8ios_base4InitD1Ev", Some("GLIBCXX_3.4"), vec![ptr(Some(object))]);
+        call(
+            &mut setup,
+            "libstdc++.so.6",
+            "_ZNSt8ios_base4InitD1Ev",
+            Some("GLIBCXX_3.4"),
+            vec![ptr(Some(object))],
+        );
         assert_eq!(flushes.borrow().len(), before);
-        call(&mut setup, "libstdc++.so.6", "_ZNSt8ios_base4InitD1Ev", Some("GLIBCXX_3.4"), vec![ptr(Some(object))]);
+        call(
+            &mut setup,
+            "libstdc++.so.6",
+            "_ZNSt8ios_base4InitD1Ev",
+            Some("GLIBCXX_3.4"),
+            vec![ptr(Some(object))],
+        );
         assert_eq!(
             flushes.borrow()[before..],
             ["stdout", "stdout", "stderr", "stderr", "stderr", "stdout", "stdout", "stderr", "stderr", "stderr"]
@@ -357,7 +528,16 @@ fn ele32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn eseg(bytes: &mut [u8], wide: bool, index: usize, kind: u32, offset: u64, size: u64, memory_size: u64, alignment: u64) {
+fn eseg(
+    bytes: &mut [u8],
+    wide: bool,
+    index: usize,
+    kind: u32,
+    offset: u64,
+    size: u64,
+    memory_size: u64,
+    alignment: u64,
+) {
     let start = 64 + index * if wide { 56 } else { 32 };
     ele32(bytes, start, kind);
     ele32(bytes, start + if wide { 4 } else { 24 }, 7);
@@ -382,10 +562,26 @@ fn lifecycle_elf(width: usize, bias: u64, callback: GuestAddress, counter: Guest
     ehalf(&mut bytes, if wide { 52 } else { 40 }, if wide { 64 } else { 52 });
     ehalf(&mut bytes, if wide { 54 } else { 42 }, if wide { 56 } else { 32 });
     ehalf(&mut bytes, if wide { 56 } else { 44 }, 3);
-    let tags: &[(u64, u64)] =
-        &[(12, 0x800), (13, 0x980), (25, 0x600), (27, (width * 2) as u64), (26, 0x640), (28, (width * 2) as u64), (0, 0)];
+    let tags: &[(u64, u64)] = &[
+        (12, 0x800),
+        (13, 0x980),
+        (25, 0x600),
+        (27, (width * 2) as u64),
+        (26, 0x640),
+        (28, (width * 2) as u64),
+        (0, 0),
+    ];
     eseg(&mut bytes, wide, 0, 1, 0, 4096, 4096, 4096);
-    eseg(&mut bytes, wide, 1, 2, 0x200, (tags.len() * width * 2) as u64, (tags.len() * width * 2) as u64, width as u64);
+    eseg(
+        &mut bytes,
+        wide,
+        1,
+        2,
+        0x200,
+        (tags.len() * width * 2) as u64,
+        (tags.len() * width * 2) as u64,
+        width as u64,
+    );
     eseg(&mut bytes, wide, 2, 7, 0x700, 4, 32, 32);
     for (index, (tag, value)) in tags.iter().enumerate() {
         eword(&mut bytes, wide, 0x200 + index * width * 2, *tag);
@@ -396,12 +592,37 @@ fn lifecycle_elf(width: usize, bias: u64, callback: GuestAddress, counter: Guest
     eword(&mut bytes, wide, 0x640, bias + 0xa00);
     eword(&mut bytes, wide, 0x640 + width, bias + 0xa80);
     ele32(&mut bytes, 0x700, 77);
-    let immediate = |value: u64| (0..width).map(|index| ((value >> (index * 8)) & 255) as u8).collect::<Vec<_>>();
-    for (offset, digit) in [(0x800usize, 1u8), (0x880, 2), (0x900, 3), (0xa00, 4), (0xa80, 5), (0x980, 6)] {
+    let immediate = |value: u64| {
+        (0..width)
+            .map(|index| ((value >> (index * 8)) & 255) as u8)
+            .collect::<Vec<_>>()
+    };
+    for (offset, digit) in [
+        (0x800usize, 1u8),
+        (0x880, 2),
+        (0x900, 3),
+        (0xa00, 4),
+        (0xa80, 5),
+        (0x980, 6),
+    ] {
         let code: Vec<u8> = if wide {
-            [vec![0x48, 0x83, 0xec, 8, 0x48, 0xbf], immediate(counter.offset), vec![0xbe, digit, 0, 0, 0, 0x48, 0xb8], immediate(callback.offset), vec![0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3]].concat()
+            [
+                vec![0x48, 0x83, 0xec, 8, 0x48, 0xbf],
+                immediate(counter.offset),
+                vec![0xbe, digit, 0, 0, 0, 0x48, 0xb8],
+                immediate(callback.offset),
+                vec![0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3],
+            ]
+            .concat()
         } else {
-            [vec![0x83, 0xec, 4, 0x6a, digit, 0x68], immediate(counter.offset), vec![0xb8], immediate(callback.offset), vec![0xff, 0xd0, 0x83, 0xc4, 12, 0xc3]].concat()
+            [
+                vec![0x83, 0xec, 4, 0x6a, digit, 0x68],
+                immediate(counter.offset),
+                vec![0xb8],
+                immediate(callback.offset),
+                vec![0xff, 0xd0, 0x83, 0xc4, 12, 0xc3],
+            ]
+            .concat()
         };
         bytes[offset..offset + code.len()].copy_from_slice(&code);
     }
@@ -439,8 +660,11 @@ fn elf_lifecycle_executes_ordered_callbacks_and_installs_static_tls() {
                         id: CallbackId::new("test", "record"),
                         signature,
                         invoke: Rc::new(move |ctx, _, args| {
-                            let (Some(address), GuestCallValue::Int32(digit)) = (pointer_value(args, 0), &args[1]) else {
-                                return Err(qa_guest::error::GuestError::invalid("Incorrect lifecycle callback arguments"));
+                            let (Some(address), GuestCallValue::Int32(digit)) = (pointer_value(args, 0), &args[1])
+                            else {
+                                return Err(qa_guest::error::GuestError::invalid(
+                                    "Incorrect lifecycle callback arguments",
+                                ));
                             };
                             let memory = ctx.memory();
                             let current = memory.read_i32(address)?;
@@ -465,11 +689,19 @@ fn elf_lifecycle_executes_ordered_callbacks_and_installs_static_tls() {
             let (_, memory) = runner.cpu_parts();
             let import = GuestImport {
                 library: "libc.so.6".to_string(),
-                symbol: GuestSymbolName::Name { name: "malloc".to_string(), version: Some("GLIBC_UNIMPLEMENTED".to_string()) },
+                symbol: GuestSymbolName::Name {
+                    name: "malloc".to_string(),
+                    version: Some("GLIBC_UNIMPLEMENTED".to_string()),
+                },
                 slot: counter,
                 weak: false,
             };
-            <SystemVGuestRuntime as qa_guest::core::contracts::GuestImportResolver>::resolve(runtime, memory, &import, &image.image)
+            <SystemVGuestRuntime as qa_guest::core::contracts::GuestImportResolver>::resolve(
+                runtime,
+                memory,
+                &import,
+                &image.image,
+            )
         };
         assert!(matches!(mismatch, GuestImportResolution::Host { .. }), "{mismatch:?}");
         let failure = call_failure(&mut setup, "libc.so.6", "malloc", Some("GLIBC_UNIMPLEMENTED"), vec![]);
@@ -484,7 +716,11 @@ fn elf_lifecycle_executes_ordered_callbacks_and_installs_static_tls() {
         assert_eq!(tls.offset % 32, 0);
         assert_eq!(memory.copy(memory.offset(tls, 4).unwrap(), 28).unwrap(), vec![0; 28]);
         let (state, _) = setup.runner.cpu_parts();
-        let segment = if width == 4 { state.segments[GuestProcessorState::GS].base } else { state.segments[GuestProcessorState::FS].base };
+        let segment = if width == 4 {
+            state.segments[GuestProcessorState::GS].base
+        } else {
+            state.segments[GuestProcessorState::FS].base
+        };
         assert_eq!(segment, setup.runtime.thread_pointer().offset);
         if width == 8 {
             let index = {
@@ -494,14 +730,26 @@ fn elf_lifecycle_executes_ordered_callbacks_and_installs_static_tls() {
                 memory.write_u64(memory.offset(index, 8).unwrap(), 4).unwrap();
                 index
             };
-            let result = call(&mut setup, "ld-linux-x86-64.so.2", "__tls_get_addr", Some("GLIBC_2.3"), vec![ptr(Some(index))]);
+            let result = call(
+                &mut setup,
+                "ld-linux-x86-64.so.2",
+                "__tls_get_addr",
+                Some("GLIBC_2.3"),
+                vec![ptr(Some(index))],
+            );
             let expected = {
                 let (_, memory) = setup.runner.cpu_parts();
                 memory.offset(tls, 4).unwrap()
             };
-            assert!(matches!(result, GuestCallResult::Value(GuestCallValue::Pointer(Some(address))) if address == expected), "{result:?}");
+            assert!(
+                matches!(result, GuestCallResult::Value(GuestCallValue::Pointer(Some(address))) if address == expected),
+                "{result:?}"
+            );
         }
-        let options = SystemVInitializeOptions { context: setup.context.clone(), instruction_budget: 1000 };
+        let options = SystemVInitializeOptions {
+            context: setup.context.clone(),
+            instruction_budget: 1000,
+        };
         {
             let Setup { runner, runtime, .. } = &mut setup;
             runtime.initialize(runner, &module, &options).unwrap();
@@ -524,7 +772,12 @@ fn elf_lifecycle_executes_ordered_callbacks_and_installs_static_tls() {
             let Setup { runner, runtime, .. } = &mut setup;
             runtime.finalize(runner, &module, &options).unwrap();
         }
-        let trace: Vec<u64> = setup.runtime.lifecycle_trace().iter().map(|entry| entry.target.offset - bias).collect();
+        let trace: Vec<u64> = setup
+            .runtime
+            .lifecycle_trace()
+            .iter()
+            .map(|entry| entry.target.offset - bias)
+            .collect();
         assert_eq!(trace, [0x800, 0x880, 0x900, 0xa80, 0xa00, 0x980]);
     }
 }
@@ -578,17 +831,33 @@ fn cxa_finalize_invokes_destructors_once_in_reverse_registration_order() {
             vec![ptr(Some(target)), ptr(Some(argument)), ptr(Some(dso))],
         );
     }
-    call(&mut setup, "libc.so.6", "__cxa_finalize", None, vec![ptr(Some(counter))]);
+    call(
+        &mut setup,
+        "libc.so.6",
+        "__cxa_finalize",
+        None,
+        vec![ptr(Some(counter))],
+    );
     let (_, memory) = setup.runner.cpu_parts();
     assert_eq!(memory.read_i32(counter).unwrap(), 31);
     {
-        let Setup { runner, runtime, context, .. } = &mut setup;
+        let Setup {
+            runner,
+            runtime,
+            context,
+            ..
+        } = &mut setup;
         runtime.finalize_destructors(runner, context, None).unwrap();
     }
     let (_, memory) = setup.runner.cpu_parts();
     assert_eq!(memory.read_i32(counter).unwrap(), 312);
     {
-        let Setup { runner, runtime, context, .. } = &mut setup;
+        let Setup {
+            runner,
+            runtime,
+            context,
+            ..
+        } = &mut setup;
         runtime.finalize_destructors(runner, context, None).unwrap();
     }
     let (_, memory) = setup.runner.cpu_parts();
@@ -613,7 +882,9 @@ fn system_v_heap_checked_copying_guards_and_nested_qsort() {
         };
         {
             let (_, memory) = setup.runner.cpu_parts();
-            memory.write(allocation, &[7, 0, 0, 0, 2, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0]).unwrap();
+            memory
+                .write(allocation, &[7, 0, 0, 0, 2, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0])
+                .unwrap();
         }
         let code: Vec<u8> = if width == 8 {
             vec![0x8b, 0x07, 0x2b, 0x06, 0xc3]
@@ -636,7 +907,10 @@ fn system_v_heap_checked_copying_guards_and_nested_qsort() {
             vec![ptr(Some(allocation)), size(4), size(4), ptr(Some(comparator))],
         );
         let (_, memory) = setup.runner.cpu_parts();
-        let sorted: Vec<i32> = [0, 4, 8, 12].iter().map(|offset| memory.read_i32(memory.offset(allocation, *offset).unwrap()).unwrap()).collect();
+        let sorted: Vec<i32> = [0, 4, 8, 12]
+            .iter()
+            .map(|offset| memory.read_i32(memory.offset(allocation, *offset).unwrap()).unwrap())
+            .collect();
         assert_eq!(sorted, [1, 2, 7, 9]);
         let reached = setup
             .runtime
@@ -657,14 +931,38 @@ fn system_v_heap_checked_copying_guards_and_nested_qsort() {
             let (_, memory) = setup.runner.cpu_parts();
             allocate(memory, 8)
         };
-        let result = call(&mut setup, "libstdc++.so.6", "__cxa_guard_acquire", None, vec![ptr(Some(guard))]);
+        let result = call(
+            &mut setup,
+            "libstdc++.so.6",
+            "__cxa_guard_acquire",
+            None,
+            vec![ptr(Some(guard))],
+        );
         assert_eq!(int32(&result), 1);
-        let failure = call_failure(&mut setup, "libstdc++.so.6", "__cxa_guard_acquire", None, vec![ptr(Some(guard))]);
+        let failure = call_failure(
+            &mut setup,
+            "libstdc++.so.6",
+            "__cxa_guard_acquire",
+            None,
+            vec![ptr(Some(guard))],
+        );
         assert!(format!("{failure:?}").contains("recursive local static"), "{failure:?}");
-        call(&mut setup, "libstdc++.so.6", "__cxa_guard_release", None, vec![ptr(Some(guard))]);
+        call(
+            &mut setup,
+            "libstdc++.so.6",
+            "__cxa_guard_release",
+            None,
+            vec![ptr(Some(guard))],
+        );
         let (_, memory) = setup.runner.cpu_parts();
         assert_eq!(memory.read_u8(guard).unwrap(), 1);
-        let result = call(&mut setup, "libstdc++.so.6", "__cxa_guard_acquire", None, vec![ptr(Some(guard))]);
+        let result = call(
+            &mut setup,
+            "libstdc++.so.6",
+            "__cxa_guard_acquire",
+            None,
+            vec![ptr(Some(guard))],
+        );
         assert_eq!(int32(&result), 0);
         call(&mut setup, "libc.so.6", "free", None, vec![ptr(Some(allocation))]);
         let (_, memory) = setup.runner.cpu_parts();

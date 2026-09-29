@@ -224,16 +224,10 @@ impl BigInt {
         // A negative donor BigInt masked with asUintN wraps modulo 2^bits.
         if self.is_negative() {
             let modulus = Self::one().shl_bits(bits);
-            let magnitude = Self {
-                negative: false,
-                limbs,
-            };
+            let magnitude = Self { negative: false, limbs };
             return modulus.sub(&magnitude).as_uint_n(bits);
         }
-        let mut result = Self {
-            negative: false,
-            limbs,
-        };
+        let mut result = Self { negative: false, limbs };
         result.normalize();
         result
     }
@@ -494,9 +488,8 @@ impl BigInt {
     fn sub_mag(left: &[u32], right: &[u32]) -> Vec<u32> {
         let mut limbs = Vec::with_capacity(left.len());
         let mut borrow = 0i64;
-        for index in 0..left.len() {
-            let wide = i64::from(left[index]) - i64::from(right.get(index).copied().unwrap_or(0))
-                - borrow;
+        for (index, limb) in left.iter().enumerate() {
+            let wide = i64::from(*limb) - i64::from(right.get(index).copied().unwrap_or(0)) - borrow;
             if wide < 0 {
                 limbs.push((wide + 0x1_0000_0000) as u32);
                 borrow = 1;
@@ -694,9 +687,7 @@ pub fn negate(value: &BinaryValue) -> BinaryValue {
             payload,
             signaling,
         },
-        BinaryValue::Unsupported { negative } => BinaryValue::Unsupported {
-            negative: !negative,
-        },
+        BinaryValue::Unsupported { negative } => BinaryValue::Unsupported { negative: !negative },
     }
 }
 
@@ -704,11 +695,7 @@ pub fn negate(value: &BinaryValue) -> BinaryValue {
 #[must_use]
 pub fn quiet(value: &BinaryValue) -> BinaryValue {
     match value {
-        BinaryValue::Nan {
-            negative,
-            payload,
-            ..
-        } => {
+        BinaryValue::Nan { negative, payload, .. } => {
             let mut payload = payload.clone();
             payload.set_bit(62);
             BinaryValue::Nan {
@@ -751,11 +738,7 @@ pub fn decode_binary32(bits: u32) -> BinaryValue {
     }
     BinaryValue::Finite {
         negative,
-        coefficient: BigInt::from_u64(u64::from(if exponent == 0 {
-            fraction
-        } else {
-            fraction | 0x80_0000
-        })),
+        coefficient: BigInt::from_u64(u64::from(if exponent == 0 { fraction } else { fraction | 0x80_0000 })),
         exponent: (if exponent == 0 { 1 } else { exponent }) as i32 - 150,
         denormal: exponent == 0 && fraction != 0,
     }
@@ -769,11 +752,7 @@ pub fn decode_binary(bits: &BigInt, width: BinaryWidth) -> BinaryValue {
         BinaryWidth::W64 => 52,
         BinaryWidth::W80 => 63,
     };
-    let storage_bits = if width == BinaryWidth::W80 {
-        64
-    } else {
-        fraction_bits
-    };
+    let storage_bits = if width == BinaryWidth::W80 { 64 } else { fraction_bits };
     let exponent_bits = match width {
         BinaryWidth::W32 => 8,
         BinaryWidth::W64 => 11,
@@ -854,19 +833,14 @@ fn rounded_quotient(
     let up = inexact
         && match mode {
             Rounding::Nearest => {
-                twice.cmp(denominator) == Ordering::Greater
-                    || (twice == *denominator && quotient.bit(0))
+                twice.cmp(denominator) == Ordering::Greater || (twice == *denominator && quotient.bit(0))
             }
             Rounding::Up => !negative,
             Rounding::Down => negative,
             Rounding::Zero => false,
         };
     Ok(RoundedQuotient {
-        quotient: if up {
-            quotient.add(&BigInt::one())
-        } else {
-            quotient
-        },
+        quotient: if up { quotient.add(&BigInt::one()) } else { quotient },
         inexact,
         up,
     })
@@ -894,27 +868,19 @@ pub fn round_rational(
     let rounded = if shift >= 0 {
         rounded_quotient(&numerator.shl_bits(shift as u32), denominator, negative, mode)?
     } else {
-        rounded_quotient(
-            numerator,
-            &denominator.shl_bits((-shift) as u32),
-            negative,
-            mode,
-        )?
+        rounded_quotient(numerator, &denominator.shl_bits((-shift) as u32), negative, mode)?
     };
     let result_top = rounded.quotient.bit_len() as i32 - 1 + quantum;
     if result_top > format.maximum_exponent {
-        let infinite = mode == Rounding::Nearest
-            || (mode == Rounding::Up && !negative)
-            || (mode == Rounding::Down && negative);
+        let infinite =
+            mode == Rounding::Nearest || (mode == Rounding::Up && !negative) || (mode == Rounding::Down && negative);
         return Ok(BinaryResult {
             value: if infinite {
                 BinaryValue::Infinity { negative }
             } else {
                 BinaryValue::Finite {
                     negative,
-                    coefficient: BigInt::one()
-                        .shl_bits(format.precision as u32)
-                        .sub(&BigInt::one()),
+                    coefficient: BigInt::one().shl_bits(format.precision as u32).sub(&BigInt::one()),
                     exponent: format.maximum_exponent - format.precision + 1,
                     denormal: false,
                 }
@@ -965,11 +931,7 @@ impl NormalizedDenormal for BinaryValue {
 }
 
 /// Convert a value to `format` with `mode` rounding.
-pub fn convert_binary(
-    value: &BinaryValue,
-    format: BinaryFormat,
-    mode: Rounding,
-) -> Result<BinaryResult, GuestError> {
+pub fn convert_binary(value: &BinaryValue, format: BinaryFormat, mode: Rounding) -> Result<BinaryResult, GuestError> {
     match value {
         BinaryValue::Unsupported { .. } => Ok(BinaryResult {
             value: indefinite(),
@@ -1003,11 +965,7 @@ pub fn encode_binary(value: &BinaryValue, width: BinaryWidth) -> BigInt {
         BinaryWidth::W64 => 52,
         BinaryWidth::W80 => 63,
     };
-    let storage_bits = if width == BinaryWidth::W80 {
-        64
-    } else {
-        fraction_bits
-    };
+    let storage_bits = if width == BinaryWidth::W80 { 64 } else { fraction_bits };
     let exponent_mask: u32 = match width {
         BinaryWidth::W32 => 255,
         BinaryWidth::W64 => 2047,
@@ -1024,33 +982,27 @@ pub fn encode_binary(value: &BinaryValue, width: BinaryWidth) -> BigInt {
         BigInt::zero()
     };
     match value {
-        BinaryValue::Unsupported { .. } => return encode_binary(&indefinite(), width),
-        BinaryValue::Infinity { .. } => {
-            return sign.add(
-                &BigInt::from_u64(u64::from(exponent_mask)).shl_bits(storage_bits),
-            ).add(&explicit);
-        }
+        BinaryValue::Unsupported { .. } => encode_binary(&indefinite(), width),
+        BinaryValue::Infinity { .. } => sign
+            .add(&BigInt::from_u64(u64::from(exponent_mask)).shl_bits(storage_bits))
+            .add(&explicit),
         BinaryValue::Nan { payload, .. } => {
             let mut shifted = payload.shr_bits(63 - fraction_bits);
             if shifted.is_zero() {
                 shifted = BigInt::one();
             }
-            return sign
-                .add(&BigInt::from_u64(u64::from(exponent_mask)).shl_bits(storage_bits))
+            sign.add(&BigInt::from_u64(u64::from(exponent_mask)).shl_bits(storage_bits))
                 .add(&explicit)
-                .add(&shifted);
+                .add(&shifted)
         }
         BinaryValue::Finite {
-            coefficient,
-            exponent,
-            ..
+            coefficient, exponent, ..
         } => {
             if coefficient.is_zero() {
                 return sign;
             }
             let top = coefficient.bit_len() as i32 - 1 + exponent;
-            let quantum = (top - fraction_bits as i32)
-                .max(format.minimum_exponent - fraction_bits as i32);
+            let quantum = (top - fraction_bits as i32).max(format.minimum_exponent - fraction_bits as i32);
             let shift = exponent - quantum;
             let significand = if shift >= 0 {
                 coefficient.shl_bits(shift as u32)
@@ -1073,14 +1025,8 @@ pub fn encode_binary(value: &BinaryValue, width: BinaryWidth) -> BigInt {
     }
 }
 
-fn propagate_nan(
-    left: &BinaryValue,
-    right: &BinaryValue,
-    sse_selection: bool,
-) -> Option<BinaryResult> {
-    if matches!(left, BinaryValue::Unsupported { .. })
-        || matches!(right, BinaryValue::Unsupported { .. })
-    {
+fn propagate_nan(left: &BinaryValue, right: &BinaryValue, sse_selection: bool) -> Option<BinaryResult> {
+    if matches!(left, BinaryValue::Unsupported { .. }) || matches!(right, BinaryValue::Unsupported { .. }) {
         return Some(BinaryResult {
             value: indefinite(),
             flags: FLAG_INVALID,
@@ -1116,9 +1062,7 @@ fn propagate_nan(
         {
             if left_sig != right_sig {
                 selected = if *left_sig { right } else { left };
-            } else if right_payload > left_payload
-                || (right_payload == left_payload && !right_neg && *left_neg)
-            {
+            } else if right_payload > left_payload || (right_payload == left_payload && !right_neg && *left_neg) {
                 selected = right;
             }
         }
@@ -1155,13 +1099,9 @@ pub fn arithmetic(
     if let Some(nan) = propagate_nan(left, right, sse_selection) {
         return Ok(nan);
     }
-    if !matches!(
-        left,
-        BinaryValue::Finite { .. } | BinaryValue::Infinity { .. }
-    ) || !matches!(
-        right,
-        BinaryValue::Finite { .. } | BinaryValue::Infinity { .. }
-    ) {
+    if !matches!(left, BinaryValue::Finite { .. } | BinaryValue::Infinity { .. })
+        || !matches!(right, BinaryValue::Finite { .. } | BinaryValue::Infinity { .. })
+    {
         return Err(GuestError::cpu("Unresolved special operand"));
     }
     let source_flags = if matches!(left, BinaryValue::Finite { denormal: true, .. })
@@ -1177,9 +1117,7 @@ pub fn arithmetic(
         right.negative()
     };
     if operation == BinaryOperation::Add || operation == BinaryOperation::Subtract {
-        if matches!(left, BinaryValue::Infinity { .. })
-            || matches!(right, BinaryValue::Infinity { .. })
-        {
+        if matches!(left, BinaryValue::Infinity { .. }) || matches!(right, BinaryValue::Infinity { .. }) {
             if matches!(left, BinaryValue::Infinity { .. })
                 && matches!(right, BinaryValue::Infinity { .. })
                 && left.negative() != right_sign
@@ -1242,14 +1180,7 @@ pub fn arithmetic(
         } else {
             false
         };
-        let rounded = round_rational(
-            sign,
-            &sum.abs(),
-            &BigInt::one(),
-            exponent,
-            format,
-            mode,
-        )?;
+        let rounded = round_rational(sign, &sum.abs(), &BigInt::one(), exponent, format, mode)?;
         return Ok(BinaryResult {
             flags: rounded.flags | source_flags,
             ..rounded
@@ -1257,8 +1188,7 @@ pub fn arithmetic(
     }
     let sign = left.negative() != right.negative();
     if operation == BinaryOperation::Multiply {
-        if matches!(left, BinaryValue::Infinity { .. }) || matches!(right, BinaryValue::Infinity { .. })
-        {
+        if matches!(left, BinaryValue::Infinity { .. }) || matches!(right, BinaryValue::Infinity { .. }) {
             let zero_operand = matches!(left, BinaryValue::Finite { coefficient, .. } if coefficient.is_zero())
                 || matches!(right, BinaryValue::Finite { coefficient, .. } if coefficient.is_zero());
             if zero_operand {
@@ -1303,8 +1233,7 @@ pub fn arithmetic(
         });
     }
     // Division.
-    if matches!(left, BinaryValue::Infinity { .. }) && matches!(right, BinaryValue::Infinity { .. })
-    {
+    if matches!(left, BinaryValue::Infinity { .. }) && matches!(right, BinaryValue::Infinity { .. }) {
         return Ok(BinaryResult {
             value: indefinite(),
             flags: FLAG_INVALID | source_flags,
@@ -1347,22 +1276,16 @@ pub fn arithmetic(
             } else {
                 BinaryValue::Infinity { negative: sign }
             },
-            flags: source_flags | if left_coeff.is_zero() {
-                FLAG_INVALID
-            } else {
-                FLAG_ZERO_DIVIDE
-            },
+            flags: source_flags
+                | if left_coeff.is_zero() {
+                    FLAG_INVALID
+                } else {
+                    FLAG_ZERO_DIVIDE
+                },
             rounded_up: false,
         });
     }
-    let rounded = round_rational(
-        sign,
-        left_coeff,
-        right_coeff,
-        left_exp - right_exp,
-        format,
-        mode,
-    )?;
+    let rounded = round_rational(sign, left_coeff, right_coeff, left_exp - right_exp, format, mode)?;
     Ok(BinaryResult {
         flags: rounded.flags | source_flags,
         ..rounded
@@ -1391,8 +1314,14 @@ pub fn compare_binary(left: &BinaryValue, right: &BinaryValue) -> BinaryComparis
         return BinaryComparison::Unordered;
     }
     if let (
-        BinaryValue::Finite { coefficient: left_coeff, .. },
-        BinaryValue::Finite { coefficient: right_coeff, .. },
+        BinaryValue::Finite {
+            coefficient: left_coeff,
+            ..
+        },
+        BinaryValue::Finite {
+            coefficient: right_coeff,
+            ..
+        },
     ) = (left, right)
     {
         if left_coeff.is_zero() && right_coeff.is_zero() {
@@ -1448,11 +1377,7 @@ pub struct IntegerConversion {
 }
 
 /// Integer conversion with `mode` rounding.
-pub fn integer_conversion(
-    value: &BinaryValue,
-    width: u32,
-    mode: Rounding,
-) -> Result<IntegerConversion, GuestError> {
+pub fn integer_conversion(value: &BinaryValue, width: u32, mode: Rounding) -> Result<IntegerConversion, GuestError> {
     let bad = || IntegerConversion {
         value: BigInt::one().shl_bits(width - 1).negated(),
         flags: FLAG_INVALID,
@@ -1468,12 +1393,7 @@ pub fn integer_conversion(
         return Ok(bad());
     };
     let rounded = if *exponent >= 0 {
-        rounded_quotient(
-            &coefficient.shl_bits(*exponent as u32),
-            &BigInt::one(),
-            *negative,
-            mode,
-        )?
+        rounded_quotient(&coefficient.shl_bits(*exponent as u32), &BigInt::one(), *negative, mode)?
     } else {
         rounded_quotient(
             coefficient,
@@ -1533,8 +1453,7 @@ pub fn round_integral(value: &BinaryValue, mode: Rounding) -> Result<BinaryResul
             exponent: 0,
             denormal: false,
         },
-        flags: (if rounded.inexact { FLAG_PRECISION } else { 0 })
-            | if *denormal { FLAG_DENORMAL_OPERAND } else { 0 },
+        flags: (if rounded.inexact { FLAG_PRECISION } else { 0 }) | if *denormal { FLAG_DENORMAL_OPERAND } else { 0 },
         rounded_up: rounded.up,
     })
 }
@@ -1554,11 +1473,7 @@ fn integer_square_root(value: &BigInt) -> Result<BigInt, GuestError> {
 }
 
 /// Exact square root with one rounding step.
-pub fn square_root(
-    value: &BinaryValue,
-    format: BinaryFormat,
-    mode: Rounding,
-) -> Result<BinaryResult, GuestError> {
+pub fn square_root(value: &BinaryValue, format: BinaryFormat, mode: Rounding) -> Result<BinaryResult, GuestError> {
     if matches!(value, BinaryValue::Nan { .. } | BinaryValue::Unsupported { .. }) {
         return convert_binary(value, format, mode);
     }
@@ -1613,21 +1528,15 @@ pub fn square_root(
     let up = inexact
         && (mode == Rounding::Up
             || (mode == Rounding::Nearest
-                && (four_numerator.cmp(&halfway) == Ordering::Greater
-                    || (four_numerator == halfway && floor.bit(0)))));
+                && (four_numerator.cmp(&halfway) == Ordering::Greater || (four_numerator == halfway && floor.bit(0)))));
     Ok(BinaryResult {
         value: BinaryValue::Finite {
             negative: false,
-            coefficient: if up {
-                floor.add(&BigInt::one())
-            } else {
-                floor
-            },
+            coefficient: if up { floor.add(&BigInt::one()) } else { floor },
             exponent: quantum,
             denormal: false,
         },
-        flags: (if inexact { FLAG_PRECISION } else { 0 })
-            | if *denormal { FLAG_DENORMAL_OPERAND } else { 0 },
+        flags: (if inexact { FLAG_PRECISION } else { 0 }) | if *denormal { FLAG_DENORMAL_OPERAND } else { 0 },
         rounded_up: up,
     })
 }
@@ -1641,14 +1550,8 @@ mod tests {
         let left = BigInt::from_u64(0x1234_5678_9abc_def0);
         let right = BigInt::from_u64(0x1111_1111);
         let (quotient, remainder) = left.divmod(&right).unwrap();
-        assert_eq!(
-            quotient.low_u64(),
-            0x1234_5678_9abc_def0u64 / 0x1111_1111u64
-        );
-        assert_eq!(
-            remainder.low_u64(),
-            0x1234_5678_9abc_def0u64 % 0x1111_1111u64
-        );
+        assert_eq!(quotient.low_u64(), 0x1234_5678_9abc_def0u64 / 0x1111_1111u64);
+        assert_eq!(remainder.low_u64(), 0x1234_5678_9abc_def0u64 % 0x1111_1111u64);
     }
 
     #[test]
@@ -1675,14 +1578,20 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(encode_binary(&ratio.value, BinaryWidth::W64).low_u64(), 0x3fc0_0000_0000_0000);
+        assert_eq!(
+            encode_binary(&ratio.value, BinaryWidth::W64).low_u64(),
+            0x3fc0_0000_0000_0000
+        );
     }
 
     #[test]
     fn sqrt_two_rounds_to_nearest_even() {
         let two = from_integer(&BigInt::from_u64(2));
         let root = square_root(&two, BINARY64, Rounding::Nearest).unwrap();
-        assert_eq!(encode_binary(&root.value, BinaryWidth::W64).low_u64(), 0x3ff6_a09e_667f_3bcd);
+        assert_eq!(
+            encode_binary(&root.value, BinaryWidth::W64).low_u64(),
+            0x3ff6_a09e_667f_3bcd
+        );
     }
 
     #[test]

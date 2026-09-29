@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use qa_guest::core::contracts::{
-    GuestAddress, GuestImage, GuestImport, GuestImportResolver, GuestImportResolution, GuestSymbolName,
+    GuestAddress, GuestImage, GuestImport, GuestImportResolution, GuestImportResolver, GuestSymbolName,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::elf::loader::{load_elf, ElfLoadOptions};
@@ -30,7 +30,11 @@ struct Fixture {
 
 impl Fixture {
     fn width(&self) -> usize {
-        if self.wide { 8 } else { 4 }
+        if self.wide {
+            8
+        } else {
+            4
+        }
     }
 
     fn word(&mut self, offset: usize, value: u64) {
@@ -45,7 +49,10 @@ impl Fixture {
 
     fn build(width: usize) -> Self {
         let wide = width == 8;
-        let mut fixture = Self { bytes: vec![0; 4096], wide };
+        let mut fixture = Self {
+            bytes: vec![0; 4096],
+            wide,
+        };
         fixture.bytes[0..4].copy_from_slice(&0x464c_457fu32.to_le_bytes());
         fixture.bytes[4] = if wide { 2 } else { 1 };
         fixture.bytes[5] = 1;
@@ -54,16 +61,33 @@ impl Fixture {
         fixture.bytes[18..20].copy_from_slice(&(if wide { 62u16 } else { 3u16 }).to_le_bytes());
         fixture.bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
         fixture.word(if wide { 32 } else { 28 }, 64);
-        let (ehsize, phentsize, phoff) = if wide { (64u16, 56u16, 52usize) } else { (52u16, 32u16, 40usize) };
+        let (ehsize, phentsize, phoff) = if wide {
+            (64u16, 56u16, 52usize)
+        } else {
+            (52u16, 32u16, 40usize)
+        };
         fixture.bytes[phoff..phoff + 2].copy_from_slice(&ehsize.to_le_bytes());
         fixture.bytes[phoff + 2..phoff + 4].copy_from_slice(&phentsize.to_le_bytes());
         fixture.bytes[phoff + 4..phoff + 6].copy_from_slice(&3u16.to_le_bytes());
         let tags: &[(u64, u64)] = &[
-            (4, 0x4c0), (5, 0x480), (10, 22), (6, 0x400), (11, if wide { 24 } else { 16 }),
-            (7, 0x500), (8, (width * 3 * 10) as u64), (9, (width * 3) as u64),
-            (12, 0x800), (13, 0x810), (25, 0x980), (27, (width * 2) as u64),
-            (26, 0x9a0), (28, (width * 2) as u64),
-            (0x6fff_fffc, 0x680), (0x6fff_fffd, 1), (0x6fff_fff0, 0x4e0), (0, 0),
+            (4, 0x4c0),
+            (5, 0x480),
+            (10, 22),
+            (6, 0x400),
+            (11, if wide { 24 } else { 16 }),
+            (7, 0x500),
+            (8, (width * 3 * 10) as u64),
+            (9, (width * 3) as u64),
+            (12, 0x800),
+            (13, 0x810),
+            (25, 0x980),
+            (27, (width * 2) as u64),
+            (26, 0x9a0),
+            (28, (width * 2) as u64),
+            (0x6fff_fffc, 0x680),
+            (0x6fff_fffd, 1),
+            (0x6fff_fff0, 0x4e0),
+            (0, 0),
         ];
         let stride = if wide { 56 } else { 32 };
         let segment = |fixture: &mut Fixture, index: usize, kind: u32, offset: u64, file: u64, mem: u64, align: u64| {
@@ -78,7 +102,15 @@ impl Fixture {
             fixture.word(p + if wide { 48 } else { 28 }, align);
         };
         segment(&mut fixture, 0, 1, 0, 4096, 8192, 4096);
-        segment(&mut fixture, 1, 2, 0x200, (tags.len() * width * 2) as u64, (tags.len() * width * 2) as u64, width as u64);
+        segment(
+            &mut fixture,
+            1,
+            2,
+            0x200,
+            (tags.len() * width * 2) as u64,
+            (tags.len() * width * 2) as u64,
+            width as u64,
+        );
         segment(&mut fixture, 2, 7, 0x700, 16, 32, 16);
         for (index, (tag, value)) in tags.iter().enumerate() {
             fixture.word(0x200 + index * width * 2, *tag);
@@ -144,20 +176,23 @@ impl GuestImportResolver for Unresolved {
 struct Tls;
 impl ElfTlsBindings for Tls {
     fn current(&self) -> ElfTlsModule {
-        ElfTlsModule { module_id: 7, thread_pointer_offset: Some(-64) }
+        ElfTlsModule {
+            module_id: 7,
+            thread_pointer_offset: Some(-64),
+        }
     }
-    fn resolve(
-        &self,
-        _import: &GuestImport,
-        _requesting: &GuestImage,
-    ) -> Result<Option<ElfTlsResolution>, GuestError> {
+    fn resolve(&self, _import: &GuestImport, _requesting: &GuestImage) -> Result<Option<ElfTlsResolution>, GuestError> {
         Ok(None)
     }
 }
 
 fn read(memory: &mut SparseGuestMemory, offset: u64, wide: bool) -> u64 {
     let address = memory.pointer(LOAD_BIAS + offset).unwrap().unwrap();
-    if wide { memory.read_u64(address).unwrap() } else { u64::from(memory.read_u32(address).unwrap()) }
+    if wide {
+        memory.read_u64(address).unwrap()
+    } else {
+        u64::from(memory.read_u32(address).unwrap())
+    }
 }
 
 #[test]
@@ -184,7 +219,10 @@ fn elf_tls_relocations_use_module_ids_signed_displacements_and_relocated_templat
             resolve_symbol_size: None,
             unique_symbols: None,
         });
-        assert!(format!("{failed:?}").contains("requires a guest thread/module allocation"), "{failed:?}");
+        assert!(
+            format!("{failed:?}").contains("requires a guest thread/module allocation"),
+            "{failed:?}"
+        );
         assert!(memory.mappings().is_empty());
 
         // Indirect relocations need explicit guest resolver execution.
@@ -201,7 +239,10 @@ fn elf_tls_relocations_use_module_ids_signed_displacements_and_relocated_templat
             resolve_symbol_size: None,
             unique_symbols: None,
         });
-        assert!(format!("{failed:?}").contains("requires explicit guest resolver execution"), "{failed:?}");
+        assert!(
+            format!("{failed:?}").contains("requires explicit guest resolver execution"),
+            "{failed:?}"
+        );
         assert!(memory.mappings().is_empty());
 
         // Unknown relocation types fail before mapping anything.
@@ -252,7 +293,14 @@ fn elf_tls_relocations_use_module_ids_signed_displacements_and_relocated_templat
         assert_eq!(read(&mut memory, 0x900, wide), 7);
         assert_eq!(read(&mut memory, 0x910, wide), if wide { 11 } else { 4 });
         let signed = read(&mut memory, 0x920, wide);
-        assert_eq!(if wide { signed as i64 } else { (signed as u32) as i32 as i64 }, -57);
+        assert_eq!(
+            if wide {
+                signed as i64
+            } else {
+                (signed as u32) as i32 as i64
+            },
+            -57
+        );
         let slot = memory.pointer(LOAD_BIAS + 0x928).unwrap().unwrap();
         assert_eq!(memory.read_i32(slot).unwrap(), if wide { -55 } else { 65 });
         assert_eq!(read(&mut memory, 0x930, wide), LOAD_BIAS + 0x850);
@@ -260,14 +308,21 @@ fn elf_tls_relocations_use_module_ids_signed_displacements_and_relocated_templat
         let template = image.image.tls.as_ref().expect("TLS template missing");
         let mut raw = [0u8; 8];
         raw.copy_from_slice(&template.initialized[..8]);
-        let head = if wide { u64::from_le_bytes(raw) } else { u64::from(u32::from_le_bytes(raw[..4].try_into().unwrap())) };
+        let head = if wide {
+            u64::from_le_bytes(raw)
+        } else {
+            u64::from(u32::from_le_bytes(raw[..4].try_into().unwrap()))
+        };
         assert_eq!(head, LOAD_BIAS + 0x800);
         assert_eq!(template.zero_fill_bytes, 16);
         assert_eq!(template.alignment, 16);
         assert_eq!(image.tls_exports.len(), 1);
         assert_eq!(
             image.tls_exports[0].symbol,
-            GuestSymbolName::Name { name: "tls".to_string(), version: None }
+            GuestSymbolName::Name {
+                name: "tls".to_string(),
+                version: None
+            }
         );
         assert_eq!(image.tls_exports[0].offset, 4);
         assert_eq!(image.tls_exports[0].byte_length, 4);
@@ -275,8 +330,14 @@ fn elf_tls_relocations_use_module_ids_signed_displacements_and_relocated_templat
         assert_eq!(
             symbols,
             [
-                &GuestSymbolName::Name { name: "entry".to_string(), version: Some("ELF_TEST_1".to_string()) },
-                &GuestSymbolName::Name { name: "entry".to_string(), version: None },
+                &GuestSymbolName::Name {
+                    name: "entry".to_string(),
+                    version: Some("ELF_TEST_1".to_string())
+                },
+                &GuestSymbolName::Name {
+                    name: "entry".to_string(),
+                    version: None
+                },
             ]
         );
         let initializers: Vec<u64> = image.image.initializers.iter().map(|address| address.offset).collect();

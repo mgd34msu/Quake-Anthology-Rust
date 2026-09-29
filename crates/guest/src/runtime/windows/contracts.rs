@@ -9,9 +9,8 @@ use std::rc::Rc;
 use crate::abi::runner::{GuestCallFailure, GuestCallRequest};
 use crate::core::callbacks::{GuestHostCallback, HookState, HostCallContext, HostCallbackFn};
 use crate::core::contracts::{
-    CallbackId, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature,
-    GuestCallValue, GuestCallbackReference, GuestExportTarget, GuestStorage, GuestSymbolName,
-    GuestValueLayout, NativeCallAbi,
+    CallbackId, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
+    GuestCallbackReference, GuestExportTarget, GuestStorage, GuestSymbolName, GuestValueLayout, NativeCallAbi,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
@@ -54,6 +53,11 @@ pub enum WindowsStream {
     Stderr,
 }
 
+/// File opener capability.
+pub type WindowsFileOpener = Rc<dyn Fn(&str, WindowsOpenOptions) -> Option<Box<dyn WindowsFile>>>;
+/// Standard output sink.
+pub type WindowsOutputSink = Rc<dyn Fn(WindowsStream, &[u8])>;
+
 /// Host capabilities supplied to the Windows guest.
 #[derive(Clone, Default)]
 pub struct WindowsCapabilities {
@@ -68,9 +72,9 @@ pub struct WindowsCapabilities {
     /// Process environment.
     pub environment: Option<HashMap<String, String>>,
     /// File opener.
-    pub open_file: Option<Rc<dyn Fn(&str, WindowsOpenOptions) -> Option<Box<dyn WindowsFile>>>>,
+    pub open_file: Option<WindowsFileOpener>,
     /// Standard output sink.
-    pub standard_output: Option<Rc<dyn Fn(WindowsStream, &[u8])>>,
+    pub standard_output: Option<WindowsOutputSink>,
     /// Standard input source: up to `length` bytes.
     pub standard_input: Option<Rc<dyn Fn(usize) -> Vec<u8>>>,
 }
@@ -121,11 +125,7 @@ pub struct WindowsInitializeOptions {
 }
 
 /// Unsupported-import failure, mirroring the donor message.
-pub fn unsupported_windows(
-    library: &str,
-    symbol: &str,
-    detail: impl Into<String>,
-) -> GuestError {
+pub fn unsupported_windows(library: &str, symbol: &str, detail: impl Into<String>) -> GuestError {
     GuestError::unsupported(format!(
         "Unsupported Windows guest import {library}!{symbol}: {}",
         detail.into()
@@ -134,7 +134,12 @@ pub fn unsupported_windows(
 
 /// Canonical library key: lowercase basename with a `.dll` suffix.
 pub fn canonical_library(library: &str) -> String {
-    let base = library.replace('\\', "/").rsplit('/').next().unwrap_or(library).to_string();
+    let base = library
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(library)
+        .to_string();
     let lower = base.to_lowercase();
     if lower.ends_with(".dll") {
         lower
@@ -270,20 +275,13 @@ pub fn invoke_nested(
 }
 
 /// Read the thread `last-error` value from the TEB.
-pub fn last_error(
-    memory: &mut SparseGuestMemory,
-    teb: GuestAddress,
-) -> Result<u32, GuestError> {
+pub fn last_error(memory: &mut SparseGuestMemory, teb: GuestAddress) -> Result<u32, GuestError> {
     let offset = if memory.pointer_bytes() == 4 { 0x34 } else { 0x68 };
     memory.read_u32(memory.offset(teb, offset)?)
 }
 
 /// Write the thread `last-error` value to the TEB.
-pub fn set_last_error(
-    memory: &mut SparseGuestMemory,
-    teb: GuestAddress,
-    value: u32,
-) -> Result<(), GuestError> {
+pub fn set_last_error(memory: &mut SparseGuestMemory, teb: GuestAddress, value: u32) -> Result<(), GuestError> {
     let offset = if memory.pointer_bytes() == 4 { 0x34 } else { 0x68 };
     memory.write_u32(memory.offset(teb, offset)?, value)
 }
@@ -387,9 +385,7 @@ impl WindowsContext {
         {
             let shared = self.shared.borrow();
             if shared.data.contains_key(&key) || shared.imports.contains_key(&key) {
-                return Err(GuestError::callback(format!(
-                    "Duplicate Windows data export {key}"
-                )));
+                return Err(GuestError::callback(format!("Duplicate Windows data export {key}")));
             }
         }
         let address = memory.allocate(&crate::core::contracts::GuestAllocationOptions {
@@ -402,14 +398,14 @@ impl WindowsContext {
         let mut shared = self.shared.borrow_mut();
         shared.data.insert(key, address);
         let normalized = canonical_library(library);
-        if !shared.libraries.contains_key(&normalized) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = shared.libraries.entry(normalized) {
             let handle = memory.allocate(&crate::core::contracts::GuestAllocationOptions {
                 byte_length: 16,
                 alignment: 16,
                 permissions: crate::core::contracts::GuestPermissions::ReadWrite,
-                label: format!("Windows library handle {normalized}"),
+                label: format!("Windows library handle {}", slot.key()),
             })?;
-            shared.libraries.insert(normalized, handle);
+            slot.insert(handle);
         }
         Ok(address)
     }
@@ -469,14 +465,14 @@ impl WindowsContext {
         {
             let mut shared = self.shared.borrow_mut();
             shared.imports.insert(key, entry.clone());
-            if !shared.libraries.contains_key(&normalized) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = shared.libraries.entry(normalized) {
                 let handle = memory.allocate(&crate::core::contracts::GuestAllocationOptions {
                     byte_length: 16,
                     alignment: 16,
                     permissions: crate::core::contracts::GuestPermissions::ReadWrite,
-                    label: format!("Windows library handle {normalized}"),
+                    label: format!("Windows library handle {}", slot.key()),
                 })?;
-                shared.libraries.insert(normalized, handle);
+                slot.insert(handle);
             }
         }
         Ok(entry)
@@ -494,9 +490,10 @@ impl WindowsContext {
                 return None;
             }
             let shared = self.shared.borrow();
-            let image = shared.images.iter().find(|image| {
-                canonical_library(&image.image.module.artifact_path) == library
-            });
+            let image = shared
+                .images
+                .iter()
+                .find(|image| canonical_library(&image.image.module.artifact_path) == library);
             let Some(image) = image else {
                 let entry = shared.imports.get(&key);
                 if entry.is_some_and(|entry| entry.supported) {
@@ -533,7 +530,10 @@ impl WindowsContext {
         {
             return Some(image.image.base);
         }
-        let supported = shared.imports.values().any(|entry| entry.library == normalized && entry.supported)
+        let supported = shared
+            .imports
+            .values()
+            .any(|entry| entry.library == normalized && entry.supported)
             || shared.data.keys().any(|key| key.starts_with(&format!("{normalized}!")));
         if supported {
             shared.libraries.get(&normalized).copied()
@@ -642,7 +642,13 @@ impl WindowsContext {
         teb: GuestAddress,
         handle: GuestAddress,
     ) -> Result<bool, GuestError> {
-        let count = self.shared.borrow().library_references.get(&handle.offset).copied().unwrap_or(0);
+        let count = self
+            .shared
+            .borrow()
+            .library_references
+            .get(&handle.offset)
+            .copied()
+            .unwrap_or(0);
         if count == 0 {
             set_last_error(memory, teb, 6)?;
             return Ok(false);
@@ -659,12 +665,7 @@ impl WindowsContext {
     }
 
     /// Release every allocation owned by `heap`.
-    pub fn destroy_heap(
-        &self,
-        memory: &mut SparseGuestMemory,
-        teb: GuestAddress,
-        heap: u64,
-    ) -> Result<(), GuestError> {
+    pub fn destroy_heap(&self, memory: &mut SparseGuestMemory, teb: GuestAddress, heap: u64) -> Result<(), GuestError> {
         let owned: Vec<GuestAddress> = self
             .shared
             .borrow()
@@ -763,16 +764,12 @@ impl<'m> WindowsServiceRegistrar<'m> {
         result: Option<GuestStorage>,
         invoke: HostCallbackFn,
     ) -> Result<(), GuestError> {
-        self.context.service(self.memory, library, name, parameters, result, invoke)
+        self.context
+            .service(self.memory, library, name, parameters, result, invoke)
     }
 
     /// Register guest data bytes; returns their address.
-    pub fn register_data(
-        &mut self,
-        library: &str,
-        name: &str,
-        bytes: &[u8],
-    ) -> Result<GuestAddress, GuestError> {
+    pub fn register_data(&mut self, library: &str, name: &str, bytes: &[u8]) -> Result<GuestAddress, GuestError> {
         self.context.register_data(self.memory, library, name, bytes)
     }
 

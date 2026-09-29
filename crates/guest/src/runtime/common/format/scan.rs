@@ -8,12 +8,9 @@ use crate::core::contracts::GuestAddress;
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
 use crate::floating_point::binary::{
-    encode_binary, format_for, round_rational, write_bits, BigInt, BinaryValue, BinaryWidth,
-    Rounding,
+    encode_binary, format_for, round_rational, write_bits, BigInt, BinaryValue, BinaryWidth, Rounding,
 };
-use crate::runtime::common::format::arguments::{
-    FormatArgument, FormatArgumentType, FormatArguments, FormatDialect,
-};
+use crate::runtime::common::format::arguments::{FormatArgument, FormatArgumentType, FormatArguments, FormatDialect};
 use crate::runtime::common::memory::{read_string, write_unsigned};
 
 /// Scan conversion the runtime does not implement.
@@ -95,11 +92,9 @@ fn directives(format: &str) -> Result<Vec<ScanDirective>, UnsupportedGuestScan> 
             u64::MAX
         } else {
             match digits.parse::<u64>() {
-                Ok(width) if width != 0 && width <= (1 << 53) - 1 => width,
+                Ok(width) if width != 0 && width < (1 << 53) => width,
                 _ => {
-                    return Err(UnsupportedGuestScan(
-                        "invalid numeric scanf field width".to_string(),
-                    ));
+                    return Err(UnsupportedGuestScan("invalid numeric scanf field width".to_string()));
                 }
             }
         };
@@ -118,7 +113,11 @@ fn directives(format: &str) -> Result<Vec<ScanDirective>, UnsupportedGuestScan> 
             });
         } else if (code == 'd' || code == 'i') && !long {
             result.push(ScanDirective::Number {
-                code: if code == 'd' { ScanCode::Decimal } else { ScanCode::Integer },
+                code: if code == 'd' {
+                    ScanCode::Decimal
+                } else {
+                    ScanCode::Integer
+                },
                 width,
                 suppressed,
                 bytes: 4,
@@ -136,9 +135,7 @@ fn decimal_value(digits: &str) -> BigInt {
     let mut value = BigInt::zero();
     let ten = BigInt::from_u64(10);
     for digit in digits.bytes() {
-        value = value
-            .mul(&ten)
-            .add(&BigInt::from_u64(u64::from(digit - b'0')));
+        value = value.mul(&ten).add(&BigInt::from_u64(u64::from(digit - b'0')));
     }
     value
 }
@@ -161,7 +158,9 @@ fn finite_bytes(negative: bool, width: BinaryWidth, bytes: usize) -> Vec<u8> {
 /// Convert decimal text directly to the destination precision.
 fn decimal_bytes(token: &str, bytes: usize) -> Result<Vec<u8>, GuestError> {
     let negative = token.starts_with('-');
-    let unsigned = token.strip_prefix('+').unwrap_or(token.strip_prefix('-').unwrap_or(token));
+    let unsigned = token
+        .strip_prefix('+')
+        .unwrap_or(token.strip_prefix('-').unwrap_or(token));
     let lower = unsigned.to_ascii_lowercase();
     let mut parts = lower.splitn(2, 'e');
     let mantissa = parts.next().unwrap_or("");
@@ -218,11 +217,15 @@ fn decimal_bytes(token: &str, bytes: usize) -> Result<Vec<u8>, GuestError> {
 }
 
 fn valid_float_token(token: &str) -> bool {
-    let body = token.strip_prefix('+').unwrap_or(token.strip_prefix('-').unwrap_or(token));
+    let body = token
+        .strip_prefix('+')
+        .unwrap_or(token.strip_prefix('-').unwrap_or(token));
     let (mantissa, exponent) = match body.find(['e', 'E']) {
         Some(at) => {
             let exponent = &body[at + 1..];
-            let digits = exponent.strip_prefix('+').unwrap_or(exponent.strip_prefix('-').unwrap_or(exponent));
+            let digits = exponent
+                .strip_prefix('+')
+                .unwrap_or(exponent.strip_prefix('-').unwrap_or(exponent));
             if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
                 return false;
             }
@@ -247,7 +250,9 @@ fn valid_float_token(token: &str) -> bool {
 }
 
 fn valid_int_token(token: &str) -> bool {
-    let body = token.strip_prefix('+').unwrap_or(token.strip_prefix('-').unwrap_or(token));
+    let body = token
+        .strip_prefix('+')
+        .unwrap_or(token.strip_prefix('-').unwrap_or(token));
     if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
         !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
     } else {
@@ -277,7 +282,11 @@ pub fn scan_windows_buffer(
                 None
             } else {
                 let byte = memory.read_u8(memory.offset(input, cursor as i64)?)?;
-                if byte == 0 { None } else { Some(byte as char) }
+                if byte == 0 {
+                    None
+                } else {
+                    Some(byte as char)
+                }
             }
         }};
     }
@@ -294,11 +303,7 @@ pub fn scan_windows_buffer(
             }
             ScanDirective::Literal(value) => {
                 if peek!() != Some(*value) {
-                    return Ok(if !converted && peek!().is_none() {
-                        -1
-                    } else {
-                        assigned
-                    });
+                    return Ok(if !converted && peek!().is_none() { -1 } else { assigned });
                 }
                 cursor += 1;
             }
@@ -321,7 +326,11 @@ pub fn scan_windows_buffer(
                 let mut token = String::new();
                 macro_rules! current {
                     () => {{
-                        if cursor - start < *width { peek!() } else { None }
+                        if cursor - start < *width {
+                            peek!()
+                        } else {
+                            None
+                        }
                     }};
                 }
                 if matches!(current!(), Some('+') | Some('-')) {
@@ -337,15 +346,15 @@ pub fn scan_windows_buffer(
                             token.push(c);
                             cursor += 1;
                         }
-                        let body = token.strip_prefix('+').unwrap_or(token.strip_prefix('-').unwrap_or(token.as_str()));
+                        let body = token
+                            .strip_prefix('+')
+                            .unwrap_or(token.strip_prefix('-').unwrap_or(token.as_str()));
                         if body.len() >= 3
-                            && (body[..3].eq_ignore_ascii_case("inf")
-                                || body[..3].eq_ignore_ascii_case("nan"))
+                            && (body[..3].eq_ignore_ascii_case("inf") || body[..3].eq_ignore_ascii_case("nan"))
                         {
-                            return Err(UnsupportedGuestScan(
-                                "scanf nonfinite text is not implemented".to_string(),
-                            )
-                            .into());
+                            return Err(
+                                UnsupportedGuestScan("scanf nonfinite text is not implemented".to_string()).into(),
+                            );
                         }
                         return Ok(assigned);
                     }
@@ -421,28 +430,28 @@ pub fn scan_windows_buffer(
                 let FormatArgument::Integer(raw) = argument else {
                     return Err(GuestError::invalid("scanf destination must be a pointer"));
                 };
-                let destination = memory.pointer(raw)?.ok_or_else(|| {
-                    GuestError::invalid("scanf destination is null")
-                })?;
+                let destination = memory
+                    .pointer(raw)?
+                    .ok_or_else(|| GuestError::invalid("scanf destination is null"))?;
                 if *code == ScanCode::Float {
                     let bytes = decimal_bytes(&token, *bytes)?;
                     memory.write(destination, &bytes)?;
                 } else {
-                    let unsigned = token.strip_prefix('+').unwrap_or(token.strip_prefix('-').unwrap_or(token.as_str()));
-                    let (digits, radix) = if let Some(hex) = unsigned
-                        .strip_prefix("0x")
-                        .or_else(|| unsigned.strip_prefix("0X"))
-                    {
-                        (hex, 16u64)
-                    } else if *code == ScanCode::Integer
-                        && unsigned.len() >= 2
-                        && unsigned.starts_with('0')
-                        && unsigned.bytes().all(|b| matches!(b, b'0'..=b'7'))
-                    {
-                        (unsigned, 8u64)
-                    } else {
-                        (unsigned, 10u64)
-                    };
+                    let unsigned = token
+                        .strip_prefix('+')
+                        .unwrap_or(token.strip_prefix('-').unwrap_or(token.as_str()));
+                    let (digits, radix) =
+                        if let Some(hex) = unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X")) {
+                            (hex, 16u64)
+                        } else if *code == ScanCode::Integer
+                            && unsigned.len() >= 2
+                            && unsigned.starts_with('0')
+                            && unsigned.bytes().all(|b| matches!(b, b'0'..=b'7'))
+                        {
+                            (unsigned, 8u64)
+                        } else {
+                            (unsigned, 10u64)
+                        };
                     let mut value: u64 = 0;
                     for digit in digits.bytes() {
                         let digit = u64::from(if digit.is_ascii_digit() {

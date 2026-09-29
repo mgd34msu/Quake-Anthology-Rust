@@ -7,8 +7,8 @@ use std::rc::Rc;
 use crate::core::contracts::{GuestAccess, GuestAddress, GuestCallResult, GuestCallValue, GuestStorage};
 use crate::error::GuestError;
 use crate::runtime::common::memory::{
-    allocate_bytes, argument, count, fill_bytes, integer, move_bytes, pointer, read_string,
-    required_pointer, string_bytes, string_length,
+    allocate_bytes, argument, count, fill_bytes, integer, move_bytes, pointer, read_string, required_pointer,
+    string_bytes, string_length,
 };
 
 fn floating(args: &[GuestCallValue], index: usize) -> Result<f64, GuestError> {
@@ -68,39 +68,59 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
     let errno = host.errno_address;
     let shared = Rc::clone(&host.shared);
 
-    host.service(lib, "__errno_location", &version, &[], Some(GuestStorage::Pointer), Rc::new(
-        move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(errno)))),
-    ))?;
+    host.service(
+        lib,
+        "__errno_location",
+        &version,
+        &[],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(errno))))),
+    )?;
 
     if pointer_bytes == 8 {
         let shared = Rc::clone(&shared);
         let thread_pointer = host.thread_pointer;
-        host.service("ld-linux-x86-64.so.2", "__tls_get_addr", &[Some("GLIBC_2.3"), None], &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "ld-linux-x86-64.so.2",
+            "__tls_get_addr",
+            &[Some("GLIBC_2.3"), None],
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let index = required_pointer(args, 0)?;
                 let module_id = memory.read_u64(index)?;
                 let offset = memory.read_u64(memory.offset(index, 8)?)?;
                 let address = tls_address(&shared, memory, thread_pointer, module_id, offset)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
-            },
-        ))?;
+            }),
+        )?;
     }
 
     {
         let shared = Rc::clone(&shared);
-        host.service(lib, "malloc", &version, &[pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            "malloc",
+            &version,
+            &[pointer_storage],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let size = count(args, 0)?;
                 let address = system_v_allocate(&shared, ctx.memory(), size)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let shared = Rc::clone(&shared);
-        host.service(lib, "calloc", &version, &[pointer_storage, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            "calloc",
+            &version,
+            &[pointer_storage, pointer_storage],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let total = integer(args, 0)? * integer(args, 1)?;
                 if total > 0x1000_0000 {
                     ctx.memory().write_i32(errno, 12)?;
@@ -108,22 +128,32 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                 }
                 let address = system_v_allocate(&shared, ctx.memory(), total as usize)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let shared = Rc::clone(&shared);
-        host.service(lib, "free", &version, &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            "free",
+            &version,
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 system_v_free(&shared, ctx.memory(), pointer(args, 0)?)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let shared = Rc::clone(&shared);
-        host.service(lib, "realloc", &version, &[GuestStorage::Pointer, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            "realloc",
+            &version,
+            &[GuestStorage::Pointer, pointer_storage],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let old = pointer(args, 0)?;
                 let size = count(args, 1)?;
                 if size == 0 && old.is_some() {
@@ -132,9 +162,8 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                 }
                 let old_size = match old {
                     None => 0,
-                    Some(address) => system_v_allocation_size(&shared, ctx.memory(), address)?.ok_or_else(|| {
-                        GuestError::callback("System V realloc of non-live allocation")
-                    })?,
+                    Some(address) => system_v_allocation_size(&shared, ctx.memory(), address)?
+                        .ok_or_else(|| GuestError::callback("System V realloc of non-live allocation"))?,
                 };
                 let next = system_v_allocate(&shared, ctx.memory(), size)?;
                 if let Some(old) = old {
@@ -143,8 +172,8 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     system_v_free(&shared, memory, Some(old))?;
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(next))))
-            },
-        ))?;
+            }),
+        )?;
     }
 
     for name in ["memcpy", "memmove", "__memcpy_chk", "__memmove_chk"] {
@@ -167,8 +196,13 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
         } else {
             vec![GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage]
         };
-        host.service(lib, name, &versions, &parameters, Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            name,
+            &versions,
+            &parameters,
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let destination = pointer(args, 0)?;
                 let source = pointer(args, 1)?;
                 let length = count(args, 2)?;
@@ -184,26 +218,41 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     move_bytes(ctx.memory(), destination, source, length)?;
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(destination)))
-            },
-        ))?;
+            }),
+        )?;
     }
 
-    host.service(lib, "memset", &version, &[GuestStorage::Pointer, GuestStorage::Int32, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        lib,
+        "memset",
+        &version,
+        &[GuestStorage::Pointer, GuestStorage::Int32, pointer_storage],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let destination = pointer(args, 0)?;
             let length = count(args, 2)?;
             if length != 0 {
                 let Some(destination_value) = destination else {
                     return Err(GuestError::invalid("Nonnull memset destination required"));
                 };
-                fill_bytes(ctx.memory(), destination_value, length, (integer(args, 1)? & 0xff) as u8)?;
+                fill_bytes(
+                    ctx.memory(),
+                    destination_value,
+                    length,
+                    (integer(args, 1)? & 0xff) as u8,
+                )?;
             }
             Ok(GuestCallResult::Value(GuestCallValue::Pointer(destination)))
-        },
-    ))?;
+        }),
+    )?;
 
-    host.service(lib, "memcmp", &version, &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage], Some(GuestStorage::Int32), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        lib,
+        "memcmp",
+        &version,
+        &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage],
+        Some(GuestStorage::Int32),
+        Rc::new(move |ctx, _, args| {
             let length = count(args, 2)?;
             if length == 0 {
                 return Ok(GuestCallResult::Value(GuestCallValue::Int32(0)));
@@ -218,26 +267,43 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                 }
             }
             Ok(GuestCallResult::Value(GuestCallValue::Int32(0)))
-        },
-    ))?;
+        }),
+    )?;
 
-    host.service(lib, "strlen", &version, &[GuestStorage::Pointer], Some(pointer_storage), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        lib,
+        "strlen",
+        &version,
+        &[GuestStorage::Pointer],
+        Some(pointer_storage),
+        Rc::new(move |ctx, _, args| {
             let length = string_length(ctx.memory(), required_pointer(args, 0)?)?;
             Ok(size_value(pointer_bytes, length))
-        },
-    ))?;
+        }),
+    )?;
 
-    host.service(lib, "strcmp", &version, &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        lib,
+        "strcmp",
+        &version,
+        &[GuestStorage::Pointer, GuestStorage::Pointer],
+        Some(GuestStorage::Int32),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let left = read_string(memory, required_pointer(args, 0)?, false)?;
             let right = read_string(memory, required_pointer(args, 1)?, false)?;
             Ok(GuestCallResult::Value(GuestCallValue::Int32(compare(&left, &right))))
-        },
-    ))?;
+        }),
+    )?;
 
-    for name in ["strcpy", "stpcpy", "strcat", "__strcpy_chk", "__stpcpy_chk", "__strcat_chk"] {
+    for name in [
+        "strcpy",
+        "stpcpy",
+        "strcat",
+        "__strcpy_chk",
+        "__stpcpy_chk",
+        "__strcat_chk",
+    ] {
         let checked = name.starts_with("__");
         let concatenate = name.contains("strcat");
         let end = name.contains("stpcpy");
@@ -252,12 +318,21 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
         } else {
             vec![GuestStorage::Pointer, GuestStorage::Pointer]
         };
-        host.service(lib, name, &versions, &parameters, Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            name,
+            &versions,
+            &parameters,
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let destination = required_pointer(args, 0)?;
                 let text = read_string(memory, required_pointer(args, 1)?, false)?;
-                let prefix = if concatenate { string_length(memory, destination)? } else { 0 };
+                let prefix = if concatenate {
+                    string_length(memory, destination)?
+                } else {
+                    0
+                };
                 if checked && (prefix + text.chars().count() + 1) as i128 > integer(args, 2)? {
                     return Err(GuestError::callback(format!(
                         "{name_owned} detected guest buffer overflow"
@@ -270,12 +345,17 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     destination
                 };
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(result))))
-            },
-        ))?;
+            }),
+        )?;
     }
 
-    host.service(lib, "strncpy", &version, &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        lib,
+        "strncpy",
+        &version,
+        &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let length = count(args, 2)?;
             let destination = pointer(args, 0)?;
             if length == 0 {
@@ -287,22 +367,27 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
             let memory = ctx.memory();
             let source = required_pointer(args, 1)?;
             let mut bytes = vec![0u8; length];
-            for index in 0..length {
+            for (index, slot) in bytes.iter_mut().enumerate().take(length) {
                 let byte = memory.read_u8(memory.offset(source, index as i64)?)?;
                 if byte == 0 {
                     break;
                 }
-                bytes[index] = byte;
+                *slot = byte;
             }
             memory.write(destination, &bytes)?;
             Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(destination))))
-        },
-    ))?;
+        }),
+    )?;
 
     for name in ["strchr", "strrchr"] {
         let first = name == "strchr";
-        host.service(lib, name, &version, &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            name,
+            &version,
+            &[GuestStorage::Pointer, GuestStorage::Int32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let source = required_pointer(args, 0)?;
                 let text = format!("{}\0", read_string(memory, source, false)?);
@@ -318,22 +403,26 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     None => None,
                 };
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(result)))
-            },
-        ))?;
+            }),
+        )?;
     }
 
     for name in ["strstr", "strpbrk"] {
         let substring = name == "strstr";
-        host.service(lib, name, &version, &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            name,
+            &version,
+            &[GuestStorage::Pointer, GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let source = required_pointer(args, 0)?;
                 let text = read_string(memory, source, false)?;
                 let needle = read_string(memory, required_pointer(args, 1)?, false)?;
                 // Offsets count UTF-16 units, like the donor's indexOf.
                 let index = if substring {
-                    text.find(&needle)
-                        .map(|byte| text[..byte].chars().count())
+                    text.find(&needle).map(|byte| text[..byte].chars().count())
                 } else {
                     text.chars().position(|character| needle.contains(character))
                 };
@@ -342,8 +431,8 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     None => None,
                 };
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(result)))
-            },
-        ))?;
+            }),
+        )?;
     }
 
     let token_slot = host.memory.allocate(&crate::core::contracts::GuestAllocationOptions {
@@ -352,8 +441,13 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
         permissions: crate::core::contracts::GuestPermissions::ReadWrite,
         label: "System V strtok cursor".to_string(),
     })?;
-    host.service(lib, "strtok", &version, &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        lib,
+        "strtok",
+        &version,
+        &[GuestStorage::Pointer, GuestStorage::Pointer],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let stored = memory.read_pointer(token_slot)?;
             let source = pointer(args, 0)?.or(stored);
@@ -384,14 +478,19 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
             Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(
                 memory.offset(source, start as i64)?,
             ))))
-        },
-    ))?;
+        }),
+    )?;
 
     {
         let shared = Rc::clone(&shared);
         let _ = &shared;
-        host.service(lib, "strtol", &version, &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32], Some(signed_pointer_storage), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            lib,
+            "strtol",
+            &version,
+            &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32],
+            Some(signed_pointer_storage),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let source = required_pointer(args, 0)?;
                 let end_pointer = pointer(args, 1)?;
@@ -400,7 +499,7 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                 let mut radix = integer(args, 2)?;
                 let mut index = 0;
                 let mut sign: i128 = 1;
-                if radix != 0 && (radix < 2 || radix > 36) {
+                if radix != 0 && (!(2..=36).contains(&radix)) {
                     memory.write_i32(errno, 22)?;
                     if let Some(end_pointer) = end_pointer {
                         memory.write_pointer(end_pointer, Some(source))?;
@@ -420,9 +519,7 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     && index + 2 < chars.len() + 1
                     && chars.get(index) == Some(&'0')
                     && matches!(chars.get(index + 1), Some('x' | 'X'))
-                    && chars
-                        .get(index + 2)
-                        .is_some_and(|c| c.is_ascii_hexdigit())
+                    && chars.get(index + 2).is_some_and(|c| c.is_ascii_hexdigit())
                 {
                     radix = 16;
                     index += 2;
@@ -434,8 +531,7 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                 let limit: i128 = 1 << (pointer_bytes * 8 - 1);
                 let mut value: i128 = 0;
                 while index < chars.len() {
-                    let digit = "0123456789abcdefghijklmnopqrstuvwxyz"
-                        .find(chars[index].to_ascii_lowercase());
+                    let digit = "0123456789abcdefghijklmnopqrstuvwxyz".find(chars[index].to_ascii_lowercase());
                     let Some(digit) = digit else { break };
                     if digit as i128 >= radix {
                         break;
@@ -457,15 +553,20 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     value = if value < 0 { -limit } else { limit - 1 };
                 }
                 Ok(signed_size_value(pointer_bytes, value))
-            },
-        ))?;
+            }),
+        )?;
     }
 
     {
         let now_seconds = host.shared.borrow().capabilities.now_seconds.clone();
         let base_owned = base.to_string();
-        host.service(lib, "time", &version, &[GuestStorage::Pointer], Some(signed_pointer_storage), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            lib,
+            "time",
+            &version,
+            &[GuestStorage::Pointer],
+            Some(signed_pointer_storage),
+            Rc::new(move |ctx, context, args| {
                 let Some(now_seconds) = &now_seconds else {
                     return Err(unsupported_system_v(
                         lib,
@@ -485,14 +586,24 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     }
                 }
                 Ok(signed_size_value(pointer_bytes, i128::from(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
 
     {
         let shared = Rc::clone(&shared);
-        host.service(lib, "qsort", &version, &[GuestStorage::Pointer, pointer_storage, pointer_storage, GuestStorage::Pointer], None, Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            lib,
+            "qsort",
+            &version,
+            &[
+                GuestStorage::Pointer,
+                pointer_storage,
+                pointer_storage,
+                GuestStorage::Pointer,
+            ],
+            None,
+            Rc::new(move |ctx, context, args| {
                 let base_address = pointer(args, 0)?;
                 let length = count(args, 1)?;
                 let size = count(args, 2)?;
@@ -507,10 +618,19 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
                     return Err(GuestError::invalid("qsort range outside supported guest memory"));
                 }
                 ctx.memory().check(base_address, length * size, GuestAccess::Write)?;
-                qsort_heapsort(ctx, context, &shared, pointer_bytes, base_address, length, size, comparator)?;
+                qsort_heapsort(
+                    ctx,
+                    context,
+                    &shared,
+                    pointer_bytes,
+                    base_address,
+                    length,
+                    size,
+                    comparator,
+                )?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
 
     install_libm(host, lib, &version)?;
@@ -518,17 +638,22 @@ pub fn install_libc(host: &mut SystemVServiceRegistrar<'_>) -> Result<(), GuestE
     Ok(())
 }
 
-fn install_libm(
-    host: &mut SystemVServiceRegistrar<'_>,
-    lib: &str,
-    version: &[Option<&str>],
-) -> Result<(), GuestError> {
+fn install_libm(host: &mut SystemVServiceRegistrar<'_>, lib: &str, version: &[Option<&str>]) -> Result<(), GuestError> {
     for name in ["sin", "cos", "ceil", "floor", "sqrt", "fabs"] {
         for float32 in [true, false] {
-            let storage = if float32 { GuestStorage::Float32 } else { GuestStorage::Float64 };
+            let storage = if float32 {
+                GuestStorage::Float32
+            } else {
+                GuestStorage::Float64
+            };
             let symbol = if float32 { format!("{name}f") } else { name.to_string() };
-            host.service("libm.so.6", &symbol, version, &[storage], Some(storage), Rc::new(
-                move |_, _, args| {
+            host.service(
+                "libm.so.6",
+                &symbol,
+                version,
+                &[storage],
+                Some(storage),
+                Rc::new(move |_, _, args| {
                     let value = floating(args, 0)?;
                     let result = match name {
                         "sin" => value.sin(),
@@ -543,24 +668,38 @@ fn install_libm(
                     } else {
                         GuestCallResult::Value(GuestCallValue::Float64(result))
                     })
-                },
-            ))?;
+                }),
+            )?;
         }
     }
-    host.service("libm.so.6", "__atan2_finite", &[Some("GLIBC_2.15"), None], &[GuestStorage::Float64, GuestStorage::Float64], Some(GuestStorage::Float64), Rc::new(
-        move |_, _, args| {
+    host.service(
+        "libm.so.6",
+        "__atan2_finite",
+        &[Some("GLIBC_2.15"), None],
+        &[GuestStorage::Float64, GuestStorage::Float64],
+        Some(GuestStorage::Float64),
+        Rc::new(move |_, _, args| {
             Ok(GuestCallResult::Value(GuestCallValue::Float64(
                 floating(args, 0)?.atan2(floating(args, 1)?),
             )))
-        },
-    ))?;
+        }),
+    )?;
     let pointer_bytes = host.pointer_bytes;
     for float32 in [true, false] {
-        let storage = if float32 { GuestStorage::Float32 } else { GuestStorage::Float64 };
+        let storage = if float32 {
+            GuestStorage::Float32
+        } else {
+            GuestStorage::Float64
+        };
         let symbol = if float32 { "sincosf" } else { "sincos" };
         let version_name = if pointer_bytes == 4 { "GLIBC_2.1" } else { "GLIBC_2.2.5" };
-        host.service("libm.so.6", symbol, &[Some(version_name), None], &[storage, GuestStorage::Pointer, GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "libm.so.6",
+            symbol,
+            &[Some(version_name), None],
+            &[storage, GuestStorage::Pointer, GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 let value = floating(args, 0)?;
                 let memory = ctx.memory();
                 let sine = required_pointer(args, 1)?;
@@ -573,19 +712,29 @@ fn install_libm(
                     memory.write_f64(cosine, value.cos())?;
                 }
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
-    host.service(lib, "__isnanf", version, &[GuestStorage::Float32], Some(GuestStorage::Int32), Rc::new(
-        move |_, _, args| {
+    host.service(
+        lib,
+        "__isnanf",
+        version,
+        &[GuestStorage::Float32],
+        Some(GuestStorage::Int32),
+        Rc::new(move |_, _, args| {
             Ok(GuestCallResult::Value(GuestCallValue::Int32(i32::from(
                 floating(args, 0)?.is_nan(),
             ))))
-        },
-    ))?;
+        }),
+    )?;
     let stack_lib = lib.to_string();
-    host.service(lib, "__stack_chk_fail", &[Some("GLIBC_2.4"), None], &[], None, Rc::new(
-        move |_, context, _| {
+    host.service(
+        lib,
+        "__stack_chk_fail",
+        &[Some("GLIBC_2.4"), None],
+        &[],
+        None,
+        Rc::new(move |_, context, _| {
             let _ = context;
             Err(unsupported_system_v(
                 &stack_lib,
@@ -593,8 +742,8 @@ fn install_libm(
                 Some("GLIBC_2.4"),
                 "guest stack protection failure",
             ))
-        },
-    ))?;
+        }),
+    )?;
     Ok(())
 }
 
@@ -610,41 +759,45 @@ fn qsort_heapsort(
     size: usize,
     comparator: crate::core::contracts::GuestAddress,
 ) -> Result<(), GuestError> {
-    let at = |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>, index: usize| -> Result<crate::core::contracts::GuestAddress, GuestError> {
+    let at = |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>,
+              index: usize|
+     -> Result<crate::core::contracts::GuestAddress, GuestError> {
         ctx.memory().offset(base_address, (index * size) as i64)
     };
-    let less = |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>, a: usize, b: usize| -> Result<bool, GuestError> {
-        let aa = at(ctx, a)?;
-        let bb = at(ctx, b)?;
-        let result = invoke_nested(
-            ctx,
-            shared,
-            pointer_bytes,
-            context,
-            comparator,
-            &[GuestStorage::Pointer, GuestStorage::Pointer],
-            Some(GuestStorage::Int32),
-            vec![
-                GuestCallValue::Pointer(Some(aa)),
-                GuestCallValue::Pointer(Some(bb)),
-            ],
-        )?;
-        match result {
-            GuestCallResult::Value(GuestCallValue::Int32(value)) => Ok(value < 0),
-            _ => Err(GuestError::invalid("qsort comparator returned wrong type")),
-        }
-    };
-    let swap = |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>, a: usize, b: usize| -> Result<(), GuestError> {
-        let memory = ctx.memory();
-        let aa = memory.offset(base_address, (a * size) as i64)?;
-        let bb = memory.offset(base_address, (b * size) as i64)?;
-        let bytes = memory.copy(aa, size)?;
-        let other = memory.copy(bb, size)?;
-        memory.write(aa, &other)?;
-        memory.write(bb, &bytes)?;
-        Ok(())
-    };
-    let sift = |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>, root: usize, end: usize| -> Result<(), GuestError> {
+    let less =
+        |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>, a: usize, b: usize| -> Result<bool, GuestError> {
+            let aa = at(ctx, a)?;
+            let bb = at(ctx, b)?;
+            let result = invoke_nested(
+                ctx,
+                shared,
+                pointer_bytes,
+                context,
+                comparator,
+                &[GuestStorage::Pointer, GuestStorage::Pointer],
+                Some(GuestStorage::Int32),
+                vec![GuestCallValue::Pointer(Some(aa)), GuestCallValue::Pointer(Some(bb))],
+            )?;
+            match result {
+                GuestCallResult::Value(GuestCallValue::Int32(value)) => Ok(value < 0),
+                _ => Err(GuestError::invalid("qsort comparator returned wrong type")),
+            }
+        };
+    let swap =
+        |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>, a: usize, b: usize| -> Result<(), GuestError> {
+            let memory = ctx.memory();
+            let aa = memory.offset(base_address, (a * size) as i64)?;
+            let bb = memory.offset(base_address, (b * size) as i64)?;
+            let bytes = memory.copy(aa, size)?;
+            let other = memory.copy(bb, size)?;
+            memory.write(aa, &other)?;
+            memory.write(bb, &bytes)?;
+            Ok(())
+        };
+    let sift = |ctx: &mut crate::core::callbacks::HostCallContext<'_, '_>,
+                root: usize,
+                end: usize|
+     -> Result<(), GuestError> {
         let mut root = root;
         loop {
             let mut child = root * 2 + 1;
@@ -679,9 +832,7 @@ pub fn system_v_allocate(
     size: usize,
 ) -> Result<GuestAddress, GuestError> {
     if size > 0x1000_0000 {
-        return Err(GuestError::invalid(
-            "System V guest allocation exceeds supported size",
-        ));
+        return Err(GuestError::invalid("System V guest allocation exceeds supported size"));
     }
     let address = allocate_bytes(memory, size.max(1), "System V guest heap")?;
     shared.borrow_mut().heap.insert(

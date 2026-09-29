@@ -10,9 +10,8 @@ use std::rc::Rc;
 use crate::abi::runner::{GuestCallFailure, GuestCallRequest};
 use crate::core::callbacks::{GuestHostCallback, HookState, HostCallContext, HostCallbackFn};
 use crate::core::contracts::{
-    CallbackId, GuestAccess, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature,
-    GuestCallValue, GuestCallbackReference, GuestImportResolution, GuestStorage, GuestValueLayout,
-    ModuleIdentity, NativeCallAbi,
+    CallbackId, GuestAccess, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
+    GuestCallbackReference, GuestImportResolution, GuestStorage, GuestValueLayout, ModuleIdentity, NativeCallAbi,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
@@ -28,6 +27,9 @@ pub enum SystemVStream {
 }
 
 /// Host capabilities supplied to the System V guest.
+/// Standard output sink: returns bytes accepted.
+pub type SystemVOutputSink = Rc<dyn Fn(SystemVStream, &[u8]) -> usize>;
+
 #[derive(Clone, Default)]
 pub struct SystemVCapabilities {
     /// Deterministic clock: seconds since the epoch.
@@ -35,7 +37,7 @@ pub struct SystemVCapabilities {
     /// Standard input source: up to `maximum_bytes` bytes.
     pub standard_input: Option<Rc<dyn Fn(usize) -> Vec<u8>>>,
     /// Standard output sink: returns bytes accepted.
-    pub standard_output: Option<Rc<dyn Fn(SystemVStream, &[u8]) -> usize>>,
+    pub standard_output: Option<SystemVOutputSink>,
     /// Standard stream flush: zero on success.
     pub standard_flush: Option<Rc<dyn Fn(SystemVStream) -> i32>>,
     /// Whether standard output is a terminal (line buffering).
@@ -265,13 +267,9 @@ pub fn tls_address(
         .iter()
         .find(|entry| entry.module_id == module_id)
         .cloned()
-        .ok_or_else(|| {
-            GuestError::invalid("System V TLS index outside loaded module block")
-        })?;
+        .ok_or_else(|| GuestError::invalid("System V TLS index outside loaded module block"))?;
     if offset >= block.byte_length as u64 {
-        return Err(GuestError::invalid(
-            "System V TLS index outside loaded module block",
-        ));
+        return Err(GuestError::invalid("System V TLS index outside loaded module block"));
     }
     let dtv = memory
         .read_pointer(memory.offset(thread_pointer, pointer_bytes as i64)?)?
@@ -282,9 +280,7 @@ pub fn tls_address(
         pointer_bytes,
     )?;
     if module_id > generation {
-        return Err(GuestError::callback(
-            "System V guest DTV has no requested module",
-        ));
+        return Err(GuestError::callback("System V guest DTV has no requested module"));
     }
     let address = memory
         .read_pointer(memory.offset(dtv, (module_id * (2 * pointer_bytes as u64)) as i64)?)?
@@ -325,15 +321,12 @@ impl SystemVContext {
     }
 
     /// Call signature for `parameters` returning `result`.
-    pub fn signature(
-        &self,
-        parameters: &[GuestStorage],
-        result: Option<GuestStorage>,
-    ) -> GuestCallSignature {
+    pub fn signature(&self, parameters: &[GuestStorage], result: Option<GuestStorage>) -> GuestCallSignature {
         system_v_signature(self.pointer_bytes, parameters, result)
     }
 
     /// Register `invoke` under every listed version.
+    #[allow(clippy::too_many_arguments)]
     pub fn service(
         &self,
         memory: &mut SparseGuestMemory,
@@ -426,12 +419,7 @@ impl SystemVContext {
     }
 
     /// Trap or data address of a registered symbol, if any.
-    pub fn resolve_address(
-        &self,
-        library: &str,
-        name: &str,
-        version: Option<&str>,
-    ) -> Option<GuestAddress> {
+    pub fn resolve_address(&self, library: &str, name: &str, version: Option<&str>) -> Option<GuestAddress> {
         self.shared
             .borrow()
             .symbols
@@ -440,15 +428,9 @@ impl SystemVContext {
     }
 
     /// Allocate heap memory tracked for `free`.
-    pub fn allocate(
-        &self,
-        memory: &mut SparseGuestMemory,
-        size: usize,
-    ) -> Result<GuestAddress, GuestError> {
+    pub fn allocate(&self, memory: &mut SparseGuestMemory, size: usize) -> Result<GuestAddress, GuestError> {
         if size > 0x1000_0000 {
-            return Err(GuestError::invalid(
-                "System V guest allocation exceeds supported size",
-            ));
+            return Err(GuestError::invalid("System V guest allocation exceeds supported size"));
         }
         let address = allocate_bytes(memory, size.max(1), "System V guest heap")?;
         self.shared.borrow_mut().heap.insert(
@@ -462,11 +444,7 @@ impl SystemVContext {
     }
 
     /// Release a heap allocation; null is a no-op.
-    pub fn free(
-        &self,
-        memory: &mut SparseGuestMemory,
-        address: Option<GuestAddress>,
-    ) -> Result<(), GuestError> {
+    pub fn free(&self, memory: &mut SparseGuestMemory, address: Option<GuestAddress>) -> Result<(), GuestError> {
         let Some(address) = address else {
             return Ok(());
         };
@@ -485,15 +463,11 @@ impl SystemVContext {
         address: GuestAddress,
     ) -> Result<Option<usize>, GuestError> {
         memory.offset(address, 0)?;
-        Ok(self
-            .shared
-            .borrow()
-            .heap
-            .get(&address.offset)
-            .map(|entry| entry.size))
+        Ok(self.shared.borrow().heap.get(&address.offset).map(|entry| entry.size))
     }
 
     /// Register one symbol version with coverage counting.
+    #[allow(clippy::too_many_arguments)]
     fn function(
         &self,
         memory: &mut SparseGuestMemory,
@@ -506,9 +480,7 @@ impl SystemVContext {
     ) -> Result<SystemVSymbolEntry, GuestError> {
         let id = symbol_key(library, name, version);
         if self.shared.borrow().symbols.contains_key(&id) {
-            return Err(GuestError::callback(format!(
-                "Duplicate System V symbol {id}"
-            )));
+            return Err(GuestError::callback(format!("Duplicate System V symbol {id}")));
         }
         let key = id.clone();
         let shared = Rc::clone(&self.shared);
@@ -625,11 +597,7 @@ impl<'m> SystemVServiceRegistrar<'m> {
     }
 
     /// Call signature for `parameters` returning `result`.
-    pub fn signature(
-        &self,
-        parameters: &[GuestStorage],
-        result: Option<GuestStorage>,
-    ) -> GuestCallSignature {
+    pub fn signature(&self, parameters: &[GuestStorage], result: Option<GuestStorage>) -> GuestCallSignature {
         self.context.signature(parameters, result)
     }
 
@@ -644,6 +612,7 @@ impl<'m> SystemVServiceRegistrar<'m> {
     }
 
     /// Register `invoke` under every listed version.
+    #[allow(clippy::too_many_arguments)]
     pub fn service(
         &mut self,
         library: &str,
@@ -653,15 +622,8 @@ impl<'m> SystemVServiceRegistrar<'m> {
         result: Option<GuestStorage>,
         invoke: HostCallbackFn,
     ) -> Result<(), GuestError> {
-        self.context.service(
-            self.memory,
-            library,
-            name,
-            versions,
-            parameters,
-            result,
-            invoke,
-        )
+        self.context
+            .service(self.memory, library, name, versions, parameters, result, invoke)
     }
 
     /// Register an always-unsupported trap; returns its address.
@@ -673,7 +635,8 @@ impl<'m> SystemVServiceRegistrar<'m> {
         result: Option<GuestStorage>,
         detail: &str,
     ) -> Result<GuestAddress, GuestError> {
-        self.context.unavailable(self.memory, library, name, parameters, result, detail)
+        self.context
+            .unavailable(self.memory, library, name, parameters, result, detail)
     }
 
     /// Register guest data at `address`.
@@ -685,16 +648,12 @@ impl<'m> SystemVServiceRegistrar<'m> {
         address: GuestAddress,
         byte_length: usize,
     ) -> Result<(), GuestError> {
-        self.context.data(self.memory, library, name, version, address, byte_length)
+        self.context
+            .data(self.memory, library, name, version, address, byte_length)
     }
 
     /// Trap or data address of a registered symbol, if any.
-    pub fn resolve_address(
-        &self,
-        library: &str,
-        name: &str,
-        version: Option<&str>,
-    ) -> Option<GuestAddress> {
+    pub fn resolve_address(&self, library: &str, name: &str, version: Option<&str>) -> Option<GuestAddress> {
         self.context.resolve_address(library, name, version)
     }
 
@@ -714,12 +673,7 @@ impl<'m> SystemVServiceRegistrar<'m> {
     }
 
     /// Resolve a registered symbol to its import resolution.
-    pub fn resolution(
-        &self,
-        library: &str,
-        name: &str,
-        version: Option<&str>,
-    ) -> Option<GuestImportResolution> {
+    pub fn resolution(&self, library: &str, name: &str, version: Option<&str>) -> Option<GuestImportResolution> {
         self.context.resolution(self.memory, library, name, version)
     }
 }

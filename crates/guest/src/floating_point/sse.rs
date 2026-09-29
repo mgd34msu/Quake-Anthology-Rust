@@ -7,10 +7,9 @@
 use crate::core::contracts::{GuestFlag, GuestRegister};
 
 use super::binary::{
-    arithmetic, compare_binary, convert_binary, decode_binary, decode_binary32, encode_binary,
-    from_integer, integer_conversion, read_bits, rounding, square_root, write_bits,
-    zero, BigInt, BinaryOperation, BinaryResult, BinaryValue, BinaryWidth, BINARY32, BINARY64,
-    FLAG_DENORMAL_OPERAND, FLAG_INVALID, FLAG_UNDERFLOW,
+    arithmetic, compare_binary, convert_binary, decode_binary, decode_binary32, encode_binary, from_integer,
+    integer_conversion, read_bits, rounding, square_root, write_bits, zero, BigInt, BinaryOperation, BinaryResult,
+    BinaryValue, BinaryWidth, BINARY32, BINARY64, FLAG_DENORMAL_OPERAND, FLAG_INVALID, FLAG_UNDERFLOW,
 };
 use super::contracts::{NumericError, NumericExecutionContext, NumericOperand, NumericPrefix};
 use super::raw_sse::{execute_raw_sse, prepare_raw_sse};
@@ -41,7 +40,10 @@ fn general_register(index: usize) -> Result<GuestRegister, NumericError> {
 }
 
 fn check_xmm(state: &crate::core::registers::GuestProcessorState, index: usize) -> Result<(), NumericError> {
-    if (index + 1).checked_mul(16).is_some_and(|end| end <= state.simd.xmm.len()) {
+    if (index + 1)
+        .checked_mul(16)
+        .is_some_and(|end| end <= state.simd.xmm.len())
+    {
         Ok(())
     } else {
         Err(NumericError::unsupported("Invalid XMM register index"))
@@ -92,19 +94,9 @@ fn signal(context: &mut NumericExecutionContext, flags: u32) -> Result<(), Numer
     Ok(())
 }
 
-fn source_value(
-    context: &NumericExecutionContext,
-    bytes: &[u8],
-    width: u32,
-    offset: usize,
-) -> BinaryValue {
+fn source_value(context: &NumericExecutionContext, bytes: &[u8], width: u32, offset: usize) -> BinaryValue {
     let value = if width == 32 {
-        let word = u32::from_le_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]);
+        let word = u32::from_le_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]);
         decode_binary32(word)
     } else {
         let mut word = [0u8; 8];
@@ -119,11 +111,8 @@ fn source_value(
 }
 
 fn finish(context: &NumericExecutionContext, result: BinaryResult) -> BinaryResult {
-    let flush =
-        context.state.simd.mxcsr & 0x8000 != 0 && context.state.simd.mxcsr & 0x800 != 0;
-    if flush
-        && matches!(result.value, BinaryValue::Finite { denormal: true, .. })
-        && result.flags & FLAG_UNDERFLOW != 0
+    let flush = context.state.simd.mxcsr & 0x8000 != 0 && context.state.simd.mxcsr & 0x800 != 0;
+    if flush && matches!(result.value, BinaryValue::Finite { denormal: true, .. }) && result.flags & FLAG_UNDERFLOW != 0
     {
         return BinaryResult {
             value: zero(result.value.negative()),
@@ -169,10 +158,7 @@ fn set_lane(bytes: &mut [u8], index: usize, width: u32, value: &BigInt) {
     }
 }
 
-fn integer_source(
-    context: &mut NumericExecutionContext,
-    width: u32,
-) -> Result<BigInt, NumericError> {
+fn integer_source(context: &mut NumericExecutionContext, width: u32) -> Result<BigInt, NumericError> {
     let source = operand(context)?;
     match source {
         NumericOperand::Register(index) => {
@@ -200,7 +186,7 @@ fn integer_source(
 }
 
 fn floating(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), NumericError> {
-    let instruction = context.instruction.clone();
+    let instruction = context.instruction;
     let scalar = matches!(instruction.prefix, NumericPrefix::XF2 | NumericPrefix::XF3);
     let width = if matches!(instruction.prefix, NumericPrefix::X66 | NumericPrefix::XF2) {
         64
@@ -256,19 +242,14 @@ fn floating(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), Num
             continue;
         }
         let result = if opcode == 0x51 {
-            square_root(
-                &right,
-                if width == 64 { BINARY64 } else { BINARY32 },
-                mode,
-            )?
+            square_root(&right, if width == 64 { BINARY64 } else { BINARY32 }, mode)?
         } else if opcode == 0x5d || opcode == 0x5f {
             let comparison = compare_binary(&left, &right);
             let selected = if comparison == super::binary::BinaryComparison::Unordered
                 || comparison == super::binary::BinaryComparison::Equal
             {
                 right.clone()
-            } else if (opcode == 0x5d
-                && comparison == super::binary::BinaryComparison::Less)
+            } else if (opcode == 0x5d && comparison == super::binary::BinaryComparison::Less)
                 || (opcode == 0x5f && comparison == super::binary::BinaryComparison::Greater)
             {
                 left.clone()
@@ -329,7 +310,7 @@ fn floating(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), Num
 }
 
 fn conversions(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), NumericError> {
-    let instruction = context.instruction.clone();
+    let instruction = context.instruction;
     check_xmm(context.state, instruction.register_index)?;
     let start = instruction.register_index * 16;
     let mode = rounding(context.state.simd.mxcsr >> 13);
@@ -424,11 +405,7 @@ fn conversions(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), 
             let denormal = matches!(value, BinaryValue::Finite { denormal: true, .. });
             let result = finish(
                 context,
-                convert_binary(
-                    &value,
-                    if target_width == 64 { BINARY64 } else { BINARY32 },
-                    mode,
-                )?,
+                convert_binary(&value, if target_width == 64 { BINARY64 } else { BINARY32 }, mode)?,
             );
             flags |= result.flags | if denormal { FLAG_DENORMAL_OPERAND } else { 0 };
             set_lane(
@@ -449,11 +426,7 @@ fn conversions(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), 
         let source = load(context, 16, true)?;
         for index in 0..4 {
             if matches!(instruction.prefix, NumericPrefix::None) {
-                let result = convert_binary(
-                    &from_integer(&lane(&source, index, 32).as_int_n(32)),
-                    BINARY32,
-                    mode,
-                )?;
+                let result = convert_binary(&from_integer(&lane(&source, index, 32).as_int_n(32)), BINARY32, mode)?;
                 flags |= result.flags;
                 set_lane(&mut output, index, 32, &encode_binary(&result.value, BinaryWidth::W32));
             } else if matches!(instruction.prefix, NumericPrefix::X66 | NumericPrefix::XF3) {
@@ -476,11 +449,7 @@ fn conversions(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), 
         if matches!(instruction.prefix, NumericPrefix::XF3) {
             let source = load(context, 8, false)?;
             for index in 0..2 {
-                let result = convert_binary(
-                    &from_integer(&lane(&source, index, 32).as_int_n(32)),
-                    BINARY64,
-                    mode,
-                )?;
+                let result = convert_binary(&from_integer(&lane(&source, index, 32).as_int_n(32)), BINARY64, mode)?;
                 flags |= result.flags;
                 set_lane(&mut output, index, 64, &encode_binary(&result.value, BinaryWidth::W64));
             }
@@ -512,9 +481,11 @@ fn conversions(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), 
 }
 
 fn packed_integer(context: &mut NumericExecutionContext, opcode: u8) -> Result<(), NumericError> {
-    let instruction = context.instruction.clone();
+    let instruction = context.instruction;
     if !matches!(instruction.prefix, NumericPrefix::X66) {
-        return Err(NumericError::unsupported("MMX packed integer instruction is unsupported"));
+        return Err(NumericError::unsupported(
+            "MMX packed integer instruction is unsupported",
+        ));
     }
     check_xmm(context.state, instruction.register_index)?;
     let start = instruction.register_index * 16;
@@ -566,11 +537,7 @@ fn packed_integer(context: &mut NumericExecutionContext, opcode: u8) -> Result<(
                 },
             );
         }
-    } else if (0x60..=0x62).contains(&opcode)
-        || (0x68..=0x6a).contains(&opcode)
-        || opcode == 0x6c
-        || opcode == 0x6d
-    {
+    } else if (0x60..=0x62).contains(&opcode) || (0x68..=0x6a).contains(&opcode) || opcode == 0x6c || opcode == 0x6d {
         let width = if opcode == 0x6c || opcode == 0x6d {
             64
         } else {
@@ -601,11 +568,7 @@ fn packed_integer(context: &mut NumericExecutionContext, opcode: u8) -> Result<(
                 lane(&b, index, 16)
             };
             let product = left.mul(&right);
-            let value = if opcode == 0xd5 {
-                product
-            } else {
-                product.shr_bits(16)
-            };
+            let value = if opcode == 0xd5 { product } else { product.shr_bits(16) };
             set_lane(&mut output, index, 16, &value);
         }
     } else if opcode == 0xf4 {
@@ -647,7 +610,7 @@ fn packed_integer(context: &mut NumericExecutionContext, opcode: u8) -> Result<(
         let width_big = BigInt::from_u64(width as u64);
         for index in 0..(128 / width) as usize {
             let value = lane(&a, index, width);
-            let signed = value.as_int_n(width as u32);
+            let signed = value.as_int_n(width);
             let shifted = if opcode >= 0xf0 {
                 if count >= width_big {
                     BigInt::zero()
@@ -677,7 +640,7 @@ fn packed_integer(context: &mut NumericExecutionContext, opcode: u8) -> Result<(
             } else {
                 value.shr_bits(count.low_u64() as u32)
             };
-            set_lane(&mut output, index, width as u32, &shifted);
+            set_lane(&mut output, index, width, &shifted);
         }
     } else {
         return Err(NumericError::unsupported(format!(
@@ -689,14 +652,18 @@ fn packed_integer(context: &mut NumericExecutionContext, opcode: u8) -> Result<(
 }
 
 fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
-    let instruction = context.instruction.clone();
+    let instruction = context.instruction;
     let Some(opcode) = instruction.secondary_opcode else {
         return Err(NumericError::unsupported("Missing SSE secondary opcode"));
     };
-    if matches!(opcode, 0x14 | 0x15 | 0x28 | 0x29 | 0x2e | 0x2f | 0x50 | 0x54 | 0x55 | 0x56 | 0x57 | 0xc6)
-        && !matches!(instruction.prefix, NumericPrefix::None | NumericPrefix::X66)
+    if matches!(
+        opcode,
+        0x14 | 0x15 | 0x28 | 0x29 | 0x2e | 0x2f | 0x50 | 0x54 | 0x55 | 0x56 | 0x57 | 0xc6
+    ) && !matches!(instruction.prefix, NumericPrefix::None | NumericPrefix::X66)
     {
-        return Err(NumericError::unsupported("Reserved mandatory prefix for SSE instruction"));
+        return Err(NumericError::unsupported(
+            "Reserved mandatory prefix for SSE instruction",
+        ));
     }
     if opcode == 0xae {
         let source = operand(context)?;
@@ -761,7 +728,7 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
         } else {
             let target = operand(context)?;
             let start = instruction.register_index * 16;
-            let bits = read_bits(&context.state.simd.xmm[start..start + width / 8].to_vec());
+            let bits = read_bits(&context.state.simd.xmm[start..start + width / 8]);
             match target {
                 NumericOperand::Register(index) => {
                     context
@@ -814,9 +781,8 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
             let NumericOperand::Memory(address) = source else {
                 return Err(NumericError::unsupported("MOVL/MOVH store requires memory"));
             };
-            let bytes = context.state.simd.xmm
-                [start + if high { 8 } else { 0 }..start + if high { 16 } else { 8 }]
-                .to_vec();
+            let bytes =
+                context.state.simd.xmm[start + if high { 8 } else { 0 }..start + if high { 16 } else { 8 }].to_vec();
             context.memory.write(address, &bytes)?;
         } else if let NumericOperand::Memory(address) = source {
             let bytes = context.memory.copy(address, 8)?;
@@ -828,9 +794,8 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
             }
             check_xmm(context.state, index)?;
             let other = index * 16;
-            let bytes = context.state.simd.xmm
-                [other + if high { 0 } else { 8 }..other + if high { 8 } else { 16 }]
-                .to_vec();
+            let bytes =
+                context.state.simd.xmm[other + if high { 0 } else { 8 }..other + if high { 8 } else { 16 }].to_vec();
             let at = start + if high { 8 } else { 0 };
             context.state.simd.xmm[at..at + 8].copy_from_slice(&bytes);
         }
@@ -858,8 +823,7 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
                     0
                 };
                 for index in 0..4 {
-                    let selected =
-                        lane(&source, base + ((immediate >> (2 * index)) & 3) as usize, 16);
+                    let selected = lane(&source, base + ((immediate >> (2 * index)) & 3) as usize, 16);
                     set_lane(&mut output, base + index, 16, &selected);
                 }
             } else {
@@ -877,8 +841,8 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
                 };
                 for index in 0..128 / width {
                     let from = if index < 64 / width { &original } else { &source };
-                    let selected = (immediate >> (index * if width == 32 { 2 } else { 1 }))
-                        & if width == 32 { 3 } else { 1 };
+                    let selected =
+                        (immediate >> (index * if width == 32 { 2 } else { 1 })) & if width == 32 { 3 } else { 1 };
                     let value = lane(from, selected as usize, width as u32);
                     set_lane(&mut output, index, width as u32, &value);
                 }
@@ -1028,7 +992,7 @@ fn execute(context: &mut NumericExecutionContext) -> Result<(), NumericError> {
         }
         return Ok(());
     }
-    if matches!(opcode, 0x71 | 0x72 | 0x73) {
+    if matches!(opcode, 0x71..=0x73) {
         let target = operand(context)?;
         if !matches!(instruction.prefix, NumericPrefix::X66)
             || instruction.immediate.is_none()

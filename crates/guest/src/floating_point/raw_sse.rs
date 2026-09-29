@@ -6,7 +6,6 @@
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
 
-
 use super::contracts::{NumericError, NumericOperand, NumericPrefix};
 
 /// Qualified raw SSE operation.
@@ -47,20 +46,13 @@ pub enum RawLogic {
 
 /// Qualify a secondary opcode as a raw move/logic operation, if applicable.
 #[must_use]
-pub fn prepare_raw_sse(
-    opcode: u8,
-    prefix: NumericPrefix,
-    register_index: usize,
-) -> Option<RawSseOperation> {
+pub fn prepare_raw_sse(opcode: u8, prefix: NumericPrefix, register_index: usize) -> Option<RawSseOperation> {
     let is_move = opcode == 0x10
         || opcode == 0x11
-        || ((opcode == 0x28 || opcode == 0x29)
-            && matches!(prefix, NumericPrefix::None | NumericPrefix::X66))
-        || ((opcode == 0x6f || opcode == 0x7f)
-            && matches!(prefix, NumericPrefix::X66 | NumericPrefix::XF3));
+        || ((opcode == 0x28 || opcode == 0x29) && matches!(prefix, NumericPrefix::None | NumericPrefix::X66))
+        || ((opcode == 0x6f || opcode == 0x7f) && matches!(prefix, NumericPrefix::X66 | NumericPrefix::XF3));
     if is_move {
-        let scalar = (opcode == 0x10 || opcode == 0x11)
-            && matches!(prefix, NumericPrefix::XF2 | NumericPrefix::XF3);
+        let scalar = (opcode == 0x10 || opcode == 0x11) && matches!(prefix, NumericPrefix::XF2 | NumericPrefix::XF3);
         let size = if scalar {
             if matches!(prefix, NumericPrefix::XF2) {
                 8
@@ -79,8 +71,7 @@ pub fn prepare_raw_sse(
                 || ((opcode == 0x6f || opcode == 0x7f) && matches!(prefix, NumericPrefix::X66)),
         });
     }
-    let is_logic = ((0x54..=0x57).contains(&opcode)
-        && matches!(prefix, NumericPrefix::None | NumericPrefix::X66))
+    let is_logic = ((0x54..=0x57).contains(&opcode) && matches!(prefix, NumericPrefix::None | NumericPrefix::X66))
         || (matches!(opcode, 0xdb | 0xdf | 0xeb | 0xef) && matches!(prefix, NumericPrefix::X66));
     if is_logic {
         let operation = if opcode == 0x54 || opcode == 0xdb {
@@ -145,15 +136,15 @@ pub fn execute_raw_sse(
     let right: [u8; 16] = match operand {
         NumericOperand::Register(index) => {
             let start = index * 16;
-            state.simd.xmm[start..start + 16].try_into().map_err(|_| {
-                NumericError::unsupported("Qualified SSE register range is incomplete")
-            })?
+            state.simd.xmm[start..start + 16]
+                .try_into()
+                .map_err(|_| NumericError::unsupported("Qualified SSE register range is incomplete"))?
         }
         NumericOperand::Memory(address) => {
             let bytes = memory.copy(address, 16)?;
-            bytes.try_into().map_err(|_| {
-                NumericError::unsupported("Qualified SSE source range is incomplete")
-            })?
+            bytes
+                .try_into()
+                .map_err(|_| NumericError::unsupported("Qualified SSE source range is incomplete"))?
         }
     };
     for (index, right_byte) in right.iter().enumerate() {

@@ -9,13 +9,13 @@ use crate::abi::classify::{
     plan_guest_call, plan_guest_call_layouts, AbiArgument, AbiCallPlan, AbiLocation, AbiResult,
 };
 use crate::abi::values::{
-    align_down, argument_bytes, decode_value, encode_argument_value, encode_integer_value,
-    encode_value, inferred_layout, value_alignment, value_bytes,
+    align_down, argument_bytes, decode_value, encode_argument_value, encode_integer_value, encode_value,
+    inferred_layout, value_alignment, value_bytes,
 };
 use crate::abi::GuestCpu;
 use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestCallResult, GuestCallSignature, GuestCallValue, GuestFlag,
-    GuestIntegerWidth, GuestRegister, GuestStorage, GuestValueLayout, NativeCallAbi,
+    GuestAccess, GuestAddress, GuestCallResult, GuestCallSignature, GuestCallValue, GuestFlag, GuestIntegerWidth,
+    GuestRegister, GuestStorage, GuestValueLayout, NativeCallAbi,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
@@ -55,15 +55,15 @@ fn read_locations(
         }
         match location {
             AbiLocation::Integer {
-                register, offset, bytes,
+                register,
+                offset,
+                bytes,
             } => {
                 let value = state.registers.read(*register, register_width(state), false)?;
                 match bytes {
                     8 => output[*offset..*offset + 8].copy_from_slice(&value.to_le_bytes()),
-                    4 => output[*offset..*offset + 4]
-                        .copy_from_slice(&(value as u32).to_le_bytes()),
-                    2 => output[*offset..*offset + 2]
-                        .copy_from_slice(&(value as u16).to_le_bytes()),
+                    4 => output[*offset..*offset + 4].copy_from_slice(&(value as u32).to_le_bytes()),
+                    2 => output[*offset..*offset + 2].copy_from_slice(&(value as u16).to_le_bytes()),
                     1 => output[*offset] = value as u8,
                     _ => {
                         for (index, slot) in output[*offset..*offset + bytes].iter_mut().enumerate() {
@@ -73,22 +73,22 @@ fn read_locations(
                 }
             }
             AbiLocation::Sse {
-                register, offset, bytes,
+                register,
+                offset,
+                bytes,
             } => {
                 let base = register * 16;
                 if base + bytes > state.simd.xmm.len() {
                     return Err(GuestError::abi("ABI XMM register is unavailable"));
                 }
-                output[*offset..*offset + bytes]
-                    .copy_from_slice(&state.simd.xmm[base..base + bytes]);
+                output[*offset..*offset + bytes].copy_from_slice(&state.simd.xmm[base..base + bytes]);
             }
             AbiLocation::Stack {
-                stack_offset, offset, bytes,
+                stack_offset,
+                offset,
+                bytes,
             } => {
-                let address = guest_pointer(
-                    memory,
-                    stack_pointer(state)?.wrapping_add(*stack_offset as u64),
-                )?;
+                let address = guest_pointer(memory, stack_pointer(state)?.wrapping_add(*stack_offset as u64))?;
                 memory.copy_into(address, &mut output, *offset, *bytes)?;
             }
         }
@@ -104,9 +104,9 @@ fn write_locations(
 ) -> Result<(), GuestError> {
     for location in locations {
         let end = location.offset() + location.bytes();
-        let part = bytes.get(location.offset()..end).ok_or_else(|| {
-            GuestError::abi("ABI value is shorter than its assigned location")
-        })?;
+        let part = bytes
+            .get(location.offset()..end)
+            .ok_or_else(|| GuestError::abi("ABI value is shorter than its assigned location"))?;
         match location {
             AbiLocation::Integer { register, bytes, .. } => {
                 let mut raw = 0u64;
@@ -114,9 +114,7 @@ fn write_locations(
                     raw |= u64::from(*byte) << (index * 8);
                 }
                 let _ = bytes;
-                state
-                    .registers
-                    .write(*register, register_width(state), raw, false)?;
+                state.registers.write(*register, register_width(state), raw, false)?;
             }
             AbiLocation::Sse { register, .. } => {
                 let base = register * 16;
@@ -126,10 +124,7 @@ fn write_locations(
                 state.simd.xmm[base..base + part.len()].copy_from_slice(part);
             }
             AbiLocation::Stack { stack_offset, .. } => {
-                let address = guest_pointer(
-                    memory,
-                    stack_pointer(state)?.wrapping_add(*stack_offset as u64),
-                )?;
+                let address = guest_pointer(memory, stack_pointer(state)?.wrapping_add(*stack_offset as u64))?;
                 memory.write(address, part)?;
             }
         }
@@ -157,10 +152,7 @@ fn read_scalar(
         }
         match location {
             AbiLocation::Stack { stack_offset, .. } => {
-                let address = guest_pointer(
-                    memory,
-                    stack_pointer(state)?.wrapping_add(*stack_offset as u64),
-                )?;
+                let address = guest_pointer(memory, stack_pointer(state)?.wrapping_add(*stack_offset as u64))?;
                 if *storage == GuestStorage::Float32 {
                     return Ok(Some(GuestCallValue::Float32(memory.read_f32(address)?)));
                 }
@@ -183,20 +175,13 @@ fn read_scalar(
             AbiLocation::Integer { .. } => return Ok(None),
         }
     }
-    if matches!(location, AbiLocation::Sse { .. })
-        || !matches!(location.bytes(), 1 | 2 | 4 | 8)
-    {
+    if matches!(location, AbiLocation::Sse { .. }) || !matches!(location.bytes(), 1 | 2 | 4 | 8) {
         return Ok(None);
     }
     let raw = match location {
-        AbiLocation::Integer { register, .. } => {
-            state.registers.read(*register, register_width(state), false)?
-        }
+        AbiLocation::Integer { register, .. } => state.registers.read(*register, register_width(state), false)?,
         AbiLocation::Stack { stack_offset, .. } => {
-            let address = guest_pointer(
-                memory,
-                stack_pointer(state)?.wrapping_add(*stack_offset as u64),
-            )?;
+            let address = guest_pointer(memory, stack_pointer(state)?.wrapping_add(*stack_offset as u64))?;
             match location.bytes() {
                 8 => memory.read_u64(address)?,
                 4 => u64::from(memory.read_u32(address)?),
@@ -351,12 +336,13 @@ impl X86AbiAdapter {
         let word = self.abi.pointer_bytes();
         let mut encoded: Vec<EncodedArgument> = Vec::with_capacity(arguments.len());
         for (index, value) in arguments.iter().enumerate() {
-            let layout = layouts.get(index).ok_or_else(|| {
-                GuestError::abi("Argument layout missing")
-            })?;
-            let argument = plan.arguments.get(index).ok_or_else(|| {
-                GuestError::abi("Argument allocation missing")
-            })?;
+            let layout = layouts
+                .get(index)
+                .ok_or_else(|| GuestError::abi("Argument layout missing"))?;
+            let argument = plan
+                .arguments
+                .get(index)
+                .ok_or_else(|| GuestError::abi("Argument allocation missing"))?;
             let single = if argument.locations.len() == 1 {
                 Some(&argument.locations[0])
             } else {
@@ -381,23 +367,16 @@ impl X86AbiAdapter {
                 };
                 encoded.push(EncodedArgument::Integer(extended));
             } else {
-                encoded.push(EncodedArgument::Bytes(encode_argument_value(
-                    layout, value, memory,
-                )?));
+                encoded.push(EncodedArgument::Bytes(encode_argument_value(layout, value, memory)?));
             }
         }
         let caller_stack = stack_pointer(state)?;
         let mut temporary_top = caller_stack;
-        let mut reserve = |memory: &mut SparseGuestMemory,
-                           size: usize,
-                           alignment: usize|
-         -> Result<GuestAddress, GuestError> {
-            temporary_top = align_down(
-                temporary_top.wrapping_sub(size as u64),
-                alignment as u64,
-            );
-            guest_pointer(memory, temporary_top)
-        };
+        let mut reserve =
+            |memory: &mut SparseGuestMemory, size: usize, alignment: usize| -> Result<GuestAddress, GuestError> {
+                temporary_top = align_down(temporary_top.wrapping_sub(size as u64), alignment as u64);
+                guest_pointer(memory, temporary_top)
+            };
         let output = match &plan.result {
             AbiResult::Memory { layout, .. } => Some(reserve(
                 memory,
@@ -439,19 +418,16 @@ impl X86AbiAdapter {
             write_locations(state, memory, &pointer.locations, &bytes)?;
         }
         for (index, argument) in plan.arguments.iter().enumerate() {
-            let bytes = encoded.get(index).ok_or_else(|| {
-                GuestError::abi("Argument allocation missing")
-            })?;
+            let bytes = encoded
+                .get(index)
+                .ok_or_else(|| GuestError::abi("Argument allocation missing"))?;
             let temporary = indirect.get(index).copied().flatten();
             match (bytes, temporary) {
                 (EncodedArgument::Integer(raw), _) => {
-                    let Some(AbiLocation::Integer { register, .. }) = argument.locations.first()
-                    else {
+                    let Some(AbiLocation::Integer { register, .. }) = argument.locations.first() else {
                         return Err(GuestError::abi("Integer argument has no assigned register"));
                     };
-                    state
-                        .registers
-                        .write(*register, register_width(state), *raw, false)?;
+                    state.registers.write(*register, register_width(state), *raw, false)?;
                 }
                 (EncodedArgument::Bytes(bytes), None) => {
                     write_locations(state, memory, &argument.locations, bytes)?;
@@ -539,12 +515,7 @@ impl X86AbiAdapter {
                 if let Some(value) = read_scalar(state, memory, layout, locations)? {
                     return Ok(GuestCallResult::Value(value));
                 }
-                let bytes = read_locations(
-                    state,
-                    memory,
-                    locations,
-                    value_bytes(layout, self.abi.pointer_bytes()),
-                )?;
+                let bytes = read_locations(state, memory, locations, value_bytes(layout, self.abi.pointer_bytes()))?;
                 if let GuestValueLayout::Aggregate(record) = layout {
                     return Ok(GuestCallResult::Value(GuestCallValue::Aggregate {
                         layout: record.clone(),
@@ -556,9 +527,7 @@ impl X86AbiAdapter {
             AbiResult::Memory { layout, .. } => {
                 let address = guest_pointer(
                     memory,
-                    state
-                        .registers
-                        .read(GuestRegister::Rax, register_width(state), false)?,
+                    state.registers.read(GuestRegister::Rax, register_width(state), false)?,
                 )?;
                 let bytes = memory.copy(address, value_bytes(layout, self.abi.pointer_bytes()))?;
                 if let GuestValueLayout::Aggregate(record) = layout {
@@ -577,10 +546,9 @@ impl X86AbiAdapter {
                 };
                 let value = read_x87_return(&mut state.x87, width)
                     .map_err(|error| GuestError::abi(format!("x87 return read failed: {error:?}")))?;
-                let top = ((state.x87.status_word >> 11) & 7) as u16;
+                let top = (state.x87.status_word >> 11) & 7;
                 state.x87.tag_word |= 3 << (top * 2);
-                state.x87.status_word =
-                    state.x87.status_word & !0x3800 | (((top + 1) & 7) << 11);
+                state.x87.status_word = state.x87.status_word & !0x3800 | (((top + 1) & 7) << 11);
                 Ok(GuestCallResult::Value(if *storage == GuestStorage::Float32 {
                     GuestCallValue::Float32(value as f32)
                 } else {
@@ -625,9 +593,7 @@ impl X86AbiAdapter {
                     GuestCallValue::Float32(value) => f64::from(*value),
                     GuestCallValue::Float64(value) => *value,
                     _ => {
-                        return Err(GuestError::abi(
-                            "x87 callback result must be floating point",
-                        ));
+                        return Err(GuestError::abi("x87 callback result must be floating point"));
                     }
                 };
                 write_x87_return(
@@ -656,9 +622,7 @@ impl X86AbiAdapter {
                         unreachable!("scalar checked above");
                     };
                     let raw = encode_integer_value(*storage, value, memory)?;
-                    state
-                        .registers
-                        .write(register, register_width(state), raw, false)?;
+                    state.registers.write(register, register_width(state), raw, false)?;
                 } else {
                     let bytes = encode_value(layout, value, memory)?;
                     write_locations(state, memory, locations, &bytes)?;
@@ -668,12 +632,9 @@ impl X86AbiAdapter {
                 let bytes = encode_value(layout, value, memory)?;
                 let destination = return_buffer(state, memory, &plan)?;
                 memory.write(destination, &bytes)?;
-                state.registers.write(
-                    GuestRegister::Rax,
-                    register_width(state),
-                    destination.offset,
-                    false,
-                )?;
+                state
+                    .registers
+                    .write(GuestRegister::Rax, register_width(state), destination.offset, false)?;
             }
         }
         state.registers.write(

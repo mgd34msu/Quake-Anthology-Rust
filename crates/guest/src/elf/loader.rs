@@ -7,17 +7,14 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::core::contracts::{
-    GuestAddress, GuestExport, GuestExportTarget, GuestImage, GuestImport,
-    GuestImportResolver, GuestMapping, GuestPermissions, GuestSymbolName, GuestTlsTemplate,
-    ModuleIdentity,
+    GuestAddress, GuestExport, GuestExportTarget, GuestImage, GuestImport, GuestImportResolver, GuestMapping,
+    GuestPermissions, GuestSymbolName, GuestTlsTemplate, ModuleIdentity,
 };
 use crate::core::memory::SparseGuestMemory;
-use crate::elf::parse::{
-    checked_number, dynamic_value, elf_file_offset, inspect_elf, ElfInspection, ElfSymbol,
-};
+use crate::elf::parse::{checked_number, dynamic_value, elf_file_offset, inspect_elf, ElfInspection, ElfSymbol};
 use crate::elf::relocate::{
-    defined_symbol_address, elf_address, relocate_elf, resolve_symbol, ElfRelocationContext,
-    ElfTlsBindings,
+    defined_symbol_address, elf_address, relocate_elf, resolve_symbol, ElfRelocationContext, ElfTlsBindings,
+    IndirectResolver, SymbolSizeResolver,
 };
 use crate::elf::unwind::read_elf_unwind;
 use crate::error::GuestError;
@@ -71,10 +68,9 @@ pub struct ElfLoadOptions<'a> {
     /// TLS bindings, if any.
     pub tls: Option<&'a dyn ElfTlsBindings>,
     /// Guest IFUNC resolver execution; must never use native execution.
-    pub resolve_indirect: Option<&'a dyn Fn(GuestAddress) -> Result<GuestAddress, GuestError>>,
+    pub resolve_indirect: Option<&'a dyn IndirectResolver>,
     /// Provider symbol sizes for COPY/SIZE relocations.
-    pub resolve_symbol_size:
-        Option<&'a dyn Fn(&GuestImport, &GuestImage) -> Result<Option<usize>, GuestError>>,
+    pub resolve_symbol_size: Option<&'a dyn SymbolSizeResolver>,
     /// One registry per guest process.
     pub unique_symbols: Option<&'a mut HashMap<String, GuestAddress>>,
 }
@@ -135,9 +131,7 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
     if elf.abi.pointer_bytes() != memory.pointer_bytes() {
         return Err(elf_error("image and guest memory have different pointer widths"));
     }
-    if (elf.image_type == crate::elf::parse::ElfType::Executable && load_bias != 0)
-        || load_bias % PAGE != 0
-    {
+    if (elf.image_type == crate::elf::parse::ElfType::Executable && load_bias != 0) || load_bias % PAGE != 0 {
         return Err(elf_error("invalid load bias for fixed ELF executable"));
     }
     for library in &elf.needed_libraries {
@@ -146,10 +140,9 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
         }
     }
     validate_dynamic_policy(&elf)?;
-    let supported: HashSet<u32> =
-        [0, 1, 2, 3, 4, 6, 7, 0x6474_e550, 0x6474_e551, 0x6474_e552]
-            .into_iter()
-            .collect();
+    let supported: HashSet<u32> = [0, 1, 2, 3, 4, 6, 7, 0x6474_e550, 0x6474_e551, 0x6474_e552]
+        .into_iter()
+        .collect();
     for segment in &elf.segments {
         if !supported.contains(&segment.segment_type) {
             return Err(elf_error(format!(
@@ -163,9 +156,7 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
         {
             return Err(elf_error("load bias violates segment alignment"));
         }
-        if segment.segment_type == 1
-            && segment.address.wrapping_sub(segment.offset as u64) % PAGE != 0
-        {
+        if segment.segment_type == 1 && segment.address.wrapping_sub(segment.offset as u64) % PAGE != 0 {
             return Err(elf_error("PT_LOAD is not page congruent"));
         }
         if segment.segment_type == 1 && segment.flags & !7 != 0 {
@@ -179,12 +170,7 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
         .collect();
     let mut boundaries: Vec<u64> = load_segments
         .iter()
-        .flat_map(|segment| {
-            [
-                down(segment.address),
-                up(segment.address + segment.memory_size as u64),
-            ]
-        })
+        .flat_map(|segment| [down(segment.address), up(segment.address + segment.memory_size as u64)])
         .collect();
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -198,10 +184,7 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
         let (start, end) = (window[0], window[1]);
         let overlapping: Vec<&&crate::elf::parse::ElfSegment> = load_segments
             .iter()
-            .filter(|segment| {
-                down(segment.address) <= start
-                    && up(segment.address + segment.memory_size as u64) >= end
-            })
+            .filter(|segment| down(segment.address) <= start && up(segment.address + segment.memory_size as u64) >= end)
             .collect();
         if overlapping.is_empty() {
             continue;
@@ -214,8 +197,9 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
             label: format!("{}:PT_LOAD", module.artifact_path),
         });
     }
-    let prior_unique: HashSet<String> =
-        unique_symbols.as_ref().map_or(HashSet::new(), |registry| registry.keys().cloned().collect());
+    let prior_unique: HashSet<String> = unique_symbols
+        .as_ref()
+        .map_or(HashSet::new(), |registry| registry.keys().cloned().collect());
     let mut mapped: Vec<GuestMapping> = Vec::new();
     let result = load_inner(
         &bytes,
@@ -257,17 +241,17 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_inner<'e, 'm, 'r, 't, 'd, 's, 'u>(
+fn load_inner(
     bytes: &[u8],
-    elf: &'e ElfInspection,
+    elf: &ElfInspection,
     module: ModuleIdentity,
-    memory: &'m mut SparseGuestMemory,
+    memory: &mut SparseGuestMemory,
     load_bias: u64,
-    resolver: &'r dyn GuestImportResolver,
-    tls_bindings: Option<&'t dyn ElfTlsBindings>,
-    resolve_indirect: Option<&'d dyn Fn(GuestAddress) -> Result<GuestAddress, GuestError>>,
-    resolve_symbol_size: Option<&'s dyn Fn(&GuestImport, &GuestImage) -> Result<Option<usize>, GuestError>>,
-    unique_symbols: Option<&'u mut HashMap<String, GuestAddress>>,
+    resolver: &dyn GuestImportResolver,
+    tls_bindings: Option<&dyn ElfTlsBindings>,
+    resolve_indirect: Option<&dyn IndirectResolver>,
+    resolve_symbol_size: Option<&dyn SymbolSizeResolver>,
+    unique_symbols: Option<&mut HashMap<String, GuestAddress>>,
     planned: &[GuestMapping],
     load_segments: &[&crate::elf::parse::ElfSegment],
     mapped: &mut Vec<GuestMapping>,
@@ -296,17 +280,11 @@ fn load_inner<'e, 'm, 'r, 't, 'd, 's, 'u>(
             let initialized = bytes
                 .get(file_start..segment.offset + segment.file_size)
                 .ok_or_else(|| elf_error("segment file range exceeds input"))?;
-            memory.write(
-                elf_address(memory, load_bias + down(segment.address))?,
-                initialized,
-            )?;
+            memory.write(elf_address(memory, load_bias + down(segment.address))?, initialized)?;
         }
         if segment.memory_size > segment.file_size {
             memory.write(
-                elf_address(
-                    memory,
-                    load_bias + segment.address + segment.file_size as u64,
-                )?,
+                elf_address(memory, load_bias + segment.address + segment.file_size as u64)?,
                 &vec![0u8; segment.memory_size - segment.file_size],
             )?;
         }
@@ -317,13 +295,9 @@ fn load_inner<'e, 'm, 'r, 't, 'd, 's, 'u>(
     for symbol in &elf.symbols {
         if symbol.symbol_type == 6 && symbol.section != 0 {
             match tls_segment {
-                Some(tls_segment)
-                    if symbol.value + symbol.size as u64 <= tls_segment.memory_size as u64 => {}
+                Some(tls_segment) if symbol.value + symbol.size as u64 <= tls_segment.memory_size as u64 => {}
                 _ => {
-                    return Err(elf_error(format!(
-                        "TLS symbol {} exceeds its template",
-                        symbol.name
-                    )));
+                    return Err(elf_error(format!("TLS symbol {} exceeds its template", symbol.name)));
                 }
             }
         }
@@ -477,16 +451,25 @@ fn load_inner<'e, 'm, 'r, 't, 'd, 's, 'u>(
         _ => None,
     };
     for mapping in planned {
-        memory.protect(elf_address(memory, mapping.base)?, mapping.byte_length, mapping.permissions)?;
+        memory.protect(
+            elf_address(memory, mapping.base)?,
+            mapping.byte_length,
+            mapping.permissions,
+        )?;
     }
-    for segment in elf.segments.iter().filter(|segment| segment.segment_type == 0x6474_e552) {
+    for segment in elf
+        .segments
+        .iter()
+        .filter(|segment| segment.segment_type == 0x6474_e552)
+    {
         let start = load_bias + down(segment.address);
         let end = load_bias + down(segment.address + segment.memory_size as u64);
         let mut address = start;
         while address < end {
-            if !planned.iter().any(|range| {
-                address >= range.base && address + PAGE <= range.base + range.byte_length as u64
-            }) {
+            if !planned
+                .iter()
+                .any(|range| address >= range.base && address + PAGE <= range.base + range.byte_length as u64)
+            {
                 return Err(elf_error("RELRO exceeds this image's mapped pages"));
             }
             address += PAGE;
@@ -499,8 +482,12 @@ fn load_inner<'e, 'm, 'r, 't, 'd, 's, 'u>(
             )?;
         }
     }
-    let mut checked: Vec<GuestAddress> =
-        preinitializers.iter().chain(&initializers).chain(&finalizers).copied().collect();
+    let mut checked: Vec<GuestAddress> = preinitializers
+        .iter()
+        .chain(&initializers)
+        .chain(&finalizers)
+        .copied()
+        .collect();
     if let Some(entry) = image.entry_point {
         checked.push(entry);
     }
@@ -513,8 +500,7 @@ fn load_inner<'e, 'm, 'r, 't, 'd, 's, 'u>(
         .filter(|mapping| {
             planned.iter().any(|range| {
                 mapping.base >= range.base
-                    && mapping.base + mapping.byte_length as u64
-                        <= range.base + range.byte_length as u64
+                    && mapping.base + mapping.byte_length as u64 <= range.base + range.byte_length as u64
             })
         })
         .collect();
@@ -598,7 +584,7 @@ fn pointer_array(
 }
 
 fn validate_dynamic_policy(elf: &ElfInspection) -> Result<(), GuestError> {
-    for tag in [0x7fff_ffff, 0x7fff_fffd, 0x6fff_efb, 0x6fff_efc] {
+    for tag in [0x7fff_ffff, 0x7fff_fffd, 0x06ff_fefb, 0x06ff_fefc] {
         if elf.dynamic.contains_key(&tag) {
             return Err(elf_error(format!(
                 "dynamic filter/audit dependency tag 0x{tag:x} is unsupported"
@@ -606,9 +592,50 @@ fn validate_dynamic_policy(elf: &ElfInspection) -> Result<(), GuestError> {
         }
     }
     let supported: HashSet<u32> = [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-        25, 26, 27, 28, 29, 30, 32, 33, 35, 36, 37, 0x6fff_fef5, 0x6fff_fff0, 0x6fff_fff9,
-        0x6fff_fffa, 0x6fff_fffb, 0x6fff_fffc, 0x6fff_fffd, 0x6fff_fffe, 0x6fff_ffff,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        32,
+        33,
+        35,
+        36,
+        37,
+        0x6fff_fef5,
+        0x6fff_fff0,
+        0x6fff_fff9,
+        0x6fff_fffa,
+        0x6fff_fffb,
+        0x6fff_fffc,
+        0x6fff_fffd,
+        0x6fff_fffe,
+        0x6fff_ffff,
     ]
     .into_iter()
     .collect();

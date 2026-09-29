@@ -15,9 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::core::contracts::{GuestAccess, GuestAddress};
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
-use crate::runtime::common::format::arguments::{
-    FormatArgument, FormatArgumentType, FormatArguments, FormatDialect,
-};
+use crate::runtime::common::format::arguments::{FormatArgument, FormatArgumentType, FormatArguments, FormatDialect};
 use crate::runtime::common::format::float::{format_float, FormatRounding};
 use crate::runtime::common::memory::{read_string, write_unsigned};
 
@@ -113,22 +111,15 @@ struct FormatCache {
     order: VecDeque<String>,
 }
 
-static PARSED_FORMATS: OnceLock<Mutex<HashMap<(FormatDialect, usize), FormatCache>>> =
-    OnceLock::new();
+static PARSED_FORMATS: OnceLock<Mutex<HashMap<(FormatDialect, usize), FormatCache>>> = OnceLock::new();
 
-fn retained_format(
-    text: &str,
-    dialect: FormatDialect,
-    pointer_bytes: usize,
-) -> Result<ParsedFormat, FormatFailure> {
+fn retained_format(text: &str, dialect: FormatDialect, pointer_bytes: usize) -> Result<ParsedFormat, FormatFailure> {
     let caches = PARSED_FORMATS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut caches = caches.lock().unwrap_or_else(|error| error.into_inner());
-    let cache = caches
-        .entry((dialect, pointer_bytes))
-        .or_insert_with(|| FormatCache {
-            map: HashMap::new(),
-            order: VecDeque::new(),
-        });
+    let cache = caches.entry((dialect, pointer_bytes)).or_insert_with(|| FormatCache {
+        map: HashMap::new(),
+        order: VecDeque::new(),
+    });
     if let Some(retained) = cache.map.get(text) {
         return Ok(retained.clone());
     }
@@ -196,10 +187,18 @@ impl Parser<'_> {
         if start == self.at {
             return Ok(0);
         }
-        let value: i64 = self.chars[start..self.at].iter().collect::<String>().parse().unwrap_or(i64::MAX);
+        let value: i64 = self.chars[start..self.at]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .unwrap_or(i64::MAX);
         if value > 0x7fff_ffff {
             return Err(FormatFailure {
-                errno: if self.dialect == FormatDialect::Windows { 132 } else { 75 },
+                errno: if self.dialect == FormatDialect::Windows {
+                    132
+                } else {
+                    75
+                },
             });
         }
         Ok(value)
@@ -212,7 +211,7 @@ impl Parser<'_> {
             self.at = start;
             return Ok(None);
         }
-        if self.dialect == FormatDialect::Windows || value < 1 || value > 4096 {
+        if self.dialect == FormatDialect::Windows || !(1..=4096).contains(&value) {
             return Err(self.invalid());
         }
         self.at += 1;
@@ -259,11 +258,7 @@ impl Parser<'_> {
     }
 }
 
-fn parse(
-    text: &str,
-    dialect: FormatDialect,
-    pointer_bytes: usize,
-) -> Result<ParsedFormat, FormatFailure> {
+fn parse(text: &str, dialect: FormatDialect, pointer_bytes: usize) -> Result<ParsedFormat, FormatFailure> {
     let chars: Vec<char> = text.chars().collect();
     let mut parser = Parser {
         chars: &chars,
@@ -306,9 +301,7 @@ fn parse(
             precision = Some(parser.amount(&mut references)?);
         }
         let mut length = String::new();
-        for candidate in [
-            "I64", "I32", "hh", "ll", "h", "l", "L", "j", "z", "t", "I", "w", "q",
-        ] {
+        for candidate in ["I64", "I32", "hh", "ll", "h", "l", "L", "j", "z", "t", "I", "w", "q"] {
             let end = parser.at + candidate.len();
             if end <= chars.len() && chars[parser.at..end].iter().collect::<String>() == candidate {
                 length = candidate.to_string();
@@ -368,30 +361,23 @@ struct Output {
 }
 
 impl Output {
-    fn append(
-        &mut self,
-        request: &mut GuestFormatRequest<'_>,
-        text: &str,
-    ) -> Result<(), OutputHalt> {
+    fn append(&mut self, request: &mut GuestFormatRequest<'_>, text: &str) -> Result<(), OutputHalt> {
         let units: Vec<u16> = text.encode_utf16().collect();
         if units.is_empty() {
             return Ok(());
         }
         let available = match request.buffer {
             None => 0,
-            Some(_) => {
-                if request.capacity > self.used {
-                    request.capacity - self.used
-                } else {
-                    0
-                }
-            }
+            Some(_) => request.capacity.saturating_sub(self.used),
         };
         let copied = (available as usize).min(units.len());
         if let Some(buffer) = request.buffer {
             if copied > 0 {
                 let bytes: Vec<u8> = units[..copied].iter().map(|unit| (unit & 0xff) as u8).collect();
-                let at = request.memory.offset(buffer, self.used as i64).map_err(OutputHalt::guest)?;
+                let at = request
+                    .memory
+                    .offset(buffer, self.used as i64)
+                    .map_err(OutputHalt::guest)?;
                 request.memory.write(at, &bytes).map_err(OutputHalt::guest)?;
                 self.used += copied as u64;
             }
@@ -425,10 +411,7 @@ impl Output {
         if count == 0 {
             return Ok(());
         }
-        if request.termination == FormatTermination::C99
-            || request.continue_count
-            || request.buffer.is_none()
-        {
+        if request.termination == FormatTermination::C99 || request.continue_count || request.buffer.is_none() {
             let available = match request.buffer {
                 None => 0,
                 Some(_) => request.capacity.saturating_sub(self.used) as usize,
@@ -502,9 +485,7 @@ impl Output {
             let slot = request.memory.offset(buffer, at as i64)?;
             request.memory.write_u8(slot, 0)?;
         }
-        if request.termination == FormatTermination::Ucrt
-            && (capacity == 0 || self.used == capacity)
-        {
+        if request.termination == FormatTermination::Ucrt && (capacity == 0 || self.used == capacity) {
             return Ok(GuestFormatResult {
                 result: if capacity == 0 { -1 } else { -2 },
                 errno: error,
@@ -543,7 +524,7 @@ fn readonly_format(request: &mut GuestFormatRequest<'_>, length: usize) -> bool 
     let mut cursor = format.offset;
     let end = cursor + length as u64 + 1;
     let mut mappings = request.memory.mappings();
-    mappings.sort_by(|a, b| a.base.cmp(&b.base));
+    mappings.sort_by_key(|mapping| mapping.base);
     for mapping in &mappings {
         let stop = mapping.base + mapping.byte_length as u64;
         if stop <= cursor {
@@ -578,10 +559,7 @@ fn string_argument(
             return Ok(String::new());
         }
         let maximum = precision.unwrap_or(1024 * 1024);
-        let length = request
-            .memory
-            .find_zero(address, maximum)
-            .map_err(OutputHalt::guest)?;
+        let length = request.memory.find_zero(address, maximum).map_err(OutputHalt::guest)?;
         if length < 0 && precision.is_none() {
             return Err(OutputHalt::guest(GuestError::invalid(
                 "Guest printf string exceeds runtime string limit",
@@ -593,7 +571,11 @@ fn string_argument(
             .map_err(OutputHalt::guest)?;
         return Ok(bytes.iter().map(|byte| *byte as char).collect());
     }
-    let width = if request.dialect == FormatDialect::Windows { 2 } else { 4 };
+    let width = if request.dialect == FormatDialect::Windows {
+        2
+    } else {
+        4
+    };
     let mut text = String::new();
     let mut index = 0;
     while precision.is_none_or(|precision| text.chars().count() < precision) {
@@ -657,44 +639,38 @@ struct Driver {
 }
 
 impl Driver {
-    fn get(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        reference: &Reference,
-    ) -> Result<FormatArgument, OutputHalt> {
+    fn get(&mut self, memory: &mut SparseGuestMemory, reference: &Reference) -> Result<FormatArgument, OutputHalt> {
         if !self.positional {
-            let reader = self.reader.as_mut().ok_or_else(|| {
-                OutputHalt::guest(GuestError::callback("Missing printf argument reader"))
-            })?;
+            let reader = self
+                .reader
+                .as_mut()
+                .ok_or_else(|| OutputHalt::guest(GuestError::callback("Missing printf argument reader")))?;
             return reader.next(memory, reference.argument_type).map_err(OutputHalt::guest);
         }
-        self.values.get(&reference.index).cloned().ok_or(OutputHalt::Failure(FormatFailure { errno: 22 }))
+        self.values
+            .get(&reference.index)
+            .cloned()
+            .ok_or(OutputHalt::Failure(FormatFailure { errno: 22 }))
     }
 
-    fn amount(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        amount: &Amount,
-    ) -> Result<i64, OutputHalt> {
+    fn amount(&mut self, memory: &mut SparseGuestMemory, amount: &Amount) -> Result<i64, OutputHalt> {
         match amount {
             Amount::Literal(value) => Ok(*value),
             Amount::Argument(reference) => {
                 let value = self.get(memory, reference)?;
-                Ok(i64::from((integer_value(&value).map_err(OutputHalt::Failure)? as u32) as i32))
+                Ok(i64::from(
+                    (integer_value(&value).map_err(OutputHalt::Failure)? as u32) as i32,
+                ))
             }
         }
     }
 }
 
 /// Format one guest `printf` request into its buffer.
-pub fn format_guest_buffer(
-    request: &mut GuestFormatRequest<'_>,
-) -> Result<GuestFormatResult, GuestError> {
+pub fn format_guest_buffer(request: &mut GuestFormatRequest<'_>) -> Result<GuestFormatResult, GuestError> {
     let pointer_bits = request.memory.pointer_bytes() * 8;
     if pointer_bits < 64 && request.capacity > (1u64 << pointer_bits) - 1 {
-        return Err(GuestError::invalid(
-            "Guest printf buffer count is not size_t",
-        ));
+        return Err(GuestError::invalid("Guest printf buffer count is not size_t"));
     }
     if request.format.is_none() || (request.buffer.is_none() && request.capacity != 0) {
         return Ok(GuestFormatResult {
@@ -712,22 +688,16 @@ pub fn format_guest_buffer(
     }
 }
 
-fn format_inner(
-    request: &mut GuestFormatRequest<'_>,
-    output: &mut Output,
-) -> Result<(), OutputHalt> {
+fn format_inner(request: &mut GuestFormatRequest<'_>, output: &mut Output) -> Result<(), OutputHalt> {
     let format_address = request.format.expect("format checked");
     let text = read_string(request.memory, format_address, false).map_err(OutputHalt::guest)?;
-    let parsed = retained_format(text.as_str(), request.dialect, request.memory.pointer_bytes())
-        .map_err(OutputHalt::Failure)?;
+    let parsed =
+        retained_format(text.as_str(), request.dialect, request.memory.pointer_bytes()).map_err(OutputHalt::Failure)?;
     // A literal format need not touch a caller's otherwise unused va_list.
     let reader = if parsed.references.is_empty() {
         None
     } else {
-        Some(
-            FormatArguments::open(request.memory, request.dialect, request.arguments)
-                .map_err(OutputHalt::guest)?,
-        )
+        Some(FormatArguments::open(request.memory, request.dialect, request.arguments).map_err(OutputHalt::guest)?)
     };
     let mut driver = Driver {
         reader,
@@ -748,7 +718,10 @@ fn format_inner(
             let Some(argument_type) = types.get(&index).copied() else {
                 return Err(OutputHalt::Failure(FormatFailure { errno: 22 }));
             };
-            let reader = driver.reader.as_mut().ok_or(OutputHalt::Failure(FormatFailure { errno: 22 }))?;
+            let reader = driver
+                .reader
+                .as_mut()
+                .ok_or(OutputHalt::Failure(FormatFailure { errno: 22 }))?;
             let value = reader.next(request.memory, argument_type).map_err(OutputHalt::guest)?;
             driver.values.insert(index, value);
         }
@@ -814,7 +787,7 @@ fn convert(
                 _ => i128::from(raw),
             }
         };
-        let magnitude = number.abs() as u64;
+        let magnitude = number.unsigned_abs() as u64;
         let radix = if code == 'o' {
             8
         } else if code == 'x' || code == 'X' {
@@ -848,7 +821,11 @@ fn convert(
                 String::new()
             };
         } else if alternate && radix == 16 && magnitude != 0 {
-            prefix = if code == 'X' { "0X".to_string() } else { "0x".to_string() };
+            prefix = if code == 'X' {
+                "0X".to_string()
+            } else {
+                "0x".to_string()
+            };
         } else if alternate && radix == 8 && !body.starts_with('0') {
             prefix = "0".to_string();
         }
@@ -878,10 +855,7 @@ fn convert(
         } else {
             String::new()
         };
-        if !matches!(
-            float,
-            crate::floating_point::binary::BinaryValue::Finite { .. }
-        ) {
+        if !matches!(float, crate::floating_point::binary::BinaryValue::Finite { .. }) {
             zero = false;
         }
         if body.starts_with("0x") || body.starts_with("0X") {
@@ -965,8 +939,7 @@ fn convert(
             .map_err(OutputHalt::guest)?
             .ok_or_else(|| OutputHalt::guest(GuestError::invalid("Null printf count pointer")))?;
         let bytes = integer_bits(&token.length, request.dialect, request.memory.pointer_bytes()) / 8;
-        write_unsigned(request.memory, address, bytes as usize, output.total as i128)
-            .map_err(OutputHalt::guest)?;
+        write_unsigned(request.memory, address, bytes as usize, output.total as i128).map_err(OutputHalt::guest)?;
         return Ok(());
     }
     let padding = (width as usize).saturating_sub(prefix.chars().count() + body.chars().count());

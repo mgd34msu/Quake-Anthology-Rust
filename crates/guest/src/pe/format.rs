@@ -106,17 +106,9 @@ pub struct PeFile {
 }
 
 /// Checked file range.
-pub fn checked_range(
-    offset: usize,
-    length: usize,
-    limit: usize,
-    stage: PeStage,
-) -> Result<(), GuestError> {
+pub fn checked_range(offset: usize, length: usize, limit: usize, stage: PeStage) -> Result<(), GuestError> {
     if offset > limit || length > limit - offset {
-        return Err(pe_error(
-            stage,
-            format!("range {offset}+{length} exceeds {limit}"),
-        ));
+        return Err(pe_error(stage, format!("range {offset}+{length} exceeds {limit}")));
     }
     Ok(())
 }
@@ -224,7 +216,7 @@ pub fn parse_pe(bytes: &[u8]) -> Result<PeFile, GuestError> {
     let section_count = reader.u16(pe + 6)? as usize;
     let optional_size = reader.u16(pe + 20)? as usize;
     let characteristics = reader.u16(pe + 22)?;
-    if section_count < 1 || section_count > 96 || characteristics & 2 == 0 {
+    if !(1..=96).contains(&section_count) || characteristics & 2 == 0 {
         return Err(pe_error(
             PeStage::Headers,
             "invalid executable section count/characteristics",
@@ -277,18 +269,12 @@ pub fn parse_pe(bytes: &[u8]) -> Result<PeFile, GuestError> {
         || header_size > image_size
         || preferred_base as u128 + u64::from(image_size) as u128 > 1u128 << (abi.pointer_bytes() * 8)
     {
-        return Err(pe_error(
-            PeStage::Headers,
-            "invalid image base/size or header size",
-        ));
+        return Err(pe_error(PeStage::Headers, "invalid image base/size or header size"));
     }
     checked_range(0, header_size as usize, bytes.len(), PeStage::Headers)?;
     let directory_count = reader.u32(optional + directory_offset - 4)? as usize;
     if directory_count > 16 || directory_offset + directory_count * 8 > optional_size {
-        return Err(pe_error(
-            PeStage::Headers,
-            "unsupported/truncated data directory array",
-        ));
+        return Err(pe_error(PeStage::Headers, "unsupported/truncated data directory array"));
     }
     let mut directories = Vec::with_capacity(16);
     for i in 0..16 {
@@ -301,10 +287,7 @@ pub fn parse_pe(bytes: &[u8]) -> Result<PeFile, GuestError> {
             (0, 0)
         };
         if (rva == 0) != (byte_length == 0) && i != 8 {
-            return Err(pe_error(
-                PeStage::Headers,
-                format!("inconsistent data directory {i}"),
-            ));
+            return Err(pe_error(PeStage::Headers, format!("inconsistent data directory {i}")));
         }
         checked_range(
             rva as usize,
@@ -334,9 +317,7 @@ pub fn parse_pe(bytes: &[u8]) -> Result<PeFile, GuestError> {
         if rva % section_alignment != 0
             || rva < end
             || (raw_size > 0
-                && (raw_offset < header_size
-                    || raw_offset % file_alignment != 0
-                    || raw_size % file_alignment != 0))
+                && (raw_offset < header_size || raw_offset % file_alignment != 0 || raw_size % file_alignment != 0))
         {
             return Err(pe_error(
                 PeStage::Headers,
@@ -344,7 +325,12 @@ pub fn parse_pe(bytes: &[u8]) -> Result<PeFile, GuestError> {
             ));
         }
         checked_range(raw_offset as usize, raw_size as usize, bytes.len(), PeStage::Headers)?;
-        checked_range(rva as usize, mapped_size as usize, image_size as usize, PeStage::Headers)?;
+        checked_range(
+            rva as usize,
+            mapped_size as usize,
+            image_size as usize,
+            PeStage::Headers,
+        )?;
         end = rva + mapped_size;
         sections.push(PeSection {
             name,
@@ -374,7 +360,8 @@ pub fn parse_pe(bytes: &[u8]) -> Result<PeFile, GuestError> {
 
 /// Fetch data directory `index`.
 pub fn directory(file: &PeFile, index: usize) -> Result<PeDirectory, GuestError> {
-    file.directories.get(index).copied().ok_or_else(|| {
-        pe_error(PeStage::Headers, format!("invalid directory index {index}"))
-    })
+    file.directories
+        .get(index)
+        .copied()
+        .ok_or_else(|| pe_error(PeStage::Headers, format!("invalid directory index {index}")))
 }

@@ -7,9 +7,15 @@ use qa_guest::server::{GuestServerLogic, GAME_CLIENT_THINK, GAME_ENTITY_FRAME};
 
 use common::{pe_fixture, test_module};
 
-fn w16(bytes: &mut [u8], offset: usize, value: u16) { bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes()); }
-fn w32(bytes: &mut [u8], offset: usize, value: u32) { bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
-fn w64(bytes: &mut [u8], offset: usize, value: u64) { bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes()); }
+fn w16(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+fn w32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+fn w64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
 
 fn game_elf() -> Vec<u8> {
     let mut bytes = vec![0u8; 4096];
@@ -67,7 +73,10 @@ fn game_pe() -> Vec<u8> {
     let mut bytes = pe_fixture(8);
     // Rename the GetGameAPI export to vmMain (fits in the padded name slot).
     let name = b"GetGameAPI\0";
-    let start = bytes.windows(name.len()).position(|window| window == name).expect("export name slot");
+    let start = bytes
+        .windows(name.len())
+        .position(|window| window == name)
+        .expect("export name slot");
     bytes[start..start + 7].copy_from_slice(b"vmMain\0");
     // Export target 0x1010 (raw 0x410): mov eax, 7; ret.
     bytes[0x410..0x416].copy_from_slice(&[0xb8, 7, 0, 0, 0, 0xc3]);

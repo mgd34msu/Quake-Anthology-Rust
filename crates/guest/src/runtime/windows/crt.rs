@@ -14,8 +14,7 @@ use crate::runtime::common::memory::{
     count, fill_bytes, integer, move_bytes, pointer, read_string, required_pointer, string_length,
 };
 use crate::runtime::windows::contracts::{
-    invoke_nested, now_millis, unsupported_windows, SharedWindows, WindowsContext,
-    WindowsServiceRegistrar,
+    invoke_nested, now_millis, unsupported_windows, SharedWindows, WindowsContext, WindowsServiceRegistrar,
 };
 use crate::runtime::windows::time::{local_offset_at, tm_fields};
 
@@ -83,62 +82,102 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
     }
     {
         let context = context.clone();
-        service(host, "heap", "malloc", &[pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "heap",
+            "malloc",
+            &[pointer_storage],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 Ok(ptr_value(context.allocate(memory, teb, count(args, 0)?, 0)?))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let context = context.clone();
-        service(host, "heap", "calloc", &[pointer_storage, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "heap",
+            "calloc",
+            &[pointer_storage, pointer_storage],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let size = integer(args, 0)? * integer(args, 1)?;
                 if size > 0x1000_0000 {
                     return Ok(ptr_value(None));
                 }
                 let memory = ctx.memory();
                 Ok(ptr_value(context.allocate(memory, teb, size as usize, 0)?))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let context = context.clone();
-        service(host, "heap", "free", &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "heap",
+            "free",
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 if !context.free(memory, teb, pointer(args, 0)?, 0)? {
                     return Err(GuestError::callback("CRT free of invalid guest allocation"));
                 }
                 Ok(done())
-            },
-        ))?;
+            }),
+        )?;
     }
-    service(host, "heap", "_callnewh", &[pointer_storage], Some(GuestStorage::Int32), Rc::new(
-        move |_, _, _| Ok(zero()),
-    ))?;
+    service(
+        host,
+        "heap",
+        "_callnewh",
+        &[pointer_storage],
+        Some(GuestStorage::Int32),
+        Rc::new(move |_, _, _| Ok(zero())),
+    )?;
     for name in ["memcpy", "memmove"] {
-        service(host, "vcruntime", name, &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "vcruntime",
+            name,
+            &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let destination = pointer(args, 0)?;
                 if count(args, 2)? > 0 {
-                    move_bytes(ctx.memory(), required_pointer(args, 0)?, required_pointer(args, 1)?, count(args, 2)?)?;
+                    move_bytes(
+                        ctx.memory(),
+                        required_pointer(args, 0)?,
+                        required_pointer(args, 1)?,
+                        count(args, 2)?,
+                    )?;
                 }
                 Ok(ptr_value(destination))
-            },
-        ))?;
+            }),
+        )?;
     }
-    service(host, "vcruntime", "memset", &[GuestStorage::Pointer, GuestStorage::Int32, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    service(
+        host,
+        "vcruntime",
+        "memset",
+        &[GuestStorage::Pointer, GuestStorage::Int32, pointer_storage],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let destination = required_pointer(args, 0)?;
             let value = (integer(args, 1)? & 255) as u8;
             fill_bytes(ctx.memory(), destination, count(args, 2)?, value)?;
             Ok(ptr_value(Some(destination)))
-        },
-    ))?;
-    service(host, "vcruntime", "memcmp", &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage], Some(GuestStorage::Int32), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "vcruntime",
+        "memcmp",
+        &[GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage],
+        Some(GuestStorage::Int32),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let left = memory.copy(required_pointer(args, 0)?, count(args, 2)?)?;
             let right = memory.copy(required_pointer(args, 1)?, left.len())?;
@@ -149,10 +188,15 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
                 }
             }
             Ok(zero())
-        },
-    ))?;
-    service(host, "string", "memchr", &[GuestStorage::Pointer, GuestStorage::Int32, pointer_storage], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "string",
+        "memchr",
+        &[GuestStorage::Pointer, GuestStorage::Int32, pointer_storage],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let source = required_pointer(args, 0)?;
             let size = count(args, 2)?;
@@ -166,26 +210,36 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
                 None => None,
             };
             Ok(ptr_value(result))
-        },
-    ))?;
-    service(host, "string", "strlen", &[GuestStorage::Pointer], Some(pointer_storage), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "string",
+        "strlen",
+        &[GuestStorage::Pointer],
+        Some(pointer_storage),
+        Rc::new(move |ctx, _, args| {
             let length = string_length(ctx.memory(), required_pointer(args, 0)?)?;
             Ok(if width == 4 {
                 u32_value(length as u32)
             } else {
                 GuestCallResult::Value(GuestCallValue::Uint64(length as u64))
             })
-        },
-    ))?;
+        }),
+    )?;
     for (name, bounded) in [("strcmp", false), ("strncmp", true)] {
         let parameters: Vec<GuestStorage> = if bounded {
             vec![GuestStorage::Pointer, GuestStorage::Pointer, pointer_storage]
         } else {
             vec![GuestStorage::Pointer, GuestStorage::Pointer]
         };
-        service(host, "string", name, &parameters, Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "string",
+            name,
+            &parameters,
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
                 let maximum = if bounded { count(args, 2)? } else { 1024 * 1024 };
                 let memory = ctx.memory();
                 let left = required_pointer(args, 0)?;
@@ -201,11 +255,16 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
                     }
                 }
                 Ok(zero())
-            },
-        ))?;
+            }),
+        )?;
     }
-    service(host, "string", "strchr", &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    service(
+        host,
+        "string",
+        "strchr",
+        &[GuestStorage::Pointer, GuestStorage::Int32],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let source = required_pointer(args, 0)?;
             let text = format!("{}\0", read_string(memory, source, false)?);
@@ -215,10 +274,15 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
                 None => None,
             };
             Ok(ptr_value(result))
-        },
-    ))?;
-    service(host, "string", "strstr", &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "string",
+        "strstr",
+        &[GuestStorage::Pointer, GuestStorage::Pointer],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let source = required_pointer(args, 0)?;
             let text = read_string(memory, source, false)?;
@@ -228,25 +292,49 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
                 None => None,
             };
             Ok(ptr_value(result))
-        },
-    ))?;
-    service(host, "startup", "_configure_narrow_argv", &[GuestStorage::Int32], Some(GuestStorage::Int32), Rc::new(
-        move |_, context, args| {
+        }),
+    )?;
+    service(
+        host,
+        "startup",
+        "_configure_narrow_argv",
+        &[GuestStorage::Int32],
+        Some(GuestStorage::Int32),
+        Rc::new(move |_, context, args| {
             let _ = context;
             if !(0..=2).contains(&integer(args, 0)?) {
-                return Err(unsupported_windows("ucrtbase.dll", "_configure_narrow_argv", "invalid argument mode"));
+                return Err(unsupported_windows(
+                    "ucrtbase.dll",
+                    "_configure_narrow_argv",
+                    "invalid argument mode",
+                ));
             }
             Ok(zero())
-        },
-    ))?;
-    service(host, "startup", "_initialize_narrow_environment", &[], Some(GuestStorage::Int32), Rc::new(
-        move |_, _, _| Ok(zero()),
-    ))?;
+        }),
+    )?;
+    service(
+        host,
+        "startup",
+        "_initialize_narrow_environment",
+        &[],
+        Some(GuestStorage::Int32),
+        Rc::new(move |_, _, _| Ok(zero())),
+    )?;
     install_onexit(host, width, teb, &context)?;
     {
         let shared = Rc::clone(&host.shared);
-        service(host, "utility", "qsort", &[GuestStorage::Pointer, pointer_storage, pointer_storage, GuestStorage::Pointer], None, Rc::new(
-            move |ctx, context, args| {
+        service(
+            host,
+            "utility",
+            "qsort",
+            &[
+                GuestStorage::Pointer,
+                pointer_storage,
+                pointer_storage,
+                GuestStorage::Pointer,
+            ],
+            None,
+            Rc::new(move |ctx, context, args| {
                 let length = count(args, 1)?;
                 if length < 2 {
                     return Ok(done());
@@ -260,8 +348,8 @@ pub fn install_crt(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestEr
                 ctx.memory().check(base, length * size, GuestAccess::Write)?;
                 qsort_heapsort(ctx, context, &shared, width, base, length, size, comparator)?;
                 Ok(done())
-            },
-        ))?;
+            }),
+        )?;
     }
     install_math(host)?;
     install_conversions(host)?;
@@ -274,56 +362,93 @@ fn install_onexit(
     teb: GuestAddress,
     context: &WindowsContext,
 ) -> Result<(), GuestError> {
-    let onexit = context.allocate(host.memory, teb, width * 3, 0)?.ok_or_else(|| {
-        GuestError::callback("Windows onexit table allocation failed")
-    })?;
+    let onexit = context
+        .allocate(host.memory, teb, width * 3, 0)?
+        .ok_or_else(|| GuestError::callback("Windows onexit table allocation failed"))?;
     let shared = Rc::clone(&host.shared);
-    service(host, "runtime", "_initialize_onexit_table", &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-        move |ctx, _, args| {
+    service(
+        host,
+        "runtime",
+        "_initialize_onexit_table",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Int32),
+        Rc::new(move |ctx, _, args| {
             ctx.memory().write(required_pointer(args, 0)?, &vec![0u8; width * 3])?;
             Ok(zero())
-        },
-    ))?;
+        }),
+    )?;
     {
         let context = context.clone();
-        service(host, "runtime", "_register_onexit_function", &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
-                register_exit(ctx.memory(), &context, teb, width, required_pointer(args, 0)?, required_pointer(args, 1)?)
-            },
-        ))?;
+        service(
+            host,
+            "runtime",
+            "_register_onexit_function",
+            &[GuestStorage::Pointer, GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
+                register_exit(
+                    ctx.memory(),
+                    &context,
+                    teb,
+                    width,
+                    required_pointer(args, 0)?,
+                    required_pointer(args, 1)?,
+                )
+            }),
+        )?;
     }
     {
         let context = context.clone();
-        service(host, "runtime", "_crt_atexit", &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "runtime",
+            "_crt_atexit",
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, _, args| {
                 register_exit(ctx.memory(), &context, teb, width, onexit, required_pointer(args, 0)?)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let shared = Rc::clone(&shared);
         let runtime = context.clone();
-        service(host, "runtime", "_execute_onexit_table", &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, context, args| {
+        service(
+            host,
+            "runtime",
+            "_execute_onexit_table",
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, context, args| {
                 execute_exit(ctx, context, &shared, &runtime, teb, width, required_pointer(args, 0)?)?;
                 Ok(zero())
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let shared = Rc::clone(&shared);
         let runtime = context.clone();
-        service(host, "runtime", "_cexit", &[], None, Rc::new(
-            move |ctx, context, _| {
+        service(
+            host,
+            "runtime",
+            "_cexit",
+            &[],
+            None,
+            Rc::new(move |ctx, context, _| {
                 execute_exit(ctx, context, &shared, &runtime, teb, width, onexit)?;
                 Ok(done())
-            },
-        ))?;
+            }),
+        )?;
     }
     for (name, result) in [("_initterm", None), ("_initterm_e", Some(GuestStorage::Int32))] {
         let shared = Rc::clone(&shared);
-        service(host, "runtime", name, &[GuestStorage::Pointer, GuestStorage::Pointer], result, Rc::new(
-            move |ctx, context, args| {
+        service(
+            host,
+            "runtime",
+            name,
+            &[GuestStorage::Pointer, GuestStorage::Pointer],
+            result,
+            Rc::new(move |ctx, context, args| {
                 let begin = required_pointer(args, 0)?;
                 let end = required_pointer(args, 1)?;
                 if end.offset < begin.offset
@@ -334,7 +459,10 @@ fn install_onexit(
                 }
                 let mut at = begin.offset;
                 while at < end.offset {
-                    let slot = ctx.memory().pointer(at)?.ok_or_else(|| GuestError::callback("Null CRT initializer slot"))?;
+                    let slot = ctx
+                        .memory()
+                        .pointer(at)?
+                        .ok_or_else(|| GuestError::callback("Null CRT initializer slot"))?;
                     at += width as u64;
                     let callback = ctx.memory().read_pointer(slot)?;
                     let Some(callback) = callback else {
@@ -351,11 +479,15 @@ fn install_onexit(
                     }
                 }
                 Ok(if result.is_some() { zero() } else { done() })
-            },
-        ))?;
+            }),
+        )?;
     }
-    host.service("vcruntime140.dll", "__std_type_info_destroy_list", &[GuestStorage::Pointer], None, Rc::new(
-        move |ctx, context, args| {
+    host.service(
+        "vcruntime140.dll",
+        "__std_type_info_destroy_list",
+        &[GuestStorage::Pointer],
+        None,
+        Rc::new(move |ctx, context, args| {
             let _ = context;
             let memory = ctx.memory();
             let bytes = memory.copy(required_pointer(args, 0)?, if width == 4 { 8 } else { 16 })?;
@@ -367,8 +499,8 @@ fn install_onexit(
                 ));
             }
             Ok(done())
-        },
-    ))?;
+        }),
+    )?;
     Ok(())
 }
 
@@ -407,7 +539,10 @@ fn register_exit(
     }
     let end = end.expect("onexit end checked");
     memory.write_pointer(end, Some(callback))?;
-    memory.write_pointer(memory.offset(table, width as i64)?, Some(memory.offset(end, width as i64)?))?;
+    memory.write_pointer(
+        memory.offset(table, width as i64)?,
+        Some(memory.offset(end, width as i64)?),
+    )?;
     Ok(zero())
 }
 
@@ -429,7 +564,9 @@ fn execute_exit(
             at -= width as u64;
             let callback = {
                 let memory = ctx.memory();
-                let slot = memory.pointer(at)?.ok_or_else(|| GuestError::callback("Null onexit slot"))?;
+                let slot = memory
+                    .pointer(at)?
+                    .ok_or_else(|| GuestError::callback("Null onexit slot"))?;
                 let callback = memory.read_pointer(slot)?;
                 memory.write_pointer(slot, None)?;
                 callback
@@ -445,6 +582,7 @@ fn execute_exit(
 }
 
 /// Heap sort over guest elements with a guest comparator.
+#[allow(clippy::too_many_arguments)]
 fn qsort_heapsort(
     ctx: &mut HostCallContext<'_, '_>,
     context: &GuestCallContext,
@@ -469,10 +607,7 @@ fn qsort_heapsort(
             comparator,
             &[GuestStorage::Pointer, GuestStorage::Pointer],
             Some(GuestStorage::Int32),
-            vec![
-                GuestCallValue::Pointer(Some(aa)),
-                GuestCallValue::Pointer(Some(bb)),
-            ],
+            vec![GuestCallValue::Pointer(Some(aa)), GuestCallValue::Pointer(Some(bb))],
             false,
         )?;
         match result {
@@ -525,9 +660,16 @@ fn real(args: &[GuestCallValue], index: usize) -> Result<f64, GuestError> {
 }
 
 fn install_math(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestError> {
-    for name in ["acosf", "sinf", "ceilf", "cosf", "truncf", "log2f", "floorf", "sqrtf", "tanf"] {
-        service(host, "math", name, &[GuestStorage::Float32], Some(GuestStorage::Float32), Rc::new(
-            move |_, _, args| {
+    for name in [
+        "acosf", "sinf", "ceilf", "cosf", "truncf", "log2f", "floorf", "sqrtf", "tanf",
+    ] {
+        service(
+            host,
+            "math",
+            name,
+            &[GuestStorage::Float32],
+            Some(GuestStorage::Float32),
+            Rc::new(move |_, _, args| {
                 let value = real(args, 0)?;
                 let result = match name {
                     "acosf" => value.acos(),
@@ -541,32 +683,52 @@ fn install_math(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestError
                     _ => value.tan(),
                 };
                 Ok(GuestCallResult::Value(GuestCallValue::Float32(result as f32)))
-            },
-        ))?;
+            }),
+        )?;
     }
-    service(host, "math", "atan2f", &[GuestStorage::Float32, GuestStorage::Float32], Some(GuestStorage::Float32), Rc::new(
-        move |_, _, args| {
+    service(
+        host,
+        "math",
+        "atan2f",
+        &[GuestStorage::Float32, GuestStorage::Float32],
+        Some(GuestStorage::Float32),
+        Rc::new(move |_, _, args| {
             Ok(GuestCallResult::Value(GuestCallValue::Float32(
                 real(args, 0)?.atan2(real(args, 1)?) as f32,
             )))
-        },
-    ))?;
-    service(host, "math", "fmodf", &[GuestStorage::Float32, GuestStorage::Float32], Some(GuestStorage::Float32), Rc::new(
-        move |_, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "math",
+        "fmodf",
+        &[GuestStorage::Float32, GuestStorage::Float32],
+        Some(GuestStorage::Float32),
+        Rc::new(move |_, _, args| {
             Ok(GuestCallResult::Value(GuestCallValue::Float32(
                 (real(args, 0)? % real(args, 1)?) as f32,
             )))
-        },
-    ))?;
-    service(host, "math", "pow", &[GuestStorage::Float64, GuestStorage::Float64], Some(GuestStorage::Float64), Rc::new(
-        move |_, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "math",
+        "pow",
+        &[GuestStorage::Float64, GuestStorage::Float64],
+        Some(GuestStorage::Float64),
+        Rc::new(move |_, _, args| {
             Ok(GuestCallResult::Value(GuestCallValue::Float64(
                 real(args, 0)?.powf(real(args, 1)?),
             )))
-        },
-    ))?;
-    service(host, "math", "nextafterf", &[GuestStorage::Float32, GuestStorage::Float32], Some(GuestStorage::Float32), Rc::new(
-        move |_, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "math",
+        "nextafterf",
+        &[GuestStorage::Float32, GuestStorage::Float32],
+        Some(GuestStorage::Float32),
+        Rc::new(move |_, _, args| {
             let from = real(args, 0)? as f32;
             let to = real(args, 1)? as f32;
             let result = if from.is_nan() || to.is_nan() {
@@ -579,9 +741,11 @@ fn install_math(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestError
                 let direction = (to > from) != (from < 0.0);
                 let next = if direction {
                     if magnitude == 0x7f80_0000 {
-                        return Ok(GuestCallResult::Value(GuestCallValue::Float32(
-                            if from < 0.0 { f32::NEG_INFINITY } else { f32::INFINITY },
-                        )));
+                        return Ok(GuestCallResult::Value(GuestCallValue::Float32(if from < 0.0 {
+                            f32::NEG_INFINITY
+                        } else {
+                            f32::INFINITY
+                        })));
                     }
                     bits + 1
                 } else if magnitude == 0 {
@@ -592,10 +756,15 @@ fn install_math(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestError
                 f32::from_bits(next)
             };
             Ok(GuestCallResult::Value(GuestCallValue::Float32(result)))
-        },
-    ))?;
-    service(host, "math", "modf", &[GuestStorage::Float64, GuestStorage::Pointer], Some(GuestStorage::Float64), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "math",
+        "modf",
+        &[GuestStorage::Float64, GuestStorage::Pointer],
+        Some(GuestStorage::Float64),
+        Rc::new(move |ctx, _, args| {
             let value = real(args, 0)?;
             let whole = value.trunc();
             ctx.memory().write_f64(required_pointer(args, 1)?, whole)?;
@@ -612,11 +781,20 @@ fn install_math(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestError
                 fraction
             };
             Ok(GuestCallResult::Value(GuestCallValue::Float64(result)))
-        },
-    ))?;
+        }),
+    )?;
     for (name, single) in [("_dclass", false), ("_fdclass", true), ("_dsign", false)] {
-        service(host, "math", name, &[if single { GuestStorage::Float32 } else { GuestStorage::Float64 }], Some(GuestStorage::Int16), Rc::new(
-            move |_, _, args| {
+        service(
+            host,
+            "math",
+            name,
+            &[if single {
+                GuestStorage::Float32
+            } else {
+                GuestStorage::Float64
+            }],
+            Some(GuestStorage::Int16),
+            Rc::new(move |_, _, args| {
                 let value = real(args, 0)?;
                 let code = if name == "_dsign" {
                     if value < 0.0 || (value == 0.0 && value.is_sign_negative()) {
@@ -636,8 +814,8 @@ fn install_math(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), GuestError
                     -1
                 };
                 Ok(i32_value(if code == 0x8000 { -32768 } else { code }))
-            },
-        ))?;
+            }),
+        )?;
     }
     Ok(())
 }
@@ -720,12 +898,22 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
         permissions: crate::core::contracts::GuestPermissions::ReadWrite,
         label: "CRT errno".to_string(),
     })?;
-    service(host, "runtime", "_errno", &[], Some(GuestStorage::Pointer), Rc::new(
-        move |_, _, _| Ok(ptr_value(Some(errno))),
-    ))?;
+    service(
+        host,
+        "runtime",
+        "_errno",
+        &[],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |_, _, _| Ok(ptr_value(Some(errno)))),
+    )?;
     crate::runtime::common::format::services::install_windows_format(host, errno)?;
-    service(host, "convert", "strtoul", &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Uint32), Rc::new(
-        move |ctx, _, args| {
+    service(
+        host,
+        "convert",
+        "strtoul",
+        &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32],
+        Some(GuestStorage::Uint32),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let source = required_pointer(args, 0)?;
             let end_pointer = pointer(args, 1)?;
@@ -734,12 +922,13 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
             let mut base = integer(args, 2)?;
             let mut index = 0;
             let mut negative = false;
-            let finish = |memory: &mut SparseGuestMemory, value: u32, end: usize| -> Result<GuestCallResult, GuestError> {
-                if let Some(end_pointer) = end_pointer {
-                    memory.write_pointer(end_pointer, Some(memory.offset(source, end as i64)?))?;
-                }
-                Ok(u32_value(value))
-            };
+            let finish =
+                |memory: &mut SparseGuestMemory, value: u32, end: usize| -> Result<GuestCallResult, GuestError> {
+                    if let Some(end_pointer) = end_pointer {
+                        memory.write_pointer(end_pointer, Some(memory.offset(source, end as i64)?))?;
+                    }
+                    Ok(u32_value(value))
+                };
             if base != 0 && !(2..=36).contains(&base) {
                 memory.write_i32(errno, 22)?;
                 return finish(memory, 0, 0);
@@ -774,7 +963,9 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
             let mut value: u64 = 0;
             let mut overflowed = false;
             while digit(&chars, index) < base {
-                value = value.saturating_mul(base as u64).saturating_add(digit(&chars, index) as u64);
+                value = value
+                    .saturating_mul(base as u64)
+                    .saturating_add(digit(&chars, index) as u64);
                 if value > 0xffff_ffff {
                     overflowed = true;
                     value = 0xffff_ffff;
@@ -794,10 +985,15 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
                 value as u32
             };
             finish(memory, result, index)
-        },
-    ))?;
-    service(host, "convert", "atoi", &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "convert",
+        "atoi",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Int32),
+        Rc::new(move |ctx, _, args| {
             let text = read_string(ctx.memory(), required_pointer(args, 0)?, false)?;
             let (magnitude, negative) = atoi_value(&text);
             let low = magnitude as u32;
@@ -806,10 +1002,15 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
             } else {
                 low as i32
             }))
-        },
-    ))?;
-    service(host, "convert", "atoll", &[GuestStorage::Pointer], Some(GuestStorage::Int64), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "convert",
+        "atoll",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Int64),
+        Rc::new(move |ctx, _, args| {
             let text = read_string(ctx.memory(), required_pointer(args, 0)?, false)?;
             let (magnitude, negative) = atoi_value(&text);
             let low = magnitude as u64;
@@ -818,33 +1019,52 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
             } else {
                 low as i64
             })))
-        },
-    ))?;
-    service(host, "convert", "atof", &[GuestStorage::Pointer], Some(GuestStorage::Float64), Rc::new(
-        move |ctx, _, args| {
+        }),
+    )?;
+    service(
+        host,
+        "convert",
+        "atof",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Float64),
+        Rc::new(move |ctx, _, args| {
             let text = read_string(ctx.memory(), required_pointer(args, 0)?, false)?;
             let value = parse_float_prefix(&text).unwrap_or(0.0);
-            Ok(GuestCallResult::Value(GuestCallValue::Float64(if value.is_nan() { 0.0 } else { value })))
-        },
-    ))?;
+            Ok(GuestCallResult::Value(GuestCallValue::Float64(if value.is_nan() {
+                0.0
+            } else {
+                value
+            })))
+        }),
+    )?;
     {
         let shared = Rc::clone(&host.shared);
-        service(host, "time", "_time64", &[GuestStorage::Pointer], Some(GuestStorage::Int64), Rc::new(
-            move |ctx, _, args| {
+        service(
+            host,
+            "time",
+            "_time64",
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Int64),
+            Rc::new(move |ctx, _, args| {
                 let value = now_millis(&shared) / 1000;
                 if let Some(out) = pointer(args, 0)? {
                     ctx.memory().write_i64(out, value)?;
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Int64(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
-    service(host, "time", "_localtime64", &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    service(
+        host,
+        "time",
+        "_localtime64",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             use crate::runtime::common::memory::read_unsigned;
             let memory = ctx.memory();
             let value = read_unsigned(memory, required_pointer(args, 0)?, 8)? as i64;
-            if value < 0 || value > 32_535_215_999 {
+            if !(0..=32_535_215_999).contains(&value) {
                 return Ok(ptr_value(None));
             }
             let slot = memory.offset(required_pointer(args, 0)?, 8)?;
@@ -854,8 +1074,8 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
                 memory.write_i32(memory.offset(slot, index as i64 * 4)?, *field)?;
             }
             Ok(ptr_value(Some(slot)))
-        },
-    ))?;
+        }),
+    )?;
     {
         let width = host.pointer_bytes;
         let empty = host.memory.allocate(&crate::core::contracts::GuestAllocationOptions {
@@ -883,10 +1103,16 @@ fn install_conversions(host: &mut WindowsServiceRegistrar<'_>) -> Result<(), Gue
                 Some(if index == 0 { decimal } else { empty }),
             )?;
         }
-        host.memory.write(host.memory.offset(locale, (width * 10) as i64)?, &[127u8; 14])?;
-        service(host, "locale", "localeconv", &[], Some(GuestStorage::Pointer), Rc::new(
-            move |_, _, _| Ok(ptr_value(Some(locale))),
-        ))?;
+        host.memory
+            .write(host.memory.offset(locale, (width * 10) as i64)?, &[127u8; 14])?;
+        service(
+            host,
+            "locale",
+            "localeconv",
+            &[],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |_, _, _| Ok(ptr_value(Some(locale)))),
+        )?;
     }
     Ok(())
 }

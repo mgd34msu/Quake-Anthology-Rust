@@ -4,13 +4,11 @@
 use qa_core::identity::ProviderId;
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::contracts::{
-    ContentDigest, GuestAddress, GuestArchitecture, GuestExecutionStop, GuestMapOptions,
-    GuestPermissions, ModuleIdentity,
+    ContentDigest, GuestAddress, GuestArchitecture, GuestExecutionStop, GuestMapOptions, GuestPermissions,
+    ModuleIdentity,
 };
 use qa_guest::core::memory::SparseGuestMemory;
-use qa_guest::core::registers::{
-    GuestProcessorInitialState, GuestProcessorState,
-};
+use qa_guest::core::registers::{GuestProcessorInitialState, GuestProcessorState};
 use qa_guest::x64::cpu::X64Cpu;
 
 /// Fixture code base.
@@ -69,13 +67,7 @@ pub fn build(bytes: &[u8], start: u64, module: ModuleIdentity) -> (GuestProcesso
         GuestPermissions::ReadExecute,
         Some(bytes.to_vec()),
     );
-    map(
-        &mut memory,
-        STACK - 0x1000,
-        0x1008,
-        GuestPermissions::ReadWrite,
-        None,
-    );
+    map(&mut memory, STACK - 0x1000, 0x1008, GuestPermissions::ReadWrite, None);
     let stack = addr(&memory, STACK);
     memory.write_u64(stack, RETURNED).expect("fixture return");
     let state = GuestProcessorState::create(GuestProcessorInitialState {
@@ -128,10 +120,7 @@ impl Fixture {
     }
 
     /// Borrow state and memory together.
-    pub fn with<R>(
-        &mut self,
-        f: impl FnOnce(&mut GuestProcessorState, &mut SparseGuestMemory) -> R,
-    ) -> R {
+    pub fn with<R>(&mut self, f: impl FnOnce(&mut GuestProcessorState, &mut SparseGuestMemory) -> R) -> R {
         let (state, memory) = self.cpu.parts();
         f(state, memory)
     }
@@ -299,10 +288,20 @@ pub fn pe_fixture(width: usize) -> Vec<u8> {
         bytes[r..r + 8].copy_from_slice(&[1, 4, 1, 0, 4, 0x32, 0, 0]);
     }
     let relocation_type = if width == 4 { 3u16 } else { 10u16 };
-    let mut rdata: Vec<u16> = [0x2200, 0x2200 + width, 0x2200 + width * 2, 0x2200 + width * 3, 0x2240, 0x2240 + width, cookie, check, dispatch]
-        .iter()
-        .map(|rva| (relocation_type << 12) | ((rva - 0x2000) as u16))
-        .collect();
+    let mut rdata: Vec<u16> = [
+        0x2200,
+        0x2200 + width,
+        0x2200 + width * 2,
+        0x2200 + width * 3,
+        0x2240,
+        0x2240 + width,
+        cookie,
+        check,
+        dispatch,
+    ]
+    .iter()
+    .map(|rva| (relocation_type << 12) | ((rva - 0x2000) as u16))
+    .collect();
     rdata.push(0);
     let mut data = vec![(relocation_type << 12) | 0x10];
     if width == 4 {
@@ -329,4 +328,3 @@ pub fn pe_fixture(width: usize) -> Vec<u8> {
     directory(&mut bytes, 5, 0x4000, relocation_bytes as u32);
     bytes
 }
-

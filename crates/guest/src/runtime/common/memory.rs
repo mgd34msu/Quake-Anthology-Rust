@@ -15,9 +15,8 @@ pub const RUNTIME_STRING_LIMIT: usize = 1024 * 1024;
 
 /// Borrow call argument `index`.
 pub fn argument(args: &[GuestCallValue], index: usize) -> Result<&GuestCallValue, GuestError> {
-    args.get(index).ok_or_else(|| {
-        GuestError::invalid(format!("Missing guest argument {index}"))
-    })
+    args.get(index)
+        .ok_or_else(|| GuestError::invalid(format!("Missing guest argument {index}")))
 }
 
 /// Decode an integer call argument as a signed 128-bit value (covers the
@@ -36,18 +35,13 @@ pub fn integer(args: &[GuestCallValue], index: usize) -> Result<i128, GuestError
 pub fn count(args: &[GuestCallValue], index: usize) -> Result<usize, GuestError> {
     let value = integer(args, index)?;
     if value < 0 || value > RUNTIME_ALLOCATION_LIMIT as i128 {
-        return Err(GuestError::invalid(
-            "Guest byte count exceeds runtime allocation limit",
-        ));
+        return Err(GuestError::invalid("Guest byte count exceeds runtime allocation limit"));
     }
     Ok(value as usize)
 }
 
 /// Decode a pointer call argument (nullable).
-pub fn pointer(
-    args: &[GuestCallValue],
-    index: usize,
-) -> Result<Option<GuestAddress>, GuestError> {
+pub fn pointer(args: &[GuestCallValue], index: usize) -> Result<Option<GuestAddress>, GuestError> {
     match argument(args, index)? {
         GuestCallValue::Pointer(value) => Ok(*value),
         _ => Err(GuestError::invalid("Guest pointer required")),
@@ -55,27 +49,18 @@ pub fn pointer(
 }
 
 /// Decode a non-null pointer call argument.
-pub fn required_pointer(
-    args: &[GuestCallValue],
-    index: usize,
-) -> Result<GuestAddress, GuestError> {
+pub fn required_pointer(args: &[GuestCallValue], index: usize) -> Result<GuestAddress, GuestError> {
     pointer(args, index)?.ok_or_else(|| GuestError::invalid("Nonnull guest pointer required"))
 }
 
 /// Read an unsigned `width`-byte little-endian value (`width` in 1, 2, 4, 8).
-pub fn read_unsigned(
-    memory: &mut SparseGuestMemory,
-    address: GuestAddress,
-    width: usize,
-) -> Result<u64, GuestError> {
+pub fn read_unsigned(memory: &mut SparseGuestMemory, address: GuestAddress, width: usize) -> Result<u64, GuestError> {
     match width {
         1 => Ok(u64::from(memory.read_u8(address)?)),
         2 => Ok(u64::from(memory.read_u16(address)?)),
         4 => Ok(u64::from(memory.read_u32(address)?)),
         8 => memory.read_u64(address),
-        _ => Err(GuestError::invalid(format!(
-            "Unsupported guest integer width {width}"
-        ))),
+        _ => Err(GuestError::invalid(format!("Unsupported guest integer width {width}"))),
     }
 }
 
@@ -97,17 +82,12 @@ pub fn write_unsigned(
         2 => memory.write_u16(address, wrapped as u16),
         4 => memory.write_u32(address, wrapped as u32),
         8 => memory.write_u64(address, wrapped as u64),
-        _ => Err(GuestError::invalid(format!(
-            "Unsupported guest integer width {width}"
-        ))),
+        _ => Err(GuestError::invalid(format!("Unsupported guest integer width {width}"))),
     }
 }
 
 /// Read a nullable guest pointer.
-pub fn read_pointer(
-    memory: &mut SparseGuestMemory,
-    address: GuestAddress,
-) -> Result<Option<GuestAddress>, GuestError> {
+pub fn read_pointer(memory: &mut SparseGuestMemory, address: GuestAddress) -> Result<Option<GuestAddress>, GuestError> {
     memory.read_pointer(address)
 }
 
@@ -144,10 +124,7 @@ pub fn fill_bytes(
 }
 
 /// Length of the NUL-terminated string at `address`.
-pub fn string_length(
-    memory: &mut SparseGuestMemory,
-    address: GuestAddress,
-) -> Result<usize, GuestError> {
+pub fn string_length(memory: &mut SparseGuestMemory, address: GuestAddress) -> Result<usize, GuestError> {
     string_length_bounded(memory, address, RUNTIME_STRING_LIMIT)
 }
 
@@ -166,11 +143,7 @@ pub fn string_length_bounded(
 
 /// Read a NUL-terminated guest string: latin-1 bytes, or UCS-2 units when
 /// `wide`.
-pub fn read_string(
-    memory: &mut SparseGuestMemory,
-    address: GuestAddress,
-    wide: bool,
-) -> Result<String, GuestError> {
+pub fn read_string(memory: &mut SparseGuestMemory, address: GuestAddress, wide: bool) -> Result<String, GuestError> {
     read_string_bounded(memory, address, wide, RUNTIME_STRING_LIMIT)
 }
 
@@ -221,7 +194,7 @@ pub fn native_allocation_bytes(logical_bytes: usize) -> Result<usize, GuestError
     if logical_bytes > usize::MAX - 4095 {
         return Err(GuestError::invalid("Invalid native allocation size"));
     }
-    Ok((logical_bytes.max(1) + 4095) / 4096 * 4096)
+    Ok(logical_bytes.max(1).div_ceil(4096) * 4096)
 }
 
 /// Allocate page-granular native memory.

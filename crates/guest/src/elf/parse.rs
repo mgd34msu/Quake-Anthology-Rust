@@ -246,11 +246,7 @@ impl<'a> Reader<'a> {
 }
 
 /// Locate a virtual range in PT_LOAD file backing.
-pub fn elf_file_offset(
-    segments: &[ElfSegment],
-    address: u64,
-    size: usize,
-) -> Result<usize, GuestError> {
+pub fn elf_file_offset(segments: &[ElfSegment], address: u64, size: usize) -> Result<usize, GuestError> {
     for segment in segments {
         if segment.segment_type != 1 || address < segment.address {
             continue;
@@ -288,7 +284,9 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
     }
     let machine = r.u16(18)?;
     if machine != if wide { 62 } else { 3 } {
-        return Err(elf_error(format!("unsupported class/machine combination {class}/{machine}")));
+        return Err(elf_error(format!(
+            "unsupported class/machine combination {class}/{machine}"
+        )));
     }
     if r.u32(if wide { 48 } else { 36 })? != 0 {
         return Err(elf_error("unsupported machine flags"));
@@ -338,14 +336,8 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
             flags: r.u32(p + if wide { 4 } else { 24 })?,
             offset: checked_number(r.word(p + if wide { 8 } else { 4 }, wide)?, "segment offset")?,
             address: r.word(p + if wide { 16 } else { 8 }, wide)?,
-            file_size: checked_number(
-                r.word(p + if wide { 32 } else { 16 }, wide)?,
-                "segment file size",
-            )?,
-            memory_size: checked_number(
-                r.word(p + if wide { 40 } else { 20 }, wide)?,
-                "segment memory size",
-            )?,
+            file_size: checked_number(r.word(p + if wide { 32 } else { 16 }, wide)?, "segment file size")?,
+            memory_size: checked_number(r.word(p + if wide { 40 } else { 20 }, wide)?, "segment memory size")?,
             alignment: r.word(p + if wide { 48 } else { 28 }, wide)?,
         };
         if segment.segment_type != 0 {
@@ -358,19 +350,20 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
             let alignment = segment.alignment;
             if alignment > 1
                 && (alignment & (alignment - 1) != 0
-                    || segment.address.wrapping_sub(segment.offset as u64) % alignment != 0)
+                    || !segment.address.wrapping_sub(segment.offset as u64).is_multiple_of(alignment))
             {
                 return Err(elf_error("invalid segment alignment or file/address congruence"));
             }
-            if segment.address as u128 + segment.memory_size as u128
-                > (1u128 << if wide { 64 } else { 32 })
-            {
+            if segment.address as u128 + segment.memory_size as u128 > (1u128 << if wide { 64 } else { 32 }) {
                 return Err(elf_error("segment exceeds ELF address width"));
             }
         }
         segments.push(segment);
     }
-    if !segments.iter().any(|segment| segment.segment_type == 1 && segment.memory_size != 0) {
+    if !segments
+        .iter()
+        .any(|segment| segment.segment_type == 1 && segment.memory_size != 0)
+    {
         return Err(elf_error("no loadable image"));
     }
     let mut raw_sections: Vec<(ElfSection, usize)> = Vec::with_capacity(shnum);
@@ -385,10 +378,7 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
             size: checked_number(r.word(p + if wide { 32 } else { 20 }, wide)?, "section size")?,
             link: r.u32(p + if wide { 40 } else { 24 })?,
             info: r.u32(p + if wide { 44 } else { 28 })?,
-            entry_size: checked_number(
-                r.word(p + if wide { 56 } else { 36 }, wide)?,
-                "section entry size",
-            )?,
+            entry_size: checked_number(r.word(p + if wide { 56 } else { 36 }, wide)?, "section entry size")?,
         };
         let name_offset = checked_number(u64::from(r.u32(p)?), "section name")?;
         if section.section_type != 8 && section.section_type != 0 {
@@ -399,9 +389,7 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
     let names: Option<(usize, usize)> = if names_index == 0 {
         None
     } else {
-        let names = raw_sections
-            .get(names_index as usize)
-            .map(|(section, _)| section);
+        let names = raw_sections.get(names_index as usize).map(|(section, _)| section);
         if names.is_none_or(|names| names.section_type != 3) {
             return Err(elf_error("invalid section name table"));
         }
@@ -441,10 +429,8 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
             return Err(elf_error("relocation symbol index exceeds symbol table"));
         }
     }
-    let interpreters: Vec<&ElfSegment> =
-        segments.iter().filter(|segment| segment.segment_type == 3).collect();
-    if interpreters.len() > 1 || segments.iter().filter(|segment| segment.segment_type == 7).count() > 1
-    {
+    let interpreters: Vec<&ElfSegment> = segments.iter().filter(|segment| segment.segment_type == 3).collect();
+    if interpreters.len() > 1 || segments.iter().filter(|segment| segment.segment_type == 7).count() > 1 {
         return Err(elf_error("multiple interpreter or TLS segments"));
     }
     let needed_libraries: Vec<String> = dynamic
@@ -489,14 +475,9 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
     })
 }
 
-fn read_dynamic(
-    r: &Reader,
-    segments: &[ElfSegment],
-    wide: bool,
-) -> Result<HashMap<u32, Vec<u64>>, GuestError> {
+fn read_dynamic(r: &Reader, segments: &[ElfSegment], wide: bool) -> Result<HashMap<u32, Vec<u64>>, GuestError> {
     let mut entries: HashMap<u32, Vec<u64>> = HashMap::new();
-    let tables: Vec<&ElfSegment> =
-        segments.iter().filter(|segment| segment.segment_type == 2).collect();
+    let tables: Vec<&ElfSegment> = segments.iter().filter(|segment| segment.segment_type == 2).collect();
     if tables.len() > 1 {
         return Err(elf_error("multiple dynamic segments"));
     }
@@ -538,11 +519,7 @@ fn read_relocations(
 ) -> Result<Vec<ElfRelocation>, GuestError> {
     let mut relocations = Vec::new();
     let mut seen_tables = std::collections::HashSet::new();
-    let mut read = |address: u64,
-                    size: u64,
-                    rela: bool,
-                    table: ElfRelocationTable|
-     -> Result<(), GuestError> {
+    let mut read = |address: u64, size: u64, rela: bool, table: ElfRelocationTable| -> Result<(), GuestError> {
         let stride = (if wide { 8 } else { 4 }) * if rela { 3 } else { 2 };
         let length = checked_number(size, "relocation table size")?;
         if length % stride != 0 {
@@ -585,11 +562,16 @@ fn read_relocations(
         if entry != Some((if wide { 8 } else { 4 } * if rela { 3 } else { 2 }) as u64) {
             return Err(elf_error("incomplete REL/RELA dynamic tags"));
         }
-        read(address, size, rela, if rela {
-            ElfRelocationTable::Rela
-        } else {
-            ElfRelocationTable::Rel
-        })?;
+        read(
+            address,
+            size,
+            rela,
+            if rela {
+                ElfRelocationTable::Rela
+            } else {
+                ElfRelocationTable::Rel
+            },
+        )?;
     }
     if let Some(plt) = dynamic_value(dynamic, 23) {
         let kind = dynamic_value(dynamic, 20);
@@ -612,10 +594,7 @@ fn read_relocations(
     if let Some(relr) = dynamic_value(dynamic, 36) {
         let width = if wide { 8 } else { 4 };
         let size = dynamic_value(dynamic, 35);
-        if size.is_none()
-            || size.unwrap_or(1) % width as u64 != 0
-            || dynamic_value(dynamic, 37) != Some(width as u64)
-        {
+        if size.is_none() || !size.unwrap_or(1).is_multiple_of(width as u64) || dynamic_value(dynamic, 37) != Some(width as u64) {
             return Err(elf_error("invalid RELR table"));
         }
         let length = checked_number(size.unwrap_or(0), "RELR table size")?;
@@ -776,12 +755,13 @@ fn read_symbols(
         } else if let Some(symbol_section) = symbol_section {
             count = symbol_section.size / stride;
         } else {
-            return Err(elf_error("cannot bound dynamic symbols without hash or section metadata"));
+            return Err(elf_error(
+                "cannot bound dynamic symbols without hash or section metadata",
+            ));
         }
         offset = elf_file_offset(segments, symtab.unwrap_or(0), count * stride)?;
     }
-    if symbol_section.is_some_and(|section| section.entry_size != stride || section.size / stride != count)
-    {
+    if symbol_section.is_some_and(|section| section.entry_size != stride || section.size / stride != count) {
         return Err(elf_error("symbol count or entry size disagrees with section metadata"));
     }
     r.range(offset, count * stride)?;
@@ -847,12 +827,7 @@ fn read_symbols(
     Ok(symbols)
 }
 
-fn gnu_symbol_count(
-    r: &Reader,
-    segments: &[ElfSegment],
-    address: u64,
-    wide: bool,
-) -> Result<usize, GuestError> {
+fn gnu_symbol_count(r: &Reader, segments: &[ElfSegment], address: u64, wide: bool) -> Result<usize, GuestError> {
     let header = elf_file_offset(segments, address, 16)?;
     let buckets = r.u32(header)?;
     let first = r.u32(header + 4)?;
@@ -873,11 +848,7 @@ fn gnu_symbol_count(
             return Err(elf_error("GNU hash bucket precedes symbol offset"));
         }
         loop {
-            let hash = r.u32(elf_file_offset(
-                segments,
-                chains + u64::from(symbol - first) * 4,
-                4,
-            )?)?;
+            let hash = r.u32(elf_file_offset(segments, chains + u64::from(symbol - first) * 4, 4)?)?;
             count = count.max(symbol + 1);
             symbol += 1;
             if hash & 1 != 0 {

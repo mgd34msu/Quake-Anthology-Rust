@@ -6,8 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::core::contracts::{
-    GuestAddress, GuestExport, GuestExportTarget, GuestImport, GuestSymbolName, GuestTlsTemplate,
-    GuestUnwindFormat,
+    GuestAddress, GuestExport, GuestExportTarget, GuestImport, GuestSymbolName, GuestTlsTemplate, GuestUnwindFormat,
 };
 use crate::error::GuestError;
 use crate::pe::format::{directory, pe_error, PeStage};
@@ -41,12 +40,7 @@ pub fn read_imports(image: &mut ImageReader) -> Result<Vec<GuestImport>, GuestEr
         if lookup == 0 && timestamp == 0 && forward == 0 && name == 0 && iat == 0 {
             return Ok(imports);
         }
-        if name == 0
-            || iat == 0
-            || iat % width != 0
-            || lookup % width != 0
-            || (lookup == 0 && timestamp != 0)
-        {
+        if name == 0 || iat == 0 || iat % width != 0 || lookup % width != 0 || (lookup == 0 && timestamp != 0) {
             return Err(pe_error(
                 PeStage::Imports,
                 "invalid descriptor/alignment or bound IAT without original lookup table",
@@ -111,7 +105,7 @@ fn forwarded(text: &str) -> Result<GuestExportTarget, GuestError> {
                 let ordinal: u32 = ordinal
                     .parse()
                     .map_err(|_| pe_error(PeStage::Exports, "forwarded ordinal out of range"))?;
-                if ordinal < 1 || ordinal > 65535 {
+                if !(1..=65535).contains(&ordinal) {
                     return Err(pe_error(PeStage::Exports, "forwarded ordinal out of range"));
                 }
                 return Ok(GuestExportTarget::Forward {
@@ -127,10 +121,7 @@ fn forwarded(text: &str) -> Result<GuestExportTarget, GuestError> {
                 },
             })
         }
-        _ => Err(pe_error(
-            PeStage::Exports,
-            format!("invalid export forwarder {text}"),
-        )),
+        _ => Err(pe_error(PeStage::Exports, format!("invalid export forwarder {text}"))),
     }
 }
 
@@ -196,9 +187,7 @@ pub fn read_exports(image: &mut ImageReader) -> Result<Vec<GuestExport>, GuestEr
 }
 
 /// Read the TLS directory.
-pub fn read_tls(
-    image: &mut ImageReader,
-) -> Result<(Option<GuestTlsTemplate>, Option<GuestAddress>), GuestError> {
+pub fn read_tls(image: &mut ImageReader) -> Result<(Option<GuestTlsTemplate>, Option<GuestAddress>), GuestError> {
     let reader = image.for_stage(PeStage::Tls);
     let table = directory(&reader.pe, 9)?;
     if table.rva == 0 {
@@ -215,15 +204,8 @@ pub fn read_tls(
     let zero_fill_bytes = reader.u32(table.rva + width * 4)? as usize;
     let flags = reader.u32(table.rva + width * 4 + 4)?;
     let alignment_code = (flags >> 20) & 15;
-    if end < start
-        || end - start > u64::from(reader.pe.image_size)
-        || alignment_code == 15
-        || index == 0
-    {
-        return Err(pe_error(
-            PeStage::Tls,
-            "invalid TLS range, alignment or index address",
-        ));
+    if end < start || end - start > u64::from(reader.pe.image_size) || alignment_code == 15 || index == 0 {
+        return Err(pe_error(PeStage::Tls, "invalid TLS range, alignment or index address"));
     }
     let size = (end - start) as usize;
     let initialized = if start == 0 && end == 0 {
@@ -284,13 +266,7 @@ pub fn read_unwind(image: &mut ImageReader) -> Result<Vec<PeUnwindRecord>, Guest
             return Err(pe_error(PeStage::Unwind, "unsorted runtime function table"));
         }
         previous = begin as i64;
-        let record = read_unwind_entry(
-            reader,
-            begin,
-            reader.u32(at + 4)?,
-            reader.u32(at + 8)?,
-            &HashSet::new(),
-        )?;
+        let record = read_unwind_entry(reader, begin, reader.u32(at + 4)?, reader.u32(at + 8)?, &HashSet::new())?;
         result.push(record);
         at += 12;
     }
@@ -312,7 +288,7 @@ fn read_unwind_entry(
     }
     reader.executable(begin_rva)?;
     reader.executable(end_rva - 1)?;
-    if unwind_info_rva % 4 != 0 {
+    if !unwind_info_rva.is_multiple_of(4) {
         return Err(pe_error(PeStage::Unwind, "unaligned unwind metadata"));
     }
     let header = reader.u32(unwind_info_rva)?;
@@ -361,9 +337,7 @@ fn read_unwind_entry(
 }
 
 /// Read the load-configuration directory.
-pub fn read_load_configuration(
-    image: &mut ImageReader,
-) -> Result<Option<PeLoadConfiguration>, GuestError> {
+pub fn read_load_configuration(image: &mut ImageReader) -> Result<Option<PeLoadConfiguration>, GuestError> {
     let reader = image.for_stage(PeStage::LoadConfig);
     let table = directory(&reader.pe, 10)?;
     if table.rva == 0 {

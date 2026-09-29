@@ -14,18 +14,13 @@ use qa_guest::abi::runner::{GuestCallRequest, GuestCallRunner};
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::{GuestHostCallback, HookState};
 use qa_guest::core::contracts::{
-    CallbackId, GuestAddress,
-    GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
-    GuestCallbackReference, GuestFlag, GuestIntegerWidth, GuestMapOptions, GuestPermissions,
-    GuestRegister, GuestStorage, GuestWrittenRange, NativeCallAbi,
+    CallbackId, GuestAddress, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature,
+    GuestCallbackReference, GuestFlag, GuestIntegerWidth, GuestMapOptions, GuestPermissions, GuestRegister, GuestWrittenRange, NativeCallAbi,
 };
 use qa_guest::core::memory::{
     add_guest_pointer, signed_guest_pointer, wrap_guest_pointer, FetchCursor, SparseGuestMemory,
 };
-use qa_guest::core::registers::{
-    GuestProcessorInitialState, GuestProcessorState, IntegerRegisterFile, ProcessorFlags,
-};
-use qa_guest::x64::cpu::X64Cpu;
+use qa_guest::core::registers::{GuestProcessorInitialState, GuestProcessorState, IntegerRegisterFile, ProcessorFlags};
 
 use common::{map, test_module};
 
@@ -90,16 +85,34 @@ fn sparse_high_64_bit_addresses_preserve_pointer_bytes_and_aliases() {
     let destination = memory.offset(base, 24).unwrap();
     let target = memory.offset(base, 63).unwrap();
     memory.write_pointer(destination, Some(target)).unwrap();
-    assert_eq!(memory.read_pointer(destination).unwrap().unwrap().offset, 0xf123_4567_89ab_c03f);
+    assert_eq!(
+        memory.read_pointer(destination).unwrap().unwrap().offset,
+        0xf123_4567_89ab_c03f
+    );
     memory.write_pointer(destination, None).unwrap();
     assert_eq!(memory.read_pointer(destination).unwrap(), None);
-    assert_eq!(memory.mappings().iter().map(|entry| entry.byte_length).sum::<usize>(), 64);
+    assert_eq!(
+        memory.mappings().iter().map(|entry| entry.byte_length).sum::<usize>(),
+        64
+    );
     let boundary = map(&mut memory, 0x1fff_ffff_ffff_fe, 4, GuestPermissions::ReadWrite, None);
     memory.write_u32(boundary, 0x1234_5678).unwrap();
     assert_eq!(memory.read_u8(memory.offset(boundary, 3).unwrap()).unwrap(), 0x12);
     assert!(format!("{:?}", memory.read_u8(memory.offset(boundary, 4).unwrap())).contains("unmapped"));
-    let beyond = map(&mut memory, 0x2000_0000_0000_10, 1, GuestPermissions::Read, Some(vec![41]));
-    let neighbor = map(&mut memory, beyond.offset + 2, 1, GuestPermissions::Read, Some(vec![43]));
+    let beyond = map(
+        &mut memory,
+        0x2000_0000_0000_10,
+        1,
+        GuestPermissions::Read,
+        Some(vec![41]),
+    );
+    let neighbor = map(
+        &mut memory,
+        beyond.offset + 2,
+        1,
+        GuestPermissions::Read,
+        Some(vec![43]),
+    );
     assert_eq!(memory.read_u8(beyond).unwrap(), 41);
     assert_eq!(memory.read_u8(neighbor).unwrap(), 43);
     assert!(format!("{:?}", memory.read_u8(memory.offset(beyond, 1).unwrap())).contains("unmapped"));
@@ -115,7 +128,7 @@ fn checked_accesses_cross_adjacent_mappings_and_reject_faulting_writes() {
     assert_eq!(memory.copy(start, 6).unwrap(), [0, 0x78, 0x56, 0x34, 0x12, 0]);
     assert_eq!(memory.read_u32(memory.offset(start, 1).unwrap()).unwrap(), 0x1234_5678);
     memory.protect(tail, 3, GuestPermissions::Read).unwrap();
-    assert!(memory.write(start, &vec![99; 6]).is_err());
+    assert!(memory.write(start, &[99; 6]).is_err());
     assert_eq!(memory.read_u8(start).unwrap(), 0);
     assert!(format!("{:?}", memory.fetch(start, 1)).contains("permits read-write"));
     memory.protect(start, 3, GuestPermissions::Execute).unwrap();
@@ -127,7 +140,13 @@ fn checked_accesses_cross_adjacent_mappings_and_reject_faulting_writes() {
 fn vector_reads_preserve_alias_changes_and_check_full_range() {
     for split in [false, true] {
         let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
-        let start = map(&mut memory, 0x1000, if split { 5 } else { 12 }, GuestPermissions::ReadWrite, None);
+        let start = map(
+            &mut memory,
+            0x1000,
+            if split { 5 } else { 12 },
+            GuestPermissions::ReadWrite,
+            None,
+        );
         if split {
             map(&mut memory, 0x1005, 7, GuestPermissions::ReadWrite, None);
         }
@@ -138,11 +157,15 @@ fn vector_reads_preserve_alias_changes_and_check_full_range() {
         assert!(vector.x == 0.0 && vector.x.is_sign_negative());
         assert_eq!((vector.y, vector.z), (1.5, -2.25));
         let source = memory.offset(start, 8).unwrap();
-        let alias = memory.map_alias(0x2000, 4, GuestPermissions::ReadWrite, "alias", source).unwrap();
+        let alias = memory
+            .map_alias(0x2000, 4, GuestPermissions::ReadWrite, "alias", source)
+            .unwrap();
         memory.write_f32(alias, 42.5).unwrap();
         let vector = memory.read_f32x3(start).unwrap();
         assert_eq!((vector.y, vector.z), (1.5, 42.5));
-        memory.protect(memory.offset(start, 8).unwrap(), 4, GuestPermissions::Execute).unwrap();
+        memory
+            .protect(memory.offset(start, 8).unwrap(), 4, GuestPermissions::Execute)
+            .unwrap();
         assert!(memory.read_f32x3(start).is_err());
         memory.unmap(memory.offset(start, 8).unwrap(), 4).unwrap();
         assert!(memory.read_f32x3(start).is_err());
@@ -170,7 +193,13 @@ fn contiguous_bulk_writes_preserve_overlapping_sources_and_notify_after_commit()
     // Observers cannot read memory; snapshot delivery order via committed reads after each write.
     let seen: Rc<RefCell<Vec<Vec<GuestWrittenRange>>>> = Rc::new(RefCell::new(Vec::new()));
     let probe = Rc::clone(&seen);
-    let id = memory.observe_writes(base, 8, Box::new(move |ranges| probe.borrow_mut().push(ranges.to_vec()))).unwrap();
+    let id = memory
+        .observe_writes(
+            base,
+            8,
+            Box::new(move |ranges| probe.borrow_mut().push(ranges.to_vec())),
+        )
+        .unwrap();
     let overlap: Vec<u8> = memory.copy(base, 6).unwrap();
     memory.write(memory.offset(base, 2).unwrap(), &overlap).unwrap();
     assert_eq!(memory.copy(base, 8).unwrap(), [0, 1, 0, 1, 2, 3, 4, 5]);
@@ -179,7 +208,10 @@ fn contiguous_bulk_writes_preserve_overlapping_sources_and_notify_after_commit()
     memory.write(base, &overlap).unwrap();
     assert_eq!(memory.copy(base, 8).unwrap(), [0, 1, 2, 3, 4, 5, 4, 5]);
     notifications.borrow_mut().push(memory.copy(base, 8).unwrap());
-    assert_eq!(*notifications.borrow(), [vec![0, 1, 0, 1, 2, 3, 4, 5], vec![0, 1, 2, 3, 4, 5, 4, 5]]);
+    assert_eq!(
+        *notifications.borrow(),
+        [vec![0, 1, 0, 1, 2, 3, 4, 5], vec![0, 1, 2, 3, 4, 5, 4, 5]]
+    );
     assert_eq!(detached, [0, 1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(seen.borrow().len(), 2);
     memory.unobserve(id);
@@ -190,13 +222,25 @@ fn split_protections_and_restored_aliases_retain_private_bytes() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 4, 0x10000).unwrap();
     let original = allocate(&mut memory, 64, 16);
     let source = memory.offset(original, 8).unwrap();
-    let alias = memory.map_alias(0x20000, 16, GuestPermissions::ReadWrite, "alias", source).unwrap();
+    let alias = memory
+        .map_alias(0x20000, 16, GuestPermissions::ReadWrite, "alias", source)
+        .unwrap();
     memory.write_u32(alias, 0xaabb_ccdd).unwrap();
-    assert_eq!(memory.read_u32(memory.offset(original, 8).unwrap()).unwrap(), 0xaabb_ccdd);
-    memory.protect(memory.offset(original, 16).unwrap(), 16, GuestPermissions::Read).unwrap();
+    assert_eq!(
+        memory.read_u32(memory.offset(original, 8).unwrap()).unwrap(),
+        0xaabb_ccdd
+    );
+    memory
+        .protect(memory.offset(original, 16).unwrap(), 16, GuestPermissions::Read)
+        .unwrap();
     assert!(memory.write(memory.offset(original, 16).unwrap(), &[1]).is_err());
-    memory.protect(memory.offset(original, 16).unwrap(), 16, GuestPermissions::ReadWrite).unwrap();
-    assert_eq!(memory.read_u32(memory.offset(original, 8).unwrap()).unwrap(), 0xaabb_ccdd);
+    memory
+        .protect(memory.offset(original, 16).unwrap(), 16, GuestPermissions::ReadWrite)
+        .unwrap();
+    assert_eq!(
+        memory.read_u32(memory.offset(original, 8).unwrap()).unwrap(),
+        0xaabb_ccdd
+    );
     let module = test_module("guest");
     let mut restored = SparseGuestMemory::restore(module, &memory.checkpoint()).unwrap();
     assert!(format!("{:?}", restored.copy(original, 4)).contains("another execution owner"));
@@ -263,10 +307,20 @@ fn callback_addresses_survive_nested_calls_revocation_and_restoration() {
     })
     .unwrap();
     map(&mut memory, 0x30000, 65536, GuestPermissions::ReadWrite, None);
-    map(&mut memory, 0x1000, 4096, GuestPermissions::ReadExecute, Some(vec![0xcc]));
+    map(
+        &mut memory,
+        0x1000,
+        4096,
+        GuestPermissions::ReadExecute,
+        Some(vec![0xcc]),
+    );
     let context = GuestCallContext {
         module: module.clone(),
-        callback: GuestCallbackReference::NativeGuest { module: module.clone(), address: nested_address, abi: NativeCallAbi::Cdecl },
+        callback: GuestCallbackReference::NativeGuest {
+            module: module.clone(),
+            address: nested_address,
+            abi: NativeCallAbi::Cdecl,
+        },
         parent: None,
         itself: None,
         other: None,
@@ -332,38 +386,68 @@ fn callback_addresses_survive_nested_calls_revocation_and_restoration() {
         signature: signature.clone(),
         invoke: Rc::new(|_, _, _| Ok(GuestCallResult::Void)),
     };
-    let mut restored_table = qa_guest::core::callbacks::GuestCallbackTable::restore(
-        &mut restored_memory,
-        &saved,
-        |id| {
+    let mut restored_table =
+        qa_guest::core::callbacks::GuestCallbackTable::restore(&mut restored_memory, &saved, |id| {
             if *id == CallbackId::new("test", "nested") {
                 Some(restored_nested.clone())
             } else {
                 Some(outer_clone.clone())
             }
-        },
-    )
-    .unwrap();
+        })
+        .unwrap();
     let restored_address = restored_memory.pointer(nested_address.offset).unwrap().unwrap();
-    let resolved = restored_table.resolve(&mut restored_memory, restored_address).unwrap().unwrap();
+    let resolved = restored_table
+        .resolve(&mut restored_memory, restored_address)
+        .unwrap()
+        .unwrap();
     assert_eq!(resolved.id, CallbackId::new("test", "nested"));
-    let outer_restored = restored_table.address(&CallbackId::new("test", "outer")).expect("restored outer address");
+    let outer_restored = restored_table
+        .address(&CallbackId::new("test", "outer"))
+        .expect("restored outer address");
     assert!(format!("{:?}", restored_table.resolve(&mut restored_memory, outer_restored)).contains("unbound"));
 }
 
 #[test]
 fn integer_register_aliases_preserve_high_bits_and_clear_upper_on_32_bit_writes() {
     let mut registers = IntegerRegisterFile::new(GuestArchitecture::X86_64);
-    registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x1234_5678_9abc_def0, false).unwrap();
-    registers.write(GuestRegister::Rax, GuestIntegerWidth::B8, 0x11, true).unwrap();
-    assert_eq!(registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 0x1234_5678_9abc_11f0);
-    registers.write(GuestRegister::Rax, GuestIntegerWidth::B32, 0xfedc_ba98, false).unwrap();
-    assert_eq!(registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 0xfedc_ba98);
-    registers.write(GuestRegister::R15, GuestIntegerWidth::B64, u64::MAX, false).unwrap();
-    assert_eq!(registers.read(GuestRegister::R15, GuestIntegerWidth::B64, false).unwrap(), u64::MAX);
+    registers
+        .write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x1234_5678_9abc_def0, false)
+        .unwrap();
+    registers
+        .write(GuestRegister::Rax, GuestIntegerWidth::B8, 0x11, true)
+        .unwrap();
+    assert_eq!(
+        registers
+            .read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        0x1234_5678_9abc_11f0
+    );
+    registers
+        .write(GuestRegister::Rax, GuestIntegerWidth::B32, 0xfedc_ba98, false)
+        .unwrap();
+    assert_eq!(
+        registers
+            .read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        0xfedc_ba98
+    );
+    registers
+        .write(GuestRegister::R15, GuestIntegerWidth::B64, u64::MAX, false)
+        .unwrap();
+    assert_eq!(
+        registers
+            .read(GuestRegister::R15, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        u64::MAX
+    );
     let mut restored = IntegerRegisterFile::new(GuestArchitecture::X86_64);
     restored.restore(&registers.checkpoint()).unwrap();
-    assert_eq!(restored.read(GuestRegister::R15, GuestIntegerWidth::B64, false).unwrap(), u64::MAX);
+    assert_eq!(
+        restored
+            .read(GuestRegister::R15, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        u64::MAX
+    );
     let i386 = IntegerRegisterFile::new(GuestArchitecture::I386);
     assert!(format!("{:?}", i386.read(GuestRegister::R8, GuestIntegerWidth::B32, false)).contains("i386"));
     assert!(format!("{:?}", registers.read(GuestRegister::Rsp, GuestIntegerWidth::B8, true)).contains("high-byte"));
@@ -381,23 +465,49 @@ fn integer_register_aliases_preserve_high_bits_and_clear_upper_on_32_bit_writes(
     assert_eq!(cpu.flags.value(), 3);
     assert_eq!(cpu.x87.registers.len(), 80);
     assert_eq!(cpu.simd.xmm.len(), 256);
-    assert_eq!(cpu.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), 0x20000);
+    assert_eq!(
+        cpu.registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        0x20000
+    );
 }
 
 #[test]
 fn register_checkpoint_snapshots_stay_independent() {
     for architecture in [GuestArchitecture::I386, GuestArchitecture::X86_64] {
         let mut registers = IntegerRegisterFile::new(architecture);
-        registers.write(GuestRegister::Rax, GuestIntegerWidth::B32, 7, false).unwrap();
+        registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B32, 7, false)
+            .unwrap();
         let retained = registers.checkpoint();
-        assert_eq!(retained.len(), if architecture == GuestArchitecture::I386 { 64 } else { 128 });
-        registers.write(GuestRegister::Rax, GuestIntegerWidth::B32, 19, false).unwrap();
+        assert_eq!(
+            retained.len(),
+            if architecture == GuestArchitecture::I386 {
+                64
+            } else {
+                128
+            }
+        );
+        registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B32, 19, false)
+            .unwrap();
         let updated = registers.checkpoint();
         assert_ne!(updated, retained);
         registers.restore(&retained).unwrap();
-        assert_eq!(registers.read(GuestRegister::Rax, GuestIntegerWidth::B32, false).unwrap(), 7);
+        assert_eq!(
+            registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B32, false)
+                .unwrap(),
+            7
+        );
         assert!(format!("{:?}", registers.restore(&[0])).contains("architecture or length"));
-        assert_eq!(registers.read(GuestRegister::Rax, GuestIntegerWidth::B32, false).unwrap(), 7);
+        assert_eq!(
+            registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B32, false)
+                .unwrap(),
+            7
+        );
     }
 }
 
@@ -406,17 +516,40 @@ fn write_ranges_retain_watched_offsets_across_aliases_and_boundaries() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
     let first = map(&mut memory, 0x10000, 8, GuestPermissions::ReadWrite, None);
     let second = map(&mut memory, 0x10008, 8, GuestPermissions::ReadWrite, None);
-    let alias = memory.map_alias(0x20000, 8, GuestPermissions::ReadWrite, "alias", second).unwrap();
+    let alias = memory
+        .map_alias(0x20000, 8, GuestPermissions::ReadWrite, "alias", second)
+        .unwrap();
     let seen: Rc<RefCell<Vec<Vec<GuestWrittenRange>>>> = Rc::new(RefCell::new(Vec::new()));
     let probe = Rc::clone(&seen);
     let watched = memory.offset(first, 4).unwrap();
-    let id = memory.observe_writes(watched, 8, Box::new(move |ranges| probe.borrow_mut().push(ranges.to_vec()))).unwrap();
+    let id = memory
+        .observe_writes(
+            watched,
+            8,
+            Box::new(move |ranges| probe.borrow_mut().push(ranges.to_vec())),
+        )
+        .unwrap();
     memory.write_u8(alias, 9).unwrap();
-    assert_eq!(*seen.borrow(), [[GuestWrittenRange { byte_offset: 4, byte_length: 1 }]]);
+    assert_eq!(
+        *seen.borrow(),
+        [[GuestWrittenRange {
+            byte_offset: 4,
+            byte_length: 1
+        }]]
+    );
     memory.write(memory.offset(first, 6).unwrap(), &[2, 3, 9, 4]).unwrap();
     assert_eq!(
         seen.borrow()[1],
-        [GuestWrittenRange { byte_offset: 2, byte_length: 2 }, GuestWrittenRange { byte_offset: 4, byte_length: 2 }]
+        [
+            GuestWrittenRange {
+                byte_offset: 2,
+                byte_length: 2
+            },
+            GuestWrittenRange {
+                byte_offset: 4,
+                byte_length: 2
+            }
+        ]
     );
     memory.unobserve(id);
     memory.write_u8(alias, 8).unwrap();
@@ -427,12 +560,16 @@ fn write_ranges_retain_watched_offsets_across_aliases_and_boundaries() {
 fn range_write_observers_follow_aliases_and_stop_after_removal_or_replacement() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
     let base = allocate(&mut memory, 16, 16);
-    let alias = memory.map_alias(0x200000, 16, GuestPermissions::ReadWrite, "alias", base).unwrap();
+    let alias = memory
+        .map_alias(0x200000, 16, GuestPermissions::ReadWrite, "alias", base)
+        .unwrap();
     let values: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
     // Observers cannot read memory; record delivery counts and read back after each write.
     let deliveries: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
     let probe = Rc::clone(&deliveries);
-    let id = memory.observe_writes(base, 4, Box::new(move |_| *probe.borrow_mut() += 1)).unwrap();
+    let id = memory
+        .observe_writes(base, 4, Box::new(move |_| *probe.borrow_mut() += 1))
+        .unwrap();
     memory.write_i32(memory.offset(base, 4).unwrap(), 9).unwrap();
     memory.write_i32(alias, 3).unwrap();
     assert_eq!(*deliveries.borrow(), 1);
@@ -444,7 +581,9 @@ fn range_write_observers_follow_aliases_and_stop_after_removal_or_replacement() 
     assert_eq!(*values.borrow(), [3]);
     // Unmap plus remap replaces the backing, dropping observers.
     let probe = Rc::clone(&deliveries);
-    let id = memory.observe_writes(base, 4, Box::new(move |_| *probe.borrow_mut() += 1)).unwrap();
+    let id = memory
+        .observe_writes(base, 4, Box::new(move |_| *probe.borrow_mut() += 1))
+        .unwrap();
     let offset = base.offset;
     memory.unmap(base, 16).unwrap();
     map(&mut memory, offset, 16, GuestPermissions::ReadWrite, None);
@@ -456,7 +595,9 @@ fn range_write_observers_follow_aliases_and_stop_after_removal_or_replacement() 
     // write has the same observable effect.
     let late: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
     let probe = Rc::clone(&late);
-    let late_id = memory.observe_writes(base, 4, Box::new(move |_| *probe.borrow_mut() += 1)).unwrap();
+    let late_id = memory
+        .observe_writes(base, 4, Box::new(move |_| *probe.borrow_mut() += 1))
+        .unwrap();
     memory.unobserve(late_id);
     memory.write_i32(base, 9).unwrap();
     assert_eq!(*late.borrow(), 0);
@@ -483,7 +624,13 @@ fn mapping_locality_preserves_code_splits_holes_and_remapped_backing() {
     memory.unmap(middle, 16).unwrap();
     assert!(memory.read_u8(middle).is_err());
     assert!(memory.copy(memory.offset(base, 15).unwrap(), 2).is_err());
-    map(&mut memory, middle.offset, 16, GuestPermissions::ReadWriteExecute, Some(vec![9]));
+    map(
+        &mut memory,
+        middle.offset,
+        16,
+        GuestPermissions::ReadWriteExecute,
+        Some(vec![9]),
+    );
     assert_eq!(memory.fetch(middle, 1).unwrap()[0], 9);
     assert_eq!(memory.copy(memory.offset(base, 15).unwrap(), 2).unwrap(), [0, 9]);
     let foreign = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
@@ -502,7 +649,13 @@ fn mapping_locality_preserves_code_splits_holes_and_remapped_backing() {
     memory.unmap(distant, 8).unwrap();
     memory.read_u8(middle).unwrap();
     assert!(format!("{:?}", memory.read_u8(distant)).contains("unmapped"));
-    map(&mut memory, distant.offset, 8, GuestPermissions::ReadWrite, Some(vec![31]));
+    map(
+        &mut memory,
+        distant.offset,
+        8,
+        GuestPermissions::ReadWrite,
+        Some(vec![31]),
+    );
     assert_eq!(memory.read_u8(distant).unwrap(), 31);
     assert!(format!("{:?}", memory.read_u8(foreign_middle)).contains("another execution owner"));
 }
@@ -537,10 +690,20 @@ fn first_fit_hints_revisit_coalesced_holes_and_preserve_alignment() {
 #[test]
 fn retained_executable_ranges_follow_writes_aliases_and_restoration() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
-    let code = map(&mut memory, 0x10000, 8, GuestPermissions::ReadExecute, Some(vec![0x90, 0xc3]));
-    let unchanged = memory.retain_executable_range(code.offset, &[0x90, 0xc3]).expect("retention");
+    let code = map(
+        &mut memory,
+        0x10000,
+        8,
+        GuestPermissions::ReadExecute,
+        Some(vec![0x90, 0xc3]),
+    );
+    let unchanged = memory
+        .retain_executable_range(code.offset, &[0x90, 0xc3])
+        .expect("retention");
     assert!(unchanged.unchanged(&memory));
-    let alias = memory.map_alias(0x20000, 8, GuestPermissions::ReadWrite, "alias", code).unwrap();
+    let alias = memory
+        .map_alias(0x20000, 8, GuestPermissions::ReadWrite, "alias", code)
+        .unwrap();
     memory.write_u8(alias, 0xcc).unwrap();
     assert!(!unchanged.unchanged(&memory));
     memory.write(alias, &[0x90]).unwrap();
@@ -551,7 +714,11 @@ fn retained_executable_ranges_follow_writes_aliases_and_restoration() {
     let probe = Rc::clone(&observed);
     let expected = [0x90u8, 0xc3];
     let id = memory
-        .observe_writes(alias, 1, Box::new(move |_| *probe.borrow_mut() = Some(expected == [0x90, 0xc3])))
+        .observe_writes(
+            alias,
+            1,
+            Box::new(move |_| *probe.borrow_mut() = Some(expected == [0x90, 0xc3])),
+        )
         .unwrap();
     memory.write_u8(alias, 0xcc).unwrap();
     assert_eq!(*observed.borrow(), Some(true));
@@ -561,7 +728,9 @@ fn retained_executable_ranges_follow_writes_aliases_and_restoration() {
     assert!(unchanged.unchanged(&memory));
     let module = test_module("guest");
     let mut restored = SparseGuestMemory::restore(module, &memory.checkpoint()).unwrap();
-    let restored_range = restored.retain_executable_range(code.offset, &[0x90, 0xc3]).expect("restored retention");
+    let restored_range = restored
+        .retain_executable_range(code.offset, &[0x90, 0xc3])
+        .expect("restored retention");
     let restored_alias = restored.pointer(alias.offset).unwrap().unwrap();
     restored.write_u16(restored_alias, 0xf4cc).unwrap();
     assert!(!restored_range.unchanged(&restored));
@@ -569,16 +738,33 @@ fn retained_executable_ranges_follow_writes_aliases_and_restoration() {
     memory.protect(code, 1, GuestPermissions::Read).unwrap();
     assert!(!unchanged.unchanged(&memory));
     memory.unmap(code, 8).unwrap();
-    map(&mut memory, code.offset, 8, GuestPermissions::ReadExecute, Some(vec![0x90, 0xc3]));
+    map(
+        &mut memory,
+        code.offset,
+        8,
+        GuestPermissions::ReadExecute,
+        Some(vec![0x90, 0xc3]),
+    );
     assert!(!unchanged.unchanged(&memory));
-    assert!(memory.retain_executable_range(code.offset, &[0x90, 0xc3]).unwrap().unchanged(&memory));
+    assert!(memory
+        .retain_executable_range(code.offset, &[0x90, 0xc3])
+        .unwrap()
+        .unchanged(&memory));
 }
 
 #[test]
 fn scalar_instruction_fetch_observes_aliases_permissions_and_remaps() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
-    let code = map(&mut memory, 0x10000, 2, GuestPermissions::ReadWriteExecute, Some(vec![0x90, 0xc3]));
-    let alias = memory.map_alias(0x20000, 2, GuestPermissions::ReadWrite, "alias", code).unwrap();
+    let code = map(
+        &mut memory,
+        0x10000,
+        2,
+        GuestPermissions::ReadWriteExecute,
+        Some(vec![0x90, 0xc3]),
+    );
+    let alias = memory
+        .map_alias(0x20000, 2, GuestPermissions::ReadWrite, "alias", code)
+        .unwrap();
     assert_eq!(memory.fetch_byte(code.offset).unwrap(), 0x90);
     memory.write_u8(alias, 0xcc).unwrap();
     assert_eq!(memory.fetch_byte(code.offset).unwrap(), 0xcc);
@@ -622,7 +808,9 @@ fn scalar_stores_preserve_encoding_and_cross_mapping_atomicity() {
     let before = memory.copy(base, 16).unwrap();
     let notifications: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
     let probe = Rc::clone(&notifications);
-    let id = memory.observe_writes(base, 16, Box::new(move |_| *probe.borrow_mut() += 1)).unwrap();
+    let id = memory
+        .observe_writes(base, 16, Box::new(move |_| *probe.borrow_mut() += 1))
+        .unwrap();
     memory.protect(second, 12, GuestPermissions::Read).unwrap();
     assert!(memory.write_u64(base, 42).is_err());
     assert!(memory.write_u64_words(base, 42, 43).is_err());
@@ -634,8 +822,16 @@ fn scalar_stores_preserve_encoding_and_cross_mapping_atomicity() {
 #[test]
 fn execute_sequence_reads_aliases_and_revalidates_without_speculative_faults() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
-    let base = map(&mut memory, 0x1000, 3, GuestPermissions::ReadExecute, Some(vec![1, 2, 3]));
-    let alias = memory.map_alias(0x2000, 3, GuestPermissions::ReadWrite, "alias", base).unwrap();
+    let base = map(
+        &mut memory,
+        0x1000,
+        3,
+        GuestPermissions::ReadExecute,
+        Some(vec![1, 2, 3]),
+    );
+    let alias = memory
+        .map_alias(0x2000, 3, GuestPermissions::ReadWrite, "alias", base)
+        .unwrap();
     let mut cursor = FetchCursor::new(base.offset);
     assert_eq!(memory.fetch_sequence_byte(&mut cursor).unwrap(), 1);
     memory.write_u8(memory.offset(alias, 1).unwrap(), 9).unwrap();
@@ -660,7 +856,14 @@ fn direct_scalar_stores_retain_unaligned_float_bits() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
     let base = allocate(&mut memory, 32, 16);
     let value = memory.offset(base, 1).unwrap();
-    for number in [-0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 5e-324, std::f64::consts::PI] {
+    for number in [
+        -0.0,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        5e-324,
+        std::f64::consts::PI,
+    ] {
         memory.write_f64(value, number).unwrap();
         assert_eq!(memory.copy(value, 8).unwrap(), number.to_le_bytes());
     }
@@ -669,8 +872,12 @@ fn direct_scalar_stores_retain_unaligned_float_bits() {
     let observed: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let first = Rc::clone(&observed);
     let second = Rc::clone(&observed);
-    let first_id = memory.observe_writes(value, 8, Box::new(move |_| first.borrow_mut().push(1))).unwrap();
-    let second_id = memory.observe_writes(value, 8, Box::new(move |_| second.borrow_mut().push(2))).unwrap();
+    let first_id = memory
+        .observe_writes(value, 8, Box::new(move |_| first.borrow_mut().push(1)))
+        .unwrap();
+    let second_id = memory
+        .observe_writes(value, 8, Box::new(move |_| second.borrow_mut().push(2)))
+        .unwrap();
     memory.write_u64(value, 0x1234_5678_9abc_def0).unwrap();
     assert_eq!(*observed.borrow(), [1, 2]);
     assert_eq!(memory.read_u64(value).unwrap(), 0x1234_5678_9abc_def0);
@@ -682,7 +889,9 @@ fn direct_scalar_stores_retain_unaligned_float_bits() {
 fn word_pair_scalars_preserve_aliases_observers_and_retired_mappings() {
     let mut memory = SparseGuestMemory::new(test_module("guest"), 8, 0x10000).unwrap();
     let base = map(&mut memory, 0xffff_8000_0000_0001, 8, GuestPermissions::ReadWrite, None);
-    let alias = memory.map_alias(0x20001, 8, GuestPermissions::ReadWrite, "alias", base).unwrap();
+    let alias = memory
+        .map_alias(0x20001, 8, GuestPermissions::ReadWrite, "alias", base)
+        .unwrap();
     let observed: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let probe = Rc::clone(&observed);
     let id = memory
@@ -699,8 +908,13 @@ fn word_pair_scalars_preserve_aliases_observers_and_retired_mappings() {
     let mut restored = SparseGuestMemory::restore(module, &memory.checkpoint()).unwrap();
     assert!(format!("{:?}", restored.read_u64_words(base)).contains("another execution owner"));
     let restored_base = restored.pointer(base.offset).unwrap().unwrap();
-    assert_eq!(restored.read_u64_words(restored_base).unwrap(), (0x89ab_cdef, 0x0123_4567));
-    memory.protect(memory.offset(base, 4).unwrap(), 4, GuestPermissions::Execute).unwrap();
+    assert_eq!(
+        restored.read_u64_words(restored_base).unwrap(),
+        (0x89ab_cdef, 0x0123_4567)
+    );
+    memory
+        .protect(memory.offset(base, 4).unwrap(), 4, GuestPermissions::Execute)
+        .unwrap();
     assert!(memory.read_u64_words(base).is_err());
     memory.unmap(base, 8).unwrap();
     assert!(memory.read_u64_words(base).is_err());

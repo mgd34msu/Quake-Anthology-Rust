@@ -6,15 +6,11 @@
 use std::rc::Rc;
 
 use crate::core::callbacks::HostCallContext;
-use crate::core::contracts::{
-    GuestAddress, GuestCallContext, GuestCallResult, GuestCallValue, GuestStorage,
-};
+use crate::core::contracts::{GuestAddress, GuestCallContext, GuestCallResult, GuestCallValue, GuestStorage};
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
 use crate::runtime::common::memory::{integer, required_pointer, write_unsigned};
-use crate::runtime::system_v::contracts::{
-    invoke_nested, unsupported_system_v, SystemVContext,
-};
+use crate::runtime::system_v::contracts::{invoke_nested, unsupported_system_v, SystemVContext};
 use crate::runtime::system_v::cxx_data::{
     abi_data, abi_function, abi_slot, abi_type, abi_unsupported, abi_vtable, CxxBase, SharedAbi,
 };
@@ -149,11 +145,7 @@ impl SystemVIostreams {
     }
 
     /// Resolve the `ios` subobject through the stream vtable.
-    fn ios(
-        &self,
-        memory: &mut SparseGuestMemory,
-        stream: GuestAddress,
-    ) -> Result<GuestAddress, GuestError> {
+    fn ios(&self, memory: &mut SparseGuestMemory, stream: GuestAddress) -> Result<GuestAddress, GuestError> {
         let vptr = memory
             .read_pointer(stream)?
             .ok_or_else(|| GuestError::invalid("Unconstructed guest stream"))?;
@@ -220,9 +212,7 @@ impl SystemVIostreams {
         let sync = memory
             .read_pointer(abi_slot(memory, vptr, 6 * pointer)?)?
             .ok_or_else(|| GuestError::callback("Stream buffer has no sync method"))?;
-        let synchronize = |streams: &Self,
-                           ctx: &mut HostCallContext<'_, '_>|
-         -> Result<(), GuestError> {
+        let synchronize = |streams: &Self, ctx: &mut HostCallContext<'_, '_>| -> Result<(), GuestError> {
             let result = invoke_nested(
                 ctx,
                 &streams.context.shared,
@@ -346,19 +336,36 @@ impl SystemVIostreams {
         let table = match ctx.resolve_address("libstdc++.so.6", &format!("_ZTV{name}"), Some("GLIBCXX_3.4")) {
             Some(table) => table,
             None => {
-                let table = abi_data(ctx, memory, &format!("_ZTV{name}"), 10 * pointer as usize, "GLIBCXX_3.4")?;
+                let table = abi_data(
+                    ctx,
+                    memory,
+                    &format!("_ZTV{name}"),
+                    10 * pointer as usize,
+                    "GLIBCXX_3.4",
+                )?;
                 write_unsigned(memory, table, self.pointer_bytes, prefix as i128)?;
                 memory.write_pointer(abi_slot(memory, table, 2 * pointer)?, Some(info))?;
                 let destructor = abi_unsupported(ctx, memory, &format!("__guest_{name}_destructor"))?;
                 memory.write_pointer(abi_slot(memory, table, 3 * pointer)?, Some(destructor))?;
                 let deleting = abi_unsupported(ctx, memory, &format!("__guest_{name}_deleting_destructor"))?;
                 memory.write_pointer(abi_slot(memory, table, 4 * pointer)?, Some(deleting))?;
-                write_unsigned(memory, abi_slot(memory, table, 5 * pointer)?, self.pointer_bytes, -(prefix as i128))?;
-                write_unsigned(memory, abi_slot(memory, table, 6 * pointer)?, self.pointer_bytes, -(prefix as i128))?;
+                write_unsigned(
+                    memory,
+                    abi_slot(memory, table, 5 * pointer)?,
+                    self.pointer_bytes,
+                    -(prefix as i128),
+                )?;
+                write_unsigned(
+                    memory,
+                    abi_slot(memory, table, 6 * pointer)?,
+                    self.pointer_bytes,
+                    -(prefix as i128),
+                )?;
                 memory.write_pointer(abi_slot(memory, table, 7 * pointer)?, Some(info))?;
                 let virtual_destructor = abi_unsupported(ctx, memory, &format!("__guest_{name}_virtual_destructor"))?;
                 memory.write_pointer(abi_slot(memory, table, 8 * pointer)?, Some(virtual_destructor))?;
-                let virtual_deleting = abi_unsupported(ctx, memory, &format!("__guest_{name}_virtual_deleting_destructor"))?;
+                let virtual_deleting =
+                    abi_unsupported(ctx, memory, &format!("__guest_{name}_virtual_deleting_destructor"))?;
                 memory.write_pointer(abi_slot(memory, table, 9 * pointer)?, Some(virtual_deleting))?;
                 table
             }
@@ -368,7 +375,10 @@ impl SystemVIostreams {
         write_unsigned(memory, abi_slot(memory, ios, layout.precision)?, self.pointer_bytes, 6)?;
         memory.write_u32(abi_slot(memory, ios, layout.flags)?, 0x1002)?;
         memory.write_i32(abi_slot(memory, ios, layout.word_size)?, 8)?;
-        memory.write_pointer(abi_slot(memory, ios, layout.words)?, Some(abi_slot(memory, ios, layout.local_words)?))?;
+        memory.write_pointer(
+            abi_slot(memory, ios, layout.words)?,
+            Some(abi_slot(memory, ios, layout.local_words)?),
+        )?;
         let retained = self.locale.retain(memory)?;
         memory.write_pointer(abi_slot(memory, ios, layout.locale)?, Some(retained))?;
         memory.write_pointer(abi_slot(memory, ios, layout.buffer)?, Some(buffer))?;
@@ -413,7 +423,11 @@ impl SystemVIostreams {
             Some(table) => table,
             None => {
                 let signed = ctx.signed_pointer_storage();
-                let character = if wide { GuestStorage::Uint32 } else { GuestStorage::Int32 };
+                let character = if wide {
+                    GuestStorage::Uint32
+                } else {
+                    GuestStorage::Int32
+                };
                 let stdio = self.stdio.clone();
                 let shared = Rc::clone(&ctx.shared);
                 let pointer_bytes = self.pointer_bytes;
@@ -438,9 +452,9 @@ impl SystemVIostreams {
                         &[GuestStorage::Pointer, GuestStorage::Pointer, signed],
                         Some(GuestStorage::Pointer),
                         Rc::new(|_, _, args| {
-                            Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(
-                                required_pointer(args, 0)?,
-                            ))))
+                            Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(required_pointer(
+                                args, 0,
+                            )?))))
                         }),
                         "GLIBCXX_3.4",
                     )?,
@@ -495,7 +509,7 @@ impl SystemVIostreams {
                                 let mut read = 0;
                                 while read < count {
                                     let file = stream_file(ctx.memory(), buffer, pointer_bytes)?;
-                                let value = stdio.get(ctx, &shared, file, wide)?;
+                                    let value = stdio.get(ctx, &shared, file, wide)?;
                                     if value < 0 {
                                         break;
                                     }
@@ -641,7 +655,11 @@ impl SystemVIostreams {
                                 let value = integer(args, 1)? as i64;
                                 let file = stream_file(ctx.memory(), buffer, pointer_bytes)?;
                                 let result = if value == -1 || value == 0xffff_ffff {
-                                    if stdio.flush(ctx, &shared, file)? == 0 { 0 } else { -1 }
+                                    if stdio.flush(ctx, &shared, file)? == 0 {
+                                        0
+                                    } else {
+                                        -1
+                                    }
                                 } else {
                                     stdio.put(ctx, &shared, file, value as i32, wide)?
                                 };
@@ -694,7 +712,13 @@ pub fn build_iostreams(
     let pointer_bytes = ctx.pointer_bytes;
     let pointer = pointer_bytes as i64;
     let refcount = abi_data(ctx, memory, "_ZNSt8ios_base4Init11_S_refcountE", 4, "GLIBCXX_3.4")?;
-    let synchronized = abi_data(ctx, memory, "_ZNSt8ios_base4Init20_S_synced_with_stdioE", 1, "GLIBCXX_3.4")?;
+    let synchronized = abi_data(
+        ctx,
+        memory,
+        "_ZNSt8ios_base4Init20_S_synced_with_stdioE",
+        1,
+        "GLIBCXX_3.4",
+    )?;
     memory.write_u8(synchronized, 1)?;
     let mut streams = Vec::new();
     for name in ["cin", "cout", "cerr", "clog", "wcin", "wcout", "wcerr", "wclog"] {
@@ -773,12 +797,7 @@ pub fn build_iostreams(
             &[GuestStorage::Pointer, GuestStorage::Int32],
             None,
             Rc::new(move |ctx, _, args| {
-                clearer.clear(
-                    ctx.memory(),
-                    required_pointer(args, 0)?,
-                    wide,
-                    integer(args, 1)? as u32,
-                )?;
+                clearer.clear(ctx.memory(), required_pointer(args, 0)?, wide, integer(args, 1)? as u32)?;
                 Ok(GuestCallResult::Void)
             }),
             "GLIBCXX_3.4",

@@ -5,8 +5,7 @@
 //! from provider definitions outside the requesting image.
 
 use crate::core::contracts::{
-    GuestAddress, GuestImage, GuestImport, GuestImportResolution, GuestImportResolver,
-    GuestSymbolName,
+    GuestAddress, GuestImage, GuestImport, GuestImportResolution, GuestImportResolver, GuestSymbolName,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::elf::parse::{dynamic_value, ElfInspection, ElfRelocation, ElfSymbol};
@@ -38,11 +37,37 @@ pub trait ElfTlsBindings {
     fn current(&self) -> ElfTlsModule;
 
     /// Resolve an imported TLS symbol, or `None` for a local definition.
-    fn resolve(
-        &self,
-        import: &GuestImport,
-        requesting: &GuestImage,
-    ) -> Result<Option<ElfTlsResolution>, GuestError>;
+    fn resolve(&self, import: &GuestImport, requesting: &GuestImage) -> Result<Option<ElfTlsResolution>, GuestError>;
+}
+
+/// Guest IFUNC resolver execution; must never use native execution.
+pub trait IndirectResolver {
+    /// Resolve an indirect symbol to its definition address.
+    fn resolve_indirect(&self, address: GuestAddress) -> Result<GuestAddress, GuestError>;
+}
+
+impl<F> IndirectResolver for F
+where
+    F: Fn(GuestAddress) -> Result<GuestAddress, GuestError>,
+{
+    fn resolve_indirect(&self, address: GuestAddress) -> Result<GuestAddress, GuestError> {
+        self(address)
+    }
+}
+
+/// Provider symbol-size metadata for COPY/SIZE relocations.
+pub trait SymbolSizeResolver {
+    /// Symbol size in bytes, if the provider knows it.
+    fn resolve_symbol_size(&self, import: &GuestImport, requesting: &GuestImage) -> Result<Option<usize>, GuestError>;
+}
+
+impl<F> SymbolSizeResolver for F
+where
+    F: Fn(&GuestImport, &GuestImage) -> Result<Option<usize>, GuestError>,
+{
+    fn resolve_symbol_size(&self, import: &GuestImport, requesting: &GuestImage) -> Result<Option<usize>, GuestError> {
+        self(import, requesting)
+    }
 }
 
 /// ELF relocation context: image, memory, resolver, and TLS bindings.
@@ -60,11 +85,9 @@ pub struct ElfRelocationContext<'e, 'm, 'i, 'r, 't, 'd, 's, 'u, 'p> {
     /// TLS bindings, if any.
     pub tls: Option<&'t dyn ElfTlsBindings>,
     /// Explicit guest IFUNC resolver execution.
-    pub resolve_indirect:
-        Option<&'d dyn Fn(GuestAddress) -> Result<GuestAddress, GuestError>>,
+    pub resolve_indirect: Option<&'d dyn IndirectResolver>,
     /// Provider symbol-size metadata for COPY/SIZE relocations.
-    pub resolve_symbol_size:
-        Option<&'s dyn Fn(&GuestImport, &GuestImage) -> Result<Option<usize>, GuestError>>,
+    pub resolve_symbol_size: Option<&'s dyn SymbolSizeResolver>,
     /// Process-wide GNU unique-symbol registry.
     pub unique_symbols: Option<&'u mut std::collections::HashMap<String, GuestAddress>>,
     /// Collected imports (including TLS and COPY sources).
@@ -86,7 +109,10 @@ pub fn elf_address(memory: &SparseGuestMemory, value: u64) -> Result<GuestAddres
 #[must_use]
 pub fn symbol_import(symbol: &ElfSymbol, slot: GuestAddress) -> GuestImport {
     GuestImport {
-        library: symbol.version.as_ref().map_or(String::new(), |version| version.library.clone()),
+        library: symbol
+            .version
+            .as_ref()
+            .map_or(String::new(), |version| version.library.clone()),
         symbol: GuestSymbolName::Name {
             name: symbol.name.clone(),
             version: symbol.version.as_ref().map(|version| version.name.clone()),
@@ -99,11 +125,7 @@ pub fn symbol_import(symbol: &ElfSymbol, slot: GuestAddress) -> GuestImport {
 /// Apply every relocation eagerly. GNU IFUNC slots defer until direct
 /// relocations have landed.
 pub fn relocate_elf(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>) -> Result<(), GuestError> {
-    let indirect_type = if context.elf.abi.pointer_bytes() == 8 {
-        37
-    } else {
-        42
-    };
+    let indirect_type = if context.elf.abi.pointer_bytes() == 8 { 37 } else { 42 };
     let mut deferred: Vec<ElfRelocation> = Vec::new();
     for relocation in &context.elf.relocations {
         let symbol = context.elf.symbols.get(relocation.symbol_index);
@@ -121,7 +143,10 @@ pub fn relocate_elf(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '
 }
 
 #[allow(clippy::too_many_lines)]
-fn apply(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>, relocation: &ElfRelocation) -> Result<(), GuestError> {
+fn apply(
+    context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
+    relocation: &ElfRelocation,
+) -> Result<(), GuestError> {
     let wide = context.elf.abi.pointer_bytes() == 8;
     let relocation_type = relocation.relocation_type;
     if relocation_type == 0 {
@@ -149,8 +174,7 @@ fn apply(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
     if !context.elf.segments.iter().any(|segment| {
         segment.segment_type == 1
             && relocation.address >= segment.address
-            && relocation.address + byte_length as u64
-                <= segment.address + segment.memory_size as u64
+            && relocation.address + byte_length as u64 <= segment.address + segment.memory_size as u64
     }) {
         return Err(elf_error(format!(
             "relocation target 0x{:x} lies outside this image",
@@ -199,14 +223,15 @@ fn apply(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
         let resolver = context
             .resolve_indirect
             .ok_or_else(|| elf_error("IRELATIVE requires explicit guest resolver execution"))?;
-        let address = resolver(elf_address(
+        let address = resolver.resolve_indirect(elf_address(
             context.memory,
             context.load_bias.wrapping_add(addend as u64),
         )?)?;
-        context.memory.check(address, 1, crate::core::contracts::GuestAccess::Execute)?;
+        context
+            .memory
+            .check(address, 1, crate::core::contracts::GuestAccess::Execute)?;
         result = address.offset as i128;
-    } else if wide
-        && [16, 17, 18, 23].contains(&relocation_type)
+    } else if wide && [16, 17, 18, 23].contains(&relocation_type)
         || !wide && [14, 17, 34, 35, 36, 37].contains(&relocation_type)
     {
         let Some(tls) = context.tls else {
@@ -230,8 +255,8 @@ fn apply(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
                 return Err(elf_error("TLS relocation references a non-TLS symbol"));
             }
             let import = symbol_import(symbol, slot);
-            let local = symbol.section != 0
-                && (symbol.binding == 0 || symbol.visibility != 0 || symbolic_binding(context.elf));
+            let local =
+                symbol.section != 0 && (symbol.binding == 0 || symbol.visibility != 0 || symbolic_binding(context.elf));
             let resolved = if local {
                 None
             } else {
@@ -286,15 +311,15 @@ fn apply(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
                 return Ok(());
             }
             if context.image.mappings.iter().any(|mapping| {
-                symbol_address >= mapping.base
-                    && symbol_address < mapping.base + mapping.byte_length as u64
+                symbol_address >= mapping.base && symbol_address < mapping.base + mapping.byte_length as u64
             }) {
                 return Err(elf_error("COPY must resolve a definition outside the requesting image"));
             }
             let source_size = external_symbol_size(context, &symbol, slot)?;
-            let bytes = context
-                .memory
-                .copy(elf_address(context.memory, symbol_address)?, source_size.min(symbol.size))?;
+            let bytes = context.memory.copy(
+                elf_address(context.memory, symbol_address)?,
+                source_size.min(symbol.size),
+            )?;
             context.memory.write(slot, &bytes)?;
             return Ok(());
         }
@@ -406,7 +431,7 @@ fn external_symbol_size(
             symbol.name
         )));
     };
-    let size = resolve(&symbol_import(symbol, slot), context.image)?;
+    let size = resolve.resolve_symbol_size(&symbol_import(symbol, slot), context.image)?;
     match size {
         Some(size) => Ok(size),
         None => Err(elf_error(format!(
@@ -427,7 +452,7 @@ fn got_address(context: &ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_
 pub fn defined_symbol_address(
     memory: &mut SparseGuestMemory,
     load_bias: u64,
-    resolve_indirect: Option<&dyn Fn(GuestAddress) -> Result<GuestAddress, GuestError>>,
+    resolve_indirect: Option<&dyn IndirectResolver>,
     symbol: &ElfSymbol,
 ) -> Result<u64, GuestError> {
     if symbol.section == 0xfff2 {
@@ -459,7 +484,7 @@ pub fn defined_symbol_address(
             symbol.name
         )));
     };
-    let resolved = resolve(elf_address(memory, raw)?)?;
+    let resolved = resolve.resolve_indirect(elf_address(memory, raw)?)?;
     memory.check(resolved, 1, crate::core::contracts::GuestAccess::Execute)?;
     Ok(resolved.offset)
 }
@@ -493,29 +518,24 @@ pub fn resolve_symbol(
             .and_then(|registry| registry.get(&symbol.name))
             .copied()
         {
-            context.memory.check(existing, 1, crate::core::contracts::GuestAccess::Read)?;
+            context
+                .memory
+                .check(existing, 1, crate::core::contracts::GuestAccess::Read)?;
             if !own {
                 context.imports.push(symbol_import(symbol, slot));
             }
             return Ok(existing.offset);
         }
     }
-    if !copy && own && (symbol.binding == 0 || symbol.visibility != 0 || symbolic_binding(context.elf))
-    {
-        return defined_symbol_address(
-            context.memory,
-            context.load_bias,
-            context.resolve_indirect,
-            symbol,
-        );
+    if !copy && own && (symbol.binding == 0 || symbol.visibility != 0 || symbolic_binding(context.elf)) {
+        return defined_symbol_address(context.memory, context.load_bias, context.resolve_indirect, symbol);
     }
     let import = symbol_import(symbol, slot);
     let resolver = context.resolver;
     let resolution = resolver.resolve(context.memory, &import, context.image);
     if !matches!(resolution, GuestImportResolution::Unresolved { .. }) {
         let address = match &resolution {
-            GuestImportResolution::Guest { address, .. }
-            | GuestImportResolution::Host { address, .. } => *address,
+            GuestImportResolution::Guest { address, .. } | GuestImportResolution::Host { address, .. } => *address,
             GuestImportResolution::Unresolved { .. } => unreachable!("checked above"),
         };
         // Every provider shares this guest address space, including host
@@ -546,12 +566,7 @@ pub fn resolve_symbol(
         return Ok(address.offset);
     }
     if !copy && own {
-        let address = defined_symbol_address(
-            context.memory,
-            context.load_bias,
-            context.resolve_indirect,
-            symbol,
-        )?;
+        let address = defined_symbol_address(context.memory, context.load_bias, context.resolve_indirect, symbol)?;
         if unique {
             if let Some(registry) = context.unique_symbols.as_deref_mut() {
                 registry.insert(symbol.name.clone(), elf_address(context.memory, address)?);
@@ -573,7 +588,12 @@ pub fn resolve_symbol(
         .map_or(String::new(), |version| format!("@{}", version.name));
     Err(elf_error(format!(
         "unresolved import {}:{}{}: {}",
-        if symbol.version.as_ref().map_or("", |version| version.library.as_str()).is_empty() {
+        if symbol
+            .version
+            .as_ref()
+            .map_or("", |version| version.library.as_str())
+            .is_empty()
+        {
             "<global>"
         } else {
             symbol.version.as_ref().map_or("", |version| version.library.as_str())

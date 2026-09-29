@@ -19,11 +19,7 @@ pub fn install_windows_format(
     errno: GuestAddress,
 ) -> Result<(), GuestError> {
     let pointer_storage = host.pointer_storage();
-    for library in [
-        "api-ms-win-crt-stdio-l1-1-0.dll",
-        "ucrtbase.dll",
-        "msvcrt.dll",
-    ] {
+    for library in ["api-ms-win-crt-stdio-l1-1-0.dll", "ucrtbase.dll", "msvcrt.dll"] {
         let library_owned = library.to_string();
         host.service(
             library,
@@ -39,7 +35,7 @@ pub fn install_windows_format(
             Some(GuestStorage::Int32),
             Rc::new(move |ctx, context, args| {
                 let _ = context;
-                if pointer(args, 4)? != None || (integer(args, 0)? & !2) != 0 {
+                if pointer(args, 4)?.is_some() || (integer(args, 0)? & !2) != 0 {
                     return Err(crate::runtime::windows::contracts::unsupported_windows(
                         &library_owned,
                         "__stdio_common_vsscanf",
@@ -62,11 +58,7 @@ pub fn install_windows_format(
             }),
         )?;
     }
-    for library in [
-        "api-ms-win-crt-stdio-l1-1-0.dll",
-        "ucrtbase.dll",
-        "msvcrt.dll",
-    ] {
+    for library in ["api-ms-win-crt-stdio-l1-1-0.dll", "ucrtbase.dll", "msvcrt.dll"] {
         let library_owned = library.to_string();
         host.service(
             library,
@@ -83,7 +75,7 @@ pub fn install_windows_format(
             Rc::new(move |ctx, context, args| {
                 let _ = context;
                 let options = integer(args, 0)?;
-                if pointer(args, 4)? != None {
+                if pointer(args, 4)?.is_some() {
                     return Err(crate::runtime::windows::contracts::unsupported_windows(
                         &library_owned,
                         "__stdio_common_vsprintf",
@@ -99,9 +91,7 @@ pub fn install_windows_format(
                 }
                 let capacity = integer(args, 2)?;
                 if capacity < 0 || capacity > u64::MAX as i128 {
-                    return Err(GuestError::invalid(
-                        "Guest printf buffer count is not size_t",
-                    ));
+                    return Err(GuestError::invalid("Guest printf buffer count is not size_t"));
                 }
                 let rounding = if (options & 32) != 0 {
                     let mxcsr = ctx.cpu_state().simd.mxcsr;
@@ -154,8 +144,7 @@ pub fn install_system_v_format(
     };
     for checked in [false, true] {
         let name = if checked { "__vsnprintf_chk" } else { "vsnprintf" };
-        let versions: [Option<&str>; 2] =
-            [Some(if checked { "GLIBC_2.3.4" } else { base }), None];
+        let versions: [Option<&str>; 2] = [Some(if checked { "GLIBC_2.3.4" } else { base }), None];
         let parameters = if checked {
             vec![
                 GuestStorage::Pointer,
@@ -183,9 +172,7 @@ pub fn install_system_v_format(
             Rc::new(move |ctx, _, args| {
                 let capacity = integer(args, 1)?;
                 if capacity < 0 || capacity > u64::MAX as i128 {
-                    return Err(GuestError::invalid(
-                        "Guest printf buffer count is not size_t",
-                    ));
+                    return Err(GuestError::invalid("Guest printf buffer count is not size_t"));
                 }
                 if checked && integer(args, 3)? < capacity {
                     return Err(GuestError::invalid(

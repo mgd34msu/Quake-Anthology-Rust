@@ -6,15 +6,12 @@
 use std::rc::Rc;
 
 use crate::core::contracts::{
-    GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestPermissions,
-    GuestStorage,
+    GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestPermissions, GuestStorage,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
 use crate::runtime::common::memory::{integer, pointer, read_string, required_pointer, string_bytes};
-use crate::runtime::windows::contracts::{
-    invoke_nested, unsupported_windows, WindowsContext, WindowsServiceRegistrar,
-};
+use crate::runtime::windows::contracts::{invoke_nested, unsupported_windows, WindowsContext, WindowsServiceRegistrar};
 
 const LIBRARY: &str = "msvcp140.dll";
 
@@ -33,9 +30,9 @@ pub struct MsvcLocale {
 impl MsvcLocale {
     /// Allocate tracked memory; fails when the heap is exhausted.
     pub fn allocate(&self, memory: &mut SparseGuestMemory, size: usize) -> Result<GuestAddress, GuestError> {
-        self.context.allocate(memory, self.teb, size, 0)?.ok_or_else(|| {
-            GuestError::invalid("MSVC allocation failed")
-        })
+        self.context
+            .allocate(memory, self.teb, size, 0)?
+            .ok_or_else(|| GuestError::invalid("MSVC allocation failed"))
     }
 
     /// Retain a facet.
@@ -70,11 +67,7 @@ impl MsvcLocale {
     }
 
     /// Release a locale handle.
-    pub fn destroy(
-        &self,
-        memory: &mut SparseGuestMemory,
-        locale: Option<GuestAddress>,
-    ) -> Result<(), GuestError> {
+    pub fn destroy(&self, memory: &mut SparseGuestMemory, locale: Option<GuestAddress>) -> Result<(), GuestError> {
         let Some(locale) = locale else {
             return Ok(());
         };
@@ -90,9 +83,7 @@ impl MsvcLocale {
             ));
         }
         if self.decref(memory, facet)?.is_some() {
-            return Err(GuestError::callback(
-                "MSVC process locale lost its owner references",
-            ));
+            return Err(GuestError::callback("MSVC process locale lost its owner references"));
         }
         if !self.context.free(memory, self.teb, Some(locale), 0)? {
             return Err(GuestError::callback("Invalid MSVC locale allocation"));
@@ -103,7 +94,7 @@ impl MsvcLocale {
     /// Enter a locale lock.
     pub fn lock(&self, memory: &mut SparseGuestMemory, object: GuestAddress, kind: i64) -> Result<(), GuestError> {
         memory.write_i32(object, kind as i32)?;
-        if kind < 0 || kind >= 8 {
+        if !(0..8).contains(&kind) {
             // _Lockit deliberately ignores out-of-range categories.
             return Ok(());
         }
@@ -122,7 +113,7 @@ impl MsvcLocale {
     /// Leave a locale lock.
     pub fn unlock(&self, memory: &mut SparseGuestMemory, object: GuestAddress) -> Result<(), GuestError> {
         let kind = memory.read_i32(object)?;
-        if kind < 0 || kind >= 8 {
+        if !(0..8).contains(&kind) {
             return Ok(());
         }
         let slot = memory.offset(self.locks, i64::from(kind) * 8)?;
@@ -139,11 +130,7 @@ impl MsvcLocale {
     }
 }
 
-fn direct(
-    memory: &mut SparseGuestMemory,
-    byte_length: usize,
-    label: &str,
-) -> Result<GuestAddress, GuestError> {
+fn direct(memory: &mut SparseGuestMemory, byte_length: usize, label: &str) -> Result<GuestAddress, GuestError> {
     memory.allocate(&GuestAllocationOptions {
         byte_length,
         alignment: 16,
@@ -172,37 +159,54 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
     };
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "?_Incref@facet@locale@std@@UEAAXXZ", &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "?_Incref@facet@locale@std@@UEAAXXZ",
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 locale.incref(ctx.memory(), required_pointer(args, 0)?)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ", &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ",
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let value = locale.decref(ctx.memory(), required_pointer(args, 0)?)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(value)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "??1facet@locale@std@@MEAA@XZ", &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
-                ctx.memory().write_pointer(required_pointer(args, 0)?, Some(locale.facet_vtable))?;
+        host.service(
+            LIBRARY,
+            "??1facet@locale@std@@MEAA@XZ",
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
+                ctx.memory()
+                    .write_pointer(required_pointer(args, 0)?, Some(locale.facet_vtable))?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
         let runtime = context.clone();
         let teb = host.teb;
-        host.service("msvcp140.dll", "runtime:facet-delete", &[GuestStorage::Pointer, GuestStorage::Uint32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            "msvcp140.dll",
+            "runtime:facet-delete",
+            &[GuestStorage::Pointer, GuestStorage::Uint32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let facet = required_pointer(args, 0)?;
                 if facet.offset == locale.global.offset {
                     return Err(unsupported_windows(
@@ -217,8 +221,8 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
                     return Err(GuestError::callback("Invalid MSVC facet allocation"));
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(facet))))
-            },
-        ))?;
+            }),
+        )?;
     }
     for (index, name) in [
         "runtime:facet-delete",
@@ -231,7 +235,8 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
         let address = context
             .resolve_address(LIBRARY, name)
             .ok_or_else(|| GuestError::callback("Missing MSVC facet method"))?;
-        host.memory.write_pointer(host.memory.offset(facet_vtable, (index * 8) as i64)?, Some(address))?;
+        host.memory
+            .write_pointer(host.memory.offset(facet_vtable, (index * 8) as i64)?, Some(address))?;
     }
     host.memory.protect(facet_vtable, 24, GuestPermissions::Read)?;
     // Classic() and the process global locale.
@@ -243,56 +248,80 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
     host.memory.write_pointer(host.memory.offset(global, 40)?, Some(name))?;
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "??0facet@locale@std@@IEAA@_K@Z", &[GuestStorage::Pointer, GuestStorage::Uint64], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "??0facet@locale@std@@IEAA@_K@Z",
+            &[GuestStorage::Pointer, GuestStorage::Uint64],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let facet = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 memory.write_pointer(facet, Some(locale.facet_vtable))?;
                 memory.write_u32(memory.offset(facet, 8)?, integer(args, 1)? as u32)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(facet))))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "?_Init@locale@std@@CAPEAV_Locimp@12@_N@Z", &[GuestStorage::Uint32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "?_Init@locale@std@@CAPEAV_Locimp@12@_N@Z",
+            &[GuestStorage::Uint32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 if integer(args, 0)? & 255 != 0 {
                     locale.incref(ctx.memory(), locale.global)?;
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(locale.global))))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ", &[], Some(GuestStorage::Pointer), Rc::new(
-            move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(locale.global)))),
-        ))?;
+        host.service(
+            LIBRARY,
+            "?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ",
+            &[],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(locale.global))))),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "??0_Lockit@std@@QEAA@H@Z", &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "??0_Lockit@std@@QEAA@H@Z",
+            &[GuestStorage::Pointer, GuestStorage::Int32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 locale.lock(ctx.memory(), object, integer(args, 1)? as i64)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(object))))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "??1_Lockit@std@@QEAA@XZ", &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "??1_Lockit@std@@QEAA@XZ",
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 locale.unlock(ctx.memory(), required_pointer(args, 0)?)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "??0_Locinfo@std@@QEAA@PEBD@Z", &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "??0_Locinfo@std@@QEAA@PEBD@Z",
+            &[GuestStorage::Pointer, GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let object = required_pointer(args, 0)?;
                 let supplied = pointer(args, 1)?;
@@ -304,10 +333,7 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
                     return Err(unsupported_windows(
                         LIBRARY,
                         "_Locinfo",
-                        format!(
-                            "locale {} is not implemented",
-                            requested.as_deref().unwrap_or("null")
-                        ),
+                        format!("locale {} is not implemented", requested.as_deref().unwrap_or("null")),
                     ));
                 }
                 memory.write(object, &[0u8; 104])?;
@@ -319,13 +345,17 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
                     memory.write_pointer(memory.offset(object, offset)?, Some(address))?;
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(object))))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let locale = locale.clone();
-        host.service(LIBRARY, "??1_Locinfo@std@@QEAA@XZ", &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "??1_Locinfo@std@@QEAA@XZ",
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let object = required_pointer(args, 0)?;
                 let mut offset = 8;
@@ -340,8 +370,8 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
                 }
                 locale.unlock(memory, object)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     for word in ["true", "false"] {
         let bytes = string_bytes(word, false);
@@ -352,25 +382,41 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
             &format!("?_Get{word}@_Locinfo@std@@QEBAPEBDXZ"),
             &[GuestStorage::Pointer],
             Some(GuestStorage::Pointer),
-            Rc::new(move |_, _, _| {
-                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
-            }),
+            Rc::new(move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))),
         )?;
     }
     {
         let shared = Rc::clone(&shared);
         let runtime = context.clone();
-        host.service(LIBRARY, "?_Getlconv@_Locinfo@std@@QEBAPEBUlconv@@XZ", &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, context, _| {
-                let target = runtime.resolve_address("ucrtbase.dll", "localeconv").ok_or_else(|| {
-                    GuestError::callback("CRT localeconv missing")
-                })?;
-                invoke_nested(ctx, &shared, width, context, target, &[], Some(GuestStorage::Pointer), vec![], false)
-            },
-        ))?;
+        host.service(
+            LIBRARY,
+            "?_Getlconv@_Locinfo@std@@QEBAPEBUlconv@@XZ",
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, context, _| {
+                let target = runtime
+                    .resolve_address("ucrtbase.dll", "localeconv")
+                    .ok_or_else(|| GuestError::callback("CRT localeconv missing"))?;
+                invoke_nested(
+                    ctx,
+                    &shared,
+                    width,
+                    context,
+                    target,
+                    &[],
+                    Some(GuestStorage::Pointer),
+                    vec![],
+                    false,
+                )
+            }),
+        )?;
     }
-    host.service(LIBRARY, "?_Getcvt@_Locinfo@std@@QEBA?AU_Cvtvec@@XZ", &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        LIBRARY,
+        "?_Getcvt@_Locinfo@std@@QEBA?AU_Cvtvec@@XZ",
+        &[GuestStorage::Pointer, GuestStorage::Pointer],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             // _Cvtvec is returned through the member-function hidden result pointer in RDX.
             let memory = ctx.memory();
             let result = required_pointer(args, 1)?;
@@ -378,7 +424,7 @@ pub fn install_msvc_locale(host: &mut WindowsServiceRegistrar<'_>) -> Result<Msv
             memory.write_u32(memory.offset(result, 4)?, 1)?;
             memory.write_u32(memory.offset(result, 8)?, 1)?;
             Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(result))))
-        },
-    ))?;
+        }),
+    )?;
     Ok(locale)
 }

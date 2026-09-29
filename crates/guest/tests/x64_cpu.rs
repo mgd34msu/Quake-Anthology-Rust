@@ -18,9 +18,7 @@ use common::{addr, build, map, Fixture, BASE, RETURNED, STACK};
 use qa_guest::core::contracts::GuestPermissions;
 
 fn read(f: &mut Fixture, register: GuestRegister, width: GuestIntegerWidth) -> u64 {
-    f.with(|state, _| {
-        state.registers.read(register, width, false).unwrap()
-    })
+    f.with(|state, _| state.registers.read(register, width, false).unwrap())
 }
 
 fn write(f: &mut Fixture, register: GuestRegister, width: GuestIntegerWidth, value: u64) {
@@ -44,7 +42,10 @@ fn cpuid_baseline_without_host_capabilities() {
     let mut baseline = Fixture::new(&[0xb8, 1, 0, 0, 0, 0x0f, 0xa2, 0xc3]);
     baseline.with(|state, _| state.flags.set_value(0x8d7));
     assert_eq!(baseline.run(100).kind(), "return");
-    assert_eq!(read(&mut baseline, GuestRegister::Rdx, GuestIntegerWidth::B64), 0x0600_8101);
+    assert_eq!(
+        read(&mut baseline, GuestRegister::Rdx, GuestIntegerWidth::B64),
+        0x0600_8101
+    );
     assert_eq!(read(&mut baseline, GuestRegister::Rcx, GuestIntegerWidth::B64), 0);
     assert_eq!(baseline.with(|state, _| state.flags.value()), 0x8d7);
     let mut structured = Fixture::new(&[0xb8, 7, 0, 0, 0, 0x0f, 0xa2, 0xc3]);
@@ -67,8 +68,14 @@ fn decoded_instructions_observe_live_operands_aliases_and_retirement() {
     let run = |f: &mut Fixture, offset: u64| -> u64 {
         f.with(|state, _| {
             state.instruction_pointer = BASE;
-            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
-            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000 + offset, false).unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false)
+                .unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000 + offset, false)
+                .unwrap();
         });
         assert_eq!(f.run(100).kind(), "return");
         read(f, GuestRegister::Rax, GuestIntegerWidth::B32)
@@ -78,7 +85,9 @@ fn decoded_instructions_observe_live_operands_aliases_and_retirement() {
     // Writes through a writable alias change the decoded instruction bytes.
     f.with(|_, memory| {
         let code = addr(memory, BASE);
-        let alias = memory.map_alias(0x60000, 7, GuestPermissions::ReadWrite, "alias", code).unwrap();
+        let alias = memory
+            .map_alias(0x60000, 7, GuestPermissions::ReadWrite, "alias", code)
+            .unwrap();
         memory.write_u8(memory.offset(alias, 5).unwrap(), 7).unwrap();
     });
     assert_eq!(run(&mut f, 0), 17);
@@ -91,7 +100,13 @@ fn decoded_instructions_observe_live_operands_aliases_and_retirement() {
     f.with(|_, memory| {
         let code = addr(memory, BASE);
         memory.unmap(code, 7).unwrap();
-        map(memory, BASE, 6, GuestPermissions::ReadExecute, Some(vec![0xb8, 99, 0, 0, 0, 0xc3]));
+        map(
+            memory,
+            BASE,
+            6,
+            GuestPermissions::ReadExecute,
+            Some(vec![0xb8, 99, 0, 0, 0, 0xc3]),
+        );
     });
     assert_eq!(run(&mut f, 0), 99);
 }
@@ -104,7 +119,11 @@ fn immediate_decoding_retains_widths_and_partial_fault_bytes() {
         let mut f = Fixture::new(&bytes);
         f.with(|state, memory| {
             let mut cursor = X64DecodeCursor::new(memory, state, None).unwrap();
-            let maximum = if width == 8 { u64::MAX } else { (1u64 << (width * 8)) - 1 };
+            let maximum = if width == 8 {
+                u64::MAX
+            } else {
+                (1u64 << (width * 8)) - 1
+            };
             assert_eq!(cursor.read_unsigned(width).unwrap(), maximum);
             assert_eq!(cursor.next_ip(), BASE + (width as u64) + 1);
             assert_eq!(cursor.bytes(), bytes.as_slice());
@@ -137,15 +156,25 @@ fn immediate_decoding_retains_widths_and_partial_fault_bytes() {
 #[test]
 fn mov_widths_preserve_aliases_and_zero_extend() {
     let mut f = Fixture::new(&[
-        0x48, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xb4, 0x12, 0x66, 0xb8, 0x34,
-        0x56, 0xc3,
+        0x48, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xb4, 0x12, 0x66, 0xb8, 0x34, 0x56, 0xc3,
     ]);
     assert_eq!(f.run(100).kind(), "return");
-    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64), 0xffff_ffff_ffff_5634);
+    assert_eq!(
+        read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64),
+        0xffff_ffff_ffff_5634
+    );
     let mut dword = Fixture::new(&[0xb8, 0xef, 0xcd, 0xab, 0x89, 0xc3]);
-    write(&mut dword, GuestRegister::Rax, GuestIntegerWidth::B64, 0xffff_ffff_ffff_ffff);
+    write(
+        &mut dword,
+        GuestRegister::Rax,
+        GuestIntegerWidth::B64,
+        0xffff_ffff_ffff_ffff,
+    );
     assert_eq!(dword.run(100).kind(), "return");
-    assert_eq!(read(&mut dword, GuestRegister::Rax, GuestIntegerWidth::B64), 0x89ab_cdef);
+    assert_eq!(
+        read(&mut dword, GuestRegister::Rax, GuestIntegerWidth::B64),
+        0x89ab_cdef
+    );
 }
 
 #[test]
@@ -155,7 +184,10 @@ fn rex_aliases_and_prefix_order_select_spl_vs_ah() {
     assert_eq!(read(&mut rex, GuestRegister::Rsp, GuestIntegerWidth::B64), 0x30080);
     let mut overridden = Fixture::new(&[0x40, 0x66, 0xb4, 0x12, 0xc3]);
     assert_eq!(overridden.run(100).kind(), "return");
-    assert_eq!(read(&mut overridden, GuestRegister::Rax, GuestIntegerWidth::B64), 0x1200);
+    assert_eq!(
+        read(&mut overridden, GuestRegister::Rax, GuestIntegerWidth::B64),
+        0x1200
+    );
 }
 
 #[test]
@@ -164,15 +196,30 @@ fn extended_registers_and_sib_beyond_number_precision() {
     let address = 0xffff_8000_0001_0000u64;
     f.with(|state, memory| {
         map(memory, address, 64, GuestPermissions::ReadWrite, None);
-        state.registers.write(GuestRegister::R13, GuestIntegerWidth::B64, address, false).unwrap();
-        state.registers.write(GuestRegister::R12, GuestIntegerWidth::B64, 4, false).unwrap();
-        state.registers.write(GuestRegister::R9, GuestIntegerWidth::B64, 0xfedc_ba98_7654_3210, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::R13, GuestIntegerWidth::B64, address, false)
+            .unwrap();
+        state
+            .registers
+            .write(GuestRegister::R12, GuestIntegerWidth::B64, 4, false)
+            .unwrap();
+        state
+            .registers
+            .write(GuestRegister::R9, GuestIntegerWidth::B64, 0xfedc_ba98_7654_3210, false)
+            .unwrap();
     });
     assert_eq!(f.run(100).kind(), "return");
     f.with(|_, memory| {
-        assert_eq!(memory.read_u64(addr(memory, address + 8)).unwrap(), 0xfedc_ba98_7654_3210);
+        assert_eq!(
+            memory.read_u64(addr(memory, address + 8)).unwrap(),
+            0xfedc_ba98_7654_3210
+        );
     });
-    assert_eq!(read(&mut f, GuestRegister::R10, GuestIntegerWidth::B64), 0xfedc_ba98_7654_3210);
+    assert_eq!(
+        read(&mut f, GuestRegister::R10, GuestIntegerWidth::B64),
+        0xfedc_ba98_7654_3210
+    );
 }
 
 #[test]
@@ -196,8 +243,7 @@ fn rip_relative_store_and_address_override_truncation() {
 #[test]
 fn sib_no_base_and_fs_addressing_with_lea_exclusion() {
     let mut f = Fixture::new(&[
-        0x64, 0x48, 0x8b, 0x04, 0x25, 0x08, 0, 0, 0, 0x64, 0x48, 0x8d, 0x0c, 0x25, 0x08, 0, 0, 0,
-        0xc3,
+        0x64, 0x48, 0x8b, 0x04, 0x25, 0x08, 0, 0, 0, 0x64, 0x48, 0x8d, 0x0c, 0x25, 0x08, 0, 0, 0, 0xc3,
     ]);
     f.with(|state, memory| {
         map(memory, 0x50000, 32, GuestPermissions::ReadWrite, None);
@@ -205,19 +251,32 @@ fn sib_no_base_and_fs_addressing_with_lea_exclusion() {
         memory.write_u64(addr(memory, 0x50008), 0x1234_5678_9abc_def0).unwrap();
     });
     assert_eq!(f.run(100).kind(), "return");
-    assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64), 0x1234_5678_9abc_def0);
+    assert_eq!(
+        read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64),
+        0x1234_5678_9abc_def0
+    );
     assert_eq!(read(&mut f, GuestRegister::Rcx, GuestIntegerWidth::B64), 8);
 }
 
 #[test]
 fn integer_flags_carry_chains_and_width_masks() {
     let mut f = Fixture::new(&[0x48, 0x83, 0xc0, 1, 0x49, 0x83, 0xd0, 0, 0xc3]);
-    write(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64, 0xffff_ffff_ffff_ffff);
+    write(
+        &mut f,
+        GuestRegister::Rax,
+        GuestIntegerWidth::B64,
+        0xffff_ffff_ffff_ffff,
+    );
     assert_eq!(f.run(100).kind(), "return");
     assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64), 0);
     assert_eq!(read(&mut f, GuestRegister::R8, GuestIntegerWidth::B64), 1);
     let mut overflow = Fixture::new(&[0x48, 0x83, 0xc0, 1, 0xc3]);
-    write(&mut overflow, GuestRegister::Rax, GuestIntegerWidth::B64, 0x7fff_ffff_ffff_ffff);
+    write(
+        &mut overflow,
+        GuestRegister::Rax,
+        GuestIntegerWidth::B64,
+        0x7fff_ffff_ffff_ffff,
+    );
     assert_eq!(overflow.run(100).kind(), "return");
     overflow.with(|state, _| {
         assert!(state.flags.get(GuestFlag::Overflow));
@@ -239,16 +298,17 @@ fn call_ret_and_backward_jcc_loop() {
 #[test]
 fn indirect_call_stops_at_host_trap_with_return_on_stack() {
     use qa_guest::core::callbacks::{GuestHostCallback, HookState};
-    use qa_guest::core::contracts::{
-        CallbackId, GuestCallResult, GuestCallSignature, NativeCallAbi,
-    };
+    use qa_guest::core::contracts::{CallbackId, GuestCallResult, GuestCallSignature, NativeCallAbi};
     use qa_guest::x64::cpu::X64Cpu;
 
     let (mut state, mut memory) = build(&[0xff, 0xd0, 0xc3], BASE, common::test_module("x64"));
     map(&mut memory, RETURNED, 8, GuestPermissions::ReadExecute, None);
     map(&mut memory, 0x60000, 8, GuestPermissions::ReadExecute, None);
     let returned = addr(&memory, RETURNED);
-    state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x60000, false).unwrap();
+    state
+        .registers
+        .write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x60000, false)
+        .unwrap();
     let hooks = std::rc::Rc::new(HookState::new());
     let host = addr(&memory, 0x60000);
     hooks
@@ -276,28 +336,63 @@ fn indirect_call_stops_at_host_trap_with_return_on_stack() {
     assert_eq!(stopped.kind(), "host-call");
     let (state, memory) = cpu.parts();
     assert_eq!(state.instruction_pointer, 0x60000);
-    assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK - 8);
+    assert_eq!(
+        state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        STACK - 8
+    );
     assert_eq!(memory.read_u64(addr(memory, STACK - 8)).unwrap(), BASE + 2);
 }
 
 #[test]
 fn mul_div_128bit_dividend_and_idiv_fault_atomicity() {
     let mut multiplied = Fixture::new(&[0x48, 0xf7, 0xe1, 0x48, 0xf7, 0xf1, 0xc3]);
-    write(&mut multiplied, GuestRegister::Rax, GuestIntegerWidth::B64, 0xffff_ffff_ffff_ffff);
+    write(
+        &mut multiplied,
+        GuestRegister::Rax,
+        GuestIntegerWidth::B64,
+        0xffff_ffff_ffff_ffff,
+    );
     write(&mut multiplied, GuestRegister::Rcx, GuestIntegerWidth::B64, 2);
     assert_eq!(multiplied.run(100).kind(), "return");
-    assert_eq!(read(&mut multiplied, GuestRegister::Rax, GuestIntegerWidth::B64), 0xffff_ffff_ffff_ffff);
+    assert_eq!(
+        read(&mut multiplied, GuestRegister::Rax, GuestIntegerWidth::B64),
+        0xffff_ffff_ffff_ffff
+    );
     assert_eq!(read(&mut multiplied, GuestRegister::Rdx, GuestIntegerWidth::B64), 0);
     let mut divided = Fixture::new(&[0x48, 0xf7, 0xf9]);
-    write(&mut divided, GuestRegister::Rax, GuestIntegerWidth::B64, 0x8000_0000_0000_0000);
-    write(&mut divided, GuestRegister::Rdx, GuestIntegerWidth::B64, 0xffff_ffff_ffff_ffff);
-    write(&mut divided, GuestRegister::Rcx, GuestIntegerWidth::B64, 0xffff_ffff_ffff_ffff);
+    write(
+        &mut divided,
+        GuestRegister::Rax,
+        GuestIntegerWidth::B64,
+        0x8000_0000_0000_0000,
+    );
+    write(
+        &mut divided,
+        GuestRegister::Rdx,
+        GuestIntegerWidth::B64,
+        0xffff_ffff_ffff_ffff,
+    );
+    write(
+        &mut divided,
+        GuestRegister::Rcx,
+        GuestIntegerWidth::B64,
+        0xffff_ffff_ffff_ffff,
+    );
     let stopped = divided.run(100);
     assert_eq!(stopped.kind(), "exception");
     assert_eq!(processor_vector(&stopped), 0);
     divided.with(|state, _| {
         assert_eq!(state.instruction_pointer, BASE);
-        assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 0x8000_0000_0000_0000);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            0x8000_0000_0000_0000
+        );
     });
 }
 
@@ -305,15 +400,36 @@ fn mul_div_128bit_dividend_and_idiv_fault_atomicity() {
 fn rep_movsb_overlapping_copy_and_budget_resume() {
     let mut f = Fixture::new(&[0xf3, 0xa4, 0xc3]);
     f.with(|state, memory| {
-        map(memory, 0x50000, 8, GuestPermissions::ReadWrite, Some(vec![1, 2, 3, 4, 5]));
-        state.registers.write(GuestRegister::Rsi, GuestIntegerWidth::B64, 0x50000, false).unwrap();
-        state.registers.write(GuestRegister::Rdi, GuestIntegerWidth::B64, 0x50001, false).unwrap();
-        state.registers.write(GuestRegister::Rcx, GuestIntegerWidth::B64, 4, false).unwrap();
+        map(
+            memory,
+            0x50000,
+            8,
+            GuestPermissions::ReadWrite,
+            Some(vec![1, 2, 3, 4, 5]),
+        );
+        state
+            .registers
+            .write(GuestRegister::Rsi, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rdi, GuestIntegerWidth::B64, 0x50001, false)
+            .unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rcx, GuestIntegerWidth::B64, 4, false)
+            .unwrap();
     });
     assert_eq!(f.run(2).kind(), "budget");
     f.with(|state, _| {
         assert_eq!(state.instruction_pointer, BASE);
-        assert_eq!(state.registers.read(GuestRegister::Rcx, GuestIntegerWidth::B64, false).unwrap(), 2);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rcx, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            2
+        );
     });
     assert_eq!(f.run(100).kind(), "return");
     f.with(|_, memory| {
@@ -325,15 +441,42 @@ fn rep_movsb_overlapping_copy_and_budget_resume() {
 fn repe_cmpsb_mismatch_positions() {
     let mut f = Fixture::new(&[0xf3, 0xa6, 0xc3]);
     f.with(|state, memory| {
-        map(memory, 0x50000, 16, GuestPermissions::ReadWrite, Some(vec![1, 2, 3, 0, 1, 9, 3]));
-        state.registers.write(GuestRegister::Rsi, GuestIntegerWidth::B64, 0x50000, false).unwrap();
-        state.registers.write(GuestRegister::Rdi, GuestIntegerWidth::B64, 0x50004, false).unwrap();
-        state.registers.write(GuestRegister::Rcx, GuestIntegerWidth::B64, 3, false).unwrap();
+        map(
+            memory,
+            0x50000,
+            16,
+            GuestPermissions::ReadWrite,
+            Some(vec![1, 2, 3, 0, 1, 9, 3]),
+        );
+        state
+            .registers
+            .write(GuestRegister::Rsi, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rdi, GuestIntegerWidth::B64, 0x50004, false)
+            .unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rcx, GuestIntegerWidth::B64, 3, false)
+            .unwrap();
     });
     assert_eq!(f.run(100).kind(), "return");
     f.with(|state, _| {
-        assert_eq!(state.registers.read(GuestRegister::Rcx, GuestIntegerWidth::B64, false).unwrap(), 1);
-        assert_eq!(state.registers.read(GuestRegister::Rsi, GuestIntegerWidth::B64, false).unwrap(), 0x50002);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rcx, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rsi, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            0x50002
+        );
         assert!(!state.flags.get(GuestFlag::Zero));
     });
 }
@@ -344,7 +487,10 @@ fn xadd_freezes_address_before_exchange() {
     f.with(|state, memory| {
         map(memory, 0x50000, 8, GuestPermissions::ReadWrite, None);
         memory.write_u64(addr(memory, 0x50000), 7).unwrap();
-        state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
     });
     assert_eq!(f.run(100).kind(), "return");
     assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64), 7);
@@ -358,7 +504,10 @@ fn memory_write_fault_rolls_back_and_reports_address() {
     let mut f = Fixture::new(&[0x48, 0x83, 0x00, 1]);
     f.with(|state, memory| {
         map(memory, 0x50000, 8, GuestPermissions::Read, Some(vec![7]));
-        state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rax, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
         state.flags.set_value(0x803);
     });
     let stopped = f.run(100);
@@ -388,7 +537,13 @@ fn sequential_runs_keep_independent_rollback_snapshots() {
     let mut f = Fixture::new(&[0xb8, 1, 0, 0, 0, 0x0f, 0x0b]);
     let nested = BASE + 0x1000;
     f.with(|_, memory| {
-        map(memory, nested, 11, GuestPermissions::ReadExecute, Some(vec![0xb8, 2, 0, 0, 0, 0xbb, 3, 0, 0, 0, 0xf4]));
+        map(
+            memory,
+            nested,
+            11,
+            GuestPermissions::ReadExecute,
+            Some(vec![0xb8, 2, 0, 0, 0, 0xbb, 3, 0, 0, 0, 0xf4]),
+        );
     });
     assert_eq!(f.run(1).kind(), "budget");
     assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B64), 1);
@@ -407,8 +562,20 @@ fn sequential_runs_keep_independent_rollback_snapshots() {
     assert_eq!(processor_vector(&stopped), 6);
     f.with(|state, _| {
         assert_eq!(state.instruction_pointer, BASE + 5);
-        assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 1);
-        assert_eq!(state.registers.read(GuestRegister::Rbx, GuestIntegerWidth::B64, false).unwrap(), 0);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rbx, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            0
+        );
     });
 }
 
@@ -425,7 +592,12 @@ fn unsupported_opcode_and_noncanonical_preserve_rip() {
         other => panic!("expected unsupported stop, got {other:?}"),
     }
     let mut noncanonical = Fixture::new(&[0x48, 0x8b, 0x00]);
-    write(&mut noncanonical, GuestRegister::Rax, GuestIntegerWidth::B64, 0x0000_8000_0000_0000);
+    write(
+        &mut noncanonical,
+        GuestRegister::Rax,
+        GuestIntegerWidth::B64,
+        0x0000_8000_0000_0000,
+    );
     let fault = noncanonical.run(100);
     assert_eq!(fault.kind(), "exception");
     assert_eq!(processor_vector(&fault), 13);
@@ -499,10 +671,25 @@ fn synthetic_relocated_image_returns_tables_through_integer_and_sse() {
     let stopped = cpu.run(512, Some(returned));
     assert_eq!(stopped.kind(), "return");
     let (state, memory) = cpu.parts();
-    assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 2023);
+    assert_eq!(
+        state
+            .registers
+            .read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        2023
+    );
     assert_eq!(memory.read_u32(addr(memory, image + 0x2000)).unwrap(), 2023);
-    assert_eq!(f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()), 1.5 + 0.025);
-    assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK + 8);
+    assert_eq!(
+        f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()),
+        1.5 + 0.025
+    );
+    assert_eq!(
+        state
+            .registers
+            .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)
+            .unwrap(),
+        STACK + 8
+    );
 }
 
 #[test]
@@ -511,11 +698,22 @@ fn canonical_address_range_sign_wrap_and_fault_boundaries() {
     use qa_guest::x86::decoder::X86Error;
 
     let values: [i128; 16] = [
-        0, 1, -1,
-        -(1 << 47), -(1 << 47) - 1,
-        (1 << 47) - 1, 1 << 47, (1 << 47) + 1,
-        0xffff_7fff_ffff_ffff, 0xffff_8000_0000_0000, 0xffff_8000_0000_0001,
-        (1 << 64) - 1, 1 << 64, (1 << 64) + 1, -(1 << 64), -(1 << 64) - 1,
+        0,
+        1,
+        -1,
+        -(1 << 47),
+        -(1 << 47) - 1,
+        (1 << 47) - 1,
+        1 << 47,
+        (1 << 47) + 1,
+        0xffff_7fff_ffff_ffff,
+        0xffff_8000_0000_0000,
+        0xffff_8000_0000_0001,
+        (1 << 64) - 1,
+        1 << 64,
+        (1 << 64) + 1,
+        -(1 << 64),
+        -(1 << 64) - 1,
     ];
     for value in values {
         for offset in [-1i128, 0, 1] {
@@ -550,7 +748,11 @@ fn instruction_sequence_preserves_fetch_fault_order() {
                 assert!(detail.contains("Noncanonical"), "start {start:#x}: {detail}");
             }
             Err(X86Error::Memory { detail, .. }) => {
-                let expected = if start == 0xffff_ffff_ffff_ffff { "null" } else { "unmapped" };
+                let expected = if start == 0xffff_ffff_ffff_ffff {
+                    "null"
+                } else {
+                    "unmapped"
+                };
                 assert!(detail.contains(expected), "start {start:#x}: {detail}");
             }
             other => panic!("expected fetch fault at {start:#x}, got {other:?}"),
@@ -581,16 +783,25 @@ fn committed_store_observers_fire_with_exact_ranges() {
     let mut f = Fixture::new(&[0x66, 0xc7, 0x03, 0x34, 0x12, 0xb8, 86, 0, 0, 0, 0xc3]);
     let data = f.with(|state, memory| {
         let data = map(memory, 0x50000, 2, GuestPermissions::ReadWrite, None);
-        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
         data
     });
     let fires: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
     let observed = Rc::clone(&fires);
     let id = f.with(|_, memory| {
         memory
-            .observe_writes(data, 2, Box::new(move |ranges| {
-                observed.borrow_mut().extend(ranges.iter().map(|range| (range.byte_offset, range.byte_length)));
-            }))
+            .observe_writes(
+                data,
+                2,
+                Box::new(move |ranges| {
+                    observed
+                        .borrow_mut()
+                        .extend(ranges.iter().map(|range| (range.byte_offset, range.byte_length)));
+                }),
+            )
             .unwrap()
     });
     for _ in 0..2 {
@@ -647,7 +858,11 @@ fn retained_blocks_requalify_entries_and_gates() {
     let notify = Rc::clone(&entries);
     let entry = addr_of(&mut f, BASE + 5);
     let observer = f.with(|_, memory| {
-        hooks.callbacks.borrow_mut().observe_entry(memory, entry, Rc::new(move || notify.set(notify.get() + 1))).unwrap()
+        hooks
+            .callbacks
+            .borrow_mut()
+            .observe_entry(memory, entry, Rc::new(move || notify.set(notify.get() + 1)))
+            .unwrap()
     });
     assert_eq!(run(&mut f, 100).kind(), "return");
     assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
@@ -659,7 +874,11 @@ fn retained_blocks_requalify_entries_and_gates() {
     let accepts = Rc::new(Cell::new(false));
     let gate = Rc::clone(&accepts);
     f.with(|_, memory| {
-        hooks.callbacks.borrow_mut().bind_entry(memory, entry, host_callback(), Rc::new(move || gate.get())).unwrap();
+        hooks
+            .callbacks
+            .borrow_mut()
+            .bind_entry(memory, entry, host_callback(), Rc::new(move || gate.get()))
+            .unwrap();
     });
     assert_eq!(run(&mut f, 100).kind(), "return");
     assert_eq!(read(&mut f, GuestRegister::Rax, GuestIntegerWidth::B32), 6);
@@ -679,7 +898,11 @@ fn retained_blocks_requalify_entries_and_gates() {
     let counted = Rc::clone(&returns);
     let ret = addr_of(&mut f, BASE + 11);
     let watcher = f.with(|_, memory| {
-        hooks.callbacks.borrow_mut().observe_entry(memory, ret, Rc::new(move || counted.set(counted.get() + 1))).unwrap()
+        hooks
+            .callbacks
+            .borrow_mut()
+            .observe_entry(memory, ret, Rc::new(move || counted.set(counted.get() + 1)))
+            .unwrap()
     });
     assert_eq!(run(&mut f, 100).kind(), "return");
     assert_eq!(returns.get(), 1);
@@ -703,7 +926,9 @@ fn raw_simd_preserves_scalar_lanes_overlaps_and_stores() {
     ]);
     let data = f.with(|_, memory| {
         let data = map(memory, 0x50000, 64, GuestPermissions::ReadWrite, None);
-        memory.write(data, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]).unwrap();
+        memory
+            .write(data, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+            .unwrap();
         data
     });
     let mut expected = [0u8; 16];
@@ -711,8 +936,14 @@ fn raw_simd_preserves_scalar_lanes_overlaps_and_stores() {
     for _ in 0..2 {
         f.with(|state, _| {
             state.instruction_pointer = BASE;
-            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
-            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false)
+                .unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+                .unwrap();
             state.simd.xmm[0..16].fill(0xaa);
             state.simd.xmm[16..32].fill(0xbb);
             state.flags.set_value(0x8d7);
@@ -732,7 +963,10 @@ fn raw_simd_preserves_scalar_lanes_overlaps_and_stores() {
         });
         assert_eq!(f.run(6).kind(), "return");
         f.with(|state, memory| {
-            assert_eq!(memory.copy(memory.offset(data, 32).unwrap(), 16).unwrap(), vec![0u8; 16]);
+            assert_eq!(
+                memory.copy(memory.offset(data, 32).unwrap(), 16).unwrap(),
+                vec![0u8; 16]
+            );
             assert_eq!(state.flags.value(), 0x8d7);
             assert_eq!(state.simd.mxcsr, 0x5fa0);
         });
@@ -748,8 +982,14 @@ fn simd_alignment_fault_before_write_and_live_bytes() {
     let run = |f: &mut Fixture, offset: u64| {
         f.with(|state, _| {
             state.instruction_pointer = BASE;
-            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
-            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000 + offset, false).unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false)
+                .unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000 + offset, false)
+                .unwrap();
         });
         f.run(100)
     };
@@ -761,7 +1001,9 @@ fn simd_alignment_fault_before_write_and_live_bytes() {
     f.with(|state, _| assert_eq!(state.simd.xmm[0..16], [0xabu8; 16]));
     f.with(|_, memory| {
         let code = addr(memory, BASE);
-        let alias = memory.map_alias(0x60000, 4, GuestPermissions::ReadWrite, "alias", code).unwrap();
+        let alias = memory
+            .map_alias(0x60000, 4, GuestPermissions::ReadWrite, "alias", code)
+            .unwrap();
         memory.write_u8(memory.offset(alias, 1).unwrap(), 0x10).unwrap();
     });
     assert_eq!(run(&mut f, 1).kind(), "return");
@@ -779,11 +1021,22 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
     use qa_guest::x86::arithmetic::AluOperation;
 
     let operations = [
-        AluOperation::Add, AluOperation::Adc, AluOperation::Sub, AluOperation::Sbb,
-        AluOperation::Cmp, AluOperation::And, AluOperation::Test, AluOperation::Or,
+        AluOperation::Add,
+        AluOperation::Adc,
+        AluOperation::Sub,
+        AluOperation::Sbb,
+        AluOperation::Cmp,
+        AluOperation::And,
+        AluOperation::Test,
+        AluOperation::Or,
         AluOperation::Xor,
     ];
-    let widths = [GuestIntegerWidth::B8, GuestIntegerWidth::B16, GuestIntegerWidth::B32, GuestIntegerWidth::B64];
+    let widths = [
+        GuestIntegerWidth::B8,
+        GuestIntegerWidth::B16,
+        GuestIntegerWidth::B32,
+        GuestIntegerWidth::B64,
+    ];
     let mut source = Fixture::new(&[0x90]);
     let mut compiled = Fixture::new(&[0x90]);
     let mut kernel = X64IntegerKernel::new();
@@ -814,21 +1067,32 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
                                 width,
                                 high_byte: width == GuestIntegerWidth::B8,
                             }),
-                            source: X64PlanSource::Operand(X64Operand::Register(
-                                X64RegisterOperand { register: GuestRegister::Rbx, width, high_byte: false },
-                            )),
+                            source: X64PlanSource::Operand(X64Operand::Register(X64RegisterOperand {
+                                register: GuestRegister::Rbx,
+                                width,
+                                high_byte: false,
+                            })),
                         },
                         BASE + 1,
                         false,
                     );
-                    let prepared = qa_guest::x64::integer_kernel::prepare_x64_integer_plan(&plan)
-                        .expect("integer plan prepares");
+                    let prepared =
+                        qa_guest::x64::integer_kernel::prepare_x64_integer_plan(&plan).expect("integer plan prepares");
                     for f in [&mut source, &mut compiled] {
                         f.with(|state, _| {
                             state.flags.set_value(*initial);
-                            state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0xfedc_ba98_7654_3210, false).unwrap();
-                            state.registers.write(GuestRegister::Rax, width, left, width == GuestIntegerWidth::B8).unwrap();
-                            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, right, false).unwrap();
+                            state
+                                .registers
+                                .write(GuestRegister::Rax, GuestIntegerWidth::B64, 0xfedc_ba98_7654_3210, false)
+                                .unwrap();
+                            state
+                                .registers
+                                .write(GuestRegister::Rax, width, left, width == GuestIntegerWidth::B8)
+                                .unwrap();
+                            state
+                                .registers
+                                .write(GuestRegister::Rbx, GuestIntegerWidth::B64, right, false)
+                                .unwrap();
                         });
                     }
                     let (source_state, source_memory) = source.cpu.parts();
@@ -880,7 +1144,11 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
     for address in addresses {
         let plan = make_x64_plan(
             X64PlanOperation::Lea {
-                destination: X64RegisterOperand { register: GuestRegister::R8, width: address.width, high_byte: false },
+                destination: X64RegisterOperand {
+                    register: GuestRegister::R8,
+                    width: address.width,
+                    high_byte: false,
+                },
                 source: address,
             },
             BASE + 7,
@@ -889,8 +1157,19 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
         let prepared = qa_guest::x64::integer_kernel::prepare_x64_integer_plan(&plan).expect("LEA prepares");
         for f in [&mut source, &mut compiled] {
             f.with(|state, _| {
-                state.registers.write(GuestRegister::Rax, GuestIntegerWidth::B64, 0xffff_8000_1234_5678, false).unwrap();
-                state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0xffff_ffff_fffedcba & 0xffff_ffff_ffff_ffff, false).unwrap();
+                state
+                    .registers
+                    .write(GuestRegister::Rax, GuestIntegerWidth::B64, 0xffff_8000_1234_5678, false)
+                    .unwrap();
+                state
+                    .registers
+                    .write(
+                        GuestRegister::Rbx,
+                        GuestIntegerWidth::B64,
+                        0xffff_ffff_fffedcba,
+                        false,
+                    )
+                    .unwrap();
                 state.segments[qa_guest::core::registers::GuestProcessorState::FS].base = 0x1234_5678_90;
             });
         }
@@ -906,7 +1185,10 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
     for code in 0..16u8 {
         for flags in [0u64, 0x8d5, 0x881, 0x44] {
             let plan = make_x64_plan(
-                X64PlanOperation::Branch { condition: Some(code), displacement: -3 },
+                X64PlanOperation::Branch {
+                    condition: Some(code),
+                    displacement: -3,
+                },
                 BASE + 7,
                 false,
             );
@@ -951,7 +1233,10 @@ fn numeric_instructions_read_live_operands_and_fault_boundaries() {
     let mut sse = Fixture::new(&[0xf3, 0x0f, 0x58, 0x03, 0xc3]);
     let input = sse.with(|state, memory| {
         let input = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
-        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
         input
     });
     for value in [2.25f32, 3.5, -1.5] {
@@ -962,7 +1247,10 @@ fn numeric_instructions_read_live_operands_and_fault_boundaries() {
         });
         assert_eq!(sse.run(100).kind(), "return");
         sse.with(|state, _| {
-            assert_eq!(f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()), 1.5 + value);
+            assert_eq!(
+                f32::from_le_bytes(state.simd.xmm[0..4].try_into().unwrap()),
+                1.5 + value
+            );
         });
     }
     // The donor uses execute-only mappings here; this port has no
@@ -979,7 +1267,10 @@ fn numeric_instructions_read_live_operands_and_fault_boundaries() {
     let mut x87 = Fixture::new(&[0xd9, 0x03, 0xd9, 0x5b, 4, 0xc3]);
     let values = x87.with(|state, memory| {
         let values = map(memory, 0x50000, 8, GuestPermissions::ReadWrite, None);
-        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
         values
     });
     for value in [2.25f32, -3.5, 7.5] {
@@ -991,7 +1282,9 @@ fn numeric_instructions_read_live_operands_and_fault_boundaries() {
         });
     }
     x87.with(|_, memory| {
-        memory.protect(memory.offset(values, 4).unwrap(), 4, GuestPermissions::Read).unwrap();
+        memory
+            .protect(memory.offset(values, 4).unwrap(), 4, GuestPermissions::Read)
+            .unwrap();
     });
     x87.reset(BASE);
     let fault = x87.run(100);
@@ -1003,12 +1296,19 @@ fn numeric_instructions_read_live_operands_and_fault_boundaries() {
 #[test]
 fn returns_preserve_stack_adjustment_and_precise_faults() {
     for discard in [0u8, 32] {
-        let bytes: Vec<u8> = if discard == 0 { vec![0xc3] } else { vec![0xc2, discard, 0] };
+        let bytes: Vec<u8> = if discard == 0 {
+            vec![0xc3]
+        } else {
+            vec![0xc2, discard, 0]
+        };
         let mut f = Fixture::new(&bytes);
         for _ in 0..2 {
             f.reset(BASE);
             assert_eq!(f.run(1).kind(), "return");
-            assert_eq!(read(&mut f, GuestRegister::Rsp, GuestIntegerWidth::B64), STACK + 8 + u64::from(discard));
+            assert_eq!(
+                read(&mut f, GuestRegister::Rsp, GuestIntegerWidth::B64),
+                STACK + 8 + u64::from(discard)
+            );
         }
         f.reset(BASE);
         f.with(|_, memory| memory.write_u64(addr(memory, STACK), 0x8000_0000_0000).unwrap());
@@ -1017,7 +1317,13 @@ fn returns_preserve_stack_adjustment_and_precise_faults() {
         assert_eq!(target.instructions(), 0);
         f.with(|state, _| {
             assert_eq!(state.instruction_pointer, BASE);
-            assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK);
+            assert_eq!(
+                state
+                    .registers
+                    .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)
+                    .unwrap(),
+                STACK
+            );
         });
         f.with(|_, memory| memory.unmap(addr(memory, STACK + 4), 4).unwrap());
         let stack = f.run(100);
@@ -1025,7 +1331,13 @@ fn returns_preserve_stack_adjustment_and_precise_faults() {
         assert_eq!(stack.instructions(), 0);
         f.with(|state, _| {
             assert_eq!(state.instruction_pointer, BASE);
-            assert_eq!(state.registers.read(GuestRegister::Rsp, GuestIntegerWidth::B64, false).unwrap(), STACK);
+            assert_eq!(
+                state
+                    .registers
+                    .read(GuestRegister::Rsp, GuestIntegerWidth::B64, false)
+                    .unwrap(),
+                STACK
+            );
         });
     }
 }
@@ -1040,7 +1352,10 @@ fn warm_blocks_match_cold_budgets_registers_and_read_faults() {
         f.with(|state, memory| {
             let data = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
             memory.write_u32(data, 30).unwrap();
-            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+                .unwrap();
         });
         assert_eq!(f.run(100).kind(), "return");
     }
@@ -1053,10 +1368,20 @@ fn warm_blocks_match_cold_budgets_registers_and_read_faults() {
         let actual = warm.run(budget);
         assert_eq!(actual.kind(), expected.kind());
         assert_eq!(actual.instructions(), expected.instructions());
-        let (cold_ip, cold_regs, cold_flags) =
-            cold.with(|state, _| (state.instruction_pointer, state.registers.checkpoint(), state.flags.value()));
-        let (warm_ip, warm_regs, warm_flags) =
-            warm.with(|state, _| (state.instruction_pointer, state.registers.checkpoint(), state.flags.value()));
+        let (cold_ip, cold_regs, cold_flags) = cold.with(|state, _| {
+            (
+                state.instruction_pointer,
+                state.registers.checkpoint(),
+                state.flags.value(),
+            )
+        });
+        let (warm_ip, warm_regs, warm_flags) = warm.with(|state, _| {
+            (
+                state.instruction_pointer,
+                state.registers.checkpoint(),
+                state.flags.value(),
+            )
+        });
         assert_eq!(warm_ip, cold_ip);
         assert_eq!(warm_regs, cold_regs);
         assert_eq!(warm_flags, cold_flags);
@@ -1064,9 +1389,18 @@ fn warm_blocks_match_cold_budgets_registers_and_read_faults() {
     for f in [&mut cold, &mut warm] {
         f.with(|state, _| {
             state.instruction_pointer = BASE;
-            state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0, false).unwrap();
-            state.registers.write(GuestRegister::Rcx, GuestIntegerWidth::B64, 123, false).unwrap();
-            state.registers.write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false).unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0, false)
+                .unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rcx, GuestIntegerWidth::B64, 123, false)
+                .unwrap();
+            state
+                .registers
+                .write(GuestRegister::Rsp, GuestIntegerWidth::B64, STACK, false)
+                .unwrap();
             state.flags.set_value(0x1234_5678_0000_0003);
         });
     }
@@ -1076,10 +1410,8 @@ fn warm_blocks_match_cold_budgets_registers_and_read_faults() {
     assert_eq!(actual.instructions(), 2);
     assert_eq!(expected.kind(), "exception");
     warm.with(|state, _| assert_eq!(state.instruction_pointer, BASE + 8));
-    let (cold_regs, cold_flags) =
-        cold.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
-    let (warm_regs, warm_flags) =
-        warm.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
+    let (cold_regs, cold_flags) = cold.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
+    let (warm_regs, warm_flags) = warm.with(|state, _| (state.registers.checkpoint(), state.flags.value()));
     assert_eq!(warm_regs, cold_regs);
     assert_eq!(warm_flags, cold_flags);
     assert_eq!(read(&mut warm, GuestRegister::Rax, GuestIntegerWidth::B32), 12);
@@ -1101,7 +1433,10 @@ fn block_boundaries_observe_stores_entries_and_aliases() {
     ]);
     let data = f.with(|state, memory| {
         let data = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
-        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
         data
     });
     let hooks = Rc::new(HookState::new());
@@ -1113,12 +1448,16 @@ fn block_boundaries_observe_stores_entries_and_aliases() {
     assert_eq!(run(&mut f).kind(), "return");
     assert_eq!(run(&mut f).kind(), "return");
     let code = f.with(|_, memory| {
-        memory.map_alias(0x60000, 17, GuestPermissions::ReadWrite, "alias", addr(memory, BASE)).unwrap()
+        memory
+            .map_alias(0x60000, 17, GuestPermissions::ReadWrite, "alias", addr(memory, BASE))
+            .unwrap()
     });
     let observed = Rc::new(Cell::new(0u32));
     let fired = Rc::clone(&observed);
     let watcher = f.with(|_, memory| {
-        memory.observe_writes(data, 4, Box::new(move |_| fired.set(fired.get() + 1))).unwrap()
+        memory
+            .observe_writes(data, 4, Box::new(move |_| fired.set(fired.get() + 1)))
+            .unwrap()
     });
     f.with(|_, memory| memory.write_u8(memory.offset(code, 12).unwrap(), 8).unwrap());
     assert_eq!(run(&mut f).kind(), "return");
@@ -1129,7 +1468,11 @@ fn block_boundaries_observe_stores_entries_and_aliases() {
     let counted = Rc::clone(&entries);
     let entry = addr_of(&mut f, BASE + 13);
     let observer = f.with(|_, memory| {
-        hooks.callbacks.borrow_mut().observe_entry(memory, entry, Rc::new(move || counted.set(counted.get() + 1))).unwrap()
+        hooks
+            .callbacks
+            .borrow_mut()
+            .observe_entry(memory, entry, Rc::new(move || counted.set(counted.get() + 1)))
+            .unwrap()
     });
     f.with(|_, memory| memory.write_u8(memory.offset(code, 15).unwrap(), 9).unwrap());
     assert_eq!(run(&mut f).kind(), "return");
@@ -1155,7 +1498,10 @@ fn store_observers_report_ranges_and_unobserve_cleanly() {
     let mut f = Fixture::new(&[0xb8, 1, 0, 0, 0, 0x83, 0xc0, 2, 0x89, 0x03, 0xc3]);
     let data = f.with(|state, memory| {
         let data = map(memory, 0x50000, 4, GuestPermissions::ReadWrite, None);
-        state.registers.write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false).unwrap();
+        state
+            .registers
+            .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0x50000, false)
+            .unwrap();
         data
     });
     assert_eq!(f.run(100).kind(), "return");
@@ -1163,9 +1509,15 @@ fn store_observers_report_ranges_and_unobserve_cleanly() {
     let observed = Rc::clone(&fires);
     let id = f.with(|_, memory| {
         memory
-            .observe_writes(data, 4, Box::new(move |ranges| {
-                observed.borrow_mut().extend(ranges.iter().map(|range| (range.byte_offset, range.byte_length)));
-            }))
+            .observe_writes(
+                data,
+                4,
+                Box::new(move |ranges| {
+                    observed
+                        .borrow_mut()
+                        .extend(ranges.iter().map(|range| (range.byte_offset, range.byte_length)));
+                }),
+            )
             .unwrap()
     });
     f.reset(BASE);
@@ -1173,7 +1525,13 @@ fn store_observers_report_ranges_and_unobserve_cleanly() {
     assert_eq!(*fires.borrow(), vec![(0, 4)]);
     f.with(|state, memory| {
         assert_eq!(state.instruction_pointer, RETURNED);
-        assert_eq!(state.registers.read(GuestRegister::Rax, GuestIntegerWidth::B64, false).unwrap(), 3);
+        assert_eq!(
+            state
+                .registers
+                .read(GuestRegister::Rax, GuestIntegerWidth::B64, false)
+                .unwrap(),
+            3
+        );
         assert_eq!(memory.read_u32(data).unwrap(), 3);
     });
     f.with(|_, memory| memory.unobserve(id));

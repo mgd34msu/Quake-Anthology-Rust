@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use crate::core::callbacks::HostCallContext;
 use crate::core::contracts::{
-    GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallValue,
-    GuestPermissions, GuestStorage,
+    GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallValue, GuestPermissions,
+    GuestStorage,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::error::GuestError;
@@ -77,6 +77,7 @@ pub struct MsvcStreams {
 }
 
 impl MsvcStreams {
+    #[allow(clippy::too_many_arguments)]
     fn virtual_call(
         &self,
         ctx: &mut HostCallContext<'_, '_>,
@@ -94,7 +95,17 @@ impl MsvcStreams {
         full_parameters.extend_from_slice(parameters);
         let mut full_args = vec![GuestCallValue::Pointer(Some(object))];
         full_args.extend(args);
-        invoke_nested(ctx, &self.shared, self.width, context, target, &full_parameters, result, full_args, false)
+        invoke_nested(
+            ctx,
+            &self.shared,
+            self.width,
+            context,
+            target,
+            &full_parameters,
+            result,
+            full_args,
+            false,
+        )
     }
 
     fn virtual_ios(&self, memory: &mut SparseGuestMemory, object: GuestAddress) -> Result<GuestAddress, GuestError> {
@@ -103,12 +114,7 @@ impl MsvcStreams {
         memory.offset(object, i64::from(displacement))
     }
 
-    fn setstate(
-        &self,
-        memory: &mut SparseGuestMemory,
-        object: GuestAddress,
-        state: i32,
-    ) -> Result<(), GuestError> {
+    fn setstate(&self, memory: &mut SparseGuestMemory, object: GuestAddress, state: i32) -> Result<(), GuestError> {
         let value = (memory.read_i32(memory.offset(object, 16)?)?
             | state
             | if memory.read_pointer(memory.offset(object, 72)?)?.is_none() {
@@ -221,12 +227,7 @@ impl MsvcStreams {
         memory.read_pointer(inner)
     }
 
-    fn available(
-        &self,
-        memory: &mut SparseGuestMemory,
-        object: GuestAddress,
-        input: bool,
-    ) -> Result<i64, GuestError> {
+    fn available(&self, memory: &mut SparseGuestMemory, object: GuestAddress, input: bool) -> Result<i64, GuestError> {
         if self.field(memory, object, if input { 56 } else { 64 })?.is_none() {
             return Ok(0);
         }
@@ -266,7 +267,15 @@ impl MsvcStreams {
             };
             return Ok(i128::from(memory.read_u8(address)?));
         }
-        let result = self.virtual_call(ctx, context, object, if consume { 7 } else { 6 }, &[], Some(GuestStorage::Int32), vec![])?;
+        let result = self.virtual_call(
+            ctx,
+            context,
+            object,
+            if consume { 7 } else { 6 },
+            &[],
+            Some(GuestStorage::Int32),
+            vec![],
+        )?;
         result_integer(result)
     }
 
@@ -359,9 +368,7 @@ impl MsvcStreams {
     ) -> Result<(), GuestError> {
         let memory = ctx.memory();
         let base = self.virtual_ios(memory, object)?;
-        if memory.read_i32(memory.offset(base, 16)?)? != 0
-            || memory.read_i32(memory.offset(base, 24)?)? & 2 == 0
-        {
+        if memory.read_i32(memory.offset(base, 16)?)? != 0 || memory.read_i32(memory.offset(base, 24)?)? & 2 == 0 {
             return Ok(());
         }
         let buffer = memory.read_pointer(memory.offset(base, 72)?)?;
@@ -375,11 +382,7 @@ impl MsvcStreams {
     }
 }
 
-fn ref_at(
-    memory: &mut SparseGuestMemory,
-    object: GuestAddress,
-    offset: i64,
-) -> Result<GuestAddress, GuestError> {
+fn ref_at(memory: &mut SparseGuestMemory, object: GuestAddress, offset: i64) -> Result<GuestAddress, GuestError> {
     let slot = memory.offset(object, offset)?;
     let inner = ref_pointer(memory, slot)?;
     ref_pointer(memory, inner)
@@ -393,7 +396,6 @@ fn direct(memory: &mut SparseGuestMemory, byte_length: usize, label: &str) -> Re
         label: label.to_string(),
     })
 }
-
 
 fn fill_table(
     context: &WindowsContext,
@@ -448,10 +450,25 @@ pub fn install_msvc_streams(host: &mut WindowsServiceRegistrar<'_>) -> Result<()
         teb,
     };
     install_ios(host, &streams)?;
-    fill_table(&context, host.memory, ios_table, &["runtime:basic-ios-delete".to_string()])?;
+    fill_table(
+        &context,
+        host.memory,
+        ios_table,
+        &["runtime:basic-ios-delete".to_string()],
+    )?;
     install_ostream(host, &streams)?;
-    fill_table(&context, host.memory, ostream_table, &["runtime:ostream-delete".to_string()])?;
-    fill_table(&context, host.memory, iostream_table, &["runtime:ostream-delete".to_string()])?;
+    fill_table(
+        &context,
+        host.memory,
+        ostream_table,
+        &["runtime:ostream-delete".to_string()],
+    )?;
+    fill_table(
+        &context,
+        host.memory,
+        iostream_table,
+        &["runtime:ostream-delete".to_string()],
+    )?;
     install_streambuf(host, &streams)?;
     fill_table(
         &context,
@@ -477,8 +494,12 @@ pub fn install_msvc_streams(host: &mut WindowsServiceRegistrar<'_>) -> Result<()
     )?;
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??0{STREAMBUF}IEAA@XZ"), &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??0{STREAMBUF}IEAA@XZ"),
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 memory.write(object, &[0u8; 104])?;
@@ -489,8 +510,8 @@ pub fn install_msvc_streams(host: &mut WindowsServiceRegistrar<'_>) -> Result<()
                 let implementation = streams.locale.create(memory)?;
                 memory.write_pointer(memory.offset(object, 96)?, Some(implementation))?;
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     install_insertions(host, &streams)?;
     Ok(())
@@ -500,68 +521,103 @@ fn install_ios(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams) ->
     let teb = streams.teb;
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??1{IOS}UEAA@XZ"), &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("??1{IOS}UEAA@XZ"),
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, context, args| {
                 streams.basic_dtor(ctx, context, required_pointer(args, 0)?)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, "runtime:basic-ios-delete", &[GuestStorage::Pointer, GuestStorage::Uint32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            "runtime:basic-ios-delete",
+            &[GuestStorage::Pointer, GuestStorage::Uint32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, context, args| {
                 let object = required_pointer(args, 0)?;
                 streams.basic_dtor(ctx, context, object)?;
                 if integer(args, 1)? & 1 != 0 && !streams.context.free(ctx.memory(), teb, Some(object), 0)? {
                     return Err(GuestError::callback("Invalid basic_ios allocation"));
                 }
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??0{IOS}IEAA@XZ"), &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??0{IOS}IEAA@XZ"),
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 memory.write(object, &[0u8; 96])?;
                 memory.write_pointer(object, Some(streams.ios_table))?;
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
-    host.service(LIBRARY, &format!("?rdbuf@{IOS}QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ"), &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        LIBRARY,
+        &format!("?rdbuf@{IOS}QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ"),
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
-            Ok(ptr_value(memory.read_pointer(memory.offset(required_pointer(args, 0)?, 72)?)?))
-        },
-    ))?;
+            Ok(ptr_value(
+                memory.read_pointer(memory.offset(required_pointer(args, 0)?, 72)?)?,
+            ))
+        }),
+    )?;
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?setstate@{IOS}QEAAXH_N@Z"), &[GuestStorage::Pointer, GuestStorage::Int32, GuestStorage::Uint32], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("?setstate@{IOS}QEAAXH_N@Z"),
+            &[GuestStorage::Pointer, GuestStorage::Int32, GuestStorage::Uint32],
+            None,
+            Rc::new(move |ctx, _, args| {
                 streams.setstate(ctx.memory(), required_pointer(args, 0)?, integer(args, 1)? as i32)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
-    host.service(LIBRARY, "?good@ios_base@std@@QEBA_NXZ", &[GuestStorage::Pointer], Some(GuestStorage::Uint32), Rc::new(
-        move |ctx, _, args| {
+    host.service(
+        LIBRARY,
+        "?good@ios_base@std@@QEBA_NXZ",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Uint32),
+        Rc::new(move |ctx, _, args| {
             let memory = ctx.memory();
             let good = memory.read_i32(memory.offset(required_pointer(args, 0)?, 16)?)? == 0;
             Ok(GuestCallResult::Value(GuestCallValue::Uint32(u32::from(good))))
-        },
-    ))?;
+        }),
+    )?;
     Ok(())
 }
 
 fn install_ostream(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams) -> Result<(), GuestError> {
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??0{OSTREAM}QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z"), &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Uint32, GuestStorage::Int32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??0{OSTREAM}QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z"),
+            &[
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+                GuestStorage::Uint32,
+                GuestStorage::Int32,
+            ],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 if integer(args, 2)? != 0 {
                     return Err(unsupported_windows(
@@ -582,13 +638,17 @@ fn install_ostream(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams
                 memory.write_i32(memory.offset(base, -4)?, (base.offset - object.offset) as i32 - 16)?;
                 streams.initialize(memory, base, pointer(args, 1)?)?;
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??0{IOSTREAM}QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z"), &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??0{IOSTREAM}QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z"),
+            &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 if integer(args, 2)? != 0 {
@@ -604,40 +664,52 @@ fn install_ostream(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams
                 memory.write_i32(memory.offset(base, -4)?, (base.offset - object.offset) as i32 - 32)?;
                 streams.initialize(memory, base, pointer(args, 1)?)?;
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     // MSVC base destructors receive this adjusted to the vfptr's static offset,
     // without the dynamic virtual-base displacement (retail call RVA 0x80f9c).
     // basic_ios is destroyed separately by the most-derived destructor.
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??1{OSTREAM}UEAA@XZ"), &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??1{OSTREAM}UEAA@XZ"),
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let object = memory.offset(required_pointer(args, 0)?, -16)?;
                 let base = streams.virtual_ios(memory, object)?;
                 memory.write_pointer(base, Some(streams.ostream_table))?;
                 memory.write_i32(memory.offset(base, -4)?, (base.offset - object.offset) as i32 - 16)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??1{IOSTREAM}UEAA@XZ"), &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??1{IOSTREAM}UEAA@XZ"),
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let object = memory.offset(required_pointer(args, 0)?, -32)?;
                 let base = streams.virtual_ios(memory, object)?;
                 memory.write_pointer(base, Some(streams.iostream_table))?;
                 memory.write_i32(memory.offset(base, -4)?, (base.offset - object.offset) as i32 - 32)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
-    host.service(LIBRARY, "runtime:ostream-delete", &[GuestStorage::Pointer, GuestStorage::Uint32], Some(GuestStorage::Pointer), Rc::new(
-        move |_, _, args| {
+    host.service(
+        LIBRARY,
+        "runtime:ostream-delete",
+        &[GuestStorage::Pointer, GuestStorage::Uint32],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |_, _, args| {
             Err(unsupported_windows(
                 LIBRARY,
                 "basic_ostream deleting destructor",
@@ -646,8 +718,8 @@ fn install_ostream(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams
                     required_pointer(args, 0)?.offset
                 ),
             ))
-        },
-    ))?;
+        }),
+    )?;
     Ok(())
 }
 
@@ -655,8 +727,12 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
     let teb = streams.teb;
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??1{STREAMBUF}UEAA@XZ"), &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("??1{STREAMBUF}UEAA@XZ"),
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 memory.write_pointer(object, Some(streams.buffer_table))?;
@@ -664,13 +740,17 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
                 streams.locale.destroy(memory, implementation)?;
                 memory.write_pointer(memory.offset(object, 96)?, None)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, "runtime:streambuf-delete", &[GuestStorage::Pointer, GuestStorage::Uint32], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            "runtime:streambuf-delete",
+            &[GuestStorage::Pointer, GuestStorage::Uint32],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 memory.write_pointer(object, Some(streams.buffer_table))?;
@@ -681,48 +761,88 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
                     return Err(GuestError::callback("Invalid streambuf allocation"));
                 }
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     // Base streambuf has no external lock, device, seek operation or imbue action.
     for method in ["_Lock", "_Unlock"] {
-        host.service(LIBRARY, &format!("?{method}@{STREAMBUF}UEAAXXZ"), &[GuestStorage::Pointer], None, Rc::new(
-            move |_, _, _| Ok(GuestCallResult::Void),
-        ))?;
+        host.service(
+            LIBRARY,
+            &format!("?{method}@{STREAMBUF}UEAAXXZ"),
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |_, _, _| Ok(GuestCallResult::Void)),
+        )?;
     }
     for method in ["overflow", "pbackfail"] {
-        host.service(LIBRARY, &format!("runtime:streambuf-{method}"), &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Int32), Rc::new(
-            move |_, _, _| Ok(i32_value(-1)),
-        ))?;
+        host.service(
+            LIBRARY,
+            &format!("runtime:streambuf-{method}"),
+            &[GuestStorage::Pointer, GuestStorage::Int32],
+            Some(GuestStorage::Int32),
+            Rc::new(move |_, _, _| Ok(i32_value(-1))),
+        )?;
     }
-    host.service(LIBRARY, "runtime:streambuf-underflow", &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-        move |_, _, _| Ok(i32_value(-1)),
-    ))?;
-    host.service(LIBRARY, &format!("?showmanyc@{STREAMBUF}MEAA_JXZ"), &[GuestStorage::Pointer], Some(GuestStorage::Int64), Rc::new(
-        move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Int64(0))),
-    ))?;
-    host.service(LIBRARY, &format!("?sync@{STREAMBUF}MEAAHXZ"), &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-        move |_, _, _| Ok(i32_value(0)),
-    ))?;
-    host.service(LIBRARY, &format!("?setbuf@{STREAMBUF}MEAAPEAV12@PEAD_J@Z"), &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64], Some(GuestStorage::Pointer), Rc::new(
-        move |_, _, args| Ok(ptr_value(Some(required_pointer(args, 0)?))),
-    ))?;
-    host.service(LIBRARY, &format!("?imbue@{STREAMBUF}MEAAXAEBVlocale@2@@Z"), &[GuestStorage::Pointer, GuestStorage::Pointer], None, Rc::new(
-        move |_, _, _| Ok(GuestCallResult::Void),
-    ))?;
+    host.service(
+        LIBRARY,
+        "runtime:streambuf-underflow",
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Int32),
+        Rc::new(move |_, _, _| Ok(i32_value(-1))),
+    )?;
+    host.service(
+        LIBRARY,
+        &format!("?showmanyc@{STREAMBUF}MEAA_JXZ"),
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Int64),
+        Rc::new(move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Int64(0)))),
+    )?;
+    host.service(
+        LIBRARY,
+        &format!("?sync@{STREAMBUF}MEAAHXZ"),
+        &[GuestStorage::Pointer],
+        Some(GuestStorage::Int32),
+        Rc::new(move |_, _, _| Ok(i32_value(0))),
+    )?;
+    host.service(
+        LIBRARY,
+        &format!("?setbuf@{STREAMBUF}MEAAPEAV12@PEAD_J@Z"),
+        &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64],
+        Some(GuestStorage::Pointer),
+        Rc::new(move |_, _, args| Ok(ptr_value(Some(required_pointer(args, 0)?)))),
+    )?;
+    host.service(
+        LIBRARY,
+        &format!("?imbue@{STREAMBUF}MEAAXAEBVlocale@2@@Z"),
+        &[GuestStorage::Pointer, GuestStorage::Pointer],
+        None,
+        Rc::new(move |_, _, _| Ok(GuestCallResult::Void)),
+    )?;
     for (name, offset) in [("eback", 24), ("pbase", 32), ("gptr", 56), ("pptr", 64)] {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?{name}@{STREAMBUF}IEBAPEADXZ"), &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
-                Ok(ptr_value(streams.field(ctx.memory(), required_pointer(args, 0)?, offset)?))
-            },
-        ))?;
+        host.service(
+            LIBRARY,
+            &format!("?{name}@{STREAMBUF}IEBAPEADXZ"),
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
+                Ok(ptr_value(streams.field(
+                    ctx.memory(),
+                    required_pointer(args, 0)?,
+                    offset,
+                )?))
+            }),
+        )?;
     }
     for input in [true, false] {
         let streams = streams.clone();
         let name = if input { "egptr" } else { "epptr" };
-        host.service(LIBRARY, &format!("?{name}@{STREAMBUF}IEBAPEADXZ"), &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("?{name}@{STREAMBUF}IEBAPEADXZ"),
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let object = required_pointer(args, 0)?;
                 let memory = ctx.memory();
                 let next = streams.field(memory, object, if input { 56 } else { 64 })?;
@@ -733,32 +853,41 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
                 let remaining = memory.read_i32(count)?;
                 let end = memory.offset(next, i64::from(remaining))?;
                 Ok(ptr_value(Some(end)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?uflow@{STREAMBUF}MEAAHXZ"), &[GuestStorage::Pointer], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("?uflow@{STREAMBUF}MEAAHXZ"),
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, context, args| {
                 let object = required_pointer(args, 0)?;
-                let underflow = streams.virtual_call(ctx, context, object, 6, &[], Some(GuestStorage::Int32), vec![])?;
+                let underflow =
+                    streams.virtual_call(ctx, context, object, 6, &[], Some(GuestStorage::Int32), vec![])?;
                 if result_integer(underflow)? == -1 {
                     return Ok(i32_value(-1));
                 }
                 let memory = ctx.memory();
                 let slot = streams.bump(memory, object, 1, true)?;
                 Ok(i32_value(i32::from(memory.read_u8(slot)?)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?sputc@{STREAMBUF}QEAAHD@Z"), &[GuestStorage::Pointer, GuestStorage::Int32], Some(GuestStorage::Int32), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("?sputc@{STREAMBUF}QEAAHD@Z"),
+            &[GuestStorage::Pointer, GuestStorage::Int32],
+            Some(GuestStorage::Int32),
+            Rc::new(move |ctx, context, args| {
                 let value = streams.stream_put(ctx, context, required_pointer(args, 0)?, integer(args, 1)?)?;
                 Ok(i32_value(value as i32))
-            },
-        ))?;
+            }),
+        )?;
     }
     for input in [true, false] {
         let streams = streams.clone();
@@ -767,8 +896,12 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
         } else {
             format!("?xsputn@{STREAMBUF}MEAA_JPEBD_J@Z")
         };
-        host.service(LIBRARY, &name, &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64], Some(GuestStorage::Int64), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &name,
+            &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64],
+            Some(GuestStorage::Int64),
+            Rc::new(move |ctx, context, args| {
                 let object = required_pointer(args, 0)?;
                 let data = required_pointer(args, 1)?;
                 let requested = integer(args, 2)?;
@@ -811,13 +944,17 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
                     }
                 }
                 Ok(GuestCallResult::Value(GuestCallValue::Int64(copied as i64)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?sputn@{STREAMBUF}QEAA_JPEBD_J@Z"), &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64], Some(GuestStorage::Int64), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("?sputn@{STREAMBUF}QEAA_JPEBD_J@Z"),
+            &[GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64],
+            Some(GuestStorage::Int64),
+            Rc::new(move |ctx, context, args| {
                 streams.virtual_call(
                     ctx,
                     context,
@@ -830,24 +967,39 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
                         GuestCallValue::Int64(integer(args, 2)? as i64),
                     ],
                 )
-            },
-        ))?;
+            }),
+        )?;
     }
     for method in ["seekoff", "seekpos"] {
         let parameters: Vec<GuestStorage> = if method == "seekoff" {
-            vec![GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int64, GuestStorage::Int32, GuestStorage::Int32]
+            vec![
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+                GuestStorage::Int64,
+                GuestStorage::Int32,
+                GuestStorage::Int32,
+            ]
         } else {
-            vec![GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Pointer, GuestStorage::Int32]
+            vec![
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+                GuestStorage::Pointer,
+                GuestStorage::Int32,
+            ]
         };
-        host.service(LIBRARY, &format!("runtime:streambuf-{method}"), &parameters, Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, _, args| {
+        host.service(
+            LIBRARY,
+            &format!("runtime:streambuf-{method}"),
+            &parameters,
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, _, args| {
                 let memory = ctx.memory();
                 let result = required_pointer(args, 1)?;
                 memory.write(result, &[0u8; 24])?;
                 memory.write_i64(memory.offset(result, 8)?, -1)?;
                 Ok(ptr_value(Some(result)))
-            },
-        ))?;
+            }),
+        )?;
     }
     Ok(())
 }
@@ -855,32 +1007,48 @@ fn install_streambuf(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStrea
 fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStreams) -> Result<(), GuestError> {
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?flush@{OSTREAM}QEAAAEAV12@XZ"), &[GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("?flush@{OSTREAM}QEAAAEAV12@XZ"),
+            &[GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, context, args| {
                 let object = required_pointer(args, 0)?;
                 streams.flush(ctx, context, object)?;
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?_Osfx@{OSTREAM}QEAAXXZ"), &[GuestStorage::Pointer], None, Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("?_Osfx@{OSTREAM}QEAAXXZ"),
+            &[GuestStorage::Pointer],
+            None,
+            Rc::new(move |ctx, context, args| {
                 streams.suffix(ctx, context, required_pointer(args, 0)?)?;
                 Ok(GuestCallResult::Void)
-            },
-        ))?;
+            }),
+        )?;
     }
     // C++ throw/unwind remains an explicit runtime stop; no exception can be
     // active while this runtime is executing normal guest instructions.
-    host.service(LIBRARY, "?uncaught_exception@std@@YA_NXZ", &[], Some(GuestStorage::Uint32), Rc::new(
-        move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Uint32(0))),
-    ))?;
+    host.service(
+        LIBRARY,
+        "?uncaught_exception@std@@YA_NXZ",
+        &[],
+        Some(GuestStorage::Uint32),
+        Rc::new(move |_, _, _| Ok(GuestCallResult::Value(GuestCallValue::Uint32(0)))),
+    )?;
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("?tellp@{OSTREAM}QEAA?AV?$fpos@U_Mbstatet@@@2@XZ"), &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("?tellp@{OSTREAM}QEAA?AV?$fpos@U_Mbstatet@@@2@XZ"),
+            &[GuestStorage::Pointer, GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, context, args| {
                 let (base, result) = {
                     let memory = ctx.memory();
                     let base = streams.virtual_ios(memory, required_pointer(args, 0)?)?;
@@ -905,7 +1073,12 @@ fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStre
                     context,
                     buffer,
                     10,
-                    &[GuestStorage::Pointer, GuestStorage::Int64, GuestStorage::Int32, GuestStorage::Int32],
+                    &[
+                        GuestStorage::Pointer,
+                        GuestStorage::Int64,
+                        GuestStorage::Int32,
+                        GuestStorage::Int32,
+                    ],
                     Some(GuestStorage::Pointer),
                     vec![
                         GuestCallValue::Pointer(Some(result)),
@@ -914,13 +1087,17 @@ fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStre
                         GuestCallValue::Int32(2),
                     ],
                 )
-            },
-        ))?;
+            }),
+        )?;
     }
     for bits in [32, 64] {
         let streams = streams.clone();
         let suffix = if bits == 32 { "H" } else { "_J" };
-        let storage = if bits == 32 { GuestStorage::Int32 } else { GuestStorage::Int64 };
+        let storage = if bits == 32 {
+            GuestStorage::Int32
+        } else {
+            GuestStorage::Int64
+        };
         host.service(
             LIBRARY,
             &format!("??6{OSTREAM}QEAAAEAV01@{suffix}@Z"),
@@ -951,8 +1128,12 @@ fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStre
     }
     {
         let streams = streams.clone();
-        host.service(LIBRARY, &format!("??6{OSTREAM}QEAAAEAV01@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z"), &[GuestStorage::Pointer, GuestStorage::Pointer], Some(GuestStorage::Pointer), Rc::new(
-            move |ctx, context, args| {
+        host.service(
+            LIBRARY,
+            &format!("??6{OSTREAM}QEAAAEAV01@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z"),
+            &[GuestStorage::Pointer, GuestStorage::Pointer],
+            Some(GuestStorage::Pointer),
+            Rc::new(move |ctx, context, args| {
                 let object = required_pointer(args, 0)?;
                 let source = pointer(args, 1)?;
                 let (base, target) = {
@@ -972,17 +1153,19 @@ fn install_insertions(host: &mut WindowsServiceRegistrar<'_>, streams: &MsvcStre
                     outcome?;
                 }
                 Ok(ptr_value(Some(object)))
-            },
-        ))?;
+            }),
+        )?;
     }
     Ok(())
 }
 
 fn read_state(ctx: &mut HostCallContext<'_, '_>, base: GuestAddress) -> Result<i32, GuestError> {
     let memory = ctx.memory();
-    Ok(memory.read_i32(memory.offset(base, 16)?)?)
+    let slot = memory.offset(base, 16)?;
+    memory.read_i32(slot)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_integer(
     streams: &MsvcStreams,
     ctx: &mut HostCallContext<'_, '_>,
@@ -1033,7 +1216,11 @@ fn insert_integer(
                     10
                 };
                 let value: i128 = if radix == 10 {
-                    if bits == 32 { i128::from(raw as i32) } else { i128::from(raw as i64) }
+                    if bits == 32 {
+                        i128::from(raw as i32)
+                    } else {
+                        i128::from(raw as i64)
+                    }
                 } else if bits == 32 {
                     i128::from(raw as u32)
                 } else {
@@ -1127,7 +1314,11 @@ fn insert_buffer(
     streams.setstate(
         ctx.memory(),
         base,
-        if source.is_none() { 4 } else { state | if copied { 0 } else { 2 } },
+        if source.is_none() {
+            4
+        } else {
+            state | if copied { 0 } else { 2 }
+        },
     )?;
     streams.suffix(ctx, context, object)
 }

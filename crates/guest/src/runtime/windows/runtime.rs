@@ -10,10 +10,9 @@ use std::rc::Rc;
 use crate::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner};
 use crate::core::callbacks::HookState;
 use crate::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallbackReference, GuestCallContext,
-    GuestCallResult, GuestCallSignature, GuestCallValue, GuestImage, GuestImport,
-    GuestImportResolution, GuestImportResolver, GuestIntegerWidth, GuestPermissions, GuestRegister,
-    GuestStorage, GuestSymbolName,
+    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallContext, GuestCallResult, GuestCallSignature,
+    GuestCallValue, GuestCallbackReference, GuestImage, GuestImport, GuestImportResolution, GuestImportResolver,
+    GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage, GuestSymbolName,
 };
 use crate::core::memory::SparseGuestMemory;
 use crate::core::registers::GuestProcessorState;
@@ -23,9 +22,9 @@ use crate::pe::image::PeImage;
 use crate::pe::loader::bind_pe_imports;
 use crate::runtime::common::memory::{read_unsigned, write_pointer, write_unsigned};
 use crate::runtime::windows::contracts::{
-    canonical_library, import_key, last_error, set_last_error, unsupported_windows, SharedWindows,
-    WindowsCapabilities, WindowsContext, WindowsImportCoverage, WindowsInitializeOptions,
-    WindowsRuntimeOptions, WindowsServiceRegistrar, WindowsShared,
+    canonical_library, import_key, last_error, set_last_error, unsupported_windows, SharedWindows, WindowsCapabilities,
+    WindowsContext, WindowsImportCoverage, WindowsInitializeOptions, WindowsRuntimeOptions, WindowsServiceRegistrar,
+    WindowsShared,
 };
 use crate::runtime::windows::crt::install_crt;
 use crate::runtime::windows::kernel::install_kernel;
@@ -83,8 +82,16 @@ impl WindowsGuestRuntime {
             label: "Windows static TLS vector".to_string(),
         })?;
         let width = pointer_bytes;
-        write_pointer(memory, memory.offset(teb, if width == 4 { 0x18 } else { 0x30 })?, Some(teb))?;
-        write_pointer(memory, memory.offset(teb, if width == 4 { 0x30 } else { 0x60 })?, Some(peb))?;
+        write_pointer(
+            memory,
+            memory.offset(teb, if width == 4 { 0x18 } else { 0x30 })?,
+            Some(teb),
+        )?;
+        write_pointer(
+            memory,
+            memory.offset(teb, if width == 4 { 0x30 } else { 0x60 })?,
+            Some(peb),
+        )?;
         write_pointer(
             memory,
             memory.offset(teb, if width == 4 { 0x2c } else { 0x58 })?,
@@ -228,11 +235,7 @@ impl WindowsGuestRuntime {
     }
 
     /// Release a library reference.
-    pub fn free_library(
-        &self,
-        memory: &mut SparseGuestMemory,
-        handle: GuestAddress,
-    ) -> Result<bool, GuestError> {
+    pub fn free_library(&self, memory: &mut SparseGuestMemory, handle: GuestAddress) -> Result<bool, GuestError> {
         self.context.free_library(memory, self.teb, handle)
     }
 
@@ -251,8 +254,7 @@ impl WindowsGuestRuntime {
             .imports
             .values()
             .filter(|entry| {
-                shared.requested.contains(&format!("{}!{}", entry.library, entry.name))
-                    || entry.reached > 0
+                shared.requested.contains(&format!("{}!{}", entry.library, entry.name)) || entry.reached > 0
             })
             .map(|entry| WindowsImportCoverage {
                 library: entry.library.clone(),
@@ -353,11 +355,7 @@ impl WindowsGuestRuntime {
     }
 
     /// Prepare an image: track, bind imports, carve TLS, patch CFG.
-    pub fn prepare_image(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        image: &PeImage,
-    ) -> Result<(), GuestError> {
+    pub fn prepare_image(&mut self, memory: &mut SparseGuestMemory, image: &PeImage) -> Result<(), GuestError> {
         if self.prepared.contains(image) {
             return Ok(());
         }
@@ -502,11 +500,7 @@ impl WindowsGuestRuntime {
         map_nested(runner.invoke(&request))
     }
 
-    fn prepare_cfg(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        image: &PeImage,
-    ) -> Result<(), GuestError> {
+    fn prepare_cfg(&mut self, memory: &mut SparseGuestMemory, image: &PeImage) -> Result<(), GuestError> {
         let Some(config) = image.load_configuration.clone() else {
             return Ok(());
         };
@@ -519,8 +513,11 @@ impl WindowsGuestRuntime {
             return Err(GuestError::invalid("Truncated CFG load configuration"));
         }
         let table = read_unsigned(memory, memory.offset(config.address, table_offset as i64)?, width)?;
-        let count =
-            read_unsigned(memory, memory.offset(config.address, (table_offset + width) as i64)?, width)?;
+        let count = read_unsigned(
+            memory,
+            memory.offset(config.address, (table_offset + width) as i64)?,
+            width,
+        )?;
         let extra = config.guard_flags >> 28;
         let stride = (extra + 4) as usize;
         if count > image.image.byte_length / stride as u64 {
@@ -568,8 +565,16 @@ impl WindowsGuestRuntime {
                 None,
                 Rc::new(move |ctx, context, _| {
                     let target = ctx.cpu_state().registers.read(
-                        if width == 4 { GuestRegister::Rcx } else { GuestRegister::Rax },
-                        if width == 4 { GuestIntegerWidth::B32 } else { GuestIntegerWidth::B64 },
+                        if width == 4 {
+                            GuestRegister::Rcx
+                        } else {
+                            GuestRegister::Rax
+                        },
+                        if width == 4 {
+                            GuestIntegerWidth::B32
+                        } else {
+                            GuestIntegerWidth::B64
+                        },
                         false,
                     )?;
                     validate_cfg(ctx, &shared, target, context)?;
@@ -594,17 +599,18 @@ impl WindowsGuestRuntime {
                         Ok(GuestCallResult::Void)
                     }),
                 )?;
-                let Some(check) = self.context.resolve_address("quake-runtime.dll", "guard-dispatch-check") else {
+                let Some(check) = self
+                    .context
+                    .resolve_address("quake-runtime.dll", "guard-dispatch-check")
+                else {
                     return Err(GuestError::callback("CFG checker binding missing"));
                 };
                 let mut code = vec![
-                    0x50, 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xec, 0x20, 0x48, 0x89,
-                    0xc1, 0x48, 0xb8,
+                    0x50, 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x48, 0x83, 0xec, 0x20, 0x48, 0x89, 0xc1, 0x48, 0xb8,
                 ];
                 code.extend_from_slice(&check.offset.to_le_bytes());
                 code.extend_from_slice(&[
-                    0xff, 0xd0, 0x48, 0x83, 0xc4, 0x20, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59, 0x58,
-                    0xff, 0xe0,
+                    0xff, 0xd0, 0x48, 0x83, 0xc4, 0x20, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59, 0x58, 0xff, 0xe0,
                 ]);
                 let address = memory.allocate(&GuestAllocationOptions {
                     byte_length: code.len(),
@@ -630,7 +636,9 @@ impl WindowsGuestRuntime {
                         ))
                     }),
                 )?;
-                self.cfg_dispatch = self.context.resolve_address("quake-runtime.dll", "guard-dispatch-check");
+                self.cfg_dispatch = self
+                    .context
+                    .resolve_address("quake-runtime.dll", "guard-dispatch-check");
             }
         }
         for (slot, value) in [
@@ -685,10 +693,7 @@ impl GuestImportResolver for WindowsGuestRuntime {
             let lookup = |library: &str, _image: &PeImage| {
                 images
                     .iter()
-                    .find(|image| {
-                        canonical_library(&image.image.module.artifact_path)
-                            == canonical_library(library)
-                    })
+                    .find(|image| canonical_library(&image.image.module.artifact_path) == canonical_library(library))
                     .cloned()
             };
             return match resolve_pe_export(guest, &import.symbol, &lookup) {
@@ -769,8 +774,7 @@ fn validate_cfg(
     context: &GuestCallContext,
 ) -> Result<(), GuestError> {
     let _ = context;
-    let valid = shared.borrow().cfg_targets.contains(&target)
-        || ctx.hooks().callbacks.borrow().has_bound_trap(target);
+    let valid = shared.borrow().cfg_targets.contains(&target) || ctx.hooks().callbacks.borrow().has_bound_trap(target);
     let address = ctx.memory().pointer(target)?;
     let (true, Some(address)) = (valid, address) else {
         return Err(unsupported_windows(
