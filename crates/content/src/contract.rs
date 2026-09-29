@@ -614,6 +614,7 @@ pub enum SourceEdition {
 
 /// Grapple equipment selection.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum GrappleSelection {
     /// Grapple disabled.
     Disabled,
@@ -639,6 +640,7 @@ pub enum GrappleBinding {
 
 /// Grapple mechanic plus edition.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum GrappleMechanicDetail {
     /// Quake Threewave hook.
     Q1Threewave {
@@ -993,6 +995,7 @@ pub struct ResolvedWeaponBehaviorSelection {
 
 /// Weapon behavior component.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum WeaponBehaviorComponent {
     /// QVM component.
     Qvm {
@@ -1425,6 +1428,7 @@ pub struct SourceItemDefinition {
 
 /// Source item kind.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum SourceItemKind {
     /// Counter item.
     Counter,
@@ -1564,6 +1568,7 @@ pub enum SourceWeaponHandoff {
 
 /// Presented weapon model.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum SourceWeaponModel {
     /// Resolved resource model.
     Resolved {
@@ -3119,6 +3124,7 @@ pub struct ModQcItemDefinition {
 
 /// QuakeC mod item kind.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ModQcItemKind {
     /// Counter item.
     Counter,
@@ -3387,6 +3393,7 @@ pub struct ResolvedGameplayMod {
 
 /// Gameplay mod declaration.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ModDeclaration {
     /// QuakeC declaration.
     Quakec(ModCallbackDeclaration),
@@ -4089,6 +4096,7 @@ pub struct QvmModCombatClient {
 
 /// QVM mod combat ABI.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum QvmModCombatAbi {
     /// Original G_Damage ABI.
     GDamage,
@@ -4572,6 +4580,7 @@ pub struct QvmItemDefinition {
 
 /// QVM item kind.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum QvmItemKind {
     /// Counter item.
     Counter,
@@ -6031,6 +6040,7 @@ pub struct NativeItemDefinition {
 
 /// Native item kind.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum NativeItemKind {
     /// Counter item.
     Counter,
