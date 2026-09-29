@@ -47,7 +47,11 @@ pub fn client_cinematic_syscall(
     if call.kind != CallKind::Engine || call.role == QvmRole::Qagame {
         return Ok(None);
     }
-    let play = if call.role == QvmRole::Ui { UI_CIN_PLAYCINEMATIC } else { CG_CIN_PLAYCINEMATIC };
+    let play = if call.role == QvmRole::Ui {
+        UI_CIN_PLAYCINEMATIC
+    } else {
+        CG_CIN_PLAYCINEMATIC
+    };
     if call.code < play || call.code > play + 4 {
         return Ok(None);
     }
@@ -77,7 +81,12 @@ pub fn client_cinematic_syscall(
     } else {
         services.set_extents(
             handle,
-            CineRect { x: call.int(2)?, y: call.int(3)?, width: call.int(4)?, height: call.int(5)? },
+            CineRect {
+                x: call.int(2)?,
+                y: call.int(3)?,
+                width: call.int(4)?,
+                height: call.int(5)?,
+            },
         );
     }
     Ok(Some(0))
@@ -94,7 +103,8 @@ mod tests {
 
     impl CinematicHost for FakeCine {
         fn play(&mut self, path: &str, rect: CineRect, bits: i32) -> i32 {
-            self.log.push(format!("play {path} {}x{} bits={bits}", rect.width, rect.height));
+            self.log
+                .push(format!("play {path} {}x{} bits={bits}", rect.width, rect.height));
             11
         }
         fn run(&mut self, handle: i32) -> i32 {
@@ -133,10 +143,22 @@ mod tests {
             client_cinematic_syscall(&cg(74, &[512, 1, 2, 320, 240, 4]), &mut memory, &mut cine).unwrap(),
             Some(11)
         );
-        assert_eq!(client_cinematic_syscall(&cg(75, &[11]), &mut memory, &mut cine).unwrap(), Some(2));
-        assert_eq!(client_cinematic_syscall(&cg(76, &[11]), &mut memory, &mut cine).unwrap(), Some(1));
-        assert_eq!(client_cinematic_syscall(&cg(77, &[11]), &mut memory, &mut cine).unwrap(), Some(0));
-        assert_eq!(client_cinematic_syscall(&cg(78, &[11, 5, 6, 100, 80]), &mut memory, &mut cine).unwrap(), Some(0));
+        assert_eq!(
+            client_cinematic_syscall(&cg(75, &[11]), &mut memory, &mut cine).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            client_cinematic_syscall(&cg(76, &[11]), &mut memory, &mut cine).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_cinematic_syscall(&cg(77, &[11]), &mut memory, &mut cine).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_cinematic_syscall(&cg(78, &[11, 5, 6, 100, 80]), &mut memory, &mut cine).unwrap(),
+            Some(0)
+        );
         assert_eq!(
             cine.log,
             vec![
@@ -158,7 +180,10 @@ mod tests {
             client_cinematic_syscall(&ui(75, &[512, 0, 0, 640, 480, 0]), &mut memory, &mut cine).unwrap(),
             Some(11)
         );
-        assert_eq!(client_cinematic_syscall(&ui(79, &[11, 1, 1, 2, 2]), &mut memory, &mut cine).unwrap(), Some(0));
+        assert_eq!(
+            client_cinematic_syscall(&ui(79, &[11, 1, 1, 2, 2]), &mut memory, &mut cine).unwrap(),
+            Some(0)
+        );
         assert_eq!(cine.log[0], "dev \"UI_CIN_PlayCinematic\\n\"".to_string());
     }
 
@@ -168,8 +193,17 @@ mod tests {
         let mut cine = FakeCine { log: Vec::new() };
         let game = HostCall::engine(QvmRole::Qagame, 74, &[0, 0, 0, 0, 0, 0], AbiProfile::Modern);
         assert_eq!(client_cinematic_syscall(&game, &mut memory, &mut cine).unwrap(), None);
-        assert_eq!(client_cinematic_syscall(&cg(73, &[]), &mut memory, &mut cine).unwrap(), None);
-        assert_eq!(client_cinematic_syscall(&cg(79, &[11]), &mut memory, &mut cine).unwrap(), None);
-        assert_eq!(client_cinematic_syscall(&ui(74, &[0, 0, 0, 0, 0, 0]), &mut memory, &mut cine).unwrap(), None);
+        assert_eq!(
+            client_cinematic_syscall(&cg(73, &[]), &mut memory, &mut cine).unwrap(),
+            None
+        );
+        assert_eq!(
+            client_cinematic_syscall(&cg(79, &[11]), &mut memory, &mut cine).unwrap(),
+            None
+        );
+        assert_eq!(
+            client_cinematic_syscall(&ui(74, &[0, 0, 0, 0, 0, 0]), &mut memory, &mut cine).unwrap(),
+            None
+        );
     }
 }

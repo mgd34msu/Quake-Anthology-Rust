@@ -74,7 +74,12 @@ impl<M: UiModule> QvmUi<M> {
         assert_current: impl Fn() -> Result<(), GuestError> + 'static,
     ) -> Result<Self, GuestError> {
         assert_current()?;
-        Ok(Self { seat, module, assert_current: Box::new(assert_current), retired: false })
+        Ok(Self {
+            seat,
+            module,
+            assert_current: Box::new(assert_current),
+            retired: false,
+        })
     }
 
     fn current(&self) -> Result<(), GuestError> {
@@ -136,7 +141,9 @@ impl<M: UiModule> QvmUi<M> {
     /// Set the active menu.
     pub fn set_active_menu(&mut self, menu: UiMenu) -> Result<(), GuestError> {
         if self.module.abi_profile() != AbiProfile::Modern && menu_number(menu) > UIMENU_BAD_CD_KEY {
-            return Err(GuestError::invalid(format!("Legacy UI does not implement menu {menu:?}")));
+            return Err(GuestError::invalid(format!(
+                "Legacy UI does not implement menu {menu:?}"
+            )));
         }
         self.invoke(&[UI_SET_ACTIVE_MENU, menu_number(menu)])?;
         Ok(())
@@ -179,7 +186,13 @@ mod tests {
 
     impl FakeModule {
         fn new(profile: AbiProfile) -> Self {
-            Self { profile, calls: Vec::new(), commands: Vec::new(), retired: false, result: 0 }
+            Self {
+                profile,
+                calls: Vec::new(),
+                commands: Vec::new(),
+                retired: false,
+                result: 0,
+            }
         }
     }
 

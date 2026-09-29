@@ -179,7 +179,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
         yaw: f32,
         dist: f32,
     ) -> Result<f32, GuestError> {
-        let resolve = self.reference_resolver();
+        let resolve = Self::reference_resolver();
         let Some(mut state) = self.read_monster(fields, actor, &resolve)? else {
             return Ok(0.0);
         };
@@ -198,7 +198,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
 
     /// `movetogoal` facing pass: turn toward `goal` without stepping.
     pub fn move_to_goal(&mut self, fields: &mut FieldTable, actor: &ActorId, goal: &ActorId) -> Result<(), GuestError> {
-        let resolve = self.reference_resolver();
+        let resolve = Self::reference_resolver();
         let Some(mut state) = self.read_monster(fields, actor, &resolve)? else {
             return Ok(());
         };
@@ -221,7 +221,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
         goal: &ActorId,
         dist: f32,
     ) -> Result<(), GuestError> {
-        let resolve = self.reference_resolver();
+        let resolve = Self::reference_resolver();
         let Some(mut state) = self.read_monster(fields, actor, &resolve)? else {
             return Ok(());
         };
@@ -244,7 +244,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
         if !self.move_step(fields, actor, &mut state, step)? {
             // Blocked: the donor turns around with a random bias instead of
             // pushing into the wall.
-            state.ideal_yaw = state.angles.y + 180.0 + f32::from(self.random.next_integer(90) - 45);
+            state.ideal_yaw = state.angles.y + 180.0 + (self.random.next_integer(90) - 45) as f32;
             self.change_yaw_state(&mut state);
         }
         self.write_monster(fields, actor, &state, true)?;
@@ -253,7 +253,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
 
     /// `changeyaw`: turn the current yaw toward the ideal yaw.
     pub fn change_yaw(&mut self, fields: &mut FieldTable, actor: &ActorId) -> Result<(), GuestError> {
-        let resolve = self.reference_resolver();
+        let resolve = Self::reference_resolver();
         let Some(mut state) = self.read_monster(fields, actor, &resolve)? else {
             return Ok(());
         };
@@ -264,7 +264,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
 
     /// `checkbottom`: whether the actor stands over solid ground.
     pub fn check_bottom(&self, fields: &FieldTable, actor: &ActorId) -> Result<bool, GuestError> {
-        let resolve = self.reference_resolver();
+        let resolve = Self::reference_resolver();
         let Some(state) = self.read_monster(fields, actor, &resolve)? else {
             return Ok(false);
         };
@@ -436,7 +436,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
         Ok(())
     }
 
-    fn reference_resolver(&self) -> impl Fn(i32) -> Option<ActorId> + '_ {
+    fn reference_resolver() -> fn(i32) -> Option<ActorId> {
         |_reference| None
     }
 }
@@ -564,7 +564,13 @@ mod tests {
     impl Scene for FakeScene {
         fn trace(&self, params: &TraceParams) -> Result<super::super::spatial_host::TraceResult, GuestError> {
             let going_down = params.end.z < params.start.z;
-            let fraction = if self.blocked && !going_down { 0.0 } else { 1.0 };
+            let fraction = if going_down {
+                0.5
+            } else if self.blocked {
+                0.0
+            } else {
+                1.0
+            };
             Ok(super::super::spatial_host::TraceResult {
                 fraction,
                 all_solid: false,

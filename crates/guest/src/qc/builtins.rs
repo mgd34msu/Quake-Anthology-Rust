@@ -727,10 +727,11 @@ pub fn create_qc_builtins(services: QcBuiltinServices) -> QcBuiltinRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::machine::{QcMachineOptions, QcOpcode};
+    use super::super::machine::QcMachineOptions;
+    use super::super::program::QcOpcode;
     use qa_core::numeric::NumericOps;
 
-    fn test_machine(services: QcBuiltinServices) -> QcMachine {
+    fn test_machine() -> QcMachine {
         // Minimal program: 32 global words incl. v_forward/v_right/v_up,
         // one string field, and room for builtin staging.
         let mut image = Vec::new();
@@ -793,26 +794,19 @@ mod tests {
             field_words: program.entity_field_words,
         };
         let entities = super::super::memory::QcEntityMemory::new(layout, 4, 3).unwrap();
-        let registry = create_qc_builtins(services);
         QcMachine::new(QcMachineOptions::new(
             program,
             NumericOps::select(qa_core::numeric::Q1_DONOR_PROFILE).unwrap(),
             entities,
-            registry,
+            QcBuiltinRegistry::default(),
             Rc::new(|| true),
         ))
         .unwrap()
     }
 
-    fn call(machine: &mut QcMachine, number: i32) -> Result<(), GuestError> {
-        let builtin = machine
-            .missing_builtins()
-            .into_iter()
-            .find(|_| false);
-        let _ = builtin;
-        // Reach into the registry through a fresh requirement-free call:
-        // builtins are stored on the machine; invoke via a direct table.
-        Err(machine.fail("unreachable"))
+    fn invoke(registry: &QcBuiltinRegistry, machine: &mut QcMachine, number: i32) -> Result<(), GuestError> {
+        let builtin = registry.numbered.get(&number).cloned().ok_or_else(|| machine.fail("missing test builtin"))?;
+        builtin(machine)
     }
 
     #[test]
@@ -860,9 +854,63 @@ mod tests {
         assert_eq!(yaw(vec3(0.0, 1.0, 0.0)), 90.0);
         assert_eq!(yaw(vec3(0.0, 0.0, 5.0)), 0.0);
         assert_eq!(format_float(3.25), "  3.2");
-        let mut machine = test_machine(QcBuiltinServices::new(QcHostKind::Netquake));
+        let machine = test_machine();
         assert!((vector_length(&machine, vec3(3.0, 4.0, 0.0)) - 5.0).abs() < 1e-6);
-        let _ = call(&mut machine, 1).unwrap_err();
+    }
+
+    #[test]
+    fn normalize_length_and_yaw_execute() {
+        let registry = create_qc_builtins(QcBuiltinServices::new(QcHostKind::Netquake));
+        let mut machine = test_machine();
+        machine.globals_mut().set_vector(4, vec3(3.0, 4.0, 0.0)).unwrap();
+        invoke(&registry, &mut machine, 12).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), 5.0);
+        invoke(&registry, &mut machine, 9).unwrap();
+        let normalized = machine.globals().vector(1).unwrap();
+        assert!((normalized.x - 0.6).abs() < 1e-6);
+        assert!((normalized.y - 0.8).abs() < 1e-6);
+        machine.globals_mut().set_vector(4, vec3(0.0, 1.0, 0.0)).unwrap();
+        invoke(&registry, &mut machine, 13).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), 90.0);
+    }
+
+    #[test]
+    fn make_vectors_writes_basis() {
+        let registry = create_qc_builtins(QcBuiltinServices::new(QcHostKind::Netquake));
+        let mut machine = test_machine();
+        machine.globals_mut().set_vector(4, vec3(0.0, 0.0, 0.0)).unwrap();
+        invoke(&registry, &mut machine, 1).unwrap();
+        let forward = machine.globals().vector(machine.global_offset("v_forward").unwrap()).unwrap();
+        assert!((forward.x - 1.0).abs() < 1e-6);
+        assert!(forward.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn text_and_rounding_builtins_execute() {
+        let registry = create_qc_builtins(QcBuiltinServices::new(QcHostKind::Netquake));
+        let mut machine = test_machine();
+        machine.globals_mut().set_float(4, 42.0).unwrap();
+        invoke(&registry, &mut machine, 26).unwrap();
+        let reference = machine.globals().int(1).unwrap();
+        assert_eq!(machine.strings().get(reference).unwrap(), "42");
+        machine.globals_mut().set_float(4, 2.5).unwrap();
+        invoke(&registry, &mut machine, 36).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), 3.0);
+        machine.globals_mut().set_float(4, -2.5).unwrap();
+        invoke(&registry, &mut machine, 37).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), -3.0);
+        invoke(&registry, &mut machine, 29).unwrap();
+        assert!(machine.trace_enabled);
+        invoke(&registry, &mut machine, 30).unwrap();
+        assert!(!machine.trace_enabled);
+    }
+
+    #[test]
+    fn error_builtin_fails_with_message() {
+        let registry = create_qc_builtins(QcBuiltinServices::new(QcHostKind::Netquake));
+        let mut machine = test_machine();
+        let error = invoke(&registry, &mut machine, 10).unwrap_err();
+        assert!(error.to_string().contains("QuakeC 0:0"));
     }
 
     #[test]
@@ -880,6 +928,44 @@ mod tests {
         let mut services = QcBuiltinServices::new(QcHostKind::Netquake);
         services.random = Some(random);
         let registry = create_qc_builtins(services);
-        assert!(registry.numbered.contains_key(&7));
+        let mut machine = test_machine();
+        invoke(&registry, &mut machine, 7).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn find_and_next_skip_free_slots() {
+        let mut services = QcBuiltinServices::new(QcHostKind::Netquake);
+        services.is_free_entity = Some(Rc::new(|slot| slot == 1));
+        let registry = create_qc_builtins(services);
+        let mut machine = test_machine();
+        let classname = machine.strings_mut().allocate("monster").unwrap();
+        machine.entities_mut().set_slot_int(2, 0, classname).unwrap();
+        let start = machine.entities().reference(0).unwrap();
+        machine.globals_mut().set_int(4, start).unwrap();
+        machine.globals_mut().set_int(7, 0).unwrap();
+        let wanted = machine.strings_mut().allocate("monster").unwrap();
+        machine.globals_mut().set_int(10, wanted).unwrap();
+        invoke(&registry, &mut machine, 18).unwrap();
+        assert_eq!(machine.globals().int(1).unwrap(), machine.entities().reference(2).unwrap());
+        machine.globals_mut().set_int(4, start).unwrap();
+        invoke(&registry, &mut machine, 47).unwrap();
+        assert_eq!(machine.globals().int(1).unwrap(), machine.entities().reference(2).unwrap());
+    }
+
+    #[test]
+    fn checkext_reports_advertised_set() {
+        let mut services = QcBuiltinServices::new(QcHostKind::Netquake);
+        services.extensions.insert("DP_TEST".to_string());
+        let registry = create_qc_builtins(services);
+        let mut machine = test_machine();
+        let yes = machine.strings_mut().allocate("DP_TEST").unwrap();
+        machine.globals_mut().set_int(4, yes).unwrap();
+        invoke(&registry, &mut machine, 99).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), 1.0);
+        let no = machine.strings_mut().allocate("NOPE").unwrap();
+        machine.globals_mut().set_int(4, no).unwrap();
+        invoke(&registry, &mut machine, 99).unwrap();
+        assert_eq!(machine.globals().float(1).unwrap(), 0.0);
     }
 }

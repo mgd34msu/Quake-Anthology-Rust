@@ -124,7 +124,7 @@ mod tests {
         }
         fn read_cd_key(&mut self, unique: i32, directory: &str) -> [u8; QVM_CD_KEY_SPAN] {
             self.log.push(format!("read {unique} {directory}"));
-            *b"234567ABCDGHJLPR\0"
+            *b"237ABCDGHJLPRSTW\0"
         }
         fn write_cd_key(&mut self, unique: i32, directory: &str, key: &[u8; QVM_CD_KEY_BYTES]) {
             self.log.push(format!("write {unique} {directory} {}", key.len()));
@@ -139,39 +139,49 @@ mod tests {
     fn get_cdkey_writes_record() {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut keys = FakeKeys { log: Vec::new() };
-        assert_eq!(ui_key_syscall(&call(UI_GET_CDKEY, &[256]), &mut memory, &mut keys).unwrap(), Some(0));
-        assert_eq!(memory.read_bytes(256, 17).unwrap(), b"234567ABCDGHJLPR\0");
+        assert_eq!(
+            ui_key_syscall(&call(UI_GET_CDKEY, &[256]), &mut memory, &mut keys).unwrap(),
+            Some(0)
+        );
+        assert_eq!(memory.read_bytes(256, 17).unwrap(), b"237ABCDGHJLPRSTW\0");
         assert_eq!(keys.log, vec!["read 1 baseq3".to_string()]);
     }
 
     #[test]
     fn set_cdkey_passes_bytes() {
         let mut memory = SyscallMemory::new(4096).unwrap();
-        memory.write_bytes(256, b"234567ABCDGHJLPR").unwrap();
+        memory.write_bytes(256, b"237ABCDGHJLPRSTW").unwrap();
         let mut keys = FakeKeys { log: Vec::new() };
-        assert_eq!(ui_key_syscall(&call(UI_SET_CDKEY, &[256]), &mut memory, &mut keys).unwrap(), Some(0));
+        assert_eq!(
+            ui_key_syscall(&call(UI_SET_CDKEY, &[256]), &mut memory, &mut keys).unwrap(),
+            Some(0)
+        );
         assert_eq!(keys.log, vec!["write 1 baseq3 16".to_string()]);
     }
 
     fn checksum(key: &str) -> String {
-        let sum = key.bytes().map(|mut byte| {
-            if byte.is_ascii_lowercase() {
-                byte -= 32;
-            }
-            u32::from(byte)
-        }).sum::<u32>() & 255;
+        let sum = key
+            .bytes()
+            .map(|mut byte| {
+                if byte.is_ascii_lowercase() {
+                    byte -= 32;
+                }
+                u32::from(byte)
+            })
+            .sum::<u32>()
+            & 255;
         format!("{sum:02x}")
     }
 
     #[test]
     fn verify_cdkey() {
-        let key = "234567ABCDGHJLPR";
+        let key = "237ABCDGHJLPRSTW";
         let sum = checksum(key);
         assert!(validate_q3_cd_key(key, None));
         assert!(validate_q3_cd_key(key, Some(&sum)));
         assert!(validate_q3_cd_key(&key.to_lowercase(), Some(&sum.to_uppercase())));
         assert!(!validate_q3_cd_key(key, Some("00")));
-        assert!(!validate_q3_cd_key("234567ABCDGHJLPRX1", None));
+        assert!(!validate_q3_cd_key("237ABCDGHJLPRSTWX1", None));
         assert!(!validate_q3_cd_key("short", None));
         assert!(!validate_q3_cd_key("!!!!!!!!!!!!!!!!", None));
         assert!(!validate_q3_cd_key(key, Some("xyz")));
@@ -180,16 +190,28 @@ mod tests {
     #[test]
     fn verify_trap_handles_length_and_null_checksum() {
         let mut memory = SyscallMemory::new(4096).unwrap();
-        memory.write_string(256, "234567ABCDGHJLPR", 17).unwrap();
+        memory.write_string(256, "237ABCDGHJLPRSTW", 17).unwrap();
         memory.write_string(512, "short", 6).unwrap();
         let mut keys = FakeKeys { log: Vec::new() };
-        assert_eq!(ui_key_syscall(&call(UI_VERIFY_CDKEY, &[256, 0]), &mut memory, &mut keys).unwrap(), Some(1));
-        assert_eq!(ui_key_syscall(&call(UI_VERIFY_CDKEY, &[512, 0]), &mut memory, &mut keys).unwrap(), Some(0));
-        let sum = checksum("234567ABCDGHJLPR");
+        assert_eq!(
+            ui_key_syscall(&call(UI_VERIFY_CDKEY, &[256, 0]), &mut memory, &mut keys).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            ui_key_syscall(&call(UI_VERIFY_CDKEY, &[512, 0]), &mut memory, &mut keys).unwrap(),
+            Some(0)
+        );
+        let sum = checksum("237ABCDGHJLPRSTW");
         memory.write_string(768, &sum, 3).unwrap();
-        assert_eq!(ui_key_syscall(&call(UI_VERIFY_CDKEY, &[256, 768]), &mut memory, &mut keys).unwrap(), Some(1));
+        assert_eq!(
+            ui_key_syscall(&call(UI_VERIFY_CDKEY, &[256, 768]), &mut memory, &mut keys).unwrap(),
+            Some(1)
+        );
         memory.write_string(768, "zz", 3).unwrap();
-        assert_eq!(ui_key_syscall(&call(UI_VERIFY_CDKEY, &[256, 768]), &mut memory, &mut keys).unwrap(), Some(0));
+        assert_eq!(
+            ui_key_syscall(&call(UI_VERIFY_CDKEY, &[256, 768]), &mut memory, &mut keys).unwrap(),
+            Some(0)
+        );
     }
 
     #[test]

@@ -1,0 +1,1695 @@
+//! QVM interpreter: prepared bytecode execution with hooks and regions.
+//!
+//! Port of `src/compat/qvm/interpreter.ts`.
+//!
+//! Translated from Quake III Arena qcommon/vm.c and vm_interpreted.c.
+//! Copyright (C) 1999-2005 Id Software, Inc.
+//! SPDX-License-Identifier: GPL-2.0-or-later
+//!
+//! Sync-port design (documented deviations from the donor):
+//!
+//! - The donor is sync-or-async (`QvmSystemCallResult = number |
+//!   Promise<number>`). This port is fully synchronous: host calls take
+//!   `&mut dyn` callbacks (`QvmSystemCallHandler`, hooks, observers, region
+//!   bindings) and return values directly. There are no `invoke_async`,
+//!   `proceed_async`, or pending-child states.
+//! - The donor stores the system call in the constructor; here the host is
+//!   passed to every [`QvmInterpreter::invoke`]. This keeps one `&mut` path
+//!   through the interpreter so recursive guest calls from host code stay
+//!   sound without self-referential structs.
+//! - Host callbacks (`QvmFunctionHook`, observers, resolvers, region and
+//!   branch bindings) are `Fn` (shared) rather than `FnMut` so recursive
+//!   guest calls reenter them exactly like the donor's plain functions; hosts
+//!   keep mutable state in their own interior mutability.
+//! - `bind_function`/`bind_invocation`/`observe_function` return tokens
+//!   removed with `unbind_function`/`unobserve_function` (Rust cannot hand out
+//!   self-borrowing unsubscribe closures).
+//! - Store effects run inline: `QvmMemory` has no back-reference to the
+//!   interpreter, so there is no `store_effect` routing or `publish_effect`
+//!   program-stack adjustment.
+//! - `evaluate_counter` takes the nested call arguments directly instead of an
+//!   `execute` closure; the only donor caller passes a plain nested call.
+//! - The donor's `CommonError` drop/fatal codes map to [`GuestError::Cpu`] /
+//!   [`GuestError::Runtime`] with the code preserved as a message prefix
+//!   (`qvm_drop_error` / `qvm_fatal_error`).
+//! - Async-only machinery (validations, pending syscall children,
+//!   cancellation failure slots) has no sync equivalent and is omitted; error
+//!   propagation is direct.
+//!
+//! Hot path: the loop decodes from slices and never allocates per
+//! instruction; host interaction allocates only at trap/hook boundaries.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::error::GuestError;
+
+use super::allocation::{QvmAllocation, QvmAllocationProfile};
+use super::image::{
+    QvmDataImage, QvmImage, QvmInstruction, QvmOpcode, QvmOperand, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
+};
+use super::memory::{QvmMemory, QvmSpan, QvmWritableView};
+use super::operations::{evaluate_binary, evaluate_branch, evaluate_unary};
+use super::regions::{
+    qualify_qvm_region, qualify_qvm_region_evaluation, QvmRegionAccess, QvmRegionEvaluation,
+};
+use super::registry::{QvmExecutionProfile, VmRegistration};
+use super::symbols::{QvmSymbolLoadOptions, QvmSymbols};
+
+/// Ten public `vmMain` argument words.
+pub type QvmArguments = [i32; 10];
+
+/// Capability for one live intercepted call, issued and checked by its interpreter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QvmCancellationScope {
+    id: u64,
+}
+
+/// Declared evaluation stack reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QvmEvaluationStack {
+    /// Reservation start (inclusive, aligned).
+    pub start: usize,
+    /// Reservation end (exclusive, aligned).
+    pub end: usize,
+}
+
+/// Read-only region evaluation attached to an invocation.
+#[derive(Debug, Clone)]
+pub struct QvmReadOnlyEvaluation {
+    /// Optional declared stack reservation.
+    pub stack: Option<QvmEvaluationStack>,
+    /// Qualified region.
+    pub region: QvmRegionEvaluation,
+    /// Live-in values.
+    pub inputs: Vec<i32>,
+}
+
+/// Execution semantics: interpreted loop or compiled control stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QvmSemantics {
+    /// Pinned interpreter (`OP_BCOM` complements the previous operand slot;
+    /// `OP_BLOCK_COPY` wraps with dword alignment).
+    Interpreted,
+    /// Compiled VM (`OP_BCOM` is unary; `OP_BLOCK_COPY` is a checked byte copy).
+    Compiled,
+}
+
+/// Interpreter fault that drops to the console (`CommonError` `"drop"`).
+pub fn qvm_drop_error(detail: impl Into<String>) -> GuestError {
+    GuestError::cpu(format!("drop: {}", detail.into()))
+}
+
+/// Engine bug (`CommonError` `"fatal"`).
+pub fn qvm_fatal_error(detail: impl Into<String>) -> GuestError {
+    GuestError::runtime(format!("fatal: {}", detail.into()))
+}
+
+/// Cancellation signal for one intercepted call.
+fn cancel_signal(call_id: u64) -> GuestError {
+    GuestError::callback(format!("QVM function scope cancelled ({call_id})"))
+}
+
+fn is_cancel_for(error: &GuestError, call_id: u64) -> bool {
+    matches!(error, GuestError::Callback(message) if *message == format!("QVM function scope cancelled ({call_id})"))
+}
+
+/// Host entry: handles one engine trap synchronously.
+pub trait QvmSystemCallHandler {
+    /// Handle `call` and return the trap result.
+    fn handle_syscall(&mut self, call: &mut QvmSyscall<'_, '_>) -> Result<i32, GuestError>;
+}
+
+impl<F> QvmSystemCallHandler for F
+where
+    F: for<'a, 'c> FnMut(&mut QvmSyscall<'a, 'c>) -> Result<i32, GuestError>,
+{
+    fn handle_syscall(&mut self, call: &mut QvmSyscall<'_, '_>) -> Result<i32, GuestError> {
+        self(call)
+    }
+}
+
+/// Function replacement or wrapper hook.
+pub type QvmFunctionHook =
+    Rc<dyn for<'a, 'c, 'o> Fn(&mut QvmFunctionCall<'a, 'c, 'o>) -> Result<i32, GuestError>>;
+
+/// Function entry observer.
+pub type QvmFunctionObserver =
+    Rc<dyn for<'a, 'c> Fn(&mut QvmFunctionObservation<'a, 'c>) -> Result<(), GuestError>>;
+
+/// Resolver for live guest callback pointers.
+pub type QvmFunctionResolver = Rc<dyn Fn(usize, i32, &[i32]) -> Option<QvmFunctionHook>>;
+
+/// Conditional-branch decision override.
+pub type QvmBranchDecide =
+    Rc<dyn Fn(bool, &mut dyn FnMut(&QvmCancellationScope) -> GuestError) -> bool>;
+
+/// Region execution decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QvmRegionDecision {
+    /// Run the original region body.
+    Execute,
+    /// Skip to the region join.
+    Skip,
+}
+
+/// Region entry handler.
+pub type QvmRegionRun = Rc<
+    dyn for<'a, 'c> Fn(&mut QvmRegionControl<'a, 'c>) -> Result<QvmRegionDecision, GuestError>,
+>;
+
+/// Region completion handler.
+pub type QvmRegionCompleted =
+    Rc<dyn for<'a, 'c> Fn(&mut QvmRegionControl<'a, 'c>) -> Result<(), GuestError>>;
+
+/// Original conditional decision binding for one invocation.
+pub struct QvmBranchBinding {
+    /// Owning-function instruction index of the conditional.
+    pub instruction_index: usize,
+    /// Decision override.
+    pub decide: QvmBranchDecide,
+}
+
+impl std::fmt::Debug for QvmBranchBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmBranchBinding")
+            .field("instruction_index", &self.instruction_index)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Closed, stack-neutral original region binding for one invocation.
+pub struct QvmRegionBinding {
+    /// Region entry instruction index.
+    pub entry: usize,
+    /// Region join instruction index.
+    pub join: usize,
+    /// Entry handler returning one execution decision.
+    pub run: QvmRegionRun,
+    /// Optional completion handler.
+    pub completed: Option<QvmRegionCompleted>,
+}
+
+impl std::fmt::Debug for QvmRegionBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmRegionBinding")
+            .field("entry", &self.entry)
+            .field("join", &self.join)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for QvmRegionBinding {
+    fn clone(&self) -> Self {
+        Self {
+            entry: self.entry,
+            join: self.join,
+            run: Rc::clone(&self.run),
+            completed: self.completed.as_ref().map(Rc::clone),
+        }
+    }
+}
+
+/// Token removing a function hook installed by `bind_function`/`bind_invocation`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QvmHookToken {
+    entry: usize,
+    generation: u64,
+}
+
+/// Token removing a function observer installed by `observe_function`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QvmObserverToken {
+    entry: usize,
+    id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookScope {
+    Calls,
+    Invocations,
+}
+
+struct FunctionBinding {
+    hook: QvmFunctionHook,
+    scope: HookScope,
+    generation: u64,
+}
+
+struct ObserverEntry {
+    id: u64,
+    observe: QvmFunctionObserver,
+    active: bool,
+}
+
+struct CancellationState {
+    scope_id: u64,
+    requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionState {
+    Ready,
+    Running,
+    Complete,
+}
+
+struct SourceRegion {
+    binding: QvmRegionBinding,
+    join_pc: i32,
+    stack: usize,
+    frame_size: usize,
+    state: RegionState,
+}
+
+struct CallEvaluation {
+    region: QvmRegionEvaluation,
+    inputs: Vec<i32>,
+    frame_size: usize,
+}
+
+struct ActiveCall {
+    id: u64,
+    stack: usize,
+    return_pc: i32,
+    operand_depth: usize,
+    parent: Option<u64>,
+    active: bool,
+    branches: Option<HashMap<i32, QvmBranchDecide>>,
+    regions: Vec<SourceRegion>,
+    region_entries: HashMap<i32, usize>,
+    region_joins: HashMap<i32, usize>,
+    evaluation: Option<CallEvaluation>,
+    cancellation: Option<CancellationState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RegionEvalKey {
+    instruction: usize,
+    entry: usize,
+    join: usize,
+    inputs: Vec<usize>,
+    result: Option<usize>,
+}
+
+struct CounterQualification {
+    functions: Vec<usize>,
+    ranges: Vec<(i32, i32)>,
+}
+
+struct CounterState {
+    address: usize,
+    value: i32,
+    stack_start: usize,
+    stack_end: usize,
+    functions: Vec<usize>,
+    ranges: Vec<(i32, i32)>,
+    remaining: i64,
+}
+
+struct QvmCore {
+    memory: QvmMemory,
+    symbols: QvmSymbols,
+    allocations: Vec<QvmAllocation>,
+    symbol_allocations: Rc<RefCell<Vec<QvmAllocation>>>,
+    program_stack: usize,
+    call_level: i32,
+    breaks: i32,
+    debug: bool,
+    hooks: HashMap<usize, FunctionBinding>,
+    next_hook_generation: u64,
+    caller_argument_bytes: HashMap<usize, usize>,
+    observers: HashMap<usize, Vec<ObserverEntry>>,
+    next_observer_id: u64,
+    resolver: Option<QvmFunctionResolver>,
+    scopes: HashMap<u64, u64>,
+    next_scope_id: u64,
+    calls: Vec<ActiveCall>,
+    next_call_id: u64,
+    branch_function_ends: HashMap<usize, usize>,
+    qualified_regions: HashMap<(usize, usize, usize), i32>,
+    qualified_evaluations: HashMap<RegionEvalKey, i32>,
+    read_only_regions: HashMap<RegionEvalKey, i32>,
+    counter_functions: HashMap<Vec<usize>, CounterQualification>,
+    counter: Option<CounterState>,
+    root_active: bool,
+    source_data_end: usize,
+    memory_initialized_end: usize,
+    registration: Option<VmRegistration>,
+    semantics: QvmSemantics,
+}
+
+struct QvmProgram {
+    source: String,
+    code: Vec<i32>,
+    instruction_pointers: Vec<i32>,
+    instructions: Vec<QvmInstruction>,
+    data_mask: usize,
+}
+
+struct InterpCtx<'c> {
+    core: &'c mut QvmCore,
+    program: &'c QvmProgram,
+}
+
+/// Shared recursive-call and cancellation control carried by every host handle.
+pub struct HostControl<'a, 'c> {
+    ctx: &'a mut InterpCtx<'c>,
+    host: &'a mut dyn QvmSystemCallHandler,
+    scope: Option<u64>,
+}
+
+impl<'a, 'c> HostControl<'a, 'c> {
+    /// Recursive guest entry; valid only while the owning callback is active.
+    pub fn invoke(
+        &mut self,
+        args: &[i32],
+        entry: usize,
+        evaluation: Option<QvmReadOnlyEvaluation>,
+    ) -> Result<i32, GuestError> {
+        self.ctx.core.live()?;
+        self.check_cancellation()?;
+        let debug = self.ctx.core.debug;
+        let mut ops = OperandStack::new(debug);
+        run_loop(
+            self.ctx,
+            self.host,
+            &mut ops,
+            args,
+            entry,
+            None,
+            self.scope,
+            evaluation,
+            None,
+        )
+    }
+
+    /// Cancel the intercepted call that owns `scope`. Always returns the
+    /// cancellation error for the caller to propagate.
+    pub fn cancel_function(&mut self, scope: &QvmCancellationScope) -> GuestError {
+        match self.cancel_inner(scope) {
+            Ok(signal) => signal,
+            Err(error) => error,
+        }
+    }
+
+    fn cancel_inner(&mut self, scope: &QvmCancellationScope) -> Result<GuestError, GuestError> {
+        let target = *self.ctx.core.scopes.get(&scope.id).ok_or_else(|| {
+            GuestError::invalid("QVM cancellation scope belongs to another interpreter")
+        })?;
+        let position = find_call(&self.ctx.core.calls, target)
+            .ok_or_else(|| GuestError::invalid("QVM cancellation scope has expired"))?;
+        if !self.ctx.core.calls[position].active {
+            return Err(GuestError::invalid("QVM cancellation scope has expired"));
+        }
+        let cancellation = self.ctx.core.calls[position].cancellation.as_ref().ok_or_else(|| {
+            GuestError::invalid("QVM cancellation scope has already been used")
+        })?;
+        if cancellation.requested {
+            return Err(GuestError::invalid("QVM cancellation scope has already been used"));
+        }
+        let mut current = self.scope;
+        while current != Some(target) {
+            let Some(id) = current else {
+                return Err(GuestError::invalid(
+                    "QVM cancellation scope is not an ancestor of this call",
+                ));
+            };
+            let position = find_call(&self.ctx.core.calls, id).ok_or_else(|| {
+                GuestError::invalid("QVM cancellation scope is not an ancestor of this call")
+            })?;
+            current = self.ctx.core.calls[position].parent;
+        }
+        self.check_cancellation()?;
+        self.ctx.core.calls[position]
+            .cancellation
+            .as_mut()
+            .map(|cancellation| cancellation.requested = true);
+        Ok(cancel_signal(target))
+    }
+
+    fn check_cancellation(&self) -> Result<(), GuestError> {
+        check_chain(&self.ctx.core.calls, self.scope)
+    }
+}
+
+fn find_call(calls: &[ActiveCall], id: u64) -> Option<usize> {
+    calls.iter().position(|call| call.id == id)
+}
+
+fn check_chain(calls: &[ActiveCall], scope: Option<u64>) -> Result<(), GuestError> {
+    let mut current = scope;
+    let mut cancelled: Option<GuestError> = None;
+    while let Some(id) = current {
+        let Some(position) = find_call(calls, id) else {
+            break;
+        };
+        let call = &calls[position];
+        if call.active {
+            if let Some(cancellation) = call.cancellation.as_ref() {
+                if cancellation.requested {
+                    cancelled = Some(cancel_signal(call.id));
+                }
+            }
+        }
+        current = call.parent;
+    }
+    if let Some(signal) = cancelled {
+        return Err(signal);
+    }
+    Ok(())
+}
+
+/// Live syscall frame: trap words, memory, and recursive entry.
+pub struct QvmSyscall<'a, 'c> {
+    /// Live little-endian words: syscall number, then its arguments.
+    pub words: QvmWritableView,
+    /// Raw allocation read by `LOAD`/`STORE`.
+    pub memory: QvmMemory,
+    /// Masked guest memory.
+    pub guest: QvmMemory,
+    control: HostControl<'a, 'c>,
+}
+
+impl<'a, 'c> QvmSyscall<'a, 'c> {
+    /// Recursive guest entry; valid only while this callback is active.
+    pub fn invoke(
+        &mut self,
+        args: &[i32],
+        entry: usize,
+        evaluation: Option<QvmReadOnlyEvaluation>,
+    ) -> Result<i32, GuestError> {
+        self.control.invoke(args, entry, evaluation)
+    }
+
+    /// Cancel an intercepted ancestor call. Returns the error to propagate.
+    pub fn cancel_function(&mut self, scope: &QvmCancellationScope) -> GuestError {
+        self.control.cancel_function(scope)
+    }
+}
+
+impl<'a, 'c> std::fmt::Debug for QvmSyscall<'a, 'c> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmSyscall").finish_non_exhaustive()
+    }
+}
+
+/// Intercepted original function call.
+pub struct QvmFunctionCall<'a, 'c, 'o> {
+    /// Called instruction index.
+    pub instruction_index: usize,
+    /// Exact original `CALL` instruction; `None` for direct host entry.
+    pub caller_instruction: Option<usize>,
+    /// Live argument words bounded by the caller frame and `OP_ARG` extent.
+    pub words: QvmWritableView,
+    /// Raw allocation.
+    pub memory: QvmMemory,
+    /// Masked guest memory.
+    pub guest: QvmMemory,
+    control: HostControl<'a, 'c>,
+    ops: &'o mut OperandStack,
+    call_id: u64,
+    proceeded: bool,
+}
+
+impl<'a, 'c, 'o> QvmFunctionCall<'a, 'c, 'o> {
+    /// Recursive guest entry.
+    pub fn invoke(
+        &mut self,
+        args: &[i32],
+        entry: usize,
+        evaluation: Option<QvmReadOnlyEvaluation>,
+    ) -> Result<i32, GuestError> {
+        self.control.invoke(args, entry, evaluation)
+    }
+
+    /// Cancel an intercepted ancestor call. Returns the error to propagate.
+    pub fn cancel_function(&mut self, scope: &QvmCancellationScope) -> GuestError {
+        self.control.cancel_function(scope)
+    }
+
+    /// Open the single cancellation scope for this call, before proceeding.
+    pub fn cancellation_scope(&mut self) -> Result<QvmCancellationScope, GuestError> {
+        if self.proceeded {
+            return Err(GuestError::invalid(
+                "QVM cancellation scope must open once before proceeding",
+            ));
+        }
+        let position = find_call(&self.control.ctx.core.calls, self.call_id)
+            .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
+        if self.control.ctx.core.calls[position].cancellation.is_some() {
+            return Err(GuestError::invalid(
+                "QVM cancellation scope must open once before proceeding",
+            ));
+        }
+        let id = self.control.ctx.core.next_scope_id;
+        self.control.ctx.core.next_scope_id += 1;
+        self.control.ctx.core.calls[position].cancellation = Some(CancellationState {
+            scope_id: id,
+            requested: false,
+        });
+        self.control.ctx.core.scopes.insert(id, self.call_id);
+        Ok(QvmCancellationScope { id })
+    }
+
+    /// Bind original conditional decisions once, before proceeding.
+    pub fn branches(&mut self, bindings: Vec<QvmBranchBinding>) -> Result<(), GuestError> {
+        if self.proceeded {
+            return Err(GuestError::invalid("QVM branches must bind once before proceeding"));
+        }
+        let position = find_call(&self.control.ctx.core.calls, self.call_id)
+            .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
+        if self.control.ctx.core.calls[position].branches.is_some() {
+            return Err(GuestError::invalid("QVM branches must bind once before proceeding"));
+        }
+        let entry = self.instruction_index;
+        let end = match self.control.ctx.core.branch_function_ends.get(&entry) {
+            Some(end) => *end,
+            None => {
+                let mut end = entry + 1;
+                while end < self.control.ctx.program.instruction_pointers.len()
+                    && code_word(self.control.ctx.program, target_pc(self.control.ctx.program, end)?)? != QvmOpcode::OpEnter as i32
+                {
+                    end += 1;
+                }
+                self.control.ctx.core.branch_function_ends.insert(entry, end);
+                end
+            }
+        };
+        let mut branches = HashMap::new();
+        for binding in bindings {
+            if binding.instruction_index <= entry || binding.instruction_index >= end {
+                return Err(GuestError::invalid("QVM branch is outside its owning function"));
+            }
+            let pc = target_pc(self.control.ctx.program, binding.instruction_index)?;
+            let opcode = code_word(self.control.ctx.program, pc)?;
+            if opcode < QvmOpcode::OpEq as i32
+                || opcode > QvmOpcode::OpGef as i32
+                || branches.contains_key(&pc)
+            {
+                return Err(GuestError::invalid(
+                    "QVM branch requires a distinct original conditional instruction",
+                ));
+            }
+            branches.insert(pc, binding.decide);
+        }
+        self.control.ctx.core.calls[position].branches = Some(branches);
+        Ok(())
+    }
+
+    /// Bind closed, stack-neutral original regions once, before proceeding.
+    pub fn regions(&mut self, bindings: Vec<QvmRegionBinding>) -> Result<(), GuestError> {
+        if self.proceeded {
+            return Err(GuestError::invalid("QVM regions must bind once before proceeding"));
+        }
+        let position = find_call(&self.control.ctx.core.calls, self.call_id)
+            .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
+        if !self.control.ctx.core.calls[position].regions.is_empty() {
+            return Err(GuestError::invalid("QVM regions must bind once before proceeding"));
+        }
+        let mut sorted = bindings;
+        sorted.sort_by_key(|binding| binding.entry);
+        let owner = self.instruction_index;
+        let mut previous = owner;
+        let mut regions = Vec::new();
+        let mut entries = HashMap::new();
+        let mut joins = HashMap::new();
+        for binding in sorted {
+            if binding.entry < previous {
+                return Err(GuestError::invalid("QVM original regions overlap"));
+            }
+            let key = (owner, binding.entry, binding.join);
+            let frame_size = match self.control.ctx.core.qualified_regions.get(&key) {
+                Some(size) => *size,
+                None => {
+                    let size = qualify_qvm_region(
+                        &self.control.ctx.program.instructions,
+                        owner,
+                        binding.entry,
+                        binding.join,
+                    )?;
+                    self.control.ctx.core.qualified_regions.insert(key, size);
+                    size
+                }
+            };
+            let stack = self.control.ctx.core.calls[position].stack;
+            let join_pc = target_pc(self.control.ctx.program, binding.join)?;
+            let entry_pc = target_pc(self.control.ctx.program, binding.entry)?;
+            let index = regions.len();
+            regions.push(SourceRegion {
+                binding,
+                join_pc,
+                stack: stack - frame_size as usize,
+                frame_size: frame_size as usize,
+                state: RegionState::Ready,
+            });
+            entries.insert(entry_pc, index);
+            joins.insert(join_pc, index);
+            previous = regions[index].binding.join;
+        }
+        let call = &mut self.control.ctx.core.calls[position];
+        call.regions = regions;
+        call.region_entries = entries;
+        call.region_joins = joins;
+        Ok(())
+    }
+
+    /// Run a qualified standalone region in this function's frame.
+    pub fn evaluate_region(
+        &mut self,
+        region: &QvmRegionEvaluation,
+        inputs: &[i32],
+    ) -> Result<i32, GuestError> {
+        self.begin()?;
+        let key = RegionEvalKey {
+            instruction: self.instruction_index,
+            entry: region.entry,
+            join: region.join,
+            inputs: region.inputs.clone(),
+            result: region.result,
+        };
+        let frame_size = match self.control.ctx.core.qualified_evaluations.get(&key) {
+            Some(size) => *size,
+            None => {
+                let size = qualify_qvm_region_evaluation(
+                    &self.control.ctx.program.instructions,
+                    self.instruction_index,
+                    region,
+                    QvmRegionAccess::Source,
+                )?;
+                self.control.ctx.core.qualified_evaluations.insert(key, size);
+                size
+            }
+        };
+        if inputs.len() != region.inputs.len() {
+            return Err(GuestError::invalid("QVM region live-ins differ from its qualified frame"));
+        }
+        let position = find_call(&self.control.ctx.core.calls, self.call_id)
+            .ok_or_else(|| GuestError::invalid("QVM function invocation has expired"))?;
+        self.control.ctx.core.calls[position].evaluation = Some(CallEvaluation {
+            region: region.clone(),
+            inputs: inputs.to_vec(),
+            frame_size: frame_size as usize,
+        });
+        let entry = self.instruction_index;
+        let call_id = self.call_id;
+        run_loop(
+            self.control.ctx,
+            self.control.host,
+            self.ops,
+            &[],
+            entry,
+            Some(call_id),
+            self.control.scope,
+            None,
+            None,
+        )
+    }
+
+    /// Deliver a synchronous host effect under this live source invocation.
+    pub fn effect(
+        &mut self,
+        perform: &mut dyn FnMut() -> Result<(), GuestError>,
+    ) -> Result<(), GuestError> {
+        self.control.ctx.core.live()?;
+        check_chain(&self.control.ctx.core.calls, Some(self.call_id))?;
+        perform()
+    }
+
+    /// Run the original body once with its caller stack and argument addresses.
+    pub fn proceed(&mut self) -> Result<i32, GuestError> {
+        self.begin()?;
+        let entry = self.instruction_index;
+        let call_id = self.call_id;
+        run_loop(
+            self.control.ctx,
+            self.control.host,
+            self.ops,
+            &[],
+            entry,
+            Some(call_id),
+            self.control.scope,
+            None,
+            None,
+        )
+    }
+
+    fn begin(&mut self) -> Result<(), GuestError> {
+        if self.proceeded {
+            return Err(GuestError::invalid("QVM function continuation can only run once"));
+        }
+        self.proceeded = true;
+        Ok(())
+    }
+}
+
+impl<'a, 'c, 'o> std::fmt::Debug for QvmFunctionCall<'a, 'c, 'o> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmFunctionCall")
+            .field("instruction_index", &self.instruction_index)
+            .field("caller_instruction", &self.caller_instruction)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Read-only view of a function entry for observers.
+pub struct QvmFunctionObservation<'a, 'c> {
+    /// Entered instruction index.
+    pub instruction_index: usize,
+    words: QvmWritableView,
+    control: HostControl<'a, 'c>,
+}
+
+impl<'a, 'c> QvmFunctionObservation<'a, 'c> {
+    /// Recursive guest entry.
+    pub fn invoke(
+        &mut self,
+        args: &[i32],
+        entry: usize,
+        evaluation: Option<QvmReadOnlyEvaluation>,
+    ) -> Result<i32, GuestError> {
+        self.control.invoke(args, entry, evaluation)
+    }
+
+    /// Cancel an intercepted ancestor call. Returns the error to propagate.
+    pub fn cancel_function(&mut self, scope: &QvmCancellationScope) -> GuestError {
+        self.control.cancel_function(scope)
+    }
+
+    /// Read caller argument word `index`.
+    pub fn argument(&self, index: usize) -> Result<i32, GuestError> {
+        if index >= self.words.len() / 4 {
+            return Err(GuestError::invalid("QVM argument index outside source call"));
+        }
+        self.words.get_i32(index * 4)
+    }
+}
+
+impl<'a, 'c> std::fmt::Debug for QvmFunctionObservation<'a, 'c> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmFunctionObservation")
+            .field("instruction_index", &self.instruction_index)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Control surface for one region callback.
+pub struct QvmRegionControl<'a, 'c> {
+    control: HostControl<'a, 'c>,
+    region_stack: usize,
+    frame_size: usize,
+}
+
+impl<'a, 'c> QvmRegionControl<'a, 'c> {
+    /// Recursive guest entry.
+    pub fn invoke(&mut self, args: &[i32], entry: usize) -> Result<i32, GuestError> {
+        self.control.invoke(args, entry, None)
+    }
+
+    /// Cancel an intercepted ancestor call. Returns the error to propagate.
+    pub fn cancel_function(&mut self, scope: &QvmCancellationScope) -> GuestError {
+        self.control.cancel_function(scope)
+    }
+
+    /// Read an aligned word in the original function's local frame.
+    pub fn local_word(&mut self, offset: usize) -> Result<i32, GuestError> {
+        if offset < 8 || offset % 4 != 0 || offset + 4 > self.frame_size {
+            return Err(GuestError::invalid("QVM region local is outside its original frame"));
+        }
+        let address = self.region_stack + offset;
+        read_word(self.control.ctx.core, address)
+    }
+}
+
+impl<'a, 'c> std::fmt::Debug for QvmRegionControl<'a, 'c> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmRegionControl").finish_non_exhaustive()
+    }
+}
+
+/// Operand stack: 256 slots, cells start uninitialized like the donor.
+pub struct OperandStack {
+    cells: [Option<i32>; 256],
+    depth: usize,
+    debug: bool,
+}
+
+impl std::fmt::Debug for OperandStack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OperandStack").field("depth", &self.depth).finish_non_exhaustive()
+    }
+}
+
+impl OperandStack {
+    /// Fresh stack.
+    #[must_use]
+    pub fn new(debug: bool) -> Self {
+        Self {
+            cells: [None; 256],
+            depth: 0,
+            debug,
+        }
+    }
+
+    /// Current depth.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.depth
+    }
+
+    /// Reserve one slot without writing it.
+    pub fn reserve(&mut self) -> Result<(), GuestError> {
+        if self.depth == 255 {
+            if self.debug {
+                return Err(qvm_drop_error("VM opStack overflow"));
+            }
+            return Err(GuestError::invalid("QVM operand stack overflow"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Push a word.
+    pub fn push(&mut self, word: i32) -> Result<(), GuestError> {
+        self.reserve()?;
+        self.cells[self.depth] = Some(word);
+        Ok(())
+    }
+
+    /// Peek at the top word.
+    pub fn peek(&self) -> Result<i32, GuestError> {
+        self.cells[self.depth].ok_or_else(|| {
+            if self.debug {
+                qvm_drop_error("QVM reads an uninitialized operand")
+            } else {
+                GuestError::invalid("QVM reads an uninitialized operand")
+            }
+        })
+    }
+
+    /// Overwrite the top word.
+    pub fn set(&mut self, word: i32) {
+        self.cells[self.depth] = Some(word);
+    }
+
+    /// Pop the top word.
+    pub fn pop(&mut self) -> Result<i32, GuestError> {
+        let word = self.peek()?;
+        self.drop_top()?;
+        Ok(word)
+    }
+
+    /// Drop the top word.
+    pub fn drop_top(&mut self) -> Result<(), GuestError> {
+        if self.depth == 0 {
+            if self.debug {
+                return Err(qvm_drop_error("VM opStack underflow"));
+            }
+            return Err(GuestError::invalid("QVM operand stack underflow"));
+        }
+        self.depth -= 1;
+        Ok(())
+    }
+
+    /// Pinned-interpreter `OP_BCOM`: complement the previous slot in place.
+    pub fn complement_previous(&mut self) -> Result<(), GuestError> {
+        if self.depth == 0 {
+            if self.debug {
+                return Err(qvm_drop_error("VM opStack underflow"));
+            }
+            return Err(GuestError::invalid("QVM operand stack underflow"));
+        }
+        let top = self.peek()?;
+        self.cells[self.depth - 1] = Some(!top);
+        Ok(())
+    }
+
+    /// Final result: exactly one word must remain.
+    pub fn result(&self) -> Result<i32, GuestError> {
+        if self.depth != 1 {
+            return Err(qvm_drop_error(format!("Interpreter error: opStack = {}", self.depth)));
+        }
+        self.peek()
+    }
+
+    /// Truncate back to a caller depth, clearing dropped cells.
+    pub fn truncate(&mut self, depth: usize) -> Result<(), GuestError> {
+        if depth > self.depth {
+            return Err(GuestError::invalid("QVM cancellation lost its caller operands"));
+        }
+        while self.depth > depth {
+            self.cells[self.depth] = None;
+            self.depth -= 1;
+        }
+        Ok(())
+    }
+}
+
+fn target_pc(program: &QvmProgram, index: usize) -> Result<i32, GuestError> {
+    program.instruction_pointers.get(index).copied().ok_or_else(|| {
+        GuestError::invalid(format!("{}: invalid QVM instruction index {index}", program.source))
+    })
+}
+
+fn code_word(program: &QvmProgram, pc: i32) -> Result<i32, GuestError> {
+    if pc < 0 {
+        return Err(GuestError::invalid(format!("{}: invalid QVM byte PC {pc}", program.source)));
+    }
+    program.code.get(pc as usize).copied().ok_or_else(|| {
+        GuestError::invalid(format!("{}: invalid QVM byte PC {pc}", program.source))
+    })
+}
+
+fn source_instruction(program: &QvmProgram, pc: i32) -> Result<usize, GuestError> {
+    let mut low = 0i64;
+    let mut high = program.instruction_pointers.len() as i64 - 1;
+    while low <= high {
+        let middle = ((low + high) as u64 >> 1) as usize;
+        let candidate = program.instruction_pointers[middle];
+        if candidate == pc {
+            return Ok(middle);
+        }
+        if candidate < pc {
+            low = middle as i64 + 1;
+        } else {
+            high = middle as i64 - 1;
+        }
+    }
+    Err(GuestError::invalid(format!("{}: caller PC is not an original instruction", program.source)))
+}
+
+fn source_argument_bytes(ctx: &mut InterpCtx<'_>, caller_instruction: usize) -> Result<usize, GuestError> {
+    if let Some(retained) = ctx.core.caller_argument_bytes.get(&caller_instruction) {
+        return Ok(*retained);
+    }
+    let mut index = caller_instruction as i64;
+    while index >= 0 {
+        let instruction = &ctx.program.instructions[index as usize];
+        if instruction.opcode == QvmOpcode::OpEnter {
+            let QvmOperand::Word(frame) = instruction.operand else {
+                return Err(GuestError::invalid("QVM source call lacks an aligned caller frame"));
+            };
+            if frame < 8 || frame % 4 != 0 {
+                return Err(GuestError::invalid("QVM source call lacks an aligned caller frame"));
+            }
+            let bytes = ((frame - 8) as usize).min(QVM_MAX_PRIVATE_ARGUMENT_WORDS * 4);
+            ctx.core.caller_argument_bytes.insert(caller_instruction, bytes);
+            return Ok(bytes);
+        }
+        index -= 1;
+    }
+    Err(GuestError::invalid("QVM source call has no original caller frame"))
+}
+
+fn mask_address(word: i32, mask: usize) -> usize {
+    (word as u32 as usize) & mask
+}
+
+fn read_word(core: &QvmCore, address: usize) -> Result<i32, GuestError> {
+    if let Some(counter) = core.counter.as_ref() {
+        if address + 4 > counter.address && address < counter.address + 4 {
+            if address != counter.address {
+                return Err(GuestError::invalid(
+                    "QVM counter evaluation cannot partially read its isolated word",
+                ));
+            }
+            return Ok(counter.value);
+        }
+    }
+    core.memory.get_i32(address)
+}
+
+fn write_word(core: &mut QvmCore, sp: usize, address: usize, word: i32) -> Result<(), GuestError> {
+    if let Some(counter) = core.counter.as_mut() {
+        if address == counter.address {
+            counter.value = word;
+            return Ok(());
+        }
+        let floor = counter.stack_start.max(sp);
+        if address < floor || address + 4 > counter.stack_end {
+            return Err(GuestError::invalid(
+                "QVM counter evaluation attempted an unrelated source write",
+            ));
+        }
+        return core.memory.set_i32_unobserved(address, word);
+    }
+    if core.memory.observes_writes() {
+        core.memory.set_i32(address, word)
+    } else {
+        core.memory.set_i32_unobserved(address, word)
+    }
+}
+
+fn counter_narrow_read(core: &QvmCore, address: usize, length: usize) -> Result<(), GuestError> {
+    if let Some(counter) = core.counter.as_ref() {
+        if address + length > counter.address && address < counter.address + 4 {
+            return Err(GuestError::invalid(
+                "QVM counter evaluation cannot partially read its isolated word",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn counter_narrow_write(core: &mut QvmCore, sp: usize, address: usize, length: usize, value: i32) -> Result<bool, GuestError> {
+    let Some(counter) = core.counter.as_mut() else {
+        return Ok(false);
+    };
+    if address == counter.address && length == 4 {
+        counter.value = value;
+        return Ok(true);
+    }
+    let floor = counter.stack_start.max(sp);
+    if address < floor || address + length > counter.stack_end {
+        return Err(GuestError::invalid(
+            "QVM counter evaluation attempted an unrelated source write",
+        ));
+    }
+    Ok(false)
+}
+
+impl QvmCore {
+    fn live(&self) -> Result<(), GuestError> {
+        self.memory.assert_not_publishing()?;
+        self.memory.assert_live()?;
+        if let Some(registration) = self.registration.as_ref() {
+            if registration.binding().is_freed() {
+                return Err(GuestError::invalid("QVM registration has been freed"));
+            }
+        }
+        for allocation in &self.allocations {
+            if !allocation.is_live() {
+                return Err(GuestError::invalid("QVM allocation has been released"));
+            }
+        }
+        for allocation in self.symbol_allocations.borrow().iter() {
+            if !allocation.is_live() {
+                return Err(GuestError::invalid("QVM allocation has been released"));
+            }
+        }
+        Ok(())
+    }
+
+    fn evaluation_stack_start(&self, stack: Option<QvmEvaluationStack>) -> Result<usize, GuestError> {
+        let Some(stack) = stack else {
+            return Ok(self.source_data_end.next_multiple_of(4));
+        };
+        if stack.start % 4 != 0
+            || stack.end % 4 != 0
+            || stack.start < self.memory_initialized_end
+            || stack.start >= stack.end
+            || stack.end > self.memory.len()
+            || self.program_stack > stack.end
+        {
+            return Err(GuestError::invalid(
+                "QVM evaluation stack is outside its declared source reservation or active caller",
+            ));
+        }
+        Ok(stack.start)
+    }
+}
+
+/// Owns prepared bytecode and its private data for one module instance.
+pub struct QvmInterpreter {
+    core: QvmCore,
+    program: QvmProgram,
+}
+
+impl std::fmt::Debug for QvmInterpreter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QvmInterpreter")
+            .field("source", &self.program.source)
+            .field("program_stack", &self.core.program_stack)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QvmInterpreter {
+    /// Prepare `image` for execution. The host is supplied per invocation (see
+    /// the module docs); `registration` may be `None` for standalone use.
+    pub fn new(
+        image: &QvmImage,
+        mut profile: QvmAllocationProfile,
+        registration: Option<VmRegistration>,
+        semantics: QvmSemantics,
+    ) -> Result<Self, GuestError> {
+        let mut allocations: Vec<QvmAllocation> = Vec::new();
+        let accounted = !matches!(profile, QvmAllocationProfile::Unaccounted);
+        let mut memory_bytes = if accounted {
+            let mut allocation =
+                profile.allocate("VM_Create:dataBase", &image.source, image.allocated_data_length)?;
+            let bytes = allocation.take_bytes()?;
+            allocations.push(allocation);
+            bytes
+        } else {
+            vec![0; image.allocated_data_length]
+        };
+        if memory_bytes.len() != image.allocated_data_length {
+            return Err(GuestError::invalid("QVM arena issued a short data allocation"));
+        }
+        if accounted {
+            allocations.push(profile.allocate(
+                "VM_Create:instructionPointers",
+                &image.source,
+                image.instructions.len() * 4,
+            )?);
+            allocations.push(profile.allocate(
+                "VM_PrepareInterpreter",
+                &image.source,
+                image.code_length * 4,
+            )?);
+        }
+        memory_bytes[..image.initialized_data.len()].copy_from_slice(&image.initialized_data);
+        if let Some(registration) = registration.as_ref() {
+            registration.bind_data(memory_bytes.len());
+        }
+        let memory = QvmMemory::new(memory_bytes)?;
+        let data_mask = image.allocated_data_length - 1;
+        let program_stack = image.allocated_data_length;
+        if let Some(registration) = registration.as_ref() {
+            registration.bind_instruction_pointers_length(image.instructions.len() * 4);
+        }
+        let mut instruction_pointers = vec![0i32; image.instructions.len()];
+        for (index, instruction) in image.instructions.iter().enumerate() {
+            instruction_pointers[index] = instruction.byte_offset as i32;
+        }
+        if let Some(registration) = registration.as_ref() {
+            registration.bind_code_length(image.code_length);
+        }
+        // Source preparation expands each code byte to an int slot. Operand
+        // tails and alignment slots remain zero, and return PCs address these
+        // slots too.
+        let mut code = vec![0i32; image.code_length];
+        for instruction in &image.instructions {
+            code[instruction.byte_offset] = instruction.opcode as i32;
+            match instruction.operand {
+                QvmOperand::None => {}
+                QvmOperand::Byte(byte) => {
+                    code[instruction.byte_offset + 1] = i32::from(byte);
+                }
+                QvmOperand::Word(word) => {
+                    code[instruction.byte_offset + 1] = if instruction.opcode.is_branch() {
+                        instruction_pointers[word as usize]
+                    } else {
+                        word
+                    };
+                }
+            }
+        }
+        if let Some(registration) = registration.as_ref() {
+            registration.bind_interpreter(code.len(), instruction_pointers.len() * 4, memory.len());
+        }
+        let program = QvmProgram {
+            source: image.source.clone(),
+            code,
+            instruction_pointers: instruction_pointers.clone(),
+            instructions: image.instructions.clone(),
+            data_mask,
+        };
+        let live_memory = memory.clone();
+        let live_registration = registration.clone();
+        let live_allocations = allocations.clone();
+        let symbol_allocations: Rc<RefCell<Vec<QvmAllocation>>> = Rc::new(RefCell::new(Vec::new()));
+        let symbol_blocks = Rc::clone(&symbol_allocations);
+        let live_symbols = Rc::clone(&symbol_allocations);
+        let symbols = QvmSymbols::new(
+            instruction_pointers,
+            Box::new(move |bytes, resource| {
+                if !accounted {
+                    return Ok(vec![0; bytes]);
+                }
+                let mut allocation = profile.allocate("VM_LoadSymbols", resource, bytes)?;
+                let owned = allocation.take_bytes()?;
+                symbol_blocks.borrow_mut().push(allocation);
+                Ok(owned)
+            }),
+            Box::new(move || {
+                live_memory.assert_not_publishing()?;
+                live_memory.assert_live()?;
+                if let Some(registration) = live_registration.as_ref() {
+                    if registration.binding().is_freed() {
+                        return Err(GuestError::invalid("QVM registration has been freed"));
+                    }
+                }
+                for allocation in &live_allocations {
+                    if !allocation.is_live() {
+                        return Err(GuestError::invalid("QVM allocation has been released"));
+                    }
+                }
+                for allocation in live_symbols.borrow().iter() {
+                    if !allocation.is_live() {
+                        return Err(GuestError::invalid("QVM allocation has been released"));
+                    }
+                }
+                Ok(())
+            }),
+        );
+        Ok(Self {
+            core: QvmCore {
+                memory,
+                symbols,
+                allocations,
+                symbol_allocations,
+                program_stack,
+                call_level: 0,
+                breaks: 0,
+                debug: false,
+                hooks: HashMap::new(),
+                next_hook_generation: 1,
+                caller_argument_bytes: HashMap::new(),
+                observers: HashMap::new(),
+                next_observer_id: 1,
+                resolver: None,
+                scopes: HashMap::new(),
+                next_scope_id: 1,
+                calls: Vec::new(),
+                next_call_id: 1,
+                branch_function_ends: HashMap::new(),
+                qualified_regions: HashMap::new(),
+                qualified_evaluations: HashMap::new(),
+                read_only_regions: HashMap::new(),
+                counter_functions: HashMap::new(),
+                counter: None,
+                root_active: false,
+                source_data_end: image.data_length + image.literal_length + image.bss_length,
+                memory_initialized_end: image.data_length + image.literal_length,
+                registration,
+                semantics,
+            },
+            program,
+        })
+    }
+
+    /// Whether a root invocation is running.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.core.root_active
+    }
+
+    /// Current program stack pointer.
+    #[must_use]
+    pub fn stack_pointer(&self) -> usize {
+        self.core.program_stack
+    }
+
+    /// Shared masked memory.
+    #[must_use]
+    pub fn memory(&self) -> QvmMemory {
+        self.core.memory.clone()
+    }
+
+    /// Shared masked memory (donor `addressSpace` alias).
+    #[must_use]
+    pub fn address_space(&self) -> QvmMemory {
+        self.core.memory.clone()
+    }
+
+    /// Symbol table.
+    #[must_use]
+    pub fn symbols(&self) -> &QvmSymbols {
+        &self.core.symbols
+    }
+
+    /// Current call level (drives [`Self::indent`]).
+    #[must_use]
+    pub fn call_level(&self) -> i32 {
+        self.core.call_level
+    }
+
+    /// Replace the call level.
+    pub fn set_call_level(&mut self, level: i32) {
+        self.core.call_level = level;
+    }
+
+    /// Count of `OP_BREAK` executions.
+    #[must_use]
+    pub fn break_count(&self) -> i32 {
+        self.core.breaks
+    }
+
+    /// Whether the running invocation uses the debug profile.
+    #[must_use]
+    pub fn debug_enabled(&self) -> bool {
+        self.core.debug
+    }
+
+    /// Prepared code length in slots.
+    pub fn code_length(&self) -> Result<usize, GuestError> {
+        self.core.live()?;
+        Ok(self.program.code.len())
+    }
+
+    /// Instruction-pointer table length in bytes.
+    pub fn instruction_pointers_length(&self) -> Result<usize, GuestError> {
+        self.core.live()?;
+        Ok(self.program.instruction_pointers.len() * 4)
+    }
+
+    /// Two spaces per call level, capped at level 20.
+    pub fn indent(&self) -> Result<String, GuestError> {
+        if self.core.call_level < 0 {
+            return Err(GuestError::invalid("VM indentation requires a nonnegative call level"));
+        }
+        Ok(" ".repeat(2 * self.core.call_level.min(20) as usize))
+    }
+
+    /// Print a stack trace from `program_counter`/`program_stack`.
+    pub fn stack_trace(
+        &self,
+        mut program_counter: i32,
+        mut program_stack: usize,
+        print: &mut dyn FnMut(&str),
+    ) -> Result<(), GuestError> {
+        self.core.live()?;
+        let mut count = 0;
+        loop {
+            print(&format!("{}\n", self.core.symbols.value_to_symbol(program_counter)?));
+            program_stack = read_word(&self.core, program_stack + 4)? as usize;
+            program_counter = read_word(&self.core, program_stack)?;
+            count += 1;
+            if program_counter == -1 || count >= 32 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Load `vm/*.map` symbols.
+    pub fn load_symbols(&mut self, options: QvmSymbolLoadOptions) -> Result<(), GuestError> {
+        self.core.symbols.load(options)
+    }
+
+    /// Mask a guest word to a live span.
+    pub fn pointer(&self, word: i32) -> Result<Option<QvmSpan>, GuestError> {
+        self.core.live()?;
+        self.core.memory.pointer(word)
+    }
+
+    /// Bind a source `OP_CALL` target in the immutable instruction table.
+    pub fn bind_function(
+        &mut self,
+        instruction_index: usize,
+        hook: QvmFunctionHook,
+    ) -> Result<QvmHookToken, GuestError> {
+        self.bind_entry(instruction_index, hook, HookScope::Calls)
+    }
+
+    /// Bind direct host entry too, keeping the same body and cancellation scope.
+    pub fn bind_invocation(
+        &mut self,
+        instruction_index: usize,
+        hook: QvmFunctionHook,
+    ) -> Result<QvmHookToken, GuestError> {
+        self.bind_entry(instruction_index, hook, HookScope::Invocations)
+    }
+
+    fn bind_entry(
+        &mut self,
+        instruction_index: usize,
+        hook: QvmFunctionHook,
+        scope: HookScope,
+    ) -> Result<QvmHookToken, GuestError> {
+        self.core.live()?;
+        let pc = target_pc(&self.program, instruction_index).map_err(|_| {
+            GuestError::invalid("QVM hook requires a function entry instruction")
+        })?;
+        if code_word(&self.program, pc)? != QvmOpcode::OpEnter as i32 {
+            return Err(GuestError::invalid("QVM hook requires a function entry instruction"));
+        }
+        if self.core.hooks.contains_key(&instruction_index) {
+            return Err(GuestError::invalid("QVM function already has a hook"));
+        }
+        let generation = self.core.next_hook_generation;
+        self.core.next_hook_generation += 1;
+        self.core.hooks.insert(instruction_index, FunctionBinding { hook, scope, generation });
+        Ok(QvmHookToken { entry: instruction_index, generation })
+    }
+
+    /// Remove a hook installed by `bind_function`/`bind_invocation`.
+    pub fn unbind_function(&mut self, token: QvmHookToken) {
+        if self.core.hooks.get(&token.entry).is_some_and(|binding| binding.generation == token.generation) {
+            self.core.hooks.remove(&token.entry);
+        }
+    }
+
+    /// Resolve live guest callback pointers for modules that request it.
+    pub fn bind_function_resolver(&mut self, resolve: QvmFunctionResolver) -> Result<(), GuestError> {
+        self.core.live()?;
+        if self.core.resolver.is_some() {
+            return Err(GuestError::invalid("QVM already has a function resolver"));
+        }
+        self.core.resolver = Some(resolve);
+        Ok(())
+    }
+
+    /// Remove the function resolver.
+    pub fn unbind_function_resolver(&mut self) {
+        self.core.resolver = None;
+    }
+
+    /// Observe a function entry; observers share entries with each other and
+    /// with the optional replacement hook.
+    pub fn observe_function(
+        &mut self,
+        instruction_index: usize,
+        observe: QvmFunctionObserver,
+    ) -> Result<QvmObserverToken, GuestError> {
+        self.core.live()?;
+        let pc = target_pc(&self.program, instruction_index).map_err(|_| {
+            GuestError::invalid("QVM observer requires a function entry instruction")
+        })?;
+        if code_word(&self.program, pc)? != QvmOpcode::OpEnter as i32 {
+            return Err(GuestError::invalid("QVM observer requires a function entry instruction"));
+        }
+        let id = self.core.next_observer_id;
+        self.core.next_observer_id += 1;
+        self.core
+            .observers
+            .entry(instruction_index)
+            .or_default()
+            .push(ObserverEntry { id, observe, active: true });
+        Ok(QvmObserverToken { entry: instruction_index, id })
+    }
+
+    /// Remove an observer installed by `observe_function`.
+    pub fn unobserve_function(&mut self, token: QvmObserverToken) {
+        if let Some(entries) = self.core.observers.get_mut(&token.entry) {
+            for entry in entries.iter_mut() {
+                if entry.id == token.id {
+                    entry.active = false;
+                }
+            }
+            entries.retain(|entry| entry.active);
+            if entries.is_empty() {
+                self.core.observers.remove(&token.entry);
+            }
+        }
+    }
+
+    /// Restore a checkpointed allocation image.
+    pub fn restore_data(&mut self, data: &[u8]) -> Result<(), GuestError> {
+        if self.core.root_active {
+            return Err(GuestError::invalid("Cannot restore an active QVM"));
+        }
+        self.core.live()?;
+        if data.len() != self.core.memory.len() {
+            return Err(GuestError::invalid("QVM checkpoint allocation mismatch"));
+        }
+        self.core.memory.clear_write_observers()?;
+        self.core.memory.write_bytes(0, data)?;
+        Ok(())
+    }
+
+    /// `VM_Restart`: zero the original allocation and copy fresh data.
+    pub fn restart(&mut self, image: &QvmDataImage) -> Result<(), GuestError> {
+        if self.core.root_active {
+            return Err(GuestError::invalid("Cannot restart an active QVM"));
+        }
+        self.core.live()?;
+        if image.allocated_data_length > self.core.memory.len() {
+            return Err(GuestError::invalid("QVM restart would exceed its original allocation"));
+        }
+        self.core.memory.clear_write_observers()?;
+        self.core.memory.fill_bytes(0, image.allocated_data_length, 0)?;
+        self.core.memory.write_bytes(0, &image.initialized_data)?;
+        Ok(())
+    }
+
+    /// Root invocation: run `entry` with `args` under `host`.
+    pub fn invoke(
+        &mut self,
+        host: &mut dyn QvmSystemCallHandler,
+        args: &[i32],
+        entry: usize,
+        evaluation: Option<QvmReadOnlyEvaluation>,
+    ) -> Result<i32, GuestError> {
+        if self.core.root_active {
+            return Err(GuestError::invalid(
+                "QVM is already active; recursive calls belong to the current syscall",
+            ));
+        }
+        self.core.live()?;
+        self.core.root_active = true;
+        let result = self.invoke_inner(host, args, entry, evaluation);
+        self.core.root_active = false;
+        result
+    }
+
+    fn invoke_inner(
+        &mut self,
+        host: &mut dyn QvmSystemCallHandler,
+        args: &[i32],
+        entry: usize,
+        evaluation: Option<QvmReadOnlyEvaluation>,
+    ) -> Result<i32, GuestError> {
+        let profile = self
+            .core
+            .registration
+            .as_ref()
+            .map(|registration| registration.execution_profile())
+            .unwrap_or(QvmExecutionProfile::Release);
+        let debug = matches!(profile, QvmExecutionProfile::Debug { .. });
+        let qualified = match evaluation {
+            Some(evaluation) => Some(self.qualify_read_only(entry, evaluation)?),
+            None => None,
+        };
+        let mut ctx = InterpCtx {
+            core: &mut self.core,
+            program: &self.program,
+        };
+        let mut ops = OperandStack::new(debug);
+        run_loop(&mut ctx, host, &mut ops, args, entry, None, None, qualified, Some(profile))
+    }
+
+    fn qualify_read_only(
+        &mut self,
+        entry: usize,
+        evaluation: QvmReadOnlyEvaluation,
+    ) -> Result<QualifiedReadOnly, GuestError> {
+        let key = RegionEvalKey {
+            instruction: entry,
+            entry: evaluation.region.entry,
+            join: evaluation.region.join,
+            inputs: evaluation.region.inputs.clone(),
+            result: evaluation.region.result,
+        };
+        let frame_size = match self.core.read_only_regions.get(&key) {
+            Some(size) => *size,
+            None => {
+                let size = qualify_qvm_region_evaluation(
+                    &self.program.instructions,
+                    entry,
+                    &evaluation.region,
+                    QvmRegionAccess::ReadOnly,
+                )?;
+                self.core.read_only_regions.insert(key, size);
+                size
+            }
+        };
+        if evaluation.inputs.len() != evaluation.region.inputs.len() {
+            return Err(GuestError::invalid(
+                "Read-only QVM region live-ins differ from its qualified frame",
+            ));
+        }
+        Ok(QualifiedReadOnly {
+            region: evaluation.region,
+            inputs: evaluation.inputs,
+            frame_size: frame_size as usize,
+            stack: evaluation.stack,
+        })
+    }
+
+    /// Run an original counter leaf with one virtual word; no source stores or
+    /// host callbacks escape. Returns the isolated word after the nested call.
+    pub fn evaluate_counter(
+        &mut self,
+        host: &mut dyn QvmSystemCallHandler,
+        address: usize,
+        initial: i32,
+        functions: &[usize],
+        stack: Option<QvmEvaluationStack>,
+        args: &[i32],
+        entry: usize,
+    ) -> Result<i32, GuestError> {
+        self.core.live()?;
+        self.core.memory.data_view(address, 4)?;
+        if address % 4 != 0 || address + 4 > self.core.source_data_end || self.core.counter.is_some() {
+            return Err(GuestError::invalid(
+                "QVM counter evaluation requires one live aligned source word and a fresh scope",
+            ));
+        }
+        let key = functions.to_vec();
+        if !self.core.counter_functions.contains_key(&key) {
+            let mut admitted = Vec::new();
+            for function in functions {
+                if admitted.contains(function) {
+                    return Err(GuestError::invalid(
+                        "QVM counter evaluation requires distinct original functions",
+                    ));
+                }
+                admitted.push(*function);
+            }
+            if admitted.is_empty() {
+                return Err(GuestError::invalid(
+                    "QVM counter evaluation requires distinct original functions",
+                ));
+            }
+            let mut ranges = Vec::new();
+            for function in &admitted {
+                if self.program.instructions.get(*function).map(|instruction| instruction.opcode)
+                    != Some(QvmOpcode::OpEnter)
+                {
+                    return Err(GuestError::invalid(
+                        "QVM counter evaluation entry is not an original function",
+                    ));
+                }
+                let mut end = function + 1;
+                while end < self.program.instructions.len()
+                    && self.program.instructions[end].opcode != QvmOpcode::OpEnter
+                {
+                    end += 1;
+                }
+                let start = target_pc(&self.program, *function)?;
+                let finish = if end == self.program.instructions.len() {
+                    self.program.code.len() as i32
+                } else {
+                    target_pc(&self.program, end)?
+                };
+                ranges.push((start, finish));
+            }
+            self.core.counter_functions.insert(key.clone(), CounterQualification {
+                functions: admitted,
+                ranges,
+            });
+        }
+        let stack_start = self.core.evaluation_stack_start(stack)?;
+        if address + 4 > stack_start {
+            return Err(GuestError::invalid("QVM counter word overlaps its evaluation stack"));
+        }
+        let qualification = self.core.counter_functions.get(&key).ok_or_else(|| {
+            GuestError::invalid("QVM counter evaluation lost its qualification")
+        })?;
+        self.core.counter = Some(CounterState {
+            address,
+            value: initial,
+            stack_start,
+            stack_end: self.core.program_stack,
+            functions: qualification.functions.clone(),
+            ranges: qualification.ranges.clone(),
+            remaining: 100_000,
+        });
+        let result = self.invoke(host, args, entry, None);
+        let value = self.core.counter.as_ref().map(|counter| counter.value);
+        self.core.counter = None;
+        result?;
+        value.ok_or_else(|| GuestError::invalid("QVM counter evaluation lost its isolated word"))
+    }
+}
+
+struct QualifiedReadOnly {
+    region: QvmRegionEvaluation,
+    inputs: Vec<i32>,
+    frame_size: usize,
+    stack: Option<QvmEvaluationStack>,
+}

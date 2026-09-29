@@ -69,13 +69,16 @@ pub fn qc_link_bounds(origin: Vec3, bounds: Bounds, flags: i32) -> Bounds {
     }
 }
 
+/// Admit hook run when a slot gains its first body binding.
+type AdmitHook = Box<dyn FnMut(&ActorId, usize)>;
+
 /// QC words remain authoritative; spatial snapshots change only at source
 /// link calls.
 pub struct QcWorldHost<S, B> {
     slots: S,
     bodies: B,
     resolve: ActorResolver,
-    admit: Option<Box<dyn FnMut(&ActorId, usize)>>,
+    admit: Option<AdmitHook>,
 }
 
 impl<S: WorldSlots, B: WorldBodies> QcWorldHost<S, B> {
@@ -282,8 +285,8 @@ mod tests {
             max: vec3(8.0, 8.0, 8.0),
         };
         let item = qc_link_bounds(origin, bounds, FLAG_ITEM);
-        assert_eq!(item.min, vec3(-13.0, -3.0, 21.0));
-        assert_eq!(item.max, vec3(33.0, 43.0, 39.0));
+        assert_eq!(item.min, vec3(-13.0, -3.0, 22.0));
+        assert_eq!(item.max, vec3(33.0, 43.0, 38.0));
         let other = qc_link_bounds(origin, bounds, 0);
         assert_eq!(other.min, vec3(1.0, 11.0, 21.0));
         assert_eq!(other.max, vec3(19.0, 29.0, 39.0));

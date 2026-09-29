@@ -12,9 +12,9 @@ use qa_core::math::Vec3;
 
 use super::client_state::{CallKind, HostCall, QvmRole, SyscallMemory};
 use super::legacy_bot_abi::{
-    CG_CM_BOXTRACE, CG_CM_CAPSULETRACE, CG_CM_INLINEMODEL, CG_CM_LOADMAP, CG_CM_NUMINLINEMODELS,
-    CG_CM_POINTCONTENTS, CG_CM_TEMPBOXMODEL, CG_CM_TEMPCAPSULEMODEL, CG_CM_TRANSFORMEDBOXTRACE,
-    CG_CM_TRANSFORMEDCAPSULETRACE, CG_CM_TRANSFORMEDPOINTCONTENTS,
+    CG_CM_BOXTRACE, CG_CM_CAPSULETRACE, CG_CM_INLINEMODEL, CG_CM_LOADMAP, CG_CM_NUMINLINEMODELS, CG_CM_POINTCONTENTS,
+    CG_CM_TEMPBOXMODEL, CG_CM_TEMPCAPSULEMODEL, CG_CM_TRANSFORMEDBOXTRACE, CG_CM_TRANSFORMEDCAPSULETRACE,
+    CG_CM_TRANSFORMEDPOINTCONTENTS,
 };
 use crate::error::GuestError;
 
@@ -157,19 +157,29 @@ pub fn client_collision_syscall(
         CG_CM_TEMPBOXMODEL | CG_CM_TEMPCAPSULEMODEL => {
             let mins = memory.read_vec3_ptr(call.int(1)?)?;
             let maxs = memory.read_vec3_ptr(call.int(2)?)?;
-            Ok(Some(services.temp_box_model(mins, maxs, call.code == CG_CM_TEMPCAPSULEMODEL)))
+            Ok(Some(services.temp_box_model(
+                mins,
+                maxs,
+                call.code == CG_CM_TEMPCAPSULEMODEL,
+            )))
         }
         CG_CM_POINTCONTENTS => {
             if !services.has_nodes() {
                 return Ok(Some(0));
             }
-            Ok(Some(services.point_contents(memory.read_vec3_ptr(call.int(1)?)?, call.int(2)?)))
+            Ok(Some(
+                services.point_contents(memory.read_vec3_ptr(call.int(1)?)?, call.int(2)?),
+            ))
         }
         CG_CM_TRANSFORMEDPOINTCONTENTS => {
             let point = memory.read_vec3_ptr(call.int(1)?)?;
             let handle = call.int(2)?;
             let origin = memory.read_vec3_ptr(call.int(3)?)?;
-            let angles = if handle == BOX_MODEL_HANDLE { zero() } else { memory.read_vec3_ptr(call.int(4)?)? };
+            let angles = if handle == BOX_MODEL_HANDLE {
+                zero()
+            } else {
+                memory.read_vec3_ptr(call.int(4)?)?
+            };
             Ok(Some(services.transformed_point_contents(point, handle, origin, angles)))
         }
         CG_CM_BOXTRACE | CG_CM_TRANSFORMEDBOXTRACE | CG_CM_CAPSULETRACE | CG_CM_TRANSFORMEDCAPSULETRACE => {
@@ -188,8 +198,16 @@ pub fn client_collision_syscall(
             let end = memory.read_vec3_ptr(call.int(3)?)?;
             let mins_word = call.int(4)?;
             let maxs_word = call.int(5)?;
-            let mins = if mins_word == 0 { zero() } else { memory.read_vec3_ptr(mins_word)? };
-            let maxs = if maxs_word == 0 { zero() } else { memory.read_vec3_ptr(maxs_word)? };
+            let mins = if mins_word == 0 {
+                zero()
+            } else {
+                memory.read_vec3_ptr(mins_word)?
+            };
+            let maxs = if maxs_word == 0 {
+                zero()
+            } else {
+                memory.read_vec3_ptr(maxs_word)?
+            };
             let query = TraceQuery {
                 start,
                 end,
@@ -279,7 +297,8 @@ mod tests {
             self.short_circuit.then(record)
         }
         fn trace(&mut self, query: &TraceQuery, handle: i32) -> TraceRecord {
-            self.log.push(format!("trace {handle} {:?} {}", query.shape, query.mask));
+            self.log
+                .push(format!("trace {handle} {:?} {}", query.shape, query.mask));
             record()
         }
         fn transformed_trace(&mut self, query: &TraceQuery, handle: i32, _origin: Vec3, _angles: Vec3) -> TraceRecord {
@@ -297,12 +316,43 @@ mod tests {
         let mut memory = SyscallMemory::new(4096).unwrap();
         memory.write_string(512, "maps/q3dm1.bsp", 15).unwrap();
         memory.write_vec3(256, &Vec3 { x: 1.0, y: 1.0, z: 1.0 }).unwrap();
-        memory.write_vec3(768, &Vec3 { x: -16.0, y: -16.0, z: -16.0 }).unwrap();
-        memory.write_vec3(1024, &Vec3 { x: 16.0, y: 16.0, z: 16.0 }).unwrap();
-        let mut models = FakeModels { log: Vec::new(), nodes: true, short_circuit: false };
-        assert_eq!(client_collision_syscall(&cg(CG_CM_LOADMAP, &[512]), &mut memory, &mut models).unwrap(), Some(0));
-        assert_eq!(client_collision_syscall(&cg(CG_CM_NUMINLINEMODELS, &[]), &mut memory, &mut models).unwrap(), Some(12));
-        assert_eq!(client_collision_syscall(&cg(CG_CM_INLINEMODEL, &[3]), &mut memory, &mut models).unwrap(), Some(103));
+        memory
+            .write_vec3(
+                768,
+                &Vec3 {
+                    x: -16.0,
+                    y: -16.0,
+                    z: -16.0,
+                },
+            )
+            .unwrap();
+        memory
+            .write_vec3(
+                1024,
+                &Vec3 {
+                    x: 16.0,
+                    y: 16.0,
+                    z: 16.0,
+                },
+            )
+            .unwrap();
+        let mut models = FakeModels {
+            log: Vec::new(),
+            nodes: true,
+            short_circuit: false,
+        };
+        assert_eq!(
+            client_collision_syscall(&cg(CG_CM_LOADMAP, &[512]), &mut memory, &mut models).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_collision_syscall(&cg(CG_CM_NUMINLINEMODELS, &[]), &mut memory, &mut models).unwrap(),
+            Some(12)
+        );
+        assert_eq!(
+            client_collision_syscall(&cg(CG_CM_INLINEMODEL, &[3]), &mut memory, &mut models).unwrap(),
+            Some(103)
+        );
         assert_eq!(
             client_collision_syscall(&cg(CG_CM_TEMPBOXMODEL, &[768, 1024]), &mut memory, &mut models).unwrap(),
             Some(255)
@@ -311,9 +361,15 @@ mod tests {
             client_collision_syscall(&cg(CG_CM_TEMPCAPSULEMODEL, &[768, 1024]), &mut memory, &mut models).unwrap(),
             Some(256)
         );
-        assert_eq!(client_collision_syscall(&cg(CG_CM_POINTCONTENTS, &[256, 4]), &mut memory, &mut models).unwrap(), Some(1004));
+        assert_eq!(
+            client_collision_syscall(&cg(CG_CM_POINTCONTENTS, &[256, 4]), &mut memory, &mut models).unwrap(),
+            Some(1004)
+        );
         models.nodes = false;
-        assert_eq!(client_collision_syscall(&cg(CG_CM_POINTCONTENTS, &[256, 4]), &mut memory, &mut models).unwrap(), Some(0));
+        assert_eq!(
+            client_collision_syscall(&cg(CG_CM_POINTCONTENTS, &[256, 4]), &mut memory, &mut models).unwrap(),
+            Some(0)
+        );
         assert_eq!(models.log[0], "load maps/q3dm1.bsp".to_string());
     }
 
@@ -321,11 +377,29 @@ mod tests {
     fn transformed_contents_ignores_box_angles() {
         let mut memory = SyscallMemory::new(4096).unwrap();
         for (index, word) in [256, 512, 768, 1024].iter().enumerate() {
-            memory.write_vec3(*word, &Vec3 { x: index as f32, y: 0.0, z: 0.0 }).unwrap();
+            memory
+                .write_vec3(
+                    *word,
+                    &Vec3 {
+                        x: index as f32,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                )
+                .unwrap();
         }
-        let mut models = FakeModels { log: Vec::new(), nodes: true, short_circuit: false };
+        let mut models = FakeModels {
+            log: Vec::new(),
+            nodes: true,
+            short_circuit: false,
+        };
         assert_eq!(
-            client_collision_syscall(&cg(CG_CM_TRANSFORMEDPOINTCONTENTS, &[256, 255, 768, 1024]), &mut memory, &mut models).unwrap(),
+            client_collision_syscall(
+                &cg(CG_CM_TRANSFORMEDPOINTCONTENTS, &[256, 255, 768, 1024]),
+                &mut memory,
+                &mut models
+            )
+            .unwrap(),
             Some(255)
         );
         assert_eq!(models.log, vec!["tpc 255 0".to_string()]);
@@ -335,10 +409,26 @@ mod tests {
     fn traces_write_record_with_zero_entity() {
         let mut memory = SyscallMemory::new(4096).unwrap();
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
-        memory.write_vec3(512, &Vec3 { x: 0.0, y: 0.0, z: -64.0 }).unwrap();
-        let mut models = FakeModels { log: Vec::new(), nodes: true, short_circuit: false };
+        memory
+            .write_vec3(
+                512,
+                &Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -64.0,
+                },
+            )
+            .unwrap();
+        let mut models = FakeModels {
+            log: Vec::new(),
+            nodes: true,
+            short_circuit: false,
+        };
         let args = [1024, 256, 512, 0, 0, 7, 3];
-        assert_eq!(client_collision_syscall(&cg(CG_CM_BOXTRACE, &args), &mut memory, &mut models).unwrap(), Some(0));
+        assert_eq!(
+            client_collision_syscall(&cg(CG_CM_BOXTRACE, &args), &mut memory, &mut models).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(1024 + 4).unwrap(), 1);
         assert_eq!(memory.read_f32(1024 + 8).unwrap(), 0.5);
         assert_eq!(memory.read_i32(1024 + 52).unwrap(), 0);
@@ -348,7 +438,10 @@ mod tests {
             client_collision_syscall(&cg(CG_CM_TRANSFORMEDCAPSULETRACE, &args), &mut memory, &mut models).unwrap(),
             Some(0)
         );
-        assert_eq!(models.log, vec!["trace 7 Box 3".to_string(), "ttrace 7 Capsule".to_string()]);
+        assert_eq!(
+            models.log,
+            vec!["trace 7 Box 3".to_string(), "ttrace 7 Capsule".to_string()]
+        );
     }
 
     #[test]
@@ -356,9 +449,18 @@ mod tests {
         let mut memory = SyscallMemory::new(4096).unwrap();
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         memory.write_vec3(512, &Vec3 { x: 0.0, y: 0.0, z: 1.0 }).unwrap();
-        let mut models = FakeModels { log: Vec::new(), nodes: false, short_circuit: true };
+        let mut models = FakeModels {
+            log: Vec::new(),
+            nodes: false,
+            short_circuit: true,
+        };
         assert_eq!(
-            client_collision_syscall(&cg(CG_CM_BOXTRACE, &[1024, 256, 512, 0, 0, 7, 1]), &mut memory, &mut models).unwrap(),
+            client_collision_syscall(
+                &cg(CG_CM_BOXTRACE, &[1024, 256, 512, 0, 0, 7, 1]),
+                &mut memory,
+                &mut models
+            )
+            .unwrap(),
             Some(0)
         );
         assert!(models.log.is_empty());
@@ -383,9 +485,19 @@ mod tests {
     #[test]
     fn routing() {
         let mut memory = SyscallMemory::new(4096).unwrap();
-        let mut models = FakeModels { log: Vec::new(), nodes: true, short_circuit: false };
-        assert_eq!(client_collision_syscall(&cg(21, &[]), &mut memory, &mut models).unwrap(), None);
+        let mut models = FakeModels {
+            log: Vec::new(),
+            nodes: true,
+            short_circuit: false,
+        };
+        assert_eq!(
+            client_collision_syscall(&cg(21, &[]), &mut memory, &mut models).unwrap(),
+            None
+        );
         let other = HostCall::engine(QvmRole::Ui, CG_CM_LOADMAP, &[512], AbiProfile::Modern);
-        assert_eq!(client_collision_syscall(&other, &mut memory, &mut models).unwrap(), None);
+        assert_eq!(
+            client_collision_syscall(&other, &mut memory, &mut models).unwrap(),
+            None
+        );
     }
 }

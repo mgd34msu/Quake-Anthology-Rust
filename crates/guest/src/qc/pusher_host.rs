@@ -586,7 +586,7 @@ mod tests {
         assert_eq!(entity.state.move_type, 7.0);
         assert_eq!(entity.state.velocity, vec3(0.0, 0.0, 50.0));
         assert_eq!(entity.state.ground, TraceHit::World { model: 0 });
-        assert!(entity.state.fix_angle == false);
+        assert!(!entity.state.fix_angle);
         assert_eq!(services.world().reference(&owner.actor(1, 1)).unwrap(), 1);
     }
 

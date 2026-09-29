@@ -4,7 +4,7 @@
 //! `server/sv_game.c` client imports). Donor promises become direct returns.
 
 use super::client_state::{AbiProfile, CallKind, HostCall, QvmRole, SyscallMemory, WireUserCommand};
-use super::client_state_record::{QVM_USER_COMMAND_BYTES, UserCommandWrite, write_user_command};
+use super::client_state_record::{write_user_command, UserCommandWrite, QVM_USER_COMMAND_BYTES};
 use super::legacy_bot_abi::{G_DROP_CLIENT, G_GET_USERCMD, G_GET_USERINFO, G_SEND_SERVER_COMMAND, G_SET_USERINFO};
 use crate::error::GuestError;
 
@@ -67,7 +67,10 @@ pub fn client_game_syscall(
         }
         G_GET_USERINFO => {
             if call.int(3)? < 1 {
-                return Err(GuestError::runtime(format!("SV_GetUserinfo: bufferSize == {}", call.int(3)?)));
+                return Err(GuestError::runtime(format!(
+                    "SV_GetUserinfo: bufferSize == {}",
+                    call.int(3)?
+                )));
             }
             check_client(call.int(1)?, services, "SV_GetUserinfo")?;
             let value = services.get_userinfo(call.int(1)?);
@@ -131,7 +134,11 @@ mod tests {
             self.infos[slot as usize] = value.to_string();
         }
         fn get_user_command(&mut self, slot: i32) -> WireUserCommand {
-            WireUserCommand { server_time: 1000 + slot, buttons: 3, ..WireUserCommand::default() }
+            WireUserCommand {
+                server_time: 1000 + slot,
+                buttons: 3,
+                ..WireUserCommand::default()
+            }
         }
         fn drop_client(&mut self, slot: i32, reason: &str) {
             self.log.push(format!("drop {slot} {reason}"));
@@ -223,6 +230,9 @@ mod tests {
         let mut services = FakeClients::new();
         let other = HostCall::engine(QvmRole::Cgame, G_GET_USERCMD, &[0, 256], AbiProfile::Modern);
         assert_eq!(client_game_syscall(&other, &mut memory, &mut services).unwrap(), None);
-        assert_eq!(client_game_syscall(&call(999, &[]), &mut memory, &mut services).unwrap(), None);
+        assert_eq!(
+            client_game_syscall(&call(999, &[]), &mut memory, &mut services).unwrap(),
+            None
+        );
     }
 }

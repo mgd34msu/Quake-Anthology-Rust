@@ -20,12 +20,17 @@ pub fn qvm_math_syscall(
     words: &QvmWritableView,
 ) -> Result<Option<i32>, GuestError> {
     let trap = words.get_i32(0)?;
+    // Transcendentals evaluate in binary64, then round once to binary32,
+    // matching the donor's Math.* + fround composition.
+    let bit64 = |value: f64| float32_to_bits(value as f32) as i32;
     let bit = |value: f32| float32_to_bits(value) as i32;
     match trap {
-        103 => Ok(Some(bit(words.get_f32(4)?.sin()))),
-        104 => Ok(Some(bit(words.get_f32(4)?.cos()))),
-        105 => Ok(Some(bit(words.get_f32(4)?.atan2(words.get_f32(8)?)))),
-        106 => Ok(Some(bit(words.get_f32(4)?.sqrt()))),
+        103 => Ok(Some(bit64(f64::from(words.get_f32(4)?).sin()))),
+        104 => Ok(Some(bit64(f64::from(words.get_f32(4)?).cos()))),
+        105 => Ok(Some(bit64(
+            f64::from(words.get_f32(4)?).atan2(f64::from(words.get_f32(8)?)),
+        ))),
+        106 => Ok(Some(bit64(f64::from(words.get_f32(4)?).sqrt()))),
         107 => {
             if role == QvmSyscallRole::Game {
                 Ok(None)
@@ -53,7 +58,7 @@ pub fn qvm_math_syscall(
             } else if role == QvmSyscallRole::Game {
                 Ok(Some(bit(words.get_f32(4)?.ceil())))
             } else {
-                let angle = words.get_f32(4)?.acos();
+                let angle = f64::from(words.get_f32(4)?).acos() as f32;
                 // Source clamps the result, not the input, and returns +PI for
                 // either end. NaN (out-of-range input) compares false to both
                 // bounds and passes through, matching the donor.

@@ -11,23 +11,23 @@
 use qa_core::math::Vec3;
 
 use super::bot_navigation_records::{
-    AasEntityInfo, BotGoal, BotInitMove, BotMoveResult, QVM_AAS_ENTITY_INFO_BYTES,
-    QVM_BOT_GOAL_BYTES, QVM_BOT_INIT_MOVE_BYTES, QVM_BOT_MOVE_RESULT_BYTES, read_bot_goal,
-    read_bot_init_move, read_bot_move_result, write_aas_entity_info, write_bot_move_result,
+    read_bot_goal, read_bot_init_move, write_aas_entity_info, write_bot_move_result, AasEntityInfo, BotGoal,
+    BotInitMove, BotMoveResult, QVM_AAS_ENTITY_INFO_BYTES, QVM_BOT_GOAL_BYTES, QVM_BOT_INIT_MOVE_BYTES,
+    QVM_BOT_MOVE_RESULT_BYTES,
 };
 use super::client_state::{AbiProfile, CallKind, HostCall, QvmRole, SyscallMemory};
 use super::legacy_bot_abi::{
     BOTLIB_AAS_ALTERNATIVE_ROUTE_GOAL, BOTLIB_AAS_AREA_INFO, BOTLIB_AAS_AREA_REACHABILITY,
     BOTLIB_AAS_AREA_TRAVEL_TIME_TO_GOAL_AREA, BOTLIB_AAS_BBOX_AREAS, BOTLIB_AAS_ENABLE_ROUTING_AREA,
     BOTLIB_AAS_ENTITY_INFO, BOTLIB_AAS_FLOAT_FOR_BSP_EPAIR_KEY, BOTLIB_AAS_INITIALIZED,
-    BOTLIB_AAS_INT_FOR_BSP_EPAIR_KEY, BOTLIB_AAS_NEXT_BSP_ENTITY, BOTLIB_AAS_POINT_AREA_NUM,
-    BOTLIB_AAS_POINT_CONTENTS, BOTLIB_AAS_POINT_REACHABILITY_AREA_INDEX, BOTLIB_AAS_PREDICT_CLIENT_MOVEMENT,
-    BOTLIB_AAS_PREDICT_ROUTE, BOTLIB_AAS_PRESENCE_TYPE_BOUNDING_BOX, BOTLIB_AAS_SWIMMING, BOTLIB_AAS_TIME,
-    BOTLIB_AAS_TRACE_AREAS, BOTLIB_AAS_VALUE_FOR_BSP_EPAIR_KEY, BOTLIB_AAS_VECTOR_FOR_BSP_EPAIR_KEY,
-    BOTLIB_AI_ADD_AVOID_SPOT, BOTLIB_AI_ALLOC_MOVE_STATE, BOTLIB_AI_FREE_MOVE_STATE,
-    BOTLIB_AI_INIT_MOVE_STATE, BOTLIB_AI_MOVE_IN_DIRECTION, BOTLIB_AI_MOVE_TO_GOAL,
-    BOTLIB_AI_MOVEMENT_VIEW_TARGET, BOTLIB_AI_PREDICT_VISIBLE_POSITION, BOTLIB_AI_REACHABILITY_AREA,
-    BOTLIB_AI_RESET_AVOID_REACH, BOTLIB_AI_RESET_LAST_AVOID_REACH, BOTLIB_AI_RESET_MOVE_STATE,
+    BOTLIB_AAS_INT_FOR_BSP_EPAIR_KEY, BOTLIB_AAS_NEXT_BSP_ENTITY, BOTLIB_AAS_POINT_AREA_NUM, BOTLIB_AAS_POINT_CONTENTS,
+    BOTLIB_AAS_POINT_REACHABILITY_AREA_INDEX, BOTLIB_AAS_PREDICT_CLIENT_MOVEMENT, BOTLIB_AAS_PREDICT_ROUTE,
+    BOTLIB_AAS_PRESENCE_TYPE_BOUNDING_BOX, BOTLIB_AAS_SWIMMING, BOTLIB_AAS_TIME, BOTLIB_AAS_TRACE_AREAS,
+    BOTLIB_AAS_VALUE_FOR_BSP_EPAIR_KEY, BOTLIB_AAS_VECTOR_FOR_BSP_EPAIR_KEY, BOTLIB_AI_ADD_AVOID_SPOT,
+    BOTLIB_AI_ALLOC_MOVE_STATE, BOTLIB_AI_FREE_MOVE_STATE, BOTLIB_AI_INIT_MOVE_STATE, BOTLIB_AI_MOVEMENT_VIEW_TARGET,
+    BOTLIB_AI_MOVE_IN_DIRECTION, BOTLIB_AI_MOVE_TO_GOAL, BOTLIB_AI_PREDICT_VISIBLE_POSITION,
+    BOTLIB_AI_REACHABILITY_AREA, BOTLIB_AI_RESET_AVOID_REACH, BOTLIB_AI_RESET_LAST_AVOID_REACH,
+    BOTLIB_AI_RESET_MOVE_STATE,
 };
 use crate::error::GuestError;
 
@@ -283,14 +283,7 @@ pub trait BotMoveHost {
     /// Reachability area for a point.
     fn reachability_area(&mut self, point: Vec3, flags: i32) -> i32;
     /// Movement view target, writing the target on success.
-    fn movement_view_target(
-        &mut self,
-        handle: i32,
-        goal: &BotGoal,
-        flags: i32,
-        range: f32,
-        target: &mut Vec3,
-    ) -> bool;
+    fn movement_view_target(&mut self, handle: i32, goal: &BotGoal, flags: i32, range: f32, target: &mut Vec3) -> bool;
     /// Predict a visible position, writing the target on success.
     fn predict_visible_position(
         &mut self,
@@ -325,7 +318,11 @@ pub fn bot_navigation_syscall(
             if area <= 0 {
                 return Ok(Some(0));
             }
-            let set = if call.int(2)? >= 0 { Some(call.int(2)? != 0) } else { None };
+            let set = if call.int(2)? >= 0 {
+                Some(call.int(2)? != 0)
+            } else {
+                None
+            };
             Ok(Some(aas.routing_area(area, set).map_or(0, i32::from)))
         }
         BOTLIB_AAS_BBOX_AREAS => {
@@ -485,7 +482,11 @@ pub fn bot_navigation_syscall(
             }
             let area = call.int(1)?;
             let origin_word = call.int(2)?;
-            let origin = if origin_word == 0 { None } else { Some(memory.read_vec3_ptr(origin_word)?) };
+            let origin = if origin_word == 0 {
+                None
+            } else {
+                Some(memory.read_vec3_ptr(origin_word)?)
+            };
             Ok(Some(aas.area_travel_time(area, origin, call.int(3)?, call.int(4)?)))
         }
         BOTLIB_AAS_SWIMMING => {
@@ -563,7 +564,12 @@ pub fn bot_navigation_syscall(
         }
         BOTLIB_AI_MOVE_IN_DIRECTION => {
             let direction = memory.read_vec3_ptr(call.int(2)?)?;
-            Ok(Some(i32::from(moves.move_in_direction(call.int(1)?, direction, call.float(3)?, call.int(4)?))))
+            Ok(Some(i32::from(moves.move_in_direction(
+                call.int(1)?,
+                direction,
+                call.float(3)?,
+                call.int(4)?,
+            ))))
         }
         BOTLIB_AI_RESET_AVOID_REACH => {
             moves.reset_avoid_reach(call.int(1)?);
@@ -684,7 +690,11 @@ pub fn bot_navigation_syscall(
         }
         BOTLIB_AAS_POINT_REACHABILITY_AREA_INDEX => {
             let origin_word = call.int(1)?;
-            let origin = if origin_word == 0 { None } else { Some(memory.read_vec3_ptr(origin_word)?) };
+            let origin = if origin_word == 0 {
+                None
+            } else {
+                Some(memory.read_vec3_ptr(origin_word)?)
+            };
             Ok(Some(aas.reachability_index(origin)))
         }
         _ => Ok(None),
@@ -693,7 +703,9 @@ pub fn bot_navigation_syscall(
 
 #[cfg(test)]
 mod tests {
-    use super::super::bot_navigation_records::{BotEntityUpdate, write_bot_goal, GoalWriteFields};
+    use super::super::bot_navigation_records::{
+        read_bot_move_result, write_bot_goal, BotEntityUpdate, GoalWriteFields,
+    };
     use super::*;
 
     struct FakeAas {
@@ -707,7 +719,11 @@ mod tests {
             flags: 0x10,
             presence_type: 2,
             cluster: 7,
-            min: Vec3 { x: -8.0, y: -8.0, z: -8.0 },
+            min: Vec3 {
+                x: -8.0,
+                y: -8.0,
+                z: -8.0,
+            },
             max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
             origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             enabled: None,
@@ -766,15 +782,32 @@ mod tests {
         }
         fn presence_bounds(&mut self, presence: i32) -> (Vec3, Vec3) {
             self.log.push(format!("presence {presence}"));
-            (Vec3 { x: -15.0, y: -15.0, z: -24.0 }, Vec3 { x: 15.0, y: 15.0, z: 32.0 })
+            (
+                Vec3 {
+                    x: -15.0,
+                    y: -15.0,
+                    z: -24.0,
+                },
+                Vec3 {
+                    x: 15.0,
+                    y: 15.0,
+                    z: 32.0,
+                },
+            )
         }
         fn point_area(&mut self, _point: Vec3) -> i32 {
             9
         }
         fn trace_areas(&mut self, _start: Vec3, _end: Vec3, _maximum: i32) -> Vec<AreaCrossing> {
             vec![
-                AreaCrossing { area: 3, point: Vec3 { x: 1.0, y: 0.0, z: 0.0 } },
-                AreaCrossing { area: 4, point: Vec3 { x: 2.0, y: 0.0, z: 0.0 } },
+                AreaCrossing {
+                    area: 3,
+                    point: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+                },
+                AreaCrossing {
+                    area: 4,
+                    point: Vec3 { x: 2.0, y: 0.0, z: 0.0 },
+                },
             ]
         }
         fn point_contents(&mut self, _point: Vec3) -> i32 {
@@ -800,7 +833,8 @@ mod tests {
             (if key == "spawnflags" { 3 } else { 0 }, key == "spawnflags")
         }
         fn area_travel_time(&mut self, area: i32, origin: Option<Vec3>, goal_area: i32, travel_flags: i32) -> i32 {
-            self.log.push(format!("travel {area} {} {goal_area} {travel_flags}", origin.is_some()));
+            self.log
+                .push(format!("travel {area} {} {goal_area} {travel_flags}", origin.is_some()));
             120
         }
         fn swimming(&mut self, _point: Vec3) -> bool {
@@ -886,11 +920,25 @@ mod tests {
         fn reachability_area(&mut self, _point: Vec3, _flags: i32) -> i32 {
             13
         }
-        fn movement_view_target(&mut self, _handle: i32, _goal: &BotGoal, _flags: i32, _range: f32, target: &mut Vec3) -> bool {
+        fn movement_view_target(
+            &mut self,
+            _handle: i32,
+            _goal: &BotGoal,
+            _flags: i32,
+            _range: f32,
+            target: &mut Vec3,
+        ) -> bool {
             *target = Vec3 { x: 7.0, y: 7.0, z: 7.0 };
             true
         }
-        fn predict_visible_position(&mut self, _origin: Vec3, _entity: i32, _goal: &BotGoal, _flags: i32, target: &mut Vec3) -> bool {
+        fn predict_visible_position(
+            &mut self,
+            _origin: Vec3,
+            _entity: i32,
+            _goal: &BotGoal,
+            _flags: i32,
+            target: &mut Vec3,
+        ) -> bool {
             *target = Vec3 { x: 8.0, y: 8.0, z: 8.0 };
             true
         }
@@ -904,14 +952,25 @@ mod tests {
     }
 
     fn harness() -> (SyscallMemory, FakeAas, FakeMoves) {
-        (SyscallMemory::new(65536).unwrap(), FakeAas { log: Vec::new(), ready: true }, FakeMoves { log: Vec::new() })
+        (
+            SyscallMemory::new(65536).unwrap(),
+            FakeAas {
+                log: Vec::new(),
+                ready: true,
+            },
+            FakeMoves { log: Vec::new() },
+        )
     }
 
     fn goal(memory: &mut SyscallMemory, at: i32) {
         let goal = BotGoal {
             origin: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
             area: 2,
-            mins: Vec3 { x: -1.0, y: -1.0, z: -1.0 },
+            mins: Vec3 {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0,
+            },
             maxs: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
             entity: 0,
             number: 0,
@@ -926,11 +985,20 @@ mod tests {
     #[test]
     fn routing_area_and_bbox() {
         let (mut memory, mut aas, mut moves) = harness();
-        assert_eq!(bot_navigation_syscall(&game(300, &[5, 1]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
-        assert_eq!(bot_navigation_syscall(&game(300, &[0, 1]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(300, &[5, 1]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(300, &[0, 1]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         memory.write_vec3(512, &Vec3 { x: 8.0, y: 8.0, z: 8.0 }).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(301, &[256, 512, 1024, 2]), &mut memory, &mut aas, &mut moves).unwrap(), Some(2));
+        assert_eq!(
+            bot_navigation_syscall(&game(301, &[256, 512, 1024, 2]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(2)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 1);
         assert_eq!(memory.read_i32(1028).unwrap(), 2);
     }
@@ -938,74 +1006,159 @@ mod tests {
     #[test]
     fn area_info_entity_info_and_initialized() {
         let (mut memory, mut aas, mut moves) = harness();
-        assert_eq!(bot_navigation_syscall(&game(302, &[3, 1024]), &mut memory, &mut aas, &mut moves).unwrap(), Some(52));
+        assert_eq!(
+            bot_navigation_syscall(&game(302, &[3, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(52)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 3);
         assert_eq!(memory.read_i32(1028).unwrap(), 0x10);
-        assert_eq!(bot_navigation_syscall(&game(302, &[3, 0]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(bot_navigation_syscall(&game(303, &[1, 2048]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(302, &[3, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(303, &[1, 2048]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(2048).unwrap(), 1);
         assert_eq!(memory.read_i32(2068).unwrap(), 1);
-        assert_eq!(bot_navigation_syscall(&game(303, &[9, 2048]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(303, &[9, 2048]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(2048).unwrap(), 0);
-        assert_eq!(bot_navigation_syscall(&game(304, &[]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        assert_eq!(
+            bot_navigation_syscall(&game(304, &[]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
     }
 
     #[test]
     fn presence_time_point_and_trace() {
         let (mut memory, mut aas, mut moves) = harness();
-        assert_eq!(bot_navigation_syscall(&game(305, &[2, 256, 512]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(memory.read_vec3(256).unwrap(), Vec3 { x: -15.0, y: -15.0, z: -24.0 });
-        assert_eq!(bot_navigation_syscall(&game(305, &[9, 256, 512]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(bot_navigation_syscall(&game(306, &[]), &mut memory, &mut aas, &mut moves).unwrap(), Some(12.5f32.to_bits() as i32));
+        assert_eq!(
+            bot_navigation_syscall(&game(305, &[2, 256, 512]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            memory.read_vec3(256).unwrap(),
+            Vec3 {
+                x: -15.0,
+                y: -15.0,
+                z: -24.0
+            }
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(305, &[9, 256, 512]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(306, &[]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(12.5f32.to_bits() as i32)
+        );
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         memory.write_vec3(512, &Vec3 { x: 4.0, y: 0.0, z: 0.0 }).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(307, &[256]), &mut memory, &mut aas, &mut moves).unwrap(), Some(9));
         assert_eq!(
-            bot_navigation_syscall(&game(308, &[256, 512, 1024, 2048, 8]), &mut memory, &mut aas, &mut moves).unwrap(),
+            bot_navigation_syscall(&game(307, &[256]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(9)
+        );
+        assert_eq!(
+            bot_navigation_syscall(
+                &game(308, &[256, 512, 1024, 2048, 8]),
+                &mut memory,
+                &mut aas,
+                &mut moves
+            )
+            .unwrap(),
             Some(2)
         );
         assert_eq!(memory.read_i32(1024).unwrap(), 3);
         assert_eq!(memory.read_vec3(2048).unwrap(), Vec3 { x: 1.0, y: 0.0, z: 0.0 });
-        assert_eq!(bot_navigation_syscall(&game(309, &[256]), &mut memory, &mut aas, &mut moves).unwrap(), Some(6));
+        assert_eq!(
+            bot_navigation_syscall(&game(309, &[256]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(6)
+        );
         assert!(aas.log.iter().any(|line| line.starts_with("print ")));
     }
 
     #[test]
     fn bsp_entity_traps() {
         let (mut memory, mut aas, mut moves) = harness();
-        assert_eq!(bot_navigation_syscall(&game(310, &[4]), &mut memory, &mut aas, &mut moves).unwrap(), Some(5));
+        assert_eq!(
+            bot_navigation_syscall(&game(310, &[4]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(5)
+        );
         memory.write_string(256, "classname", 10).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(311, &[1, 256, 1024, 64]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        assert_eq!(
+            bot_navigation_syscall(&game(311, &[1, 256, 1024, 64]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_string(1024).unwrap(), "worldspawn");
         memory.write_string(256, "nope", 5).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(311, &[1, 256, 1024, 64]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(311, &[1, 256, 1024, 64]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         memory.write_string(256, "origin", 7).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(312, &[1, 256, 1024]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        assert_eq!(
+            bot_navigation_syscall(&game(312, &[1, 256, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_vec3(1024).unwrap(), Vec3 { x: 1.0, y: 2.0, z: 3.0 });
         memory.write_string(256, "angle", 6).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(313, &[1, 256, 1024]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        assert_eq!(
+            bot_navigation_syscall(&game(313, &[1, 256, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_f32(1024).unwrap(), 90.0);
         memory.write_string(256, "spawnflags", 11).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(314, &[1, 256, 1024]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        assert_eq!(
+            bot_navigation_syscall(&game(314, &[1, 256, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 3);
     }
 
     #[test]
     fn reachability_travel_swimming_and_prediction() {
         let (mut memory, mut aas, mut moves) = harness();
-        assert_eq!(bot_navigation_syscall(&game(315, &[3]), &mut memory, &mut aas, &mut moves).unwrap(), Some(5));
+        assert_eq!(
+            bot_navigation_syscall(&game(315, &[3]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(5)
+        );
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(317, &[256]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
-        assert_eq!(bot_navigation_syscall(&game(316, &[1, 256, 2, 7]), &mut memory, &mut aas, &mut moves).unwrap(), Some(120));
+        assert_eq!(
+            bot_navigation_syscall(&game(317, &[256]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(316, &[1, 256, 2, 7]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(120)
+        );
         aas.ready = false;
-        assert_eq!(bot_navigation_syscall(&game(316, &[1, 256, 2, 7]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(316, &[1, 256, 2, 7]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         aas.ready = true;
         for (index, word) in [256, 512, 768, 1024].iter().enumerate() {
-            memory.write_vec3(*word, &Vec3 { x: index as f32, y: 0.0, z: 0.0 }).unwrap();
+            memory
+                .write_vec3(
+                    *word,
+                    &Vec3 {
+                        x: index as f32,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                )
+                .unwrap();
         }
         let frame = 0.1f32.to_bits() as i32;
         let args = [4096, 1, 256, 2, 1, 512, 768, 3, 30, frame, 0, 0, 0];
-        assert_eq!(bot_navigation_syscall(&game(318, &args), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        assert_eq!(
+            bot_navigation_syscall(&game(318, &args), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_vec3(4096).unwrap(), Vec3 { x: 5.0, y: 5.0, z: 0.0 });
         assert_eq!(memory.read_i32(4108).unwrap(), 8);
         assert_eq!(memory.read_f32(4128).unwrap(), 0.75);
@@ -1023,8 +1176,16 @@ mod tests {
             memory.write_vec3(word, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         }
         let frame = 0.1f32.to_bits() as i32;
-        let call = HostCall::engine(QvmRole::Qagame, 318, &[4096, 1, 256, 2, 1, 512, 768, 3, 30, frame, 0, 0, 0], AbiProfile::Legacy);
-        assert_eq!(bot_navigation_syscall(&call, &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
+        let call = HostCall::engine(
+            QvmRole::Qagame,
+            318,
+            &[4096, 1, 256, 2, 1, 512, 768, 3, 30, frame, 0, 0, 0],
+            AbiProfile::Legacy,
+        );
+        assert_eq!(
+            bot_navigation_syscall(&call, &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_f32(4168).unwrap(), 9.0);
     }
 
@@ -1032,23 +1193,56 @@ mod tests {
     fn move_state_traps() {
         let (mut memory, mut aas, mut moves) = harness();
         goal(&mut memory, 2048);
-        assert_eq!(bot_navigation_syscall(&game(548, &[1]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(bot_navigation_syscall(&game(549, &[1024, 1, 2048, 0]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(548, &[1]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(549, &[1024, 1, 2048, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 0);
         assert_eq!(memory.read_i32(1028).unwrap(), 3);
-        assert_eq!(bot_navigation_syscall(&game(549, &[1024, 1, 0, 0]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(549, &[1024, 1, 0, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 1);
         memory.write_vec3(256, &Vec3 { x: 1.0, y: 0.0, z: 0.0 }).unwrap();
         let speed = 200.0f32.to_bits() as i32;
-        assert_eq!(bot_navigation_syscall(&game(550, &[1, 256, speed, 0]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
-        assert_eq!(bot_navigation_syscall(&game(551, &[1]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(bot_navigation_syscall(&game(552, &[1]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(bot_navigation_syscall(&game(553, &[256, 0]), &mut memory, &mut aas, &mut moves).unwrap(), Some(13));
-        assert_eq!(bot_navigation_syscall(&game(555, &[]), &mut memory, &mut aas, &mut moves).unwrap(), Some(7));
-        assert_eq!(bot_navigation_syscall(&game(556, &[7]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(550, &[1, 256, speed, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(551, &[1]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(552, &[1]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(553, &[256, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(13)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(555, &[]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(7)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(556, &[7]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         memory.write_i32(3072 + 36, 4).unwrap();
-        assert_eq!(bot_navigation_syscall(&game(557, &[7, 3072]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(moves.log, vec!["reset 1", "goal 1", "avoid 1", "last 1", "free 7", "init 7 4"]);
+        assert_eq!(
+            bot_navigation_syscall(&game(557, &[7, 3072]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            moves.log,
+            vec!["reset 1", "goal 1", "avoid 1", "last 1", "free 7", "init 7 4"]
+        );
     }
 
     #[test]
@@ -1057,20 +1251,35 @@ mod tests {
         goal(&mut memory, 2048);
         let range = 64.0f32.to_bits() as i32;
         assert_eq!(
-            bot_navigation_syscall(&game(554, &[1, 2048, 0, range, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            bot_navigation_syscall(
+                &game(554, &[1, 2048, 0, range, 1024]),
+                &mut memory,
+                &mut aas,
+                &mut moves
+            )
+            .unwrap(),
             Some(1)
         );
         assert_eq!(memory.read_vec3(1024).unwrap(), Vec3 { x: 7.0, y: 7.0, z: 7.0 });
-        assert_eq!(bot_navigation_syscall(&game(554, &[1, 0, 0, range, 1024]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(554, &[1, 0, 0, range, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         assert_eq!(
             bot_navigation_syscall(&game(572, &[256, 1, 2048, 0, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
             Some(1)
         );
         assert_eq!(memory.read_vec3(1024).unwrap(), Vec3 { x: 8.0, y: 8.0, z: 8.0 });
-        assert_eq!(bot_navigation_syscall(&game(572, &[256, 1, 0, 0, 1024]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(572, &[256, 1, 0, 0, 1024]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         let radius = 32.0f32.to_bits() as i32;
-        assert_eq!(bot_navigation_syscall(&game(574, &[1, 256, radius, 2]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
+        assert_eq!(
+            bot_navigation_syscall(&game(574, &[1, 256, radius, 2]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
         assert_eq!(moves.log, vec!["spot 1 32 2".to_string()]);
     }
 
@@ -1080,7 +1289,13 @@ mod tests {
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         memory.write_vec3(512, &Vec3 { x: 8.0, y: 8.0, z: 0.0 }).unwrap();
         assert_eq!(
-            bot_navigation_syscall(&game(575, &[256, 1, 512, 2, 7, 1024, 4, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            bot_navigation_syscall(
+                &game(575, &[256, 1, 512, 2, 7, 1024, 4, 0]),
+                &mut memory,
+                &mut aas,
+                &mut moves
+            )
+            .unwrap(),
             Some(1)
         );
         assert_eq!(memory.read_vec3(1024).unwrap(), Vec3 { x: 9.0, y: 9.0, z: 0.0 });
@@ -1089,19 +1304,38 @@ mod tests {
         assert_eq!(memory.read_u16(1042).unwrap(), 20);
         assert_eq!(memory.read_u16(1044).unwrap(), 5);
         assert_eq!(
-            bot_navigation_syscall(&game(576, &[1024, 1, 256, 2, 7, 8, 100, 0, 0, 0, 0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            bot_navigation_syscall(
+                &game(576, &[1024, 1, 256, 2, 7, 8, 100, 0, 0, 0, 0]),
+                &mut memory,
+                &mut aas,
+                &mut moves
+            )
+            .unwrap(),
             Some(1)
         );
         assert_eq!(memory.read_vec3(1024).unwrap(), Vec3 { x: 3.0, y: 3.0, z: 0.0 });
         assert_eq!(memory.read_i32(1056).unwrap(), 44);
-        assert_eq!(bot_navigation_syscall(&game(577, &[0]), &mut memory, &mut aas, &mut moves).unwrap(), Some(0));
-        assert_eq!(bot_navigation_syscall(&game(577, &[256]), &mut memory, &mut aas, &mut moves).unwrap(), Some(1));
-        assert_eq!(bot_navigation_syscall(&game(999, &[]), &mut memory, &mut aas, &mut moves).unwrap(), None);
+        assert_eq!(
+            bot_navigation_syscall(&game(577, &[0]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(577, &[256]), &mut memory, &mut aas, &mut moves).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            bot_navigation_syscall(&game(999, &[]), &mut memory, &mut aas, &mut moves).unwrap(),
+            None
+        );
     }
 
     #[test]
     fn move_result_readback_matches_write() {
-        let result = BotMoveResult { failure: true, move_type: 1, ..BotMoveResult::default() };
+        let result = BotMoveResult {
+            failure: true,
+            move_type: 1,
+            ..BotMoveResult::default()
+        };
         let mut record = vec![0u8; QVM_BOT_MOVE_RESULT_BYTES];
         write_bot_move_result(&mut record, &result).unwrap();
         assert_eq!(read_bot_move_result(&record).unwrap(), result);

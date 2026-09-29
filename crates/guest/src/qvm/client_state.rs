@@ -102,9 +102,10 @@ impl HostCall {
 
     /// Read the `index`-th word as a signed integer.
     pub fn int(&self, index: usize) -> Result<i32, GuestError> {
-        self.words.get(index).copied().ok_or_else(|| {
-            GuestError::invalid(format!("Host call has no word at index {index}"))
-        })
+        self.words
+            .get(index)
+            .copied()
+            .ok_or_else(|| GuestError::invalid(format!("Host call has no word at index {index}")))
     }
 
     /// Read the `index`-th word as a little-endian float.
@@ -142,10 +143,7 @@ impl SyscallMemory {
                 "QVM memory allocation must be a nonzero power of two at most 2^30 bytes",
             ));
         }
-        Ok(Self {
-            bytes,
-            mask: len - 1,
-        })
+        Ok(Self { bytes, mask: len - 1 })
     }
 
     /// Allocation length in bytes.
@@ -179,13 +177,13 @@ impl SyscallMemory {
     }
 
     /// Resolve a guest span: masked base plus `relative` offset, `len` bytes.
-    pub fn span(&self, word: i32, len: usize, relative: isize) -> Result<std::ops::Range<usize>, GuestError> {
-        let base = self.pointer(word).ok_or_else(|| {
-            GuestError::invalid("QVM memory span requires a nonnull pointer")
-        })?;
-        let start = base as isize + relative;
-        let end = start + len as isize;
-        if relative < 0 && start < 0 || start < 0 || end < start || end as usize > self.bytes.len() {
+    pub fn span(&self, word: i32, len: usize, relative: i64) -> Result<std::ops::Range<usize>, GuestError> {
+        let base = self
+            .pointer(word)
+            .ok_or_else(|| GuestError::invalid("QVM memory span requires a nonnull pointer"))?;
+        let start = base as i64 + relative;
+        let end = start + len as i64;
+        if start < 0 || end < start || end > self.bytes.len() as i64 {
             return Err(GuestError::memory_fault(
                 "span-overflow",
                 word as u32 as u64,
@@ -227,7 +225,9 @@ impl SyscallMemory {
     /// Read a little-endian `i32` at an absolute offset.
     pub fn read_i32(&self, offset: usize) -> Result<i32, GuestError> {
         self.check(offset, 4, "read")?;
-        Ok(i32::from_le_bytes(self.bytes[offset..offset + 4].try_into().expect("checked range")))
+        Ok(i32::from_le_bytes(
+            self.bytes[offset..offset + 4].try_into().expect("checked range"),
+        ))
     }
 
     /// Write a little-endian `i32` at an absolute offset.
@@ -240,7 +240,9 @@ impl SyscallMemory {
     /// Read a little-endian `u16` at an absolute offset.
     pub fn read_u16(&self, offset: usize) -> Result<u16, GuestError> {
         self.check(offset, 2, "read")?;
-        Ok(u16::from_le_bytes(self.bytes[offset..offset + 2].try_into().expect("checked range")))
+        Ok(u16::from_le_bytes(
+            self.bytes[offset..offset + 2].try_into().expect("checked range"),
+        ))
     }
 
     /// Write a little-endian `u16` at an absolute offset.
@@ -253,7 +255,9 @@ impl SyscallMemory {
     /// Read a little-endian `f32` at an absolute offset.
     pub fn read_f32(&self, offset: usize) -> Result<f32, GuestError> {
         self.check(offset, 4, "read")?;
-        Ok(f32::from_le_bytes(self.bytes[offset..offset + 4].try_into().expect("checked range")))
+        Ok(f32::from_le_bytes(
+            self.bytes[offset..offset + 4].try_into().expect("checked range"),
+        ))
     }
 
     /// Write a little-endian `f32` at an absolute offset.
@@ -291,9 +295,9 @@ impl SyscallMemory {
 
     /// Read a vector from a guest pointer word.
     pub fn read_vec3_ptr(&self, word: i32) -> Result<Vec3, GuestError> {
-        let base = self.pointer(word).ok_or_else(|| {
-            GuestError::invalid("QVM vector requires a nonnull pointer")
-        })?;
+        let base = self
+            .pointer(word)
+            .ok_or_else(|| GuestError::invalid("QVM vector requires a nonnull pointer"))?;
         self.read_vec3(base)
     }
 
@@ -322,13 +326,14 @@ impl SyscallMemory {
     /// Bytes map to Latin-1 scalar values, matching the donor's
     /// `String.fromCharCode` decoding byte for byte.
     pub fn read_string(&self, word: i32) -> Result<String, GuestError> {
-        let base = self.pointer(word).ok_or_else(|| {
-            GuestError::invalid("QVM string requires a nonnull pointer")
-        })?;
+        let base = self
+            .pointer(word)
+            .ok_or_else(|| GuestError::invalid("QVM string requires a nonnull pointer"))?;
         let tail = &self.bytes[base..];
-        let end = tail.iter().position(|byte| *byte == 0).ok_or_else(|| {
-            GuestError::invalid("QVM string has no terminator before the allocation ends")
-        })?;
+        let end = tail
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| GuestError::invalid("QVM string has no terminator before the allocation ends"))?;
         Ok(tail[..end].iter().map(|byte| char::from(*byte)).collect())
     }
 
@@ -341,9 +346,9 @@ impl SyscallMemory {
         if capacity < 1 {
             return Err(GuestError::invalid("Q_strncpyz: destsize < 1"));
         }
-        let base = self.pointer(word).ok_or_else(|| {
-            GuestError::invalid("Q_strncpyz: NULL dest")
-        })?;
+        let base = self
+            .pointer(word)
+            .ok_or_else(|| GuestError::invalid("Q_strncpyz: NULL dest"))?;
         if capacity > self.bytes.len() - base {
             return Err(GuestError::memory_fault(
                 "string-overflow",
@@ -358,7 +363,6 @@ impl SyscallMemory {
             if index + 1 >= capacity {
                 break;
             }
-            #[allow(clippy::char_lit_as_u8)]
             self.bytes[base + index] = (ch as u32 & 0xFF) as u8;
             index += 1;
         }
@@ -369,9 +373,9 @@ impl SyscallMemory {
     /// Raw bounded copy plus NUL: null pointers and bad capacities are errors
     /// without the donor's fatal-comment path.
     pub fn write_bounded_string(&mut self, word: i32, text: &str, capacity: usize) -> Result<(), GuestError> {
-        let base = self.pointer(word).ok_or_else(|| {
-            GuestError::invalid("Bounded string copy exceeds QVM allocation")
-        })?;
+        let base = self
+            .pointer(word)
+            .ok_or_else(|| GuestError::invalid("Bounded string copy exceeds QVM allocation"))?;
         if capacity < 1 || capacity > self.bytes.len() - base {
             return Err(GuestError::invalid("Bounded string copy exceeds QVM allocation"));
         }
@@ -498,7 +502,11 @@ mod tests {
         assert_eq!(memory.read_f32(200).unwrap(), 1.5);
         memory.write_u16(300, 0xBEEF).unwrap();
         assert_eq!(memory.read_u16(300).unwrap(), 0xBEEF);
-        let vector = Vec3 { x: 1.0, y: -2.0, z: 3.5 };
+        let vector = Vec3 {
+            x: 1.0,
+            y: -2.0,
+            z: 3.5,
+        };
         memory.write_vec3(400, &vector).unwrap();
         assert_eq!(memory.read_vec3(400).unwrap(), vector);
         assert_eq!(memory.read_vec3_ptr(400).unwrap(), vector);

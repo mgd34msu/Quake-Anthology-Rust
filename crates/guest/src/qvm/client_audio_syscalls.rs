@@ -9,10 +9,10 @@ use qa_core::math::Vec3;
 
 use super::client_state::{CallKind, HostCall, QvmRole, SyscallMemory};
 use super::legacy_bot_abi::{
-    CG_S_ADDLOOPINGSOUND, CG_S_ADDREALLOOPINGSOUND, CG_S_CLEARLOOPINGSOUNDS, CG_S_REGISTERSOUND,
-    CG_S_RESPATIALIZE, CG_S_STARTBACKGROUNDTRACK, CG_S_STARTLOCALSOUND, CG_S_STARTSOUND,
-    CG_S_STOPBACKGROUNDTRACK, CG_S_STOPLOOPINGSOUND, CG_S_UPDATEENTITYPOSITION, UI_S_REGISTERSOUND,
-    UI_S_STARTBACKGROUNDTRACK, UI_S_STARTLOCALSOUND, UI_S_STOPBACKGROUNDTRACK,
+    CG_S_ADDLOOPINGSOUND, CG_S_ADDREALLOOPINGSOUND, CG_S_CLEARLOOPINGSOUNDS, CG_S_REGISTERSOUND, CG_S_RESPATIALIZE,
+    CG_S_STARTBACKGROUNDTRACK, CG_S_STARTLOCALSOUND, CG_S_STARTSOUND, CG_S_STOPBACKGROUNDTRACK, CG_S_STOPLOOPINGSOUND,
+    CG_S_UPDATEENTITYPOSITION, UI_S_REGISTERSOUND, UI_S_STARTBACKGROUNDTRACK, UI_S_STARTLOCALSOUND,
+    UI_S_STOPBACKGROUNDTRACK,
 };
 use crate::error::GuestError;
 
@@ -70,7 +70,11 @@ pub fn client_audio_syscall(
     if call.code == if ui { UI_S_REGISTERSOUND } else { CG_S_REGISTERSOUND } {
         let name_word = call.int(1)?;
         let compressed = call.abi_profile.is_modern() && call.int(2)? != 0;
-        let name = if name_word == 0 { None } else { Some(memory.read_string(name_word)?) };
+        let name = if name_word == 0 {
+            None
+        } else {
+            Some(memory.read_string(name_word)?)
+        };
         return Ok(Some(host.register_sound(name.as_deref(), compressed)));
     }
     if call.code == if ui { UI_S_STARTLOCALSOUND } else { CG_S_STARTLOCALSOUND } {
@@ -79,15 +83,35 @@ pub fn client_audio_syscall(
         }
         return Ok(Some(0));
     }
-    if call.code == if ui { UI_S_STARTBACKGROUNDTRACK } else { CG_S_STARTBACKGROUNDTRACK } {
+    if call.code
+        == if ui {
+            UI_S_STARTBACKGROUNDTRACK
+        } else {
+            CG_S_STARTBACKGROUNDTRACK
+        }
+    {
         let intro_word = call.int(1)?;
         let loop_word = call.int(2)?;
-        let intro = if intro_word == 0 { String::new() } else { memory.read_string(intro_word)? };
-        let loop_track = if loop_word == 0 { String::new() } else { memory.read_string(loop_word)? };
+        let intro = if intro_word == 0 {
+            String::new()
+        } else {
+            memory.read_string(intro_word)?
+        };
+        let loop_track = if loop_word == 0 {
+            String::new()
+        } else {
+            memory.read_string(loop_word)?
+        };
         host.start_background_track(&intro, &loop_track);
         return Ok(Some(0));
     }
-    if call.code == if ui { UI_S_STOPBACKGROUNDTRACK } else { CG_S_STOPBACKGROUNDTRACK } {
+    if call.code
+        == if ui {
+            UI_S_STOPBACKGROUNDTRACK
+        } else {
+            CG_S_STOPBACKGROUNDTRACK
+        }
+    {
         host.start_background_track("", "");
         return Ok(Some(0));
     }
@@ -103,7 +127,11 @@ pub fn client_audio_syscall(
                 return Err(GuestError::runtime(format!("S_StartSound: bad entitynum {entity}")));
             }
             if let Some(sound) = pcm(host, call.int(4)?) {
-                let origin = if origin_word == 0 { None } else { Some(memory.read_vec3_ptr(origin_word)?) };
+                let origin = if origin_word == 0 {
+                    None
+                } else {
+                    Some(memory.read_vec3_ptr(origin_word)?)
+                };
                 host.start_sound(origin, entity, channel, sound);
             }
             Ok(Some(0))
@@ -116,7 +144,13 @@ pub fn client_audio_syscall(
             if let Some(sound) = pcm(host, call.int(4)?) {
                 let origin = memory.read_vec3_ptr(call.int(2)?)?;
                 let velocity = memory.read_vec3_ptr(call.int(3)?)?;
-                host.add_loop_sound(call.int(1)?, origin, velocity, sound, call.code == CG_S_ADDREALLOOPINGSOUND);
+                host.add_loop_sound(
+                    call.int(1)?,
+                    origin,
+                    velocity,
+                    sound,
+                    call.code == CG_S_ADDREALLOOPINGSOUND,
+                );
             }
             Ok(Some(0))
         }
@@ -133,9 +167,9 @@ pub fn client_audio_syscall(
             let origin = memory.read_vec3_ptr(call.int(2)?)?;
             let axes_word = call.int(3)?;
             let _ = call.int(4)?;
-            let base = memory.pointer(axes_word).ok_or_else(|| {
-                GuestError::invalid("QVM respatialize axes require a nonnull pointer")
-            })?;
+            let base = memory
+                .pointer(axes_word)
+                .ok_or_else(|| GuestError::invalid("QVM respatialize axes require a nonnull pointer"))?;
             let axis = [
                 memory.read_vec3(base)?,
                 memory.read_vec3(base + 12)?,
@@ -172,7 +206,8 @@ mod tests {
             self.log.push(format!("bg {intro} {loop_track}"));
         }
         fn start_sound(&mut self, origin: Option<Vec3>, entity: i32, channel: i32, sound: SoundHandle) {
-            self.log.push(format!("start {} {entity} {channel} {}", sound.0, origin.is_some()));
+            self.log
+                .push(format!("start {} {entity} {channel} {}", sound.0, origin.is_some()));
         }
         fn clear_looping_sounds(&mut self, clear: bool) {
             self.log.push(format!("clear {clear}"));
@@ -206,27 +241,60 @@ mod tests {
         memory.write_string(640, "loop", 5).unwrap();
         let mut host = FakeAudio { log: Vec::new() };
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_REGISTERSOUND, &[256, 1]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_REGISTERSOUND, &[256, 1]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(5)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_STARTLOCALSOUND, &[5, 1]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_STARTLOCALSOUND, &[5, 1]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_STARTLOCALSOUND, &[99, 1]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_STARTLOCALSOUND, &[99, 1]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_STARTBACKGROUNDTRACK, &[512, 640]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_STARTBACKGROUNDTRACK, &[512, 640]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_STOPBACKGROUNDTRACK, &[]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_STOPBACKGROUNDTRACK, &[]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         let ui = HostCall::engine(QvmRole::Ui, UI_S_REGISTERSOUND, &[0, 0], AbiProfile::Modern);
-        assert_eq!(client_audio_syscall(&ui, &mut memory, QvmRole::Ui, &mut host).unwrap(), Some(5));
+        assert_eq!(
+            client_audio_syscall(&ui, &mut memory, QvmRole::Ui, &mut host).unwrap(),
+            Some(5)
+        );
         assert_eq!(
             host.log,
             vec![
@@ -250,33 +318,84 @@ mod tests {
         memory.write_vec3(664, &Vec3 { x: 0.0, y: 0.0, z: 1.0 }).unwrap();
         let mut host = FakeAudio { log: Vec::new() };
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_STARTSOUND, &[256, 3, 1, 5]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_STARTSOUND, &[256, 3, 1, 5]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_STARTSOUND, &[0, 3, 1, 5]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_STARTSOUND, &[0, 3, 1, 5]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
-        assert!(client_audio_syscall(&cg(CG_S_STARTSOUND, &[0, 5000, 1, 5]), &mut memory, QvmRole::Cgame, &mut host).is_err());
+        assert!(client_audio_syscall(
+            &cg(CG_S_STARTSOUND, &[0, 5000, 1, 5]),
+            &mut memory,
+            QvmRole::Cgame,
+            &mut host
+        )
+        .is_err());
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_CLEARLOOPINGSOUNDS, &[1]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_CLEARLOOPINGSOUNDS, &[1]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_ADDLOOPINGSOUND, &[2, 256, 512, 5]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_ADDLOOPINGSOUND, &[2, 256, 512, 5]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_ADDREALLOOPINGSOUND, &[2, 256, 512, 5]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_ADDREALLOOPINGSOUND, &[2, 256, 512, 5]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_UPDATEENTITYPOSITION, &[2, 256]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(
+                &cg(CG_S_UPDATEENTITYPOSITION, &[2, 256]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
-        assert_eq!(client_audio_syscall(&cg(CG_S_STOPLOOPINGSOUND, &[2]), &mut memory, QvmRole::Cgame, &mut host).unwrap(), Some(0));
         assert_eq!(
-            client_audio_syscall(&cg(CG_S_RESPATIALIZE, &[1, 256, 640, 0]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            client_audio_syscall(&cg(CG_S_STOPLOOPINGSOUND, &[2]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_audio_syscall(
+                &cg(CG_S_RESPATIALIZE, &[1, 256, 640, 0]),
+                &mut memory,
+                QvmRole::Cgame,
+                &mut host
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(
@@ -299,9 +418,18 @@ mod tests {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut host = FakeAudio { log: Vec::new() };
         let ui = HostCall::engine(QvmRole::Ui, CG_S_STARTSOUND, &[0, 0, 0, 0], AbiProfile::Modern);
-        assert_eq!(client_audio_syscall(&ui, &mut memory, QvmRole::Ui, &mut host).unwrap(), None);
-        assert_eq!(client_audio_syscall(&cg(999, &[]), &mut memory, QvmRole::Cgame, &mut host).unwrap(), None);
+        assert_eq!(
+            client_audio_syscall(&ui, &mut memory, QvmRole::Ui, &mut host).unwrap(),
+            None
+        );
+        assert_eq!(
+            client_audio_syscall(&cg(999, &[]), &mut memory, QvmRole::Cgame, &mut host).unwrap(),
+            None
+        );
         let wrong = HostCall::engine(QvmRole::Cgame, CG_S_STARTLOCALSOUND, &[5, 1], AbiProfile::Modern);
-        assert_eq!(client_audio_syscall(&wrong, &mut memory, QvmRole::Ui, &mut host).unwrap(), None);
+        assert_eq!(
+            client_audio_syscall(&wrong, &mut memory, QvmRole::Ui, &mut host).unwrap(),
+            None
+        );
     }
 }

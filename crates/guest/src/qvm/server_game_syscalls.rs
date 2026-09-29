@@ -11,15 +11,15 @@
 use qa_core::math::Vec3;
 
 use super::client_collision_syscalls::{TraceRecord, TraceShape};
-use super::client_game_syscalls::{ClientGameHost, client_game_syscall};
+use super::client_game_syscalls::{client_game_syscall, ClientGameHost};
 use super::client_state::{AbiProfile, CallKind, HostCall, QvmRole, SyscallMemory, WireUserCommand};
 use super::legacy_bot_abi::{
     G_ADJUST_AREA_PORTAL_STATE, G_AREAS_CONNECTED, G_DROP_CLIENT, G_ENTITIES_IN_BOX, G_ENTITY_CONTACT,
-    G_ENTITY_CONTACTCAPSULE, G_GET_CONFIGSTRING, G_GET_ENTITY_TOKEN, G_GET_SERVERINFO, G_GET_USERCMD,
-    G_GET_USERINFO, G_IN_PVS, G_IN_PVS_IGNORE_PORTALS, G_LINKENTITY, G_POINT_CONTENTS, G_SEND_SERVER_COMMAND,
-    G_SET_BRUSH_MODEL, G_SET_CONFIGSTRING, G_SET_USERINFO, G_TRACE, G_TRACECAPSULE, G_UNLINKENTITY,
+    G_ENTITY_CONTACTCAPSULE, G_GET_CONFIGSTRING, G_GET_ENTITY_TOKEN, G_GET_SERVERINFO, G_GET_USERCMD, G_GET_USERINFO,
+    G_IN_PVS, G_IN_PVS_IGNORE_PORTALS, G_LINKENTITY, G_POINT_CONTENTS, G_SEND_SERVER_COMMAND, G_SET_BRUSH_MODEL,
+    G_SET_CONFIGSTRING, G_SET_USERINFO, G_TRACE, G_TRACECAPSULE, G_UNLINKENTITY,
 };
-use super::server_info_syscalls::{ServerInformationHost, server_information_syscall};
+use super::server_info_syscalls::{server_information_syscall, ServerInformationHost};
 use crate::error::GuestError;
 
 /// Server trace query.
@@ -169,7 +169,9 @@ pub fn server_game_syscall(
             }
             let name = memory.read_string(call.int(2)?)?;
             if !name.starts_with('*') {
-                return Err(GuestError::runtime(format!("SV_SetBrushModel: {name} isn't a brush model")));
+                return Err(GuestError::runtime(format!(
+                    "SV_SetBrushModel: {name} isn't a brush model"
+                )));
             }
             let slot = services.number_from_pointer(call.int(1)?);
             services.set_brush_model(slot, &name);
@@ -182,9 +184,21 @@ pub fn server_game_syscall(
             let query = ServerTraceQuery {
                 start: memory.read_vec3_ptr(call.int(2)?)?,
                 end: memory.read_vec3_ptr(call.int(5)?)?,
-                mins: if mins_word == 0 { zero } else { memory.read_vec3_ptr(mins_word)? },
-                maxs: if maxs_word == 0 { zero } else { memory.read_vec3_ptr(maxs_word)? },
-                shape: if call.code == G_TRACECAPSULE { TraceShape::Capsule } else { TraceShape::Box },
+                mins: if mins_word == 0 {
+                    zero
+                } else {
+                    memory.read_vec3_ptr(mins_word)?
+                },
+                maxs: if maxs_word == 0 {
+                    zero
+                } else {
+                    memory.read_vec3_ptr(maxs_word)?
+                },
+                shape: if call.code == G_TRACECAPSULE {
+                    TraceShape::Capsule
+                } else {
+                    TraceShape::Box
+                },
                 pass_entity_num: call.int(6)?,
                 mask: call.int(7)?,
             };
@@ -192,13 +206,17 @@ pub fn server_game_syscall(
             super::client_collision_syscalls::write_trace(memory, call.int(1)?, &result)?;
             Ok(Some(0))
         }
-        G_POINT_CONTENTS => {
-            Ok(Some(services.point_contents(memory.read_vec3_ptr(call.int(1)?)?, call.int(2)?)))
-        }
+        G_POINT_CONTENTS => Ok(Some(
+            services.point_contents(memory.read_vec3_ptr(call.int(1)?)?, call.int(2)?),
+        )),
         G_IN_PVS | G_IN_PVS_IGNORE_PORTALS => {
             let first = memory.read_vec3_ptr(call.int(1)?)?;
             let second = memory.read_vec3_ptr(call.int(2)?)?;
-            Ok(Some(i32::from(services.in_pvs(first, second, call.code == G_IN_PVS_IGNORE_PORTALS))))
+            Ok(Some(i32::from(services.in_pvs(
+                first,
+                second,
+                call.code == G_IN_PVS_IGNORE_PORTALS,
+            ))))
         }
         G_ADJUST_AREA_PORTAL_STATE => {
             let slot = services.number_from_pointer(call.int(1)?);
@@ -242,7 +260,11 @@ pub fn server_game_syscall(
                 max: memory.read_vec3_ptr(call.int(2)?)?,
             };
             let slot = services.number_from_pointer(call.int(3)?);
-            Ok(Some(i32::from(services.entity_contact(bounds, slot, call.code == G_ENTITY_CONTACTCAPSULE))))
+            Ok(Some(i32::from(services.entity_contact(
+                bounds,
+                slot,
+                call.code == G_ENTITY_CONTACTCAPSULE,
+            ))))
         }
         G_GET_ENTITY_TOKEN => {
             let (token, ended) = services.entity_token();
@@ -281,7 +303,10 @@ mod tests {
 
     impl ServerSpatialHost for FakeServer {
         fn trace(&mut self, query: &ServerTraceQuery) -> TraceRecord {
-            self.log.push(format!("trace {:?} {} {}", query.shape, query.pass_entity_num, query.mask));
+            self.log.push(format!(
+                "trace {:?} {} {}",
+                query.shape, query.pass_entity_num, query.mask
+            ));
             record()
         }
         fn point_contents(&mut self, _point: Vec3, pass: i32) -> i32 {
@@ -362,7 +387,10 @@ mod tests {
     }
 
     fn server() -> FakeServer {
-        FakeServer { log: Vec::new(), tokens: vec![("{".to_string(), false), (String::new(), true)] }
+        FakeServer {
+            log: Vec::new(),
+            tokens: vec![("{".to_string(), false), (String::new(), true)],
+        }
     }
 
     #[test]
@@ -370,12 +398,24 @@ mod tests {
         let mut memory = SyscallMemory::new(65536).unwrap();
         memory.write_string(512, "hi", 3).unwrap();
         let mut services = server();
-        assert_eq!(server_game_syscall(&game(G_GET_USERINFO, &[0, 256, 64]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            server_game_syscall(&game(G_GET_USERINFO, &[0, 256, 64]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "\\name\\x");
-        assert_eq!(server_game_syscall(&game(G_SEND_SERVER_COMMAND, &[-1, 512]), &mut memory, &mut services).unwrap(), Some(0));
-        assert_eq!(server_game_syscall(&game(G_GET_CONFIGSTRING, &[3, 256, 64]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            server_game_syscall(&game(G_SEND_SERVER_COMMAND, &[-1, 512]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            server_game_syscall(&game(G_GET_CONFIGSTRING, &[3, 256, 64]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "cfg");
-        assert_eq!(server_game_syscall(&game(G_GET_SERVERINFO, &[256, 64]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            server_game_syscall(&game(G_GET_SERVERINFO, &[256, 64]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert_eq!(services.log[0], "cmd -1 hi".to_string());
     }
 
@@ -385,7 +425,10 @@ mod tests {
         memory.write_string(512, "*4", 3).unwrap();
         memory.write_string(1024, "bad", 4).unwrap();
         let mut services = server();
-        assert_eq!(server_game_syscall(&game(G_SET_BRUSH_MODEL, &[32, 512]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            server_game_syscall(&game(G_SET_BRUSH_MODEL, &[32, 512]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert!(server_game_syscall(&game(G_SET_BRUSH_MODEL, &[32, 1024]), &mut memory, &mut services).is_err());
         assert!(server_game_syscall(&game(G_SET_BRUSH_MODEL, &[32, 0]), &mut memory, &mut services).is_err());
         assert_eq!(services.log[0], "brush 2 *4".to_string());
@@ -394,20 +437,51 @@ mod tests {
     #[test]
     fn trace_and_contents() {
         let mut memory = SyscallMemory::new(65536).unwrap();
-        memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 10.0 }).unwrap();
-        memory.write_vec3(512, &Vec3 { x: 0.0, y: 0.0, z: -10.0 }).unwrap();
+        memory
+            .write_vec3(
+                256,
+                &Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 10.0,
+                },
+            )
+            .unwrap();
+        memory
+            .write_vec3(
+                512,
+                &Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -10.0,
+                },
+            )
+            .unwrap();
         let mut services = server();
         assert_eq!(
-            server_game_syscall(&game(G_TRACE, &[1024, 256, 0, 0, 512, 1, 3]), &mut memory, &mut services).unwrap(),
+            server_game_syscall(
+                &game(G_TRACE, &[1024, 256, 0, 0, 512, 1, 3]),
+                &mut memory,
+                &mut services
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(memory.read_f32(1032).unwrap(), 1.0);
         assert_eq!(memory.read_i32(1076).unwrap(), 9);
         assert_eq!(
-            server_game_syscall(&game(G_TRACECAPSULE, &[1024, 256, 0, 0, 512, 1, 3]), &mut memory, &mut services).unwrap(),
+            server_game_syscall(
+                &game(G_TRACECAPSULE, &[1024, 256, 0, 0, 512, 1, 3]),
+                &mut memory,
+                &mut services
+            )
+            .unwrap(),
             Some(0)
         );
-        assert_eq!(server_game_syscall(&game(G_POINT_CONTENTS, &[256, 2]), &mut memory, &mut services).unwrap(), Some(102));
+        assert_eq!(
+            server_game_syscall(&game(G_POINT_CONTENTS, &[256, 2]), &mut memory, &mut services).unwrap(),
+            Some(102)
+        );
         assert_eq!(services.log[0], "trace Box 1 3".to_string());
         assert_eq!(services.log[1], "trace Capsule 1 3".to_string());
     }
@@ -418,46 +492,107 @@ mod tests {
         memory.write_vec3(256, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         memory.write_vec3(512, &Vec3 { x: 1.0, y: 1.0, z: 1.0 }).unwrap();
         let mut services = server();
-        assert_eq!(server_game_syscall(&game(G_IN_PVS, &[256, 512]), &mut memory, &mut services).unwrap(), Some(1));
-        assert_eq!(server_game_syscall(&game(G_IN_PVS_IGNORE_PORTALS, &[256, 512]), &mut memory, &mut services).unwrap(), Some(0));
-        assert_eq!(server_game_syscall(&game(G_AREAS_CONNECTED, &[3, 3]), &mut memory, &mut services).unwrap(), Some(1));
-        assert_eq!(server_game_syscall(&game(G_ADJUST_AREA_PORTAL_STATE, &[16, 1]), &mut memory, &mut services).unwrap(), Some(0));
-        assert_eq!(server_game_syscall(&game(G_LINKENTITY, &[32]), &mut memory, &mut services).unwrap(), Some(0));
-        assert_eq!(server_game_syscall(&game(G_UNLINKENTITY, &[32]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            server_game_syscall(&game(G_IN_PVS, &[256, 512]), &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            server_game_syscall(&game(G_IN_PVS_IGNORE_PORTALS, &[256, 512]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            server_game_syscall(&game(G_AREAS_CONNECTED, &[3, 3]), &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            server_game_syscall(&game(G_ADJUST_AREA_PORTAL_STATE, &[16, 1]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            server_game_syscall(&game(G_LINKENTITY, &[32]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            server_game_syscall(&game(G_UNLINKENTITY, &[32]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert_eq!(
             services.log,
-            vec!["portal 1 true".to_string(), "link 2".to_string(), "unlink 2".to_string()]
+            vec![
+                "portal 1 true".to_string(),
+                "link 2".to_string(),
+                "unlink 2".to_string()
+            ]
         );
     }
 
     #[test]
     fn entities_in_box_and_contact() {
         let mut memory = SyscallMemory::new(65536).unwrap();
-        memory.write_vec3(256, &Vec3 { x: -8.0, y: -8.0, z: -8.0 }).unwrap();
+        memory
+            .write_vec3(
+                256,
+                &Vec3 {
+                    x: -8.0,
+                    y: -8.0,
+                    z: -8.0,
+                },
+            )
+            .unwrap();
         memory.write_vec3(512, &Vec3 { x: 8.0, y: 8.0, z: 8.0 }).unwrap();
         let mut services = server();
         assert_eq!(
-            server_game_syscall(&game(G_ENTITIES_IN_BOX, &[256, 512, 1024, 8]), &mut memory, &mut services).unwrap(),
+            server_game_syscall(
+                &game(G_ENTITIES_IN_BOX, &[256, 512, 1024, 8]),
+                &mut memory,
+                &mut services
+            )
+            .unwrap(),
             Some(3)
         );
         assert_eq!(memory.read_i32(1024).unwrap(), 1);
         assert_eq!(memory.read_i32(1032).unwrap(), 3);
-        assert!(server_game_syscall(&game(G_ENTITIES_IN_BOX, &[256, 512, 1024, 2]), &mut memory, &mut services).is_err());
-        assert_eq!(server_game_syscall(&game(G_ENTITY_CONTACT, &[256, 512, 48]), &mut memory, &mut services).unwrap(), Some(1));
+        assert!(server_game_syscall(
+            &game(G_ENTITIES_IN_BOX, &[256, 512, 1024, 2]),
+            &mut memory,
+            &mut services
+        )
+        .is_err());
         assert_eq!(
-            server_game_syscall(&game(G_ENTITY_CONTACTCAPSULE, &[256, 512, 48]), &mut memory, &mut services).unwrap(),
+            server_game_syscall(&game(G_ENTITY_CONTACT, &[256, 512, 48]), &mut memory, &mut services).unwrap(),
             Some(1)
         );
-        assert_eq!(services.log, vec!["contact 3 false".to_string(), "contact 3 true".to_string()]);
+        assert_eq!(
+            server_game_syscall(
+                &game(G_ENTITY_CONTACTCAPSULE, &[256, 512, 48]),
+                &mut memory,
+                &mut services
+            )
+            .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            services.log,
+            vec!["contact 3 false".to_string(), "contact 3 true".to_string()]
+        );
     }
 
     #[test]
     fn entity_token_consumes_before_copying() {
         let mut memory = SyscallMemory::new(65536).unwrap();
         let mut services = server();
-        assert_eq!(server_game_syscall(&game(G_GET_ENTITY_TOKEN, &[256, 64]), &mut memory, &mut services).unwrap(), Some(1));
+        assert_eq!(
+            server_game_syscall(&game(G_GET_ENTITY_TOKEN, &[256, 64]), &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "{");
-        assert_eq!(server_game_syscall(&game(G_GET_ENTITY_TOKEN, &[256, 64]), &mut memory, &mut services).unwrap(), Some(0));
-        assert_eq!(server_game_syscall(&game(999, &[]), &mut memory, &mut services).unwrap(), None);
+        assert_eq!(
+            server_game_syscall(&game(G_GET_ENTITY_TOKEN, &[256, 64]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            server_game_syscall(&game(999, &[]), &mut memory, &mut services).unwrap(),
+            None
+        );
     }
 }

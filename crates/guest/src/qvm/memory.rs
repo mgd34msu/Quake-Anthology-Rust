@@ -688,6 +688,29 @@ impl QvmMemory {
     pub fn set_u64(&self, offset: usize, value: u64) -> Result<(), GuestError> {
         self.store(offset, &value.to_le_bytes())
     }
+
+    fn store_raw(&self, offset: usize, bytes: &[u8]) -> Result<(), GuestError> {
+        let mut inner = self.inner.borrow_mut();
+        inner.writes.assert_writable()?;
+        inner.writes.check_range(inner.bytes.len(), offset, bytes.len())?;
+        inner.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Write one byte without publication (counter evaluation scratch stores).
+    pub fn set_u8_unobserved(&self, offset: usize, value: u8) -> Result<(), GuestError> {
+        self.store_raw(offset, &[value])
+    }
+
+    /// Write a little-endian `u16` without publication.
+    pub fn set_u16_unobserved(&self, offset: usize, value: u16) -> Result<(), GuestError> {
+        self.store_raw(offset, &value.to_le_bytes())
+    }
+
+    /// Write a little-endian `i32` without publication.
+    pub fn set_i32_unobserved(&self, offset: usize, value: i32) -> Result<(), GuestError> {
+        self.store_raw(offset, &value.to_le_bytes())
+    }
 }
 
 fn span_error(start: i64, len: usize, total: usize) -> Result<(), GuestError> {

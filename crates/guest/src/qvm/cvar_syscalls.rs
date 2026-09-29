@@ -81,7 +81,11 @@ fn update(memory: &mut SyscallMemory, word: i32, cvars: &mut dyn CvarHost) -> Re
 
 fn register(call: &HostCall, memory: &mut SyscallMemory, cvars: &mut dyn CvarHost) -> Result<(), GuestError> {
     let word = call.int(1)?;
-    let handle = cvars.bind_vm(&memory.read_string(call.int(2)?)?, &memory.read_string(call.int(3)?)?, call.int(4)?);
+    let handle = cvars.bind_vm(
+        &memory.read_string(call.int(2)?)?,
+        &memory.read_string(call.int(3)?)?,
+        call.int(4)?,
+    );
     if memory.pointer(word).is_none() {
         return Ok(());
     }
@@ -224,7 +228,11 @@ mod tests {
             Self {
                 values: HashMap::from([(
                     "sv_fps".to_string(),
-                    CvarValue { value: "20".to_string(), numeric_value: 20.0, integer_value: 20 },
+                    CvarValue {
+                        value: "20".to_string(),
+                        numeric_value: 20.0,
+                        integer_value: 20,
+                    },
                 )]),
                 bound: HashMap::new(),
                 next: 7,
@@ -237,10 +245,19 @@ mod tests {
         fn bind_vm(&mut self, name: &str, default: &str, _flags: i32) -> i32 {
             let handle = self.next;
             self.next += 1;
-            let value = self.values.get(name).map_or(default, |bound| bound.value.as_str()).to_string();
+            let value = self
+                .values
+                .get(name)
+                .map_or(default, |bound| bound.value.as_str())
+                .to_string();
             self.bound.insert(
                 handle,
-                CvarVmBinding { modification_count: 3, value, numeric_value: 20.0, integer_value: 20 },
+                CvarVmBinding {
+                    modification_count: 3,
+                    value,
+                    numeric_value: 20.0,
+                    integer_value: 20,
+                },
             );
             handle
         }
@@ -254,7 +271,11 @@ mod tests {
             self.log.push(format!("set {name}={value}"));
             self.values.insert(
                 name.to_string(),
-                CvarValue { value: value.to_string(), numeric_value: 0.0, integer_value: 0 },
+                CvarValue {
+                    value: value.to_string(),
+                    numeric_value: value.parse().unwrap_or(0.0),
+                    integer_value: value.parse().unwrap_or(0),
+                },
             );
         }
         fn set_value(&mut self, name: &str, value: f32) {
@@ -282,7 +303,13 @@ mod tests {
     }
 
     fn call(role: QvmRole, code: i32, args: &[i32]) -> HostCall {
-        HostCall { kind: CallKind::Engine, role, code, words: core::iter::once(code).chain(args.iter().copied()).collect(), abi_profile: AbiProfile::Modern }
+        HostCall {
+            kind: CallKind::Engine,
+            role,
+            code,
+            words: core::iter::once(code).chain(args.iter().copied()).collect(),
+            abi_profile: AbiProfile::Modern,
+        }
     }
 
     #[test]
@@ -305,7 +332,10 @@ mod tests {
         memory.write_i32(128, 999).unwrap();
         memory.write_i32(132, 3).unwrap();
         let mut cvars = FakeCvars::new();
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 4, &[128]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 4, &[128]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(132).unwrap(), 3);
     }
 
@@ -314,8 +344,14 @@ mod tests {
         let mut memory = memory();
         words(&mut memory, &[("sv_fps", 512), ("40", 600)]);
         let mut cvars = FakeCvars::new();
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 5, &[512, 600]), &mut memory, &mut cvars).unwrap(), Some(0));
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 5, &[512, 0]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 5, &[512, 600]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 5, &[512, 0]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(cvars.log, vec!["set sv_fps=40".to_string(), "reset sv_fps".to_string()]);
     }
 
@@ -324,11 +360,23 @@ mod tests {
         let mut memory = memory();
         words(&mut memory, &[("sv_fps", 512), ("nope", 600)]);
         let mut cvars = FakeCvars::new();
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 6, &[512]), &mut memory, &mut cvars).unwrap(), Some(20));
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 6, &[600]), &mut memory, &mut cvars).unwrap(), Some(0));
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 7, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 6, &[512]), &mut memory, &mut cvars).unwrap(),
+            Some(20)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 6, &[600]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 7, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(128).unwrap(), "20");
-        assert_eq!(cvar_syscall(&call(QvmRole::Qagame, 7, &[600, 128, 64]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Qagame, 7, &[600, 128, 64]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.get(128).unwrap(), 0);
     }
 
@@ -337,10 +385,19 @@ mod tests {
         let mut memory = memory();
         words(&mut memory, &[("sv_fps", 512)]);
         let mut cvars = FakeCvars::new();
-        assert_eq!(cvar_syscall(&call(QvmRole::Cgame, 6, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Cgame, 6, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(128).unwrap(), "20");
-        assert_eq!(cvar_syscall(&call(QvmRole::Cgame, 7, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(), None);
-        assert_eq!(cvar_syscall(&call(QvmRole::Cgame, 8, &[]), &mut memory, &mut cvars).unwrap(), None);
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Cgame, 7, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(),
+            None
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Cgame, 8, &[]), &mut memory, &mut cvars).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -348,24 +405,53 @@ mod tests {
         let mut memory = memory();
         words(&mut memory, &[("sv_fps", 512), ("9", 600)]);
         let mut cvars = FakeCvars::new();
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 3, &[512, 600]), &mut memory, &mut cvars).unwrap(), Some(0));
         assert_eq!(
-            cvar_syscall(&call(QvmRole::Ui, 4, &[512]), &mut memory, &mut cvars).unwrap(),
-            Some(20.0f32.to_bits() as i32)
-        );
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 5, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(), Some(0));
-        assert_eq!(memory.read_string(128).unwrap(), "9");
-        assert_eq!(
-            cvar_syscall(&call(QvmRole::Ui, 6, &[512, 1.5f32.to_bits() as i32]), &mut memory, &mut cvars).unwrap(),
+            cvar_syscall(&call(QvmRole::Ui, 3, &[512, 600]), &mut memory, &mut cvars).unwrap(),
             Some(0)
         );
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 7, &[512]), &mut memory, &mut cvars).unwrap(), Some(0));
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 8, &[512, 600, 1]), &mut memory, &mut cvars).unwrap(), Some(0));
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 9, &[2, 128, 64]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 4, &[512]), &mut memory, &mut cvars).unwrap(),
+            Some(9.0f32.to_bits() as i32)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 5, &[512, 128, 64]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
+        assert_eq!(memory.read_string(128).unwrap(), "9");
+        assert_eq!(
+            cvar_syscall(
+                &call(QvmRole::Ui, 6, &[512, 1.5f32.to_bits() as i32]),
+                &mut memory,
+                &mut cvars
+            )
+            .unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 7, &[512]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 8, &[512, 600, 1]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 9, &[2, 128, 64]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(128).unwrap(), "\\flags\\2");
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 50, &[256, 512, 600, 0]), &mut memory, &mut cvars).unwrap(), Some(0));
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 50, &[256, 512, 600, 0]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(256).unwrap(), 7);
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 51, &[256]), &mut memory, &mut cvars).unwrap(), Some(0));
-        assert_eq!(cvar_syscall(&call(QvmRole::Ui, 52, &[]), &mut memory, &mut cvars).unwrap(), None);
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 51, &[256]), &mut memory, &mut cvars).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            cvar_syscall(&call(QvmRole::Ui, 52, &[]), &mut memory, &mut cvars).unwrap(),
+            None
+        );
     }
 }

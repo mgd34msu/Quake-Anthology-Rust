@@ -350,7 +350,7 @@ fn read_slots(view: &[u8], offset: usize) -> [i32; 16] {
     core::array::from_fn(|index| read_i32(view, offset + index * 4))
 }
 
-fn write_slots(view: &mut [u8], offset: usize, slots: &[i32; 16]) {
+fn write_slots(view: &mut [u8], offset: usize, slots: &[i32]) {
     for (index, value) in slots.iter().enumerate() {
         write_i32(view, offset + index * 4, *value);
     }
@@ -401,11 +401,7 @@ pub fn read_source_entity_state(view: &[u8], profile: AbiProfile) -> Result<Enti
 }
 
 /// Write an entity-state record with presentation translation.
-pub fn write_entity_state(
-    view: &mut [u8],
-    state: &EntityStateFields,
-    profile: AbiProfile,
-) -> Result<(), GuestError> {
+pub fn write_entity_state(view: &mut [u8], state: &EntityStateFields, profile: AbiProfile) -> Result<(), GuestError> {
     let translated = EntityStateFields {
         entity_type: qvm_entity_type(state.entity_type, profile, true)?,
         event: qvm_event(state.event, profile, true)?,
@@ -525,11 +521,7 @@ pub fn read_source_player_state(view: &[u8], profile: AbiProfile) -> Result<Play
 }
 
 /// Write a player-state record with presentation translation.
-pub fn write_player_state(
-    view: &mut [u8],
-    state: &PlayerStateFields,
-    profile: AbiProfile,
-) -> Result<(), GuestError> {
+pub fn write_player_state(view: &mut [u8], state: &PlayerStateFields, profile: AbiProfile) -> Result<(), GuestError> {
     let mut persistent = state.persistent;
     if !profile.is_modern() {
         let mut mapped = [0i32; 16];
@@ -829,7 +821,11 @@ mod tests {
             client_number: 26,
             weapon: 27,
             weapon_state: 28,
-            view_angles: Vec3 { x: 0.0, y: 90.0, z: 0.0 },
+            view_angles: Vec3 {
+                x: 0.0,
+                y: 90.0,
+                z: 0.0,
+            },
             view_height: 29,
             damage_event: 30,
             damage_yaw: 31,

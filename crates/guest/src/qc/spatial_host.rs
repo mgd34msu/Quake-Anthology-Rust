@@ -308,7 +308,11 @@ impl<W: SpatialWorld, S: Scene, M: ModelTable> SpatialBindings<W, S, M> {
         let origin = fields.get(&actor, "origin")?.as_vector("origin")?;
         let trace = self.scene.trace(&TraceParams {
             start: origin,
-            end: Vec3 { x: origin.x, y: origin.y, z: origin.z - 256.0 },
+            end: Vec3 {
+                x: origin.x,
+                y: origin.y,
+                z: origin.z - 256.0,
+            },
             shape: TraceShape::Box {
                 bounds: Bounds {
                     min: fields.get(&actor, "mins")?.as_vector("mins")?,
@@ -406,9 +410,7 @@ mod tests {
     impl Scene for FakeScene {
         fn trace(&self, params: &TraceParams) -> Result<TraceResult, GuestError> {
             let hit = match &self.hit {
-                Some(actor) if Some(actor) != params.pass_actor.as_ref() => {
-                    TraceHit::Actor { actor: actor.clone() }
-                }
+                Some(actor) if Some(actor) != params.pass_actor.as_ref() => TraceHit::Actor { actor: actor.clone() },
                 _ => TraceHit::None,
             };
             let fraction = if matches!(hit, TraceHit::None) { 1.0 } else { 0.5 };
@@ -419,7 +421,10 @@ mod tests {
                 in_water: false,
                 in_open: true,
                 end: params.end,
-                plane: Plane { normal: vec3(0.0, 0.0, 1.0), distance: params.end.z },
+                plane: Plane {
+                    normal: vec3(0.0, 0.0, 1.0),
+                    distance: params.end.z,
+                },
                 hit,
             })
         }
@@ -459,17 +464,28 @@ mod tests {
             fields.allocate(actor, &layout()).unwrap();
         }
         fields.set(&player, "solid", FieldValue::Float(3.0)).unwrap();
-        fields.set(&player, "origin", FieldValue::Vector(vec3(0.0, 0.0, 0.0))).unwrap();
+        fields
+            .set(&player, "origin", FieldValue::Vector(vec3(0.0, 0.0, 0.0)))
+            .unwrap();
         fields.set(&target, "solid", FieldValue::Float(3.0)).unwrap();
-        fields.set(&target, "origin", FieldValue::Vector(vec3(40.0, 0.0, 0.0))).unwrap();
-        let world = FakeWorld { actors: vec![Some(world_actor), Some(player), Some(target)], links: Vec::new(), prepared: 0 };
+        fields
+            .set(&target, "origin", FieldValue::Vector(vec3(40.0, 0.0, 0.0)))
+            .unwrap();
+        let world = FakeWorld {
+            actors: vec![Some(world_actor), Some(player), Some(target)],
+            links: Vec::new(),
+            prepared: 0,
+        };
         let scene = FakeScene { contents: -16.0, hit };
         let mut table = HashMap::new();
         table.insert(
             "progs/player.mdl".to_string(),
             ModelInfo {
                 index: 2,
-                bounds: Bounds { min: vec3(-16.0, -16.0, -24.0), max: vec3(16.0, 16.0, 32.0) },
+                bounds: Bounds {
+                    min: vec3(-16.0, -16.0, -24.0),
+                    max: vec3(16.0, 16.0, 32.0),
+                },
             },
         );
         (owner, fields, world, scene, FakeModels { table })
@@ -484,7 +500,10 @@ mod tests {
             .set_size(
                 &mut fields,
                 1,
-                Bounds { min: vec3(-8.0, -8.0, -8.0), max: vec3(8.0, 8.0, 8.0) },
+                Bounds {
+                    min: vec3(-8.0, -8.0, -8.0),
+                    max: vec3(8.0, 8.0, 8.0),
+                },
             )
             .unwrap();
         bindings.set_model(&mut fields, 1, "progs/player.mdl").unwrap();
@@ -497,19 +516,31 @@ mod tests {
         assert_eq!(bindings.world().links, vec![1, 1, 1]);
         assert!(bindings.set_model(&mut fields, 1, "missing.mdl").is_err());
         assert!(bindings
-            .set_size(&mut fields, 1, Bounds { min: vec3(1.0, 0.0, 0.0), max: vec3(0.0, 0.0, 0.0) })
+            .set_size(
+                &mut fields,
+                1,
+                Bounds {
+                    min: vec3(1.0, 0.0, 0.0),
+                    max: vec3(0.0, 0.0, 0.0)
+                }
+            )
             .is_err());
     }
 
     #[test]
     fn traceline_writes_globals_with_hit_reference() {
-        let (owner, mut fields, world, _, models) = harness(Some(owner.actor(2, 1)));
+        let (owner, mut fields, world, _, models) = harness(None);
         let hit = owner.actor(2, 1);
         let _ = &mut fields;
-        let scene = FakeScene { contents: 0.0, hit: Some(hit) };
+        let scene = FakeScene {
+            contents: 0.0,
+            hit: Some(hit),
+        };
         let mut bindings = SpatialBindings::new(world, scene, models);
         let mut globals = TraceGlobals::default();
-        bindings.traceline(&mut globals, vec3(0.0, 0.0, 0.0), vec3(64.0, 0.0, 0.0), 1, 1).unwrap();
+        bindings
+            .traceline(&mut globals, vec3(0.0, 0.0, 0.0), vec3(64.0, 0.0, 0.0), 1, 1)
+            .unwrap();
         assert_eq!(globals.fraction, 0.5);
         assert_eq!(globals.ent_reference, 2);
         assert_eq!(globals.plane_normal, vec3(0.0, 0.0, 1.0));
@@ -540,10 +571,15 @@ mod tests {
     fn drop_to_floor_lands_and_sets_ground() {
         let (owner, mut fields, world, _, models) = harness(None);
         let floor = owner.actor(0, 1);
-        let scene = FakeScene { contents: 0.0, hit: Some(floor) };
+        let scene = FakeScene {
+            contents: 0.0,
+            hit: Some(floor),
+        };
         let mut bindings = SpatialBindings::new(world, scene, models);
         let actor = bindings.world().slot_actor(1).unwrap();
-        fields.set(&actor, "origin", FieldValue::Vector(vec3(0.0, 0.0, 64.0))).unwrap();
+        fields
+            .set(&actor, "origin", FieldValue::Vector(vec3(0.0, 0.0, 64.0)))
+            .unwrap();
         let landed = bindings.drop_to_floor(&mut fields, 1).unwrap();
         assert_eq!(landed, 1.0);
         let flags = fields.get(&actor, "flags").unwrap().as_float("flags").unwrap() as i32;

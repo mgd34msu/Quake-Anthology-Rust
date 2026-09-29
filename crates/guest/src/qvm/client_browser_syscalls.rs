@@ -64,12 +64,14 @@ fn has_server_record(source: i32, index: i32) -> bool {
 
 /// Copy a server name with the donor's 31-byte `LAN_AddServer` limit.
 fn read_server_name(memory: &SyscallMemory, word: i32) -> Result<String, GuestError> {
-    let base = memory.pointer(word).ok_or_else(|| GuestError::invalid("Q_strncpyz: NULL src"))?;
+    let base = memory
+        .pointer(word)
+        .ok_or_else(|| GuestError::invalid("Q_strncpyz: NULL src"))?;
     let mut name = String::new();
     for offset in 0..31 {
-        let byte = memory.get(base + offset).map_err(|_| {
-            GuestError::invalid("Server name copy exceeds QVM allocation")
-        })?;
+        let byte = memory
+            .get(base + offset)
+            .map_err(|_| GuestError::invalid("Server name copy exceeds QVM allocation"))?;
         if byte == 0 {
             break;
         }
@@ -208,7 +210,11 @@ pub fn client_browser_syscall(
             let address_word = call.int(1)?;
             let word = call.int(2)?;
             let capacity = call.int(3)?;
-            let address = if address_word == 0 { None } else { Some(memory.read_string(address_word)?) };
+            let address = if address_word == 0 {
+                None
+            } else {
+                Some(memory.read_string(address_word)?)
+            };
             let status = browser.server_status(address.as_deref());
             if word != 0 {
                 if let Some(text) = &status {
@@ -219,7 +225,13 @@ pub fn client_browser_syscall(
         }
         83 => Ok(Some(browser.get_server_ping(call.int(1)?, call.int(2)?))),
         84 => Ok(Some(browser.server_visibility(call.int(1)?, call.int(2)?))),
-        85 => Ok(Some(browser.compare_servers(call.int(1)?, call.int(2)?, call.int(3)?, call.int(4)?, call.int(5)?))),
+        85 => Ok(Some(browser.compare_servers(
+            call.int(1)?,
+            call.int(2)?,
+            call.int(3)?,
+            call.int(4)?,
+            call.int(5)?,
+        ))),
         _ => Ok(None),
     }
 }
@@ -242,9 +254,15 @@ mod tests {
         }
         fn get_ping(&mut self, index: i32) -> PingResult {
             if index == 0 {
-                PingResult { time: 42, address: Some("1.2.3.4:27960".to_string()) }
+                PingResult {
+                    time: 42,
+                    address: Some("1.2.3.4:27960".to_string()),
+                }
             } else {
-                PingResult { time: -1, address: None }
+                PingResult {
+                    time: -1,
+                    address: None,
+                }
             }
         }
         fn source_ping_info(&mut self, index: i32) -> Option<String> {
@@ -303,8 +321,14 @@ mod tests {
     fn ping_traps() {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
-        assert_eq!(client_browser_syscall(&ui(46, &[]), &mut memory, &mut browser).unwrap(), Some(3));
-        assert_eq!(client_browser_syscall(&ui(47, &[2]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(46, &[]), &mut memory, &mut browser).unwrap(),
+            Some(3)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(47, &[2]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(
             client_browser_syscall(&ui(48, &[0, 256, 64, 512]), &mut memory, &mut browser).unwrap(),
             Some(0)
@@ -316,9 +340,15 @@ mod tests {
             Some(0)
         );
         assert_eq!(memory.get(256).unwrap(), 0);
-        assert_eq!(client_browser_syscall(&ui(49, &[0, 256, 64]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(49, &[0, 256, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "info");
-        assert_eq!(client_browser_syscall(&ui(49, &[1, 256, 64]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(49, &[1, 256, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.get(256).unwrap(), 0);
         assert_eq!(browser.log, vec!["clear 2".to_string()]);
     }
@@ -327,26 +357,64 @@ mod tests {
     fn server_address_and_info() {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
-        assert_eq!(client_browser_syscall(&ui(65, &[0]), &mut memory, &mut browser).unwrap(), Some(10));
-        assert_eq!(client_browser_syscall(&ui(66, &[0, 0, 256, 64]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(65, &[0]), &mut memory, &mut browser).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(66, &[0, 0, 256, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "5.6.7.8:27960");
-        assert_eq!(client_browser_syscall(&ui(67, &[0, 0, 256, 64]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(67, &[0, 0, 256, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "\\map\\q3dm1");
-        assert_eq!(client_browser_syscall(&ui(66, &[0, 200, 256, 64]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(66, &[0, 200, 256, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.get(256).unwrap(), 0);
-        assert_eq!(client_browser_syscall(&ui(67, &[0, 0, 0, 64]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(67, &[0, 0, 0, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
     }
 
     #[test]
     fn visible_pings_and_cache() {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
-        assert_eq!(client_browser_syscall(&ui(68, &[0, 1, 1]), &mut memory, &mut browser).unwrap(), Some(0));
-        assert_eq!(client_browser_syscall(&ui(69, &[0]), &mut memory, &mut browser).unwrap(), Some(1));
-        assert_eq!(client_browser_syscall(&ui(70, &[0]), &mut memory, &mut browser).unwrap(), Some(0));
-        assert_eq!(client_browser_syscall(&ui(71, &[]), &mut memory, &mut browser).unwrap(), Some(0));
-        assert_eq!(client_browser_syscall(&ui(72, &[]), &mut memory, &mut browser).unwrap(), Some(0));
-        assert_eq!(browser.log, vec!["visible 0 1 1".to_string(), "reset 0".to_string(), "load".to_string(), "save".to_string()]);
+        assert_eq!(
+            client_browser_syscall(&ui(68, &[0, 1, 1]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(69, &[0]), &mut memory, &mut browser).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(70, &[0]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(71, &[]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(72, &[]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            browser.log,
+            vec![
+                "visible 0 1 1".to_string(),
+                "reset 0".to_string(),
+                "load".to_string(),
+                "save".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -355,8 +423,14 @@ mod tests {
         memory.write_string(256, "my-server", 10).unwrap();
         memory.write_string(512, "9.9.9.9:27960", 14).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
-        assert_eq!(client_browser_syscall(&ui(73, &[0, 256, 512]), &mut memory, &mut browser).unwrap(), Some(4));
-        assert_eq!(client_browser_syscall(&ui(74, &[0, 512]), &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&ui(73, &[0, 256, 512]), &mut memory, &mut browser).unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(74, &[0, 512]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(
             browser.log,
             vec![
@@ -373,7 +447,10 @@ mod tests {
         memory.write_string(256, &long, 41).unwrap();
         memory.write_string(512, "addr", 5).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
-        assert_eq!(client_browser_syscall(&ui(73, &[0, 256, 512]), &mut memory, &mut browser).unwrap(), Some(4));
+        assert_eq!(
+            client_browser_syscall(&ui(73, &[0, 256, 512]), &mut memory, &mut browser).unwrap(),
+            Some(4)
+        );
         assert_eq!(browser.log[0], format!("add 0 {} addr", "a".repeat(31)));
     }
 
@@ -382,13 +459,31 @@ mod tests {
         let mut memory = SyscallMemory::new(4096).unwrap();
         memory.write_string(256, "7.7.7.7", 8).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
-        assert_eq!(client_browser_syscall(&ui(82, &[256, 512, 64]), &mut memory, &mut browser).unwrap(), Some(1));
+        assert_eq!(
+            client_browser_syscall(&ui(82, &[256, 512, 64]), &mut memory, &mut browser).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_string(512).unwrap(), "status 7.7.7.7");
-        assert_eq!(client_browser_syscall(&ui(82, &[0, 512, 64]), &mut memory, &mut browser).unwrap(), Some(0));
-        assert_eq!(client_browser_syscall(&ui(83, &[0, 1]), &mut memory, &mut browser).unwrap(), Some(50));
-        assert_eq!(client_browser_syscall(&ui(84, &[0, 1]), &mut memory, &mut browser).unwrap(), Some(1));
-        assert_eq!(client_browser_syscall(&ui(85, &[0, 0, 0, 5, 3]), &mut memory, &mut browser).unwrap(), Some(2));
-        assert_eq!(client_browser_syscall(&ui(86, &[]), &mut memory, &mut browser).unwrap(), None);
+        assert_eq!(
+            client_browser_syscall(&ui(82, &[0, 512, 64]), &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(83, &[0, 1]), &mut memory, &mut browser).unwrap(),
+            Some(50)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(84, &[0, 1]), &mut memory, &mut browser).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(85, &[0, 0, 0, 5, 3]), &mut memory, &mut browser).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            client_browser_syscall(&ui(86, &[]), &mut memory, &mut browser).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -396,14 +491,26 @@ mod tests {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut browser = FakeBrowser { log: Vec::new() };
         let count = HostCall::extension(QvmRole::Ui, 46, &[], AbiProfile::Legacy);
-        assert_eq!(client_browser_syscall(&count, &mut memory, &mut browser).unwrap(), Some(10));
+        assert_eq!(
+            client_browser_syscall(&count, &mut memory, &mut browser).unwrap(),
+            Some(10)
+        );
         let count2 = HostCall::extension(QvmRole::Ui, 48, &[], AbiProfile::Legacy);
-        assert_eq!(client_browser_syscall(&count2, &mut memory, &mut browser).unwrap(), Some(12));
+        assert_eq!(
+            client_browser_syscall(&count2, &mut memory, &mut browser).unwrap(),
+            Some(12)
+        );
         let addr = HostCall::extension(QvmRole::Ui, 47, &[0, 256, 64], AbiProfile::Legacy);
-        assert_eq!(client_browser_syscall(&addr, &mut memory, &mut browser).unwrap(), Some(0));
+        assert_eq!(
+            client_browser_syscall(&addr, &mut memory, &mut browser).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "5.6.7.8:27960");
         let modern = HostCall::extension(QvmRole::Ui, 46, &[], AbiProfile::Modern);
-        assert_eq!(client_browser_syscall(&modern, &mut memory, &mut browser).unwrap(), None);
+        assert_eq!(
+            client_browser_syscall(&modern, &mut memory, &mut browser).unwrap(),
+            None
+        );
         let game = HostCall::engine(QvmRole::Cgame, 46, &[], AbiProfile::Modern);
         assert_eq!(client_browser_syscall(&game, &mut memory, &mut browser).unwrap(), None);
     }

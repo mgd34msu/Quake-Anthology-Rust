@@ -241,10 +241,19 @@ pub fn read_ref_entity(memory: &SyscallMemory, word: i32) -> Result<RefEntity, G
         5 => RefEntityKind::RailRings,
         6 => RefEntityKind::Lightning,
         7 => RefEntityKind::PortalSurface,
-        other => return Err(GuestError::abi(format!("QVM refEntity_t unsupported entity type {other}"))),
+        other => {
+            return Err(GuestError::abi(format!(
+                "QVM refEntity_t unsupported entity type {other}"
+            )))
+        }
     };
     let color = |offset: usize| -> Result<[u8; 4], GuestError> {
-        Ok([memory.get(range.start + offset)?, memory.get(range.start + offset + 1)?, memory.get(range.start + offset + 2)?, memory.get(range.start + offset + 3)?])
+        Ok([
+            memory.get(range.start + offset)?,
+            memory.get(range.start + offset + 1)?,
+            memory.get(range.start + offset + 2)?,
+            memory.get(range.start + offset + 3)?,
+        ])
     };
     Ok(RefEntity {
         kind,
@@ -283,7 +292,9 @@ pub fn read_refdef(memory: &SyscallMemory, word: i32) -> Result<Refdef, GuestErr
     for (row, slot) in text.iter_mut().enumerate() {
         let bytes = memory.read_bytes(range.start + 112 + row * 32, 32)?;
         if !bytes.contains(&0) {
-            return Err(GuestError::abi(format!("QVM refdef_t render text row {row} has no NUL within 32 bytes")));
+            return Err(GuestError::abi(format!(
+                "QVM refdef_t render text row {row} has no NUL within 32 bytes"
+            )));
         }
         slot.copy_from_slice(bytes);
     }
@@ -312,14 +323,21 @@ pub fn read_poly_vertices(memory: &SyscallMemory, word: i32, count: i32) -> Resu
     if count < 0 {
         return Err(GuestError::abi(format!("QVM polyVert_t invalid vertex count {count}")));
     }
-    let base = memory.pointer(word).ok_or_else(|| GuestError::invalid("QVM poly vertices require a nonnull pointer"))?;
+    let base = memory
+        .pointer(word)
+        .ok_or_else(|| GuestError::invalid("QVM poly vertices require a nonnull pointer"))?;
     let mut vertices = Vec::with_capacity(count as usize);
     for index in 0..count as usize {
         let offset = base + index * QVM_POLY_VERTEX_BYTES;
         vertices.push(PolyVertex {
             position: memory.read_vec3(offset)?,
             tex_coord: [memory.read_f32(offset + 12)?, memory.read_f32(offset + 16)?],
-            color: [memory.get(offset + 20)?, memory.get(offset + 21)?, memory.get(offset + 22)?, memory.get(offset + 23)?],
+            color: [
+                memory.get(offset + 20)?,
+                memory.get(offset + 21)?,
+                memory.get(offset + 22)?,
+                memory.get(offset + 23)?,
+            ],
         });
     }
     Ok(vertices)
@@ -358,10 +376,28 @@ struct ResourceTraps {
     remap: i32,
 }
 
-const UI_TRAPS: ResourceTraps =
-    ResourceTraps { model: 18, skin: 19, shader: None, shader_nomip: 20, color: 26, picture: 27, bounds: 56, tag: 29, remap: 80 };
-const CGAME_TRAPS: ResourceTraps =
-    ResourceTraps { model: 37, skin: 38, shader: Some(39), shader_nomip: 57, color: 45, picture: 46, bounds: 47, tag: 48, remap: 79 };
+const UI_TRAPS: ResourceTraps = ResourceTraps {
+    model: 18,
+    skin: 19,
+    shader: None,
+    shader_nomip: 20,
+    color: 26,
+    picture: 27,
+    bounds: 56,
+    tag: 29,
+    remap: 80,
+};
+const CGAME_TRAPS: ResourceTraps = ResourceTraps {
+    model: 37,
+    skin: 38,
+    shader: Some(39),
+    shader_nomip: 57,
+    color: 45,
+    picture: 46,
+    bounds: 47,
+    tag: 48,
+    remap: 79,
+};
 
 fn resource_syscall(
     call: &HostCall,
@@ -377,12 +413,20 @@ fn resource_syscall(
     let trap = call.code;
     if trap == ids.model {
         let name_word = call.int(1)?;
-        let name = if name_word == 0 { String::new() } else { memory.read_string(name_word)? };
+        let name = if name_word == 0 {
+            String::new()
+        } else {
+            memory.read_string(name_word)?
+        };
         return Ok(Some(resources.register_model(&name)));
     }
     if trap == ids.skin {
         let name_word = call.int(1)?;
-        let name = if name_word == 0 { String::new() } else { memory.read_string(name_word)? };
+        let name = if name_word == 0 {
+            String::new()
+        } else {
+            memory.read_string(name_word)?
+        };
         return Ok(Some(resources.register_skin(&name)));
     }
     if Some(trap) == ids.shader || trap == ids.shader_nomip {
@@ -397,7 +441,9 @@ fn resource_syscall(
         if word == 0 {
             draw.set_color(None);
         } else {
-            let base = memory.pointer(word).ok_or_else(|| GuestError::invalid("QVM color requires a nonnull pointer"))?;
+            let base = memory
+                .pointer(word)
+                .ok_or_else(|| GuestError::invalid("QVM color requires a nonnull pointer"))?;
             draw.set_color(Some([
                 memory.read_f32(base)?,
                 memory.read_f32(base + 4)?,
@@ -408,8 +454,18 @@ fn resource_syscall(
         return Ok(Some(0));
     }
     if trap == ids.picture {
-        let rect = FloatRect { x: call.float(1)?, y: call.float(2)?, width: call.float(3)?, height: call.float(4)? };
-        let uv = UvRect { s: call.float(5)?, t: call.float(6)?, s2: call.float(7)?, t2: call.float(8)? };
+        let rect = FloatRect {
+            x: call.float(1)?,
+            y: call.float(2)?,
+            width: call.float(3)?,
+            height: call.float(4)?,
+        };
+        let uv = UvRect {
+            s: call.float(5)?,
+            t: call.float(6)?,
+            s2: call.float(7)?,
+            t2: call.float(8)?,
+        };
         draw.stretch_pixels(rect, uv, call.int(9)?);
         return Ok(Some(0));
     }
@@ -417,9 +473,13 @@ fn resource_syscall(
         let (min, max) = resources.model_bounds(call.int(1)?);
         let min_word = call.int(2)?;
         let max_word = call.int(3)?;
-        let base = memory.pointer(min_word).ok_or_else(|| GuestError::invalid("QVM model bounds require a nonnull pointer"))?;
+        let base = memory
+            .pointer(min_word)
+            .ok_or_else(|| GuestError::invalid("QVM model bounds require a nonnull pointer"))?;
         memory.write_vec3(base, &min)?;
-        let base = memory.pointer(max_word).ok_or_else(|| GuestError::invalid("QVM model bounds require a nonnull pointer"))?;
+        let base = memory
+            .pointer(max_word)
+            .ok_or_else(|| GuestError::invalid("QVM model bounds require a nonnull pointer"))?;
         memory.write_vec3(base, &max)?;
         return Ok(Some(0));
     }
@@ -446,7 +506,11 @@ fn resource_syscall(
         let original = memory.read_string(call.int(1)?)?;
         let replacement = memory.read_string(call.int(2)?)?;
         let offset_word = call.int(3)?;
-        let offset = if offset_word == 0 { String::new() } else { memory.read_string(offset_word)? };
+        let offset = if offset_word == 0 {
+            String::new()
+        } else {
+            memory.read_string(offset_word)?
+        };
         resources.remap_shader(&original, &replacement, &offset);
         Ok(Some(0))
     } else {
@@ -500,8 +564,13 @@ pub fn client_render_syscall(
         if shader == 0 || count <= 0 || polys <= 0 {
             return Ok(Some(0));
         }
-        let stride = count as usize * QVM_POLY_VERTEX_BYTES;
-        memory.span(word, stride * polys as usize, 0)?;
+        let stride = (count as usize)
+            .checked_mul(QVM_POLY_VERTEX_BYTES)
+            .ok_or_else(|| GuestError::invalid("QVM polygon vertex count overflows its record"))?;
+        let total = stride
+            .checked_mul(polys as usize)
+            .ok_or_else(|| GuestError::invalid("QVM polygon count overflows its record"))?;
+        memory.span(word, total, 0)?;
         let base = memory.pointer(word).expect("checked span");
         for index in 0..polys as usize {
             let mut vertices = Vec::with_capacity(count as usize);
@@ -510,7 +579,12 @@ pub fn client_render_syscall(
                 vertices.push(PolyVertex {
                     position: memory.read_vec3(offset)?,
                     tex_coord: [memory.read_f32(offset + 12)?, memory.read_f32(offset + 16)?],
-                    color: [memory.get(offset + 20)?, memory.get(offset + 21)?, memory.get(offset + 22)?, memory.get(offset + 23)?],
+                    color: [
+                        memory.get(offset + 20)?,
+                        memory.get(offset + 21)?,
+                        memory.get(offset + 22)?,
+                        memory.get(offset + 23)?,
+                    ],
                 });
             }
             resources.add_poly(shader, vertices);
@@ -526,7 +600,11 @@ pub fn client_render_syscall(
         resources.add_light(GuestLight {
             origin,
             radius,
-            color: Vec3 { x: call.float(3)?, y: call.float(4)?, z: call.float(5)? },
+            color: Vec3 {
+                x: call.float(3)?,
+                y: call.float(4)?,
+                z: call.float(5)?,
+            },
             additive: trap == 85,
         });
         return Ok(Some(0));
@@ -566,7 +644,14 @@ mod tests {
         }
         fn model_bounds(&mut self, handle: i32) -> (Vec3, Vec3) {
             self.log.push(format!("bounds {handle}"));
-            (Vec3 { x: -1.0, y: -1.0, z: -1.0 }, Vec3 { x: 1.0, y: 1.0, z: 1.0 })
+            (
+                Vec3 {
+                    x: -1.0,
+                    y: -1.0,
+                    z: -1.0,
+                },
+                Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+            )
         }
         fn lerp_tag(
             &mut self,
@@ -634,18 +719,37 @@ mod tests {
     }
 
     fn harness() -> (SyscallMemory, FakeResources, FakeDraw) {
-        (SyscallMemory::new(65536).unwrap(), FakeResources { log: Vec::new() }, FakeDraw { log: Vec::new() })
+        (
+            SyscallMemory::new(65536).unwrap(),
+            FakeResources { log: Vec::new() },
+            FakeDraw { log: Vec::new() },
+        )
     }
 
     #[test]
     fn resource_registration() {
         let (mut memory, mut resources, mut draw) = harness();
         memory.write_string(512, "models/a.md3", 13).unwrap();
-        assert_eq!(client_render_syscall(&cg(37, &[512]), &mut memory, &mut resources, &mut draw).unwrap(), Some(11));
-        assert_eq!(client_render_syscall(&cg(38, &[0]), &mut memory, &mut resources, &mut draw).unwrap(), Some(12));
-        assert_eq!(client_render_syscall(&cg(39, &[512]), &mut memory, &mut resources, &mut draw).unwrap(), Some(13));
-        assert_eq!(client_render_syscall(&ui(20, &[512]), &mut memory, &mut resources, &mut draw).unwrap(), Some(14));
-        assert_eq!(client_render_syscall(&ui(39, &[512]), &mut memory, &mut resources, &mut draw).unwrap(), None);
+        assert_eq!(
+            client_render_syscall(&cg(37, &[512]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(11)
+        );
+        assert_eq!(
+            client_render_syscall(&cg(38, &[0]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(12)
+        );
+        assert_eq!(
+            client_render_syscall(&cg(39, &[512]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(13)
+        );
+        assert_eq!(
+            client_render_syscall(&ui(20, &[512]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(14)
+        );
+        assert_eq!(
+            client_render_syscall(&ui(39, &[512]), &mut memory, &mut resources, &mut draw).unwrap(),
+            None
+        );
         assert_eq!(
             resources.log,
             vec![
@@ -664,12 +768,23 @@ mod tests {
         memory.write_f32(516, 0.5).unwrap();
         memory.write_f32(520, 0.25).unwrap();
         memory.write_f32(524, 1.0).unwrap();
-        assert_eq!(client_render_syscall(&cg(45, &[512]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&ui(26, &[0]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        let pic = [0f32, 0.0, 64.0, 64.0, 0.0, 0.0, 1.0, 1.0].map(f32::to_bits).map(|bits| bits as i32);
+        assert_eq!(
+            client_render_syscall(&cg(45, &[512]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(&ui(26, &[0]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        let pic = [0f32, 0.0, 64.0, 64.0, 0.0, 0.0, 1.0, 1.0]
+            .map(f32::to_bits)
+            .map(|bits| bits as i32);
         let mut args = pic.to_vec();
         args.push(13);
-        assert_eq!(client_render_syscall(&cg(46, &args), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(&cg(46, &args), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
         assert_eq!(draw.log[0], "color Some([1.0, 0.5, 0.25, 1.0])".to_string());
         assert_eq!(draw.log[1], "color None".to_string());
         assert_eq!(draw.log[2], "pic 64 64 13".to_string());
@@ -678,63 +793,161 @@ mod tests {
     #[test]
     fn bounds_tag_and_remap() {
         let (mut memory, mut resources, mut draw) = harness();
-        assert_eq!(client_render_syscall(&cg(47, &[11, 512, 1024]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(memory.read_vec3(512).unwrap(), Vec3 { x: -1.0, y: -1.0, z: -1.0 });
+        assert_eq!(
+            client_render_syscall(&cg(47, &[11, 512, 1024]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            memory.read_vec3(512).unwrap(),
+            Vec3 {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0
+            }
+        );
         memory.write_string(2048, "tag_head", 9).unwrap();
         let frac = 0.5f32.to_bits() as i32;
         assert_eq!(
-            client_render_syscall(&cg(48, &[4096, 11, 0, 1, frac, 2048]), &mut memory, &mut resources, &mut draw).unwrap(),
+            client_render_syscall(
+                &cg(48, &[4096, 11, 0, 1, frac, 2048]),
+                &mut memory,
+                &mut resources,
+                &mut draw
+            )
+            .unwrap(),
             Some(1)
         );
         assert_eq!(memory.read_vec3(4096 + 12).unwrap(), Vec3 { x: 1.0, y: 0.0, z: 0.0 });
-        assert_eq!(client_render_syscall(&ui(29, &[4096, 99, 0, 1, frac, 2048]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(
+                &ui(29, &[4096, 99, 0, 1, frac, 2048]),
+                &mut memory,
+                &mut resources,
+                &mut draw
+            )
+            .unwrap(),
+            Some(0)
+        );
         memory.write_string(512, "old", 4).unwrap();
         memory.write_string(1024, "new", 4).unwrap();
         assert_eq!(
             client_render_syscall(&cg(79, &[512, 1024, 0]), &mut memory, &mut resources, &mut draw).unwrap(),
             Some(0)
         );
-        assert_eq!(resources.log[3], "remap old new ".to_string());
+        assert_eq!(
+            resources.log,
+            vec![
+                "bounds 11".to_string(),
+                "tag 11 tag_head".to_string(),
+                "remap old new ".to_string(),
+            ]
+        );
     }
 
     #[test]
     fn scene_traps() {
         let (mut memory, mut resources, mut draw) = harness();
         memory.write_string(512, "maps/q3dm1.bsp", 15).unwrap();
-        assert_eq!(client_render_syscall(&cg(36, &[512]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&cg(86, &[1024, 64]), &mut memory, &mut resources, &mut draw).unwrap(), Some(1));
+        assert_eq!(
+            client_render_syscall(&cg(36, &[512]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(&cg(86, &[1024, 64]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_string(1024).unwrap(), "{");
         memory.write_vec3(2048, &Vec3 { x: 0.0, y: 0.0, z: 0.0 }).unwrap();
         memory.write_vec3(3072, &Vec3 { x: 1.0, y: 1.0, z: 1.0 }).unwrap();
-        assert_eq!(client_render_syscall(&cg(88, &[2048, 3072]), &mut memory, &mut resources, &mut draw).unwrap(), Some(1));
-        assert_eq!(client_render_syscall(&cg(40, &[]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&ui(21, &[]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(&cg(88, &[2048, 3072]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_render_syscall(&cg(40, &[]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(&ui(21, &[]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
         memory.write_i32(8192, 0).unwrap();
         memory.write_i32(8200, 11).unwrap();
-        assert_eq!(client_render_syscall(&cg(41, &[8192]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(&cg(41, &[8192]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
         memory.write_i32(8192, 9).unwrap();
         assert!(client_render_syscall(&cg(41, &[8192]), &mut memory, &mut resources, &mut draw).is_err());
-        assert_eq!(resources.log[4], "entity Model 11".to_string());
+        assert_eq!(resources.log[3], "entity Model 11".to_string());
     }
 
     #[test]
     fn polys_lights_and_scene() {
         let (mut memory, mut resources, mut draw) = harness();
         for vertex in 0..3 {
-            memory.write_vec3(8192 + vertex * 24, &Vec3 { x: vertex as f32, y: 0.0, z: 0.0 }).unwrap();
+            memory
+                .write_vec3(
+                    8192 + vertex * 24,
+                    &Vec3 {
+                        x: vertex as f32,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                )
+                .unwrap();
         }
-        assert_eq!(client_render_syscall(&cg(42, &[13, 3, 8192]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&cg(42, &[0, 3, 8192]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&cg(87, &[13, 3, 8192, 0]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(&cg(42, &[13, 3, 8192]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(&cg(42, &[0, 3, 8192]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(&cg(87, &[13, 3, 8192, 0]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
         memory.write_vec3(1024, &Vec3 { x: 1.0, y: 2.0, z: 3.0 }).unwrap();
         let radius = 300.0f32.to_bits() as i32;
         let one = 1.0f32.to_bits() as i32;
-        assert_eq!(client_render_syscall(&cg(43, &[1024, radius, one, one, one]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&cg(85, &[1024, radius, one, one, one]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
-        assert_eq!(client_render_syscall(&cg(43, &[1024, 0, one, one, one]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(
+                &cg(43, &[1024, radius, one, one, one]),
+                &mut memory,
+                &mut resources,
+                &mut draw
+            )
+            .unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(
+                &cg(85, &[1024, radius, one, one, one]),
+                &mut memory,
+                &mut resources,
+                &mut draw
+            )
+            .unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_render_syscall(
+                &cg(43, &[1024, 0, one, one, one]),
+                &mut memory,
+                &mut resources,
+                &mut draw
+            )
+            .unwrap(),
+            Some(0)
+        );
         memory.write_i32(16384 + 8, 640).unwrap();
         memory.write_i32(16384 + 12, 480).unwrap();
-        assert_eq!(client_render_syscall(&cg(44, &[16384]), &mut memory, &mut resources, &mut draw).unwrap(), Some(0));
+        assert_eq!(
+            client_render_syscall(&cg(44, &[16384]), &mut memory, &mut resources, &mut draw).unwrap(),
+            Some(0)
+        );
         assert_eq!(
             resources.log,
             vec![
@@ -757,8 +970,17 @@ mod tests {
     fn routing() {
         let (mut memory, mut resources, mut draw) = harness();
         let game = HostCall::engine(QvmRole::Qagame, 40, &[], AbiProfile::Modern);
-        assert_eq!(client_render_syscall(&game, &mut memory, &mut resources, &mut draw).unwrap(), None);
-        assert_eq!(client_render_syscall(&cg(999, &[]), &mut memory, &mut resources, &mut draw).unwrap(), None);
-        assert_eq!(client_render_syscall(&ui(36, &[0]), &mut memory, &mut resources, &mut draw).unwrap(), None);
+        assert_eq!(
+            client_render_syscall(&game, &mut memory, &mut resources, &mut draw).unwrap(),
+            None
+        );
+        assert_eq!(
+            client_render_syscall(&cg(999, &[]), &mut memory, &mut resources, &mut draw).unwrap(),
+            None
+        );
+        assert_eq!(
+            client_render_syscall(&ui(36, &[0]), &mut memory, &mut resources, &mut draw).unwrap(),
+            None
+        );
     }
 }

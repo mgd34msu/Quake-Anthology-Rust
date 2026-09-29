@@ -564,7 +564,7 @@ mod tests {
         }
 
         fn combat(&self, actor: &ActorId) -> Option<BorrowedCombat> {
-            self.is_owned(actor).then(|| BorrowedCombat {
+            self.is_owned(actor).then_some(BorrowedCombat {
                 health: 75.0,
                 can_take_damage: true,
             })
@@ -680,9 +680,9 @@ mod tests {
                 slot: 1
             }]
         );
-        let (_owner, _fields, mut restored) = harness();
+        let (owner, _fields, mut restored) = harness();
         restored.pool_mut().mark_source(0).unwrap();
-        let live = actor.clone();
+        let live = owner.actor(1, 1);
         restored
             .restore(
                 &saved,
@@ -690,7 +690,7 @@ mod tests {
                 &|slot| slot == 0,
             )
             .unwrap();
-        assert_eq!(restored.actor(1).unwrap(), Some(actor));
+        assert_eq!(restored.actor(1).unwrap(), Some(live));
         let bad = vec![BorrowedCheckpoint {
             actor: SavedActorId { slot: 9, generation: 9 },
             slot: 1,

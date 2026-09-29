@@ -345,7 +345,11 @@ mod tests {
         BotGoal {
             origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
             area: 11,
-            mins: Vec3 { x: -1.0, y: -2.0, z: -3.0 },
+            mins: Vec3 {
+                x: -1.0,
+                y: -2.0,
+                z: -3.0,
+            },
             maxs: Vec3 { x: 4.0, y: 5.0, z: 6.0 },
             entity: 7,
             number: 8,
@@ -404,8 +408,16 @@ mod tests {
             travel_type: 6,
             flags: 7,
             weapon: 8,
-            move_direction: Vec3 { x: 1.0, y: 0.0, z: -1.0 },
-            ideal_view_angles: Vec3 { x: 10.0, y: 20.0, z: 30.0 },
+            move_direction: Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: -1.0,
+            },
+            ideal_view_angles: Vec3 {
+                x: 10.0,
+                y: 20.0,
+                z: 30.0,
+            },
         };
         let mut bytes = vec![0u8; QVM_BOT_MOVE_RESULT_BYTES];
         write_bot_move_result(&mut bytes, &result).unwrap();
@@ -433,7 +445,11 @@ mod tests {
             origin: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
             angles: Vec3 { x: 2.0, y: 2.0, z: 2.0 },
             old_origin: Vec3 { x: 3.0, y: 3.0, z: 3.0 },
-            mins: Vec3 { x: -1.0, y: -1.0, z: -1.0 },
+            mins: Vec3 {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0,
+            },
             maxs: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
             ground_entity: 5,
             solid: 6,

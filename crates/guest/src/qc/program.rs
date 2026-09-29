@@ -483,6 +483,48 @@ impl QcProgram {
     }
 }
 
+/// Build a synthetic program for headless fixture tests (no real game
+/// module). First-wins name maps match the loader.
+#[cfg(test)]
+pub fn test_program(
+    statements: Vec<QcStatement>,
+    globals: Vec<QcDefinition>,
+    fields: Vec<QcDefinition>,
+    functions: Vec<QcFunction>,
+    strings: Vec<u8>,
+    initial_globals: Vec<u8>,
+    entity_field_words: usize,
+) -> QcProgram {
+    let mut globals_by_name = HashMap::new();
+    for (index, definition) in globals.iter().enumerate() {
+        globals_by_name.entry(definition.name.clone()).or_insert(index);
+    }
+    let mut fields_by_name = HashMap::new();
+    for (index, definition) in fields.iter().enumerate() {
+        fields_by_name.entry(definition.name.clone()).or_insert(index);
+    }
+    let mut functions_by_name = HashMap::new();
+    for (index, function) in functions.iter().enumerate() {
+        functions_by_name.entry(function.name.clone()).or_insert(index);
+    }
+    QcProgram {
+        source: "test.dat".to_string(),
+        api: QuakeCApi::Netquake,
+        statements,
+        globals,
+        fields,
+        functions,
+        strings,
+        initial_globals,
+        entity_field_words,
+        checksum: 0,
+        digest: ContentDigest::new("sha256", &"0".repeat(64)),
+        globals_by_name,
+        fields_by_name,
+        functions_by_name,
+    }
+}
+
 /// Interpret a branch operand as a signed 16-bit displacement.
 #[must_use]
 pub const fn signed_qc_branch(word: u16) -> i32 {

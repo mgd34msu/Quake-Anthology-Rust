@@ -20,7 +20,7 @@ use qa_core::math::{Bounds, Vec3};
 
 use super::message_effects::{quake_temporary_event, QcBroadcastEffect, TempEntityEffect};
 use crate::error::GuestError;
-use crate::fields::{FieldTable, FieldValue};
+use crate::fields::FieldTable;
 
 /// Unreliable datagram budget.
 pub const MAX_DATAGRAM: usize = 1024;
@@ -173,7 +173,7 @@ pub struct QcPrecachedResource {
 }
 
 /// Precache table kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrecacheKind {
     /// Model table.
     Model,
@@ -1414,7 +1414,9 @@ impl<R: QcMessageRouter> QcBroadcastMessages<R> {
                 let offset = encoded.len() as i32;
                 encode_qw(&mut encoded, &message)?;
                 let actor = match &message {
-                    QwMessage::TempEntity { effect } if matches!(effect, TempEntityEffect::Beam { .. }) => {
+                    QwMessage::TempEntity {
+                        effect: TempEntityEffect::Beam { .. },
+                    } => {
                         let owner = entry.owners.get(&(offset + 2)).and_then(Clone::clone);
                         if owner.is_none() {
                             return Err(GuestError::invalid("QC beam had no owned actor when written"));
@@ -1922,11 +1924,10 @@ impl<S: QcPresentationServices, R: QcMessageRouter> QcPresentationBindings<S, R>
     /// `makestatic`: freeze an entity into a static model, then remove it.
     pub fn makestatic(
         &mut self,
-        fields: &FieldTable,
+        fields: &mut FieldTable,
         actor: &ActorId,
         reference: i32,
         remove: &mut dyn FnMut(&mut FieldTable, i32) -> Result<(), GuestError>,
-        fields_mut: &mut FieldTable,
     ) -> Result<(), GuestError> {
         let path = fields.get(actor, "model")?.as_text("model")?.to_string();
         let resource = if path.is_empty() {
@@ -1954,7 +1955,7 @@ impl<S: QcPresentationServices, R: QcMessageRouter> QcPresentationBindings<S, R>
         };
         let content = self.content.clone();
         self.services.emit(&content, event);
-        remove(fields_mut, reference)
+        remove(fields, reference)
     }
 
     /// `sprint` / `centerprint` / `stuffcmd`: message one client. The level
@@ -2281,9 +2282,11 @@ pub fn presentation_bounds(min: Vec3, max: Vec3) -> Bounds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fields::FieldLayout;
+    use crate::fields::{FieldLayout, FieldValue};
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
+
+    type NqRoute = (Vec<NqMessage>, QcMessageDestination, Vec<(usize, Option<ActorId>)>);
 
     struct FakeRouter {
         api: ApiKind,
@@ -2292,7 +2295,7 @@ mod tests {
         native: bool,
         local: bool,
         phs: bool,
-        nq: Vec<(Vec<NqMessage>, QcMessageDestination, Vec<(usize, Option<ActorId>)>)>,
+        nq: Vec<NqRoute>,
         qw: Vec<(Vec<QcRoutedMessage>, QcMessageDestination)>,
     }
 
@@ -2450,7 +2453,7 @@ mod tests {
         buffer.write_string("hi").unwrap();
         assert_eq!(buffer.bytes()[0], 0xff);
         assert_eq!(buffer.bytes()[1], 0xff);
-        assert_eq!(buffer.bytes()[6], 0xf9);
+        assert_eq!(buffer.bytes()[4], 0xf9);
         assert!(!buffer.is_empty());
         let mut reader = MsgReader::new(buffer.bytes());
         assert_eq!(reader.read_u8().unwrap(), 0xff);
@@ -2643,7 +2646,12 @@ mod tests {
         let mut router = nq_router();
         router.clients.push(client.clone());
         let mut restored = QcBroadcastMessages::new(Some(router), false, 15, 3).unwrap();
-        restored.restore(&saved, &|_| None).unwrap();
+        let live = client.clone();
+        restored
+            .restore(&saved, &|saved| {
+                (*saved == SavedActorId::from(&live)).then(|| live.clone())
+            })
+            .unwrap();
         assert_eq!(restored.routed_count(), 2);
         let live = client.clone();
         let entries = restored
@@ -2843,16 +2851,10 @@ mod tests {
         bindings.precache(PrecacheKind::Model, "progs/player.mdl", 1).unwrap();
         let mut removed = Vec::new();
         bindings
-            .makestatic(
-                &fields,
-                &actor,
-                1,
-                &mut |_, reference| {
-                    removed.push(reference);
-                    Ok(())
-                },
-                &mut fields,
-            )
+            .makestatic(&mut fields, &actor, 1, &mut |_, reference| {
+                removed.push(reference);
+                Ok(())
+            })
             .unwrap();
         assert_eq!(removed, vec![1]);
         bindings.ambientsound(vec3(0.0, 0.0, 0.0), "missing.wav", 1.0, 1.0);

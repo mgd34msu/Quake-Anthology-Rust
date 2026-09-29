@@ -208,7 +208,7 @@ pub fn qc_aim<A: AimScene>(
         return Ok(*forward);
     }
     for name in ["team", "takedamage"] {
-        if !matches!(fields.get(shooter, name), Ok(_)) {
+        if fields.get(shooter, name).is_err() {
             return Err(GuestError::invalid(format!("Missing QC aim float field {name}")));
         }
     }

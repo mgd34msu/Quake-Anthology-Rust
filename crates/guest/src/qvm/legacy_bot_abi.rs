@@ -676,11 +676,13 @@ pub fn decode_legacy_game_import(code: i32) -> Option<i32> {
     if (0..=40).contains(&code) {
         return Some(code);
     }
-    LEGACY_BOT_IMPORTS.iter().find_map(|(legacy, modern)| (*legacy == code).then_some(*modern))
+    LEGACY_BOT_IMPORTS
+        .iter()
+        .find_map(|(legacy, modern)| (*legacy == code).then_some(*modern))
 }
 
 /// Legacy trap number paired with its modern import number.
-const LEGACY_BOT_IMPORTS: [(i32, i32); 125] = [
+const LEGACY_BOT_IMPORTS: [(i32, i32); 124] = [
     (200, BOTLIB_SETUP),
     (201, BOTLIB_SHUTDOWN),
     (202, BOTLIB_LIBVAR_SET),
@@ -844,6 +846,6 @@ mod tests {
 
     #[test]
     fn table_covers_expected_count() {
-        assert_eq!(LEGACY_BOT_IMPORTS.len(), 125);
+        assert_eq!(LEGACY_BOT_IMPORTS.len(), 124);
     }
 }

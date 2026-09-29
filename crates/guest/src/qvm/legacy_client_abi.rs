@@ -24,7 +24,9 @@ pub fn legacy_client_command(argv: &[String], profile: AbiProfile) -> Result<Vec
         return Ok(translated);
     }
     if (12..=26).contains(&index) {
-        return Err(GuestError::invalid(format!("Configstring {index} has no legacy client mapping")));
+        return Err(GuestError::invalid(format!(
+            "Configstring {index} has no legacy client mapping"
+        )));
     }
     Ok(argv.to_vec())
 }

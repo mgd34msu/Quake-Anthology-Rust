@@ -8,9 +8,9 @@ use crate::error::GuestError;
 
 /// Legacy event index to modern event number.
 const EVENTS: [u8; 65] = [
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-    26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 48, 49,
-    50, 51, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 66, 68,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 53, 54, 55, 56, 57, 58, 59, 60, 61,
+    62, 63, 64, 66, 68,
 ];
 
 /// Translate an event (plus its `~255` flag bits) between ABIs.
@@ -28,7 +28,9 @@ pub fn qvm_event(value: i32, profile: AbiProfile, reverse: bool) -> Result<i32, 
         EVENTS.get(event).map(|entry| usize::from(*entry))
     };
     let mapped = mapped.ok_or_else(|| {
-        GuestError::invalid(format!("QVM event {event} is not represented by the selected legacy ABI"))
+        GuestError::invalid(format!(
+            "QVM event {event} is not represented by the selected legacy ABI"
+        ))
     })?;
     Ok(mapped as i32 | flags)
 }

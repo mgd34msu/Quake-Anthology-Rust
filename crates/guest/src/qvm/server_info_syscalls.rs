@@ -91,7 +91,11 @@ mod tests {
 
     impl FakeInfo {
         fn new(profile: AbiProfile) -> Self {
-            Self { profile, configs: vec![String::new(); 1024], log: Vec::new() }
+            Self {
+                profile,
+                configs: vec![String::new(); 1024],
+                log: Vec::new(),
+            }
         }
     }
 
@@ -159,8 +163,12 @@ mod tests {
         let mut memory = SyscallMemory::new(4096).unwrap();
         let mut services = FakeInfo::new(AbiProfile::Modern);
         assert!(server_information_syscall(&call(G_SET_CONFIGSTRING, &[1024, 0]), &mut memory, &mut services).is_err());
-        assert!(server_information_syscall(&call(G_GET_CONFIGSTRING, &[-1, 256, 64]), &mut memory, &mut services).is_err());
-        assert!(server_information_syscall(&call(G_GET_CONFIGSTRING, &[1, 256, 0]), &mut memory, &mut services).is_err());
+        assert!(
+            server_information_syscall(&call(G_GET_CONFIGSTRING, &[-1, 256, 64]), &mut memory, &mut services).is_err()
+        );
+        assert!(
+            server_information_syscall(&call(G_GET_CONFIGSTRING, &[1, 256, 0]), &mut memory, &mut services).is_err()
+        );
         assert!(server_information_syscall(&call(G_GET_SERVERINFO, &[256, 0]), &mut memory, &mut services).is_err());
     }
 
@@ -174,8 +182,18 @@ mod tests {
             Some(0)
         );
         assert_eq!(services.log, vec!["set 20=v".to_string()]);
-        let other = HostCall { kind: CallKind::Engine, role: QvmRole::Cgame, ..call(G_GET_SERVERINFO, &[256, 64]) };
-        assert_eq!(server_information_syscall(&other, &mut memory, &mut services).unwrap(), None);
-        assert_eq!(server_information_syscall(&call(999, &[]), &mut memory, &mut services).unwrap(), None);
+        let other = HostCall {
+            kind: CallKind::Engine,
+            role: QvmRole::Cgame,
+            ..call(G_GET_SERVERINFO, &[256, 64])
+        };
+        assert_eq!(
+            server_information_syscall(&other, &mut memory, &mut services).unwrap(),
+            None
+        );
+        assert_eq!(
+            server_information_syscall(&call(999, &[]), &mut memory, &mut services).unwrap(),
+            None
+        );
     }
 }

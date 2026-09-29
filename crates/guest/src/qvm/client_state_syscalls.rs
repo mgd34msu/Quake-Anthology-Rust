@@ -5,10 +5,10 @@
 //! bundles the connection, snapshot source, and command owners the donor
 //! receives separately.
 
-use super::client_state::{AbiProfile, CallKind, GameStateRecord, HostCall, QvmRole, SyscallMemory, WireUserCommand};
+use super::client_state::{CallKind, GameStateRecord, HostCall, QvmRole, SyscallMemory, WireUserCommand};
 use super::client_state_record::{
-    QVM_GAME_STATE_BYTES, QVM_USER_COMMAND_BYTES, SourceSnapshot, UserCommandWrite, qvm_snapshot_bytes,
-    write_game_state, write_snapshot, write_user_command,
+    qvm_snapshot_bytes, write_game_state, write_snapshot, write_user_command, SourceSnapshot, UserCommandWrite,
+    QVM_USER_COMMAND_BYTES,
 };
 use super::legacy_bot_abi::{
     CG_GETCURRENTCMDNUMBER, CG_GETCURRENTSNAPSHOTNUMBER, CG_GETGAMESTATE, CG_GETSERVERCOMMAND, CG_GETSNAPSHOT,
@@ -129,6 +129,7 @@ pub fn client_state_syscall(
 
 #[cfg(test)]
 mod tests {
+    use super::super::client_state::AbiProfile;
     use super::super::client_state_record::PlayerStateFields;
     use super::*;
     use qa_core::math::Vec3;
@@ -192,7 +193,11 @@ mod tests {
             (index == 3).then(|| "\\map\\q3dm1".to_string())
         }
         fn game_state_record(&mut self) -> GameStateRecord {
-            GameStateRecord { string_offsets: vec![8; 1024], string_data: vec![1u8; 16000], data_count: 9 }
+            GameStateRecord {
+                string_offsets: vec![8; 1024],
+                string_data: vec![1u8; 16000],
+                data_count: 9,
+            }
         }
         fn snapshot_current(&mut self) -> (i32, i32) {
             (41, 4242)
@@ -218,7 +223,10 @@ mod tests {
             77
         }
         fn commands_read(&mut self, number: i32) -> Option<WireUserCommand> {
-            (number == 77).then(|| WireUserCommand { server_time: 555, ..WireUserCommand::default() })
+            (number == 77).then(|| WireUserCommand {
+                server_time: 555,
+                ..WireUserCommand::default()
+            })
         }
         fn set_user_command_value(&mut self, weapon: i32, sensitivity: f32) {
             self.log.push(format!("usercmd {weapon} {sensitivity}"));
@@ -234,10 +242,16 @@ mod tests {
         let mut memory = SyscallMemory::new(65536).unwrap();
         let mut services = FakeState { log: Vec::new() };
         let found = HostCall::engine(QvmRole::Ui, UI_GETCONFIGSTRING, &[3, 256, 64], AbiProfile::Modern);
-        assert_eq!(client_state_syscall(&found, &mut memory, &mut services).unwrap(), Some(1));
+        assert_eq!(
+            client_state_syscall(&found, &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "\\map\\q3dm1");
         let missing = HostCall::engine(QvmRole::Ui, UI_GETCONFIGSTRING, &[4, 256, 64], AbiProfile::Modern);
-        assert_eq!(client_state_syscall(&missing, &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            client_state_syscall(&missing, &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.get(256).unwrap(), 0);
         let bad = HostCall::engine(QvmRole::Ui, UI_GETCONFIGSTRING, &[2048, 256, 64], AbiProfile::Modern);
         assert_eq!(client_state_syscall(&bad, &mut memory, &mut services).unwrap(), Some(0));
@@ -247,10 +261,21 @@ mod tests {
     fn get_game_state_and_snapshot_number() {
         let mut memory = SyscallMemory::new(65536).unwrap();
         let mut services = FakeState { log: Vec::new() };
-        assert_eq!(client_state_syscall(&cg(CG_GETGAMESTATE, &[8192]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETGAMESTATE, &[8192]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(8192).unwrap(), 8);
         assert_eq!(memory.read_i32(8192 + 20096).unwrap(), 9);
-        assert_eq!(client_state_syscall(&cg(CG_GETCURRENTSNAPSHOTNUMBER, &[256, 260]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            client_state_syscall(
+                &cg(CG_GETCURRENTSNAPSHOTNUMBER, &[256, 260]),
+                &mut memory,
+                &mut services
+            )
+            .unwrap(),
+            Some(0)
+        );
         assert_eq!(memory.read_i32(256).unwrap(), 41);
         assert_eq!(memory.read_i32(260).unwrap(), 4242);
     }
@@ -259,24 +284,50 @@ mod tests {
     fn get_snapshot_found_and_missing() {
         let mut memory = SyscallMemory::new(65536).unwrap();
         let mut services = FakeState { log: Vec::new() };
-        assert_eq!(client_state_syscall(&cg(CG_GETSNAPSHOT, &[41, 1024]), &mut memory, &mut services).unwrap(), Some(1));
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETSNAPSHOT, &[41, 1024]), &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 5);
         assert_eq!(memory.read_i32(1024 + 4).unwrap(), 37);
-        assert_eq!(client_state_syscall(&cg(CG_GETSNAPSHOT, &[40, 1024]), &mut memory, &mut services).unwrap(), Some(0));
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETSNAPSHOT, &[40, 1024]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
     }
 
     #[test]
     fn server_command_and_user_commands() {
         let mut memory = SyscallMemory::new(65536).unwrap();
         let mut services = FakeState { log: Vec::new() };
-        assert_eq!(client_state_syscall(&cg(CG_GETSERVERCOMMAND, &[12]), &mut memory, &mut services).unwrap(), Some(1));
-        assert_eq!(client_state_syscall(&cg(CG_GETSERVERCOMMAND, &[11]), &mut memory, &mut services).unwrap(), Some(0));
-        assert_eq!(client_state_syscall(&cg(CG_GETCURRENTCMDNUMBER, &[]), &mut memory, &mut services).unwrap(), Some(77));
-        assert_eq!(client_state_syscall(&cg(CG_GETUSERCMD, &[77, 256]), &mut memory, &mut services).unwrap(), Some(1));
-        assert_eq!(memory.read_i32(256).unwrap(), 555);
-        assert_eq!(client_state_syscall(&cg(CG_GETUSERCMD, &[76, 256]), &mut memory, &mut services).unwrap(), Some(0));
         assert_eq!(
-            client_state_syscall(&cg(CG_SETUSERCMDVALUE, &[3, 2.5f32.to_bits() as i32]), &mut memory, &mut services).unwrap(),
+            client_state_syscall(&cg(CG_GETSERVERCOMMAND, &[12]), &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETSERVERCOMMAND, &[11]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETCURRENTCMDNUMBER, &[]), &mut memory, &mut services).unwrap(),
+            Some(77)
+        );
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETUSERCMD, &[77, 256]), &mut memory, &mut services).unwrap(),
+            Some(1)
+        );
+        assert_eq!(memory.read_i32(256).unwrap(), 555);
+        assert_eq!(
+            client_state_syscall(&cg(CG_GETUSERCMD, &[76, 256]), &mut memory, &mut services).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_state_syscall(
+                &cg(CG_SETUSERCMDVALUE, &[3, 2.5f32.to_bits() as i32]),
+                &mut memory,
+                &mut services
+            )
+            .unwrap(),
             Some(0)
         );
         assert_eq!(services.log, vec!["usercmd 3 2.5".to_string()]);
@@ -288,6 +339,9 @@ mod tests {
         let mut services = FakeState { log: Vec::new() };
         let game = HostCall::engine(QvmRole::Qagame, CG_GETSNAPSHOT, &[41, 1024], AbiProfile::Modern);
         assert_eq!(client_state_syscall(&game, &mut memory, &mut services).unwrap(), None);
-        assert_eq!(client_state_syscall(&cg(999, &[]), &mut memory, &mut services).unwrap(), None);
+        assert_eq!(
+            client_state_syscall(&cg(999, &[]), &mut memory, &mut services).unwrap(),
+            None
+        );
     }
 }

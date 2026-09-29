@@ -80,7 +80,9 @@ pub fn write_script_token(memory: &mut SyscallMemory, word: i32, value: &ScriptT
     let leading_quote = token_type == 1 && bytes.first() == Some(&b'"');
     let stripped = bytes.len() - usize::from(leading_quote);
     if token_type == 1 && stripped == 0 {
-        return Err(GuestError::invalid("QVM pc_token_t cannot encode undefined empty StripDoubleQuotes input"));
+        return Err(GuestError::invalid(
+            "QVM pc_token_t cannot encode undefined empty StripDoubleQuotes input",
+        ));
     }
     for (index, byte) in bytes.iter().enumerate() {
         memory.set(range.start + 16 + index, *byte)?;
@@ -233,19 +235,43 @@ mod tests {
         memory.write_string(256, "MAX 4", 6).unwrap();
         memory.write_string(512, "bot.c", 6).unwrap();
         let mut scripts = FakeScripts { log: Vec::new() };
-        assert_eq!(client_script_syscall(&cg(64, &[256]), &mut memory, &mut scripts).unwrap(), Some(1));
-        assert_eq!(client_script_syscall(&cg(65, &[512]), &mut memory, &mut scripts).unwrap(), Some(2));
-        assert_eq!(client_script_syscall(&cg(66, &[2]), &mut memory, &mut scripts).unwrap(), Some(1));
-        assert_eq!(client_script_syscall(&cg(66, &[9]), &mut memory, &mut scripts).unwrap(), Some(0));
-        assert_eq!(client_script_syscall(&cg(67, &[2, 1024]), &mut memory, &mut scripts).unwrap(), Some(1));
+        assert_eq!(
+            client_script_syscall(&cg(64, &[256]), &mut memory, &mut scripts).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_script_syscall(&cg(65, &[512]), &mut memory, &mut scripts).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            client_script_syscall(&cg(66, &[2]), &mut memory, &mut scripts).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            client_script_syscall(&cg(66, &[9]), &mut memory, &mut scripts).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_script_syscall(&cg(67, &[2, 1024]), &mut memory, &mut scripts).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_i32(1024).unwrap(), 4);
         assert_eq!(memory.read_i32(1028).unwrap(), 7);
         assert_eq!(memory.read_string(1040).unwrap(), "hello");
-        assert_eq!(client_script_syscall(&cg(67, &[9, 1024]), &mut memory, &mut scripts).unwrap(), Some(0));
-        assert_eq!(client_script_syscall(&cg(68, &[2, 256, 512]), &mut memory, &mut scripts).unwrap(), Some(1));
+        assert_eq!(
+            client_script_syscall(&cg(67, &[9, 1024]), &mut memory, &mut scripts).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            client_script_syscall(&cg(68, &[2, 256, 512]), &mut memory, &mut scripts).unwrap(),
+            Some(1)
+        );
         assert_eq!(memory.read_string(256).unwrap(), "maps/a.script");
         assert_eq!(memory.read_i32(512).unwrap(), 41);
-        assert_eq!(client_script_syscall(&cg(68, &[9, 256, 512]), &mut memory, &mut scripts).unwrap(), Some(0));
+        assert_eq!(
+            client_script_syscall(&cg(68, &[9, 256, 512]), &mut memory, &mut scripts).unwrap(),
+            Some(0)
+        );
         assert_eq!(scripts.log, vec!["define MAX 4".to_string(), "load bot.c".to_string()]);
     }
 
@@ -255,12 +281,21 @@ mod tests {
         memory.write_string(256, "X", 2).unwrap();
         let mut scripts = FakeScripts { log: Vec::new() };
         let define = HostCall::engine(QvmRole::Ui, 57, &[256], AbiProfile::Modern);
-        assert_eq!(client_script_syscall(&define, &mut memory, &mut scripts).unwrap(), Some(1));
+        assert_eq!(
+            client_script_syscall(&define, &mut memory, &mut scripts).unwrap(),
+            Some(1)
+        );
         let load = HostCall::engine(QvmRole::Ui, 58, &[256], AbiProfile::Modern);
-        assert_eq!(client_script_syscall(&load, &mut memory, &mut scripts).unwrap(), Some(2));
+        assert_eq!(
+            client_script_syscall(&load, &mut memory, &mut scripts).unwrap(),
+            Some(2)
+        );
         let game = HostCall::engine(QvmRole::Qagame, 64, &[256], AbiProfile::Modern);
         assert_eq!(client_script_syscall(&game, &mut memory, &mut scripts).unwrap(), None);
-        assert_eq!(client_script_syscall(&cg(69, &[]), &mut memory, &mut scripts).unwrap(), None);
+        assert_eq!(
+            client_script_syscall(&cg(69, &[]), &mut memory, &mut scripts).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -290,11 +325,21 @@ mod tests {
             float_value: 0.0,
         };
         assert!(write_script_token(&mut memory, 128, &long).is_err());
-        let wide = ScriptToken { text: "caf\u{e9}".to_string(), ..long.clone() };
+        let wide = ScriptToken {
+            text: "caf\u{e9}".to_string(),
+            ..long.clone()
+        };
         assert!(write_script_token(&mut memory, 128, &wide).is_ok());
-        let astral = ScriptToken { text: "\u{1f600}".to_string(), ..long.clone() };
+        let astral = ScriptToken {
+            text: "\u{1f600}".to_string(),
+            ..long.clone()
+        };
         assert!(write_script_token(&mut memory, 128, &astral).is_err());
-        let empty_quote = ScriptToken { text: "\"".to_string(), kind: ScriptTokenKind::String, ..long };
+        let empty_quote = ScriptToken {
+            text: "\"".to_string(),
+            kind: ScriptTokenKind::String,
+            ..long
+        };
         assert!(write_script_token(&mut memory, 128, &empty_quote).is_err());
     }
 }
