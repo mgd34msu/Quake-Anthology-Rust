@@ -832,18 +832,18 @@ mod tests {
         }
     }
 
-    /// Token base fixture at the given line.
-    fn base(text: &str, line: i32) -> TokenBase {
-        TokenBase {
-            text: text.to_string(),
-            location: SourceLocation {
-                path: "maps/test.cfg".to_string(),
-                line,
-                column: 7,
-            },
-            leading_whitespace: "  ".to_string(),
-            lines_crossed: 2,
+    /// Token location fixture at the given line.
+    fn location(line: usize) -> SourceLocation {
+        SourceLocation {
+            path: "maps/test.cfg".to_string(),
+            line,
+            column: 7,
         }
+    }
+
+    /// Leading whitespace carried by every fixture token.
+    fn whitespace() -> String {
+        "  ".to_string()
     }
 
     /// Assert a `BadUi` message.
@@ -1031,8 +1031,11 @@ mod tests {
         let cases: Vec<(ScriptToken, i32, u32, f64)> = vec![
             (
                 ScriptToken::Primitive {
-                    base: base("primitive-word", 11),
+                    text: "primitive-word".to_string(),
                     value: "primitive-word".to_string(),
+                    location: location(11),
+                    leading_whitespace: whitespace(),
+                    lines_crossed: 2,
                 },
                 0,
                 0,
@@ -1040,9 +1043,12 @@ mod tests {
             ),
             (
                 ScriptToken::String {
-                    base: base("\"hi\"", 12),
+                    text: "\"hi\"".to_string(),
                     value: "hi".to_string(),
                     length: 4,
+                    location: location(12),
+                    leading_whitespace: whitespace(),
+                    lines_crossed: 2,
                 },
                 4,
                 0,
@@ -1050,9 +1056,12 @@ mod tests {
             ),
             (
                 ScriptToken::Literal {
-                    base: base("'a'", 13),
+                    text: "'a'".to_string(),
                     value: "a".to_string(),
                     length: 3,
+                    location: location(13),
+                    leading_whitespace: whitespace(),
+                    lines_crossed: 2,
                 },
                 3,
                 0,
@@ -1060,10 +1069,13 @@ mod tests {
             ),
             (
                 ScriptToken::Number {
-                    base: base("0x10", 14),
+                    text: "0x10".to_string(),
                     flags: 0x1100,
                     integer_value: 16,
                     float_value: 16.0,
+                    location: location(14),
+                    leading_whitespace: whitespace(),
+                    lines_crossed: 2,
                 },
                 0x1100,
                 16,
@@ -1071,9 +1083,12 @@ mod tests {
             ),
             (
                 ScriptToken::Name {
-                    base: base("someName", 15),
+                    text: "someName".to_string(),
                     value: "someName".to_string(),
                     length: 8,
+                    location: location(15),
+                    leading_whitespace: whitespace(),
+                    lines_crossed: 2,
                 },
                 8,
                 0,
@@ -1081,9 +1096,12 @@ mod tests {
             ),
             (
                 ScriptToken::Punctuation {
-                    base: base("==", 16),
+                    text: "==".to_string(),
                     value: "==".to_string(),
                     punctuation: 9,
+                    location: location(16),
+                    leading_whitespace: whitespace(),
+                    lines_crossed: 2,
                 },
                 9,
                 0,
@@ -1091,7 +1109,7 @@ mod tests {
             ),
         ];
         for (token, subtype, integer_value, float_value) in cases {
-            let expected_line = token.base().location.line;
+            let expected_line = token.location().line;
             let record = ScriptTokenRecord {
                 token: token.clone(),
                 subtype,
@@ -1101,17 +1119,17 @@ mod tests {
             let mut memory = SourceTokenMemory::new();
             memory.write_record(&record).unwrap();
             let decoded = memory.read_record(&context(), None).unwrap();
-            assert_eq!(decoded.subtype, subtype, "subtype for {}", token.kind_name());
+            assert_eq!(decoded.subtype, subtype, "subtype for {}", token.kind());
             assert_eq!(decoded.integer_value, integer_value);
             assert_eq!(decoded.float_value.to_bits(), float_value.to_bits());
-            assert_eq!(decoded.token, token, "token for {}", token.kind_name());
+            assert_eq!(decoded.token, token, "token for {}", token.kind());
             // Positions: the line travels with the record while the path and
             // column come from the decode context.
-            assert_eq!(decoded.token.base().location.line, expected_line);
-            assert_eq!(decoded.token.base().location.path, "maps/test.cfg");
-            assert_eq!(decoded.token.base().location.column, 7);
-            assert_eq!(decoded.token.base().leading_whitespace, "  ");
-            assert_eq!(decoded.token.base().lines_crossed, 2);
+            assert_eq!(decoded.token.location().line, expected_line);
+            assert_eq!(decoded.token.location().path, "maps/test.cfg");
+            assert_eq!(decoded.token.location().column, 7);
+            assert_eq!(decoded.token.leading_whitespace(), "  ");
+            assert_eq!(decoded.token.lines_crossed(), 2);
         }
     }
 
@@ -1119,10 +1137,13 @@ mod tests {
     fn write_token_derives_fresh_record() {
         let mut memory = SourceTokenMemory::new();
         let number = ScriptToken::Number {
-            base: base("12.5", 3),
+            text: "12.5".to_string(),
             flags: 0x0808,
             integer_value: 12,
             float_value: 12.5,
+            location: location(3),
+            leading_whitespace: whitespace(),
+            lines_crossed: 2,
         };
         memory.write_token(&number).unwrap();
         let decoded = memory.read_record(&context(), None).unwrap();
@@ -1132,9 +1153,12 @@ mod tests {
 
         let mut memory = SourceTokenMemory::new();
         let name = ScriptToken::Name {
-            base: base("target", 4),
+            text: "target".to_string(),
             value: "target".to_string(),
             length: 6,
+            location: location(4),
+            leading_whitespace: whitespace(),
+            lines_crossed: 2,
         };
         memory.write_token(&name).unwrap();
         let decoded = memory.read_record(&context(), None).unwrap();
@@ -1146,9 +1170,12 @@ mod tests {
     #[test]
     fn write_back_restores_snapshot_bytes() {
         let token = ScriptToken::Name {
-            base: base("keep", 9),
+            text: "keep".to_string(),
             value: "keep".to_string(),
             length: 4,
+            location: location(9),
+            leading_whitespace: whitespace(),
+            lines_crossed: 2,
         };
         let record = ScriptTokenRecord {
             token: token.clone(),
@@ -1210,18 +1237,16 @@ mod tests {
         assert_eq!(
             decoded.token,
             ScriptToken::Name {
-                base: TokenBase {
-                    text: "a\0b".to_string(),
-                    location: SourceLocation {
-                        path: "maps/test.cfg".to_string(),
-                        line: 6,
-                        column: 7,
-                    },
-                    leading_whitespace: "  ".to_string(),
-                    lines_crossed: 0,
-                },
+                text: "a\0b".to_string(),
                 value: "a\0b".to_string(),
                 length: 3,
+                location: SourceLocation {
+                    path: "maps/test.cfg".to_string(),
+                    line: 6,
+                    column: 7,
+                },
+                leading_whitespace: "  ".to_string(),
+                lines_crossed: 0,
             }
         );
         // An explicit extent shorter than the NUL-truncated text is dropped.

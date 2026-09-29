@@ -54,30 +54,28 @@
 //!   UiGlobalAssets, UiMenuRegistrationEvent, UiMenuAssetPublication,
 //!   UiMenuRegistrationState, UiMenuDefinitions, UiMenuMemory,
 //!   UiMenuMemoryOwnership, MAX_UI_MENUS}`
-//! - `super::script::lexer::{SourceLocation, ScriptDiagnostic}`
+//! - `super::script::preprocessor::{SourceLocation, ScriptDiagnostic}`
 //! - `super::team_arena::memory::TeamArenaUiMemory` (see [`UiMenuMemory`])
 //!
 //! All failures surface as [`ClientError::BadUi`].
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use qa_core::cmd::{ascii_fold, source_command_text};
 use qa_core::identity::{ClientId, SeatId, SessionId};
-use qa_core::math::{Vec3, Vec4};
+use qa_core::math::Vec4;
 use qa_core::numeric::qvm_float_to_int;
 
 use super::borders::{draw_cg_rect, draw_cg_sides, draw_cg_top_bottom};
 use super::menu::{
-    UiColorComponent, UiColorRange, UiCvarRule, UiEditFieldDefinition, UiFontReference,
-    UiGlobalAssets, UiItemBehavior, UiItemDefinition, UiItemTypeCode, UiListBoxDefinition,
-    UiListColumn, UiMenuAssetPublication, UiMenuDefinition, UiMenuDefinitions, UiMenuMemory,
-    UiMenuMemoryOwnership, UiMenuRegistrationEvent, UiMenuRegistrationState, UiModelDefinition,
-    UiModelReference, UiMultiDefinition, UiRect, UiScript, UiScriptToken, UiShaderReference,
-    UiSoundReference, UiWindowDefinition, UiWindowFlag,
+    UiColorComponent, UiGlobalAssets, UiItemBehavior, UiItemDefinition, UiItemTypeCode,
+    UiListBoxDefinition, UiMenuAssetPublication, UiMenuDefinition, UiMenuDefinitions, UiMenuMemory,
+    UiMenuMemoryOwnership, UiMenuRegistrationEvent, UiMenuRegistrationState, UiMenuResource,
+    UiModelReference, UiRect, UiScript, UiScriptToken, UiShaderReference, UiWindowDefinition,
+    UiWindowFlag,
 };
-use super::script::lexer::SourceLocation;
+use super::script::preprocessor::SourceLocation;
 use crate::input::{KeyCode, KEY_CHAR_FLAG};
 use crate::text::draw2d::{Draw2D, PictureAsset, Rect};
 use crate::text::q3_font::{
@@ -705,7 +703,7 @@ impl UiMenuRegistrationEvent {
 
 /// A script diagnostic (`ScriptDiagnostic`).
 ///
-/// Assumed sibling import: `super::script::lexer::ScriptDiagnostic`.
+/// Assumed sibling import: `super::script::preprocessor::ScriptDiagnostic`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiScriptDiagnostic {
     /// Whether this is a warning (`true`) or an error (`false`).
@@ -1615,7 +1613,7 @@ impl UiScriptCursor for RuntimeScriptCursor {
             text: token,
             location: SourceLocation {
                 path: "<UI script>".to_string(),
-                line: self.line,
+                line: self.line as usize,
                 column: 1,
             },
         })
@@ -1633,7 +1631,7 @@ impl UiScriptCursor for RuntimeScriptCursor {
             text: token,
             location: SourceLocation {
                 path: "<UI script>".to_string(),
-                line: self.line,
+                line: self.line as usize,
                 column: 1,
             },
         })
@@ -2079,7 +2077,7 @@ impl UiRuntime {
             return Err(bad_ui("UI menu publication exceeds the source static menu array"));
         }
         let index = self.active_menu_count;
-        let cinematic = definition.window().cinematic().clone();
+        let cinematic = definition.window().cinematic();
         if let Some(path) = cinematic.as_deref() {
             let asset = self.options.resources.prepare_cinematic(path);
             self.cinematics.insert(path.to_string(), asset);
@@ -2125,7 +2123,7 @@ impl UiRuntime {
         let mut pictures = std::mem::take(&mut self.pictures);
         let mut sounds = std::mem::take(&mut self.sounds);
         let mut models = std::mem::take(&mut self.models);
-        for event in definitions.registration.events().clone() {
+        for event in definitions.registration.events() {
             Self::resolve_registration(
                 &mut self.options,
                 completed,
@@ -2396,7 +2394,7 @@ impl UiRuntime {
                     .cinematics
                     .stop(instance.map(|found| found.handle).unwrap_or(-1));
             }
-            let sound_loop = self.definitions.menus[menu].sound_loop().clone();
+            let sound_loop = self.definitions.menus[menu].sound_loop();
             if let Some(sound) = sound_loop.as_ref().and_then(|found| found.path.as_deref()) {
                 if !quake_string(sound, None)?.is_empty() {
                     self.options.resources.register_sound(Some(sound));
@@ -2529,14 +2527,15 @@ impl UiRuntime {
                 .unwrap_or(self.options.zero_picture),
             None => match definition.asset().as_ref() {
                 None => self.options.zero_picture,
-                Some(UiAssetReference::Shader(shader)) => self
+                Some(UiMenuResource::Shader(shader)) => self
                     .picture(shader.path.as_deref())
                     .unwrap_or(self.options.zero_picture),
-                Some(UiAssetReference::Model(_)) => {
+                Some(UiMenuResource::Model(_)) => {
                     return Err(bad_ui(
                         "Item_Image_Paint needs the source numeric handle for a model asset",
                     ));
                 }
+                Some(UiMenuResource::Sound(_)) => self.options.zero_picture,
             },
             Some(_) => self.options.zero_picture,
         };
@@ -2582,8 +2581,8 @@ impl UiRuntime {
             x = f(x + border_size);
             y = f(y + border_size);
         }
-        for item in 0..self.definitions.menus[index].item_count() as usize {
-            set_item_screen_coords(&mut self.definitions.menus[index].items[item], x, y);
+        for item in 0..self.definitions.menus[index].item_count().max(0) as usize {
+            set_item_screen_coords(&self.menu_item(index, item)?, x, y);
         }
         Ok(())
     }
@@ -2657,9 +2656,9 @@ impl UiRuntime {
             list.set_cursor_position(0);
             list.set_start_position(0);
         }
-        self.definitions.menus[menu].items[item].cursor_position = index;
-        let special = self.definitions.menus[menu].items[item].special;
-        let cursor = self.definitions.menus[menu].items[item].cursor_position;
+        self.menu_item(menu, item)?.set_cursor_position(index);
+        let special = self.menu_item(menu, item)?.special();
+        let cursor = self.menu_item(menu, item)?.cursor_position();
         self.options.feeder.select(special, cursor);
         Ok(())
     }
@@ -2887,7 +2886,7 @@ impl UiRuntime {
     fn menu_at(&self, x: f32, y: f32) -> Option<usize> {
         self.definitions.menus[..self.active_menu_count]
             .iter()
-            .position(|menu| rect_contains(&menu.window().rect(), x, y))
+            .position(|menu| rect_contains(&menu.window().rect().snapshot(), x, y))
     }
 
     /// Borrow a menu.
@@ -3106,7 +3105,7 @@ impl UiRuntime {
     /// `Promise -> sync`.
     fn activate_menu(&mut self, index: usize) -> Result<(), ClientError> {
         self.definitions.menus[index].window().set_flags(        self.definitions.menus[index].window().flags() | (UiWindowFlag::HAS_FOCUS | UiWindowFlag::VISIBLE));
-        let on_open = self.definitions.menus[index].on_open().clone();
+        let on_open = self.definitions.menus[index].on_open();
         if let Some(script) = on_open {
             self.run_script(
                 ScriptOwner {
@@ -3116,7 +3115,7 @@ impl UiRuntime {
                 &script,
             )?;
         }
-        let sound_loop = self.definitions.menus[index].sound_loop().clone();
+        let sound_loop = self.definitions.menus[index].sound_loop();
         if let Some(sound) = sound_loop {
             self.start_background(sound.path.as_deref())?;
         }
@@ -3130,7 +3129,7 @@ impl UiRuntime {
     fn close_menu(&mut self, index: usize) -> Result<(), ClientError> {
         let visible = self.definitions.menus[index].window().flags() & UiWindowFlag::VISIBLE != 0;
         if visible {
-            let on_close = self.definitions.menus[index].on_close().clone();
+            let on_close = self.definitions.menus[index].on_close();
             if let Some(script) = on_close {
                 self.run_script(
                     ScriptOwner {
@@ -3260,7 +3259,7 @@ impl UiRuntime {
         if definition.cvar_flags() & (flag | flag << 1) == 0 {
             return Ok(true);
         }
-        let (script, test) = (definition.cvar_script().clone(), definition.cvar_test().clone());
+        let (script, test) = (definition.cvar_script(), definition.cvar_test());
         let (Some(script), Some(test)) = (script.as_ref(), test.as_ref()) else {
             return Ok(true);
         };
@@ -3314,8 +3313,8 @@ impl UiRuntime {
             if !self.run_shared_command(owner, &ascii_fold(&command), &mut cursor)? {
                 let menu = self.script_menu(owner)?;
                 let context = UiExternalScriptContext {
-                    menu_name: menu.and_then(|index| self.menu(index).window().name().clone()),
-                    item_name: owner.item.and_then(|item| self.item(item).ok()?.window().name().clone()),
+                    menu_name: menu.and_then(|index| self.menu(index).window().name()),
+                    item_name: owner.item.and_then(|item| self.item(item).ok()?.window().name()),
                 };
                 self.options.external_script.run(&mut cursor, &context);
             }
@@ -3449,9 +3448,9 @@ impl UiRuntime {
                 item_index: item,
             };
             if visible {
-                self.definitions.menus[menu].items[item].window.flags |= UiWindowFlag::VISIBLE;
+                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::VISIBLE);
             } else {
-                self.definitions.menus[menu].items[item].window.flags &= !UiWindowFlag::VISIBLE;
+                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::VISIBLE);
                 self.close_cinematics_for(target);
             }
         }
@@ -3623,8 +3622,8 @@ impl UiRuntime {
             } else {
                 None
             };
-            self.definitions.menus[item.menu_index].items[item.item_index]
-                .window
+            self.menu_item(item.menu_index, item.item_index)?
+                .window()
                 .set_background(UiShaderReference { path }, handle);
         }
         self.pictures.insert(key, background);
@@ -3678,12 +3677,12 @@ impl UiRuntime {
         let name = ascii_fold(&target);
         for item in indices {
             if name == "backcolor" {
-                self.definitions.menus[menu].items[item].window.back_color = color;
+                self.menu_item(menu, item)?.window().set_back_color(&color);
             } else if name == "forecolor" {
-                self.definitions.menus[menu].items[item].window.flags |= UiWindowFlag::FORE_COLOR_SET;
-                self.definitions.menus[menu].items[item].window.fore_color = color;
+                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::FORE_COLOR_SET);
+                self.menu_item(menu, item)?.window().set_fore_color(&color);
             } else if name == "bordercolor" {
-                self.definitions.menus[menu].items[item].window.border_color = color;
+                self.menu_item(menu, item)?.window().set_border_color(&color);
             }
         }
         Ok(())
@@ -3708,15 +3707,15 @@ impl UiRuntime {
             return Ok(None);
         };
         let mut previous = None;
-        for item in 0..self.definitions.menus[menu].item_count() as usize {
-            if self.definitions.menus[menu].items[item].window.flags & UiWindowFlag::HAS_FOCUS != 0 {
+        for item in 0..self.definitions.menus[menu].item_count().max(0) as usize {
+            if self.menu_item(menu, item)?.window().flags() & UiWindowFlag::HAS_FOCUS != 0 {
                 previous = Some(ItemState {
                     menu_index: menu,
                     item_index: item,
                 });
             }
-            self.definitions.menus[menu].items[item].window.flags &= !UiWindowFlag::HAS_FOCUS;
-            let leave = self.definitions.menus[menu].items[item].leave_focus.clone();
+            self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::HAS_FOCUS);
+            let leave = self.menu_item(menu, item)?.leave_focus();
             if let Some(script) = leave {
                 self.run_script(
                     ScriptOwner {
@@ -3759,14 +3758,14 @@ impl UiRuntime {
         let Some(found) = found else {
             return Ok(());
         };
-        let flags = self.definitions.menus[menu].items[found].window.flags;
+        let flags = self.menu_item(menu, found)?.window().flags();
         if flags & UiWindowFlag::DECORATION != 0 || flags & UiWindowFlag::HAS_FOCUS != 0 {
             return Ok(());
         }
         let menu_again = self.script_menu(owner)?;
         self.clear_focus(menu_again)?;
-        self.definitions.menus[menu].items[found].window.flags |= UiWindowFlag::HAS_FOCUS;
-        let on_focus = self.definitions.menus[menu].items[found].on_focus.clone();
+        self.menu_item(menu, found)?.window().set_flags(self.menu_item(menu, found)?.window().flags() | UiWindowFlag::HAS_FOCUS);
+        let on_focus = self.menu_item(menu, found)?.on_focus();
         if let Some(script) = on_focus {
             self.run_script(
                 ScriptOwner {
@@ -3872,17 +3871,17 @@ impl UiRuntime {
                 item_index: item,
             };
             {
-                let definition = &mut self.definitions.menus[menu].items[item];
-                definition.window.flags |= UiWindowFlag::IN_TRANSITION | UiWindowFlag::VISIBLE;
-                definition.window.offset_time = game_atoi(&time_text)?;
-                definition.window.client_rect = from;
-                definition.window.rect_effects = to;
-                definition.window.rect_effects2 = UiRect {
+                let definition = self.menu_item(menu, item)?;
+                definition.window().set_flags(definition.window().flags() | UiWindowFlag::IN_TRANSITION | UiWindowFlag::VISIBLE);
+                definition.window().set_offset_time(game_atoi(&time_text)?);
+                definition.window().set_client_rect(&from);
+                definition.window().set_rect_effects(&to);
+                definition.window().set_rect_effects2(&UiRect {
                     x: transition_step(from.x, to.x, amount),
                     y: transition_step(from.y, to.y, amount),
                     width: transition_step(from.width, to.width, amount),
                     height: transition_step(from.height, to.height, amount),
-                };
+                });
             }
             self.update_item_position(target)?;
         }
@@ -3925,13 +3924,13 @@ impl UiRuntime {
                 item_index: item,
             };
             {
-                let definition = &mut self.definitions.menus[menu].items[item];
-                definition.window.flags |= UiWindowFlag::ORBITING | UiWindowFlag::VISIBLE;
-                definition.window.offset_time = game_atoi(&time)?;
-                definition.window.rect_effects.x = game_atof(&cx)?;
-                definition.window.rect_effects.y = game_atof(&cy)?;
-                definition.window.client_rect.x = game_atof(&x)?;
-                definition.window.client_rect.y = game_atof(&y)?;
+                let definition = self.menu_item(menu, item)?;
+                definition.window().set_flags(definition.window().flags() | UiWindowFlag::ORBITING | UiWindowFlag::VISIBLE);
+                definition.window().set_offset_time(game_atoi(&time)?);
+                definition.window().rect_effects().set_x(game_atof(&cx)?);
+                definition.window().rect_effects().set_y(game_atof(&cy)?);
+                definition.window().client_rect().set_x(game_atof(&x)?);
+                definition.window().client_rect().set_y(game_atof(&y)?);
             }
             self.update_item_position(target)?;
         }
@@ -4004,7 +4003,7 @@ impl UiRuntime {
         }
         let mut focus_set = false;
         for pass in 0..2 {
-            for item in 0..self.menu(menu).item_count() as usize {
+            for item in 0..self.menu(menu).item_count().max(0) as usize {
                 let target = ItemState {
                     menu_index: menu,
                     item_index: item,
@@ -4016,7 +4015,7 @@ impl UiRuntime {
                 if !self.item_passes_cvar(target, "enable")? || !self.item_passes_cvar(target, "show")? {
                     continue;
                 }
-                if rect_contains(&self.item(target)?.window().rect(), x, y) {
+                if rect_contains(&self.item(target)?.window().rect().snapshot(), x, y) {
                     if pass != 1 {
                         continue;
                     }
@@ -4034,7 +4033,7 @@ impl UiRuntime {
                     }
                 } else if self.item(target)?.window().flags() & UiWindowFlag::MOUSE_OVER != 0 {
                     self.mouse_leave(menu, target)?;
-                    self.definitions.menus[menu].items[item].window.flags &= !UiWindowFlag::MOUSE_OVER;
+                    self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::MOUSE_OVER);
                 }
             }
         }
@@ -4052,40 +4051,40 @@ impl UiRuntime {
         let over_text = rect_contains(
             &UiRect {
                 y: f(text.y() - text.height()),
-                ..text
+                ..text.snapshot()
             },
             x,
             y,
         );
         if over_text {
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER_TEXT == 0 {
-                let script = self.item(item)?.mouse_enter_text().clone();
+                let script = self.item(item)?.mouse_enter_text();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.definitions.menus[menu].items[item.item_index].window.flags |= UiWindowFlag::MOUSE_OVER_TEXT;
+                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER_TEXT);
             }
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER == 0 {
-                let script = self.item(item)?.mouse_enter().clone();
+                let script = self.item(item)?.mouse_enter();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.definitions.menus[menu].items[item.item_index].window.flags |= UiWindowFlag::MOUSE_OVER;
+                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER);
             }
         } else {
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER_TEXT != 0 {
-                let script = self.item(item)?.mouse_exit_text().clone();
+                let script = self.item(item)?.mouse_exit_text();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.definitions.menus[menu].items[item.item_index].window.flags &= !UiWindowFlag::MOUSE_OVER_TEXT;
+                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !UiWindowFlag::MOUSE_OVER_TEXT);
             }
             if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER == 0 {
-                let script = self.item(item)?.mouse_enter().clone();
+                let script = self.item(item)?.mouse_enter();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
-                self.definitions.menus[menu].items[item.item_index].window.flags |= UiWindowFlag::MOUSE_OVER;
+                self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() | UiWindowFlag::MOUSE_OVER);
             }
             if self.item(item)?.item_type() == UiItemTypeCode::ListBox as i32 {
                 self.list_mouse_enter(item, x, y)?;
@@ -4099,18 +4098,17 @@ impl UiRuntime {
     /// `Promise -> sync`.
     fn mouse_leave(&mut self, menu: usize, item: ItemState) -> Result<(), ClientError> {
         if self.item(item)?.window().flags() & UiWindowFlag::MOUSE_OVER_TEXT != 0 {
-            let script = self.item(item)?.mouse_exit_text().clone();
+            let script = self.item(item)?.mouse_exit_text();
             if let Some(script) = script {
                 self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
             }
-            self.definitions.menus[menu].items[item.item_index].window.flags &= !UiWindowFlag::MOUSE_OVER_TEXT;
+            self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !UiWindowFlag::MOUSE_OVER_TEXT);
         }
-        let script = self.item(item)?.mouse_exit().clone();
+        let script = self.item(item)?.mouse_exit();
         if let Some(script) = script {
             self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
         }
-        self.definitions.menus[menu].items[item.item_index].window.flags &=
-            !(UiWindowFlag::LIST_RIGHT_ARROW | UiWindowFlag::LIST_LEFT_ARROW);
+        self.menu_item(menu, item.item_index)?.window().set_flags(self.menu_item(menu, item.item_index)?.window().flags() & !(UiWindowFlag::LIST_RIGHT_ARROW | UiWindowFlag::LIST_LEFT_ARROW));
         Ok(())
     }
 
@@ -4130,24 +4128,21 @@ impl UiRuntime {
         let mut play_sound = false;
         if self.item(item)?.behavior().kind() == "text" {
             if rect_contains(&self.corrected_text_rect(item)?, x, y) {
-                self.definitions.menus[item.menu_index].items[item.item_index]
-                    .window
-                    .flags |= UiWindowFlag::HAS_FOCUS;
+                let window = self.menu_item(item.menu_index, item.item_index)?.window();
+                window.set_flags(window.flags() | UiWindowFlag::HAS_FOCUS);
                 play_sound = true;
             } else if let Some(old) = old_focus {
-                self.definitions.menus[old.menu_index].items[old.item_index]
-                    .window
-                    .flags |= UiWindowFlag::HAS_FOCUS;
-                let script = self.item(old)?.on_focus().clone();
+                let window = self.menu_item(old.menu_index, old.item_index)?.window();
+                window.set_flags(window.flags() | UiWindowFlag::HAS_FOCUS);
+                let script = self.item(old)?.on_focus();
                 if let Some(script) = script {
                     self.run_script(ScriptOwner { menu, item: Some(old) }, &script)?;
                 }
             }
         } else {
-            self.definitions.menus[item.menu_index].items[item.item_index]
-                .window
-                .flags |= UiWindowFlag::HAS_FOCUS;
-            let script = self.item(item)?.on_focus().clone();
+            let window = self.menu_item(item.menu_index, item.item_index)?.window();
+            window.set_flags(window.flags() | UiWindowFlag::HAS_FOCUS);
+            let script = self.item(item)?.on_focus();
             if let Some(script) = script {
                 self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
             }
@@ -4161,7 +4156,7 @@ impl UiRuntime {
                 }
                 _ => {
                     let item_path = match handle {
-                        None => self.item(item)?.focus_sound().clone(),
+                        None => self.item(item)?.focus_sound(),
                         Some(_) => None,
                     };
                     let item_sound = item_path
@@ -4213,7 +4208,7 @@ impl UiRuntime {
                 self.definitions.menus[menu].set_cursor_item(if direction < 0 { count - 1 } else { 0 });
             }
             let cursor = self.definitions.menus[menu].cursor_item();
-            let target = if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count() as usize {
+            let target = if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count().max(0) as usize {
                 Some(ItemState {
                     menu_index: menu,
                     item_index: cursor as usize,
@@ -4227,7 +4222,7 @@ impl UiRuntime {
                     let rect = self.item(target)?.window().rect();
                     self.mouse_move_menu(menu, f(rect.x() + 1.0), f(rect.y() + 1.0))?;
                     let cursor = self.definitions.menus[menu].cursor_item();
-                    if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count() as usize {
+                    if cursor >= 0 && (cursor as usize) < self.definitions.menus[menu].item_count().max(0) as usize {
                         return Ok(Some(ItemState {
                             menu_index: menu,
                             item_index: cursor as usize,
@@ -4269,7 +4264,7 @@ impl UiRuntime {
         if down
             && self.menu(menu).window().flags() & UiWindowFlag::POPUP == 0
             && !rect_contains(
-                &self.menu(menu).window().rect(),
+                &self.menu(menu).window().rect().snapshot(),
                 self.display_cursor_x,
                 self.display_cursor_y,
             )
@@ -4279,8 +4274,8 @@ impl UiRuntime {
             return Ok(true);
         }
         let mut item = None;
-        for index in 0..self.menu(menu).item_count() as usize {
-            if self.menu(menu).items[index].window.flags & UiWindowFlag::HAS_FOCUS != 0 {
+        for index in 0..self.menu(menu).item_count().max(0) as usize {
+            if self.menu_item(menu, index)?.window().flags() & UiWindowFlag::HAS_FOCUS != 0 {
                 item = Some(ItemState {
                     menu_index: menu,
                     item_index: index,
@@ -4289,7 +4284,7 @@ impl UiRuntime {
         }
         if let Some(item) = item {
             if self.handle_item_key(item, key, down)? {
-                let action = self.item(item)?.action().clone();
+                let action = self.item(item)?.action();
                 if let Some(script) = action {
                     self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                 }
@@ -4321,7 +4316,7 @@ impl UiRuntime {
         }
         if key == KeyCode::Escape as i32 {
             if !self.waiting_for_key {
-                let on_escape = self.menu(menu).on_escape().clone();
+                let on_escape = self.menu(menu).on_escape();
                 if let Some(script) = on_escape {
                     self.run_script(ScriptOwner { menu, item: None }, &script)?;
                 }
@@ -4337,25 +4332,25 @@ impl UiRuntime {
                         self.display_cursor_x,
                         self.display_cursor_y,
                     ) {
-                        let action = self.item(item)?.action().clone();
+                        let action = self.item(item)?.action();
                         if let Some(script) = action {
                             self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                         }
                     }
                 } else if kind == "edit-field" || kind == "numeric-field" {
                     if rect_contains(
-                        &self.item(item)?.window().rect(),
+                        &self.item(item)?.window().rect().snapshot(),
                         self.display_cursor_x,
                         self.display_cursor_y,
                     ) {
                         self.begin_editing(item)?;
                     }
                 } else if rect_contains(
-                    &self.item(item)?.window().rect(),
+                    &self.item(item)?.window().rect().snapshot(),
                     self.display_cursor_x,
                     self.display_cursor_y,
                 ) {
-                    let action = self.item(item)?.action().clone();
+                    let action = self.item(item)?.action();
                     if let Some(script) = action {
                         self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                     }
@@ -4369,7 +4364,7 @@ impl UiRuntime {
                 if kind == "edit-field" || kind == "numeric-field" {
                     self.begin_editing(item)?;
                 } else {
-                    let action = self.item(item)?.action().clone();
+                    let action = self.item(item)?.action();
                     if let Some(script) = action {
                         self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                     }
@@ -4382,7 +4377,7 @@ impl UiRuntime {
 
     /// Begin editing an item (`beginEditing`).
     fn begin_editing(&mut self, item: ItemState) -> Result<(), ClientError> {
-        self.definitions.menus[item.menu_index].items[item.item_index].cursor_position = 0;
+        self.menu_item(item.menu_index, item.item_index)?.set_cursor_position(0);
         self.editing_item = Some(item);
         self.binding_host("edit overstrike")?.set_overstrike(true);
         Ok(())
@@ -4421,11 +4416,11 @@ impl UiRuntime {
     /// Whether a point hits an active item (`menuOverActiveItem`).
     fn menu_over_active_item(&self, menu: usize, x: f32, y: f32) -> Result<bool, ClientError> {
         if self.menu(menu).window().flags() & (UiWindowFlag::VISIBLE | UiWindowFlag::FORCED) == 0
-            || !rect_contains(&self.menu(menu).window().rect(), x, y)
+            || !rect_contains(&self.menu(menu).window().rect().snapshot(), x, y)
         {
             return Ok(false);
         }
-        for item in 0..self.menu(menu).item_count() as usize {
+        for item in 0..self.menu(menu).item_count().max(0) as usize {
             let target = ItemState {
                 menu_index: menu,
                 item_index: item,
@@ -4434,7 +4429,7 @@ impl UiRuntime {
             if flags & (UiWindowFlag::VISIBLE | UiWindowFlag::FORCED) == 0 || flags & UiWindowFlag::DECORATION != 0 {
                 continue;
             }
-            if !rect_contains(&self.item(target)?.window().rect(), x, y) {
+            if !rect_contains(&self.item(target)?.window().rect().snapshot(), x, y) {
                 continue;
             }
             let is_text = self.item(target)?.behavior().kind() == "text";
@@ -4472,7 +4467,7 @@ impl UiRuntime {
                     )
                 };
                 let result = self.options.owner_draw.handle_key(owner_draw, flags, special, key);
-                self.definitions.menus[item.menu_index].items[item.item_index].special = result.special;
+                self.menu_item(item.menu_index, item.item_index)?.set_special(result.special);
                 Ok(result.handled)
             }
             "bind" => self.handle_bind_key(item, key, down),
@@ -4483,13 +4478,13 @@ impl UiRuntime {
 
     /// Handle a yes/no key (`handleYesNoKey`).
     fn handle_yes_no_key(&mut self, item: ItemState, key: i32) -> Result<bool, ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         let Some(cvar) = cvar else {
             return Ok(false);
         };
         if self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS == 0
             || !rect_contains(
-                &self.item(item)?.window().rect(),
+                &self.item(item)?.window().rect().snapshot(),
                 self.display_cursor_x,
                 self.display_cursor_y,
             )
@@ -4506,7 +4501,7 @@ impl UiRuntime {
 
     /// Handle a multi key (`handleMultiKey`).
     fn handle_multi_key(&mut self, item: ItemState, key: i32) -> Result<bool, ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         let multi = match &self.item(item)?.behavior() {
             UiItemBehavior::Multi { multi } => multi.clone(),
             _ => None,
@@ -4516,7 +4511,7 @@ impl UiRuntime {
         };
         if self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS == 0
             || !rect_contains(
-                &self.item(item)?.window().rect(),
+                &self.item(item)?.window().rect().snapshot(),
                 self.display_cursor_x,
                 self.display_cursor_y,
             )
@@ -4528,15 +4523,15 @@ impl UiRuntime {
         let mut current = 0i32;
         if multi.string_definition() {
             let value = self.cvar_buffer(&cvar)?;
-            for index in 0..count {
-                if equal_name(multi.string_value(index), &value) {
+            for index in 0..count.max(0) as usize {
+                if equal_name(multi.string_value(index).as_deref(), &value) {
                     current = index as i32;
                     break;
                 }
             }
         } else {
             let value = self.cvar_value(&cvar);
-            for index in 0..count {
+            for index in 0..count.max(0) as usize {
                 if multi.number_value(index) == value {
                     current = index as i32;
                     break;
@@ -4549,7 +4544,7 @@ impl UiRuntime {
         }
         if multi.string_definition() {
             let value = multi.string_value(current as usize);
-            self.set_cvar(Some(&cvar), value, true);
+            self.set_cvar(Some(&cvar), value.as_deref(), true);
         } else {
             let value = multi.number_value(current as usize);
             let integer = qvm_float_to_int(value);
@@ -4578,7 +4573,7 @@ impl UiRuntime {
     ///
     /// `Promise -> sync`.
     fn handle_text_key(&mut self, item: ItemState, key: i32) -> Result<bool, ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         let Some(cvar) = cvar else {
             return Ok(false);
         };
@@ -4756,7 +4751,7 @@ impl UiRuntime {
         let count = self.options.feeder.count(special);
         if !force
             && (!rect_contains(
-                &self.item(item)?.window().rect(),
+                &self.item(item)?.window().rect().snapshot(),
                 self.display_cursor_x,
                 self.display_cursor_y,
             ) || self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS == 0)
@@ -4860,7 +4855,7 @@ impl UiRuntime {
                 self.write_list(item, &list);
             } else if flags & UiWindowFlag::LIST_THUMB == 0 {
                 if self.real_time < self.last_list_box_click_time {
-                    if let Some(script) = list.double_click().clone() {
+                    if let Some(script) = list.double_click() {
                         let menu = self.menu_for(item)?;
                         self.run_script(ScriptOwner { menu, item: Some(item) }, &script)?;
                     }
@@ -4942,7 +4937,7 @@ impl UiRuntime {
             };
             (definition.special(), list.cursor_position())
         };
-        self.definitions.menus[item.menu_index].items[item.item_index].cursor_position = cursor;
+        self.menu_item(item.menu_index, item.item_index)?.set_cursor_position(cursor);
         self.options.feeder.select(special, cursor);
         Ok(())
     }
@@ -5162,7 +5157,7 @@ impl UiRuntime {
     fn slider_thumb_position(&mut self, item: ItemState) -> Result<f32, ClientError> {
         let edit = self.item(item)?.edit_data();
         let x = self.slider_x(item)?;
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         if edit.is_none() && cvar.is_some() {
             return Ok(x);
         }
@@ -5190,11 +5185,11 @@ impl UiRuntime {
 
     /// Handle a slider key (`handleSliderKey`).
     fn handle_slider_key(&mut self, item: ItemState, key: i32) -> Result<bool, ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         if let Some(cvar) = cvar {
             if self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS != 0
                 && rect_contains(
-                    &self.item(item)?.window().rect(),
+                    &self.item(item)?.window().rect().snapshot(),
                     self.display_cursor_x,
                     self.display_cursor_y,
                 )
@@ -5207,7 +5202,7 @@ impl UiRuntime {
                     let test = UiRect {
                         x: f(x - SLIDER_THUMB_WIDTH / 2.0),
                         width: f(SLIDER_WIDTH + SLIDER_THUMB_WIDTH / 2.0),
-                        ..rect
+                        ..rect.snapshot()
                     };
                     if rect_contains(&test, self.display_cursor_x, self.display_cursor_y) {
                         let work = f(self.display_cursor_x - x);
@@ -5270,7 +5265,7 @@ impl UiRuntime {
     /// Handle a binding key (`handleBindKey`).
     fn handle_bind_key(&mut self, item: ItemState, key: i32, down: bool) -> Result<bool, ClientError> {
         if rect_contains(
-            &self.item(item)?.window().rect(),
+            &self.item(item)?.window().rect().snapshot(),
             self.display_cursor_x,
             self.display_cursor_y,
         ) && !self.waiting_for_key
@@ -5360,7 +5355,7 @@ impl UiRuntime {
                 };
                 let value = f(f(f(f(cursor - x) / SLIDER_WIDTH) * f(edit.maximum() - edit.minimum())) + edit.minimum());
                 let text = game_format("%f", &[GameFormatArg::Float(value)])?;
-                let cvar = self.item(item)?.cvar().clone();
+                let cvar = self.item(item)?.cvar();
                 self.set_cvar(cvar.as_deref(), Some(&text), true);
                 return Ok(());
             }
@@ -5455,7 +5450,7 @@ impl UiRuntime {
             self.definitions.menus[menu].window().set_flags(            self.definitions.menus[menu].window().flags() | (UiWindowFlag::FORCED));
         }
         if self.menu(menu).full_screen() != 0 {
-            let background = self.background_or_zero(&self.menu(menu).window().clone())?;
+            let background = self.background_or_zero(&self.menu(menu).window())?;
             draw.draw_handle_pic(
                 Rect {
                     x: 0.0,
@@ -5471,11 +5466,11 @@ impl UiRuntime {
             (menu_def.fade_amount(), menu_def.fade_clamp(), menu_def.fade_cycle())
         };
         self.paint_window(menu, None, fade_amount, fade_clamp, fade_cycle, draw)?;
-        for item in 0..self.menu(menu).item_count() as usize {
+        for item in 0..self.menu(menu).item_count().max(0) as usize {
             self.paint_item(menu, item, draw)?;
         }
         if self.debug {
-            let rect = self.menu(menu).window().rect();
+            let rect = self.menu(menu).window().rect().snapshot();
             self.draw_rect(
                 draw,
                 &rect,
@@ -5505,13 +5500,13 @@ impl UiRuntime {
         draw: &mut Draw2D,
     ) -> Result<(), ClientError> {
         let window = match item {
-            Some(item) => self.definitions.menus[menu].items[item].window.clone(),
-            None => self.definitions.menus[menu].window().clone(),
+            Some(item) => self.menu_item(menu, item)?.window(),
+            None => self.definitions.menus[menu].window(),
         };
         if self.debug {
             self.draw_rect(
                 draw,
-                &window.rect,
+                &window.rect().snapshot(),
                 1.0,
                 Vec4 {
                     x: 1.0,
@@ -5521,20 +5516,20 @@ impl UiRuntime {
                 },
             );
         }
-        if window.style == 0 && window.border == 0 {
+        if window.style() == 0 && window.border() == 0 {
             return Ok(());
         }
-        let mut fill = window.rect;
-        if window.border != 0 {
+        let mut fill = window.rect().snapshot();
+        if window.border() != 0 {
             fill = UiRect {
-                x: f(fill.x + window.border_size),
-                y: f(fill.y + window.border_size),
-                width: f(fill.width - f(window.border_size + 1.0)),
-                height: f(fill.height - f(window.border_size + 1.0)),
+                x: f(fill.x + window.border_size()),
+                y: f(fill.y + window.border_size()),
+                width: f(fill.width - f(window.border_size() + 1.0)),
+                height: f(fill.height - f(window.border_size() + 1.0)),
             };
         }
         let mut team_color = None;
-        if window.style == 1 {
+        if window.style() == 1 {
             if self.has_window_background(&window)? {
                 let real_time = self.real_time;
                 let mut target = match item {
@@ -5551,38 +5546,38 @@ impl UiRuntime {
                     fade_amount,
                 );
                 let window = match item {
-                    Some(item) => self.definitions.menus[menu].items[item].window.clone(),
-                    None => self.definitions.menus[menu].window().clone(),
+                    Some(item) => self.menu_item(menu, item)?.window(),
+                    None => self.definitions.menus[menu].window(),
                 };
                 let background = self.background_or_zero(&window)?;
-                draw.set_color(Some(window.back_color));
+                draw.set_color(Some(window.back_color().snapshot()));
                 draw.draw_handle_pic(Rect::from(&fill), background);
                 draw.set_color(None);
             } else {
                 draw.fill_rect(
                     Rect::from(&fill),
-                    window.back_color,
+                    window.back_color().snapshot(),
                     self.options.widget_assets.white_shader,
                 );
             }
-        } else if window.style == 2 {
-            self.gradient(draw, &fill, window.back_color);
-        } else if window.style == 3 {
-            if window.flags & UiWindowFlag::FORE_COLOR_SET != 0 {
-                draw.set_color(Some(window.fore_color));
+        } else if window.style() == 2 {
+            self.gradient(draw, &fill, window.back_color().snapshot());
+        } else if window.style() == 3 {
+            if window.flags() & UiWindowFlag::FORE_COLOR_SET != 0 {
+                draw.set_color(Some(window.fore_color().snapshot()));
             }
             let background = self.background_or_zero(&window)?;
             draw.draw_handle_pic(Rect::from(&fill), background);
             draw.set_color(None);
-        } else if window.style == 4 {
+        } else if window.style() == 4 {
             let color = (self.options.get_team_color)();
             team_color = Some(color);
             draw.fill_rect(Rect::from(&fill), color, self.options.widget_assets.white_shader);
-        } else if window.style == 5 {
+        } else if window.style() == 5 {
             self.paint_cinematic(menu, item, fill, draw)?;
         }
-        if window.border == 1 {
-            if window.style == 4 {
+        if window.border() == 1 {
+            if window.style() == 4 {
                 if let Some(team) = team_color {
                     let color = if team.x > 0.0 {
                         Vec4 {
@@ -5599,41 +5594,41 @@ impl UiRuntime {
                             w: 1.0,
                         }
                     };
-                    self.draw_rect(draw, &window.rect, window.border_size, color);
+                    self.draw_rect(draw, &window.rect().snapshot(), window.border_size(), color);
                 }
             } else {
-                self.draw_rect(draw, &window.rect, window.border_size, window.border_color);
+                self.draw_rect(draw, &window.rect().snapshot(), window.border_size(), window.border_color().snapshot());
             }
-        } else if window.border == 2 {
-            draw.set_color(Some(window.border_color));
+        } else if window.border() == 2 {
+            draw.set_color(Some(window.border_color().snapshot()));
             draw_cg_top_bottom(
                 draw,
-                &Rect::from(&window.rect),
-                window.border_size,
+                &Rect::from(&window.rect().snapshot()),
+                window.border_size(),
                 self.options.widget_assets.white_shader,
             );
             draw.set_color(None);
-        } else if window.border == 3 {
-            draw.set_color(Some(window.border_color));
+        } else if window.border() == 3 {
+            draw.set_color(Some(window.border_color().snapshot()));
             draw_cg_sides(
                 draw,
-                &Rect::from(&window.rect),
-                window.border_size,
+                &Rect::from(&window.rect().snapshot()),
+                window.border_size(),
                 self.options.widget_assets.white_shader,
             );
             draw.set_color(None);
-        } else if window.border == 4 {
+        } else if window.border() == 4 {
             let top = UiRect {
-                height: window.border_size,
-                ..window.rect
+                height: window.border_size(),
+                ..window.rect().snapshot()
             };
-            self.gradient(draw, &top, window.border_color);
+            self.gradient(draw, &top, window.border_color().snapshot());
             let bottom = UiRect {
-                y: f(f(window.rect.y + window.rect.height) - 1.0),
-                height: window.border_size,
-                ..window.rect
+                y: f(f(window.rect().y() + window.rect().height()) - 1.0),
+                height: window.border_size(),
+                ..window.rect().snapshot()
             };
-            self.gradient(draw, &bottom, window.border_color);
+            self.gradient(draw, &bottom, window.border_color().snapshot());
         }
         Ok(())
     }
@@ -5687,7 +5682,7 @@ impl UiRuntime {
             target.set_cinematic_handle(instance.map(|found| found.handle).unwrap_or(-2));
         }
         let handle = match item {
-            Some(item) => self.definitions.menus[menu].items[item].window.cinematic_handle,
+            Some(item) => self.menu_item(menu, item)?.window().cinematic_handle(),
             None => self.definitions.menus[menu].window().cinematic_handle(),
         };
         if handle >= 0 {
@@ -5746,9 +5741,9 @@ impl UiRuntime {
             let flags = self.item(target)?.window().owner_draw_flags();
             let visible = self.options.owner_draw.visible(flags);
             if visible {
-                self.definitions.menus[menu].items[item].window.flags |= UiWindowFlag::VISIBLE;
+                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() | UiWindowFlag::VISIBLE);
             } else {
-                self.definitions.menus[menu].items[item].window.flags &= !UiWindowFlag::VISIBLE;
+                self.menu_item(menu, item)?.window().set_flags(self.menu_item(menu, item)?.window().flags() & !UiWindowFlag::VISIBLE);
             }
         }
         if !self.item_passes_cvar(target, "show")? || self.item(target)?.window().flags() & UiWindowFlag::VISIBLE == 0 {
@@ -5798,12 +5793,12 @@ impl UiRuntime {
             && self.real_time > self.item(item)?.window().next_time()
         {
             let real_time = self.real_time;
-            let definition = &mut self.definitions.menus[item.menu_index].items[item.item_index];
-            definition.window.next_time = real_time.wrapping_add(definition.window.offset_time);
-            let half_width = f(definition.window.client_rect.width / 2.0);
-            let half_height = f(definition.window.client_rect.height / 2.0);
-            let rx = f(f(definition.window.client_rect.x + half_width) - definition.window.rect_effects.x);
-            let ry = f(f(definition.window.client_rect.y + half_height) - definition.window.rect_effects.y);
+            let definition = self.menu_item(item.menu_index, item.item_index)?;
+            definition.window().set_next_time(real_time.wrapping_add(definition.window().offset_time()));
+            let half_width = f(definition.window().client_rect().width() / 2.0);
+            let half_height = f(definition.window().client_rect().height() / 2.0);
+            let rx = f(f(definition.window().client_rect().x() + half_width) - definition.window().rect_effects().x());
+            let ry = f(f(definition.window().client_rect().y() + half_height) - definition.window().rect_effects().y());
             // Donor f64 point: f(3 * PI / 180), then f(cos/sin) back to f32.
             let angle = (3.0f64 * std::f64::consts::PI / 180.0) as f32;
             let cosine = f((f64::from(angle)).cos() as f32);
@@ -5822,37 +5817,37 @@ impl UiRuntime {
             let real_time = self.real_time;
             let mut done = 0;
             {
-                let definition = &mut self.definitions.menus[item.menu_index].items[item.item_index];
-                definition.window.next_time = real_time.wrapping_add(definition.window.offset_time);
+                let definition = self.menu_item(item.menu_index, item.item_index)?;
+                definition.window().set_next_time(real_time.wrapping_add(definition.window().offset_time()));
                 for component in 0..4 {
                     let current = match component {
-                        0 => definition.window.client_rect.x,
-                        1 => definition.window.client_rect.y,
-                        2 => definition.window.client_rect.width,
-                        _ => definition.window.client_rect.height,
+                        0 => definition.window().client_rect().x(),
+                        1 => definition.window().client_rect().y(),
+                        2 => definition.window().client_rect().width(),
+                        _ => definition.window().client_rect().height(),
                     };
                     let target = match component {
-                        0 => definition.window.rect_effects.x,
-                        1 => definition.window.rect_effects.y,
-                        2 => definition.window.rect_effects.width,
-                        _ => definition.window.rect_effects.height,
+                        0 => definition.window().rect_effects().x(),
+                        1 => definition.window().rect_effects().y(),
+                        2 => definition.window().rect_effects().width(),
+                        _ => definition.window().rect_effects().height(),
                     };
                     if current == target {
                         done += 1;
                         continue;
                     }
                     let amount = match component {
-                        0 => definition.window.rect_effects2.x,
-                        1 => definition.window.rect_effects2.y,
-                        2 => definition.window.rect_effects2.width,
-                        _ => definition.window.rect_effects2.height,
+                        0 => definition.window().rect_effects2().x(),
+                        1 => definition.window().rect_effects2().y(),
+                        2 => definition.window().rect_effects2().width(),
+                        _ => definition.window().rect_effects2().height(),
                     };
                     let (value, finished) = Self::transition_value(current, target, amount);
                     match component {
-                        0 => definition.window.client_rect.x = value,
-                        1 => definition.window.client_rect.y = value,
-                        2 => definition.window.client_rect.width = value,
-                        _ => definition.window.client_rect.height = value,
+                        0 => definition.window().client_rect().set_x(value),
+                        1 => definition.window().client_rect().set_y(value),
+                        2 => definition.window().client_rect().set_width(value),
+                        _ => definition.window().client_rect().set_height(value),
                     }
                     if finished {
                         done += 1;
@@ -5861,11 +5856,11 @@ impl UiRuntime {
             }
             self.update_item_position(item)?;
             if done == 4 {
-                self.definitions.menus[item.menu_index].items[item.item_index]
-                    .window
-                    .flags &= !UiWindowFlag::IN_TRANSITION;
+                let window = self.menu_item(item.menu_index, item.item_index)?.window();
+                window.set_flags(window.flags() & !UiWindowFlag::IN_TRANSITION);
             }
         }
+        Ok(())
     }
 
     /// Step one transition component (`transitionValue`).
@@ -5913,10 +5908,10 @@ impl UiRuntime {
         let (static_text, scale, owner_draw, cvar) = {
             let definition = self.item(item)?;
             (
-                definition.text().clone().unwrap_or_default(),
+                definition.text().unwrap_or_default(),
                 definition.text_scale(),
                 definition.window().owner_draw(),
-                definition.cvar().clone(),
+                definition.cvar(),
             )
         };
         let mut original = text_width(&self.options.fonts, &static_text, scale, 0)?;
@@ -5958,7 +5953,7 @@ impl UiRuntime {
         }
         placed.x = f(placed.x + rect.x());
         placed.y = f(placed.y + rect.y());
-        self.definitions.menus[item.menu_index].items[item.item_index].text_rect = placed;
+        self.menu_item(item.menu_index, item.item_index)?.set_text_rect(&placed);
         Ok(())
     }
 
@@ -5971,14 +5966,14 @@ impl UiRuntime {
                 menu_def.fade_clamp(),
                 menu_def.fade_cycle(),
                 menu_def.fade_amount(),
-                menu_def.focus_color(),
-                menu_def.disable_color(),
+                menu_def.focus_color().snapshot(),
+                menu_def.disable_color().snapshot(),
             )
         };
         let real_time = self.real_time;
         Self::fade_window(
             real_time,
-            &mut self.definitions.menus[item.menu_index].items[item.item_index].window,
+            &mut self.menu_item(item.menu_index, item.item_index)?.window(),
             true,
             fade_clamp,
             fade_cycle,
@@ -5988,8 +5983,8 @@ impl UiRuntime {
         let (mut color, fore, style, flags) = {
             let definition = self.item(item)?;
             (
-                definition.window().fore_color(),
-                definition.window().fore_color(),
+                definition.window().fore_color().snapshot(),
+                definition.window().fore_color().snapshot(),
                 definition.text_style(),
                 definition.window().flags(),
             )
@@ -6177,12 +6172,8 @@ impl UiRuntime {
                         x = f(x + border_size);
                         baseline = f(baseline + border_size);
                     }
-                    self.definitions.menus[item.menu_index].items[item.item_index]
-                        .text_rect
-                        .x = f(x + rect.x());
-                    self.definitions.menus[item.menu_index].items[item.item_index]
-                        .text_rect
-                        .y = f(baseline + rect.y());
+                    self.menu_item(item.menu_index, item.item_index)?.text_rect().set_x(f(x + rect.x()));
+                    self.menu_item(item.menu_index, item.item_index)?.text_rect().set_y(f(baseline + rect.y()));
                     buffer.truncate(line_break);
                     let (paint_x, paint_y) = {
                         let definition = self.item(item)?;
@@ -6228,9 +6219,9 @@ impl UiRuntime {
     fn value_color(&self, item: ItemState) -> Result<Vec4, ClientError> {
         if self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS != 0 {
             let menu = self.menu_for(item)?;
-            Ok(self.pulse(self.menu(menu).focus_color()))
+            Ok(self.pulse(self.menu(menu).focus_color().snapshot()))
         } else {
-            Ok(self.item(item)?.window().fore_color())
+            Ok(self.item(item)?.window().fore_color().snapshot())
         }
     }
 
@@ -6238,7 +6229,7 @@ impl UiRuntime {
     fn paint_text_field(&mut self, item: ItemState, draw: &mut Draw2D) -> Result<(), ClientError> {
         let edit = self.item(item)?.edit_data();
         self.paint_text(item, draw)?;
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         let value = match cvar.as_deref() {
             Some(cvar) => self.cvar_buffer(cvar)?,
             None => String::new(),
@@ -6291,7 +6282,7 @@ impl UiRuntime {
 
     /// Paint a yes/no toggle (`paintYesNo`).
     fn paint_yes_no(&mut self, item: ItemState, draw: &mut Draw2D) -> Result<(), ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         let value = match cvar.as_deref() {
             Some(cvar) => self.cvar_value(cvar),
             None => 0.0,
@@ -6329,7 +6320,7 @@ impl UiRuntime {
         let (cvar, multi) = {
             let definition = self.item(item)?;
             (
-                definition.cvar().clone(),
+                definition.cvar(),
                 match &definition.behavior() {
                     UiItemBehavior::Multi { multi } => multi.clone(),
                     _ => None,
@@ -6341,14 +6332,14 @@ impl UiRuntime {
         };
         if multi.string_definition() {
             let current = self.cvar_buffer(&cvar)?;
-            for index in 0..multi.count() {
-                if equal_name(multi.string_value(index), &current) {
+            for index in 0..multi.count().max(0) as usize {
+                if equal_name(multi.string_value(index).as_deref(), &current) {
                     return Ok(multi.label(index).unwrap_or_default().to_string());
                 }
             }
         } else {
             let current = self.cvar_value(&cvar);
-            for index in 0..multi.count() {
+            for index in 0..multi.count().max(0) as usize {
                 if multi.number_value(index) == current {
                     return Ok(multi.label(index).unwrap_or_default().to_string());
                 }
@@ -6390,7 +6381,7 @@ impl UiRuntime {
 
     /// Binding display text (`bindingText`).
     fn binding_text(&mut self, item: ItemState) -> Result<String, ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         let binding = self.binding_by_name(cvar.as_deref());
         let Some(binding) = binding else {
             return Ok("???".to_string());
@@ -6416,14 +6407,14 @@ impl UiRuntime {
             .edit_data()
             .map(|edit| edit.max_paint_chars())
             .unwrap_or(0);
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         if let Some(cvar) = cvar.as_deref() {
             let _ = self.cvar_value(cvar);
         }
         let mut color = self.value_color(item)?;
         if self.item(item)?.window().flags() & UiWindowFlag::HAS_FOCUS != 0 && self.binding_item == Some(item) {
             let menu = self.menu_for(item)?;
-            let focus = self.menu(menu).focus_color();
+            let focus = self.menu(menu).focus_color().snapshot();
             color = self.lerp_color(
                 focus,
                 Vec4 {
@@ -6465,7 +6456,7 @@ impl UiRuntime {
 
     /// Paint a slider (`paintSlider`).
     fn paint_slider(&mut self, item: ItemState, draw: &mut Draw2D) -> Result<(), ClientError> {
-        let cvar = self.item(item)?.cvar().clone();
+        let cvar = self.item(item)?.cvar();
         if let Some(cvar) = cvar.as_deref() {
             let _ = self.cvar_value(cvar);
         }
@@ -6520,16 +6511,17 @@ impl UiRuntime {
         }
         let (handle, asset) = {
             let definition = self.item(item)?;
-            (definition.asset_handle(), definition.asset().clone())
+            (definition.asset_handle(), definition.asset())
         };
         let asset_path = match asset.as_ref() {
-            Some(UiAssetReference::Shader(shader)) => shader.path.clone(),
-            Some(UiAssetReference::Model(model)) => model.path.clone(),
+            Some(UiMenuResource::Shader(shader)) => shader.path.clone(),
+            Some(UiMenuResource::Model(model)) => model.path.clone(),
+            Some(UiMenuResource::Sound(_)) => None,
             None => None,
         };
         let model = match handle {
             None => match asset.as_ref() {
-                Some(UiAssetReference::Model(model)) => self.models.get(&resource_key(model.path.as_deref())).cloned(),
+                Some(UiMenuResource::Model(model)) => self.models.get(&resource_key(model.path.as_deref())).cloned(),
                 _ => None,
             },
             Some(0) if self.options.resources.handle_kind() == UiHandleKind::Diagnostic => Some(default_model()),
@@ -6571,22 +6563,22 @@ impl UiRuntime {
                 menu_def.fade_clamp(),
                 menu_def.fade_cycle(),
                 menu_def.fade_amount(),
-                menu_def.focus_color(),
-                menu_def.disable_color(),
+                menu_def.focus_color().snapshot(),
+                menu_def.disable_color().snapshot(),
             )
         };
         let real_time = self.real_time;
         Self::fade_window(
             real_time,
-            &mut self.definitions.menus[item.menu_index].items[item.item_index].window,
+            &mut self.menu_item(item.menu_index, item.item_index)?.window(),
             true,
             fade_clamp,
             fade_cycle,
             true,
             fade_amount,
         );
-        let mut color = self.item(item)?.window().fore_color();
-        let ranges = self.item(item)?.color_ranges.clone();
+        let mut color = self.item(item)?.window().fore_color().snapshot();
+        let ranges = self.item(item)?.color_ranges()?;
         if !ranges.is_empty() {
             let owner_draw = self.item(item)?.window().owner_draw();
             let value = self.options.owner_draw.value(owner_draw);
@@ -6602,7 +6594,7 @@ impl UiRuntime {
             (
                 definition.window().flags(),
                 definition.text_style(),
-                definition.window().fore_color(),
+                definition.window().fore_color().snapshot(),
             )
         };
         if flags & UiWindowFlag::HAS_FOCUS != 0 {
@@ -6613,7 +6605,7 @@ impl UiRuntime {
         if !self.item_passes_cvar(item, "enable")? {
             color = disable_color;
         }
-        let mut rect = self.item(item)?.window().rect();
+        let rect = self.item(item)?.window().rect();
         let mut text_x = self.item(item)?.text_align_x();
         let has_text = self.item(item)?.text().is_some();
         let text_len = self.item(item)?.text().as_ref().is_some_and(|text| !text.is_empty());
@@ -6623,11 +6615,11 @@ impl UiRuntime {
             rect.set_x(f(f(definition.text_rect().x() + definition.text_rect().width()) + if text_len { 8.0 } else { 0.0 }));
             text_x = 0.0;
         }
-        let definition = self.item(item)?.clone();
+        let definition = self.item(item)?;
         let background = self.window_background(&definition.window())?;
         self.options.owner_draw.paint(UiOwnerDrawPaintRequest {
             draw,
-            rect,
+            rect: rect.snapshot(),
             text_x,
             text_y: definition.text_align_y(),
             owner_draw: definition.window().owner_draw(),
@@ -6721,7 +6713,10 @@ impl UiRuntime {
                 if row == f(self.item(item)?.cursor_position() as f32) {
                     let (border_size, border_color) = {
                         let definition = self.item(item)?;
-                        (definition.window().border_size(), definition.window().border_color())
+                        (
+                            definition.window().border_size(),
+                            definition.window().border_color().snapshot(),
+                        )
                     };
                     self.draw_rect(
                         draw,
@@ -6814,7 +6809,10 @@ impl UiRuntime {
                 if row == f(self.item(item)?.cursor_position() as f32) {
                     let (border_size, border_color) = {
                         let definition = self.item(item)?;
-                        (definition.window().border_size(), definition.window().border_color())
+                        (
+                            definition.window().border_size(),
+                            definition.window().border_color().snapshot(),
+                        )
                     };
                     self.draw_rect(
                         draw,
@@ -6845,10 +6843,10 @@ impl UiRuntime {
                     if let Some(picture) = entry.picture {
                         draw.draw_handle_pic(
                             Rect {
-                                x: f(f(x + 4.0) + f(column.position)),
+                                x: f(f(x + 4.0) + f(column.position as f32)),
                                 y: f(f(y - 1.0) + f(list.element_height() / 2.0)),
-                                width: f(column.width),
-                                height: f(column.width),
+                                width: f(column.width as f32),
+                                height: f(column.width as f32),
                             },
                             picture,
                         );
@@ -6866,10 +6864,10 @@ impl UiRuntime {
                             draw,
                             &self.options.fonts,
                             &TextPaintOptions {
-                                x: f(f(x + 4.0) + f(column.position)),
+                                x: f(f(x + 4.0) + f(column.position as f32)),
                                 y: f(y + list.element_height()),
                                 scale,
-                                color: fore,
+                                color: fore.snapshot(),
                                 text: &text,
                                 adjust: 0.0,
                                 limit: column.max_chars,
@@ -6881,7 +6879,7 @@ impl UiRuntime {
                 if row == f(self.item(item)?.cursor_position() as f32) {
                     let (outline, rect) = {
                         let definition = self.item(item)?;
-                        (definition.window().outline_color(), definition.window().rect())
+                        (definition.window().outline_color().snapshot(), definition.window().rect())
                     };
                     draw.fill_rect(
                         Rect {
@@ -6916,7 +6914,7 @@ impl UiRuntime {
                                     x: f(x + 4.0),
                                     y: f(y + list.element_height()),
                                     scale,
-                                    color: fore,
+                                    color: fore.snapshot(),
                                     text: &text,
                                     adjust: 0.0,
                                     limit: 0,
@@ -6929,7 +6927,7 @@ impl UiRuntime {
                 if row == f(self.item(item)?.cursor_position() as f32) {
                     let (outline, rect) = {
                         let definition = self.item(item)?;
-                        (definition.window().outline_color(), definition.window().rect())
+                        (definition.window().outline_color().snapshot(), definition.window().rect())
                     };
                     draw.fill_rect(
                         Rect {
@@ -7012,22 +7010,22 @@ impl UiRuntime {
         let mut menus = Vec::new();
         for menu in 0..self.active_menu_count {
             let mut items = Vec::new();
-            for item in 0..self.definitions.menus[menu].item_count() as usize {
+            for item in 0..self.definitions.menus[menu].item_count().max(0) as usize {
                 let target = ItemState {
                     menu_index: menu,
                     item_index: item,
                 };
                 let definition = self.item(target)?;
                 items.push(UiRuntimeItemSnapshot {
-                    name: definition.window().name().clone(),
-                    group: definition.window().group().clone(),
+                    name: definition.window().name(),
+                    group: definition.window().group(),
                     flags: definition.window().flags(),
                     rect: definition.window().rect().snapshot(),
                     client_rect: definition.window().client_rect().snapshot(),
                     fore_color: definition.window().fore_color().snapshot(),
                     back_color: definition.window().back_color().snapshot(),
                     border_color: definition.window().border_color().snapshot(),
-                    background: self.window_picture(&definition.window().clone())?,
+                    background: self.window_picture(&definition.window())?,
                     cursor_position: definition.cursor_position(),
                     special: definition.special(),
                     enabled: self.item_passes_cvar(target, "enable")?,
@@ -7037,19 +7035,19 @@ impl UiRuntime {
             }
             let definition = self.menu(menu);
             menus.push(UiRuntimeMenuSnapshot {
-                name: definition.window().name().clone(),
+                name: definition.window().name(),
                 flags: definition.window().flags(),
-                rect: definition.window().rect(),
+                rect: definition.window().rect().snapshot(),
                 cursor_item: definition.cursor_item(),
                 items,
             });
         }
         Ok(UiRuntimeSnapshot {
-            focused_menu: focused.and_then(|index| self.menu(index).window().name().clone()),
+            focused_menu: focused.and_then(|index| self.menu(index).window().name()),
             open_stack: self
                 .open_stack
                 .iter()
-                .map(|index| self.definitions.menus[*index].window().name().clone())
+                .map(|index| self.definitions.menus[*index].window().name())
                 .collect(),
             menus,
         })

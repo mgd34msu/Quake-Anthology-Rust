@@ -288,14 +288,17 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use super::super::runtime::{
-        CommandContext, PcmSound, SceneModel, SourceLocation, UiCinematicAsset, UiCinematicInstance, UiCommandBuffer,
-        UiCommandOrigin, UiCvarRegistry, UiCvarValue, UiExternalScriptContext, UiExternalScriptHost, UiHandleKind,
-        UiLocalSound, UiMenuDefinition, UiMenuDefinitions, UiOwnerDrawKeyResult, UiOwnerDrawPaintRequest, UiRect,
-        UiRuntimeAudio, UiRuntimeBindings, UiRuntimeCinematics, UiRuntimeContext, UiRuntimeFeeder, UiRuntimeFeederItem,
-        UiRuntimeOptions, UiRuntimeOwnerDraw, UiRuntimeResources, UiScriptCursor, UiWidgetAssets, UiWindowDefinition,
-        UiWindowFlag,
+    use super::super::menu::{
+        UiMenuDefinition, UiMenuDefinitions, UiRect, UiWindowDefinition, UiWindowFlag,
     };
+    use super::super::runtime::{
+        CommandContext, PcmSound, SceneModel, UiCinematicAsset, UiCinematicInstance, UiCommandBuffer,
+        UiCommandOrigin, UiCvarRegistry, UiCvarValue, UiExternalScriptContext, UiExternalScriptHost, UiHandleKind,
+        UiLocalSound, UiOwnerDrawKeyResult, UiOwnerDrawPaintRequest, UiRuntimeAudio, UiRuntimeBindings,
+        UiRuntimeCinematics, UiRuntimeContext, UiRuntimeFeeder, UiRuntimeFeederItem, UiRuntimeOptions,
+        UiRuntimeOwnerDraw, UiRuntimeResources, UiScriptCursor, UiWidgetAssets,
+    };
+    use super::super::script::preprocessor::SourceLocation;
 
     /// Shared handle.
     type Shared<T> = Rc<RefCell<T>>;
