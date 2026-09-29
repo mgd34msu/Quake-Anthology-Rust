@@ -20,11 +20,11 @@ use thiserror::Error;
 
 use crate::msg::{MsgError, MsgReader, MsgWriter};
 use crate::protocol::q2 as protocol;
-use crate::q2::{
-    EntityState, FrameHeader, FrameWrite, PlayerState, Q2CodecError, Q2ProFog, Usercmd, MAX_EDICTS,
-    MAX_STATS, MAX_STATS_STORAGE, RF_BEAM,
-};
 use crate::q2::{angle_to_short, read_dir, scaled_trunc, short_to_angle};
+use crate::q2::{
+    EntityState, FrameHeader, FrameWrite, PlayerState, Q2CodecError, Q2ProFog, Usercmd, MAX_EDICTS, MAX_STATS,
+    MAX_STATS_STORAGE, RF_BEAM,
+};
 
 /// Error for extended Q2 codec variants.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -123,7 +123,11 @@ pub struct BatchBitReader<'a, 'b> {
 impl<'a, 'b> BatchBitReader<'a, 'b> {
     /// Borrow a message reader for bit reads.
     pub fn new(reader: &'b mut MsgReader<'a>) -> Self {
-        Self { reader, buf: 0, left: 0 }
+        Self {
+            reader,
+            buf: 0,
+            left: 0,
+        }
     }
 
     fn fill(&mut self, bits: u32) -> Result<(), MsgError> {
@@ -162,7 +166,11 @@ pub struct BatchBitWriter<'a> {
 impl<'a> BatchBitWriter<'a> {
     /// Borrow a message writer for bit writes.
     pub fn new(writer: &'a mut MsgWriter) -> Self {
-        Self { writer, buf: 0, left: 0 }
+        Self {
+            writer,
+            buf: 0,
+            left: 0,
+        }
     }
 
     /// Write the low `bits` bits of `value`.
@@ -212,10 +220,7 @@ pub struct BatchMove {
 }
 
 /// Read one delta-or-absolute batch-move angle component.
-pub fn read_batch_move_angle(
-    reader: &mut BatchBitReader<'_, '_>,
-    prev_angle: i16,
-) -> Result<i16, MsgError> {
+pub fn read_batch_move_angle(reader: &mut BatchBitReader<'_, '_>, prev_angle: i16) -> Result<i16, MsgError> {
     if reader.read_unsigned(1)? != 0 {
         Ok(prev_angle.wrapping_add(reader.read_signed(8)? as i16))
     } else {
@@ -294,12 +299,7 @@ pub struct WideEntityBits {
 }
 
 /// Write wide entity bits plus number (`writeEntityBitsWide`).
-pub fn write_entity_bits_wide(
-    writer: &mut MsgWriter,
-    lo: u32,
-    hi: u8,
-    number: u16,
-) -> Result<(), MsgError> {
+pub fn write_entity_bits_wide(writer: &mut MsgWriter, lo: u32, hi: u8, number: u16) -> Result<(), MsgError> {
     let mut lo = lo;
     if number >= 256 {
         lo |= protocol::U_NUMBER16;
@@ -435,11 +435,7 @@ impl R1q2Codec {
     }
 
     /// Write server data (`writeServerData`).
-    pub fn write_server_data(
-        &self,
-        writer: &mut MsgWriter,
-        params: &R1q2ServerData,
-    ) -> Result<(), MsgError> {
+    pub fn write_server_data(&self, writer: &mut MsgWriter, params: &R1q2ServerData) -> Result<(), MsgError> {
         writer.write_byte(protocol::Svc::Serverdata as u8)?;
         writer.write_long(protocol::PROTOCOL_VERSION_R1Q2 as i32)?;
         writer.write_long(params.servercount)?;
@@ -554,17 +550,14 @@ impl R1q2Codec {
         } else if (bits & protocol::U_SKIN16) != 0 {
             writer.write_short(to.skinnum as i16)?;
         }
-        if (bits & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16))
-            == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)
-        {
+        if (bits & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)) == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16) {
             writer.write_long(to.effects)?;
         } else if (bits & protocol::U_EFFECTS8) != 0 {
             writer.write_byte(to.effects as u8)?;
         } else if (bits & protocol::U_EFFECTS16) != 0 {
             writer.write_short(to.effects as i16)?;
         }
-        if (bits & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16))
-            == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
+        if (bits & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)) == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
         {
             writer.write_long(to.renderfx)?;
         } else if (bits & protocol::U_RENDERFX8) != 0 {
@@ -645,17 +638,14 @@ impl R1q2Codec {
         } else if (bits & protocol::U_SKIN16) != 0 {
             to.skinnum = i32::from(reader.word()?);
         }
-        if (bits & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16))
-            == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)
-        {
+        if (bits & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)) == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16) {
             to.effects = reader.long()?;
         } else if (bits & protocol::U_EFFECTS8) != 0 {
             to.effects = i32::from(reader.byte()?);
         } else if (bits & protocol::U_EFFECTS16) != 0 {
             to.effects = i32::from(reader.word()?);
         }
-        if (bits & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16))
-            == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
+        if (bits & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)) == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
         {
             to.renderfx = reader.long()?;
         } else if (bits & protocol::U_RENDERFX8) != 0 {
@@ -703,11 +693,7 @@ impl R1q2Codec {
     }
 
     /// Write a spawn baseline (`writeSpawnBaseline`).
-    pub fn write_spawn_baseline(
-        &self,
-        writer: &mut MsgWriter,
-        base: &EntityState,
-    ) -> Result<bool, Q2CodecError> {
+    pub fn write_spawn_baseline(&self, writer: &mut MsgWriter, base: &EntityState) -> Result<bool, Q2CodecError> {
         writer.write_byte(protocol::Svc::Spawnbaseline as u8)?;
         self.write_delta_entity(writer, &EntityState::default(), base, true, true)
     }
@@ -726,9 +712,7 @@ impl R1q2Codec {
         if to.pmove.origin[2] != from.pmove.origin[2] {
             extraflags |= protocol::EPS_M_ORIGIN2 as u8;
         }
-        if to.pmove.velocity[0] != from.pmove.velocity[0]
-            || to.pmove.velocity[1] != from.pmove.velocity[1]
-        {
+        if to.pmove.velocity[0] != from.pmove.velocity[0] || to.pmove.velocity[1] != from.pmove.velocity[1] {
             flags |= protocol::PS_M_VELOCITY as u16;
         }
         if to.pmove.velocity[2] != from.pmove.velocity[2] {
@@ -996,10 +980,7 @@ impl R1q2Codec {
     }
 
     /// Read an R1Q2 player-state delta (`readPlayerStateDelta`).
-    pub fn read_player_state_delta(
-        reader: &mut MsgReader<'_>,
-        from: &PlayerState,
-    ) -> Result<PlayerState, MsgError> {
+    pub fn read_player_state_delta(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, MsgError> {
         let flags = reader.short()? as u16;
         let extraflags = reader.byte()?;
         Self::read_player_state_body(reader, from, flags, extraflags)
@@ -1025,9 +1006,7 @@ impl R1q2Codec {
             params.framenum - params.lastframe
         };
         writer.write_long((params.framenum & 0x07ff_ffff) | (offset.wrapping_shl(27)))?;
-        writer.write_byte(
-            ((params.surpress_count & 0x0f) | ((i32::from(delta.extraflags) & 0x0f) << 4)) as u8,
-        )?;
+        writer.write_byte(((params.surpress_count & 0x0f) | ((i32::from(delta.extraflags) & 0x0f) << 4)) as u8)?;
         writer.write_byte(params.areabits.len() as u8)?;
         writer.write_bytes(params.areabits)?;
         writer.write_short(delta.flags as i16)?;
@@ -1071,12 +1050,7 @@ impl R1q2Codec {
     }
 
     /// Write a delta user command, compressing movements on new revisions.
-    pub fn write_delta_usercmd(
-        &self,
-        writer: &mut MsgWriter,
-        from: &Usercmd,
-        cmd: &Usercmd,
-    ) -> Result<(), MsgError> {
+    pub fn write_delta_usercmd(&self, writer: &mut MsgWriter, from: &Usercmd, cmd: &Usercmd) -> Result<(), MsgError> {
         let mut bits = 0u8;
         if cmd.angles[0] != from.angles[0] {
             bits |= 1 << 0;
@@ -1114,10 +1088,7 @@ impl R1q2Codec {
             if (bits & (1 << 5)) != 0 && cmd.upmove % 5 == 0 {
                 buttons |= BUTTON_UCMD_DBLUP;
             }
-            if (bits & (1 << 0)) != 0
-                && cmd.angles[0] % 64 == 0
-                && (i32::from(cmd.angles[0]) / 64).abs() < 128
-            {
+            if (bits & (1 << 0)) != 0 && cmd.angles[0] % 64 == 0 && (i32::from(cmd.angles[0]) / 64).abs() < 128 {
                 buttons |= BUTTON_UCMD_DBL_ANGLE1;
             }
             if (bits & (1 << 1)) != 0 && cmd.angles[1] % 256 == 0 {
@@ -1174,11 +1145,7 @@ impl R1q2Codec {
     }
 
     /// Read a delta user command.
-    pub fn read_delta_usercmd(
-        &self,
-        reader: &mut MsgReader<'_>,
-        from: &Usercmd,
-    ) -> Result<Usercmd, MsgError> {
+    pub fn read_delta_usercmd(&self, reader: &mut MsgReader<'_>, from: &Usercmd) -> Result<Usercmd, MsgError> {
         let mut cmd = from.clone();
         let bits = reader.byte()?;
         let mut buttons = 0u8;
@@ -1271,8 +1238,7 @@ impl Q2ProFeatures {
     /// Whether extended game fields are negotiated (`q2proExtensions`).
     #[must_use]
     pub fn extensions(self) -> bool {
-        (self.revision >= 1024 && (self.flags & 8) != 0)
-            || (self.revision >= 1025 && (self.flags & 16) != 0)
+        (self.revision >= 1024 && (self.flags & 8) != 0) || (self.revision >= 1025 && (self.flags & 16) != 0)
     }
 
     /// Whether v2 extended fields are negotiated (`q2proExtensionsV2`).
@@ -1473,13 +1439,7 @@ fn q2pro_width(value: u32, byte: u64, word: u64) -> u64 {
 }
 
 /// Write a Q2Pro width-selected field.
-fn write_q2pro_width(
-    writer: &mut MsgWriter,
-    bits: u64,
-    value: i32,
-    byte: u64,
-    word: u64,
-) -> Result<(), MsgError> {
+fn write_q2pro_width(writer: &mut MsgWriter, bits: u64, value: i32, byte: u64, word: u64) -> Result<(), MsgError> {
     if (bits & (byte | word)) == (byte | word) {
         writer.write_long(value)?;
     } else if (bits & byte) != 0 {
@@ -1599,10 +1559,7 @@ pub fn write_q2pro_entity(
     if !extended && (to.sound > 255 || volume_changed || attenuation_changed) {
         return Err(VariantError::ExtensionsRequired);
     }
-    if new_entity
-        || ((to.renderfx & RF_BEAM) != 0
-            && (features.revision < 1017 || from.old_origin != to.old_origin))
-    {
+    if new_entity || ((to.renderfx & RF_BEAM) != 0 && (features.revision < 1017 || from.old_origin != to.old_origin)) {
         bits |= Q2P_OLDORIGIN;
     }
     if bits == 0 && !force {
@@ -1900,11 +1857,7 @@ impl Q2ProCodec {
     }
 
     /// Write server data, negotiating the carried revision and flags.
-    pub fn write_server_data(
-        &mut self,
-        writer: &mut MsgWriter,
-        params: &Q2ProServerData,
-    ) -> Result<(), MsgError> {
+    pub fn write_server_data(&mut self, writer: &mut MsgWriter, params: &Q2ProServerData) -> Result<(), MsgError> {
         writer.write_byte(protocol::Svc::Serverdata as u8)?;
         writer.write_long(protocol::PROTOCOL_VERSION_Q2PRO as i32)?;
         writer.write_long(params.servercount)?;
@@ -1983,21 +1936,13 @@ impl Q2ProCodec {
     }
 
     /// Write a spawn baseline (`writeSpawnBaseline`).
-    pub fn write_spawn_baseline(
-        &self,
-        writer: &mut MsgWriter,
-        base: &EntityState,
-    ) -> Result<bool, VariantError> {
+    pub fn write_spawn_baseline(&self, writer: &mut MsgWriter, base: &EntityState) -> Result<bool, VariantError> {
         writer.write_byte(protocol::Svc::Spawnbaseline as u8)?;
         self.write_delta_entity(writer, &EntityState::default(), base, true, true)
     }
 
     /// Encode a Q2Pro player-state delta.
-    pub fn encode_player_state(
-        &self,
-        from: &PlayerState,
-        to: &PlayerState,
-    ) -> Result<Q2ProPlayerDelta, VariantError> {
+    pub fn encode_player_state(&self, from: &PlayerState, to: &PlayerState) -> Result<Q2ProPlayerDelta, VariantError> {
         let v2 = self.features.extensions_v2();
         let mut flags = 0u32;
         let mut extraflags = 0u8;
@@ -2010,9 +1955,7 @@ impl Q2ProCodec {
         if to.pmove.origin[2] != from.pmove.origin[2] {
             extraflags |= protocol::EPS_M_ORIGIN2 as u8;
         }
-        if to.pmove.velocity[0] != from.pmove.velocity[0]
-            || to.pmove.velocity[1] != from.pmove.velocity[1]
-        {
+        if to.pmove.velocity[0] != from.pmove.velocity[0] || to.pmove.velocity[1] != from.pmove.velocity[1] {
             flags |= protocol::PS_M_VELOCITY;
         }
         if to.pmove.velocity[2] != from.pmove.velocity[2] {
@@ -2475,9 +2418,7 @@ impl Q2ProCodec {
             params.framenum - params.lastframe
         };
         writer.write_long((params.framenum & 0x07ff_ffff) | offset.wrapping_shl(27))?;
-        writer.write_byte(
-            ((params.surpress_count & 0x0f) | ((i32::from(delta.extraflags) & 0x0f) << 4)) as u8,
-        )?;
+        writer.write_byte(((params.surpress_count & 0x0f) | ((i32::from(delta.extraflags) & 0x0f) << 4)) as u8)?;
         writer.write_byte(params.areabits.len() as u8)?;
         writer.write_bytes(params.areabits)?;
         writer.write_short(delta.flags as i16)?;
@@ -2548,9 +2489,7 @@ impl Q2ProCodec {
             .map_or(0, |cmd| cmd.lightlevel);
         writer.write_byte(lightlevel)?;
         let mut bits = BatchBitWriter::new(writer);
-        write_batch_move_frames(&mut bits, frames, |bw, cmd, prev| {
-            encode_q2pro_batch_cmd(bw, cmd, prev)
-        })
+        write_batch_move_frames(&mut bits, frames, |bw, cmd, prev| encode_q2pro_batch_cmd(bw, cmd, prev))
     }
 
     /// Read a batched move (`readBatchMove`); `opcode_extra` carries `num_dups`.
@@ -2567,9 +2506,7 @@ impl Q2ProCodec {
         let lightlevel = reader.byte()?;
         let _ = lightlevel;
         let mut bits = BatchBitReader::new(reader);
-        let frames = read_batch_move_frames(&mut bits, num_dups, |br, prev| {
-            decode_q2pro_batch_cmd(br, prev)
-        })?;
+        let frames = read_batch_move_frames(&mut bits, num_dups, |br, prev| decode_q2pro_batch_cmd(br, prev))?;
         Ok(BatchMove {
             lastframe,
             num_dups,
@@ -2682,10 +2619,7 @@ fn encode_q2pro_batch_cmd(
         writer.write_signed(i32::from(cmd.upmove), 10)?;
     }
     if (bits & protocol::CM_BUTTONS) != 0 {
-        writer.write_unsigned(
-            u32::from(cmd.buttons & 3) | (u32::from((cmd.buttons >> 5) & 4)),
-            3,
-        )?;
+        writer.write_unsigned(u32::from(cmd.buttons & 3) | (u32::from((cmd.buttons >> 5) & 4)), 3)?;
     }
     if (bits & protocol::CM_IMPULSE) != 0 {
         writer.write_unsigned(u32::from(cmd.msec), 8)?;
@@ -3023,11 +2957,7 @@ impl RereleaseCodec {
     }
 
     /// Write server data (`writeServerData`).
-    pub fn write_server_data(
-        &self,
-        writer: &mut MsgWriter,
-        params: &RereleaseServerData,
-    ) -> Result<(), MsgError> {
+    pub fn write_server_data(&self, writer: &mut MsgWriter, params: &RereleaseServerData) -> Result<(), MsgError> {
         let version = if self.classic {
             protocol::PROTOCOL_VERSION_RERELEASE_CLASSIC
         } else {
@@ -3224,26 +3154,21 @@ impl RereleaseCodec {
         } else if (lo & protocol::U_FRAME8) != 0 {
             writer.write_byte(to.frame as u8)?;
         }
-        if (lo & (protocol::U_SKIN8 | protocol::U_SKIN16)) == (protocol::U_SKIN8 | protocol::U_SKIN16)
-        {
+        if (lo & (protocol::U_SKIN8 | protocol::U_SKIN16)) == (protocol::U_SKIN8 | protocol::U_SKIN16) {
             writer.write_long(to.skinnum)?;
         } else if (lo & protocol::U_SKIN16) != 0 {
             writer.write_short(to.skinnum as i16)?;
         } else if (lo & protocol::U_SKIN8) != 0 {
             writer.write_byte(to.skinnum as u8)?;
         }
-        if (lo & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16))
-            == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)
-        {
+        if (lo & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)) == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16) {
             writer.write_long(to.effects)?;
         } else if (lo & protocol::U_EFFECTS16) != 0 {
             writer.write_short(to.effects as i16)?;
         } else if (lo & protocol::U_EFFECTS8) != 0 {
             writer.write_byte(to.effects as u8)?;
         }
-        if (lo & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16))
-            == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
-        {
+        if (lo & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)) == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16) {
             writer.write_long(to.renderfx)?;
         } else if (lo & protocol::U_RENDERFX16) != 0 {
             writer.write_short(to.renderfx as i16)?;
@@ -3325,42 +3250,53 @@ impl RereleaseCodec {
         let hi = bits.hi;
         let model16 = (lo & RR_U_MODEL16) != 0;
         if (lo & protocol::U_MODEL) != 0 {
-            to.modelindex = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_MODEL2) != 0 {
-            to.modelindex2 = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex2 = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_MODEL3) != 0 {
-            to.modelindex3 = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex3 = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_MODEL4) != 0 {
-            to.modelindex4 = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex4 = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_FRAME16) != 0 {
             to.frame = i32::from(reader.word()?);
         } else if (lo & protocol::U_FRAME8) != 0 {
             to.frame = i32::from(reader.byte()?);
         }
-        if (lo & (protocol::U_SKIN8 | protocol::U_SKIN16)) == (protocol::U_SKIN8 | protocol::U_SKIN16)
-        {
+        if (lo & (protocol::U_SKIN8 | protocol::U_SKIN16)) == (protocol::U_SKIN8 | protocol::U_SKIN16) {
             to.skinnum = reader.long()?;
         } else if (lo & protocol::U_SKIN16) != 0 {
             to.skinnum = i32::from(reader.word()?);
         } else if (lo & protocol::U_SKIN8) != 0 {
             to.skinnum = i32::from(reader.byte()?);
         }
-        if (lo & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16))
-            == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)
-        {
+        if (lo & (protocol::U_EFFECTS8 | protocol::U_EFFECTS16)) == (protocol::U_EFFECTS8 | protocol::U_EFFECTS16) {
             to.effects = reader.long()?;
         } else if (lo & protocol::U_EFFECTS16) != 0 {
             to.effects = i32::from(reader.word()?);
         } else if (lo & protocol::U_EFFECTS8) != 0 {
             to.effects = i32::from(reader.byte()?);
         }
-        if (lo & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16))
-            == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
-        {
+        if (lo & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)) == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16) {
             to.renderfx = reader.long()?;
         } else if (lo & protocol::U_RENDERFX16) != 0 {
             to.renderfx = i32::from(reader.word()?);
@@ -3437,10 +3373,7 @@ impl RereleaseCodec {
     }
 
     /// Write a spawn baseline (`writeSpawnBaseline`).
-    pub fn write_spawn_baseline(
-        writer: &mut MsgWriter,
-        base: &EntityState,
-    ) -> Result<bool, VariantError> {
+    pub fn write_spawn_baseline(writer: &mut MsgWriter, base: &EntityState) -> Result<bool, VariantError> {
         writer.write_byte(protocol::Svc::Spawnbaseline as u8)?;
         Self::write_delta_entity(writer, &EntityState::default(), base, true, true)
     }
@@ -3453,17 +3386,13 @@ impl RereleaseCodec {
         if to.pmove.pm_type != from.pmove.pm_type {
             flags |= protocol::PS_M_TYPE as u16;
         }
-        if to.pmove.origin_f[0] != from.pmove.origin_f[0]
-            || to.pmove.origin_f[1] != from.pmove.origin_f[1]
-        {
+        if to.pmove.origin_f[0] != from.pmove.origin_f[0] || to.pmove.origin_f[1] != from.pmove.origin_f[1] {
             flags |= protocol::PS_M_ORIGIN as u16;
         }
         if to.pmove.origin_f[2] != from.pmove.origin_f[2] {
             extraflags |= protocol::EPS_M_ORIGIN2 as u8;
         }
-        if to.pmove.velocity_f[0] != from.pmove.velocity_f[0]
-            || to.pmove.velocity_f[1] != from.pmove.velocity_f[1]
-        {
+        if to.pmove.velocity_f[0] != from.pmove.velocity_f[0] || to.pmove.velocity_f[1] != from.pmove.velocity_f[1] {
             flags |= protocol::PS_M_VELOCITY as u16;
         }
         if to.pmove.velocity_f[2] != from.pmove.velocity_f[2] {
@@ -3534,9 +3463,7 @@ impl RereleaseCodec {
         }
         let mut damage_blend_bits = 0u8;
         for i in 0..4 {
-            if scaled_trunc(to.damage_blend[i], 255.0) as u8
-                != scaled_trunc(from.damage_blend[i], 255.0) as u8
-            {
+            if scaled_trunc(to.damage_blend[i], 255.0) as u8 != scaled_trunc(from.damage_blend[i], 255.0) as u8 {
                 damage_blend_bits |= 1 << i;
             }
         }
@@ -3851,10 +3778,7 @@ impl RereleaseCodec {
     }
 
     /// Read a rerelease player-state delta (`readPlayerStateDelta`).
-    pub fn read_player_state_delta(
-        reader: &mut MsgReader<'_>,
-        from: &PlayerState,
-    ) -> Result<PlayerState, MsgError> {
+    pub fn read_player_state_delta(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, MsgError> {
         let flags = reader.word()?;
         let extraflags = reader.byte()?;
         Self::read_player_state_body(reader, from, flags, extraflags)
@@ -3935,11 +3859,7 @@ impl RereleaseCodec {
     }
 
     /// Read a non-batched delta user command.
-    pub fn read_delta_usercmd(
-        &self,
-        reader: &mut MsgReader<'_>,
-        from: &Usercmd,
-    ) -> Result<Usercmd, VariantError> {
+    pub fn read_delta_usercmd(&self, reader: &mut MsgReader<'_>, from: &Usercmd) -> Result<Usercmd, VariantError> {
         if !self.classic {
             let mut probe = reader.clone();
             if let Ok(bits) = probe.byte() {
@@ -3979,11 +3899,7 @@ impl RereleaseCodec {
     }
 
     /// Read a batched move (`readBatchMove`).
-    pub fn read_batch_move(
-        &self,
-        reader: &mut MsgReader<'_>,
-        nodelta: bool,
-    ) -> Result<BatchMove, VariantError> {
+    pub fn read_batch_move(&self, reader: &mut MsgReader<'_>, nodelta: bool) -> Result<BatchMove, VariantError> {
         let lastframe = if nodelta { -1 } else { reader.long()? };
         let num_dups = reader.byte()?;
         if usize::from(num_dups) >= MAX_BATCH_MOVE_FRAMES - 1 {
@@ -4179,11 +4095,7 @@ pub fn read_kex_usercmd(reader: &mut MsgReader<'_>, from: &Usercmd) -> Result<Us
 }
 
 /// Write a KEX user command (`writeKexUsercmd`).
-pub fn write_kex_usercmd(
-    writer: &mut MsgWriter,
-    from: &Usercmd,
-    to: &Usercmd,
-) -> Result<(), MsgError> {
+pub fn write_kex_usercmd(writer: &mut MsgWriter, from: &Usercmd, to: &Usercmd) -> Result<(), MsgError> {
     let mut bits = 0u8;
     for axis in 0..3 {
         if from.angles[axis] != to.angles[axis] {
@@ -4393,11 +4305,7 @@ impl KexCodec {
     }
 
     /// Write server data (`writeServerData`).
-    pub fn write_server_data(
-        &self,
-        writer: &mut MsgWriter,
-        params: &KexServerData,
-    ) -> Result<(), VariantError> {
+    pub fn write_server_data(&self, writer: &mut MsgWriter, params: &KexServerData) -> Result<(), VariantError> {
         writer.write_byte(protocol::Svc::Serverdata as u8)?;
         writer.write_long(self.protocol as i32)?;
         writer.write_long(params.servercount)?;
@@ -4595,13 +4503,7 @@ impl KexCodec {
         } else {
             to.effects
         };
-        write_kex_width(
-            writer,
-            effects_value,
-            bits,
-            protocol::U_EFFECTS8,
-            protocol::U_EFFECTS16,
-        )?;
+        write_kex_width(writer, effects_value, bits, protocol::U_EFFECTS8, protocol::U_EFFECTS16)?;
         write_kex_width(writer, to.renderfx, bits, protocol::U_RENDERFX8, protocol::U_RENDERFX16)?;
         if (bits & protocol::U_SOLID) != 0 {
             writer.write_long(to.solid as i32)?;
@@ -4689,24 +4591,39 @@ impl KexCodec {
         let hi = bits.hi;
         let model16 = (lo & KEX_U_MODEL16) != 0;
         if (lo & protocol::U_MODEL) != 0 {
-            to.modelindex = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_MODEL2) != 0 {
-            to.modelindex2 = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex2 = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_MODEL3) != 0 {
-            to.modelindex3 = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex3 = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_MODEL4) != 0 {
-            to.modelindex4 = if model16 { reader.word()? } else { u16::from(reader.byte()?) };
+            to.modelindex4 = if model16 {
+                reader.word()?
+            } else {
+                u16::from(reader.byte()?)
+            };
         }
         if (lo & protocol::U_FRAME8) != 0 {
             to.frame = i32::from(reader.byte()?);
         } else if (lo & protocol::U_FRAME16) != 0 {
             to.frame = i32::from(reader.word()?);
         }
-        if (lo & (protocol::U_SKIN8 | protocol::U_SKIN16)) == (protocol::U_SKIN8 | protocol::U_SKIN16)
-        {
+        if (lo & (protocol::U_SKIN8 | protocol::U_SKIN16)) == (protocol::U_SKIN8 | protocol::U_SKIN16) {
             to.skinnum = reader.long()?;
         } else if (lo & protocol::U_SKIN16) != 0 {
             to.skinnum = i32::from(reader.word()?);
@@ -4739,9 +4656,7 @@ impl KexCodec {
                 to.morefx = 0;
             }
         }
-        if (lo & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16))
-            == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)
-        {
+        if (lo & (protocol::U_RENDERFX8 | protocol::U_RENDERFX16)) == (protocol::U_RENDERFX8 | protocol::U_RENDERFX16) {
             to.renderfx = reader.long()?;
         } else if (lo & protocol::U_RENDERFX16) != 0 {
             to.renderfx = i32::from(reader.word()?);
@@ -4837,11 +4752,7 @@ impl KexCodec {
     }
 
     /// Write a spawn baseline (`writeSpawnBaseline`).
-    pub fn write_spawn_baseline(
-        &self,
-        writer: &mut MsgWriter,
-        entity: &EntityState,
-    ) -> Result<bool, VariantError> {
+    pub fn write_spawn_baseline(&self, writer: &mut MsgWriter, entity: &EntityState) -> Result<bool, VariantError> {
         writer.write_byte(protocol::Svc::Spawnbaseline as u8)?;
         self.write_delta_entity(writer, &EntityState::default(), entity, true, true)
     }
@@ -5218,10 +5129,7 @@ impl KexCodec {
     }
 
     /// Read a KEX frame header (`readFrameHeader`).
-    pub fn read_frame_header(
-        reader: &mut MsgReader<'_>,
-        areabits: &mut Vec<u8>,
-    ) -> Result<FrameHeader, MsgError> {
+    pub fn read_frame_header(reader: &mut MsgReader<'_>, areabits: &mut Vec<u8>) -> Result<FrameHeader, MsgError> {
         let serverframe = reader.long()?;
         let deltaframe = reader.long()?;
         let surpress_count = i32::from(reader.byte()?);
@@ -5237,10 +5145,7 @@ impl KexCodec {
     }
 
     /// Read the player state of a KEX frame (`readFramePlayerstate`).
-    pub fn read_frame_playerstate(
-        reader: &mut MsgReader<'_>,
-        from: &PlayerState,
-    ) -> Result<PlayerState, VariantError> {
+    pub fn read_frame_playerstate(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, VariantError> {
         let opcode = reader.byte()?;
         if opcode != protocol::Svc::Playerinfo as u8 {
             return Err(VariantError::Codec(Q2CodecError::UnexpectedOpcode {
@@ -5376,12 +5281,14 @@ impl KexCodec {
         let mut pos = None;
         if (flags & KEX_SND_POS) != 0 {
             if self.is_demo_protocol() {
-                pos = Some([
-                    f64::from(reader.short()?) * KEX_COORD_SHORT_SCALE,
-                    f64::from(reader.short()?) * KEX_COORD_SHORT_SCALE,
-                    f64::from(reader.short()?) * KEX_COORD_SHORT_SCALE,
-                ]
-                .map(|axis| axis as f32));
+                pos = Some(
+                    [
+                        f64::from(reader.short()?) * KEX_COORD_SHORT_SCALE,
+                        f64::from(reader.short()?) * KEX_COORD_SHORT_SCALE,
+                        f64::from(reader.short()?) * KEX_COORD_SHORT_SCALE,
+                    ]
+                    .map(|axis| axis as f32),
+                );
             } else {
                 pos = Some([reader.float()?, reader.float()?, reader.float()?]);
             }
@@ -5426,17 +5333,13 @@ impl KexCodec {
     }
 
     /// Read a KEX spawn baseline blast (`readSpawnbaselineblastKex`).
-    pub fn read_spawnbaselineblast(
-        &mut self,
-        reader: &mut MsgReader<'_>,
-    ) -> Result<Vec<KexBaseline>, VariantError> {
+    pub fn read_spawnbaselineblast(&mut self, reader: &mut MsgReader<'_>) -> Result<Vec<KexBaseline>, VariantError> {
         let inflated = Self::inflate_block(reader)?;
         let mut cursor = MsgReader::new(&inflated);
         let mut out = Vec::new();
         while cursor.remaining() > 0 {
             let header = read_entity_bits_wide(&mut cursor)?;
-            let state =
-                self.read_delta_entity(&mut cursor, &EntityState::default(), header.number, header)?;
+            let state = self.read_delta_entity(&mut cursor, &EntityState::default(), header.number, header)?;
             cursor.finish()?;
             out.push(KexBaseline {
                 entnum: header.number,
@@ -5448,13 +5351,7 @@ impl KexCodec {
 }
 
 /// Write a KEX width-selected field (`writeWidth` in `kex-write.ts`).
-fn write_kex_width(
-    writer: &mut MsgWriter,
-    value: i32,
-    bits: u32,
-    byte: u32,
-    short: u32,
-) -> Result<(), MsgError> {
+fn write_kex_width(writer: &mut MsgWriter, value: i32, bits: u32, byte: u32, short: u32) -> Result<(), MsgError> {
     if (bits & (byte | short)) == (byte | short) {
         writer.write_long(value)?;
     } else if (bits & short) != 0 {
@@ -6041,16 +5938,10 @@ fn packed_mvd_gun_index(ps: &PlayerState) -> u16 {
 }
 
 /// Write an MVD rerelease blend delta (`writeDeltaBlend`).
-fn write_mvd_delta_blend(
-    writer: &mut MsgWriter,
-    from: &PlayerState,
-    to: &PlayerState,
-) -> Result<(), MsgError> {
+fn write_mvd_delta_blend(writer: &mut MsgWriter, from: &PlayerState, to: &PlayerState) -> Result<(), MsgError> {
     let mut bflags = 0u8;
     for i in 0..4 {
-        if scaled_trunc(to.blend[i], 255.0).clamp(0, 255)
-            != scaled_trunc(from.blend[i], 255.0).clamp(0, 255)
-        {
+        if scaled_trunc(to.blend[i], 255.0).clamp(0, 255) != scaled_trunc(from.blend[i], 255.0).clamp(0, 255) {
             bflags |= 1 << i;
         }
         if scaled_trunc(to.damage_blend[i], 255.0).clamp(0, 255)
@@ -6092,8 +5983,7 @@ fn read_mvd_delta_blend(reader: &mut MsgReader<'_>, ps: &mut PlayerState) -> Res
 /// Whether an MVD rerelease blend changed (`blendChanged`).
 fn mvd_blend_changed(from: &PlayerState, to: &PlayerState) -> bool {
     (0..4).any(|i| {
-        scaled_trunc(to.blend[i], 255.0).clamp(0, 255)
-            != scaled_trunc(from.blend[i], 255.0).clamp(0, 255)
+        scaled_trunc(to.blend[i], 255.0).clamp(0, 255) != scaled_trunc(from.blend[i], 255.0).clamp(0, 255)
             || scaled_trunc(to.damage_blend[i], 255.0).clamp(0, 255)
                 != scaled_trunc(from.damage_blend[i], 255.0).clamp(0, 255)
     })
@@ -6515,8 +6405,7 @@ pub struct MvdHeader {
 /// Read an MVD gamestate header (`readMvdHeader`).
 pub fn read_mvd_header(reader: &mut MsgReader<'_>) -> Result<MvdHeader, VariantError> {
     let command = reader.byte()?;
-    if (command & SVCMD_MASK) != MvdOp::Serverdata as u8 || reader.long()? != PROTOCOL_VERSION_MVD as i32
-    {
+    if (command & SVCMD_MASK) != MvdOp::Serverdata as u8 || reader.long()? != PROTOCOL_VERSION_MVD as i32 {
         return Err(VariantError::BadMvdHeader);
     }
     let revision = reader.word()?;
@@ -6715,11 +6604,7 @@ pub fn read_mvd_player(
         }
     }
     let removed = (flags & (1 << 16)) != 0;
-    Ok(MvdPlayer {
-        number,
-        removed,
-        ps,
-    })
+    Ok(MvdPlayer { number, removed, ps })
 }
 
 #[cfg(test)]
@@ -6880,7 +6765,10 @@ mod tests {
         };
         let mut out = writer();
         codec.write_server_data(&mut out, &params).unwrap();
-        assert_eq!(out.bytes(), decode_hex("0c2300000007000000006261736571320002007132646d31000071070001").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("0c2300000007000000006261736571320002007132646d31000071070001").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         assert_eq!(reader.byte().unwrap(), protocol::Svc::Serverdata as u8);
         assert_eq!(reader.long().unwrap(), 35);
@@ -6893,12 +6781,13 @@ mod tests {
         let codec = R1q2Codec::new(1905);
         assert!(codec.long_solid());
         let mut out = writer();
-        assert!(
-            codec
-                .write_delta_entity(&mut out, &EntityState::default(), &r1_entity(), false, true)
-                .unwrap()
+        assert!(codec
+            .write_delta_entity(&mut out, &EntityState::default(), &r1_entity(), false, true)
+            .unwrap());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("a7d98b0f2c01052c0170110100009000002920036cfe40080010001800090778563412").as_slice()
         );
-        assert_eq!(out.bytes(), decode_hex("a7d98b0f2c01052c0170110100009000002920036cfe40080010001800090778563412").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         let (number, bits) = crate::q2::read_entity_bits(&mut reader).unwrap();
         assert_eq!(number, 300);
@@ -6944,8 +6833,7 @@ mod tests {
         R1q2Codec::write_player_state_delta(&mut out, &PlayerState::default(), &r1_player()).unwrap();
         assert_eq!(out.bytes(), decode_hex("ff7f3f01200370fe78000a00ecff1e00050320036400c8002c0101fe041c07380e551504080c050702020210141819334c665a01210000006400fdff").as_slice());
         let mut reader = MsgReader::new(out.bytes());
-        let decoded =
-            R1q2Codec::read_player_state_delta(&mut reader, &PlayerState::default()).unwrap();
+        let decoded = R1q2Codec::read_player_state_delta(&mut reader, &PlayerState::default()).unwrap();
         reader.finish().unwrap();
         assert_eq!(decoded.pmove.pm_type, 1);
         assert_eq!(decoded.pmove.origin, [800, -400, 120]);
@@ -6988,7 +6876,10 @@ mod tests {
             |w| w.write_short(0).map_err(VariantError::from),
         )
         .unwrap();
-        assert_eq!(out.bytes(), decode_hex("14640000100302aa55001100200000030000").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("14640000100302aa55001100200000030000").as_slice()
+        );
         let mut codec = R1q2Codec::new(1905);
         let mut reader = MsgReader::new(out.bytes());
         let opcode = reader.byte().unwrap();
@@ -7017,7 +6908,10 @@ mod tests {
 
     #[test]
     fn r1q2_usercmd_byte_exact() {
-        for (version, name) in [(1903, "ff800200022c01900121000a00030832c8"), (1905, "ff770a022c01502100020832c8")] {
+        for (version, name) in [
+            (1903, "ff800200022c01900121000a00030832c8"),
+            (1905, "ff770a022c01502100020832c8"),
+        ] {
             let codec = R1q2Codec::new(version);
             let mut out = writer();
             codec
@@ -7058,11 +6952,7 @@ mod tests {
 
     #[test]
     fn q2pro_var64_vectors() {
-        for (value, name) in [
-            (300u64, "ac02"),
-            (0u64, "00"),
-            (u64::MAX, "ffffffffffffffffff01"),
-        ] {
+        for (value, name) in [(300u64, "ac02"), (0u64, "00"), (u64::MAX, "ffffffffffffffffff01")] {
             let mut out = writer();
             write_q2pro_var64(&mut out, value).unwrap();
             assert_eq!(out.bytes(), decode_hex(name).as_slice());
@@ -7084,12 +6974,12 @@ mod tests {
         assert_eq!(q2pro_fog_bits(&Q2ProFog::default(), &q2pro_fog()), 0xff);
         let mut out = writer();
         write_q2pro_fog(&mut out, 0xff, &q2pro_fog()).unwrap();
-        assert_eq!(out.bytes(), decode_hex("ff0a141e6400c80005000600010203040506400680f3").as_slice());
-        let mut reader = MsgReader::new(out.bytes());
         assert_eq!(
-            read_q2pro_fog(&mut reader, &Q2ProFog::default()).unwrap(),
-            q2pro_fog()
+            out.bytes(),
+            decode_hex("ff0a141e6400c80005000600010203040506400680f3").as_slice()
         );
+        let mut reader = MsgReader::new(out.bytes());
+        assert_eq!(read_q2pro_fog(&mut reader, &Q2ProFog::default()).unwrap(), q2pro_fog());
     }
 
     #[test]
@@ -7107,7 +6997,10 @@ mod tests {
         };
         let mut out = writer();
         codec.write_server_data(&mut out, &params).unwrap();
-        assert_eq!(out.bytes(), decode_hex("0c2400000009000000016261736571320001007132646d31000204021800").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("0c2400000009000000016261736571320001007132646d31000204021800").as_slice()
+        );
         assert!(!params.strafejump_hack());
         assert!(!params.qw_mode());
         assert!(!params.waterjump_hack());
@@ -7159,11 +7052,9 @@ mod tests {
     fn q2pro_entity_byte_exact() {
         let codec = q2pro_codec();
         let mut out = writer();
-        assert!(
-            codec
-                .write_delta_entity(&mut out, &EntityState::default(), &q2pro_entity(), false, true)
-                .unwrap()
-        );
+        assert!(codec
+            .write_delta_entity(&mut out, &EntityState::default(), &q2pro_entity(), false, true)
+            .unwrap());
         assert_eq!(out.bytes(), decode_hex("afeb8fff032c012c012c01701101000000120056344806dcfcc200004000201000200030002cc17f800744332211efcdab097f20").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         let (number, bits) = read_q2pro_entity_bits(&mut reader).unwrap();
@@ -7303,7 +7194,10 @@ mod tests {
                 |w| w.write_short(0).map_err(VariantError::from),
             )
             .unwrap();
-        assert_eq!(out.bytes(), decode_hex("34c800001001017f00115515aa2a004007000000").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("34c800001001017f00115515aa2a004007000000").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         let opcode = reader.byte().unwrap();
         assert_eq!(opcode, 0x34);
@@ -7350,7 +7244,9 @@ mod tests {
             BatchMoveFrame {
                 cmds: vec![cmd0.clone(), cmd0.clone()],
             },
-            BatchMoveFrame { cmds: vec![cmd2.clone()] },
+            BatchMoveFrame {
+                cmds: vec![cmd2.clone()],
+            },
         ];
         let mut out = writer();
         Q2ProCodec::write_batch_move(&mut out, Some(50), &frames).unwrap();
@@ -7438,7 +7334,10 @@ mod tests {
         };
         let mut out = writer();
         codec.write_server_data(&mut out, &params).unwrap();
-        assert_eq!(out.bytes(), decode_hex("0c0e0400000500000000626173657132000000626173653100000401030014").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("0c0e0400000500000000626173657132000000626173653100000401030014").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         assert_eq!(reader.byte().unwrap(), protocol::Svc::Serverdata as u8);
         assert_eq!(reader.long().unwrap(), 1038);
@@ -7449,27 +7348,20 @@ mod tests {
     #[test]
     fn rerelease_entity_byte_exact() {
         let mut out = writer();
-        assert!(
-            RereleaseCodec::write_delta_entity(
-                &mut out,
-                &EntityState::default(),
-                &rerelease_entity(),
-                false,
-                true
-            )
-            .unwrap()
-        );
+        assert!(RereleaseCodec::write_delta_entity(
+            &mut out,
+            &EntityState::default(),
+            &rerelease_entity(),
+            false,
+            true
+        )
+        .unwrap());
         assert_eq!(out.bytes(), decode_hex("affb9bdf032c012c0105002c017011010000001200290000c942000049c200004241004000200000803f00000040000040402cc17f80074433221156347f20").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         let header = read_entity_bits_wide(&mut reader).unwrap();
         assert_eq!(header.number, 300);
-        let decoded = RereleaseCodec::read_delta_entity(
-            &mut reader,
-            &EntityState::default(),
-            header.number,
-            header,
-        )
-        .unwrap();
+        let decoded =
+            RereleaseCodec::read_delta_entity(&mut reader, &EntityState::default(), header.number, header).unwrap();
         reader.finish().unwrap();
         assert_eq!(decoded.origin, [100.5, -50.25, 12.125]);
         for i in 0..3 {
@@ -7496,17 +7388,11 @@ mod tests {
     #[test]
     fn rerelease_playerstate_byte_exact() {
         let mut out = writer();
-        RereleaseCodec::write_player_state_delta(
-            &mut out,
-            &PlayerState::default(),
-            &rerelease_player(),
-        )
-        .unwrap();
+        RereleaseCodec::write_player_state_delta(&mut out, &PlayerState::default(), &rerelease_player()).unwrap();
         assert_eq!(out.bytes(), decode_hex("11ffffbf020000c942000049c200004241000028410000a4c10000f4412c0190012003010002000300040008000c001c07380e551500040008000c2c61f4013300660099000010002000304f19334c66995a0101000000000100006400fbff0716").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         assert_eq!(reader.byte().unwrap(), protocol::Svc::Playerinfo as u8);
-        let decoded =
-            RereleaseCodec::read_player_state_delta(&mut reader, &PlayerState::default()).unwrap();
+        let decoded = RereleaseCodec::read_player_state_delta(&mut reader, &PlayerState::default()).unwrap();
         reader.finish().unwrap();
         assert_eq!(decoded.pmove.pm_type, 2);
         assert_eq!(decoded.pmove.origin_f, [100.5, -50.25, 12.125]);
@@ -7580,9 +7466,18 @@ mod tests {
         let codec = RereleaseCodec::new(false);
         let mut out = writer();
         codec
-            .write_batch_move(&mut out, Some(60), &[BatchMoveFrame { cmds: vec![cmd.clone()] }])
+            .write_batch_move(
+                &mut out,
+                Some(60),
+                &[BatchMoveFrame {
+                    cmds: vec![cmd.clone()],
+                }],
+            )
             .unwrap();
-        assert_eq!(out.bytes(), decode_hex("3c0000000000e1373200c8002c01907d3f2803").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("3c0000000000e1373200c8002c01907d3f2803").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         let parsed = codec.read_batch_move(&mut reader, false).unwrap();
         reader.finish().unwrap();
@@ -7602,7 +7497,13 @@ mod tests {
         let codec = RereleaseCodec::new(true);
         let mut out = writer();
         codec
-            .write_batch_move(&mut out, Some(61), &[BatchMoveFrame { cmds: vec![cmd.clone()] }])
+            .write_batch_move(
+                &mut out,
+                Some(61),
+                &[BatchMoveFrame {
+                    cmds: vec![cmd.clone()],
+                }],
+            )
             .unwrap();
         assert_eq!(out.bytes(), decode_hex("3d00000000962138190528").as_slice());
         let mut reader = MsgReader::new(out.bytes());
@@ -7640,21 +7541,20 @@ mod tests {
             .write_batch_move(
                 &mut batch,
                 None,
-                &[BatchMoveFrame { cmds: vec![cmd.clone()] }],
+                &[BatchMoveFrame {
+                    cmds: vec![cmd.clone()],
+                }],
             )
             .unwrap();
         let mut reader = MsgReader::new(batch.bytes());
-        assert_eq!(
-            codec.read_batch_move(&mut reader, true),
-            Err(VariantError::BatchCmUp)
-        );
+        assert_eq!(codec.read_batch_move(&mut reader, true), Err(VariantError::BatchCmUp));
     }
 
     #[test]
     fn fog_read_matches_donor() {
         let bytes = [
-            0xff, 0xff, 0x00, 0x00, 0x00, 0x3f, 200, 10, 20, 30, 0x90, 0x01, 0x00, 0x00, 0xc0, 0x3f,
-            0x00, 0x00, 0x20, 0x40, 1, 2, 3, 0xe8, 0x03, 0x00, 0x00, 4, 5, 6, 0xd0, 0x07, 0x00, 0x00,
+            0xff, 0xff, 0x00, 0x00, 0x00, 0x3f, 200, 10, 20, 30, 0x90, 0x01, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x00, 0x20,
+            0x40, 1, 2, 3, 0xe8, 0x03, 0x00, 0x00, 4, 5, 6, 0xd0, 0x07, 0x00, 0x00,
         ];
         let mut reader = MsgReader::new(&bytes);
         let fog = read_fog(&mut reader).unwrap();
@@ -7723,7 +7623,10 @@ mod tests {
         };
         let mut out = writer();
         write_kex_usercmd(&mut out, &Usercmd::default(), &cmd).unwrap();
-        assert_eq!(out.bytes(), decode_hex("df00c8af4000c82f4100d683410000c843000048c307d204000032").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("df00c8af4000c82f4100d683410000c843000048c307d204000032").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         let decoded = read_kex_usercmd(&mut reader, &Usercmd::default()).unwrap();
         reader.finish().unwrap();
@@ -7734,11 +7637,9 @@ mod tests {
     fn kex_entity_2023_byte_exact() {
         let mut codec = KexCodec::new(PROTOCOL_KEX);
         let mut out = writer();
-        assert!(
-            codec
-                .write_delta_entity(&mut out, &EntityState::default(), &kex_entity(), false, true)
-                .unwrap()
-        );
+        assert!(codec
+            .write_delta_entity(&mut out, &EntityState::default(), &kex_entity(), false, true)
+            .unwrap());
         assert_eq!(out.bytes(), decode_hex("af8b8fffff2c012c012c01701101001111111122225634443322110000c942000049c2000042410000803f00000040000040400000b442000034422cc17f80077f200558022c00").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         let header = read_entity_bits_wide(&mut reader).unwrap();
@@ -7783,7 +7684,10 @@ mod tests {
         codec
             .write_delta_entity(&mut out, &EntityState::default(), &to, false, true)
             .unwrap();
-        assert_eq!(out.bytes(), decode_hex("8f8680010724036efe6100080010001800000020410000a0410000f041").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("8f8680010724036efe6100080010001800000020410000a0410000f041").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         let header = read_entity_bits_wide(&mut reader).unwrap();
         let decoded = codec
@@ -7833,7 +7737,10 @@ mod tests {
         };
         let mut out = writer();
         codec.write_server_data(&mut out, &params).unwrap();
-        assert_eq!(out.bytes(), decode_hex("0ce70700000b000000002862617365713200feff020002000300626173653100").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("0ce70700000b000000002862617365713200feff020002000300626173653100").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         assert_eq!(reader.byte().unwrap(), protocol::Svc::Serverdata as u8);
         assert_eq!(reader.long().unwrap(), 2023);
@@ -7862,7 +7769,10 @@ mod tests {
             |w| w.write_short(0).map_err(VariantError::from),
         )
         .unwrap();
-        assert_eq!(out.bytes(), decode_hex("14900100008f0100000001ff1100086400000000000000000000").as_slice());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("14900100008f0100000001ff1100086400000000000000000000").as_slice()
+        );
         let mut reader = MsgReader::new(out.bytes());
         assert_eq!(reader.byte().unwrap(), protocol::Svc::Frame as u8);
         let mut areas = Vec::new();
@@ -7877,8 +7787,7 @@ mod tests {
             }
         );
         assert_eq!(areas, vec![0xff]);
-        let decoded =
-            KexCodec::read_frame_playerstate(&mut reader, &PlayerState::default()).unwrap();
+        let decoded = KexCodec::read_frame_playerstate(&mut reader, &PlayerState::default()).unwrap();
         assert_eq!(decoded.fov, 100);
         KexCodec::read_packet_entities_begin(&mut MsgReader::new(&[18])).unwrap();
         assert_eq!(reader.short().unwrap(), 0);
@@ -7889,8 +7798,8 @@ mod tests {
     fn kex_message_readers_match_donor() {
         let codec = KexCodec::new(PROTOCOL_KEX);
         let bytes = [
-            0x05, b'b', b'a', b's', b'e', b'_', b's', b't', b'r', b'i', b'n', b'g', 0, 2, b'a',
-            b'r', b'g', b'1', 0, b'a', b'r', b'g', b'2', 0,
+            0x05, b'b', b'a', b's', b'e', b'_', b's', b't', b'r', b'i', b'n', b'g', 0, 2, b'a', b'r', b'g', b'1', 0,
+            b'a', b'r', b'g', b'2', 0,
         ];
         let mut reader = MsgReader::new(&bytes);
         let loc = KexCodec::read_locprint(&mut reader).unwrap();
@@ -7904,8 +7813,8 @@ mod tests {
         );
 
         let sound = [
-            95, 0x34, 0x12, 200, 100, 50, 0xc5, 0x12, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x3f, 0x00,
-            0x00, 0x20, 0x40, 0x00, 0x00, 0x60, 0x40,
+            95, 0x34, 0x12, 200, 100, 50, 0xc5, 0x12, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x00, 0x20, 0x40, 0x00,
+            0x00, 0x60, 0x40,
         ];
         let mut reader = MsgReader::new(&sound);
         let parsed = codec.read_sound(&mut reader).unwrap();
@@ -7925,13 +7834,16 @@ mod tests {
         assert_eq!(damage.len(), 2);
         assert_eq!(damage[0].damage, 5);
         assert!(damage[0].health && !damage[0].armor && damage[0].shield);
-        assert_eq!(damage[0].direction, crate::q2::read_dir(&mut MsgReader::new(&[10])).unwrap());
+        assert_eq!(
+            damage[0].direction,
+            crate::q2::read_dir(&mut MsgReader::new(&[10])).unwrap()
+        );
         assert_eq!(damage[1].damage, 3);
         assert!(!damage[1].health && damage[1].armor && !damage[1].shield);
 
         let poi = [
-            0x34, 0x12, 0x50, 0x00, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x00, 0x20, 0x40, 0x00, 0x00,
-            0x60, 0x40, 0xaa, 0x00, 7, 3,
+            0x34, 0x12, 0x50, 0x00, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x00, 0x20, 0x40, 0x00, 0x00, 0x60, 0x40, 0xaa, 0x00,
+            7, 3,
         ];
         let mut reader = MsgReader::new(&poi);
         let parsed = KexCodec::read_poi(&mut reader).unwrap();
@@ -7986,15 +7898,11 @@ mod tests {
     fn kex_codec_errors() {
         let mut out = writer();
         assert_eq!(
-            KexCodec::write_player_state_delta(
-                &mut out,
-                &PlayerState::default(),
-                &{
-                    let mut ps = PlayerState::default();
-                    ps.gunframe = 512;
-                    ps
-                }
-            ),
+            KexCodec::write_player_state_delta(&mut out, &PlayerState::default(), &{
+                let mut ps = PlayerState::default();
+                ps.gunframe = 512;
+                ps
+            }),
             Err(VariantError::GunRange(512))
         );
         let codec = KexCodec::new(PROTOCOL_KEX);
@@ -8014,10 +7922,7 @@ mod tests {
         let mut codec = KexCodec::new(PROTOCOL_KEX);
         let bytes = [7, 0, 0, 0, 0, 40, b'b', 0, 0xfe, 0xff, 0, 0];
         let mut reader = MsgReader::new(&bytes);
-        assert_eq!(
-            codec.read_server_data(&mut reader),
-            Err(VariantError::BadSplitCount(0))
-        );
+        assert_eq!(codec.read_server_data(&mut reader), Err(VariantError::BadSplitCount(0)));
     }
 
     #[test]
@@ -8076,10 +7981,12 @@ mod tests {
     #[test]
     fn mvd_playerstate_byte_exact() {
         let mut out = writer();
-        assert!(
-            write_delta_mvd_playerstate(&mut out, None, Some(&mvd_player()), 7, false).unwrap()
+        assert!(write_delta_mvd_playerstate(&mut out, None, Some(&mvd_player()), 7, false).unwrap());
+        assert_eq!(
+            out.bytes(),
+            decode_hex("07ff7f02200370fe78000102031c07380e551504080c050702020210141819334c665a01010000006400")
+                .as_slice()
         );
-        assert_eq!(out.bytes(), decode_hex("07ff7f02200370fe78000102031c07380e551504080c050702020210141819334c665a01010000006400").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         let parsed = read_delta_mvd_playerstate(&mut reader, None).unwrap();
         reader.finish().unwrap();
@@ -8105,9 +8012,7 @@ mod tests {
         to.damage_blend = [0.0, 0.0, 0.6, 0.0];
         to.stats[40] = -5;
         let mut out = writer();
-        assert!(
-            write_delta_mvd_playerstate_rerelease(&mut out, None, Some(&to), 7, false).unwrap()
-        );
+        assert!(write_delta_mvd_playerstate_rerelease(&mut out, None, Some(&to), 7, false).unwrap());
         assert_eq!(out.bytes(), decode_hex("07ff7f02200370fe7800040008000c001c07380e551500040008000c2c61f4013300660099000010002000304f19334c66995a0101000000000100006400fbff").as_slice());
         let mut reader = MsgReader::new(out.bytes());
         let parsed = read_delta_mvd_playerstate_rerelease(&mut reader, None).unwrap();
@@ -8258,4 +8163,3 @@ mod tests {
         reader.finish().unwrap();
     }
 }
-

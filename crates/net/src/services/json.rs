@@ -145,8 +145,7 @@ impl Parser<'_> {
             if rest.len() < length {
                 return Err(JsonError::UnexpectedEnd);
             }
-            let chunk =
-                std::str::from_utf8(&rest[..length]).map_err(|_| JsonError::UnexpectedChar(self.offset))?;
+            let chunk = std::str::from_utf8(&rest[..length]).map_err(|_| JsonError::UnexpectedChar(self.offset))?;
             text.push_str(chunk);
             self.offset += length;
         }
@@ -156,8 +155,7 @@ impl Parser<'_> {
         if self.offset + 4 > self.bytes.len() {
             return Err(JsonError::UnexpectedEnd);
         }
-        let text = std::str::from_utf8(&self.bytes[self.offset..self.offset + 4])
-            .map_err(|_| JsonError::BadEscape)?;
+        let text = std::str::from_utf8(&self.bytes[self.offset..self.offset + 4]).map_err(|_| JsonError::BadEscape)?;
         let value = u32::from_str_radix(text, 16).map_err(|_| JsonError::BadEscape)?;
         self.offset += 4;
         Ok(value)
@@ -265,8 +263,7 @@ impl Parser<'_> {
                 return Err(JsonError::BadNumber);
             }
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.offset])
-            .map_err(|_| JsonError::BadNumber)?;
+        let text = std::str::from_utf8(&self.bytes[start..self.offset]).map_err(|_| JsonError::BadNumber)?;
         text.parse::<f64>().map(Json::Number).map_err(|_| JsonError::BadNumber)
     }
 }
@@ -292,12 +289,15 @@ mod tests {
     #[test]
     fn parses_documents() {
         assert_eq!(parse_json("null").unwrap(), Json::Null);
-        assert_eq!(parse_json("[1, \"a\\n\", true, null]").unwrap(), Json::Array(vec![
-            Json::Number(1.0),
-            Json::String("a\n".to_owned()),
-            Json::Bool(true),
-            Json::Null,
-        ]));
+        assert_eq!(
+            parse_json("[1, \"a\\n\", true, null]").unwrap(),
+            Json::Array(vec![
+                Json::Number(1.0),
+                Json::String("a\n".to_owned()),
+                Json::Bool(true),
+                Json::Null,
+            ])
+        );
         assert!(parse_json("{\"a\":01}").is_err());
         assert!(parse_json("[1,]").is_err());
     }

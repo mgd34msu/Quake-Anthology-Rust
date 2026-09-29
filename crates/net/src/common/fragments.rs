@@ -184,8 +184,7 @@ impl FragmentReceiver {
                 reason: FragmentRejection::Length,
             };
         }
-        self.storage[self.length..self.length + fragment.bytes.len()]
-            .copy_from_slice(&fragment.bytes);
+        self.storage[self.length..self.length + fragment.bytes.len()].copy_from_slice(&fragment.bytes);
         self.length += fragment.bytes.len();
         if !fragment.final_fragment {
             return FragmentResult::Pending {

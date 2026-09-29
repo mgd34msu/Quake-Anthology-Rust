@@ -15,18 +15,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use qa_core::cmd::{Dialect, TextMode, source_command_text, tokenize_command};
-use qa_core::cvar::{InfoOptions, InfoTarget, set_info_value};
+use qa_core::cmd::{source_command_text, tokenize_command, Dialect, TextMode};
+use qa_core::cvar::{set_info_value, InfoOptions, InfoTarget};
 use qa_core::identity::{ClientId, SeatId};
 use qa_core::numeric::native_atoi;
 use thiserror::Error;
 
-use crate::common::endpoint::{NetworkAddress, same_address};
+use crate::common::endpoint::{same_address, NetworkAddress};
 use crate::common::hash::{md4_block_checksum, md4_block_checksum_key};
-use crate::huffman::{HuffmanError, compress_adaptive, decompress_adaptive};
+use crate::huffman::{compress_adaptive, decompress_adaptive, HuffmanError};
 use crate::q3::{
-    MessageMode, Q3MsgError, Q3MsgReader, Q3MsgWriter, WireUserCommand, MAX_MESSAGE_LENGTH,
-    read_delta_user_command, write_delta_user_command,
+    read_delta_user_command, write_delta_user_command, MessageMode, Q3MsgError, Q3MsgReader, Q3MsgWriter,
+    WireUserCommand, MAX_MESSAGE_LENGTH,
 };
 
 /// Error for Quake III netcode.
@@ -122,7 +122,10 @@ pub enum Q3NetError {
 impl Q3NetError {
     /// Build a drop error.
     fn drop(kind: &'static str, message: impl Into<String>) -> Self {
-        Self::Drop { kind, message: message.into() }
+        Self::Drop {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -137,7 +140,12 @@ pub struct SourceMessageState {
 impl SourceMessageState {
     /// Build state over a print sink.
     pub fn new(print: impl FnMut(&str) + Send + Sync + 'static) -> Self {
-        Self { print: Box::new(print), oldsize: Some(0), newsize: Some(0), overflows: Some(0) }
+        Self {
+            print: Box::new(print),
+            oldsize: Some(0),
+            newsize: Some(0),
+            overflows: Some(0),
+        }
     }
 
     /// Print a diagnostic.
@@ -875,8 +883,14 @@ fn set_player_int(state: &mut Q3PlayerState, kind: PlayerFieldKind, value: i32) 
 #[must_use]
 pub fn state_delta_fields(kind: &str) -> Vec<(String, i32)> {
     match kind {
-        "player" => PLAYER_FIELDS.iter().map(|field| (field.name.to_string(), field.bits)).collect(),
-        _ => ENTITY_FIELDS.iter().map(|field| (field.name.to_string(), field.bits)).collect(),
+        "player" => PLAYER_FIELDS
+            .iter()
+            .map(|field| (field.name.to_string(), field.bits))
+            .collect(),
+        _ => ENTITY_FIELDS
+            .iter()
+            .map(|field| (field.name.to_string(), field.bits))
+            .collect(),
     }
 }
 
@@ -954,8 +968,7 @@ fn diagnostic_float(bits: u32) -> String {
             let remainder = coefficient & ((1u64 << k) - 1);
             let twice = remainder * 2;
             let divisor = 1u64 << k;
-            quotient
-                + u64::from(twice > divisor || (twice == divisor && quotient & 1 == 1))
+            quotient + u64::from(twice > divisor || (twice == divisor && quotient & 1 == 1))
         };
         decimal_string(rounded)
     };
@@ -979,11 +992,7 @@ const SERVER_OPCODE_NAMES: &[&str] = &[
     "svc_snapshot",
 ];
 
-fn show_net<'d, 'x>(
-    reader: &Q3MsgReader<'_>,
-    label: &str,
-    diagnostics: Option<&'d mut (dyn DeltaDiagnostics + 'x)>,
-) {
+fn show_net<'d, 'x>(reader: &Q3MsgReader<'_>, label: &str, diagnostics: Option<&'d mut (dyn DeltaDiagnostics + 'x)>) {
     if let Some(diagnostics) = diagnostics {
         if diagnostics.shownet() >= 2 {
             let count = reader.read_count() as isize + diagnostics.offset() as isize - 1;
@@ -1031,10 +1040,7 @@ fn show_packet_entity<'d, 'x>(
     if let Some(diagnostics) = diagnostics {
         if diagnostics.shownet() == 3 {
             let offset = diagnostics.offset();
-            diagnostics.print(&format!(
-                "{:>3}:  {label}: {number}\n",
-                reader.read_count() + offset
-            ));
+            diagnostics.print(&format!("{:>3}:  {label}: {number}\n", reader.read_count() + offset));
         }
     }
 }
@@ -1109,7 +1115,7 @@ fn read_entity_field<'d, 'x>(
 }
 
 fn check_entity_number(number: i32) -> Result<(), Q3NetError> {
-    if number < 0 || number >= MAX_Q3_ENTITIES {
+    if !(0..MAX_Q3_ENTITIES).contains(&number) {
         return Err(Q3NetError::BadDeltaEntity { number });
     }
     Ok(())
@@ -1275,7 +1281,7 @@ fn read_player_field<'d, 'x>(
     let mut text = None;
     if field.bits != 0 {
         let value = reader.read_bits(field.bits)?;
-        text = Some((value as i32).to_string());
+        text = Some(value.to_string());
         set_player_int(state, field.kind, value);
     } else if reader.read_bits(1)? == 0 {
         let value = reader.read_bits(FLOAT_INT_BITS)? - FLOAT_INT_BIAS;
@@ -1417,7 +1423,11 @@ pub fn read_delta_player_state<'d, 'x>(
             let mask = reader.read_short()?;
             for index in 0..16 {
                 if (mask & (1 << index)) != 0 {
-                    let value = if width == 16 { reader.read_short()? } else { reader.read_long()? };
+                    let value = if width == 16 {
+                        reader.read_short()?
+                    } else {
+                        reader.read_long()?
+                    };
                     match key {
                         "stats" => to.stats.set(index, value)?,
                         "persistant" => to.persistant.set(index, value)?,
@@ -1532,11 +1542,7 @@ pub struct Netchannel {
 
 impl Netchannel {
     /// Build a channel.
-    pub fn new(
-        role: ChannelRole,
-        qport: u16,
-        transmit_qport: impl FnMut() -> u16 + 'static,
-    ) -> Self {
+    pub fn new(role: ChannelRole, qport: u16, transmit_qport: impl FnMut() -> u16 + 'static) -> Self {
         Self {
             role,
             qport,
@@ -1607,16 +1613,12 @@ impl Netchannel {
     }
 
     /// Begin transmitting a payload; only the first fragment goes out.
-    pub fn begin_transmit(
-        &mut self,
-        payload: &[u8],
-        delivery: &mut dyn ChannelDelivery,
-    ) -> Result<(), Q3NetError> {
+    pub fn begin_transmit(&mut self, payload: &[u8], delivery: &mut dyn ChannelDelivery) -> Result<(), Q3NetError> {
         self.assert_delivery_entry()?;
         if payload.len() > MAX_MESSAGE_LENGTH {
             return Err(Q3NetError::Range("Netchannel message too large"));
         }
-        if self.outgoing >= 0x7fff_ffff {
+        if self.outgoing == 0x7fff_ffff {
             return Err(Q3NetError::Range("Netchannel sequence exhausted; reconnect required"));
         }
         self.unsent_start = 0;
@@ -1633,7 +1635,11 @@ impl Netchannel {
         delivery.send(&packet);
         delivery.trace(&format!(
             "{} send {:>4} : s={} ack={}\n",
-            if self.role == ChannelRole::Client { "client" } else { "server" },
+            if self.role == ChannelRole::Client {
+                "client"
+            } else {
+                "server"
+            },
             packet.len(),
             self.outgoing - 1,
             self.incoming
@@ -1643,10 +1649,7 @@ impl Netchannel {
     }
 
     /// Transmit the next fragment.
-    pub fn transmit_next_fragment(
-        &mut self,
-        delivery: &mut dyn ChannelDelivery,
-    ) -> Result<bool, Q3NetError> {
+    pub fn transmit_next_fragment(&mut self, delivery: &mut dyn ChannelDelivery) -> Result<bool, Q3NetError> {
         self.assert_delivery_entry()?;
         let length = FRAGMENT_SIZE.min(self.unsent_length - self.unsent_start);
         let start = self.unsent_start;
@@ -1656,7 +1659,11 @@ impl Netchannel {
         delivery.send(&packet);
         delivery.trace(&format!(
             "{} send {:>4} : s={} fragment={},{}\n",
-            if self.role == ChannelRole::Client { "client" } else { "server" },
+            if self.role == ChannelRole::Client {
+                "client"
+            } else {
+                "server"
+            },
             packet.len(),
             self.outgoing,
             start,
@@ -1706,14 +1713,12 @@ impl Netchannel {
     }
 
     /// Receive one packet (address/qport routing precedes this call).
-    pub fn receive(
-        &mut self,
-        packet: &[u8],
-        mut diagnostics: Option<&mut ChannelDiagnostics<'_>>,
-    ) -> ChannelResult {
-            let base_header = if self.role == ChannelRole::Server { 6 } else { 4 };
+    pub fn receive(&mut self, packet: &[u8], mut diagnostics: Option<&mut ChannelDiagnostics<'_>>) -> ChannelResult {
+        let base_header = if self.role == ChannelRole::Server { 6 } else { 4 };
         if packet.len() < base_header || packet.len() > MAX_MESSAGE_LENGTH {
-            return ChannelResult::Rejected { reason: ChannelReject::Malformed };
+            return ChannelResult::Rejected {
+                reason: ChannelReject::Malformed,
+            };
         }
         let wire_sequence = u32::from_le_bytes([packet[0], packet[1], packet[2], packet[3]]);
         let fragmented = (wire_sequence & 0x8000_0000) != 0;
@@ -1724,7 +1729,9 @@ impl Netchannel {
             None
         };
         if fragmented && packet.len() < base_header + 4 {
-            return ChannelResult::Rejected { reason: ChannelReject::Malformed };
+            return ChannelResult::Rejected {
+                reason: ChannelReject::Malformed,
+            };
         }
         let start = if fragmented {
             i16::from_le_bytes([packet[base_header], packet[base_header + 1]]) as i32
@@ -1741,7 +1748,11 @@ impl Netchannel {
                 (diagnostics.print)(&if fragmented {
                     format!(
                         "{} recv {:>4} : s={} fragment={},{}\n",
-                        if self.role == ChannelRole::Client { "client" } else { "server" },
+                        if self.role == ChannelRole::Client {
+                            "client"
+                        } else {
+                            "server"
+                        },
                         packet.len(),
                         sequence,
                         start,
@@ -1750,7 +1761,11 @@ impl Netchannel {
                 } else {
                     format!(
                         "{} recv {:>4} : s={}\n",
-                        if self.role == ChannelRole::Client { "client" } else { "server" },
+                        if self.role == ChannelRole::Client {
+                            "client"
+                        } else {
+                            "server"
+                        },
                         packet.len(),
                         sequence,
                     )
@@ -1766,7 +1781,9 @@ impl Netchannel {
                     ));
                 }
             }
-            return ChannelResult::Rejected { reason: ChannelReject::Sequence };
+            return ChannelResult::Rejected {
+                reason: ChannelReject::Sequence,
+            };
         }
         self.dropped = sequence - (self.incoming + 1);
         if self.dropped > 0 {
@@ -1795,40 +1812,46 @@ impl Netchannel {
         if start as usize != self.fragment_length {
             if let Some(diagnostics) = diagnostics.as_deref_mut() {
                 if diagnostics.show_drop || diagnostics.show_packets {
-                    (diagnostics.print)(&format!(
-                        "{}:Dropped a message fragment\n",
-                        diagnostics.remote_address
-                    ));
+                    (diagnostics.print)(&format!("{}:Dropped a message fragment\n", diagnostics.remote_address));
                 }
             }
-            return ChannelResult::Rejected { reason: ChannelReject::FragmentOrder };
+            return ChannelResult::Rejected {
+                reason: ChannelReject::FragmentOrder,
+            };
         }
         let header = base_header + 4;
         if length < 0
             || length as usize > packet.len() - header
             || self.fragment_length + length as usize > MAX_MESSAGE_LENGTH
         {
-            if let Some(diagnostics) = diagnostics.as_deref_mut() {
+            if let Some(diagnostics) = diagnostics {
                 if diagnostics.show_drop || diagnostics.show_packets {
-                    (diagnostics.print)(&format!(
-                        "{}:illegal fragment length\n",
-                        diagnostics.remote_address
-                    ));
+                    (diagnostics.print)(&format!("{}:illegal fragment length\n", diagnostics.remote_address));
                 }
             }
-            return ChannelResult::Rejected { reason: ChannelReject::FragmentLength };
+            return ChannelResult::Rejected {
+                reason: ChannelReject::FragmentLength,
+            };
         }
         let length = length as usize;
         self.fragments[self.fragment_length..self.fragment_length + length]
             .copy_from_slice(&packet[header..header + length]);
         self.fragment_length += length;
         if length == FRAGMENT_SIZE {
-            return ChannelResult::Fragment { sequence, received: self.fragment_length };
+            return ChannelResult::Fragment {
+                sequence,
+                received: self.fragment_length,
+            };
         }
         let payload = self.fragments[..self.fragment_length].to_vec();
         self.fragment_length = 0;
         self.incoming = sequence;
-        ChannelResult::Accepted { sequence, qport, dropped: self.dropped, payload }
+        ChannelResult::Accepted {
+            sequence,
+            qport,
+            dropped: self.dropped,
+            payload,
+        }
     }
 }
 
@@ -1875,12 +1898,7 @@ pub fn xor_client_message(
 
 /// `SV_Encode`/`CL_Decode` on a server payload (`xorServerMessage`).
 #[must_use]
-pub fn xor_server_message(
-    payload: &[u8],
-    challenge: i32,
-    sequence: i32,
-    client_command: &str,
-) -> Vec<u8> {
+pub fn xor_server_message(payload: &[u8], challenge: i32, sequence: i32, client_command: &str) -> Vec<u8> {
     xor_payload(payload, 4, challenge ^ sequence, client_command)
 }
 
@@ -1959,9 +1977,8 @@ fn config_string_number(text: &str) -> Result<i32, Q3NetError> {
             "SV_ReplacePendingServerCommands: indeterminate sscanf configstring index",
         ));
     }
-    let magnitude = i64::from_str_radix(&digits[..end], radix).map_err(|_| {
-        Q3NetError::Range("SV_ReplacePendingServerCommands: sscanf index exceeds signed int32")
-    })?;
+    let magnitude = i64::from_str_radix(&digits[..end], radix)
+        .map_err(|_| Q3NetError::Range("SV_ReplacePendingServerCommands: sscanf index exceeds signed int32"))?;
     let value = if negative { -magnitude } else { magnitude };
     if value < i64::from(i32::MIN) || value > i64::from(i32::MAX) {
         return Err(Q3NetError::Range(
@@ -1972,7 +1989,7 @@ fn config_string_number(text: &str) -> Result<i32, Q3NetError> {
 }
 
 /// Reliable command ring (`ReliableRing`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ReliableRing {
     current_sequence: i32,
     acknowledged_sequence: i32,
@@ -2020,7 +2037,10 @@ impl ReliableRing {
         let mut commands = Vec::new();
         let mut sequence = self.acknowledged_sequence + 1;
         while sequence <= self.current_sequence {
-            commands.push(ReliableCommand { sequence, text: self.lookup_masked(sequence) });
+            commands.push(ReliableCommand {
+                sequence,
+                text: self.lookup_masked(sequence),
+            });
             sequence += 1;
         }
         commands
@@ -2035,9 +2055,11 @@ impl ReliableRing {
     }
 
     fn store(&mut self, text: &str) -> ReliableCommand {
-        let command = ReliableCommand { sequence: self.current_sequence, text: stored_text(text) };
-        self.slots[(self.current_sequence & (MAX_RELIABLE_COMMANDS as i32 - 1)) as usize] =
-            command.text.clone();
+        let command = ReliableCommand {
+            sequence: self.current_sequence,
+            text: stored_text(text),
+        };
+        self.slots[(self.current_sequence & (MAX_RELIABLE_COMMANDS as i32 - 1)) as usize] = command.text.clone();
         command
     }
 
@@ -2048,14 +2070,16 @@ impl ReliableRing {
     fn validate_acknowledge(&self, sequence: i32) -> Result<(), Q3NetError> {
         check_sequence(sequence)?;
         if sequence > self.current_sequence {
-            return Err(Q3NetError::Range("Reliable acknowledgement is ahead of generated commands"));
+            return Err(Q3NetError::Range(
+                "Reliable acknowledgement is ahead of generated commands",
+            ));
         }
         Ok(())
     }
 }
 
 /// Client reliable commands (`ClientReliableCommands`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClientReliableCommands {
     ring: ReliableRing,
 }
@@ -2064,7 +2088,9 @@ impl ClientReliableCommands {
     /// Fresh ring.
     #[must_use]
     pub fn new() -> Self {
-        Self { ring: ReliableRing::new() }
+        Self {
+            ring: ReliableRing::new(),
+        }
     }
 
     /// Current sequence.
@@ -2140,7 +2166,7 @@ impl ClientReliableCommands {
 }
 
 /// Server reliable commands (`ServerReliableCommands`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ServerReliableCommands {
     ring: ReliableRing,
 }
@@ -2149,7 +2175,9 @@ impl ServerReliableCommands {
     /// Fresh ring.
     #[must_use]
     pub fn new() -> Self {
-        Self { ring: ReliableRing::new() }
+        Self {
+            ring: ReliableRing::new(),
+        }
     }
 
     /// Current sequence.
@@ -2349,9 +2377,7 @@ fn command_whitespace(line: &str) -> String {
         let character = chars[index];
         if mode == Mode::Comment {
             normalized.push(character);
-            if chars.get(index) == Some(&'*')
-                && chars.get(index + 1) == Some(&'/')
-            {
+            if chars.get(index) == Some(&'*') && chars.get(index + 1) == Some(&'/') {
                 normalized.push('/');
                 index += 1;
                 mode = Mode::Regular;
@@ -2392,7 +2418,9 @@ pub fn decode_connectionless(
         return Err(Q3NetError::Range("Truncated connectionless marker"));
     }
     if packet.len() > MAX_CONNECTIONLESS_PACKET {
-        return Err(Q3NetError::Range("Connectionless datagram exceeds source receive limit"));
+        return Err(Q3NetError::Range(
+            "Connectionless datagram exceeds source receive limit",
+        ));
     }
     if packet[..4] != [255, 255, 255, 255] {
         return Err(Q3NetError::Range("Invalid connectionless marker"));
@@ -2403,11 +2431,8 @@ pub fn decode_connectionless(
         && packet.len() > CONNECT_OFFSET
         && packet[4..4 + CONNECT_WORD.len()] == *CONNECT_WORD
     {
-        let expanded = decompress_adaptive(
-            &packet[CONNECT_OFFSET..],
-            MAX_MESSAGE_LENGTH - CONNECT_OFFSET,
-        )
-        .map_err(|_| Q3NetError::Range("Malformed compressed connectionless payload"))?;
+        let expanded = decompress_adaptive(&packet[CONNECT_OFFSET..], MAX_MESSAGE_LENGTH - CONNECT_OFFSET)
+            .map_err(|_| Q3NetError::Range("Malformed compressed connectionless payload"))?;
         let mut joined = Vec::with_capacity(CONNECT_OFFSET + expanded.len());
         joined.extend_from_slice(&packet[..CONNECT_OFFSET]);
         joined.extend_from_slice(&expanded);
@@ -2507,7 +2532,11 @@ impl<'a> DemoReader<'a> {
     /// Build a reader.
     #[must_use]
     pub fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0, ended: None }
+        Self {
+            bytes,
+            position: 0,
+            ended: None,
+        }
     }
 
     /// Current offset.
@@ -2544,8 +2573,7 @@ impl DemoMessageReader for DemoReader<'_> {
             self.position = self.bytes.len();
             return Ok(self.end(DemoEndReason::TruncatedHeader, start));
         }
-        let length =
-            i32::from_le_bytes(self.bytes[start + 4..start + 8].try_into().unwrap_or([0; 4]));
+        let length = i32::from_le_bytes(self.bytes[start + 4..start + 8].try_into().unwrap_or([0; 4]));
         self.position += 4;
         if length == -1 {
             return Ok(self.end(DemoEndReason::Terminator, start));
@@ -2609,7 +2637,11 @@ impl ClientGameStateStorage {
     /// Fresh storage.
     #[must_use]
     pub fn new() -> Self {
-        Self { offsets: [0; 1024], data: vec![0; 16000], count: 0 }
+        Self {
+            offsets: [0; 1024],
+            data: vec![0; 16000],
+            count: 0,
+        }
     }
 
     /// Clear all entries.
@@ -2633,7 +2665,9 @@ impl ClientGameStateStorage {
     /// Copy all strings.
     #[must_use]
     pub fn copy_strings(&self) -> Vec<String> {
-        (0..1024).map(|index| self.get(index).unwrap_or_default().unwrap_or_default()).collect()
+        (0..1024)
+            .map(|index| self.get(index).unwrap_or_default().unwrap_or_default())
+            .collect()
     }
 
     /// Read one entry.
@@ -2733,15 +2767,13 @@ pub struct Q3ArchiveHandle {
 }
 
 /// Pure checksums of an archive (`q3ArchiveChecksums`).
-pub fn q3_archive_checksums(
-    archive: &Q3ArchiveHandle,
-    checksum_feed: i32,
-) -> Result<(u32, u32), Q3NetError> {
+pub fn q3_archive_checksums(archive: &Q3ArchiveHandle, checksum_feed: i32) -> Result<(u32, u32), Q3NetError> {
     if archive.pak_format {
-        return Err(Q3NetError::Range("Q3 pak checksums require a ZIP/PK3 central directory"));
+        return Err(Q3NetError::Range(
+            "Q3 pak checksums require a ZIP/PK3 central directory",
+        ));
     }
-    let entries: Vec<&Q3ArchiveEntry> =
-        archive.entries.iter().filter(|entry| entry.byte_length > 0).collect();
+    let entries: Vec<&Q3ArchiveEntry> = archive.entries.iter().filter(|entry| entry.byte_length > 0).collect();
     let mut bytes = Vec::with_capacity(entries.len() * 4);
     for entry in &entries {
         if entry.pak_entry {
@@ -2793,24 +2825,15 @@ pub enum Q3PureIgnore {
 }
 
 /// Verify a pure client command (`verifyQ3PureCommand`).
-pub fn verify_q3_pure_command(
-    server: &Q3PureServer,
-    argv: &[String],
-) -> Result<Q3PureResult, Q3NetError> {
+pub fn verify_q3_pure_command(server: &Q3PureServer, argv: &[String]) -> Result<Q3PureResult, Q3NetError> {
     if !server.enabled {
         return Ok(Q3PureResult::Ignored(Q3PureIgnore::Disabled));
     }
-    if native_atoi(argv.get(1).map(String::as_str).unwrap_or(""))?
-        < server.checksum_feed_server_id
-    {
+    if native_atoi(argv.get(1).map(String::as_str).unwrap_or(""))? < server.checksum_feed_server_id {
         return Ok(Q3PureResult::Ignored(Q3PureIgnore::Outdated));
     }
-    let rejected = || {
-        Q3PureResult::Rejected("Unpure client detected. Invalid .PK3 files referenced!".to_string())
-    };
-    let (Some(cgame_checksum), Some(ui_checksum)) =
-        (server.cgame_checksum, server.ui_checksum)
-    else {
+    let rejected = || Q3PureResult::Rejected("Unpure client detected. Invalid .PK3 files referenced!".to_string());
+    let (Some(cgame_checksum), Some(ui_checksum)) = (server.cgame_checksum, server.ui_checksum) else {
         return Ok(rejected());
     };
     if argv.len() < 6 || argv.len() - 5 > 1024 {
@@ -2858,9 +2881,13 @@ pub fn check_q3_download_name(name: &str) -> Result<(), Q3NetError> {
     let safe = !name.is_empty()
         && name.len() < 4096
         && !name.contains("..")
-        && name.chars().all(|ch| matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '+' | '.' | '/' | '-'))
+        && name
+            .chars()
+            .all(|ch| matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '+' | '.' | '/' | '-'))
         && !name.starts_with('/')
-        && !name.split('/').any(|component| component.is_empty() || component == ".")
+        && !name
+            .split('/')
+            .any(|component| component.is_empty() || component == ".")
         && name.to_lowercase().ends_with(".pk3");
     if safe {
         Ok(())
@@ -2872,7 +2899,7 @@ pub fn check_q3_download_name(name: &str) -> Result<(), Q3NetError> {
 /// Classify a stock package (`q3StockPackage`).
 #[must_use]
 pub fn q3_stock_package(name: &str) -> Option<&'static str> {
-    let normalized = name.replace('\\', "/").replace(':', "/").to_lowercase();
+    let normalized = name.replace(['\\', ':'], "/").to_lowercase();
     let (game, file) = normalized.split_once('/')?;
     if !matches!(game, "baseq3" | "missionpack") || file.contains('/') {
         return None;
@@ -2997,7 +3024,10 @@ impl SourceParseEntities {
     /// Fresh ring.
     #[must_use]
     pub fn new() -> Self {
-        Self { cells: vec![Q3EntityState::default(); MAX_PARSE_ENTITIES], number: 0 }
+        Self {
+            cells: vec![Q3EntityState::default(); MAX_PARSE_ENTITIES],
+            number: 0,
+        }
     }
 
     /// Borrow a cell by absolute index.
@@ -3199,7 +3229,7 @@ pub enum ServerOperation {
         text: String,
     },
     /// Gamestate.
-    Gamestate(Gamestate),
+    Gamestate(Box<Gamestate>),
     /// Download block.
     Download(DownloadBlock),
     /// Snapshot.
@@ -3207,7 +3237,7 @@ pub enum ServerOperation {
         /// Validity.
         validity: SnapshotValidity,
         /// Snapshot.
-        snapshot: Snapshot,
+        snapshot: Box<Snapshot>,
     },
 }
 
@@ -3287,7 +3317,11 @@ fn read_packet_entities<'d, 'x>(
             return None;
         }
         if let Some(parse_entities) = parse_entities {
-            return Some(parse_entities.get(previous.parse_entities_number + index as i32).clone());
+            return Some(
+                parse_entities
+                    .get(previous.parse_entities_number + index as i32)
+                    .clone(),
+            );
         }
         previous.entities.get(index).cloned()
     }
@@ -3433,7 +3467,10 @@ fn read_download<T: FnMut(i32) -> i32 + ?Sized>(
             file_size = publish(file_size);
         }
         if file_size < 0 {
-            return Ok(DownloadBlock::Error { file_size, message: reader.read_string()? });
+            return Ok(DownloadBlock::Error {
+                file_size,
+                message: reader.read_string()?,
+            });
         }
     }
     let size = reader.read_short()?;
@@ -3472,18 +3509,21 @@ fn read_snapshot<'d, 'x>(
     };
     let mut validity = SnapshotValidity::Valid;
     if header.delta_number > 0 {
+        let stale_entities = slot.as_ref().is_some_and(|slot| {
+            let current = parse_entities.as_ref().map_or(parse_number, |ring| ring.number);
+            current.wrapping_sub(slot.snapshot.parse_entities_number)
+                > MAX_PARSE_ENTITIES as i32 - 128
+        });
         if slot.is_none() {
             validity = SnapshotValidity::Invalid(SnapshotInvalid::MissingDelta);
         } else if slot.as_ref().is_some_and(|slot| slot.status == SnapshotStatus::Invalid) {
             validity = SnapshotValidity::Invalid(SnapshotInvalid::InvalidDelta);
-        } else if slot.as_ref().is_some_and(|slot| slot.snapshot.message_number != header.delta_number) {
+        } else if slot
+            .as_ref()
+            .is_some_and(|slot| slot.snapshot.message_number != header.delta_number)
+        {
             validity = SnapshotValidity::Invalid(SnapshotInvalid::StaleDelta);
-        } else if {
-            let slot = slot.as_ref().expect("checked");
-            let current = parse_entities.as_ref().map_or(parse_number, |ring| ring.number);
-            current.wrapping_sub(slot.snapshot.parse_entities_number)
-                > MAX_PARSE_ENTITIES as i32 - 128
-        } {
+        } else if stale_entities {
             validity = SnapshotValidity::Invalid(SnapshotInvalid::StaleEntities);
         }
     }
@@ -3499,7 +3539,17 @@ fn read_snapshot<'d, 'x>(
         }
     }
     let slot_snapshot = slot.as_ref().map(|slot| &slot.snapshot);
-    finish_snapshot(reader, header, context, slot_snapshot, validity, diagnostics, parse_entities, parse_number, data_len)
+    finish_snapshot(
+        reader,
+        header,
+        context,
+        slot_snapshot,
+        validity,
+        diagnostics,
+        parse_entities,
+        parse_number,
+        data_len,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3527,19 +3577,11 @@ fn finish_snapshot<'d, 'x>(
         reborrow(&mut diagnostics),
     )?;
     show_net(reader, "packet entities", reborrow(&mut diagnostics));
-    let parse_entities_number =
-        parse_entities.as_ref().map_or(parse_number, |ring| ring.number);
-    let entities = read_packet_entities(
-        reader,
-        data_len,
-        slot,
-        context.baseline,
-        diagnostics,
-        parse_entities,
-    )?;
+    let parse_entities_number = parse_entities.as_ref().map_or(parse_number, |ring| ring.number);
+    let entities = read_packet_entities(reader, data_len, slot, context.baseline, diagnostics, parse_entities)?;
     Ok(ServerOperation::Snapshot {
         validity,
-        snapshot: Snapshot {
+        snapshot: Box::new(Snapshot {
             message_number: context.message_number,
             server_time: header.server_time,
             delta_number: header.delta_number,
@@ -3549,7 +3591,7 @@ fn finish_snapshot<'d, 'x>(
             area_mask,
             player_state,
             entities,
-        },
+        }),
     })
 }
 
@@ -3663,9 +3705,7 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
                 Ok(value)
             }
             Err(error) => {
-                if self.reader.bit_position() < self.data_len * 8
-                    && self.reader.read_count() <= self.data_len
-                {
+                if self.reader.bit_position() < self.data_len * 8 && self.reader.read_count() <= self.data_len {
                     return Err(Q3NetError::from(error));
                 }
                 self.exhausted = true;
@@ -3678,14 +3718,16 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
     pub fn next(&mut self, context: &ServerMessageContext<'_>) -> Result<ServerMessageStep, Q3NetError> {
         // The cursor shadows the diagnostics offset with its read offset.
         let mut wrapped;
-        let mut shadowed: Option<&mut dyn DeltaDiagnostics> =
-            match self.diagnostics.as_deref_mut() {
-                Some(inner) => {
-                    wrapped = OffsetDiagnostics { inner, offset: self.read_offset };
-                    Some(&mut wrapped)
-                }
-                None => None,
-            };
+        let mut shadowed: Option<&mut dyn DeltaDiagnostics> = match self.diagnostics.as_deref_mut() {
+            Some(inner) => {
+                wrapped = OffsetDiagnostics {
+                    inner,
+                    offset: self.read_offset,
+                };
+                Some(&mut wrapped)
+            }
+            None => None,
+        };
         if let Some(header) = self.snapshot_header.take() {
             let parse_entities = self.parse_entities.as_deref_mut();
             let data_len = self.data_len;
@@ -3711,11 +3753,13 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
                 }
                 let wire = self.source_long()?;
                 self.phase = CursorPhase::Opcode;
-                Ok(ServerMessageStep::Acknowledge(if wire < context.reliable_sequence - 64 {
-                    context.reliable_sequence
-                } else {
-                    wire
-                }))
+                Ok(ServerMessageStep::Acknowledge(
+                    if wire < context.reliable_sequence - 64 {
+                        context.reliable_sequence
+                    } else {
+                        wire
+                    },
+                ))
             }
             CursorPhase::Sequence => {
                 let sequence = self.source_long()?;
@@ -3747,12 +3791,7 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
                 if opcode == ServerOpcode::Baseline as i32 {
                     let number = self.reader.read_bits(10)?;
                     let from = Q3EntityState::default();
-                    let target = read_delta_entity(
-                        &mut self.reader,
-                        &from,
-                        number,
-                        reborrow(&mut shadowed),
-                    )?;
+                    let target = read_delta_entity(&mut self.reader, &from, number, reborrow(&mut shadowed))?;
                     return Ok(ServerMessageStep::GamestateEntry(GamestateEntry::Baseline {
                         number,
                         entity: target,
@@ -3794,12 +3833,8 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
                     match name {
                         None => {
                             if let Some(diagnostics) = reborrow(&mut shadowed) {
-                                let count = self.reader.read_count() as isize
-                                    + self.read_offset as isize
-                                    - 1;
-                                diagnostics.print(&format!(
-                                    "{count:>3}:BAD CMD {opcode}\n"
-                                ));
+                                let count = self.reader.read_count() as isize + self.read_offset as isize - 1;
+                                diagnostics.print(&format!("{count:>3}:BAD CMD {opcode}\n"));
                             }
                         }
                         Some(name) => {
@@ -3837,10 +3872,17 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
                 if opcode == ServerOpcode::Snapshot as i32 {
                     let server_time = self.reader.read_long()?;
                     let distance = self.reader.read_byte()?;
-                    let delta_number =
-                        if distance == 0 { -1 } else { context.message_number - distance };
+                    let delta_number = if distance == 0 {
+                        -1
+                    } else {
+                        context.message_number - distance
+                    };
                     let flags = self.reader.read_byte()?;
-                    self.snapshot_header = Some(SnapshotHeader { server_time, delta_number, flags });
+                    self.snapshot_header = Some(SnapshotHeader {
+                        server_time,
+                        delta_number,
+                        flags,
+                    });
                     return Ok(ServerMessageStep::SnapshotHeader(delta_number));
                 }
                 return Err(Q3NetError::ServerOpcode { opcode });
@@ -3850,10 +3892,7 @@ impl<'b, 'p, 'f, 'd> ServerMessageCursor<'b, 'p, 'f, 'd> {
 }
 
 /// Decode a whole server message (`decodeServerMessage`).
-pub fn decode_server_message(
-    bytes: &[u8],
-    context: &ServerMessageContext<'_>,
-) -> Result<ServerMessage, Q3NetError> {
+pub fn decode_server_message(bytes: &[u8], context: &ServerMessageContext<'_>) -> Result<ServerMessage, Q3NetError> {
     let mut cursor = ServerMessageCursor::new(bytes, None, None)?;
     let mut reliable_acknowledge = 0;
     let mut command_sequence = context.server_command_sequence;
@@ -3914,7 +3953,7 @@ pub fn decode_server_message(
                     client_number,
                     checksum_feed,
                 };
-                operations.push(ServerOperation::Gamestate(gamestate.clone()));
+                operations.push(ServerOperation::Gamestate(Box::new(gamestate.clone())));
                 baselines = Some(gamestate_baselines(&gamestate));
                 use_history = false;
             }
@@ -3923,8 +3962,7 @@ pub fn decode_server_message(
                     command_sequence = *sequence;
                 }
                 if let ServerOperation::Snapshot { snapshot, .. } = &operation {
-                    parse_entities_number =
-                        parse_entities_number.wrapping_add(snapshot.entities.len() as i32);
+                    parse_entities_number = parse_entities_number.wrapping_add(snapshot.entities.len() as i32);
                 }
                 operations.push(operation);
             }
@@ -4009,8 +4047,7 @@ fn write_gamestate(writer: &mut Q3MsgWriter, gamestate: &Gamestate) -> Result<()
                 writer.write_byte(ServerOpcode::Baseline as i32)?;
                 // The entity number rides inside `writeDeltaEntity`.
                 if entity.number == ENTITY_SENTINEL && *number != ENTITY_SENTINEL {
-                    let mut removed = Q3EntityState::default();
-                    removed.number = *number;
+                    let removed = Q3EntityState { number: *number, ..Default::default() };
                     write_delta_entity(writer, Some(&removed), None, false)?;
                 } else {
                     if entity.number != *number {
@@ -4045,14 +4082,17 @@ fn write_server_snapshot(
     } else {
         snapshot.message_number.wrapping_sub(snapshot.delta_number)
     };
-    if distance < 0 || distance > 255 || (distance == 0 && snapshot.delta_number > 0) {
+    if !(0..=255).contains(&distance) || (distance == 0 && snapshot.delta_number > 0) {
         return Err(Q3NetError::Range("Invalid snapshot delta distance"));
     }
-    let old = if distance == 0 { None } else { history(snapshot.delta_number) };
+    let old = if distance == 0 {
+        None
+    } else {
+        history(snapshot.delta_number)
+    };
     if distance != 0
         && old.as_ref().is_none_or(|old| {
-            old.status != SnapshotStatus::Valid
-                || old.snapshot.message_number != snapshot.delta_number
+            old.status != SnapshotStatus::Valid || old.snapshot.message_number != snapshot.delta_number
         })
     {
         return Err(Q3NetError::Range("Missing valid snapshot baseline for encoding"));
@@ -4210,7 +4250,11 @@ impl<'a> SnapshotHistory<'a> {
     /// Build history, optionally over shared parse entities.
     #[must_use]
     pub fn new(parse_entities: Option<&'a SourceParseEntities>) -> Self {
-        Self { slots: vec![None; SNAPSHOT_BACKUP], current: None, parse_entities }
+        Self {
+            slots: vec![None; SNAPSHOT_BACKUP],
+            current: None,
+            parse_entities,
+        }
     }
 
     /// Latest published snapshot (detached copy).
@@ -4241,11 +4285,7 @@ impl<'a> SnapshotHistory<'a> {
     }
 
     /// Borrow a slot, retaining a zero invalid record before first publication.
-    pub fn borrow_slot(
-        &mut self,
-        message_number: i32,
-        product: Q3Product,
-    ) -> Result<SnapshotHistoryEntry, Q3NetError> {
+    pub fn borrow_slot(&mut self, message_number: i32, product: Q3Product) -> Result<SnapshotHistoryEntry, Q3NetError> {
         let index = (message_number & (SNAPSHOT_BACKUP as i32 - 1)) as usize;
         let Some(slot) = self.slots.get_mut(index) else {
             return Err(Q3NetError::Range("Missing snapshot ring slot"));
@@ -4262,7 +4302,10 @@ impl<'a> SnapshotHistory<'a> {
             }
         }
         let entry = slot.as_ref().expect("set");
-        Ok(SnapshotHistoryEntry { status: entry.status, snapshot: entry.snapshot.clone() })
+        Ok(SnapshotHistoryEntry {
+            status: entry.status,
+            snapshot: entry.snapshot.clone(),
+        })
     }
 
     /// Non-mutating slot lookup for shared decode contexts.
@@ -4271,20 +4314,14 @@ impl<'a> SnapshotHistory<'a> {
     /// retained zero record is never observable (`read_slot` reports it as
     /// absent and later lookups rebuild the same zero value), so `Fn`
     /// closures use this instead of borrowing the history mutably.
-    pub fn read_or_zero(
-        &self,
-        message_number: i32,
-        product: Q3Product,
-    ) -> Result<SnapshotHistoryEntry, Q3NetError> {
+    pub fn read_or_zero(&self, message_number: i32, product: Q3Product) -> Result<SnapshotHistoryEntry, Q3NetError> {
         let index = (message_number & (SNAPSHOT_BACKUP as i32 - 1)) as usize;
         let slot = self
             .slots
             .get(index)
             .ok_or(Q3NetError::Range("Missing snapshot ring slot"))?;
         match slot {
-            Some(entry)
-                if entry.present || entry.snapshot.player_state.product == product =>
-            {
+            Some(entry) if entry.present || entry.snapshot.player_state.product == product => {
                 Ok(SnapshotHistoryEntry {
                     status: entry.status,
                     snapshot: entry.snapshot.clone(),
@@ -4293,7 +4330,10 @@ impl<'a> SnapshotHistory<'a> {
             Some(entry) => {
                 let mut snapshot = entry.snapshot.clone();
                 snapshot.player_state = Q3PlayerState::new(product);
-                Ok(SnapshotHistoryEntry { status: entry.status, snapshot })
+                Ok(SnapshotHistoryEntry {
+                    status: entry.status,
+                    snapshot,
+                })
             }
             None => Ok(SnapshotHistoryEntry {
                 status: SnapshotStatus::Invalid,
@@ -4517,12 +4557,7 @@ impl<'a> Q3ServerDownload<'a> {
     }
 
     /// Write due blocks.
-    pub fn write(
-        &mut self,
-        writer: &mut Q3MsgWriter,
-        time: i32,
-        settings: Q3DownloadRate,
-    ) -> Result<(), Q3NetError> {
+    pub fn write(&mut self, writer: &mut Q3MsgWriter, time: i32, settings: Q3DownloadRate) -> Result<(), Q3NetError> {
         if self.name.is_empty() || (self.file.is_none() && !self.open(writer)?) {
             return Ok(());
         }
@@ -4637,7 +4672,15 @@ pub struct Q3ClientDownload<'a> {
 impl<'a> Q3ClientDownload<'a> {
     /// Build a download over bindings.
     pub fn new(bindings: &'a mut dyn Q3DownloadClientBindings) -> Self {
-        Self { bindings, file: None, name: String::new(), temporary: String::new(), block: 0, count: 0, size: 0 }
+        Self {
+            bindings,
+            file: None,
+            name: String::new(),
+            temporary: String::new(),
+            block: 0,
+            count: 0,
+            size: 0,
+        }
     }
 
     /// Begin downloading a remote file to a local name.
@@ -4930,18 +4973,21 @@ pub fn command_hash(text: &str, max_length: usize) -> Result<i32, Q3NetError> {
     Ok(hash ^ (hash >> 10) ^ (hash >> 20))
 }
 
-fn move_key(header: ClientHeader, checksum_feed: i32, server_command: &dyn Fn(i32) -> String) -> Result<i32, Q3NetError> {
+fn move_key(
+    header: ClientHeader,
+    checksum_feed: i32,
+    server_command: &dyn Fn(i32) -> String,
+) -> Result<i32, Q3NetError> {
     Ok(checksum_feed ^ header.message_acknowledge ^ command_hash(&server_command(header.reliable_acknowledge), 32)?)
 }
 
 /// Begin a client message (`beginClientMessage`).
-pub fn begin_client_message(
-    header: ClientHeader,
-    commands: &[ReliableCommand],
-) -> Result<Q3MsgWriter, Q3NetError> {
+pub fn begin_client_message(header: ClientHeader, commands: &[ReliableCommand]) -> Result<Q3MsgWriter, Q3NetError> {
     for acknowledge in [header.message_acknowledge, header.reliable_acknowledge] {
         if acknowledge < 0 {
-            return Err(Q3NetError::Range("Client acknowledgements must be nonnegative int32 values"));
+            return Err(Q3NetError::Range(
+                "Client acknowledgements must be nonnegative int32 values",
+            ));
         }
     }
     let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH)?;
@@ -4973,13 +5019,11 @@ pub fn write_client_movement(
     if movement.commands.is_empty() || movement.commands.len() > MAX_PACKET_USER_COMMANDS {
         return Err(Q3NetError::Range("Movement needs 1 through 32 backup commands"));
     }
-    writer.write_byte(
-        if movement.kind == ClientMovementKind::Move {
-            ClientOpcode::Move as i32
-        } else {
-            ClientOpcode::MoveNoDelta as i32
-        },
-    )?;
+    writer.write_byte(if movement.kind == ClientMovementKind::Move {
+        ClientOpcode::Move as i32
+    } else {
+        ClientOpcode::MoveNoDelta as i32
+    })?;
     writer.write_byte(movement.commands.len() as i32)?;
     let key = move_key(header, context.checksum_feed, context.server_command)?;
     let mut old = WireUserCommand::default();
@@ -5000,10 +5044,7 @@ pub fn finish_client_message(writer: &mut Q3MsgWriter) -> Result<Vec<u8>, Q3NetE
 }
 
 /// Encode a full client message (`encodeClientMessage`).
-pub fn encode_client_message(
-    message: &ClientMessage,
-    context: &ClientKeyContext<'_>,
-) -> Result<Vec<u8>, Q3NetError> {
+pub fn encode_client_message(message: &ClientMessage, context: &ClientKeyContext<'_>) -> Result<Vec<u8>, Q3NetError> {
     let mut writer = begin_client_message(message.header, &message.commands)?;
     if let Some(movement) = &message.movement {
         write_client_movement(&mut writer, movement, message.header, context)?;
@@ -5036,7 +5077,11 @@ impl<'a> ClientMessageReader<'a> {
             server_id: reader.read_long()?,
             message_acknowledge: reader.read_long()?,
         };
-        Ok(Self { reader, prefix, phase: ClientReadPhase::Header })
+        Ok(Self {
+            reader,
+            prefix,
+            phase: ClientReadPhase::Header,
+        })
     }
 
     /// Read count.
@@ -5099,10 +5144,7 @@ impl<'a> ClientMessageReader<'a> {
     }
 
     /// Decode backups without time filtering or trailing-byte reads.
-    pub fn read_movement(
-        &mut self,
-        context: &ClientKeyContext<'_>,
-    ) -> Result<UnfilteredClientMovement, Q3NetError> {
+    pub fn read_movement(&mut self, context: &ClientKeyContext<'_>) -> Result<UnfilteredClientMovement, Q3NetError> {
         let ClientReadPhase::Movement(header, kind) = self.phase else {
             return Err(Q3NetError::Protocol("Cannot read client movement during phase"));
         };
@@ -5112,8 +5154,7 @@ impl<'a> ClientMessageReader<'a> {
             return Err(Q3NetError::ClientCommandCount { count });
         }
         let key = move_key(header, context.checksum_feed, context.server_command)?;
-        let mut old =
-            read_delta_user_command(&mut self.reader, &WireUserCommand::default(), Some(key))?;
+        let mut old = read_delta_user_command(&mut self.reader, &WireUserCommand::default(), Some(key))?;
         let mut commands = vec![old.clone()];
         for _ in 1..count {
             old = read_delta_user_command(&mut self.reader, &old, Some(key))?;
@@ -5253,10 +5294,7 @@ pub fn decode_client_message(
                     header,
                     commands,
                     last_client_command,
-                    movement: Some(filter_client_movement(
-                        &movement,
-                        context.last_user_command_time,
-                    )?),
+                    movement: Some(filter_client_movement(&movement, context.last_user_command_time)?),
                 });
             }
         }
@@ -5276,10 +5314,14 @@ pub struct Q3SnapshotEntities {
 impl Q3SnapshotEntities {
     /// Build storage.
     pub fn new(length: usize) -> Result<Self, Q3NetError> {
-        if length < 1 || length > 131072 {
+        if !(1..=131072).contains(&length) {
             return Err(Q3NetError::Range("Q3 snapshot entity storage outside 1..131072"));
         }
-        Ok(Self { cells: vec![None; length], next: 0, length })
+        Ok(Self {
+            cells: vec![None; length],
+            next: 0,
+            length,
+        })
     }
 
     /// Append an entity.
@@ -5341,11 +5383,7 @@ pub struct Q3ServerSnapshotHistory<'a> {
 impl<'a> Q3ServerSnapshotHistory<'a> {
     /// Build history over shared storage.
     #[must_use]
-    pub fn new(
-        entities: Q3SnapshotEntities,
-        product: Q3Product,
-        baseline: &'a dyn Fn(i32) -> Q3EntityState,
-    ) -> Self {
+    pub fn new(entities: Q3SnapshotEntities, product: Q3Product, baseline: &'a dyn Fn(i32) -> Q3EntityState) -> Self {
         let frames = (0..32)
             .map(|_| Q3ServerFrame {
                 player_state: Q3PlayerState::new(product),
@@ -5357,7 +5395,12 @@ impl<'a> Q3ServerSnapshotHistory<'a> {
                 message_acked: 0,
             })
             .collect();
-        Self { entities, product, baseline, frames }
+        Self {
+            entities,
+            product,
+            baseline,
+            frames,
+        }
     }
 
     /// Borrow a frame slot.
@@ -5424,23 +5467,21 @@ impl<'a> Q3ServerSnapshotHistory<'a> {
     ) -> Result<(), Q3NetError> {
         let current = self.frame(sequence)?.clone();
         let delta = self.delta(sequence, requested, active)?;
-        let old = if delta < 0 { None } else { Some(self.frame(delta)?.clone()) };
+        let old = if delta < 0 {
+            None
+        } else {
+            Some(self.frame(delta)?.clone())
+        };
         writer.write_byte(ServerOpcode::Snapshot as i32)?;
         writer.write_long(server_time)?;
         writer.write_byte(if delta < 0 { 0 } else { sequence - delta })?;
         writer.write_byte(flags)?;
         writer.write_byte(current.area_mask.len() as i32)?;
         writer.write_data(&current.area_mask)?;
-        write_delta_player_state(
-            writer,
-            old.as_ref().map(|old| &old.player_state),
-            &current.player_state,
-        )?;
+        write_delta_player_state(writer, old.as_ref().map(|old| &old.player_state), &current.player_state)?;
         let mut new_index = 0;
         let mut old_index = 0;
-        while new_index < current.num_entities
-            || old.as_ref().is_some_and(|old| old_index < old.num_entities)
-        {
+        while new_index < current.num_entities || old.as_ref().is_some_and(|old| old_index < old.num_entities) {
             let next = if new_index < current.num_entities {
                 Some(self.entities.read(current.first_entity + new_index as i32)?)
             } else {
@@ -5458,9 +5499,7 @@ impl<'a> Q3ServerSnapshotHistory<'a> {
                     new_index += 1;
                     old_index += 1;
                 }
-                (Some(next), previous)
-                    if previous.as_ref().is_none_or(|previous| next.number < previous.number) =>
-                {
+                (Some(next), previous) if previous.as_ref().is_none_or(|previous| next.number < previous.number) => {
                     write_delta_entity(writer, Some(&(self.baseline)(next.number)), Some(&next), true)?;
                     new_index += 1;
                 }
@@ -5557,8 +5596,11 @@ impl Q3ServerCommandExecutor {
             return Err(Q3NetError::drop("server-disconnect", "Server disconnected\n"));
         }
         if name == "bcs0" {
-            let assembled =
-                format!("cs {} \"{}", argv.get(1).cloned().unwrap_or_default(), argv.get(2).cloned().unwrap_or_default());
+            let assembled = format!(
+                "cs {} \"{}",
+                argv.get(1).cloned().unwrap_or_default(),
+                argv.get(2).cloned().unwrap_or_default()
+            );
             self.big_config_string = assembled.chars().take(8191).collect();
             return Ok(None);
         }
@@ -5616,12 +5658,7 @@ pub trait Q3RconBindings {
     /// Print outside the redirect.
     fn print(&mut self, text: &str);
     /// Run `produce` with output captured, then flush through `send`.
-    fn redirect(
-        &mut self,
-        to: &NetworkAddress,
-        capacity: usize,
-        produce: &mut dyn FnMut(&mut dyn Q3RconSink),
-    );
+    fn redirect(&mut self, to: &NetworkAddress, capacity: usize, produce: &mut dyn FnMut(&mut dyn Q3RconSink));
     /// Execute a command.
     fn execute(&mut self, command: &str);
     /// Send bytes.
@@ -5661,8 +5698,7 @@ impl<'a> Q3Rcon<'a> {
         }
         self.state.last_time = time;
         let password = source_command_text(&self.bindings.password())?;
-        let valid = !password.is_empty()
-            && password == *packet.arguments.first().cloned().unwrap_or_default();
+        let valid = !password.is_empty() && password == *packet.arguments.first().cloned().unwrap_or_default();
         let empty = password.is_empty();
         let line = packet.line.clone();
         self.bindings.redirect(from, 1008, &mut |sink| {
@@ -5759,12 +5795,7 @@ pub fn q3_info_value(info: &str, key: &str) -> Result<String, Q3NetError> {
     Ok(String::new())
 }
 
-fn info_set(
-    info: &str,
-    key: &str,
-    value: &str,
-    print: &mut dyn FnMut(&str),
-) -> Result<String, Q3NetError> {
+fn info_set(info: &str, key: &str, value: &str, print: &mut dyn FnMut(&str)) -> Result<String, Q3NetError> {
     Ok(set_info_value(
         info,
         key,
@@ -5868,8 +5899,7 @@ impl<'a> Q3ClientAdmission<'a> {
 
     /// Resend a challenge/connect request when due.
     pub fn resend(&mut self, now: i32, userinfo: &str) -> Result<Option<Q3OutgoingDatagram>, Q3NetError> {
-        if (self.phase != Q3ClientAdmissionPhase::Connecting
-            && self.phase != Q3ClientAdmissionPhase::Challenging)
+        if (self.phase != Q3ClientAdmissionPhase::Connecting && self.phase != Q3ClientAdmissionPhase::Challenging)
             || now.wrapping_sub(self.connect_time) < 3000
         {
             return Ok(None);
@@ -5890,7 +5920,10 @@ impl<'a> Q3ClientAdmission<'a> {
         info = info_set(&info, "qport", &self.qport.to_string(), &mut self.print)?;
         let challenge = self.challenge;
         info = info_set(&info, "challenge", &challenge.to_string(), &mut self.print)?;
-        Ok(Some(Q3OutgoingDatagram { to: address, payload: encode_connect(&info)? }))
+        Ok(Some(Q3OutgoingDatagram {
+            to: address,
+            payload: encode_connect(&info)?,
+        }))
     }
 
     /// Receive a datagram.
@@ -5906,8 +5939,7 @@ impl<'a> Q3ClientAdmission<'a> {
             match packet.command.to_lowercase().as_str() {
                 "challengeresponse" => {
                     if self.phase == Q3ClientAdmissionPhase::Connecting {
-                        self.challenge =
-                            native_atoi(packet.arguments.first().map(String::as_str).unwrap_or(""))?;
+                        self.challenge = native_atoi(packet.arguments.first().map(String::as_str).unwrap_or(""))?;
                         self.phase = Q3ClientAdmissionPhase::Challenging;
                         self.connect_packet_count = 0;
                         self.connect_time = -99999;
@@ -5917,7 +5949,10 @@ impl<'a> Q3ClientAdmission<'a> {
                 }
                 "connectresponse" => {
                     if self.phase != Q3ClientAdmissionPhase::Challenging
-                        || self.address.as_ref().is_none_or(|address| !same_address(&from, address, false))
+                        || self
+                            .address
+                            .as_ref()
+                            .is_none_or(|address| !same_address(&from, address, false))
                     {
                         return Ok(Q3ClientAdmissionResult::Ignored);
                     }
@@ -5933,7 +5968,10 @@ impl<'a> Q3ClientAdmission<'a> {
             }
         }
         if self.phase != Q3ClientAdmissionPhase::Connected
-            || self.address.as_ref().is_none_or(|address| !same_address(&from, address, true))
+            || self
+                .address
+                .as_ref()
+                .is_none_or(|address| !same_address(&from, address, true))
         {
             return Ok(Q3ClientAdmissionResult::Ignored);
         }
@@ -6090,7 +6128,10 @@ impl<'a> Q3ServerAdmission<'a> {
         let mut found = None;
         for (index, candidate) in self.challenges.iter().enumerate() {
             if !candidate.connected
-                && candidate.address.as_ref().is_some_and(|address| same_address(from, address, true))
+                && candidate
+                    .address
+                    .as_ref()
+                    .is_some_and(|address| same_address(from, address, true))
             {
                 found = Some(index);
                 break;
@@ -6122,17 +6163,11 @@ impl<'a> Q3ServerAdmission<'a> {
         Ok(())
     }
 
-    fn authorize(
-        &mut self,
-        from: &NetworkAddress,
-        packet: &ConnectionlessPacket,
-        now: i32,
-    ) -> Result<(), Q3NetError> {
+    fn authorize(&mut self, from: &NetworkAddress, packet: &ConnectionlessPacket, now: i32) -> Result<(), Q3NetError> {
         let authority = self.bindings.authorize_address();
         if !matches!(from, NetworkAddress::Ipv4 { .. })
             || authority.as_ref().is_none_or(|authority| {
-                !matches!(authority, NetworkAddress::Ipv4 { .. })
-                    || !same_address(from, authority, false)
+                !matches!(authority, NetworkAddress::Ipv4 { .. }) || !same_address(from, authority, false)
             })
         {
             return Ok(());
@@ -6172,15 +6207,17 @@ impl<'a> Q3ServerAdmission<'a> {
 
     #[allow(clippy::too_many_lines)]
     fn connect(&mut self, from: &NetworkAddress, input: &str, now: i32) -> Result<(), Q3NetError> {
-        let mut userinfo: String =
-            source_command_text(&source_command_text(input)?)?.chars().take(1023).collect();
+        let mut userinfo: String = source_command_text(&source_command_text(input)?)?
+            .chars()
+            .take(1023)
+            .collect();
         if native_atoi(&q3_info_value(&userinfo, "protocol")?)? != 68 {
             self.reply(from, "print\nServer uses protocol version 68.\n")?;
             return Ok(());
         }
         let qport = native_atoi(&q3_info_value(&userinfo, "qport")?)?;
         let challenge_number = native_atoi(&q3_info_value(&userinfo, "challenge")?)?;
-        if qport < 0 || qport > 65535 {
+        if !(0..=65535).contains(&qport) {
             self.reply(from, "print\nInvalid qport.\n")?;
             return Ok(());
         }
@@ -6194,16 +6231,20 @@ impl<'a> Q3ServerAdmission<'a> {
             })
         };
         let slots = self.bindings.slots();
-        let existing = slots.iter().find(|slot| slot.phase != Q3SlotPhase::Free && matches(slot));
+        let existing = slots
+            .iter()
+            .find(|slot| slot.phase != Q3SlotPhase::Free && matches(slot));
         if existing.is_some_and(|existing| {
-            now.wrapping_sub(existing.last_connect_time)
-                < self.bindings.reconnect_limit_seconds().wrapping_mul(1000)
+            now.wrapping_sub(existing.last_connect_time) < self.bindings.reconnect_limit_seconds().wrapping_mul(1000)
         }) {
             return Ok(());
         }
         if !matches!(from, NetworkAddress::Loopback { .. }) {
             let found = self.challenges.iter().position(|value| {
-                value.address.as_ref().is_some_and(|address| same_address(from, address, true))
+                value
+                    .address
+                    .as_ref()
+                    .is_some_and(|address| same_address(from, address, true))
                     && value.challenge == challenge_number
             });
             let Some(index) = found else {
@@ -6232,19 +6273,24 @@ impl<'a> Q3ServerAdmission<'a> {
                 self.bindings.print(text);
             })?;
         }
-        let password_ok =
-            q3_info_value(&userinfo, "password")? == self.bindings.private_password();
-        let start = if password_ok { 0 } else { self.bindings.private_clients() };
+        let password_ok = q3_info_value(&userinfo, "password")? == self.bindings.private_password();
+        let start = if password_ok {
+            0
+        } else {
+            self.bindings.private_clients()
+        };
         let mut selected = existing.cloned().or_else(|| {
-            slots.iter().find(|slot| slot.slot >= start && slot.phase == Q3SlotPhase::Free).cloned()
+            slots
+                .iter()
+                .find(|slot| slot.slot >= start && slot.phase == Q3SlotPhase::Free)
+                .cloned()
         });
         if selected.is_none() {
             if !matches!(from, NetworkAddress::Loopback { .. }) {
                 self.reply(from, "print\nServer is full.\n")?;
                 return Ok(());
             }
-            let candidates: Vec<&Q3AdmissionSlot> =
-                slots.iter().filter(|slot| slot.slot >= start).collect();
+            let candidates: Vec<&Q3AdmissionSlot> = slots.iter().filter(|slot| slot.slot >= start).collect();
             if candidates.iter().any(|slot| !slot.bot) {
                 return Err(Q3NetError::drop("fatal", "server is full on local connect\n"));
             }
@@ -6279,12 +6325,7 @@ impl<'a> Q3ServerAdmission<'a> {
     }
 
     /// Receive a connectionless datagram.
-    pub fn receive(
-        &mut self,
-        from: &NetworkAddress,
-        bytes: &[u8],
-        now: i32,
-    ) -> Result<(), Q3NetError> {
+    pub fn receive(&mut self, from: &NetworkAddress, bytes: &[u8], now: i32) -> Result<(), Q3NetError> {
         let packet = decode_connectionless(bytes, ConnectionlessReceiver::Server)?;
         match packet.command.to_lowercase().as_str() {
             "getchallenge" => self.challenge(from, now),
@@ -6303,7 +6344,10 @@ impl<'a> Q3ServerAdmission<'a> {
     /// Mark a challenge disconnected.
     pub fn disconnect(&mut self, address: &NetworkAddress) {
         if let Some(challenge) = self.challenges.iter_mut().find(|value| {
-            value.address.as_ref().is_some_and(|current| same_address(address, current, true))
+            value
+                .address
+                .as_ref()
+                .is_some_and(|current| same_address(address, current, true))
         }) {
             challenge.connected = false;
         }
@@ -6314,34 +6358,25 @@ impl<'a> Q3ServerAdmission<'a> {
 fn zero_port(address: &NetworkAddress) -> NetworkAddress {
     match address {
         NetworkAddress::Ipv4 { host, .. } => NetworkAddress::Ipv4 { host: *host, port: 0 },
-        NetworkAddress::Ipv6 { host, .. } => {
-            NetworkAddress::Ipv6 { host: host.clone(), port: 0 }
-        }
-        NetworkAddress::Ipx { network, node, .. } => {
-            NetworkAddress::Ipx { network: *network, node: *node, port: 0 }
-        }
+        NetworkAddress::Ipv6 { host, .. } => NetworkAddress::Ipv6 {
+            host: host.clone(),
+            port: 0,
+        },
+        NetworkAddress::Ipx { network, node, .. } => NetworkAddress::Ipx {
+            network: *network,
+            node: *node,
+            port: 0,
+        },
         NetworkAddress::Loopback { id } => NetworkAddress::Loopback { id: id.clone() },
     }
 }
 
 fn q3_ports_equal(left: &NetworkAddress, right: &NetworkAddress) -> bool {
     match (left, right) {
-        (
-            NetworkAddress::Ipv4 { port: left, .. },
-            NetworkAddress::Ipv4 { port: right, .. },
-        )
-        | (
-            NetworkAddress::Ipx { port: left, .. },
-            NetworkAddress::Ipx { port: right, .. },
-        )
-        | (
-            NetworkAddress::Ipv6 { port: left, .. },
-            NetworkAddress::Ipv6 { port: right, .. },
-        ) => left == right,
-        (
-            NetworkAddress::Loopback { id: left },
-            NetworkAddress::Loopback { id: right },
-        ) => left == right,
+        (NetworkAddress::Ipv4 { port: left, .. }, NetworkAddress::Ipv4 { port: right, .. })
+        | (NetworkAddress::Ipx { port: left, .. }, NetworkAddress::Ipx { port: right, .. })
+        | (NetworkAddress::Ipv6 { port: left, .. }, NetworkAddress::Ipv6 { port: right, .. }) => left == right,
+        (NetworkAddress::Loopback { id: left }, NetworkAddress::Loopback { id: right }) => left == right,
         _ => false,
     }
 }
@@ -6361,7 +6396,10 @@ pub fn route_q3_sequenced_packet(
         .iter()
         .find(|slot| {
             slot.phase != Q3SlotPhase::Free
-                && slot.address.as_ref().is_some_and(|address| same_address(from, address, false))
+                && slot
+                    .address
+                    .as_ref()
+                    .is_some_and(|address| same_address(from, address, false))
                 && slot.qport == qport
         })
         .cloned()
@@ -6457,7 +6495,10 @@ impl Q3CommandHistory {
     /// Fresh history.
     #[must_use]
     pub fn new() -> Self {
-        Self { commands: vec![WireUserCommand::default(); 64], number: 0 }
+        Self {
+            commands: vec![WireUserCommand::default(); 64],
+            number: 0,
+        }
     }
 
     /// Current number.
@@ -6476,10 +6517,7 @@ impl Q3CommandHistory {
     /// Read a command.
     pub fn read(&self, number: i32) -> Result<Option<WireUserCommand>, Q3NetError> {
         if number > self.number {
-            return Err(Q3NetError::drop(
-                "drop",
-                "CL_GetUserCmd: requested future command",
-            ));
+            return Err(Q3NetError::drop("drop", "CL_GetUserCmd: requested future command"));
         }
         if number <= self.number.wrapping_sub(64) {
             return Ok(None);
@@ -6665,7 +6703,11 @@ impl<'a> Q3ClientConnection<'a> {
             channel,
             server_commands: vec![String::new(); 64],
             out_packets: vec![
-                SentPacket { command_number: 0, server_time: 0, real_time: 0 };
+                SentPacket {
+                    command_number: 0,
+                    server_time: 0,
+                    real_time: 0
+                };
                 32
             ],
             snapshot_pings: HashMap::new(),
@@ -6701,10 +6743,7 @@ impl<'a> Q3ClientConnection<'a> {
     pub fn snapshot_ping(&self, number: i32) -> Result<Option<i32>, Q3NetError> {
         let entry = self.history.read_slot(number)?;
         Ok(match entry {
-            Some(entry)
-                if entry.status == SnapshotStatus::Valid
-                    && entry.snapshot.message_number == number =>
-            {
+            Some(entry) if entry.status == SnapshotStatus::Valid && entry.snapshot.message_number == number => {
                 self.snapshot_pings.get(&number).copied()
             }
             _ => None,
@@ -6716,12 +6755,18 @@ impl<'a> Q3ClientConnection<'a> {
         let mut entries = Vec::new();
         for index in 0..1024 {
             if let Some(value) = self.game_state.get(index)? {
-                entries.push(GamestateEntry::Configstring { index: index as i32, value });
+                entries.push(GamestateEntry::Configstring {
+                    index: index as i32,
+                    value,
+                });
             }
         }
         for (number, entity) in self.baselines.iter().enumerate() {
             if entity.number != 0 {
-                entries.push(GamestateEntry::Baseline { number: number as i32, entity: entity.clone() });
+                entries.push(GamestateEntry::Baseline {
+                    number: number as i32,
+                    entity: entity.clone(),
+                });
             }
         }
         Ok(Gamestate {
@@ -6746,7 +6791,11 @@ impl<'a> Q3ClientConnection<'a> {
             return Err(Q3NetError::Range("Server message sequence must advance"));
         }
         self.server_message_sequence = sequence;
-        let read_offset = if matches!(self.mode, Q3ClientMode::Network { .. }) { 4 } else { 0 };
+        let read_offset = if matches!(self.mode, Q3ClientMode::Network { .. }) {
+            4
+        } else {
+            0
+        };
         // The cursor borrows the parse-entity ring while steps borrow the
         // baselines/history; split the borrows through a helper scope.
         let result = self.receive_message_inner(bytes, read_offset, real_time)?;
@@ -6784,8 +6833,7 @@ impl<'a> Q3ClientConnection<'a> {
             generation,
             demo_waiting,
         } = self.fields();
-        let mut cursor =
-            ServerMessageCursor::with_diagnostics(bytes, Some(parse_entities), None, None, read_offset)?;
+        let mut cursor = ServerMessageCursor::with_diagnostics(bytes, Some(parse_entities), None, None, read_offset)?;
         let mut acknowledge = 0;
         let mut command_sequence = 0;
         let mut client_number_value = 0;
@@ -6797,11 +6845,9 @@ impl<'a> Q3ClientConnection<'a> {
             let baseline_lookup;
             let history_lookup;
             let step = {
-                baseline_lookup = |number: i32| {
-                    (number >= 0).then(|| baselines.get(number as usize).cloned()).flatten()
-                };
-                history_lookup =
-                    |number: i32| history.read_or_zero(number, *product).ok();
+                baseline_lookup =
+                    |number: i32| (number >= 0).then(|| baselines.get(number as usize).cloned()).flatten();
+                history_lookup = |number: i32| history.read_or_zero(number, *product).ok();
                 cursor.next(&ServerMessageContext {
                     product: *product,
                     message_number: *server_message_sequence,
@@ -6847,9 +6893,7 @@ impl<'a> Q3ClientConnection<'a> {
                             game_state.append(*index as usize, value)?;
                         }
                         GamestateEntry::Baseline { number, entity } => {
-                            let Some(baseline) = (*number >= 0)
-                                .then(|| baselines.get_mut(*number as usize))
-                                .flatten()
+                            let Some(baseline) = (*number >= 0).then(|| baselines.get_mut(*number as usize)).flatten()
                             else {
                                 return Err(Q3NetError::Range("Invalid source baseline number"));
                             };
@@ -6872,7 +6916,7 @@ impl<'a> Q3ClientConnection<'a> {
                         client_number: client_number_value,
                         checksum_feed: checksum_feed_value,
                     };
-                    operations.push(ServerOperation::Gamestate(state.clone()));
+                    operations.push(ServerOperation::Gamestate(Box::new(state.clone())));
                     apply_q3_system_info(game_state, server_id, bindings)?;
                     bindings.assert_current();
                     bindings.gamestate(&state, *generation);
@@ -6895,20 +6939,12 @@ impl<'a> Q3ClientConnection<'a> {
                         }
                         ServerOperation::Snapshot { ref snapshot, .. } => {
                             if history.publish(&operation)? {
-                                let ping = snapshot_ping_for(
-                                    channel,
-                                    out_packets,
-                                    snapshot,
-                                    real_time,
-                                );
+                                let ping = snapshot_ping_for(channel, out_packets, snapshot, real_time);
                                 let stale: Vec<i32> = snapshot_pings
                                     .keys()
                                     .copied()
                                     .filter(|number| {
-                                        snapshot
-                                            .message_number
-                                            .wrapping_sub(*number)
-                                            >= SNAPSHOT_BACKUP as i32
+                                        snapshot.message_number.wrapping_sub(*number) >= SNAPSHOT_BACKUP as i32
                                     })
                                     .collect();
                                 for number in stale {
@@ -6920,8 +6956,7 @@ impl<'a> Q3ClientConnection<'a> {
                         }
                         ServerOperation::Download(mut block) => {
                             match &mut block {
-                                DownloadBlock::Start { file_size, .. }
-                                | DownloadBlock::Error { file_size, .. } => {
+                                DownloadBlock::Start { file_size, .. } | DownloadBlock::Error { file_size, .. } => {
                                     *file_size = bindings.download_size(*file_size);
                                 }
                                 DownloadBlock::Chunk { .. } => {}
@@ -6975,38 +7010,34 @@ impl<'a> Q3ClientConnection<'a> {
     }
 
     /// Accept one datagram through the channel (`receiveDatagram`).
-    pub fn receive_datagram(
-        &mut self,
-        packet: &[u8],
-        real_time: i32,
-    ) -> Result<Q3ClientPacketResult, Q3NetError> {
+    pub fn receive_datagram(&mut self, packet: &[u8], real_time: i32) -> Result<Q3ClientPacketResult, Q3NetError> {
         self.bindings.assert_current();
         let challenge = match &self.mode {
             Q3ClientMode::Network { challenge, .. } => *challenge,
             Q3ClientMode::Demo { .. } => {
-                return Err(Q3NetError::Protocol(
-                    "Demo connection cannot receive datagrams",
-                ));
+                return Err(Q3NetError::Protocol("Demo connection cannot receive datagrams"));
             }
         };
         if self.channel.is_none() {
-            return Err(Q3NetError::Protocol(
-                "Demo connection cannot receive datagrams",
-            ));
+            return Err(Q3NetError::Protocol("Demo connection cannot receive datagrams"));
         }
         let result = self
             .channel
             .as_mut()
             .map(|channel| channel.receive(packet, None))
-            .unwrap_or(ChannelResult::Rejected { reason: ChannelReject::Malformed });
-        let ChannelResult::Accepted { sequence, dropped, payload, .. } = result else {
+            .unwrap_or(ChannelResult::Rejected {
+                reason: ChannelReject::Malformed,
+            });
+        let ChannelResult::Accepted {
+            sequence,
+            dropped,
+            payload,
+            ..
+        } = result
+        else {
             return Ok(match result {
-                ChannelResult::Fragment { sequence, received } => {
-                    Q3ClientPacketResult::Fragment { sequence, received }
-                }
-                ChannelResult::Rejected { reason } => {
-                    Q3ClientPacketResult::Rejected { reason }
-                }
+                ChannelResult::Fragment { sequence, received } => Q3ClientPacketResult::Fragment { sequence, received },
+                ChannelResult::Rejected { reason } => Q3ClientPacketResult::Rejected { reason },
                 ChannelResult::Accepted { .. } => {
                     unreachable!("matched above")
                 }
@@ -7017,15 +7048,18 @@ impl<'a> Q3ClientConnection<'a> {
         let key = self.reliable.lookup_masked(acknowledge);
         let plaintext = xor_server_message(&payload, challenge, sequence, &key);
         let message = self.receive_message(sequence, &plaintext, real_time)?;
-        Ok(Q3ClientPacketResult::Accepted { sequence, dropped, message, plaintext })
+        Ok(Q3ClientPacketResult::Accepted {
+            sequence,
+            dropped,
+            message,
+            plaintext,
+        })
     }
 
     /// Read one demo record (`readDemo`).
     pub fn read_demo(&mut self, real_time: i32) -> Result<Q3DemoRead, Q3NetError> {
         let Q3ClientMode::Demo { reader } = &mut self.mode else {
-            return Err(Q3NetError::Protocol(
-                "Network connection cannot read demo messages",
-            ));
+            return Err(Q3NetError::Protocol("Network connection cannot read demo messages"));
         };
         let mut sequence = 0;
         let record = reader.next(&mut |value| sequence = value)?;
@@ -7040,10 +7074,7 @@ impl<'a> Q3ClientConnection<'a> {
     }
 
     /// Execute one server command at `CG_GetServerCommand` time (`getServerCommand`).
-    pub fn get_server_command(
-        &mut self,
-        sequence: i32,
-    ) -> Result<Option<Vec<String>>, Q3NetError> {
+    pub fn get_server_command(&mut self, sequence: i32) -> Result<Option<Vec<String>>, Q3NetError> {
         self.bindings.assert_current();
         if sequence <= self.server_command_sequence - 64 {
             if matches!(self.mode, Q3ClientMode::Demo { .. }) {
@@ -7087,10 +7118,7 @@ impl<'a> Q3ClientConnection<'a> {
         if self.channel.is_none() {
             return Err(Q3NetError::Protocol("Demo connection cannot send packets"));
         }
-        let outgoing = self
-            .channel
-            .as_ref()
-            .map_or(0, |channel| channel.outgoing_sequence());
+        let outgoing = self.channel.as_ref().map_or(0, |channel| channel.outgoing_sequence());
         let packet_dup = options.packet_dup.clamp(0, 5);
         let old_slot = outgoing.wrapping_sub(1).wrapping_sub(packet_dup) & 31;
         let old_command_number = self
@@ -7113,28 +7141,32 @@ impl<'a> Q3ClientConnection<'a> {
             message_acknowledge: self.server_message_sequence,
             reliable_acknowledge: self.server_command_sequence,
         };
-        let mut writer = begin_client_message(header.clone(), &self.reliable.pending())?;
+        let mut writer = begin_client_message(header, &self.reliable.pending())?;
         if !wire.is_empty() {
             let latest = self.history.latest();
             let kind = if options.no_delta
                 || latest.is_none()
                 || self.demo_waiting
-                || latest.is_some_and(|snapshot| {
-                    snapshot.message_number != self.server_message_sequence
-                }) {
+                || latest.is_some_and(|snapshot| snapshot.message_number != self.server_message_sequence)
+            {
                 ClientMovementKind::MoveNoDelta
             } else {
                 ClientMovementKind::Move
             };
-            let movement = ClientMovement { kind, commands: wire.clone() };
+            let movement = ClientMovement {
+                kind,
+                commands: wire.clone(),
+            };
             let lookup = |sequence: i32| {
                 self.server_commands
                     .get((sequence & 63) as usize)
                     .cloned()
                     .unwrap_or_default()
             };
-            let context =
-                ClientKeyContext { checksum_feed: self.checksum_feed, server_command: &lookup };
+            let context = ClientKeyContext {
+                checksum_feed: self.checksum_feed,
+                server_command: &lookup,
+            };
             write_client_movement(&mut writer, &movement, header, &context)?;
             let finished = finish_client_message(&mut writer)?;
             let bytes = xor_client_message(&finished, challenge, &lookup)?;
@@ -7181,19 +7213,11 @@ impl<'a> Q3ClientConnection<'a> {
     }
 
     /// Send readiness (`readyToSend`).
-    pub fn ready_to_send(
-        &self,
-        options: &Q3ClientSendReadiness,
-    ) -> Result<bool, Q3NetError> {
-        if matches!(self.mode, Q3ClientMode::Demo { .. })
-            || self.channel.is_none()
-            || options.cinematic
-        {
+    pub fn ready_to_send(&self, options: &Q3ClientSendReadiness) -> Result<bool, Q3NetError> {
+        if matches!(self.mode, Q3ClientMode::Demo { .. }) || self.channel.is_none() || options.cinematic {
             return Ok(false);
         }
-        if options.downloading
-            && options.real_time.wrapping_sub(self.last_packet_sent_time) < 50
-        {
+        if options.downloading && options.real_time.wrapping_sub(self.last_packet_sent_time) < 50 {
             return Ok(false);
         }
         if !options.active
@@ -7355,13 +7379,13 @@ pub struct Q3ServerRate {
 }
 
 /// Snapshot rate interval (`q3RateMilliseconds`).
-pub fn q3_rate_milliseconds(
-    message_size: i32,
-    rate: i32,
-    max_rate: i32,
-) -> Result<i32, Q3NetError> {
+pub fn q3_rate_milliseconds(message_size: i32, rate: i32, max_rate: i32) -> Result<i32, Q3NetError> {
     let message_size = message_size.min(1500);
-    let rate = if max_rate != 0 { rate.min(max_rate.max(1000)) } else { rate };
+    let rate = if max_rate != 0 {
+        rate.min(max_rate.max(1000))
+    } else {
+        rate
+    };
     if rate == 0 {
         return Err(Q3NetError::Range("Source snapshot rate division by zero"));
     }
@@ -7463,9 +7487,7 @@ impl<'a> Q3ServerConnection<'a> {
     pub fn receive_datagram(&mut self, packet: &[u8]) -> Result<ChannelResult, Q3NetError> {
         self.bindings.assert_current();
         let result = self.channel.receive(packet, None);
-        if !matches!(result, ChannelResult::Accepted { .. })
-            || self.phase == Q3ServerPhase::Zombie
-        {
+        if !matches!(result, ChannelResult::Accepted { .. }) || self.phase == Q3ServerPhase::Zombie {
             return Ok(result);
         }
         let plaintext = match &result {
@@ -7480,10 +7502,7 @@ impl<'a> Q3ServerConnection<'a> {
     }
 
     /// Execute one decoded client message (`executeMessage`).
-    pub fn execute_message(
-        &mut self,
-        mut reader: ClientMessageReader<'_>,
-    ) -> Result<(), Q3NetError> {
+    pub fn execute_message(&mut self, mut reader: ClientMessageReader<'_>) -> Result<(), Q3NetError> {
         let server_id = self.bindings.server_id();
         self.bindings.assert_current();
         self.message_acknowledge = reader.prefix.message_acknowledge;
@@ -7508,9 +7527,7 @@ impl<'a> Q3ServerConnection<'a> {
             && self.bindings.download_name().is_empty()
             && !self.last_client_command_string.contains("nextdl")
         {
-            if header.server_id >= self.bindings.restarted_server_id()
-                && header.server_id < server_now
-            {
+            if header.server_id >= self.bindings.restarted_server_id() && header.server_id < server_now {
                 return Ok(());
             }
             if self.message_acknowledge > self.gamestate_message_number {
@@ -7595,8 +7612,7 @@ impl<'a> Q3ServerConnection<'a> {
                 Err(other) => return Err(other),
             }
         };
-        self.snapshots.frame_mut(self.message_acknowledge)?.message_acked =
-            self.bindings.time();
+        self.snapshots.frame_mut(self.message_acknowledge)?.message_acked = self.bindings.time();
         if self.bindings.pure() && !self.pure_authentic && !self.got_pure_command {
             if self.phase == Q3ServerPhase::Active {
                 self.bindings.resend_gamestate()?;
@@ -7626,9 +7642,7 @@ impl<'a> Q3ServerConnection<'a> {
             .cloned()
             .ok_or(Q3NetError::Range("Missing decoded user command"))?;
         for command in &movement.commands {
-            if command.server_time > latest.server_time
-                || command.server_time <= self.last_user_command.server_time
-            {
+            if command.server_time > latest.server_time || command.server_time <= self.last_user_command.server_time {
                 continue;
             }
             self.last_user_command = command.clone();
@@ -7658,20 +7672,14 @@ impl<'a> Q3ServerConnection<'a> {
             self.queued_messages.push(plaintext);
             self.channel.transmit_next_fragment(delivery)?;
         } else {
-            let bytes = xor_server_message(
-                &plaintext,
-                self.challenge,
-                outgoing,
-                &self.last_client_command_string,
-            );
+            let bytes = xor_server_message(&plaintext, self.challenge, outgoing, &self.last_client_command_string);
             self.channel.begin_transmit(&bytes, delivery)?;
         }
         if rate.local || (rate.force_lan && rate.lan) {
             self.next_snapshot_time = now.wrapping_sub(1);
             return Ok(());
         }
-        let mut interval =
-            q3_rate_milliseconds(writer.byte_length() as i32, rate.rate, rate.max_rate)?;
+        let mut interval = q3_rate_milliseconds(writer.byte_length() as i32, rate.rate, rate.max_rate)?;
         if interval < rate.snapshot_msec {
             interval = rate.snapshot_msec;
             self.rate_delayed = false;
@@ -7712,7 +7720,7 @@ impl<'a> Q3ServerConnection<'a> {
         let mut gamestate = state.clone();
         gamestate.command_sequence = self.reliable.sequence();
         gamestate.checksum_feed = self.bindings.checksum_feed();
-        operations.push(ServerOperation::Gamestate(gamestate));
+        operations.push(ServerOperation::Gamestate(Box::new(gamestate)));
         let product = self.snapshots.product;
         let message_number = self.channel.outgoing_sequence();
         let baseline = |number: i32| Some((self.snapshots.baseline)(number));
@@ -7744,11 +7752,8 @@ impl<'a> Q3ServerConnection<'a> {
         append_download: &mut dyn FnMut(&mut Q3MsgWriter),
     ) -> Result<(), Q3NetError> {
         if self.channel.has_unsent_fragments() {
-            let interval = q3_rate_milliseconds(
-                self.channel.remaining_unsent_bytes() as i32,
-                rate.rate,
-                rate.max_rate,
-            )?;
+            let interval =
+                q3_rate_milliseconds(self.channel.remaining_unsent_bytes() as i32, rate.rate, rate.max_rate)?;
             self.next_snapshot_time = self.bindings.time().wrapping_add(interval);
             self.transmit_next_fragment(delivery)?;
             return Ok(());
@@ -7764,16 +7769,9 @@ impl<'a> Q3ServerConnection<'a> {
         let outgoing = self.channel.outgoing_sequence();
         let active = self.phase == Q3ServerPhase::Active;
         let now = self.bindings.time();
-        let flags =
-            server_flags | i32::from(self.rate_delayed) | if active { 0 } else { 2 };
-        self.snapshots.write(
-            &mut writer,
-            outgoing,
-            self.delta_message,
-            active,
-            now,
-            flags,
-        )?;
+        let flags = server_flags | i32::from(self.rate_delayed) | if active { 0 } else { 2 };
+        self.snapshots
+            .write(&mut writer, outgoing, self.delta_message, active, now, flags)?;
         append_download(&mut writer);
         if writer.overflowed() {
             self.bindings.print("WARNING: msg overflowed\n");
@@ -7783,10 +7781,7 @@ impl<'a> Q3ServerConnection<'a> {
     }
 
     /// Transmit the next fragment, dequeuing one queued message (`transmitNextFragment`).
-    pub fn transmit_next_fragment(
-        &mut self,
-        delivery: &mut dyn ChannelDelivery,
-    ) -> Result<(), Q3NetError> {
+    pub fn transmit_next_fragment(&mut self, delivery: &mut dyn ChannelDelivery) -> Result<(), Q3NetError> {
         if !self.channel.has_unsent_fragments() {
             return Err(Q3NetError::Protocol("No pending server fragments"));
         }
@@ -7794,8 +7789,7 @@ impl<'a> Q3ServerConnection<'a> {
         if !self.channel.has_unsent_fragments() && !self.queued_messages.is_empty() {
             let next = self.queued_messages.remove(0);
             let outgoing = self.channel.outgoing_sequence();
-            let bytes =
-                xor_server_message(&next, self.challenge, outgoing, &self.last_client_command_string);
+            let bytes = xor_server_message(&next, self.challenge, outgoing, &self.last_client_command_string);
             self.channel.begin_transmit(&bytes, delivery)?;
         }
         Ok(())
@@ -7842,20 +7836,21 @@ mod tests {
     }
 
     fn fixture_entity() -> Q3EntityState {
-        let mut to = Q3EntityState::default();
-        to.number = 7;
-        to.e_type = 1;
-        to.e_flags = 4;
-        to.pos.base = [100.0, -50.0, 12.5];
-        to.origin = [100.0, -50.0, 12.5];
-        to.angles = [0.0, 90.0, 0.0];
-        to.modelindex = 3;
-        to.client_num = 1;
-        to.solid = 0x0001_0203;
-        to.event = 5;
-        to.event_parm = 9;
-        to.weapon = 4;
-        to
+        Q3EntityState {
+            number: 7,
+            e_type: 1,
+            e_flags: 4,
+            pos: Q3Trajectory { base: [100.0, -50.0, 12.5], ..Default::default() },
+            origin: [100.0, -50.0, 12.5],
+            angles: [0.0, 90.0, 0.0],
+            modelindex: 3,
+            client_num: 1,
+            solid: 0x0001_0203,
+            event: 5,
+            event_parm: 9,
+            weapon: 4,
+            ..Default::default()
+        }
     }
 
     fn fixture_player_full() -> Q3PlayerState {
@@ -7887,11 +7882,7 @@ mod tests {
         to
     }
 
-    fn delta_hex(
-        from_entity: Option<&Q3EntityState>,
-        to_entity: Option<&Q3EntityState>,
-        force: bool,
-    ) -> String {
+    fn delta_hex(from_entity: Option<&Q3EntityState>, to_entity: Option<&Q3EntityState>, force: bool) -> String {
         let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
         write_delta_entity(&mut writer, from_entity, to_entity, force).unwrap();
         hex(writer.to_bytes())
@@ -7905,12 +7896,9 @@ mod tests {
             delta_hex(Some(&from), Some(&to), false),
             "6f9f18e9cf21b8f684e2b6b76998ead0f7349391fe1ce2da133a1bb9cd06"
         );
-        let mut gone = Q3EntityState::default();
-        gone.number = 9;
+        let gone = Q3EntityState { number: 9, ..Default::default() };
         assert_eq!(delta_hex(Some(&gone), None, false), "2103");
-        let mut base = Q3EntityState::default();
-        base.number = 2;
-        base.e_type = 2;
+        let base = Q3EntityState { number: 2, e_type: 2, ..Default::default() };
         assert_eq!(delta_hex(None, Some(&base), true), "ea04002301");
     }
 
@@ -7952,12 +7940,13 @@ mod tests {
 
     #[test]
     fn server_gamestate_byte_exact() {
-        let mut baseline = Q3EntityState::default();
-        baseline.number = 1;
-        baseline.e_type = 3;
+        let baseline = Q3EntityState { number: 1, e_type: 3, ..Default::default() };
         let operations = vec![
             ServerOperation::Nop,
-            ServerOperation::Command { sequence: 9, text: "cs 5 \"hello\"".to_string() },
+            ServerOperation::Command {
+                sequence: 9,
+                text: "cs 5 \"hello\"".to_string(),
+            },
             ServerOperation::Gamestate(Gamestate {
                 command_sequence: 9,
                 entries: vec![
@@ -7969,7 +7958,10 @@ mod tests {
                         index: 1,
                         value: "\\sv_serverid\\42\\sv_hostname\\q3".to_string(),
                     },
-                    GamestateEntry::Baseline { number: 1, entity: baseline },
+                    GamestateEntry::Baseline {
+                        number: 1,
+                        entity: baseline,
+                    },
                 ],
                 client_number: 2,
                 checksum_feed: 0x1234_5678,
@@ -7977,13 +7969,14 @@ mod tests {
         ];
         let no_baseline = |_: i32| Some(Q3EntityState::default());
         let no_history = |_: i32| None;
-        let bytes = encode_server_message(4, &operations, &encode_context(&no_baseline, &no_history))
-            .unwrap();
+        let bytes = encode_server_message(4, &operations, &encode_context(&no_baseline, &no_history)).unwrap();
         assert_eq!(
             hex(&bytes),
-            "a1ea8ea0a98ff3eed89b0807c3c49c252292a6b235ef029b9bcdcb32f03c821d63bc9c85e565656f8fe55d60e7c18e2e604728978e4dbd1fcbbbc0e666f3b20c3c8f60c7182f1b9a4e0030bb22d5a5f1a6e003"
+            "a1ea8ea0a98ff3eed89b0807c3c49c252292a6b235ef029b9bcdcb32f03c821d63bc9c85e565656f8fe55d60e7c18e2e604728978e4dbd1fcbbbc0e666f3b20c3c8f60c7182f1b9a4e0030bb22d5a5f1a6e057"
         );
-        let message = decode_server_message(&bytes, &encode_context(&no_baseline, &no_history)).unwrap();
+        let mut decode = encode_context(&no_baseline, &no_history);
+        decode.server_command_sequence = 0;
+        let message = decode_server_message(&bytes, &decode).unwrap();
         assert_eq!(message.reliable_acknowledge, 4);
         assert_eq!(message.operations.len(), 3);
         assert!(matches!(message.operations[0], ServerOperation::Nop));
@@ -7993,10 +7986,12 @@ mod tests {
         let mut player_state = Q3PlayerState::new(Q3Product::Base);
         player_state.command_time = 1900;
         player_state.origin = [1.0, 2.0, 3.0];
-        let mut entity = Q3EntityState::default();
-        entity.number = 5;
-        entity.e_type = 1;
-        entity.origin = [7.0, 8.0, 9.0];
+        let entity = Q3EntityState {
+            number: 5,
+            e_type: 1,
+            origin: [7.0, 8.0, 9.0],
+            ..Default::default()
+        };
         Snapshot {
             message_number: 11,
             server_time: 1900,
@@ -8015,10 +8010,12 @@ mod tests {
         let mut player_state = Q3PlayerState::new(Q3Product::Base);
         player_state.command_time = 2000;
         player_state.origin = [1.0, 2.0, 3.0];
-        let mut entity = Q3EntityState::default();
-        entity.number = 5;
-        entity.e_type = 1;
-        entity.origin = [7.0, 8.0, 9.0];
+        let entity = Q3EntityState {
+            number: 5,
+            e_type: 1,
+            origin: [7.0, 8.0, 9.0],
+            ..Default::default()
+        };
         let operations = vec![ServerOperation::Snapshot {
             validity: SnapshotValidity::Valid,
             snapshot: Snapshot {
@@ -8040,7 +8037,7 @@ mod tests {
         let bytes = encode_server_message(9, &operations, &context).unwrap();
         assert_eq!(
             hex(&bytes),
-            "34f507f0ab22d9a603f8b5f0253ea0f1693b3600de00b0f30d7d4bdf24"
+            "34f507f0ab22d9a603f8b5f0253ea0f1693b3600de00b0f30d7d4bdf6405"
         );
         let message = decode_server_message(&bytes, &context).unwrap();
         let ServerOperation::Snapshot { validity, snapshot } = &message.operations[0] else {
@@ -8059,9 +8056,7 @@ mod tests {
         player_state.origin = [2.0, 2.0, 3.0];
         let mut entity = old.entities[0].clone();
         entity.origin = [8.0, 8.0, 9.0];
-        let mut added = Q3EntityState::default();
-        added.number = 6;
-        added.e_type = 2;
+        let added = Q3EntityState { number: 6, e_type: 2, ..Default::default() };
         let operations = vec![ServerOperation::Snapshot {
             validity: SnapshotValidity::Valid,
             snapshot: Snapshot {
@@ -8087,7 +8082,7 @@ mod tests {
         context.message_number = 12;
         context.parse_entities_number = 1;
         let bytes = encode_server_message(9, &operations, &context).unwrap();
-        assert_eq!(hex(&bytes), "34f55fffd72d922df2fabf263e6d1b03000018fadc4e00307212");
+        assert_eq!(hex(&bytes), "34f55fffd72d922df2fabf263e6d1b03000018fadc4e003072b202");
         let message = decode_server_message(&bytes, &context).unwrap();
         let ServerOperation::Snapshot { validity, snapshot } = &message.operations[0] else {
             panic!("expected snapshot");
@@ -8105,22 +8100,541 @@ mod tests {
                 file_size: 66,
                 data: vec![1, 2, 3, 4],
             }),
-            ServerOperation::Download(DownloadBlock::Chunk { number: 1, data: vec![5, 6] }),
+            ServerOperation::Download(DownloadBlock::Chunk {
+                number: 1,
+                data: vec![5, 6],
+            }),
         ];
         let no_baseline = |_: i32| Some(Q3EntityState::default());
         let no_history = |_: i32| None;
         let mut context = encode_context(&no_baseline, &no_history);
         context.message_number = 3;
         let bytes = encode_server_message(9, &operations, &context).unwrap();
-        assert_eq!(hex(&bytes), "3415a27c35d48d648742b648232000");
+        assert_eq!(hex(&bytes), "3415a27c35d48d648742b648232015");
         let error = vec![ServerOperation::Download(DownloadBlock::Error {
             file_size: -1,
             message: "nope".to_string(),
         })];
         let bytes = encode_server_message(9, &error, &context).unwrap();
-        assert_eq!(hex(&bytes), "3415a22449920cb3853001");
+        assert_eq!(hex(&bytes), "3415a22449920cb385302b");
         let message = decode_server_message(&bytes, &context).unwrap();
         assert_eq!(message.terminal, ServerTerminal::DownloadError);
     }
-}
 
+    fn fixture_wire_commands() -> Vec<WireUserCommand> {
+        vec![
+            WireUserCommand {
+                server_time: 2000,
+                angles: [10, 20, 30],
+                moves: [5, 0, 0],
+                buttons: 1,
+                weapon: 2,
+            },
+            WireUserCommand {
+                server_time: 2050,
+                angles: [11, 21, 31],
+                moves: [6, 1, 0],
+                buttons: 0,
+                weapon: 2,
+            },
+        ]
+    }
+
+    #[test]
+    fn client_move_byte_exact() {
+        let header = ClientHeader {
+            server_id: 42,
+            message_acknowledge: 12,
+            reliable_acknowledge: 9,
+        };
+        let mut writer = begin_client_message(
+            header,
+            &[ReliableCommand {
+                sequence: 3,
+                text: "userinfo x".to_string(),
+            }],
+        )
+        .unwrap();
+        let lookup = |_: i32| "cs 1 \"x\"".to_string();
+        let context = ClientKeyContext {
+            checksum_feed: 99,
+            server_command: &lookup,
+        };
+        let movement = ClientMovement {
+            kind: ClientMovementKind::Move,
+            commands: fixture_wire_commands(),
+        };
+        write_client_movement(&mut writer, &movement, header, &context).unwrap();
+        let bytes = finish_client_message(&mut writer).unwrap();
+        assert_eq!(
+            hex(&bytes),
+            "33a81395a686b255601eec08852168f65e128904e0d7c72e7644b15915bb3b968a8dfffbf11bdd5ca37b6ff4f1bb041b1501"
+        );
+        let decode = ClientDecodeContext {
+            checksum_feed: 99,
+            server_command: &lookup,
+            reliable_sequence: 9,
+            last_client_command: 2,
+            last_user_command_time: 0,
+        };
+        let DecodedClientMessage::Accepted {
+            header,
+            commands,
+            movement,
+            ..
+        } = decode_client_message(&bytes, &decode).unwrap()
+        else {
+            panic!("expected accepted client message");
+        };
+        assert_eq!(header.server_id, 42);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].sequence, 3);
+        let movement = movement.expect("movement");
+        assert_eq!(movement.commands.len(), 2);
+        assert_eq!(movement.commands[1].server_time, 2050);
+        assert_eq!(movement.commands[1].angles, [11, 21, 31]);
+    }
+
+    #[test]
+    fn user_commands_byte_exact() {
+        let zero = WireUserCommand::default();
+        let command = WireUserCommand {
+            server_time: 2000,
+            angles: [10, -20, 300],
+            moves: [5, -3, 127],
+            buttons: 257,
+            weapon: 9,
+        };
+        let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+        write_delta_user_command(&mut writer, &zero, &command, None).unwrap();
+        assert_eq!(hex(writer.to_bytes()), "00fc3aed11c971ee111b5dbe771a");
+        let mut writer = Q3MsgWriter::new(MessageMode::Bitstream, MAX_MESSAGE_LENGTH).unwrap();
+        write_delta_user_command(&mut writer, &zero, &command, Some(0x51ab)).unwrap();
+        assert_eq!(hex(writer.to_bytes()), "00fc3ae3787b08e38c33460c187a74c64700");
+    }
+
+    #[test]
+    fn xor_byte_exact() {
+        let payload = unhex("2a0000000c0000000900000002026373203100");
+        let lookup = |_: i32| "say hi".to_string();
+        assert_eq!(
+            hex(&xor_client_message(&payload, 0x1122_3344, &lookup).unwrap()),
+            "2a0000000c00000009000000e5273f6f5497d5"
+        );
+        assert_eq!(
+            hex(&xor_server_message(&payload, 0x1122_3344, 7, "userinfo")),
+            "2a0000003ad0b55131e4825c2bcdc93d07ca9d"
+        );
+    }
+
+    struct CaptureDelivery {
+        packets: Vec<Vec<u8>>,
+    }
+
+    impl ChannelDelivery for CaptureDelivery {
+        fn send(&mut self, datagram: &[u8]) {
+            self.packets.push(datagram.to_vec());
+        }
+
+        fn trace(&mut self, _message: &str) {}
+    }
+
+    #[test]
+    fn netchan_packets_byte_exact() {
+        let mut delivery = CaptureDelivery { packets: Vec::new() };
+        let mut client = Netchannel::new(ChannelRole::Client, 27960, || 27960);
+        client.begin_transmit(&[1, 2, 3, 4, 5], &mut delivery).unwrap();
+        assert_eq!(hex(&delivery.packets[0]), "01000000386d0102030405");
+        assert_eq!(client.outgoing_sequence(), 2);
+        let mut server = Netchannel::new(ChannelRole::Server, 0, || 0);
+        server.begin_transmit(&[9, 8, 7], &mut delivery).unwrap();
+        assert_eq!(hex(&delivery.packets[1]), "01000000090807");
+        let mut receiver = Netchannel::new(ChannelRole::Server, 0, || 0);
+        let ChannelResult::Accepted {
+            sequence,
+            dropped,
+            payload,
+            qport,
+        } = receiver.receive(&delivery.packets[0], None)
+        else {
+            panic!("expected accepted packet");
+        };
+        assert_eq!((sequence, dropped, qport), (1, 0, Some(27960)));
+        assert_eq!(payload, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn netchan_fragments_byte_exact() {
+        let big: Vec<u8> = (0..3000).map(|index| (index & 255) as u8).collect();
+        let mut delivery = CaptureDelivery { packets: Vec::new() };
+        let mut client = Netchannel::new(ChannelRole::Client, 111, || 111);
+        client.begin_transmit(&big, &mut delivery).unwrap();
+        while client.has_unsent_fragments() {
+            client.transmit_next_fragment(&mut delivery).unwrap();
+        }
+        assert_eq!(delivery.packets.len(), 3);
+        assert_eq!(hex(&delivery.packets[0][..16]), "010000806f0000001405000102030405");
+        assert_eq!(hex(&delivery.packets[1][..16]), "010000806f0014051405141516171819");
+        assert_eq!(hex(&delivery.packets[2][..16]), "010000806f00280a900128292a2b2c2d");
+        let mut server = Netchannel::new(ChannelRole::Server, 0, || 0);
+        let mut result = ChannelResult::Rejected {
+            reason: ChannelReject::Malformed,
+        };
+        for fragment in &delivery.packets {
+            result = server.receive(fragment, None);
+        }
+        let ChannelResult::Accepted { sequence, payload, .. } = result else {
+            panic!("expected accepted reassembly, got {result:?}");
+        };
+        assert_eq!(sequence, 1);
+        assert_eq!(hex(&payload[..16]), "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(hex(&payload[2992..3000]), "b0b1b2b3b4b5b6b7");
+    }
+
+    #[test]
+    fn connectionless_byte_exact() {
+        assert_eq!(
+            hex(&encode_connectionless_text("getchallenge").unwrap()),
+            "ffffffff6765746368616c6c656e6765"
+        );
+        assert_eq!(
+            hex(&encode_connect("\\protocol\\68\\qport\\27960\\challenge\\123\\").unwrap()),
+            "ffffffff636f6e6e6563742000294474708813ecc7a5612cd8e8b0198e05c7f9c40c53c35e70968461c5b1500ccb174c09bb8d391ec0281ecc7b00"
+        );
+        let response = encode_connectionless_text("connectResponse").unwrap();
+        let packet = decode_connectionless(&response, ConnectionlessReceiver::Client).unwrap();
+        assert_eq!(packet.command, "connectResponse");
+        assert!(packet.arguments.is_empty());
+        let challenge = encode_connectionless_text("challengeResponse 9876").unwrap();
+        let packet = decode_connectionless(&challenge, ConnectionlessReceiver::Client).unwrap();
+        assert_eq!(
+            (packet.command.as_str(), packet.arguments.as_slice()),
+            ("challengeResponse", ["9876".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn demo_framing_byte_exact() {
+        let message = DemoMessage {
+            sequence: 5,
+            payload: vec![1, 2, 3],
+        };
+        assert_eq!(hex(&encode_demo_message(&message).unwrap()), "0500000003000000010203");
+        let full = encode_demo(&[DemoMessage {
+            sequence: 5,
+            payload: vec![1],
+        }])
+        .unwrap();
+        assert_eq!(hex(&full), "050000000100000001ffffffffffffffff");
+        assert_eq!(hex(&finish_demo()), "ffffffffffffffff");
+        let mut reader = DemoReader::new(&full);
+        let mut seen = Vec::new();
+        let record = reader.next(&mut |sequence| seen.push(sequence)).unwrap();
+        assert_eq!(seen, vec![5]);
+        assert!(matches!(record, DemoRecord::Message(_)));
+        let record = reader.next(&mut |sequence| seen.push(sequence)).unwrap();
+        let DemoRecord::End(end) = record else {
+            panic!("expected demo end")
+        };
+        assert_eq!(end.reason, DemoEndReason::Terminator);
+    }
+
+    #[test]
+    fn command_hash_byte_exact() {
+        assert_eq!(command_hash("userinfo", 32).unwrap(), 107247);
+        assert_eq!(command_hash(&"a".repeat(100), 32).unwrap(), 417607);
+    }
+
+    #[test]
+    fn reliable_commands_acknowledge() {
+        let mut reliable = ClientReliableCommands::new();
+        reliable.add("a").unwrap();
+        reliable.add("b").unwrap();
+        assert_eq!(reliable.sequence(), 2);
+        assert_eq!(reliable.pending().len(), 2);
+        reliable.assign_acknowledgement(1);
+        let pending = reliable.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].sequence, 2);
+        assert_eq!(reliable.lookup_masked(2), "b");
+        let mut server = ServerReliableCommands::new();
+        server.add("cs 5 \"old\"").unwrap();
+        assert!(server.replace_pending(0, "cs 5 \"new\"").unwrap());
+        assert_eq!(server.lookup_masked(1), "cs 5 \"new\"");
+    }
+
+    #[test]
+    fn snapshot_history_publish_and_lookup() {
+        let mut history = SnapshotHistory::new(None);
+        let retained = history.borrow_slot(11, Q3Product::Base).unwrap();
+        assert_eq!(retained.status, SnapshotStatus::Invalid);
+        let shared = history.read_or_zero(11, Q3Product::Base).unwrap();
+        assert_eq!(shared.status, retained.status);
+        assert_eq!(shared.snapshot, retained.snapshot);
+        let mut snapshot = fixture_snapshot_old();
+        snapshot.message_number = 11;
+        let operation = ServerOperation::Snapshot {
+            validity: SnapshotValidity::Valid,
+            snapshot: snapshot.clone(),
+        };
+        assert!(history.publish(&operation).unwrap());
+        let entry = history.read_slot(11).unwrap().expect("slot");
+        assert_eq!(entry.status, SnapshotStatus::Valid);
+        assert_eq!(entry.snapshot.server_time, 1900);
+        assert_eq!(history.latest().expect("latest").message_number, 11);
+        let stale = ServerOperation::Snapshot {
+            validity: SnapshotValidity::Invalid(SnapshotInvalid::MissingDelta),
+            snapshot,
+        };
+        assert!(!history.publish(&stale).unwrap());
+    }
+
+    #[test]
+    fn rate_milliseconds_matches_source() {
+        assert_eq!(q3_rate_milliseconds(100, 25000, 0).unwrap(), 5);
+        assert_eq!(q3_rate_milliseconds(100, 25000, 3000).unwrap(), 49);
+        assert!(q3_rate_milliseconds(100, 0, 0).is_err());
+    }
+
+    #[test]
+    fn pure_verification_outcomes() {
+        let disabled = Q3PureServer {
+            enabled: false,
+            checksum_feed: 100,
+            checksum_feed_server_id: 1,
+            cgame_checksum: Some(7),
+            ui_checksum: Some(8),
+            loaded_pure_checksums: vec![10, 20],
+        };
+        let argv = ["cp", "1", "7", "8", "@x", "10", "20", "120"]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            verify_q3_pure_command(&disabled, &argv).unwrap(),
+            Q3PureResult::Ignored(Q3PureIgnore::Disabled)
+        );
+        let mut server = disabled;
+        server.enabled = true;
+        assert_eq!(verify_q3_pure_command(&server, &argv).unwrap(), Q3PureResult::Authentic);
+        let mut tampered = argv.clone();
+        tampered[7] = "121".to_string();
+        assert!(matches!(
+            verify_q3_pure_command(&server, &tampered).unwrap(),
+            Q3PureResult::Rejected(_)
+        ));
+    }
+
+    #[derive(Default)]
+    struct LoopClientBindings {
+        gamestates: Vec<(Gamestate, i32)>,
+        snapshots: Vec<(Snapshot, i32)>,
+        system_infos: Vec<String>,
+        downloads: Vec<DownloadBlock>,
+        sizes: Vec<i32>,
+    }
+
+    impl Q3ClientBindings for LoopClientBindings {
+        fn assert_current(&mut self) {}
+        fn print(&mut self, _text: &str) {}
+        fn clear_active(&mut self) {}
+        fn system_info(&mut self, info: &str) {
+            self.system_infos.push(info.to_string());
+        }
+        fn gamestate(&mut self, state: &Gamestate, generation: i32) {
+            self.gamestates.push((state.clone(), generation));
+        }
+        fn snapshot(&mut self, snapshot: &Snapshot, ping: i32) {
+            self.snapshots.push((snapshot.clone(), ping));
+        }
+        fn download_size(&mut self, size: i32) -> i32 {
+            self.sizes.push(size);
+            size
+        }
+        fn download(&mut self, block: &DownloadBlock) {
+            self.downloads.push(block.clone());
+        }
+        fn map_restart(&mut self) {}
+        fn level_shot(&mut self) {}
+        fn local_server_running(&self) -> bool {
+            false
+        }
+    }
+
+    struct LoopServerBindings {
+        server_id: i32,
+        feed: i32,
+        time: i32,
+        commands: Vec<(ReliableCommand, bool)>,
+        entered: Vec<WireUserCommand>,
+        thinks: Vec<WireUserCommand>,
+        resends: usize,
+    }
+
+    impl Q3ServerBindings for LoopServerBindings {
+        fn assert_current(&mut self) {}
+        fn server_id(&self) -> i32 {
+            self.server_id
+        }
+        fn restarted_server_id(&self) -> i32 {
+            self.server_id
+        }
+        fn checksum_feed(&self) -> i32 {
+            self.feed
+        }
+        fn pure(&self) -> bool {
+            false
+        }
+        fn debug_build(&self) -> bool {
+            false
+        }
+        fn time(&self) -> i32 {
+            self.time
+        }
+        fn client_running(&self) -> bool {
+            false
+        }
+        fn flood_protect(&self) -> bool {
+            false
+        }
+        fn download_name(&self) -> String {
+            String::new()
+        }
+        fn command(&mut self, command: &ReliableCommand, client_ok: bool) -> Result<bool, Q3NetError> {
+            self.commands.push((command.clone(), client_ok));
+            Ok(true)
+        }
+        fn enter_world(&mut self, command: &WireUserCommand) -> Result<(), Q3NetError> {
+            self.entered.push(command.clone());
+            Ok(())
+        }
+        fn think(&mut self, command: &WireUserCommand) -> Result<(), Q3NetError> {
+            self.thinks.push(command.clone());
+            Ok(())
+        }
+        fn resend_gamestate(&mut self) -> Result<(), Q3NetError> {
+            self.resends += 1;
+            Ok(())
+        }
+        fn drop_client(&mut self, _reason: &str) -> Result<(), Q3NetError> {
+            Ok(())
+        }
+        fn print(&mut self, _text: &str) {}
+    }
+
+    #[test]
+    fn client_server_loopback_session() {
+        let owner = IdentityOwner::create("q3-loop").unwrap();
+        let identity = Q3ConnectionIdentity {
+            client: owner.client(0, 0),
+            seat: None,
+        };
+        let challenge = 0x1234;
+        let mut server_bindings = LoopServerBindings {
+            server_id: 42,
+            feed: 99,
+            time: 1000,
+            commands: Vec::new(),
+            entered: Vec::new(),
+            thinks: Vec::new(),
+            resends: 0,
+        };
+        let baseline = |_: i32| Q3EntityState::default();
+        let mut snapshots =
+            Q3ServerSnapshotHistory::new(Q3SnapshotEntities::new(1024).unwrap(), Q3Product::Base, &baseline);
+        let mut server =
+            Q3ServerConnection::new(identity.clone(), challenge, 27960, &mut snapshots, &mut server_bindings);
+        let mut client_bindings = LoopClientBindings::default();
+        let mut client = Q3ClientConnection::new(
+            identity,
+            Q3Product::Base,
+            Q3ClientMode::Network {
+                challenge,
+                qport: 27960,
+            },
+            &mut client_bindings,
+        );
+        let rate = Q3ServerRate {
+            rate: 25000,
+            max_rate: 0,
+            snapshot_msec: 50,
+            local: true,
+            force_lan: false,
+            lan: false,
+        };
+        let mut delivery = CaptureDelivery { packets: Vec::new() };
+        let state = Gamestate {
+            command_sequence: 0,
+            entries: vec![GamestateEntry::Configstring {
+                index: 1,
+                value: "\\sv_serverid\\42".to_string(),
+            }],
+            client_number: 0,
+            checksum_feed: 0,
+        };
+        server.send_gamestate(&state, rate, &mut delivery).unwrap();
+        assert_eq!(server.phase, Q3ServerPhase::Primed);
+        assert_eq!(server.gamestate_message_number, 1);
+        assert_eq!(delivery.packets.len(), 1);
+        let gamestate_packet = delivery.packets.pop().unwrap();
+        let result = client.receive_datagram(&gamestate_packet, 1100).unwrap();
+        assert!(matches!(result, Q3ClientPacketResult::Accepted { sequence: 1, .. }));
+        assert_eq!(client.server_id, 42);
+        assert_eq!(client.server_message_sequence, 1);
+
+        client.reliable.add("userinfo \\name\\t").unwrap();
+        client.commands.append(&WireUserCommand {
+            server_time: 1050,
+            angles: [1, 2, 3],
+            moves: [4, 0, 0],
+            buttons: 0,
+            weapon: 1,
+        });
+        client
+            .transmit(
+                Q3ClientSendOptions {
+                    real_time: 1100,
+                    packet_dup: 0,
+                    no_delta: false,
+                },
+                &mut delivery,
+            )
+            .unwrap();
+        assert_eq!(delivery.packets.len(), 1);
+        let client_packet = delivery.packets.pop().unwrap();
+        server.receive_datagram(&client_packet).unwrap();
+        assert_eq!(server.phase, Q3ServerPhase::Active);
+        assert_eq!(server.last_client_command, 1);
+        assert_eq!(server.message_acknowledge, 1);
+
+        server.reliable.add("cs 5 hi").unwrap();
+        let mut append = |_: &mut Q3MsgWriter| {};
+        server.send_snapshot(0, rate, &mut delivery, &mut append).unwrap();
+        assert_eq!(delivery.packets.len(), 1);
+        let snapshot_packet = delivery.packets.pop().unwrap();
+        let result = client.receive_datagram(&snapshot_packet, 1200).unwrap();
+        assert!(matches!(result, Q3ClientPacketResult::Accepted { sequence: 2, .. }));
+        assert!(!client.demo_waiting);
+        assert_eq!(client.server_message_sequence, 2);
+        assert_eq!(client.server_command_sequence, 1);
+        let tokens = client.get_server_command(1).unwrap().expect("tokens");
+        assert_eq!(tokens, vec!["cs".to_string(), "5".to_string(), "hi".to_string()]);
+        assert_eq!(client.game_state.get(5).unwrap().as_deref(), Some("hi"));
+        assert_eq!(client.last_executed_server_command, 1);
+        drop(client);
+        drop(server);
+
+        assert_eq!(client_bindings.gamestates.len(), 1);
+        assert_eq!(client_bindings.gamestates[0].1, 1);
+        assert_eq!(client_bindings.system_infos, vec!["\\sv_serverid\\42".to_string()]);
+        assert_eq!(client_bindings.snapshots.len(), 1);
+        assert_eq!(client_bindings.snapshots[0].0.message_number, 2);
+        assert_eq!(server_bindings.commands.len(), 1);
+        assert_eq!(server_bindings.commands[0].0.sequence, 1);
+        assert!(server_bindings.commands[0].1);
+        assert_eq!(server_bindings.entered.len(), 1);
+        assert_eq!(server_bindings.entered[0].server_time, 1050);
+        assert!(server_bindings.thinks.is_empty());
+        assert_eq!(server_bindings.resends, 0);
+    }
+}

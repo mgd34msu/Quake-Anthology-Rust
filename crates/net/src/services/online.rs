@@ -12,10 +12,10 @@ use std::io::Read;
 use qa_core::identity::ProviderId;
 use thiserror::Error;
 
+use super::json::{parse_json, JsonError};
 use crate::common::endpoint::NetworkAddress;
 use crate::common::hash::{hex_lower, password_verifier, timing_safe_equal, Sha256};
 use crate::common::session::{canonical, CompositionIdentity, Json, WireSelection};
-use super::json::{parse_json, JsonError};
 
 /// Error for online service failures.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -188,11 +188,14 @@ impl LocalAuthorization {
         };
         let salt = random_hex(16);
         let password_hash = password_verifier(password, &salt, PASSWORD_ITERATIONS);
-        self.accounts.insert(name.to_owned(), AccountRecord {
-            account: account.clone(),
-            salt,
-            password_hash,
-        });
+        self.accounts.insert(
+            name.to_owned(),
+            AccountRecord {
+                account: account.clone(),
+                salt,
+                password_hash,
+            },
+        );
         Ok(account)
     }
 
@@ -252,8 +255,17 @@ impl LocalAuthorization {
             let Some(Json::Object(account)) = row.get("account") else {
                 return Err(OnlineError::BadAccountRecord);
             };
-            let (Some(Json::String(id)), Some(Json::String(name)), Some(Json::String(salt)), Some(Json::String(password_hash))) =
-                (account.get("id"), account.get("name"), row.get("salt"), row.get("passwordHash"))
+            let (
+                Some(Json::String(id)),
+                Some(Json::String(name)),
+                Some(Json::String(salt)),
+                Some(Json::String(password_hash)),
+            ) = (
+                account.get("id"),
+                account.get("name"),
+                row.get("salt"),
+                row.get("passwordHash"),
+            )
             else {
                 return Err(OnlineError::BadAccountFields);
             };
@@ -266,14 +278,17 @@ impl LocalAuthorization {
             {
                 return Err(OnlineError::BadAccountFields);
             }
-            restored.insert(name.clone(), AccountRecord {
-                account: Account {
-                    id: id.clone(),
-                    name: name.clone(),
+            restored.insert(
+                name.clone(),
+                AccountRecord {
+                    account: Account {
+                        id: id.clone(),
+                        name: name.clone(),
+                    },
+                    salt: salt.clone(),
+                    password_hash: password_hash.clone(),
                 },
-                salt: salt.clone(),
-                password_hash: password_hash.clone(),
-            });
+            );
         }
         self.accounts = restored;
         self.tokens.clear();
@@ -415,14 +430,10 @@ impl LocalLobbyService {
     /// Join a lobby (`join`).
     pub fn join(&mut self, id: &str, account: &Account, seats: u32) -> Result<Lobby, OnlineError> {
         let lobby = self.require(id)?;
-        if lobby.phase != LobbyPhase::Open
-            || lobby.members.iter().any(|member| member.account.id == account.id)
-        {
+        if lobby.phase != LobbyPhase::Open || lobby.members.iter().any(|member| member.account.id == account.id) {
             return Err(OnlineError::CannotJoin);
         }
-        if seats < 1
-            || lobby.members.iter().map(|member| member.seats).sum::<u32>() + seats > lobby.capacity
-        {
+        if seats < 1 || lobby.members.iter().map(|member| member.seats).sum::<u32>() + seats > lobby.capacity {
             return Err(OnlineError::LobbyFull);
         }
         let mut updated = lobby;
@@ -438,9 +449,7 @@ impl LocalLobbyService {
     /// Change readiness (`ready`).
     pub fn ready(&mut self, id: &str, account: &AccountId, ready: bool) -> Result<Lobby, OnlineError> {
         let lobby = self.require(id)?;
-        if lobby.phase != LobbyPhase::Open
-            || !lobby.members.iter().any(|member| &member.account.id == account)
-        {
+        if lobby.phase != LobbyPhase::Open || !lobby.members.iter().any(|member| &member.account.id == account) {
             return Err(OnlineError::CannotReady);
         }
         let mut updated = lobby;
@@ -456,7 +465,8 @@ impl LocalLobbyService {
     /// Start a match (`start`).
     pub fn start(&mut self, id: &str, owner: &AccountId) -> Result<Lobby, OnlineError> {
         let lobby = self.require(id)?;
-        if &lobby.owner != owner || lobby.phase != LobbyPhase::Open || lobby.members.iter().any(|member| !member.ready) {
+        if &lobby.owner != owner || lobby.phase != LobbyPhase::Open || lobby.members.iter().any(|member| !member.ready)
+        {
             return Err(OnlineError::NotReady);
         }
         let mut updated = lobby;
@@ -498,12 +508,7 @@ impl LocalLobbyService {
     }
 
     /// Complete a match generation (`complete`).
-    pub fn complete(
-        &mut self,
-        id: &str,
-        owner: &AccountId,
-        match_generation: u64,
-    ) -> Result<Lobby, OnlineError> {
+    pub fn complete(&mut self, id: &str, owner: &AccountId, match_generation: u64) -> Result<Lobby, OnlineError> {
         let lobby = self.require(id)?;
         if &lobby.owner != owner {
             return Err(OnlineError::NotOwner);
@@ -593,11 +598,17 @@ impl LocalRankingService {
             return Ok(false);
         }
         if report.match_name.is_empty()
-            || report.players.iter().map(|player| &player.account).collect::<std::collections::HashSet<_>>().len()
+            || report
+                .players
+                .iter()
+                .map(|player| &player.account)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
                 != report.players.len()
-            || report.players.iter().any(|player| {
-                !player.score.is_finite() || player.statistics.values().any(|value| !value.is_finite())
-            })
+            || report
+                .players
+                .iter()
+                .any(|player| !player.score.is_finite() || player.statistics.values().any(|value| !value.is_finite()))
         {
             return Err(OnlineError::BadReport);
         }
@@ -672,10 +683,7 @@ impl LocalRankingService {
                                             .statistics
                                             .iter()
                                             .map(|(key, value)| {
-                                                Json::Array(vec![
-                                                    Json::String(key.clone()),
-                                                    Json::Number(*value),
-                                                ])
+                                                Json::Array(vec![Json::String(key.clone()), Json::Number(*value)])
                                             })
                                             .collect(),
                                     ),
@@ -716,8 +724,17 @@ impl LocalRankingService {
                 let Json::Object(player) = player else {
                     return Err(OnlineError::BadPlayer);
                 };
-                let (Some(Json::String(account)), Some(Json::Number(score)), Some(Json::Bool(won)), Some(Json::Array(pairs))) =
-                    (player.get("account"), player.get("score"), player.get("won"), player.get("statistics"))
+                let (
+                    Some(Json::String(account)),
+                    Some(Json::Number(score)),
+                    Some(Json::Bool(won)),
+                    Some(Json::Array(pairs)),
+                ) = (
+                    player.get("account"),
+                    player.get("score"),
+                    player.get("won"),
+                    player.get("statistics"),
+                )
                 else {
                     return Err(OnlineError::BadPlayer);
                 };
@@ -732,9 +749,7 @@ impl LocalRankingService {
                     if pair.len() != 2 {
                         return Err(OnlineError::BadStatistic);
                     }
-                    let (Some(Json::String(key)), Some(Json::Number(value))) =
-                        (pair.first(), pair.get(1))
-                    else {
+                    let (Some(Json::String(key)), Some(Json::Number(value))) = (pair.first(), pair.get(1)) else {
                         return Err(OnlineError::BadStatistic);
                     };
                     statistics.insert(key.clone(), *value);

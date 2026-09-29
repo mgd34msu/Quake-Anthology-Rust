@@ -8,14 +8,14 @@
 //! saves.
 
 const K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+    0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+    0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+    0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+    0xc67178f2,
 ];
 
 #[derive(Debug, Clone)]
@@ -31,8 +31,7 @@ impl Sha256 {
     pub fn new() -> Self {
         Self {
             state: [
-                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-                0x5be0cd19,
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
             ],
             length_bytes: 0,
             buffer: [0; 64],
@@ -217,7 +216,24 @@ pub fn md4(bytes: &[u8]) -> [u8; 16] {
         }
         let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
         // Round 1.
-        for (index, shift) in [(0, 3), (1, 7), (2, 11), (3, 19), (4, 3), (5, 7), (6, 11), (7, 19), (8, 3), (9, 7), (10, 11), (11, 19), (12, 3), (13, 7), (14, 11), (15, 19)] {
+        for (index, shift) in [
+            (0, 3),
+            (1, 7),
+            (2, 11),
+            (3, 19),
+            (4, 3),
+            (5, 7),
+            (6, 11),
+            (7, 19),
+            (8, 3),
+            (9, 7),
+            (10, 11),
+            (11, 19),
+            (12, 3),
+            (13, 7),
+            (14, 11),
+            (15, 19),
+        ] {
             let sum = a.wrapping_add(f(b, c, d)).wrapping_add(x[index]);
             a = d;
             d = c;
@@ -225,16 +241,56 @@ pub fn md4(bytes: &[u8]) -> [u8; 16] {
             b = sum.rotate_left(shift);
         }
         // Round 2.
-        for (index, shift) in [(0, 3), (4, 5), (8, 9), (12, 13), (1, 3), (5, 5), (9, 9), (13, 13), (2, 3), (6, 5), (10, 9), (14, 13), (3, 3), (7, 5), (11, 9), (15, 13)] {
-            let sum = a.wrapping_add(g(b, c, d)).wrapping_add(x[index]).wrapping_add(0x5a827999);
+        for (index, shift) in [
+            (0, 3),
+            (4, 5),
+            (8, 9),
+            (12, 13),
+            (1, 3),
+            (5, 5),
+            (9, 9),
+            (13, 13),
+            (2, 3),
+            (6, 5),
+            (10, 9),
+            (14, 13),
+            (3, 3),
+            (7, 5),
+            (11, 9),
+            (15, 13),
+        ] {
+            let sum = a
+                .wrapping_add(g(b, c, d))
+                .wrapping_add(x[index])
+                .wrapping_add(0x5a827999);
             a = d;
             d = c;
             c = b;
             b = sum.rotate_left(shift);
         }
         // Round 3.
-        for (index, shift) in [(0, 3), (8, 9), (4, 11), (12, 15), (2, 3), (10, 9), (6, 11), (14, 15), (1, 3), (9, 9), (5, 11), (13, 15), (3, 3), (11, 9), (7, 11), (15, 15)] {
-            let sum = a.wrapping_add(h(b, c, d)).wrapping_add(x[index]).wrapping_add(0x6ed9eba1);
+        for (index, shift) in [
+            (0, 3),
+            (8, 9),
+            (4, 11),
+            (12, 15),
+            (2, 3),
+            (10, 9),
+            (6, 11),
+            (14, 15),
+            (1, 3),
+            (9, 9),
+            (5, 11),
+            (13, 15),
+            (3, 3),
+            (11, 9),
+            (7, 11),
+            (15, 15),
+        ] {
+            let sum = a
+                .wrapping_add(h(b, c, d))
+                .wrapping_add(x[index])
+                .wrapping_add(0x6ed9eba1);
             a = d;
             d = c;
             c = b;

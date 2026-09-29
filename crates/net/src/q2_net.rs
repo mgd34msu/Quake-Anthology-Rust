@@ -22,14 +22,11 @@ use crate::common::transport::{DatagramTransport, TransportError};
 use crate::msg::{MsgError, MsgReader, MsgWriter};
 use crate::protocol::q2 as protocol;
 use crate::protocol::ProtocolIdentity;
-use crate::q2::{
-    read_dir, string_to_bytes, EntityState, FrameHeader, PlayerState, Q2CodecError, Usercmd,
-};
+use crate::q2::{read_dir, string_to_bytes, EntityState, FrameHeader, PlayerState, Q2CodecError, Usercmd};
 use crate::q2_variants::{
-    read_entity_bits_wide, read_q2pro_entity_bits, read_q2pro_int23, read_zpacket_payload,
-    try_wrap_zpacket, BatchMove, BatchMoveFrame, FogData, KexCodec, KexConfigstringRecord,
-    KexDamageIndicator, KexHelpPath, KexLocprint, KexPoi, Q2ProCodec, Q2ProFeatures, R1q2Codec,
-    RereleaseCodec, VariantError, WideEntityBits, PROTOCOL_KEX_DEMOS,
+    read_entity_bits_wide, read_q2pro_entity_bits, read_q2pro_int23, read_zpacket_payload, try_wrap_zpacket, BatchMove,
+    BatchMoveFrame, FogData, KexCodec, KexConfigstringRecord, KexDamageIndicator, KexHelpPath, KexLocprint, KexPoi,
+    Q2ProCodec, Q2ProFeatures, R1q2Codec, RereleaseCodec, VariantError, WideEntityBits, PROTOCOL_KEX_DEMOS,
 };
 use crate::services::discovery::{DiscoveryError, DiscoveryRequestKind, DiscoveryWire, PlayerDetail, ServerStatus};
 use crate::services::downloads::DownloadError;
@@ -504,10 +501,8 @@ impl Q2Channel {
     }
 
     fn header(&self, reliable: bool, fragmented: bool) -> Result<MsgWriter, Q2NetError> {
-        let classic_id =
-            self.options.channel == ChannelKind::Old && self.recording() == SequenceRecording::Id;
-        let size = (if classic_id { 1400 } else { 4096 })
-            .min(self.options.max_datagram_bytes.unwrap_or(4096));
+        let classic_id = self.options.channel == ChannelKind::Old && self.recording() == SequenceRecording::Id;
+        let size = (if classic_id { 1400 } else { 4096 }).min(self.options.max_datagram_bytes.unwrap_or(4096));
         let mut message = MsgWriter::new(size, false);
         let mask = if self.options.channel == ChannelKind::Old {
             0x7fff_ffff
@@ -567,11 +562,7 @@ impl Q2Channel {
     }
 
     /// Transmit unreliable bytes, flushing reliable and fragmented state first.
-    pub fn transmit(
-        &mut self,
-        unreliable: &[u8],
-        now_milliseconds: u64,
-    ) -> Result<Vec<u8>, Q2NetError> {
+    pub fn transmit(&mut self, unreliable: &[u8], now_milliseconds: u64) -> Result<Vec<u8>, Q2NetError> {
         if self.options.protocol == ProtocolIdentity::Q2Kex {
             return self.kex_packet(unreliable, false, now_milliseconds);
         }
@@ -606,9 +597,7 @@ impl Q2Channel {
         } else {
             Vec::new()
         };
-        if self.options.channel == ChannelKind::New
-            && reliable.len() + unreliable.len() > self.payload_bytes
-        {
+        if self.options.channel == ChannelKind::New && reliable.len() + unreliable.len() > self.payload_bytes {
             let include = reliable.len() + unreliable.len() <= self.receiving.len();
             let mut bytes = Vec::with_capacity(reliable.len() + if include { unreliable.len() } else { 0 });
             bytes.extend_from_slice(&reliable);
@@ -633,9 +622,9 @@ impl Q2Channel {
             packet.write_bytes(unreliable)?;
         }
         if send_reliable {
-            self.last_reliable = self.outgoing.wrapping_add(u32::from(
-                self.recording() == SequenceRecording::Id,
-            ));
+            self.last_reliable = self
+                .outgoing
+                .wrapping_add(u32::from(self.recording() == SequenceRecording::Id));
         }
         self.outgoing = self.outgoing.wrapping_add(1);
         self.ack_pending = false;
@@ -644,11 +633,7 @@ impl Q2Channel {
     }
 
     /// Receive a packet.
-    pub fn receive(
-        &mut self,
-        bytes: &[u8],
-        now_milliseconds: u64,
-    ) -> Result<Q2ChannelReceive, Q2NetError> {
+    pub fn receive(&mut self, bytes: &[u8], now_milliseconds: u64) -> Result<Q2ChannelReceive, Q2NetError> {
         if self.options.protocol == ProtocolIdentity::Q2Kex {
             if bytes.len() < 8 {
                 return Ok(Q2ChannelReceive::Rejected {
@@ -721,8 +706,7 @@ impl Q2Channel {
         let acknowledged = ack_word & mask;
         let reliable = sequence_word >> 31;
         let reliable_ack = ack_word >> 31;
-        let fragmented =
-            self.options.channel == ChannelKind::New && (sequence_word & 0x4000_0000) != 0;
+        let fragmented = self.options.channel == ChannelKind::New && (sequence_word & 0x4000_0000) != 0;
         let fragment_word = if fragmented { u32::from(packet.word()?) } else { 0 };
         if packet.finish().is_err() {
             return Ok(Q2ChannelReceive::Rejected {
@@ -755,8 +739,7 @@ impl Q2Channel {
                     reason: Q2RejectReason::FragmentSize,
                 });
             }
-            self.receiving[self.receive_length..self.receive_length + payload.len()]
-                .copy_from_slice(&payload);
+            self.receiving[self.receive_length..self.receive_length + payload.len()].copy_from_slice(&payload);
             self.receive_length += payload.len();
             if (fragment_word & 0x8000) != 0 {
                 return Ok(Q2ChannelReceive::Fragment {
@@ -783,12 +766,7 @@ impl Q2Channel {
         })
     }
 
-    fn kex_packet(
-        &mut self,
-        payload: &[u8],
-        reliable: bool,
-        now: u64,
-    ) -> Result<Vec<u8>, Q2NetError> {
+    fn kex_packet(&mut self, payload: &[u8], reliable: bool, now: u64) -> Result<Vec<u8>, Q2NetError> {
         if payload.len() > self.capacity {
             return Err(Q2NetError::Range("KEX game message overflow"));
         }
@@ -885,7 +863,10 @@ pub fn read_q2_out_of_band(bytes: &[u8], utf8: bool) -> Option<Q2ConnectionlessM
         text.push(char::from(*byte));
     }
     if utf8 {
-        let end = bytes[4..].iter().position(|byte| *byte == 0).map_or(bytes.len(), |i| i + 4);
+        let end = bytes[4..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map_or(bytes.len(), |i| i + 4);
         text = String::from_utf8(bytes[4..end].to_vec()).ok()?;
     }
     let (line, body) = match text.find('\n') {
@@ -970,10 +951,7 @@ pub fn q2_codec_support(protocol: ProtocolIdentity) -> Result<(), Q2NetError> {
 }
 
 /// Negotiate the R1Q2 revision actually spoken (`negotiatedR1Q2Protocol`).
-pub fn negotiated_r1q2_protocol(
-    offered_revision: u32,
-    reported: Option<i64>,
-) -> Result<u32, Q2NetError> {
+pub fn negotiated_r1q2_protocol(offered_revision: u32, reported: Option<i64>) -> Result<u32, Q2NetError> {
     let reported = reported.unwrap_or(-1);
     if reported != 1903 && reported != 1904 && reported != 1905 {
         return Err(Q2NetError::Protocol("Unsupported R1Q2 server revision"));
@@ -1185,10 +1163,7 @@ pub fn read_q2_challenge(message: &Q2ConnectionlessMessage) -> Result<Q2Challeng
             .map(|value| decimal(Some(value), None))
             .collect::<Result<Vec<_>, _>>()?,
     };
-    Ok(Q2Challenge {
-        challenge,
-        versions,
-    })
+    Ok(Q2Challenge { challenge, versions })
 }
 
 /// Read a Q2PRO download-server advertisement (`readQ2DownloadServer`).
@@ -1204,9 +1179,15 @@ pub fn read_q2_download_server(arguments: &[String]) -> Option<String> {
     if advertised.is_empty() || advertised.len() >= 512 {
         return None;
     }
-    let rest = if advertised.get(0..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://")) {
+    let rest = if advertised
+        .get(0..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
+    {
         advertised.get(7..)
-    } else if advertised.get(0..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://")) {
+    } else if advertised
+        .get(0..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+    {
         advertised.get(8..)
     } else {
         None
@@ -1336,9 +1317,7 @@ impl Q2ClientHandshake {
             }
         }
         if matches!(self.state, Q2ClientHandshakeState::Challenging { .. }) {
-            self.state = Q2ClientHandshakeState::Challenging {
-                last_sent: Some(now),
-            };
+            self.state = Q2ClientHandshakeState::Challenging { last_sent: Some(now) };
             return Ok(Some(q2_out_of_band("getchallenge\n", false)));
         }
         let Q2ClientHandshakeState::Connecting { request, .. } = self.state.clone() else {
@@ -1358,16 +1337,11 @@ impl Q2ClientHandshake {
     }
 
     /// Feed a connectionless message; returns whether it was consumed.
-    pub fn receive(
-        &mut self,
-        from: &NetworkAddress,
-        message: &Q2ConnectionlessMessage,
-    ) -> Result<bool, Q2NetError> {
+    pub fn receive(&mut self, from: &NetworkAddress, message: &Q2ConnectionlessMessage) -> Result<bool, Q2NetError> {
         if !same_address(from, &self.remote, true) {
             return Ok(false);
         }
-        if message.command == "challenge" && !matches!(self.state, Q2ClientHandshakeState::Connected { .. })
-        {
+        if message.command == "challenge" && !matches!(self.state, Q2ClientHandshakeState::Connected { .. }) {
             let challenge = read_q2_challenge(message)?;
             let protocol = self
                 .preferences
@@ -1380,10 +1354,7 @@ impl Q2ClientHandshake {
                 };
                 return Ok(true);
             };
-            if matches!(
-                protocol,
-                ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo
-            ) {
+            if matches!(protocol, ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo) {
                 self.state = Q2ClientHandshakeState::Rejected {
                     reason: "KEX native live transport connect is unbound".to_string(),
                 };
@@ -1499,12 +1470,7 @@ impl Q2ChallengeTable {
     }
 
     /// Reply with a challenge advertisement.
-    pub fn reply(
-        &mut self,
-        from: &NetworkAddress,
-        now: u64,
-        protocols: &[ProtocolIdentity],
-    ) -> Vec<u8> {
+    pub fn reply(&mut self, from: &NetworkAddress, now: u64, protocols: &[ProtocolIdentity]) -> Vec<u8> {
         let challenge = self.issue(from, now);
         let mut versions = Vec::new();
         for protocol in protocols {
@@ -1513,11 +1479,7 @@ impl Q2ChallengeTable {
                 versions.push(version);
             }
         }
-        let list = versions
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+        let list = versions.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
         q2_out_of_band(&format!("challenge {challenge} p={list}"), false)
     }
 }
@@ -1621,9 +1583,7 @@ pub struct Q2Status {
 pub fn q2_status_text(status: &Q2Status, maximum_bytes: usize) -> Result<String, Q2NetError> {
     let mut result = format!("{}\n", status.server_info);
     if result.len() >= maximum_bytes {
-        return Err(Q2NetError::Range(
-            "Q2 serverinfo exceeds status packet capacity",
-        ));
+        return Err(Q2NetError::Range("Q2 serverinfo exceeds status packet capacity"));
     }
     for player in &status.players {
         let line = format!("{} {} \"{}\"\n", player.score, player.ping, player.name);
@@ -1637,10 +1597,7 @@ pub fn q2_status_text(status: &Q2Status, maximum_bytes: usize) -> Result<String,
 
 /// Read a status reply (`readQ2Status`).
 #[must_use]
-pub fn read_q2_status(
-    message: &Q2ConnectionlessMessage,
-    protocol: ProtocolIdentity,
-) -> Option<ServerStatus> {
+pub fn read_q2_status(message: &Q2ConnectionlessMessage, protocol: ProtocolIdentity) -> Option<ServerStatus> {
     if message.command != "print" {
         return None;
     }
@@ -1659,8 +1616,7 @@ pub fn read_q2_status(
     let mut players = Vec::new();
     for line in lines {
         let mut parts = line.splitn(3, ' ');
-        let (Some(score), Some(ping), Some(name)) = (parts.next(), parts.next(), parts.next())
-        else {
+        let (Some(score), Some(ping), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
             continue;
         };
         // Mirrors /^(-?\d+) (-?\d+) "(.*)"$/: strict decimal pair plus quotes.
@@ -1681,7 +1637,10 @@ pub fn read_q2_status(
             });
         }
     }
-    let max_players = rules.get("maxclients").and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
+    let max_players = rules
+        .get("maxclients")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0);
     Some(ServerStatus {
         name: rules.get("hostname").cloned().unwrap_or_default(),
         map: rules.get("mapname").cloned().unwrap_or_default(),
@@ -1740,10 +1699,7 @@ pub fn read_q2_master_reply(bytes: &[u8]) -> Result<Option<Vec<NetworkAddress>>,
         start = 4;
     }
     let prefix = bytes.get(start..start + 8).unwrap_or_default();
-    if prefix.len() != 8
-        || prefix[0..7] != *b"servers"
-        || (prefix[7] != b' ' && prefix[7] != b'\n')
-    {
+    if prefix.len() != 8 || prefix[0..7] != *b"servers" || (prefix[7] != b' ' && prefix[7] != b'\n') {
         return Ok(None);
     }
     start += 8;
@@ -1881,12 +1837,7 @@ impl<H: Q2ConnectionlessHost> Q2ConnectionlessServer<H> {
     }
 
     /// Handle one packet; returns whether it was consumed.
-    pub fn receive(
-        &mut self,
-        from: &NetworkAddress,
-        bytes: &[u8],
-        now: u64,
-    ) -> Result<bool, Q2NetError> {
+    pub fn receive(&mut self, from: &NetworkAddress, bytes: &[u8], now: u64) -> Result<bool, Q2NetError> {
         let Some(message) = read_q2_out_of_band(bytes, false) else {
             return Ok(false);
         };
@@ -2314,11 +2265,7 @@ pub struct Q2TempEntity {
 }
 
 /// Read a game position (`readGamePosition`).
-pub fn read_game_position(
-    reader: &mut MsgReader<'_>,
-    floating: bool,
-    int23: bool,
-) -> Result<[f64; 3], Q2NetError> {
+pub fn read_game_position(reader: &mut MsgReader<'_>, floating: bool, int23: bool) -> Result<[f64; 3], Q2NetError> {
     if int23 {
         Ok([
             f64::from(read_q2pro_int23(reader, 0)?) / 8.0,
@@ -2350,10 +2297,7 @@ pub fn read_temp_entity(
     macro_rules! integer {
         ($name:expr, $value:expr) => {{
             let value = $value;
-            fields.push(Q2TempField::Integer {
-                name: $name,
-                value,
-            });
+            fields.push(Q2TempField::Integer { name: $name, value });
             value
         }};
     }
@@ -2525,11 +2469,7 @@ pub fn read_temp_entity(
     }
     reader.finish()?;
     let raw = reader.data_slice(start, reader.offset()).to_vec();
-    Ok(Q2TempEntity {
-        temp_type,
-        fields,
-        raw,
-    })
+    Ok(Q2TempEntity { temp_type, fields, raw })
 }
 
 // ---------------------------------------------------------------------------
@@ -2681,18 +2621,10 @@ impl Q2Wire {
                     flags: 0,
                 }))
             }
-            ProtocolIdentity::Q2Rerelease => {
-                Q2SelectedCodec::Rerelease(RereleaseCodec::new(false))
-            }
-            ProtocolIdentity::Q2PrivateClassic => {
-                Q2SelectedCodec::PrivateClassic(RereleaseCodec::new(true))
-            }
-            ProtocolIdentity::Q2Kex => {
-                Q2SelectedCodec::Kex(KexCodec::new(crate::q2_variants::PROTOCOL_KEX))
-            }
-            ProtocolIdentity::Q2KexDemo => {
-                Q2SelectedCodec::Kex(KexCodec::new(PROTOCOL_KEX_DEMOS))
-            }
+            ProtocolIdentity::Q2Rerelease => Q2SelectedCodec::Rerelease(RereleaseCodec::new(false)),
+            ProtocolIdentity::Q2PrivateClassic => Q2SelectedCodec::PrivateClassic(RereleaseCodec::new(true)),
+            ProtocolIdentity::Q2Kex => Q2SelectedCodec::Kex(KexCodec::new(crate::q2_variants::PROTOCOL_KEX)),
+            ProtocolIdentity::Q2KexDemo => Q2SelectedCodec::Kex(KexCodec::new(PROTOCOL_KEX_DEMOS)),
             _ => return Err(Q2NetError::Protocol("Not a Q2 protocol identity")),
         };
         Ok(Self {
@@ -2715,9 +2647,7 @@ impl Q2Wire {
     pub fn floating_coordinates(&self) -> bool {
         matches!(
             self.protocol,
-            ProtocolIdentity::Q2Rerelease
-                | ProtocolIdentity::Q2PrivateClassic
-                | ProtocolIdentity::Q2Kex
+            ProtocolIdentity::Q2Rerelease | ProtocolIdentity::Q2PrivateClassic | ProtocolIdentity::Q2Kex
         )
     }
 
@@ -2751,10 +2681,7 @@ impl Q2Wire {
     /// Whether the KEX wire is active.
     #[must_use]
     pub fn is_kex(&self) -> bool {
-        matches!(
-            self.protocol,
-            ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo
-        )
+        matches!(self.protocol, ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo)
     }
 
     /// Split-screen player count (KEX only).
@@ -2779,10 +2706,7 @@ impl Q2Wire {
 
     /// Record negotiated Q2Pro features.
     pub fn accept_q2pro_features(&mut self, revision: u16, flags: u16) -> Result<(), Q2NetError> {
-        let ProtocolIdentity::Q2Q2pro {
-            revision: current,
-        } = self.protocol
-        else {
+        let ProtocolIdentity::Q2Q2pro { revision: current } = self.protocol else {
             return Err(Q2NetError::Protocol(
                 "Recorded Q2PRO features disagree with protocol identity",
             ));
@@ -2898,21 +2822,19 @@ impl Q2Wire {
     }
 
     /// Read a batched move for the active protocol.
-    pub fn read_batch_move_wire(
-        &mut self,
-        nodelta: bool,
-        opcode_extra: u8,
-    ) -> Result<BatchMove, Q2NetError> {
+    pub fn read_batch_move_wire(&mut self, nodelta: bool, opcode_extra: u8) -> Result<BatchMove, Q2NetError> {
         let mut reader = MsgReader::new(&self.data);
         reader.skip(self.pos)?;
         let batch = match &mut self.codec {
-            Q2SelectedCodec::Q2Pro(_) => {
-                Q2ProCodec::read_batch_move(&mut reader, nodelta, opcode_extra)?
-            }
+            Q2SelectedCodec::Q2Pro(_) => Q2ProCodec::read_batch_move(&mut reader, nodelta, opcode_extra)?,
             Q2SelectedCodec::Rerelease(codec) | Q2SelectedCodec::PrivateClassic(codec) => {
                 codec.read_batch_move(&mut reader, nodelta)?
             }
-            _ => return Err(Q2NetError::Protocol("Batched movement is not supported by selected Q2 wire")),
+            _ => {
+                return Err(Q2NetError::Protocol(
+                    "Batched movement is not supported by selected Q2 wire",
+                ))
+            }
         };
         self.pos = reader.offset();
         Ok(batch)
@@ -2926,9 +2848,7 @@ impl Q2Wire {
         frames: &[BatchMoveFrame],
     ) -> Result<(), Q2NetError> {
         match &mut self.codec {
-            Q2SelectedCodec::Q2Pro(_) => {
-                Ok(Q2ProCodec::write_batch_move(writer, lastframe, frames)?)
-            }
+            Q2SelectedCodec::Q2Pro(_) => Ok(Q2ProCodec::write_batch_move(writer, lastframe, frames)?),
             Q2SelectedCodec::Rerelease(codec) | Q2SelectedCodec::PrivateClassic(codec) => {
                 Ok(codec.write_batch_move(writer, lastframe, frames)?)
             }
@@ -2968,28 +2888,16 @@ impl Q2Wire {
     }
 
     /// Write server data for the active protocol.
-    pub fn write_server_data(
-        &mut self,
-        writer: &mut MsgWriter,
-        data: &Q2ServerData,
-    ) -> Result<(), Q2NetError> {
+    pub fn write_server_data(&mut self, writer: &mut MsgWriter, data: &Q2ServerData) -> Result<(), Q2NetError> {
         match (&mut self.codec, data) {
-            (Q2SelectedCodec::Vanilla, Q2ServerData::Vanilla(data)) => {
-                Ok(crate::q2::write_server_data(writer, data)?)
-            }
-            (Q2SelectedCodec::R1Q2(codec), Q2ServerData::R1Q2(data)) => {
-                Ok(codec.write_server_data(writer, data)?)
-            }
-            (Q2SelectedCodec::Q2Pro(codec), Q2ServerData::Q2Pro(data)) => {
-                Ok(codec.write_server_data(writer, data)?)
-            }
+            (Q2SelectedCodec::Vanilla, Q2ServerData::Vanilla(data)) => Ok(crate::q2::write_server_data(writer, data)?),
+            (Q2SelectedCodec::R1Q2(codec), Q2ServerData::R1Q2(data)) => Ok(codec.write_server_data(writer, data)?),
+            (Q2SelectedCodec::Q2Pro(codec), Q2ServerData::Q2Pro(data)) => Ok(codec.write_server_data(writer, data)?),
             (Q2SelectedCodec::Rerelease(codec), Q2ServerData::Rerelease(data))
             | (Q2SelectedCodec::PrivateClassic(codec), Q2ServerData::Rerelease(data)) => {
                 Ok(codec.write_server_data(writer, data)?)
             }
-            (Q2SelectedCodec::Kex(codec), Q2ServerData::Kex(data)) => {
-                Ok(codec.write_server_data(writer, data)?)
-            }
+            (Q2SelectedCodec::Kex(codec), Q2ServerData::Kex(data)) => Ok(codec.write_server_data(writer, data)?),
             _ => Err(Q2NetError::Protocol("Q2 server data disagrees with protocol")),
         }
     }
@@ -2999,12 +2907,8 @@ impl Q2Wire {
         let mut reader = MsgReader::new(&self.data);
         reader.skip(self.pos)?;
         let data = match &mut self.codec {
-            Q2SelectedCodec::Vanilla => {
-                Q2ServerData::Vanilla(crate::q2::read_server_data(&mut reader)?)
-            }
-            Q2SelectedCodec::R1Q2(_) => {
-                Q2ServerData::R1Q2(R1q2Codec::read_server_data(&mut reader)?)
-            }
+            Q2SelectedCodec::Vanilla => Q2ServerData::Vanilla(crate::q2::read_server_data(&mut reader)?),
+            Q2SelectedCodec::R1Q2(_) => Q2ServerData::R1Q2(R1q2Codec::read_server_data(&mut reader)?),
             Q2SelectedCodec::Q2Pro(codec) => {
                 let minor = codec.features().revision;
                 Q2ServerData::Q2Pro(codec.read_server_data(&mut reader, minor)?)
@@ -3019,11 +2923,7 @@ impl Q2Wire {
     }
 
     /// Write a spawn baseline.
-    pub fn write_spawn_baseline(
-        &mut self,
-        writer: &mut MsgWriter,
-        entity: &EntityState,
-    ) -> Result<bool, Q2NetError> {
+    pub fn write_spawn_baseline(&mut self, writer: &mut MsgWriter, entity: &EntityState) -> Result<bool, Q2NetError> {
         match &mut self.codec {
             Q2SelectedCodec::Vanilla => Ok(crate::q2::write_spawn_baseline(writer, entity)?),
             Q2SelectedCodec::R1Q2(codec) => Ok(codec.write_spawn_baseline(writer, entity)?),
@@ -3036,11 +2936,7 @@ impl Q2Wire {
     }
 
     /// Write an entity removal.
-    pub fn write_entity_remove(
-        &mut self,
-        writer: &mut MsgWriter,
-        number: u16,
-    ) -> Result<(), Q2NetError> {
+    pub fn write_entity_remove(&mut self, writer: &mut MsgWriter, number: u16) -> Result<(), Q2NetError> {
         match &mut self.codec {
             Q2SelectedCodec::Kex(_) => Ok(KexCodec::write_entity_remove(writer, number)?),
             _ => Ok(crate::q2::write_entity_remove(writer, number)?),
@@ -3057,14 +2953,14 @@ impl Q2Wire {
         match &mut self.codec {
             Q2SelectedCodec::Kex(_) => {
                 let mut reader = MsgReader::new(&self.data);
-        reader.skip(self.pos)?;
+                reader.skip(self.pos)?;
                 let result = KexCodec::read_packet_entities_begin(&mut reader);
                 self.pos = reader.offset();
                 Ok(result?)
             }
             _ => {
                 let mut reader = MsgReader::new(&self.data);
-        reader.skip(self.pos)?;
+                reader.skip(self.pos)?;
                 let result = crate::q2::read_packet_entities_begin(&mut reader);
                 self.pos = reader.offset();
                 Ok(result?)
@@ -3082,14 +2978,12 @@ impl Q2Wire {
         newentity: bool,
     ) -> Result<bool, Q2NetError> {
         match &mut self.codec {
-            Q2SelectedCodec::Vanilla => Ok(crate::q2::write_delta_entity(
-                writer, from, to, force, newentity,
-            )?),
+            Q2SelectedCodec::Vanilla => Ok(crate::q2::write_delta_entity(writer, from, to, force, newentity)?),
             Q2SelectedCodec::R1Q2(codec) => Ok(codec.write_delta_entity(writer, from, to, force, newentity)?),
             Q2SelectedCodec::Q2Pro(codec) => Ok(codec.write_delta_entity(writer, from, to, force, newentity)?),
-            Q2SelectedCodec::Rerelease(_) | Q2SelectedCodec::PrivateClassic(_) => Ok(
-                RereleaseCodec::write_delta_entity(writer, from, to, force, newentity)?,
-            ),
+            Q2SelectedCodec::Rerelease(_) | Q2SelectedCodec::PrivateClassic(_) => {
+                Ok(RereleaseCodec::write_delta_entity(writer, from, to, force, newentity)?)
+            }
             Q2SelectedCodec::Kex(codec) => Ok(codec.write_delta_entity(writer, from, to, force, newentity)?),
         }
     }
@@ -3113,9 +3007,7 @@ impl Q2Wire {
                     bits: Q2EntityBits::Q2Pro(bits),
                 }
             }
-            Q2SelectedCodec::Rerelease(_)
-            | Q2SelectedCodec::PrivateClassic(_)
-            | Q2SelectedCodec::Kex(_) => {
+            Q2SelectedCodec::Rerelease(_) | Q2SelectedCodec::PrivateClassic(_) | Q2SelectedCodec::Kex(_) => {
                 let wide = read_entity_bits_wide(&mut reader)?;
                 Q2EntityHeader {
                     number: wide.number,
@@ -3146,10 +3038,9 @@ impl Q2Wire {
             (Q2SelectedCodec::Q2Pro(codec), Q2EntityBits::Q2Pro(bits)) => {
                 codec.read_delta_entity(&mut reader, from, number, bits)?
             }
-            (
-                Q2SelectedCodec::Rerelease(_) | Q2SelectedCodec::PrivateClassic(_),
-                Q2EntityBits::Wide(wide),
-            ) => RereleaseCodec::read_delta_entity(&mut reader, from, number, wide)?,
+            (Q2SelectedCodec::Rerelease(_) | Q2SelectedCodec::PrivateClassic(_), Q2EntityBits::Wide(wide)) => {
+                RereleaseCodec::read_delta_entity(&mut reader, from, number, wide)?
+            }
             (Q2SelectedCodec::Kex(codec), Q2EntityBits::Wide(wide)) => {
                 codec.read_delta_entity(&mut reader, from, number, wide)?
             }
@@ -3278,9 +3169,7 @@ impl Q2Wire {
     }
 
     /// Read a KEX spawn baseline blast.
-    pub fn read_kex_spawnbaselineblast(
-        &mut self,
-    ) -> Result<Vec<crate::q2_variants::KexBaseline>, Q2NetError> {
+    pub fn read_kex_spawnbaselineblast(&mut self) -> Result<Vec<crate::q2_variants::KexBaseline>, Q2NetError> {
         let Q2SelectedCodec::Kex(codec) = &mut self.codec else {
             return Err(Q2NetError::Protocol("KEX blast on a non-KEX wire"));
         };
@@ -3292,9 +3181,7 @@ impl Q2Wire {
     }
 
     /// Read a KEX muzzle flash.
-    pub fn read_kex_muzzleflash3(
-        &mut self,
-    ) -> Result<crate::q2_variants::KexMuzzleflash3, Q2NetError> {
+    pub fn read_kex_muzzleflash3(&mut self) -> Result<crate::q2_variants::KexMuzzleflash3, Q2NetError> {
         let mut reader = MsgReader::new(&self.data);
         reader.skip(self.pos)?;
         let value = KexCodec::read_muzzleflash3(&mut reader)?;
@@ -3437,20 +3324,14 @@ fn ordered_entities(entities: &[EntityState]) -> Result<(), Q2NetError> {
     for entity in entities {
         let number = u32::from(entity.number);
         if number <= previous || number > 65535 {
-            return Err(Q2NetError::Range(
-                "Q2 frame entity numbers must be unique and sorted",
-            ));
+            return Err(Q2NetError::Range("Q2 frame entity numbers must be unique and sorted"));
         }
         previous = number;
     }
     Ok(())
 }
 
-fn remove_entity(
-    codec: &Q2SelectedCodec,
-    writer: &mut MsgWriter,
-    number: u16,
-) -> Result<(), Q2NetError> {
+fn remove_entity(codec: &Q2SelectedCodec, writer: &mut MsgWriter, number: u16) -> Result<(), Q2NetError> {
     if matches!(codec, Q2SelectedCodec::Kex(_)) {
         Ok(KexCodec::write_entity_remove(writer, number)?)
     } else {
@@ -3528,10 +3409,8 @@ pub fn encode_q2_frame(
             let previous = if index == 0 {
                 old.map_or(&base, |frame| &frame.player)
             } else {
-                old.and_then(|frame| {
-                    frame.split_players.get(index - 1).map(|split| &split.player)
-                })
-                .unwrap_or(&base)
+                old.and_then(|frame| frame.split_players.get(index - 1).map(|split| &split.player))
+                    .unwrap_or(&base)
             };
             writer.write_byte(area_bits.len() as u8)?;
             writer.write_bytes(area_bits)?;
@@ -3636,9 +3515,7 @@ impl Q2FrameHistory {
     pub fn latest(&self) -> Option<&Q2WireFrame> {
         let mut latest: Option<&Q2WireFrame> = None;
         for frame in self.frames.values() {
-            if frame.valid
-                && latest.is_none_or(|best: &Q2WireFrame| frame.server_frame > best.server_frame)
-            {
+            if frame.valid && latest.is_none_or(|best: &Q2WireFrame| frame.server_frame > best.server_frame) {
                 latest = Some(frame);
             }
         }
@@ -3669,11 +3546,7 @@ impl Q2FrameHistory {
     /// Decode one frame from the wire cursor, recording it (`read`).
     ///
     /// The caller consumes and masks the frame opcode first.
-    pub fn read(
-        &mut self,
-        wire: &mut Q2Wire,
-        read_suppress_byte: bool,
-    ) -> Result<Q2WireFrame, Q2NetError> {
+    pub fn read(&mut self, wire: &mut Q2Wire, read_suppress_byte: bool) -> Result<Q2WireFrame, Q2NetError> {
         let mut area_bits = Vec::new();
         let header = wire.read_frame_header(&mut area_bits, read_suppress_byte)?;
         let old = if header.deltaframe > 0 {
@@ -3792,9 +3665,11 @@ fn zero_entity_bits(protocol: ProtocolIdentity) -> Q2EntityBits {
         ProtocolIdentity::Q2Rerelease
         | ProtocolIdentity::Q2PrivateClassic
         | ProtocolIdentity::Q2Kex
-        | ProtocolIdentity::Q2KexDemo => {
-            Q2EntityBits::Wide(WideEntityBits { number: 0, lo: 0, hi: 0 })
-        }
+        | ProtocolIdentity::Q2KexDemo => Q2EntityBits::Wide(WideEntityBits {
+            number: 0,
+            lo: 0,
+            hi: 0,
+        }),
         _ => Q2EntityBits::Classic(0),
     }
 }
@@ -4051,9 +3926,8 @@ pub struct Q2ServerMessageReader {
     compressed_download: Vec<u8>,
     inflated_download_bytes: usize,
     private_opcodes: HashSet<u8>,
-    private_message: Option<
-        Box<dyn FnMut(u8, &mut MsgReader<'_>, ProtocolIdentity) -> Result<Q2PrivateMessage, Q2NetError>>,
-    >,
+    private_message:
+        Option<Box<dyn FnMut(u8, &mut MsgReader<'_>, ProtocolIdentity) -> Result<Q2PrivateMessage, Q2NetError>>>,
 }
 
 impl Q2ServerMessageReader {
@@ -4066,10 +3940,7 @@ impl Q2ServerMessageReader {
             Box<dyn FnMut(u8, &mut MsgReader<'_>, ProtocolIdentity) -> Result<Q2PrivateMessage, Q2NetError>>,
         >,
     ) -> Result<Self, Q2NetError> {
-        if options.max_config_strings < 1
-            || options.inventory_slots < 1
-            || options.inventory_slots > 32768
-        {
+        if options.max_config_strings < 1 || options.inventory_slots < 1 || options.inventory_slots > 32768 {
             return Err(Q2NetError::Range("Invalid Q2 message layout limits"));
         }
         Ok(Self {
@@ -4173,7 +4044,6 @@ impl Q2ServerMessageReader {
         Ok(records)
     }
 
-
     fn record(&self, opcode: u8, start: usize, event: Q2ServerEvent) -> Q2ServerRecord {
         let seat = if matches!(event, Q2ServerEvent::Frame { .. }) && self.wire.is_kex() {
             0
@@ -4206,9 +4076,9 @@ impl Q2ServerMessageReader {
         if header.number == 0 {
             return Ok(None);
         }
-        let entity =
-            self.wire
-                .read_delta_entity(&EntityState::default(), header.number, header)?;
+        let entity = self
+            .wire
+            .read_delta_entity(&EntityState::default(), header.number, header)?;
         self.baselines.insert(entity.number, entity.clone());
         for history in self.histories.values_mut() {
             history.baselines.insert(entity.number, entity.clone());
@@ -4224,9 +4094,9 @@ impl Q2ServerMessageReader {
                 index: sound.index,
                 entity: sound.entity,
                 channel: sound.channel,
-                position: sound.pos.map(|pos| {
-                    [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])]
-                }),
+                position: sound
+                    .pos
+                    .map(|pos| [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])]),
                 volume: sound.volume,
                 attenuation: sound.attenuation,
                 delay_seconds: sound.timeofs,
@@ -4276,9 +4146,7 @@ impl Q2ServerMessageReader {
     }
 
     fn download(&mut self, mode: Q2DownloadMode) -> Result<Q2ServerEvent, Q2NetError> {
-        let (length, percent) = self
-            .wire
-            .with_reader(|reader| Ok((reader.short()?, reader.byte()?)))?;
+        let (length, percent) = self.wire.with_reader(|reader| Ok((reader.short()?, reader.byte()?)))?;
         if length < 0 {
             self.compressed_download.clear();
             self.inflated_download_bytes = 0;
@@ -4305,9 +4173,7 @@ impl Q2ServerMessageReader {
                 let mut inflated = Vec::new();
                 decoder
                     .decompress_vec(&bytes, &mut inflated, FlushDecompress::Finish)
-                    .map_err(|error| {
-                        Q2NetError::Variant(VariantError::Zlib(error.to_string()))
-                    })?;
+                    .map_err(|error| Q2NetError::Variant(VariantError::Zlib(error.to_string())))?;
                 // The donor caps output at the header length (or one byte).
                 inflated.truncate(expected.max(1).saturating_add(1));
                 if inflated.len() != expected {
@@ -4332,9 +4198,7 @@ impl Q2ServerMessageReader {
                             FlushDecompress::Sync
                         },
                     )
-                    .map_err(|error| {
-                        Q2NetError::Variant(VariantError::Zlib(error.to_string()))
-                    })?;
+                    .map_err(|error| Q2NetError::Variant(VariantError::Zlib(error.to_string())))?;
                 let delta = inflated[self.inflated_download_bytes.min(inflated.len())..].to_vec();
                 self.inflated_download_bytes = inflated.len();
                 if percent == 100 {
@@ -4456,9 +4320,7 @@ impl Q2ServerMessageReader {
                 }
                 13 => {
                     let Some(event) = self.config()? else {
-                        return Err(Q2NetError::Protocol(
-                            "Q2 configstring terminator outside stream",
-                        ));
+                        return Err(Q2NetError::Protocol("Q2 configstring terminator outside stream"));
                     };
                     records.push(self.record(opcode, start, event));
                 }
@@ -4487,20 +4349,13 @@ impl Q2ServerMessageReader {
                 3 => {
                     let floating = self.wire.floating_coordinates();
                     let extended = self.options.q2pro_extended_temp_entities.unwrap_or_else(|| {
-                        matches!(
-                            self.wire.protocol(),
-                            ProtocolIdentity::Q2Q2pro { .. }
-                        ) && self.wire.q2pro_extended()
+                        matches!(self.wire.protocol(), ProtocolIdentity::Q2Q2pro { .. }) && self.wire.q2pro_extended()
                     });
                     let int23 = self.wire.q2pro_extended_v2();
                     let value = self
                         .wire
                         .with_reader(|reader| read_temp_entity(reader, floating, extended, int23))?;
-                    records.push(self.record(
-                        opcode,
-                        start,
-                        Q2ServerEvent::TempEntity { value },
-                    ));
+                    records.push(self.record(opcode, start, Q2ServerEvent::TempEntity { value }));
                 }
                 1 | 2 => {
                     let (mut entity, mut flash) = self
@@ -4563,9 +4418,7 @@ impl Q2ServerMessageReader {
                     }
                     for item in self.wire.read_kex_configblast()? {
                         if item.index >= self.options.max_config_strings {
-                            return Err(Q2NetError::Protocol(
-                                "KEX configblast index exceeds selected layout",
-                            ));
+                            return Err(Q2NetError::Protocol("KEX configblast index exceeds selected layout"));
                         }
                         self.config_strings.insert(item.index, item.value.clone());
                         records.push(self.record(
@@ -4588,20 +4441,14 @@ impl Q2ServerMessageReader {
                         for history in self.histories.values_mut() {
                             history.baselines.insert(item.entnum, item.state.clone());
                         }
-                        records.push(self.record(
-                            opcode,
-                            start,
-                            Q2ServerEvent::Baseline { entity: item.state },
-                        ));
+                        records.push(self.record(opcode, start, Q2ServerEvent::Baseline { entity: item.state }));
                     }
                 }
                 24 => {
                     if kex {
                         records.push(self.record(opcode, start, Q2ServerEvent::LevelRestart));
                     } else {
-                        let (index, value) = self
-                            .wire
-                            .with_reader(|reader| Ok((reader.long()?, reader.long()?)))?;
+                        let (index, value) = self.wire.with_reader(|reader| Ok((reader.long()?, reader.long()?)))?;
                         records.push(self.record(opcode, start, Q2ServerEvent::Setting { index, value }));
                     }
                 }
@@ -4676,9 +4523,7 @@ impl Q2ServerMessageReader {
                             protocol: self.wire.protocol(),
                         });
                     }
-                    let (index, value) = self
-                        .wire
-                        .with_reader(|reader| Ok((reader.long()?, reader.long()?)))?;
+                    let (index, value) = self.wire.with_reader(|reader| Ok((reader.long()?, reader.long()?)))?;
                     records.push(self.record(opcode, start, Q2ServerEvent::Setting { index, value }));
                 }
                 38 => {
@@ -4724,5 +4569,124 @@ impl Q2ServerMessageReader {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    fn channel_options(side: ChannelSide) -> Q2ChannelOptions {
+        Q2ChannelOptions {
+            side,
+            protocol: ProtocolIdentity::Q2Classic,
+            channel: ChannelKind::Old,
+            qport: 27960,
+            payload_bytes: None,
+            message_bytes: None,
+            max_datagram_bytes: None,
+            compress: false,
+            sequence_recording: None,
+        }
+    }
 
+    #[test]
+    fn out_of_band_round_trip() {
+        let bytes = q2_out_of_band("getchallenge", false);
+        assert_eq!(&bytes[..4], &[255, 255, 255, 255]);
+        let message = read_q2_out_of_band(&bytes, false).expect("message");
+        assert_eq!(message.command, "getchallenge");
+        assert!(read_q2_out_of_band(&[1, 2, 3], false).is_none());
+    }
+
+    #[test]
+    fn connect_request_round_trip() {
+        let request = Q2ConnectRequest {
+            protocol: ProtocolIdentity::Q2Classic,
+            qport: 27960,
+            challenge: 1234,
+            userinfo: "\\name\\t".to_string(),
+            payload_bytes: 1390,
+            channel: ChannelKind::Old,
+            compression: false,
+            social_ids: None,
+        };
+        let bytes = write_q2_connect(&request).unwrap();
+        let message = read_q2_out_of_band(&bytes, false).expect("oob");
+        let back = read_q2_connect(&message).unwrap();
+        assert_eq!(back.protocol, ProtocolIdentity::Q2Classic);
+        assert_eq!(back.challenge, 1234);
+        assert_eq!(back.userinfo, "\\name\\t");
+    }
+
+    #[test]
+    fn challenge_parses_versions() {
+        let bytes = q2_out_of_band("challenge 777 p=34,35", false);
+        let message = read_q2_out_of_band(&bytes, false).expect("oob");
+        let challenge = read_q2_challenge(&message).unwrap();
+        assert_eq!(challenge.challenge, 777);
+        assert_eq!(challenge.versions, vec![34, 35]);
+    }
+
+    #[test]
+    fn channel_loopback_unreliable() {
+        let mut client = Q2Channel::new(channel_options(ChannelSide::Client)).unwrap();
+        let mut server = Q2Channel::new(channel_options(ChannelSide::Server)).unwrap();
+        let packet = client.transmit(&[9, 8, 7], 100).unwrap();
+        let received = server.receive(&packet, 100).unwrap();
+        let Q2ChannelReceive::Message { sequence, bytes, .. } = received else {
+            panic!("expected message, got {received:?}");
+        };
+        assert_eq!(sequence, 1);
+        assert_eq!(bytes, vec![9, 8, 7]);
+        let reply = server.transmit(&[1], 101).unwrap();
+        let back = client.receive(&reply, 101).unwrap();
+        assert!(matches!(back, Q2ChannelReceive::Message { .. }));
+    }
+
+    #[test]
+    fn channel_reliable_queue_and_ack() {
+        let mut client = Q2Channel::new(channel_options(ChannelSide::Client)).unwrap();
+        let mut server = Q2Channel::new(channel_options(ChannelSide::Server)).unwrap();
+        client.queue_reliable(&[5, 6]).unwrap();
+        assert!(client.reliable_pending());
+        let packet = client.transmit(&[], 100).unwrap();
+        let received = server.receive(&packet, 100).unwrap();
+        assert!(matches!(received, Q2ChannelReceive::Message { .. }));
+    }
+
+    #[test]
+    fn handshake_challenge_connect_flow() {
+        let remote = ipv4_address([127, 0, 0, 1], 27910, false).unwrap();
+        let mut handshake = Q2ClientHandshake::new(
+            remote.clone(),
+            vec![ProtocolIdentity::Q2Classic],
+            27960,
+            || "\\name\\t".to_string(),
+            1390,
+            1000,
+            String::new,
+        )
+        .unwrap();
+        assert!(matches!(handshake.state(), Q2ClientHandshakeState::Challenging { .. }));
+        let poll = handshake.poll(0).unwrap().expect("challenge poll");
+        let message = read_q2_out_of_band(&poll, false).expect("oob");
+        assert_eq!(message.command, "getchallenge");
+        let reply = q2_out_of_band("challenge 555 p=34", false);
+        let message = read_q2_out_of_band(&reply, false).expect("oob");
+        assert!(handshake.receive(&remote, &message).unwrap());
+        assert!(matches!(handshake.state(), Q2ClientHandshakeState::Connecting { .. }));
+        let poll = handshake.poll(100).unwrap().expect("connect poll");
+        let message = read_q2_out_of_band(&poll, false).expect("oob");
+        assert_eq!(message.command, "connect");
+        let accept = q2_out_of_band("client_connect", false);
+        let message = read_q2_out_of_band(&accept, false).expect("oob");
+        assert!(handshake.receive(&remote, &message).unwrap());
+        assert!(matches!(handshake.state(), Q2ClientHandshakeState::Connected { .. }));
+    }
+
+    #[test]
+    fn protocol_negotiation() {
+        assert_eq!(q2_protocol(34, 0).unwrap(), ProtocolIdentity::Q2Classic);
+        q2_codec_support(ProtocolIdentity::Q2Classic).unwrap();
+        assert_eq!(negotiated_r1q2_protocol(1905, Some(1904)).unwrap(), 1904);
+        assert!(negotiated_r1q2_protocol(1905, Some(1800)).is_err());
+    }
+}

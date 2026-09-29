@@ -263,9 +263,7 @@ impl<'a> RankingLifecycle<'a> {
         match started.unwrap_or_else(|| unreachable!("provider presence was checked")) {
             Ok(game) => {
                 self.current_match = Some(game);
-                self.set_state(RankingServiceState::Active {
-                    game_id: game.game_id,
-                });
+                self.set_state(RankingServiceState::Active { game_id: game.game_id });
                 Ok(())
             }
             Err(error) => Err(self.fail(error)),
@@ -274,7 +272,10 @@ impl<'a> RankingLifecycle<'a> {
 
     /// Log in or create an account (`account`).
     pub fn account(&mut self, slot: i32, request: RankingAccountRequest) -> Result<(), RankingError> {
-        if self.provider.is_none() || self.current_match.is_none() || !matches!(self.current, RankingServiceState::Active { .. }) {
+        if self.provider.is_none()
+            || self.current_match.is_none()
+            || !matches!(self.current, RankingServiceState::Active { .. })
+        {
             return Err(RankingError::NotActive);
         }
         if matches!(self.player(slot), RankingPlayerState::Active { .. }) {
@@ -282,7 +283,11 @@ impl<'a> RankingLifecycle<'a> {
         }
         self.set_player(slot, RankingPlayerState::Pending);
         let game = self.current_match.unwrap_or(RankingMatch { game_id: 0 });
-        let result = self.provider.as_deref_mut().unwrap_or_else(|| unreachable!("provider presence was checked")).login(&game, &request);
+        let result = self
+            .provider
+            .as_deref_mut()
+            .unwrap_or_else(|| unreachable!("provider presence was checked"))
+            .login(&game, &request);
         match result {
             Ok(RankingLoginResult::Denied { reason }) => {
                 self.set_player(slot, RankingPlayerState::Denied { reason });
@@ -296,7 +301,11 @@ impl<'a> RankingLifecycle<'a> {
                     });
                     return Err(error);
                 }
-                let join = self.provider.as_deref_mut().unwrap_or_else(|| unreachable!("provider presence was checked")).join(&game, &account);
+                let join = self
+                    .provider
+                    .as_deref_mut()
+                    .unwrap_or_else(|| unreachable!("provider presence was checked"))
+                    .join(&game, &account);
                 match join {
                     Ok(()) => {
                         self.set_player(slot, RankingPlayerState::Active { account });
@@ -372,7 +381,12 @@ impl<'a> RankingLifecycle<'a> {
         };
         let game = self.current_match.unwrap_or(RankingMatch { game_id: 0 });
         let report = make(first, second);
-        if let Err(error) = self.provider.as_deref_mut().unwrap_or_else(|| unreachable!("provider presence was checked")).report(&game, &report) {
+        if let Err(error) = self
+            .provider
+            .as_deref_mut()
+            .unwrap_or_else(|| unreachable!("provider presence was checked"))
+            .report(&game, &report)
+        {
             return Err(self.fail(error));
         }
         Ok(())
@@ -524,10 +538,13 @@ mod tests {
         lifecycle.begin(true, false, "q3").unwrap();
         assert!(matches!(lifecycle.state(), RankingServiceState::Active { .. }));
         lifecycle
-            .account(0, RankingAccountRequest::Login {
-                username: "a".to_owned(),
-                password: "b".to_owned(),
-            })
+            .account(
+                0,
+                RankingAccountRequest::Login {
+                    username: "a".to_owned(),
+                    password: "b".to_owned(),
+                },
+            )
             .unwrap();
         assert!(matches!(lifecycle.player(0), RankingPlayerState::Active { .. }));
         lifecycle.report_int(0, -1, 1, 2, true).unwrap();

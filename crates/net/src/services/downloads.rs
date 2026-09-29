@@ -147,8 +147,8 @@ impl DownloadFile {
         for part in &parts {
             path.push(part);
         }
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(DownloadError::NotRegularFile);
         }
@@ -182,8 +182,7 @@ impl DownloadSource for DownloadFile {
         file.seek(SeekFrom::Start(offset))
             .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         let mut bytes = vec![0u8; (self.byte_length - offset).min(max_bytes as u64) as usize];
-        file.read_exact(&mut bytes)
-            .map_err(|_| DownloadError::UnexpectedEof)?;
+        file.read_exact(&mut bytes).map_err(|_| DownloadError::UnexpectedEof)?;
         Ok(bytes)
     }
 
@@ -300,11 +299,7 @@ pub struct DownloadSink {
 
 impl DownloadSink {
     /// Create a sequential sink (`DownloadSink.create`).
-    pub fn create(
-        root: &Path,
-        name: &str,
-        expected: SinkExpectation,
-    ) -> Result<Self, DownloadError> {
+    pub fn create(root: &Path, name: &str, expected: SinkExpectation) -> Result<Self, DownloadError> {
         Self::open(root, name, expected, WriteMode::Sequential)
     }
 
@@ -333,10 +328,13 @@ impl DownloadSink {
             if span.start != next || span.end < span.start || (total > 0 && span.end >= total) {
                 return Err(DownloadError::BadSpans);
             }
-            ranges.insert(span.start, RangeSpan {
-                end: span.end,
-                written: 0,
-            });
+            ranges.insert(
+                span.start,
+                RangeSpan {
+                    end: span.end,
+                    written: 0,
+                },
+            );
             next = span.end + 1;
         }
         if next != total {
@@ -345,12 +343,7 @@ impl DownloadSink {
         Self::open(root, name, expected, WriteMode::Ranged { total, spans: ranges })
     }
 
-    fn open(
-        root: &Path,
-        name: &str,
-        expected: SinkExpectation,
-        mode: WriteMode,
-    ) -> Result<Self, DownloadError> {
+    fn open(root: &Path, name: &str, expected: SinkExpectation, mode: WriteMode) -> Result<Self, DownloadError> {
         let parts = download_path(name)?;
         let mut parent = root.to_path_buf();
         for part in &parts[..parts.len() - 1] {
@@ -359,11 +352,7 @@ impl DownloadSink {
         std::fs::create_dir_all(&parent).map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         let leaf = parts[parts.len() - 1].clone();
         let sequence = SINK_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let staged = parent.join(format!(
-            ".download-{}-{}",
-            std::process::id(),
-            sequence
-        ));
+        let staged = parent.join(format!(".download-{}-{}", std::process::id(), sequence));
         let target = parent.join(leaf);
         let file = OpenOptions::new()
             .write(true)
@@ -412,7 +401,8 @@ impl DownloadSink {
             return Err(DownloadError::ExceedsSize);
         }
         let file = self.file()?;
-        file.write_all(bytes).map_err(|error| DownloadError::Filesystem(error.to_string()))?;
+        file.write_all(bytes)
+            .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         self.count += bytes.len() as u64;
         Ok(())
     }
@@ -435,7 +425,8 @@ impl DownloadSink {
         let file = self.file.as_mut().ok_or(DownloadError::SinkClosed)?;
         file.seek(SeekFrom::Start(span_start + span.written))
             .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
-        file.write_all(bytes).map_err(|error| DownloadError::Filesystem(error.to_string()))?;
+        file.write_all(bytes)
+            .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         span.written += bytes.len() as u64;
         self.count += bytes.len() as u64;
         Ok(())
@@ -445,9 +436,7 @@ impl DownloadSink {
         let WriteMode::Ranged { total, spans } = &self.mode else {
             return Ok(());
         };
-        if self.count != *total
-            || spans.iter().any(|(start, span)| span.written != span.end - start + 1)
-        {
+        if self.count != *total || spans.iter().any(|(start, span)| span.written != span.end - start + 1) {
             return Err(DownloadError::Incomplete);
         }
         let length = self
@@ -504,7 +493,8 @@ impl DownloadSink {
         }
         // Flush staged bytes before hashing.
         if let Some(file) = self.file.as_mut() {
-            file.flush().map_err(|error| DownloadError::Filesystem(error.to_string()))?;
+            file.flush()
+                .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         }
         let digest = self.digest()?;
         if let SinkExpectation::Content(expected) = &self.expected {
@@ -514,8 +504,7 @@ impl DownloadSink {
         }
         // link fails if the destination exists, avoiding replacement of
         // installed game assets.
-        std::fs::hard_link(&self.staged, &self.target)
-            .map_err(|error| DownloadError::Filesystem(error.to_string()))?;
+        std::fs::hard_link(&self.staged, &self.target).map_err(|error| DownloadError::Filesystem(error.to_string()))?;
         Ok(digest)
     }
 
@@ -689,11 +678,7 @@ impl<'a> DownloadWindow<'a> {
 ///
 /// The host performs the request and hands over the validated response body;
 /// only `http:` and `https:` URLs are accepted.
-pub fn download_body(
-    url: &str,
-    sink: &mut DownloadSink,
-    body: &mut dyn Read,
-) -> Result<ContentDigest, DownloadError> {
+pub fn download_body(url: &str, sink: &mut DownloadSink, body: &mut dyn Read) -> Result<ContentDigest, DownloadError> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         sink.close();
         return Err(DownloadError::BadScheme);
@@ -720,7 +705,11 @@ pub fn verify_pure_content(
     required: &[ContentDigest],
     available: &std::collections::HashSet<ContentDigest>,
 ) -> Vec<ContentDigest> {
-    required.iter().filter(|digest| !available.contains(digest)).cloned().collect()
+    required
+        .iter()
+        .filter(|digest| !available.contains(digest))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -768,10 +757,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("qa-net-sink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let digest = ContentDigest::new(
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        )
-        .unwrap();
+        let digest = ContentDigest::new("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").unwrap();
         let mut sink = DownloadSink::create(
             &root,
             "a/b.bin",

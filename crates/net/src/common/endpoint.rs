@@ -60,11 +60,7 @@ pub enum NetworkAddress {
     /// Named loopback endpoint.
     Loopback { id: String },
     /// IPX network, node, and port.
-    Ipx {
-        network: u32,
-        node: [u8; 6],
-        port: u16,
-    },
+    Ipx { network: u32, node: [u8; 6], port: u16 },
 }
 
 impl NetworkAddress {
@@ -89,9 +85,7 @@ impl NetworkAddress {
     #[must_use]
     pub fn port(&self) -> Option<u16> {
         match self {
-            Self::Ipv4 { port, .. }
-            | Self::Ipv6 { port, .. }
-            | Self::Ipx { port, .. } => Some(*port),
+            Self::Ipv4 { port, .. } | Self::Ipv6 { port, .. } | Self::Ipx { port, .. } => Some(*port),
             Self::Loopback { .. } => None,
         }
     }
@@ -149,11 +143,7 @@ pub fn ip_address(host: &str, port: u32, allow_zero: bool) -> Result<NetworkAddr
 }
 
 /// Build an IPX address (`ipxAddress`).
-pub fn ipx_address(
-    network: u32,
-    node: [u8; 6],
-    port: u32,
-) -> Result<NetworkAddress, AddressError> {
+pub fn ipx_address(network: u32, node: [u8; 6], port: u32) -> Result<NetworkAddress, AddressError> {
     Ok(NetworkAddress::Ipx {
         network,
         node,
@@ -242,18 +232,13 @@ pub fn parse_network_address(record: &AddressRecord) -> Result<NetworkAddress, A
             ipv4_address([host[0], host[1], host[2], host[3]], port, false)
         }
         "ipx" => {
-            let (Some(node), Some(network), Some(port)) = (&record.node, record.network, record.port)
-            else {
+            let (Some(node), Some(network), Some(port)) = (&record.node, record.network, record.port) else {
                 return Err(AddressError::MissingPort);
             };
             if node.len() != 6 {
                 return Err(AddressError::BadFields);
             }
-            ipx_address(
-                network,
-                [node[0], node[1], node[2], node[3], node[4], node[5]],
-                port,
-            )
+            ipx_address(network, [node[0], node[1], node[2], node[3], node[4], node[5]], port)
         }
         _ => Err(AddressError::BadRecord),
     }
@@ -291,11 +276,7 @@ pub enum ResolveFamily {
 }
 
 /// Resolve `host[:port]` text with a default port (`resolveAddress`).
-pub fn resolve_address(
-    text: &str,
-    default_port: u32,
-    family: ResolveFamily,
-) -> Result<NetworkAddress, AddressError> {
+pub fn resolve_address(text: &str, default_port: u32, family: ResolveFamily) -> Result<NetworkAddress, AddressError> {
     let mut host = text;
     let mut port = default_port;
     if let Some(rest) = text.strip_prefix('[') {

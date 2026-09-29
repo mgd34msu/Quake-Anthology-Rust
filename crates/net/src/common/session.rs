@@ -126,7 +126,11 @@ pub fn js_number_string(value: f64) -> Result<String, SessionError> {
     let sign = if value.is_sign_negative() { "-" } else { "" };
     let scientific = format!("{:e}", value.abs());
     let (mantissa, exponent) = scientific.split_once('e').unwrap_or((scientific.as_str(), "0"));
-    let digits: String = mantissa.bytes().filter(|byte| *byte != b'.').map(|byte| byte as char).collect();
+    let digits: String = mantissa
+        .bytes()
+        .filter(|byte| *byte != b'.')
+        .map(|byte| byte as char)
+        .collect();
     let digits = digits.trim_end_matches('0');
     let digits = if digits.is_empty() { "0" } else { digits };
     let exp: i32 = exponent.parse().unwrap_or(0);
@@ -247,10 +251,7 @@ fn composition_json(composition: &SessionComposition) -> Json {
                 .map(|entry| {
                     let mut fields = BTreeMap::new();
                     fields.insert("slot".to_owned(), Json::Number(f64::from(entry.slot)));
-                    fields.insert(
-                        "generation".to_owned(),
-                        Json::Number(f64::from(entry.generation)),
-                    );
+                    fields.insert("generation".to_owned(), Json::Number(f64::from(entry.generation)));
                     fields.insert("configuration".to_owned(), entry.configuration.clone());
                     Json::Object(fields)
                 })
@@ -306,11 +307,7 @@ pub enum WireAdmission {
 /// Source wire capability (`SourceWireCapability`).
 pub trait SourceWireCapability {
     /// Admit a source protocol for a composition.
-    fn supports(
-        &self,
-        composition: &SessionComposition,
-        protocol: &ProtocolIdentity,
-    ) -> WireAdmission;
+    fn supports(&self, composition: &SessionComposition, protocol: &ProtocolIdentity) -> WireAdmission;
 }
 
 /// Encode the initial composition offer (`encodeCompositionOffer`).
@@ -412,9 +409,7 @@ impl ClientAttachment {
     #[must_use]
     pub fn endpoint(&self) -> &NetworkAddress {
         match self {
-            Self::Local { endpoint, .. }
-            | Self::Remote { endpoint, .. }
-            | Self::Headless { endpoint } => endpoint,
+            Self::Local { endpoint, .. } | Self::Remote { endpoint, .. } | Self::Headless { endpoint } => endpoint,
         }
     }
 }
@@ -552,8 +547,7 @@ impl<'a> NetworkSession<'a> {
                 return Err(SessionError::ForeignSeat);
             }
             for record in self.clients.values() {
-                if matches!(&record.value.attachment, ClientAttachment::Local { seat: other, .. } if other == seat)
-                {
+                if matches!(&record.value.attachment, ClientAttachment::Local { seat: other, .. } if other == seat) {
                     return Err(SessionError::SeatBusy);
                 }
             }
@@ -733,11 +727,7 @@ mod tests {
     struct AcceptAll;
 
     impl SourceWireCapability for AcceptAll {
-        fn supports(
-            &self,
-            _composition: &SessionComposition,
-            _protocol: &ProtocolIdentity,
-        ) -> WireAdmission {
+        fn supports(&self, _composition: &SessionComposition, _protocol: &ProtocolIdentity) -> WireAdmission {
             WireAdmission::Supported
         }
     }

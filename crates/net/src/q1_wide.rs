@@ -212,12 +212,7 @@ pub struct WideEntityUpdate {
 }
 
 /// Write the protocol version (`writeProtocol`).
-pub fn write_wide_protocol(
-    writer: &mut MsgWriter,
-    version: u16,
-    flags: u32,
-    is_rmq: bool,
-) -> Result<(), MsgError> {
+pub fn write_wide_protocol(writer: &mut MsgWriter, version: u16, flags: u32, is_rmq: bool) -> Result<(), MsgError> {
     writer.write_long(i32::from(version))?;
     if is_rmq {
         writer.write_long(flags as i32)?;
@@ -478,11 +473,7 @@ pub fn write_wide_baseline(
 }
 
 /// Read a wide baseline (`readBaseline`).
-pub fn read_wide_baseline(
-    reader: &mut MsgReader<'_>,
-    version: u8,
-    flags: u32,
-) -> Result<WideEntityState, MsgError> {
+pub fn read_wide_baseline(reader: &mut MsgReader<'_>, version: u8, flags: u32) -> Result<WideEntityState, MsgError> {
     let bits = if version == 2 { u32::from(reader.byte()?) } else { 0 };
     let mut baseline = WideEntityState::default();
     baseline.modelindex = if (bits & protocol::B_LARGEMODEL) != 0 {
@@ -620,11 +611,7 @@ pub struct WideSoundMessage {
 }
 
 /// Write a wide sound (`writeSound`).
-pub fn write_wide_sound(
-    writer: &mut MsgWriter,
-    sound: &WideSoundMessage,
-    flags: u32,
-) -> Result<bool, MsgError> {
+pub fn write_wide_sound(writer: &mut MsgWriter, sound: &WideSoundMessage, flags: u32) -> Result<bool, MsgError> {
     let mut field_mask = 0;
     if i32::from(sound.volume) != protocol::DEFAULT_SOUND_PACKET_VOLUME {
         field_mask |= protocol::SND_VOLUME;
@@ -675,10 +662,7 @@ pub struct WideSoundHeader {
 }
 
 /// Read a wide sound header (`readSoundHeader`).
-pub fn read_wide_sound_header(
-    reader: &mut MsgReader<'_>,
-    field_mask: u32,
-) -> Result<WideSoundHeader, MsgError> {
+pub fn read_wide_sound_header(reader: &mut MsgReader<'_>, field_mask: u32) -> Result<WideSoundHeader, MsgError> {
     let mut header = WideSoundHeader::default();
     if (field_mask & protocol::SND_LARGEENTITY) != 0 {
         header.ent = reader.short()? as u16;
@@ -926,10 +910,7 @@ pub fn read_wide_clientdata_bits(reader: &mut MsgReader<'_>) -> Result<u32, MsgE
 }
 
 /// Read a wide clientdata tail (`readClientdataTail`).
-pub fn read_wide_clientdata_tail(
-    reader: &mut MsgReader<'_>,
-    bits: u32,
-) -> Result<WideClientdataTail, MsgError> {
+pub fn read_wide_clientdata_tail(reader: &mut MsgReader<'_>, bits: u32) -> Result<WideClientdataTail, MsgError> {
     let mut tail = WideClientdataTail {
         weaponalpha: protocol::ENTALPHA_DEFAULT,
         ..WideClientdataTail::default()
@@ -992,12 +973,7 @@ pub struct QwWideEntityState {
     pub solid: bool,
 }
 
-fn write_qw29_entity_header(
-    writer: &mut MsgWriter,
-    entnum: u32,
-    bits_in: u32,
-    ext: u32,
-) -> Result<(), MsgError> {
+fn write_qw29_entity_header(writer: &mut MsgWriter, entnum: u32, bits_in: u32, ext: u32) -> Result<(), MsgError> {
     let mut bits = bits_in;
     if ext != 0 {
         bits |= U_EXTEND;
@@ -1247,11 +1223,7 @@ pub fn read_qw29_delta_entity(
 }
 
 /// Write a QuakeWorld wide baseline (`writeQwBaseline`).
-pub fn write_qw29_baseline(
-    writer: &mut MsgWriter,
-    state: &QwWideEntityState,
-    flags: u32,
-) -> Result<(), MsgError> {
+pub fn write_qw29_baseline(writer: &mut MsgWriter, state: &QwWideEntityState, flags: u32) -> Result<(), MsgError> {
     writer.write_short(state.modelindex as i16)?;
     writer.write_short(state.frame as i16)?;
     writer.write_byte(state.colormap)?;
@@ -1323,11 +1295,7 @@ pub fn read_qw29_protocol_flags(reader: &mut MsgReader<'_>) -> Result<u32, MsgEr
 }
 
 /// Write a QuakeWorld wide static (`writeStatic`).
-pub fn write_qw29_static(
-    writer: &mut MsgWriter,
-    state: &WideEntityState,
-    flags: u32,
-) -> Result<bool, MsgError> {
+pub fn write_qw29_static(writer: &mut MsgWriter, state: &WideEntityState, flags: u32) -> Result<bool, MsgError> {
     // `frame` is 16-bit here, so the donor's `frame & 0xffff0000` check is vacuous.
     if state.modelindex >= QW29_MAX_PRECACHE as u16 {
         return Ok(false);
@@ -1374,11 +1342,7 @@ pub fn read_qw29_static_sound_index(reader: &mut MsgReader<'_>) -> Result<u16, M
 }
 
 /// Write a QuakeWorld wide sound (`writeSound`).
-pub fn write_qw29_sound(
-    writer: &mut MsgWriter,
-    sound: &WideSoundMessage,
-    flags: u32,
-) -> Result<bool, MsgError> {
+pub fn write_qw29_sound(writer: &mut MsgWriter, sound: &WideSoundMessage, flags: u32) -> Result<bool, MsgError> {
     if sound.ent >= 1024 || sound.channel >= 8 || u32::from(sound.sound_num) > 65535 {
         return Ok(false);
     }

@@ -208,11 +208,7 @@ impl<A> PacketQueue<A> {
         Self::notify(listeners);
     }
 
-    fn push_locked(
-        inner: &mut QueueInner<A>,
-        limits: DatagramLimits,
-        event: ReceiveEvent<A>,
-    ) {
+    fn push_locked(inner: &mut QueueInner<A>, limits: DatagramLimits, event: ReceiveEvent<A>) {
         if inner.events.len() == limits.queue_packets {
             inner.events.pop_front();
             inner.dropped += 1;
@@ -237,9 +233,10 @@ impl<A> PacketQueue<A> {
 
     /// Subscribe a readable listener; returns an unsubscribe token.
     pub fn subscribe(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
-        let mut inner = self.inner.lock().map_err(|_| {
-            TransportError::Closed("Packet queue is closed".to_owned())
-        })?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| TransportError::Closed("Packet queue is closed".to_owned()))?;
         if inner.ended {
             return Err(TransportError::Closed("Packet queue is closed".to_owned()));
         }
@@ -344,7 +341,9 @@ impl UdpTransport {
         let queue = PacketQueue::new(options.limits, options.now.clone())?;
         let socket = UdpSocket::bind(format!("{}:{}", options.host, options.port))
             .map_err(|error| TransportError::BindFailed(error.to_string()))?;
-        socket.set_nonblocking(true).map_err(|error| TransportError::BindFailed(error.to_string()))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| TransportError::BindFailed(error.to_string()))?;
         if options.broadcast && socket.set_broadcast(true).is_err() {
             return Err(TransportError::BroadcastFailed);
         }
@@ -451,16 +450,19 @@ impl DatagramTransport for UdpTransport {
         if payload.len() > self.queue.limits.max_bytes {
             return Err(TransportError::Oversize);
         }
-        let socks = self.socks.lock().map_err(|_| {
-            TransportError::Closed("UDP transport is closed".to_owned())
-        })?;
+        let socks = self
+            .socks
+            .lock()
+            .map_err(|_| TransportError::Closed("UDP transport is closed".to_owned()))?;
         let relay = socks.relay().cloned();
         let proxied = match (&relay, to) {
-            (Some(NetworkAddress::Ipv4 { host: relay_host, port: relay_port }), NetworkAddress::Ipv4 { host, .. })
-                if !host.iter().all(|byte| *byte == 255) =>
-            {
-                Some((relay_host, relay_port))
-            }
+            (
+                Some(NetworkAddress::Ipv4 {
+                    host: relay_host,
+                    port: relay_port,
+                }),
+                NetworkAddress::Ipv4 { host, .. },
+            ) if !host.iter().all(|byte| *byte == 255) => Some((relay_host, relay_port)),
             (Some(_), _) => return Err(TransportError::SocksUnavailable),
             _ => None,
         };
@@ -469,13 +471,7 @@ impl DatagramTransport for UdpTransport {
             (Some((host, port)), NetworkAddress::Ipv4 { port: to_port, .. }) => {
                 let host = *host;
                 let bytes = socks_datagram(&host_of(to), *to_port, payload);
-                (
-                    NetworkAddress::Ipv4 {
-                        host,
-                        port: *port,
-                    },
-                    bytes,
-                )
+                (NetworkAddress::Ipv4 { host, port: *port }, bytes)
             }
             _ => (to.clone(), payload.to_vec()),
         };
@@ -502,13 +498,15 @@ impl DatagramTransport for UdpTransport {
         self.opened()?;
         self.pump();
         let event = self.queue.poll();
-        let relay = self
-            .socks
-            .lock()
-            .ok()
-            .and_then(|socks| socks.relay().cloned());
-        if let (Some(ReceiveEvent::Packet { from, payload, received_at }), Some(relay)) =
-            (event.clone(), relay)
+        let relay = self.socks.lock().ok().and_then(|socks| socks.relay().cloned());
+        if let (
+            Some(ReceiveEvent::Packet {
+                from,
+                payload,
+                received_at,
+            }),
+            Some(relay),
+        ) = (event.clone(), relay)
         {
             if same_address(&from, &relay, true) && from.kind() == "ipv4" {
                 return Ok(match read_socks_datagram(&payload) {
@@ -529,10 +527,7 @@ impl DatagramTransport for UdpTransport {
         Ok(event)
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         self.opened()?;
         self.queue.subscribe(listener)
     }
@@ -590,7 +585,10 @@ mod tests {
     #[test]
     fn queue_reports_oversize_and_overflow() {
         let queue = PacketQueue::new(
-            DatagramLimits { max_bytes: 4, queue_packets: 1 },
+            DatagramLimits {
+                max_bytes: 4,
+                queue_packets: 1,
+            },
             monotonic_clock(),
         )
         .unwrap();
@@ -598,7 +596,10 @@ mod tests {
         queue.accept(from.clone(), &[1, 2, 3, 4, 5], false);
         assert!(matches!(
             queue.poll(),
-            Some(ReceiveEvent::Dropped { reason: DropReason::Oversize, .. })
+            Some(ReceiveEvent::Dropped {
+                reason: DropReason::Oversize,
+                ..
+            })
         ));
         queue.accept(from.clone(), &[1], false);
         queue.accept(from.clone(), &[2], false);
@@ -608,8 +609,7 @@ mod tests {
 
     #[test]
     fn queue_notifies_listeners() {
-        let queue: PacketQueue<NetworkAddress> =
-            PacketQueue::new(UNIFIED_DATAGRAM_LIMITS, monotonic_clock()).unwrap();
+        let queue: PacketQueue<NetworkAddress> = PacketQueue::new(UNIFIED_DATAGRAM_LIMITS, monotonic_clock()).unwrap();
         let hits = Arc::new(AtomicUsize::new(0));
         let probe = hits.clone();
         queue

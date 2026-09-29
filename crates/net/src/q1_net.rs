@@ -399,8 +399,7 @@ impl NetQuakeChannel {
     /// Create a channel with message and fragment limits.
     pub fn new(max_message_bytes: usize, fragment_bytes: usize) -> Result<Self, Q1NetError> {
         Ok(Self {
-            reliable: StopAndWaitChannel::new(max_message_bytes, fragment_bytes)
-                .map_err(|_| Q1NetError::Overflow)?,
+            reliable: StopAndWaitChannel::new(max_message_bytes, fragment_bytes).map_err(|_| Q1NetError::Overflow)?,
             unreliable_send: 0,
             unreliable_receive: 0,
             max_message_bytes,
@@ -497,9 +496,7 @@ impl NetQuakeChannel {
                 .map_err(|_| Q1NetError::Overflow)?;
             let (delivery, acknowledge) = match result {
                 crate::common::reliability::ReliableFragmentReceive::Duplicate { acknowledge }
-                | crate::common::reliability::ReliableFragmentReceive::Fragment { acknowledge } => {
-                    (None, acknowledge)
-                }
+                | crate::common::reliability::ReliableFragmentReceive::Fragment { acknowledge } => (None, acknowledge),
                 crate::common::reliability::ReliableFragmentReceive::Message { acknowledge, payload } => (
                     Some(ChannelDelivery {
                         reliable: true,
@@ -617,18 +614,15 @@ impl QuakeWorldChannel {
     }
 
     /// Transmit a packet (`transmit`).
-    pub fn transmit(
-        &mut self,
-        unreliable: &[u8],
-        now: f64,
-        server_paused: bool,
-    ) -> Result<Vec<u8>, Q1NetError> {
-        let packet = self.reliable.transmit(unreliable, None).map_err(|_| Q1NetError::Overflow)?;
+    pub fn transmit(&mut self, unreliable: &[u8], now: f64, server_paused: bool) -> Result<Vec<u8>, Q1NetError> {
+        let packet = self
+            .reliable
+            .transmit(unreliable, None)
+            .map_err(|_| Q1NetError::Overflow)?;
         let header = if self.side == QuakeWorldSide::Client { 10 } else { 8 };
         let mut bytes = vec![0u8; header + packet.payload.len()];
         let sequence = packet.sequence as u32 | if packet.reliable { 0x8000_0000 } else { 0 };
-        let acknowledged =
-            packet.acknowledged as u32 | u32::from(packet.reliable_acknowledged) << 31;
+        let acknowledged = packet.acknowledged as u32 | u32::from(packet.reliable_acknowledged) << 31;
         bytes[0..4].copy_from_slice(&sequence.to_le_bytes());
         bytes[4..8].copy_from_slice(&acknowledged.to_le_bytes());
         if self.side == QuakeWorldSide::Client {
@@ -647,9 +641,7 @@ impl QuakeWorldChannel {
         if bytes.len() < header {
             return Err(Q1NetError::ShortQwHeader);
         }
-        if self.side == QuakeWorldSide::Server
-            && u16::from_le_bytes([bytes[8], bytes[9]]) != self.qport
-        {
+        if self.side == QuakeWorldSide::Server && u16::from_le_bytes([bytes[8], bytes[9]]) != self.qport {
             return Ok(None);
         }
         let word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -844,8 +836,7 @@ pub fn encode_net_quake_control(message: &NetQuakeControl) -> Result<Vec<u8>, Q1
     let mut writer = MsgWriter::new(65535, false);
     writer.write_long(0)?;
     match message {
-        NetQuakeControl::ConnectRequest { game, version }
-        | NetQuakeControl::ServerInfoRequest { game, version } => {
+        NetQuakeControl::ConnectRequest { game, version } | NetQuakeControl::ServerInfoRequest { game, version } => {
             writer.write_byte(if matches!(message, NetQuakeControl::ConnectRequest { .. }) {
                 1
             } else {
@@ -940,15 +931,11 @@ pub fn decode_net_quake_control(bytes: &[u8]) -> Result<NetQuakeControl, Q1NetEr
                 NetQuakeControl::ServerInfoRequest { game, version }
             }
         }
-        3 => NetQuakeControl::PlayerInfoRequest {
-            player: reader.byte()?,
-        },
+        3 => NetQuakeControl::PlayerInfoRequest { player: reader.byte()? },
         4 => NetQuakeControl::RuleInfoRequest {
             previous: reader.string(512),
         },
-        0x81 => NetQuakeControl::Accept {
-            port: reader.long()?,
-        },
+        0x81 => NetQuakeControl::Accept { port: reader.long()? },
         0x82 => NetQuakeControl::Reject {
             reason: reader.string(512),
         },
@@ -1029,11 +1016,11 @@ pub fn answer_net_quake_control(
             None => Ok(None),
             Some(info) => Ok(Some(encode_net_quake_control(&info)?)),
         },
-        NetQuakeControl::RuleInfoRequest { previous } => Ok(Some(encode_net_quake_control(
-            &NetQuakeControl::RuleInfo {
+        NetQuakeControl::RuleInfoRequest { previous } => {
+            Ok(Some(encode_net_quake_control(&NetQuakeControl::RuleInfo {
                 rule: host.next_rule(&previous),
-            },
-        )?)),
+            })?))
+        }
         NetQuakeControl::ConnectRequest { game, version } => {
             if game != "QUAKE" {
                 return Ok(None);
@@ -1145,7 +1132,9 @@ impl QuakeWorldChallenges {
     /// Validate a challenge (`validate`).
     #[must_use]
     pub fn validate(&self, address: &NetworkAddress, challenge: u32) -> bool {
-        self.records.get(&address_key(address, false)).is_some_and(|(stored, _)| *stored == challenge)
+        self.records
+            .get(&address_key(address, false))
+            .is_some_and(|(stored, _)| *stored == challenge)
     }
 }
 
@@ -1215,12 +1204,7 @@ impl<'a> QuakeWorldConnectionlessServer<'a> {
     }
 
     /// Handle a connectionless datagram (`receive`).
-    pub fn receive(
-        &mut self,
-        bytes: &[u8],
-        from: &NetworkAddress,
-        now: f64,
-    ) -> Result<Vec<Vec<u8>>, Q1NetError> {
+    pub fn receive(&mut self, bytes: &[u8], from: &NetworkAddress, now: f64) -> Result<Vec<Vec<u8>>, Q1NetError> {
         if self.host.blocked(from) {
             return Ok(vec![quake_world_out_of_band("n\nbanned.\n", false)]);
         }
@@ -1236,7 +1220,10 @@ impl<'a> QuakeWorldConnectionlessServer<'a> {
             return Ok(vec![quake_world_out_of_band(&format!("c{challenge}"), false)]);
         }
         if command == "status" {
-            return Ok(vec![quake_world_out_of_band(&format!("n{}", self.host.status()), false)]);
+            return Ok(vec![quake_world_out_of_band(
+                &format!("n{}", self.host.status()),
+                false,
+            )]);
         }
         if command == "log" {
             let sequence = args.get(1).and_then(|arg| parse_int_prefix(arg)).unwrap_or(-1);
@@ -1383,7 +1370,9 @@ impl QuakeWorldConnectClient {
         Self {
             qport,
             userinfo: userinfo.to_owned(),
-            state: QuakeWorldConnectState::Challenge { sent_at: f64::NEG_INFINITY },
+            state: QuakeWorldConnectState::Challenge {
+                sent_at: f64::NEG_INFINITY,
+            },
         }
     }
 
@@ -1391,8 +1380,7 @@ impl QuakeWorldConnectClient {
     pub fn next(&mut self, now: f64) -> Option<Vec<u8>> {
         match &self.state {
             QuakeWorldConnectState::Connected | QuakeWorldConnectState::Rejected { .. } => None,
-            QuakeWorldConnectState::Challenge { sent_at }
-            | QuakeWorldConnectState::Connect { sent_at, .. }
+            QuakeWorldConnectState::Challenge { sent_at } | QuakeWorldConnectState::Connect { sent_at, .. }
                 if now - sent_at < 5000.0 =>
             {
                 None
@@ -1723,7 +1711,8 @@ impl<'a> QuakeWorldSignonServer<'a> {
             _ => return Err(Q1NetError::NoServerInfo),
         };
         if version == 29 && !self.donor_wide {
-            self.host.disconnect("Client does not support donor QuakeWorld protocol 29");
+            self.host
+                .disconnect("Client does not support donor QuakeWorld protocol 29");
             return Ok(Vec::new());
         }
         self.spawned = false;
@@ -1791,9 +1780,7 @@ impl<'a> QuakeWorldSignonServer<'a> {
         }
         let (server_count, protocol) = match &data {
             QuakeWorldMessage::ServerData {
-                server_count,
-                protocol,
-                ..
+                server_count, protocol, ..
             } => (*server_count, *protocol),
             _ => return Err(Q1NetError::NoServerInfo),
         };
@@ -2081,11 +2068,15 @@ impl crate::services::discovery::DiscoveryWire for NetQuakeDiscoveryWire {
     }
 
     fn master_query(&self) -> Result<Vec<u8>, DiscoveryError> {
-        Err(DiscoveryError::Wire("NetQuake master discovery is not configured".to_owned()))
+        Err(DiscoveryError::Wire(
+            "NetQuake master discovery is not configured".to_owned(),
+        ))
     }
 
     fn heartbeat(&self, _active: bool) -> Result<Vec<u8>, DiscoveryError> {
-        Err(DiscoveryError::Wire("NetQuake master registration is not configured".to_owned()))
+        Err(DiscoveryError::Wire(
+            "NetQuake master registration is not configured".to_owned(),
+        ))
     }
 }
 
@@ -2317,11 +2308,7 @@ impl QuakeWorldPredictionHistory {
     }
 
     /// Command bundle for a move (`bundle`).
-    pub fn bundle(
-        &self,
-        sequence: u32,
-        loss_percent: u8,
-    ) -> Result<QuakeWorldMove, Q1NetError> {
+    pub fn bundle(&self, sequence: u32, loss_percent: u8) -> Result<QuakeWorldMove, Q1NetError> {
         let (Some(current), Some(previous), Some(oldest)) = (
             self.frames.get(&sequence),
             self.frames.get(&sequence.wrapping_sub(1)),
@@ -2353,7 +2340,11 @@ impl QuakeWorldPredictionHistory {
             };
         }
         let target = realtime.min(realtime - self.latency_seconds - push_latency_ms.min(0.0) / 1000.0);
-        let mut previous_time = self.frames.get(&acknowledged).map(|frame| frame.sent_at_seconds).unwrap_or(target);
+        let mut previous_time = self
+            .frames
+            .get(&acknowledged)
+            .map(|frame| frame.sent_at_seconds)
+            .unwrap_or(target);
         let mut previous_origin = initial.origin;
         let mut previous_velocity = initial.velocity;
         let mut current = initial.clone();
@@ -2602,13 +2593,7 @@ pub struct QuakeWorldCommandReplay {
 
 impl QuakeWorldCommandReplay {
     /// Replay dropped commands, then the current one (`run`).
-    pub fn run(
-        &mut self,
-        bundle: &QuakeWorldMove,
-        dropped: u32,
-        paused: bool,
-        mut apply: impl FnMut(&QwUsercmd),
-    ) {
+    pub fn run(&mut self, bundle: &QuakeWorldMove, dropped: u32, paused: bool, mut apply: impl FnMut(&QwUsercmd)) {
         if !paused {
             if dropped < 20 {
                 let mut pending = dropped;
@@ -3220,7 +3205,10 @@ impl NetQuakeDecoder {
         Ok(Q1WireEntity {
             number,
             state,
-            lerp_finish_seconds: tail.lerpfinish.map(|finish| f64::from(self.time_seconds) + finish).unwrap_or(0.0),
+            lerp_finish_seconds: tail
+                .lerpfinish
+                .map(|finish| f64::from(self.time_seconds) + finish)
+                .unwrap_or(0.0),
             step: bits & protocol::U_STEP != 0,
             quakeworld_flags: 0,
         })
@@ -3423,7 +3411,11 @@ impl NetQuakeDecoder {
                             }
                             _ => crate::q1_wide::read_wide_sound_header(&mut reader, mask)?,
                         };
-                        let origin = [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?];
+                        let origin = [
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                        ];
                         NetQuakeMessage::Sound {
                             entity: header.ent,
                             channel: header.channel,
@@ -3448,7 +3440,11 @@ impl NetQuakeDecoder {
                         text: reader.string(512),
                     },
                     10 => {
-                        let angles = [self.angle(&mut reader)?, self.angle(&mut reader)?, self.angle(&mut reader)?];
+                        let angles = [
+                            self.angle(&mut reader)?,
+                            self.angle(&mut reader)?,
+                            self.angle(&mut reader)?,
+                        ];
                         NetQuakeMessage::SetAngle { angles }
                     }
                     11 => {
@@ -3504,7 +3500,11 @@ impl NetQuakeDecoder {
                         value: i16::from(reader.byte()?),
                     },
                     18 => {
-                        let origin = [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?];
+                        let origin = [
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                        ];
                         let direction = [
                             f64::from(reader.char()?) / 16.0,
                             f64::from(reader.char()?) / 16.0,
@@ -3520,15 +3520,15 @@ impl NetQuakeDecoder {
                     19 => NetQuakeMessage::Damage {
                         armor: reader.byte()?,
                         blood: reader.byte()?,
-                        source: [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?],
+                        source: [
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                        ],
                     },
                     20 | 22 | 42 | 43 => {
                         let baseline = op == 22 || op == 42;
-                        let number = if baseline {
-                            u32::from(reader.short()? as u16)
-                        } else {
-                            0
-                        };
+                        let number = if baseline { u32::from(reader.short()? as u16) } else { 0 };
                         let state = match self.protocol {
                             NqProfile::Netquake => {
                                 let mut state = WideEntityState::default();
@@ -3582,9 +3582,7 @@ impl NetQuakeDecoder {
                     24 => NetQuakeMessage::Pause {
                         paused: reader.byte()? != 0,
                     },
-                    25 => NetQuakeMessage::Signon {
-                        stage: reader.byte()?,
-                    },
+                    25 => NetQuakeMessage::Signon { stage: reader.byte()? },
                     26 => NetQuakeMessage::Text {
                         kind: NqText::CenterPrint,
                         text: reader.string(512),
@@ -3592,13 +3590,16 @@ impl NetQuakeDecoder {
                     27 => NetQuakeMessage::Unit(NqUnit::KilledMonster),
                     28 => NetQuakeMessage::Unit(NqUnit::FoundSecret),
                     29 | 44 => {
-                        let origin = [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?];
+                        let origin = [
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                        ];
                         let index = match self.protocol {
                             NqProfile::Netquake => u16::from(reader.byte()?),
-                            _ => crate::q1_wide::read_wide_static_sound_index(
-                                &mut reader,
-                                if op == 44 { 2 } else { 1 },
-                            )?,
+                            _ => {
+                                crate::q1_wide::read_wide_static_sound_index(&mut reader, if op == 44 { 2 } else { 1 })?
+                            }
                         };
                         NetQuakeMessage::StaticSound {
                             index,
@@ -3780,11 +3781,7 @@ pub fn write_net_quake_client_data(
     }
 }
 
-fn write_nq15_client_data(
-    writer: &mut MsgWriter,
-    data: &ClientData,
-    standard_quake: bool,
-) -> Result<(), Q1NetError> {
+fn write_nq15_client_data(writer: &mut MsgWriter, data: &ClientData, standard_quake: bool) -> Result<(), Q1NetError> {
     let mut bits = 0;
     if data.viewheight != protocol::DEFAULT_VIEWHEIGHT as i8 {
         bits |= protocol::SU_VIEWHEIGHT;
@@ -3885,14 +3882,8 @@ pub fn write_net_quake_sound(
     match profile {
         NqProfile::Netquake => {
             if statik {
-                crate::q1::write_static_sound(
-                    writer,
-                    origin,
-                    index,
-                    f64::from(volume) / 255.0,
-                    attenuation,
-                )
-                .map_err(Q1NetError::from)
+                crate::q1::write_static_sound(writer, origin, index, f64::from(volume) / 255.0, attenuation)
+                    .map_err(Q1NetError::from)
             } else {
                 crate::q1::write_sound(
                     writer,
@@ -3939,10 +3930,7 @@ pub fn write_net_quake_sound(
 }
 
 /// Write NetQuake server info (`writeNetQuakeServerInfo`).
-pub fn write_net_quake_server_info(
-    writer: &mut MsgWriter,
-    message: &NetQuakeMessage,
-) -> Result<(), Q1NetError> {
+pub fn write_net_quake_server_info(writer: &mut MsgWriter, message: &NetQuakeMessage) -> Result<(), Q1NetError> {
     let NetQuakeMessage::ServerInfo {
         protocol,
         max_clients,
@@ -3984,12 +3972,7 @@ fn nq_write_text(writer: &mut MsgWriter, op: u8, value: &str) -> Result<(), Q1Ne
     Ok(())
 }
 
-fn nq_write_vec(
-    writer: &mut MsgWriter,
-    profile: NqProfile,
-    flags: u32,
-    origin: [f64; 3],
-) -> Result<(), Q1NetError> {
+fn nq_write_vec(writer: &mut MsgWriter, profile: NqProfile, flags: u32, origin: [f64; 3]) -> Result<(), Q1NetError> {
     for axis in 0..3 {
         match profile {
             NqProfile::Netquake => writer.write_float(origin[axis] as f32)?,
@@ -4082,9 +4065,7 @@ pub fn write_net_quake_message(
             writer.write_string(value)?;
         }
         NetQuakeMessage::NamedSlot { kind, slot, value } => {
-            if !matches!(kind, NqNamedSlot::Name)
-                && rerelease_messages != RereleaseMessages::Quake1ReTsPrivate
-            {
+            if !matches!(kind, NqNamedSlot::Name) && rerelease_messages != RereleaseMessages::Quake1ReTsPrivate {
                 return Err(Q1NetError::BadPrivate);
             }
             writer.write_byte(match kind {
@@ -4096,9 +4077,7 @@ pub fn write_net_quake_message(
             writer.write_string(value)?;
         }
         NetQuakeMessage::NumberedSlot { kind, slot, value } => {
-            if matches!(kind, NqNumberedSlot::Ping)
-                && rerelease_messages != RereleaseMessages::Quake1ReTsPrivate
-            {
+            if matches!(kind, NqNumberedSlot::Ping) && rerelease_messages != RereleaseMessages::Quake1ReTsPrivate {
                 return Err(Q1NetError::BadPrivate);
             }
             match kind {
@@ -4127,12 +4106,7 @@ pub fn write_net_quake_message(
             NqProfile::Netquake => {
                 crate::q1::write_baseline(writer, state.number as u16, &to_nq15_entity(&state.state))?
             }
-            _ => crate::q1_wide::write_wide_baseline(
-                writer,
-                state.number as u16,
-                &state.state,
-                flags,
-            )?,
+            _ => crate::q1_wide::write_wide_baseline(writer, state.number as u16, &state.state, flags)?,
         },
         NetQuakeMessage::Static { state } => {
             let written = match profile {
@@ -4159,7 +4133,11 @@ pub fn write_net_quake_message(
         }
         NetQuakeMessage::LocalSound { index } => {
             writer.write_byte(56)?;
-            writer.write_byte(if *index > 255 { protocol::SND_LARGESOUND as u8 } else { 0 })?;
+            writer.write_byte(if *index > 255 {
+                protocol::SND_LARGESOUND as u8
+            } else {
+                0
+            })?;
             if *index > 255 {
                 writer.write_short(*index as i16)?;
             } else {
@@ -4211,9 +4189,7 @@ pub fn write_net_quake_message(
                     writer.write_byte(*color_length)?;
                 }
                 TemporaryEntity::Point {
-                    effect_type,
-                    origin,
-                    ..
+                    effect_type, origin, ..
                 } => {
                     writer.write_byte(*effect_type)?;
                     nq_write_vec(writer, profile, flags, *origin)?;
@@ -4924,10 +4900,7 @@ impl QuakeWorldDecoder {
         })
     }
 
-    fn read_baseline_state(
-        &self,
-        reader: &mut MsgReader<'_>,
-    ) -> Result<crate::q1_wide::QwWideEntityState, Q1NetError> {
+    fn read_baseline_state(&self, reader: &mut MsgReader<'_>) -> Result<crate::q1_wide::QwWideEntityState, Q1NetError> {
         match self.protocol {
             QwProfile::Quakeworld => {
                 let state = crate::qw::read_baseline(reader)?;
@@ -5206,7 +5179,11 @@ impl QuakeWorldDecoder {
                         entity: (word >> 3) & 1023,
                         channel: (word & 7) as u8,
                         index: self.sound_index(&mut reader)?,
-                        origin: [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?],
+                        origin: [
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                            self.coord(&mut reader)?,
+                        ],
                         volume,
                         attenuation,
                     }
@@ -5220,7 +5197,11 @@ impl QuakeWorldDecoder {
                     text: reader.string(512),
                 },
                 10 => QuakeWorldMessage::SetAngle {
-                    angles: [self.angle(&mut reader)?, self.angle(&mut reader)?, self.angle(&mut reader)?],
+                    angles: [
+                        self.angle(&mut reader)?,
+                        self.angle(&mut reader)?,
+                        self.angle(&mut reader)?,
+                    ],
                 },
                 11 => {
                     let version = reader.long()?;
@@ -5285,14 +5266,14 @@ impl QuakeWorldDecoder {
                 19 => QuakeWorldMessage::Damage {
                     armor: reader.byte()?,
                     blood: reader.byte()?,
-                    source: [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?],
+                    source: [
+                        self.coord(&mut reader)?,
+                        self.coord(&mut reader)?,
+                        self.coord(&mut reader)?,
+                    ],
                 },
                 20 | 22 => {
-                    let number = if op == 22 {
-                        u32::from(reader.short()? as u16)
-                    } else {
-                        0
-                    };
+                    let number = if op == 22 { u32::from(reader.short()? as u16) } else { 0 };
                     let mut state = self.read_baseline_state(&mut reader)?;
                     state.number = number;
                     if op == 22 {
@@ -5328,7 +5309,11 @@ impl QuakeWorldDecoder {
                 27 => QuakeWorldMessage::Unit(QwUnit::KilledMonster),
                 28 => QuakeWorldMessage::Unit(QwUnit::FoundSecret),
                 29 => {
-                    let origin = [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?];
+                    let origin = [
+                        self.coord(&mut reader)?,
+                        self.coord(&mut reader)?,
+                        self.coord(&mut reader)?,
+                    ];
                     QuakeWorldMessage::StaticSound {
                         index: self.sound_index(&mut reader)?,
                         origin,
@@ -5337,16 +5322,22 @@ impl QuakeWorldDecoder {
                     }
                 }
                 30 => QuakeWorldMessage::Intermission {
-                    origin: [self.coord(&mut reader)?, self.coord(&mut reader)?, self.coord(&mut reader)?],
-                    angles: [self.angle(&mut reader)?, self.angle(&mut reader)?, self.angle(&mut reader)?],
+                    origin: [
+                        self.coord(&mut reader)?,
+                        self.coord(&mut reader)?,
+                        self.coord(&mut reader)?,
+                    ],
+                    angles: [
+                        self.angle(&mut reader)?,
+                        self.angle(&mut reader)?,
+                        self.angle(&mut reader)?,
+                    ],
                 },
                 31 => QuakeWorldMessage::Text {
                     kind: QwText::Finale,
                     text: reader.string(512),
                 },
-                32 => QuakeWorldMessage::CdTrack {
-                    track: reader.byte()?,
-                },
+                32 => QuakeWorldMessage::CdTrack { track: reader.byte()? },
                 33 => QuakeWorldMessage::Unit(QwUnit::SellScreen),
                 34 | 35 => QuakeWorldMessage::Kick {
                     degrees: if op == 34 { -2 } else { -4 },
@@ -5404,9 +5395,7 @@ impl QuakeWorldDecoder {
                     }
                     QuakeWorldMessage::Nails { projectiles }
                 }
-                44 => QuakeWorldMessage::ChokeCount {
-                    count: reader.byte()?,
-                },
+                44 => QuakeWorldMessage::ChokeCount { count: reader.byte()? },
                 45 | 46 => {
                     let first = self.precache_count(&mut reader)?;
                     let mut names = Vec::new();
@@ -5473,8 +5462,7 @@ pub fn write_quake_world_entities(
     let old: HashMap<u32, &Q1WireEntity> = previous
         .map(|(_, states)| states.iter().map(|state| (state.number, state)).collect())
         .unwrap_or_default();
-    let current: HashMap<u32, &Q1WireEntity> =
-        states.iter().map(|state| (state.number, state)).collect();
+    let current: HashMap<u32, &Q1WireEntity> = states.iter().map(|state| (state.number, state)).collect();
     let mut numbers: Vec<u32> = old.keys().chain(current.keys()).copied().collect();
     numbers.sort_unstable();
     numbers.dedup();
@@ -5593,10 +5581,7 @@ pub fn write_quake_world_player(
 }
 
 /// Write QuakeWorld server data (`writeQuakeWorldServerData`).
-pub fn write_quake_world_server_data(
-    writer: &mut MsgWriter,
-    message: &QuakeWorldMessage,
-) -> Result<(), Q1NetError> {
+pub fn write_quake_world_server_data(writer: &mut MsgWriter, message: &QuakeWorldMessage) -> Result<(), Q1NetError> {
     let QuakeWorldMessage::ServerData {
         protocol,
         server_count,
@@ -5661,12 +5646,7 @@ fn qw_write_text(writer: &mut MsgWriter, op: u8, value: &str) -> Result<(), Q1Ne
     Ok(())
 }
 
-fn qw_write_coord(
-    writer: &mut MsgWriter,
-    profile: QwProfile,
-    flags: u32,
-    origin: [f64; 3],
-) -> Result<(), Q1NetError> {
+fn qw_write_coord(writer: &mut MsgWriter, profile: QwProfile, flags: u32, origin: [f64; 3]) -> Result<(), Q1NetError> {
     for axis in 0..3 {
         match profile {
             QwProfile::Quakeworld => writer.write_float(origin[axis] as f32)?,
@@ -5676,12 +5656,7 @@ fn qw_write_coord(
     Ok(())
 }
 
-fn qw_write_angle(
-    writer: &mut MsgWriter,
-    profile: QwProfile,
-    flags: u32,
-    angles: [f64; 3],
-) -> Result<(), Q1NetError> {
+fn qw_write_angle(writer: &mut MsgWriter, profile: QwProfile, flags: u32, angles: [f64; 3]) -> Result<(), Q1NetError> {
     for axis in 0..3 {
         match profile {
             QwProfile::Quakeworld => writer.write_float(angles[axis] as f32)?,
@@ -5720,10 +5695,7 @@ pub fn write_quake_world_message(
                 writer.write_long(*value)?;
             }
         }
-        QuakeWorldMessage::ViewEntity {
-            muzzle_flash,
-            entity,
-        } => {
+        QuakeWorldMessage::ViewEntity { muzzle_flash, entity } => {
             writer.write_byte(if *muzzle_flash { 39 } else { 5 })?;
             writer.write_short(*entity as i16)?;
         }
@@ -5765,7 +5737,8 @@ pub fn write_quake_world_message(
             writer.write_string(value)?;
         }
         QuakeWorldMessage::Text { kind, text: value } => {
-            qw_write_text(writer, 
+            qw_write_text(
+                writer,
                 match kind {
                     QwText::Stufftext => 9,
                     QwText::CenterPrint => 26,
@@ -5955,8 +5928,7 @@ pub fn write_quake_world_message(
             writer.write_byte(44)?;
             writer.write_byte(*count)?;
         }
-        QuakeWorldMessage::ModelList { first, names, next }
-        | QuakeWorldMessage::SoundList { first, names, next } => {
+        QuakeWorldMessage::ModelList { first, names, next } | QuakeWorldMessage::SoundList { first, names, next } => {
             writer.write_byte(if matches!(message, QuakeWorldMessage::ModelList { .. }) {
                 45
             } else {
@@ -5975,10 +5947,7 @@ pub fn write_quake_world_message(
                 QwProfile::Wide { .. } => crate::q1_wide::write_qw29_precache_count(writer, *next)?,
             }
         }
-        QuakeWorldMessage::Speed {
-            entity_gravity,
-            value,
-        } => {
+        QuakeWorldMessage::Speed { entity_gravity, value } => {
             writer.write_byte(if *entity_gravity { 50 } else { 49 })?;
             writer.write_float(*value)?;
         }
@@ -6228,7 +6197,10 @@ impl QuakeWorldRecordingState {
             bytes[0..4].copy_from_slice(&(index as i32 + 1).to_le_bytes());
             bytes[4..8].copy_from_slice(&(outgoing - 1).to_le_bytes());
             bytes[8..].copy_from_slice(payload.bytes());
-            records.push(crate::demo::QwDemoRecord::Packet { seconds, message: bytes });
+            records.push(crate::demo::QwDemoRecord::Packet {
+                seconds,
+                message: bytes,
+            });
         }
         records.push(crate::demo::QwDemoRecord::Sequences {
             seconds,
@@ -6247,9 +6219,7 @@ fn qw_message_kind_name(message: &QuakeWorldMessage) -> String {
         QuakeWorldMessage::Intermission { .. } => "intermission".to_owned(),
         QuakeWorldMessage::Text { .. } => "finale".to_owned(),
         QuakeWorldMessage::CdTrack { .. } => "cd-track".to_owned(),
-        QuakeWorldMessage::Speed {
-            entity_gravity, ..
-        } => {
+        QuakeWorldMessage::Speed { entity_gravity, .. } => {
             if *entity_gravity {
                 "entity-gravity".to_owned()
             } else {
@@ -6279,7 +6249,10 @@ mod tests {
             parse_q1_token(b"connect 28", &mut state, Q1TokenDialect::Quakeworld),
             Some("28".to_owned())
         );
-        assert_eq!(parse_q1_token(b"connect 28", &mut state, Q1TokenDialect::Quakeworld), None);
+        assert_eq!(
+            parse_q1_token(b"connect 28", &mut state, Q1TokenDialect::Quakeworld),
+            None
+        );
         let mut state = Q1Tokenizer::default();
         assert_eq!(
             parse_q1_token(b"a // skip\nb", &mut state, Q1TokenDialect::Netquake),
@@ -6347,7 +6320,10 @@ mod tests {
     fn quakeworld_channel_matches_donor_bytes() {
         let mut channel = QuakeWorldChannel::new(QuakeWorldSide::Client, 27001, 1450, 9999.0).unwrap();
         channel.queue_reliable(&[5, 6]).unwrap();
-        assert_eq!(hex(&channel.transmit(&[7], 1000.0, false).unwrap()), "00000080000000007969050607");
+        assert_eq!(
+            hex(&channel.transmit(&[7], 1000.0, false).unwrap()),
+            "00000080000000007969050607"
+        );
         let mut server = QuakeWorldChannel::new(QuakeWorldSide::Server, 27001, 1450, 9999.0).unwrap();
         let packet = channel.transmit(&[], 1100.0, false).unwrap();
         let delivery = server.receive(&packet, 1100.0).unwrap().unwrap();
@@ -6426,11 +6402,10 @@ mod tests {
         }
         let from = crate::common::endpoint::ipv4_address([127, 0, 0, 1], 27001, false).unwrap();
         let mut host = Host;
-        let mut server = QuakeWorldConnectionlessServer::new(
-            &mut host,
-            QuakeWorldChallenges::new(Box::new(|| 7), 8),
-        );
-        let replies = server.receive(&quake_world_out_of_band("getchallenge\n", false), &from, 0.0).unwrap();
+        let mut server = QuakeWorldConnectionlessServer::new(&mut host, QuakeWorldChallenges::new(Box::new(|| 7), 8));
+        let replies = server
+            .receive(&quake_world_out_of_band("getchallenge\n", false), &from, 0.0)
+            .unwrap();
         let challenge = read_quake_world_out_of_band(&replies[0]).unwrap();
         assert!(challenge.starts_with('c'));
         let replies = server
@@ -6447,7 +6422,9 @@ mod tests {
         let replies = server
             .receive(&quake_world_out_of_band("rcon secret status\n", false), &from, 2.0)
             .unwrap();
-        assert!(read_quake_world_out_of_band(&replies[0]).unwrap().contains("ran status"));
+        assert!(read_quake_world_out_of_band(&replies[0])
+            .unwrap()
+            .contains("ran status"));
         let replies = server
             .receive(&quake_world_out_of_band("rcon wrong status\n", false), &from, 3.0)
             .unwrap();
@@ -6597,14 +6574,7 @@ mod tests {
         }
         let bundle = history.bundle(103, 0).unwrap();
         assert_eq!(bundle.current.msec, 10);
-        let prediction = history.predict(
-            &QwPredictionState::default(),
-            100,
-            104,
-            10.0,
-            0.0,
-            &mut Step,
-        );
+        let prediction = history.predict(&QwPredictionState::default(), 100, 104, 10.0, 0.0, &mut Step);
         assert!(matches!(prediction, QuakeWorldPrediction::Predicted { .. }));
     }
 

@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::endpoint::NetworkAddress;
 use super::transport::{
-    monotonic_clock, Clock, DatagramLimits, DatagramTransport, PacketQueue, ReceiveEvent,
-    TransportError, UNIFIED_DATAGRAM_LIMITS,
+    monotonic_clock, Clock, DatagramLimits, DatagramTransport, PacketQueue, ReceiveEvent, TransportError,
+    UNIFIED_DATAGRAM_LIMITS,
 };
 
 /// Named loopback hub (`LoopbackHub`).
@@ -43,9 +43,10 @@ impl LoopbackHub {
                 "Loopback endpoint must have a unique nonempty name".to_owned(),
             ));
         }
-        let mut inner = self.inner.lock().map_err(|_| {
-            TransportError::Closed("Loopback hub is closed".to_owned())
-        })?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| TransportError::Closed("Loopback hub is closed".to_owned()))?;
         if inner
             .endpoints
             .get(id)
@@ -136,9 +137,11 @@ impl DatagramTransport for LoopbackTransport {
         let NetworkAddress::Loopback { id } = to else {
             return Ok(false);
         };
-        let hub = self.inner.hub.upgrade().ok_or_else(|| {
-            TransportError::Closed("Loopback transport is closed".to_owned())
-        })?;
+        let hub = self
+            .inner
+            .hub
+            .upgrade()
+            .ok_or_else(|| TransportError::Closed("Loopback transport is closed".to_owned()))?;
         let peer = hub
             .inner
             .lock()
@@ -158,10 +161,7 @@ impl DatagramTransport for LoopbackTransport {
         Ok(self.inner.queue.poll())
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         self.opened()?;
         self.inner.queue.subscribe(listener)
     }
@@ -197,7 +197,12 @@ mod tests {
         assert!(hub.bind("a").is_err());
         assert!(first.send(&second.address(), &[1, 2, 3]).unwrap());
         assert!(!first
-            .send(&NetworkAddress::Loopback { id: "missing".to_owned() }, &[1])
+            .send(
+                &NetworkAddress::Loopback {
+                    id: "missing".to_owned()
+                },
+                &[1]
+            )
             .unwrap());
         let event = second.poll().unwrap().unwrap();
         assert!(matches!(event, ReceiveEvent::Packet { .. }));

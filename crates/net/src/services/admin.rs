@@ -348,11 +348,7 @@ pub struct RconService<'a> {
 
 impl<'a> RconService<'a> {
     /// Create a service over a host.
-    pub fn new(
-        host: &'a mut dyn RconHost,
-        profile: RconProfile,
-        output_bytes: usize,
-    ) -> Result<Self, AdminError> {
+    pub fn new(host: &'a mut dyn RconHost, profile: RconProfile, output_bytes: usize) -> Result<Self, AdminError> {
         if output_bytes < 5 {
             return Err(AdminError::BadOutput);
         }

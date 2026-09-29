@@ -134,18 +134,19 @@ impl SocksAssociation {
         let password = credential_bytes(&options.password)?;
         let authenticated = !username.is_empty() || !password.is_empty();
         let target = format!("{}:{}", options.server, options.port);
-        let address: Ipv4Addr = options
-            .server
-            .parse()
-            .map_err(|_| SocksError::ControlFailed)?;
+        let address: Ipv4Addr = options.server.parse().map_err(|_| SocksError::ControlFailed)?;
         let deadline = Duration::from_secs(5);
         let stream = TcpStream::connect_timeout(
             &std::net::SocketAddr::new(address.into(), options.port as u16),
             deadline,
         )
         .map_err(|_| SocksError::ControlFailed)?;
-        stream.set_read_timeout(Some(deadline)).map_err(|_| SocksError::ControlFailed)?;
-        stream.set_write_timeout(Some(deadline)).map_err(|_| SocksError::ControlFailed)?;
+        stream
+            .set_read_timeout(Some(deadline))
+            .map_err(|_| SocksError::ControlFailed)?;
+        stream
+            .set_write_timeout(Some(deadline))
+            .map_err(|_| SocksError::ControlFailed)?;
         let _ = target;
         self.stream = Some(stream);
         // Repair the source's overwritten buf[2]/uninitialized buf[3] greeting.
@@ -197,9 +198,7 @@ impl SocksAssociation {
             return Err(SocksError::Rejected("SOCKS relay port is zero".to_owned()));
         }
         let host = format!("{}.{}.{}.{}", reply[0], reply[1], reply[2], reply[3]);
-        self.relay_address = Some(
-            ip_address(&host, u32::from(port), false).map_err(|_| SocksError::ControlFailed)?,
-        );
+        self.relay_address = Some(ip_address(&host, u32::from(port), false).map_err(|_| SocksError::ControlFailed)?);
         Ok(())
     }
 

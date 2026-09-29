@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use super::downloads::{
-    download_path, DownloadSink, DownloadSpan, SinkExpectation,
-};
+use super::downloads::{download_path, DownloadSink, DownloadSpan, SinkExpectation};
 use crate::common::session::ContentDigest;
 
 /// Error for HTTP download failures.
@@ -201,9 +199,7 @@ pub trait HttpClient {
 
 fn same_expectation(left: &SinkExpectation, right: &SinkExpectation) -> bool {
     match (left, right) {
-        (SinkExpectation::Protocol(a), SinkExpectation::Protocol(b)) => {
-            a.maximum_bytes == b.maximum_bytes
-        }
+        (SinkExpectation::Protocol(a), SinkExpectation::Protocol(b)) => a.maximum_bytes == b.maximum_bytes,
         (SinkExpectation::Content(a), SinkExpectation::Content(b)) => {
             a.byte_length == b.byte_length && a.digest == b.digest
         }
@@ -248,14 +244,21 @@ fn parse_url(text: &str) -> Result<ParsedUrl, HttpDownloadError> {
         let port = if suffix.is_empty() {
             default_port(scheme)
         } else {
-            suffix.strip_prefix(':').ok_or(HttpDownloadError::BadUrl)?.parse::<u16>().map_err(|_| HttpDownloadError::BadUrl)?
+            suffix
+                .strip_prefix(':')
+                .ok_or(HttpDownloadError::BadUrl)?
+                .parse::<u16>()
+                .map_err(|_| HttpDownloadError::BadUrl)?
         };
         (format!("[{host}]"), port)
     } else if let Some((host, port_text)) = authority.rsplit_once(':') {
         if host.is_empty() || port_text.is_empty() || !port_text.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(HttpDownloadError::BadUrl);
         }
-        (host.to_ascii_lowercase(), port_text.parse::<u16>().map_err(|_| HttpDownloadError::BadUrl)?)
+        (
+            host.to_ascii_lowercase(),
+            port_text.parse::<u16>().map_err(|_| HttpDownloadError::BadUrl)?,
+        )
     } else {
         (authority.to_ascii_lowercase(), default_port(scheme))
     };
@@ -271,7 +274,11 @@ fn parse_url(text: &str) -> Result<ParsedUrl, HttpDownloadError> {
 }
 
 fn default_port(scheme: &str) -> u16 {
-    if scheme == "https" { 443 } else { 80 }
+    if scheme == "https" {
+        443
+    } else {
+        80
+    }
 }
 
 fn resolve_location(current: &ParsedUrl, location: &str) -> Result<ParsedUrl, HttpDownloadError> {
@@ -376,9 +383,9 @@ fn valid_etag(etag: &str) -> bool {
     if bytes.len() < 2 || bytes[0] != b'"' || bytes[bytes.len() - 1] != b'"' {
         return false;
     }
-    bytes[1..bytes.len() - 1].iter().all(|byte| {
-        *byte == 0x21 || (0x23..=0x7e).contains(byte) || *byte >= 0x80
-    })
+    bytes[1..bytes.len() - 1]
+        .iter()
+        .all(|byte| *byte == 0x21 || (0x23..=0x7e).contains(byte) || *byte >= 0x80)
 }
 
 const RANGE_THRESHOLD: u64 = 1024 * 1024;
@@ -515,11 +522,7 @@ fn receive_range(
 }
 
 /// Optional dependency metadata fetch (`fetchHttpDownloadMetadata`).
-pub fn fetch_http_download_metadata(
-    client: &mut dyn HttpClient,
-    url: &str,
-    maximum_bytes: u64,
-) -> Option<Vec<u8>> {
+pub fn fetch_http_download_metadata(client: &mut dyn HttpClient, url: &str, maximum_bytes: u64) -> Option<Vec<u8>> {
     let parsed = parse_url(url).ok()?;
     if parsed.scheme != "http" && parsed.scheme != "https" {
         return None;
@@ -618,19 +621,22 @@ impl HttpDownloadQueue {
     /// Enqueue a request (`enqueue`).
     pub fn enqueue(&mut self, request: HttpDownloadRequest) -> Result<(), HttpDownloadError> {
         if self.closed {
-            self.entries.insert(request.path.clone(), Entry {
-                path: request.path.clone(),
-                url: request.url.clone(),
-                kind: request.kind,
-                expected: request.expected,
-                validator_tag: None,
-                validate: None,
-                state: EntryState::Done,
-                received: 0,
-                total: None,
-                result: Some(HttpDownloadResult::Cancelled),
-                cancelled: true,
-            });
+            self.entries.insert(
+                request.path.clone(),
+                Entry {
+                    path: request.path.clone(),
+                    url: request.url.clone(),
+                    kind: request.kind,
+                    expected: request.expected,
+                    validator_tag: None,
+                    validate: None,
+                    state: EntryState::Done,
+                    received: 0,
+                    total: None,
+                    result: Some(HttpDownloadResult::Cancelled),
+                    cancelled: true,
+                },
+            );
             return Ok(());
         }
         (self.callbacks.assert_current)()?;
@@ -654,19 +660,22 @@ impl HttpDownloadQueue {
             Some((tag, validate)) => (Some(tag), Some(validate)),
             None => (None, None),
         };
-        self.entries.insert(request.path.clone(), Entry {
-            path: request.path.clone(),
-            url: request.url,
-            kind: request.kind,
-            expected: request.expected,
-            validator_tag,
-            validate,
-            state: EntryState::Pending,
-            received: 0,
-            total: None,
-            result: None,
-            cancelled: false,
-        });
+        self.entries.insert(
+            request.path.clone(),
+            Entry {
+                path: request.path.clone(),
+                url: request.url,
+                kind: request.kind,
+                expected: request.expected,
+                validator_tag,
+                validate,
+                state: EntryState::Pending,
+                received: 0,
+                total: None,
+                result: None,
+                cancelled: false,
+            },
+        );
         Ok(())
     }
 
@@ -716,10 +725,7 @@ impl HttpDownloadQueue {
         let Some(entry) = self.entries.get(path) else {
             return Err(HttpDownloadError::NotRetryable);
         };
-        if entry.state != EntryState::Done
-            || !Self::retryable(entry.result.as_ref())
-            || entry.validator_tag.is_some()
-        {
+        if entry.state != EntryState::Done || !Self::retryable(entry.result.as_ref()) || entry.validator_tag.is_some() {
             return Err(HttpDownloadError::NotRetryable);
         }
         let rebuilt = HttpDownloadRequest {
@@ -764,7 +770,9 @@ impl HttpDownloadQueue {
                 if let Some(entry) = self.entries.get_mut(&path) {
                     if entry.state == EntryState::Pending {
                         entry.state = EntryState::Done;
-                        entry.result = Some(HttpDownloadResult::Failed { reason: "epoch retired".to_owned() });
+                        entry.result = Some(HttpDownloadResult::Failed {
+                            reason: "epoch retired".to_owned(),
+                        });
                     }
                 }
             }
@@ -794,7 +802,9 @@ impl HttpDownloadQueue {
             .map(|entry| entry.path.clone())
             .collect();
         if let Some(pack) = pending.iter().find(|path| {
-            self.entries.get(*path).is_some_and(|entry| entry.kind == HttpDownloadKind::Package)
+            self.entries
+                .get(*path)
+                .is_some_and(|entry| entry.kind == HttpDownloadKind::Package)
         }) {
             let pack = pack.clone();
             self.run_entry(&pack);
@@ -881,7 +891,8 @@ impl HttpDownloadQueue {
         let mut retry_identity: Option<String> = None;
         if let Some(probe) = &probe {
             let spans = byte_spans(probe.total, self.range_streams);
-            let mut ranged = match DownloadSink::create_ranged(&self.root, path, expected.clone(), probe.total, &spans) {
+            let mut ranged = match DownloadSink::create_ranged(&self.root, path, expected.clone(), probe.total, &spans)
+            {
                 Ok(sink) => sink,
                 Err(error) => {
                     return HttpDownloadResult::Failed {
@@ -1110,7 +1121,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("qa-net-http-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let client = Box::new(StubClient { body: b"hello".to_vec() });
+        let client = Box::new(StubClient {
+            body: b"hello".to_vec(),
+        });
         let callbacks = HttpQueueCallbacks {
             assert_current: Box::new(|| Ok(())),
             resolved: Box::new(|_| false),

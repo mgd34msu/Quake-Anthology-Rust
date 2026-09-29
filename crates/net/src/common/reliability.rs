@@ -45,7 +45,11 @@ pub enum ReliabilityError {
 pub type ReliableBit = u8;
 
 fn flip(value: ReliableBit) -> ReliableBit {
-    if value == 0 { 1 } else { 0 }
+    if value == 0 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Outbound toggle packet (`TogglePacket`).
@@ -180,14 +184,17 @@ impl ToggleReliableChannel {
             self.reliable_sequence = flip(self.reliable_sequence);
             send_reliable = true;
         }
-        let reliable_bytes = if send_reliable { self.reliable.clone() } else { Vec::new() };
+        let reliable_bytes = if send_reliable {
+            self.reliable.clone()
+        } else {
+            Vec::new()
+        };
         if reliable_bytes.len() > payload_capacity {
             return Err(ReliabilityError::DoesNotFit);
         }
         let include_unreliable = reliable_bytes.len() + unreliable.len() <= payload_capacity;
-        let mut payload = Vec::with_capacity(
-            reliable_bytes.len() + if include_unreliable { unreliable.len() } else { 0 },
-        );
+        let mut payload =
+            Vec::with_capacity(reliable_bytes.len() + if include_unreliable { unreliable.len() } else { 0 });
         payload.extend_from_slice(&reliable_bytes);
         if include_unreliable {
             payload.extend_from_slice(unreliable);
@@ -335,7 +342,10 @@ impl StopAndWaitChannel {
     /// Next fragment to transmit, honoring the retry interval (`next`).
     pub fn next(&mut self, now: f64) -> Option<ReliableFragment> {
         let pending = self.sending.as_mut()?;
-        if pending.sent_at.is_some_and(|sent_at| now - sent_at <= self.retry_milliseconds) {
+        if pending
+            .sent_at
+            .is_some_and(|sent_at| now - sent_at <= self.retry_milliseconds)
+        {
             return None;
         }
         let end = (pending.bytes.len()).min(pending.offset + self.fragment_bytes);
@@ -366,10 +376,7 @@ impl StopAndWaitChannel {
     }
 
     /// Receive a fragment (`receive`).
-    pub fn receive(
-        &mut self,
-        fragment: &ReliableFragment,
-    ) -> Result<ReliableFragmentReceive, ReliabilityError> {
+    pub fn receive(&mut self, fragment: &ReliableFragment) -> Result<ReliableFragmentReceive, ReliabilityError> {
         if fragment.sequence != self.incoming {
             return Ok(ReliableFragmentReceive::Duplicate {
                 acknowledge: fragment.sequence,

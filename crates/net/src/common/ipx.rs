@@ -11,12 +11,10 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use super::endpoint::{
-    address_key, ipx_address, port_number, same_address, NetworkAddress,
-};
+use super::endpoint::{address_key, ipx_address, port_number, same_address, NetworkAddress};
 use super::transport::{
-    Clock, DatagramLimits, DatagramTransport, PacketQueue, ReceiveEvent, TransportError,
-    UdpTransport, UNIFIED_DATAGRAM_LIMITS,
+    Clock, DatagramLimits, DatagramTransport, PacketQueue, ReceiveEvent, TransportError, UdpTransport,
+    UNIFIED_DATAGRAM_LIMITS,
 };
 
 /// Error for IPX packet and tunnel failures.
@@ -277,10 +275,7 @@ impl IpxUdpTransport {
             _ => false,
         };
         let port_matches = match (&packet.to, &self.address) {
-            (
-                NetworkAddress::Ipx { port: to_port, .. },
-                NetworkAddress::Ipx { port, .. },
-            ) => to_port == port,
+            (NetworkAddress::Ipx { port: to_port, .. }, NetworkAddress::Ipx { port, .. }) => to_port == port,
             _ => false,
         };
         if !port_matches || (!is_broadcast && !same_address(&packet.to, &self.address, true)) {
@@ -343,12 +338,17 @@ impl DatagramTransport for IpxUdpTransport {
         .map_err(|error| TransportError::Closed(error.to_string()))?;
         let is_broadcast = matches!(to, NetworkAddress::Ipx { node, .. } if node.iter().all(|byte| *byte == 255));
         if is_broadcast {
-            let peers = self.peers.lock().map_err(|_| TransportError::Closed("IPX tunnel is closed".to_owned()))?;
+            let peers = self
+                .peers
+                .lock()
+                .map_err(|_| TransportError::Closed("IPX tunnel is closed".to_owned()))?;
             let mut sent = false;
             for peer in peers.values() {
                 let same_network = match (to, &peer.ipx) {
                     (
-                        NetworkAddress::Ipx { network: to_network, .. },
+                        NetworkAddress::Ipx {
+                            network: to_network, ..
+                        },
                         NetworkAddress::Ipx { network, .. },
                     ) => *to_network == 0 || to_network == network,
                     _ => false,
@@ -359,7 +359,10 @@ impl DatagramTransport for IpxUdpTransport {
             }
             return Ok(sent);
         }
-        let peers = self.peers.lock().map_err(|_| TransportError::Closed("IPX tunnel is closed".to_owned()))?;
+        let peers = self
+            .peers
+            .lock()
+            .map_err(|_| TransportError::Closed("IPX tunnel is closed".to_owned()))?;
         let Some(peer) = peers.get(&address_key(to, false)) else {
             return Ok(false);
         };
@@ -374,10 +377,7 @@ impl DatagramTransport for IpxUdpTransport {
         Ok(self.queue.poll())
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         self.queue.subscribe(listener)
     }
 
@@ -499,7 +499,11 @@ impl DatagramTransport for IpxGameTransport {
                 return Ok(event);
             }
             match event {
-                Some(ReceiveEvent::Packet { from, payload, received_at }) if payload.len() >= 4 => {
+                Some(ReceiveEvent::Packet {
+                    from,
+                    payload,
+                    received_at,
+                }) if payload.len() >= 4 => {
                     return Ok(Some(ReceiveEvent::Packet {
                         from,
                         payload: payload[4..].to_vec(),
@@ -512,10 +516,7 @@ impl DatagramTransport for IpxGameTransport {
         }
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         self.socket.subscribe_readable(listener)
     }
 
@@ -537,11 +538,14 @@ pub fn bind_ipx_transport(host: &IpxHost, game: IpxGame, port: u32) -> Result<Ip
             let socket = network
                 .bind(port as u16, packet_type)
                 .map_err(|error| TransportError::Closed(error.to_string()))?;
-            Ok(Box::new(IpxGameTransport::new(Box::new(DosBoxSocketHandle { socket }), game)))
+            Ok(Box::new(IpxGameTransport::new(
+                Box::new(DosBoxSocketHandle { socket }),
+                game,
+            )))
         }
-        IpxHost::Native(NativeIpxCapability::Unavailable { reason }) => Err(TransportError::Closed(format!(
-            "ipx-native: {reason}"
-        ))),
+        IpxHost::Native(NativeIpxCapability::Unavailable { reason }) => {
+            Err(TransportError::Closed(format!("ipx-native: {reason}")))
+        }
         IpxHost::Native(NativeIpxCapability::Available(bind)) => {
             let socket = bind(port as u16, packet_type)?;
             Ok(Box::new(IpxGameTransport::new(socket, game)))
@@ -576,10 +580,7 @@ impl DatagramTransport for DosBoxSocketHandle {
         self.socket.poll()
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         self.socket.subscribe_readable(listener)
     }
 
@@ -669,7 +670,11 @@ impl DosBoxIpxNetwork {
                                 port: from_port,
                                 ..
                             },
-                            NetworkAddress::Ipx { node: to_node, port: to_port, .. },
+                            NetworkAddress::Ipx {
+                                node: to_node,
+                                port: to_port,
+                                ..
+                            },
                         ) => {
                             packet.payload.is_empty()
                                 && *from_port == 2
@@ -839,10 +844,7 @@ impl DosBoxIpxNetwork {
             return;
         }
         if to_port(&packet.to) == Some(2) {
-            if is_broadcast(&packet.to)
-                && from_port(&packet.from) == Some(2)
-                && packet.payload.is_empty()
-            {
+            if is_broadcast(&packet.to) && from_port(&packet.from) == Some(2) && packet.payload.is_empty() {
                 let reply = IpxPacket {
                     from: self.address.clone(),
                     to: packet.from.clone(),
@@ -941,8 +943,7 @@ impl DatagramTransport for DosBoxIpxSocket {
     }
 
     fn closed(&self) -> bool {
-        self.inner.ended.load(std::sync::atomic::Ordering::Relaxed)
-            || self.inner.network.upgrade().is_none()
+        self.inner.ended.load(std::sync::atomic::Ordering::Relaxed) || self.inner.network.upgrade().is_none()
     }
 
     fn max_datagram_bytes(&self) -> Option<usize> {
@@ -968,10 +969,7 @@ impl DatagramTransport for DosBoxIpxSocket {
         Ok(self.inner.queue.poll())
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         self.opened()?;
         self.inner.queue.subscribe(listener)
     }
@@ -981,11 +979,7 @@ impl DatagramTransport for DosBoxIpxSocket {
     }
 
     fn close(&self) {
-        if self
-            .inner
-            .ended
-            .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
+        if self.inner.ended.swap(true, std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         if let Some(network) = self.inner.network.upgrade() {

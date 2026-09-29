@@ -545,8 +545,7 @@ pub fn decode_unified_actor_command(
     let slot = cursor.u32()?;
     let generation = cursor.u32()?;
     let sequence_value = cursor.f64()?;
-    if sequence_value < 0.0 || sequence_value.fract() != 0.0 || sequence_value > ((1u64 << 53) - 1) as f64
-    {
+    if sequence_value < 0.0 || sequence_value.fract() != 0.0 || sequence_value > ((1u64 << 53) - 1) as f64 {
         return Err(CommandError::BadSequence);
     }
     let sequence = sequence_value as u64;
@@ -555,8 +554,7 @@ pub fn decode_unified_actor_command(
     let mut arsenal = None;
     if has_intent == 1 {
         let provider_length = cursor.u16()? as usize;
-        let provider_text =
-            std::str::from_utf8(cursor.take(provider_length)?).map_err(|_| CommandError::BadText)?;
+        let provider_text = std::str::from_utf8(cursor.take(provider_length)?).map_err(|_| CommandError::BadText)?;
         let provider = identifier(provider_text)?.to_owned();
         let has_weapon = cursor.u8()?;
         if has_weapon != 0 && has_weapon != 1 {
@@ -566,8 +564,7 @@ pub fn decode_unified_actor_command(
             None
         } else {
             let weapon_length = cursor.u16()? as usize;
-            let weapon_text =
-                std::str::from_utf8(cursor.take(weapon_length)?).map_err(|_| CommandError::BadText)?;
+            let weapon_text = std::str::from_utf8(cursor.take(weapon_length)?).map_err(|_| CommandError::BadText)?;
             Some(identifier(weapon_text)?.to_owned())
         };
         let use_holdable = cursor.u8()?;
@@ -585,7 +582,9 @@ pub fn decode_unified_actor_command(
     if cursor.remaining() != 0 {
         return Err(CommandError::TrailingBytes);
     }
-    let controlled = receiver.resolve_controlled_actor(slot, generation).ok_or(CommandError::StaleActor)?;
+    let controlled = receiver
+        .resolve_controlled_actor(slot, generation)
+        .ok_or(CommandError::StaleActor)?;
     if controlled.actor.slot() != slot || controlled.actor.generation() != generation {
         return Err(CommandError::StaleActor);
     }

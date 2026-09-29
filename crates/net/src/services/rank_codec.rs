@@ -123,11 +123,7 @@ pub fn rank_ascii_decode(destination: &mut [u8], source: &str) -> Result<usize, 
 }
 
 /// `SV_RankEncodeGameID`. A short destination receives only a leading NUL.
-pub fn rank_encode_game_id(
-    game_id: u64,
-    destination: &mut [u8],
-    mut debug_print: impl FnMut(&str),
-) {
+pub fn rank_encode_game_id(game_id: u64, destination: &mut [u8], mut debug_print: impl FnMut(&str)) {
     if destination.len() < 12 {
         debug_print("SV_RankEncodeGameID: result buffer too small\n");
         if !destination.is_empty() {
@@ -140,10 +136,7 @@ pub fn rank_encode_game_id(
 
 /// `SV_RankDecodePlayerID`, rejecting native uninitialized or out-of-bounds
 /// reads.
-pub fn rank_decode_player_id(
-    source: &str,
-    mut debug_print: impl FnMut(&str),
-) -> Result<u64, RankCodecError> {
+pub fn rank_decode_player_id(source: &str, mut debug_print: impl FnMut(&str)) -> Result<u64, RankCodecError> {
     let end = source.find('\0').unwrap_or(source.len());
     let text = &source[..end];
     debug_print(&format!("SV_RankDecodePlayerID: string length {}\n", text.len()));

@@ -16,94 +16,81 @@ use std::time::{Duration, Instant};
 use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 use crate::msg::{MsgError, MsgReader, MsgWriter};
-use crate::protocol::ProtocolIdentity;
 use crate::protocol::q2 as protocol;
-use crate::q2::{EntityState, PlayerState, Usercmd, angle_to_short, write_dir};
+use crate::protocol::ProtocolIdentity;
+use crate::q2::{angle_to_short, write_dir, EntityState, PlayerState, Usercmd};
 use crate::q2_net::{
     Q2EntityBits, Q2EntityHeader, Q2NetError, Q2ServerData, Q2ServerEvent, Q2ServerMessageOptions,
-    Q2ServerMessageReader, Q2ServerRecord, Q2SoundMessage, Q2TempField, Q2TempInt, Q2TempType,
-    Q2TempVec, Q2Wire, Q2WireFrame,
+    Q2ServerMessageReader, Q2ServerRecord, Q2SoundMessage, Q2TempField, Q2TempInt, Q2TempType, Q2TempVec, Q2Wire,
+    Q2WireFrame,
 };
 use crate::q2_variants::{
-    BatchMove, BatchMoveFrame, FogData, MvdHeader, MvdOp, MvdPlayer, MvdProfile, MvdProtocol,
-    Q2ProFeatures, RereleaseCodec, WideEntityBits, fog_bits, mvd_profile, q2pro_fog_bits,
-    read_mvd_cmd,
-    read_mvd_header, read_mvd_player, read_q2pro_entity, read_q2pro_entity_bits,
-    write_delta_mvd_playerstate, write_mvd_cmd, write_q2pro_fog, write_q2pro_int23,
-    write_q2pro_var64, CLIENTNUM_NONE, GTF_DEFLATE, GTF_STRINGCMDS, GTV_PROTOCOL_VERSION,
-    MAX_GTC_MSGLEN, MVD_MAGIC, PPS_BLEND, PPS_FOV, PPS_GUNANGLES, PPS_GUNOFFSET, PPS_KICKANGLES,
-    PPS_MOREBITS, PPS_M_ORIGIN, PPS_M_ORIGIN2, PPS_M_TYPE, PPS_RDFLAGS, PPS_STATS,
-    PPS_VIEWANGLE2, PPS_VIEWANGLES, PPS_VIEWOFFSET, PPS_WEAPONFRAME, PPS_WEAPONINDEX,
-    GtvClientOp, GtvServerOp,
+    fog_bits, mvd_profile, q2pro_fog_bits, read_mvd_cmd, read_mvd_header, read_mvd_player, read_q2pro_entity,
+    read_q2pro_entity_bits, write_delta_mvd_playerstate, write_mvd_cmd, write_q2pro_fog, write_q2pro_int23,
+    write_q2pro_var64, BatchMove, BatchMoveFrame, FogData, GtvClientOp, GtvServerOp, MvdHeader, MvdOp, MvdPlayer,
+    MvdProfile, MvdProtocol, Q2ProFeatures, RereleaseCodec, WideEntityBits, CLIENTNUM_NONE, GTF_DEFLATE,
+    GTF_STRINGCMDS, GTV_PROTOCOL_VERSION, MAX_GTC_MSGLEN, MVD_MAGIC, PPS_BLEND, PPS_FOV, PPS_GUNANGLES, PPS_GUNOFFSET,
+    PPS_KICKANGLES, PPS_MOREBITS, PPS_M_ORIGIN, PPS_M_ORIGIN2, PPS_M_TYPE, PPS_RDFLAGS, PPS_STATS, PPS_VIEWANGLE2,
+    PPS_VIEWANGLES, PPS_VIEWOFFSET, PPS_WEAPONFRAME, PPS_WEAPONINDEX,
 };
 use crate::services::downloads::DownloadSource;
 
 /// Quake II `chktbl` (`checksum.ts`).
 const Q2_CHKTBL: [u8; 1024] = [
-0x84,0x47,0x51,0xc1,0x93,0x22,0x21,0x24,0x2f,0x66,0x60,0x4d,0xb0,0x7c,0xda,0x88,
-0x54,0x15,0x2b,0xc6,0x6c,0x89,0xc5,0x9d,0x48,0xee,0xe6,0x8a,0xb5,0xf4,0xcb,0xfb,
-0xf1,0x0c,0x2e,0xa0,0xd7,0xc9,0x1f,0xd6,0x06,0x9a,0x09,0x41,0x54,0x67,0x46,0xc7,
-0x74,0xe3,0xc8,0xb6,0x5d,0xa6,0x36,0xc4,0xab,0x2c,0x7e,0x85,0xa8,0xa4,0xa6,0x4d,
-0x96,0x19,0x19,0x9a,0xcc,0xd8,0xac,0x39,0x5e,0x3c,0xf2,0xf5,0x5a,0x72,0xe5,0xa9,
-0xd1,0xb3,0x23,0x82,0x6f,0x29,0xcb,0xd1,0xcc,0x71,0xfb,0xea,0x92,0xeb,0x1c,0xca,
-0x4c,0x70,0xfe,0x4d,0xc9,0x67,0x43,0x47,0x94,0xb9,0x47,0xbc,0x3f,0x01,0xab,0x7b,
-0xa6,0xe2,0x76,0xef,0x5a,0x7a,0x29,0x0b,0x51,0x54,0x67,0xd8,0x1c,0x14,0x3e,0x29,
-0xec,0xe9,0x2d,0x48,0x67,0xff,0xed,0x54,0x4f,0x48,0xc0,0xaa,0x61,0xf7,0x78,0x12,
-0x03,0x7a,0x9e,0x8b,0xcf,0x83,0x7b,0xae,0xca,0x7b,0xd9,0xe9,0x53,0x2a,0xeb,0xd2,
-0xd8,0xcd,0xa3,0x10,0x25,0x78,0x5a,0xb5,0x23,0x06,0x93,0xb7,0x84,0xd2,0xbd,0x96,
-0x75,0xa5,0x5e,0xcf,0x4e,0xe9,0x50,0xa1,0xe6,0x9d,0xb1,0xe3,0x85,0x66,0x28,0x4e,
-0x43,0xdc,0x6e,0xbb,0x33,0x9e,0xf3,0x0d,0x00,0xc1,0xcf,0x67,0x34,0x06,0x7c,0x71,
-0xe3,0x63,0xb7,0xb7,0xdf,0x92,0xc4,0xc2,0x25,0x5c,0xff,0xc3,0x6e,0xfc,0xaa,0x1e,
-0x2a,0x48,0x11,0x1c,0x36,0x68,0x78,0x86,0x79,0x30,0xc3,0xd6,0xde,0xbc,0x3a,0x2a,
-0x6d,0x1e,0x46,0xdd,0xe0,0x80,0x1e,0x44,0x3b,0x6f,0xaf,0x31,0xda,0xa2,0xbd,0x77,
-0x06,0x56,0xc0,0xb7,0x92,0x4b,0x37,0xc0,0xfc,0xc2,0xd5,0xfb,0xa8,0xda,0xf5,0x57,
-0xa8,0x18,0xc0,0xdf,0xe7,0xaa,0x2a,0xe0,0x7c,0x6f,0x77,0xb1,0x26,0xba,0xf9,0x2e,
-0x1d,0x16,0xcb,0xb8,0xa2,0x44,0xd5,0x2f,0x1a,0x79,0x74,0x87,0x4b,0x00,0xc9,0x4a,
-0x3a,0x65,0x8f,0xe6,0x5d,0xe5,0x0a,0x77,0xd8,0x1a,0x14,0x41,0x75,0xb1,0xe2,0x50,
-0x2c,0x93,0x38,0x2b,0x6d,0xf3,0xf6,0xdb,0x1f,0xcd,0xff,0x14,0x70,0xe7,0x16,0xe8,
-0x3d,0xf0,0xe3,0xbc,0x5e,0xb6,0x3f,0xcc,0x81,0x24,0x67,0xf3,0x97,0x3b,0xfe,0x3a,
-0x96,0x85,0xdf,0xe4,0x6e,0x3c,0x85,0x05,0x0e,0xa3,0x2b,0x07,0xc8,0xbf,0xe5,0x13,
-0x82,0x62,0x08,0x61,0x69,0x4b,0x47,0x62,0x73,0x44,0x64,0x8e,0xe2,0x91,0xa6,0x9a,
-0xb7,0xe9,0x04,0xb6,0x54,0x0c,0xc5,0xa9,0x47,0xa6,0xc9,0x08,0xfe,0x4e,0xa6,0xcc,
-0x8a,0x5b,0x90,0x6f,0x2b,0x3f,0xb6,0x0a,0x96,0xc0,0x78,0x58,0x3c,0x76,0x6d,0x94,
-0x1a,0xe4,0x4e,0xb8,0x38,0xbb,0xf5,0xeb,0x29,0xd8,0xb0,0xf3,0x15,0x1e,0x99,0x96,
-0x3c,0x5d,0x63,0xd5,0xb1,0xad,0x52,0xb8,0x55,0x70,0x75,0x3e,0x1a,0xd5,0xda,0xf6,
-0x7a,0x48,0x7d,0x44,0x41,0xf9,0x11,0xce,0xd7,0xca,0xa5,0x3d,0x7a,0x79,0x7e,0x7d,
-0x25,0x1b,0x77,0xbc,0xf7,0xc7,0x0f,0x84,0x95,0x10,0x92,0x67,0x15,0x11,0x5a,0x5e,
-0x41,0x66,0x0f,0x38,0x03,0xb2,0xf1,0x5d,0xf8,0xab,0xc0,0x02,0x76,0x84,0x28,0xf4,
-0x9d,0x56,0x46,0x60,0x20,0xdb,0x68,0xa7,0xbb,0xee,0xac,0x15,0x01,0x2f,0x20,0x09,
-0xdb,0xc0,0x16,0xa1,0x89,0xf9,0x94,0x59,0x00,0xc1,0x76,0xbf,0xc1,0x4d,0x5d,0x2d,
-0xa9,0x85,0x2c,0xd6,0xd3,0x14,0xcc,0x02,0xc3,0xc2,0xfa,0x6b,0xb7,0xa6,0xef,0xdd,
-0x12,0x26,0xa4,0x63,0xe3,0x62,0xbd,0x56,0x8a,0x52,0x2b,0xb9,0xdf,0x09,0xbc,0x0e,
-0x97,0xa9,0xb0,0x82,0x46,0x08,0xd5,0x1a,0x8e,0x1b,0xa7,0x90,0x98,0xb9,0xbb,0x3c,
-0x17,0x9a,0xf2,0x82,0xba,0x64,0x0a,0x7f,0xca,0x5a,0x8c,0x7c,0xd3,0x79,0x09,0x5b,
-0x26,0xbb,0xbd,0x25,0xdf,0x3d,0x6f,0x9a,0x8f,0xee,0x21,0x66,0xb0,0x8d,0x84,0x4c,
-0x91,0x45,0xd4,0x77,0x4f,0xb3,0x8c,0xbc,0xa8,0x99,0xaa,0x19,0x53,0x7c,0x02,0x87,
-0xbb,0x0b,0x7c,0x1a,0x2d,0xdf,0x48,0x44,0x06,0xd6,0x7d,0x0c,0x2d,0x35,0x76,0xae,
-0xc4,0x5f,0x71,0x85,0x97,0xc4,0x3d,0xef,0x52,0xbe,0x00,0xe4,0xcd,0x49,0xd1,0xd1,
-0x1c,0x3c,0xd0,0x1c,0x42,0xaf,0xd4,0xbd,0x58,0x34,0x07,0x32,0xee,0xb9,0xb5,0xea,
-0xff,0xd7,0x8c,0x0d,0x2e,0x2f,0xaf,0x87,0xbb,0xe6,0x52,0x71,0x22,0xf5,0x25,0x17,
-0xa1,0x82,0x04,0xc2,0x4a,0xbd,0x57,0xc6,0xab,0xc8,0x35,0x0c,0x3c,0xd9,0xc2,0x43,
-0xdb,0x27,0x92,0xcf,0xb8,0x25,0x60,0xfa,0x21,0x3b,0x04,0x52,0xc8,0x96,0xba,0x74,
-0xe3,0x67,0x3e,0x8e,0x8d,0x61,0x90,0x92,0x59,0xb6,0x1a,0x1c,0x5e,0x21,0xc1,0x65,
-0xe5,0xa6,0x34,0x05,0x6f,0xc5,0x60,0xb1,0x83,0xc1,0xd5,0xd5,0xed,0xd9,0xc7,0x11,
-0x7b,0x49,0x7a,0xf9,0xf9,0x84,0x47,0x9b,0xe2,0xa5,0x82,0xe0,0xc2,0x88,0xd0,0xb2,
-0x58,0x88,0x7f,0x45,0x09,0x67,0x74,0x61,0xbf,0xe6,0x40,0xe2,0x9d,0xc2,0x47,0x05,
-0x89,0xed,0xcb,0xbb,0xb7,0x27,0xe7,0xdc,0x7a,0xfd,0xbf,0xa8,0xd0,0xaa,0x10,0x39,
-0x3c,0x20,0xf0,0xd3,0x6e,0xb1,0x72,0xf8,0xe6,0x0f,0xef,0x37,0xe5,0x09,0x33,0x5a,
-0x83,0x43,0x80,0x4f,0x65,0x2f,0x7c,0x8c,0x6a,0xa0,0x82,0x0c,0xd4,0xd4,0xfa,0x81,
-0x60,0x3d,0xdf,0x06,0xf1,0x5f,0x08,0x0d,0x6d,0x43,0xf2,0xe3,0x11,0x7d,0x80,0x32,
-0xc5,0xfb,0xc5,0xd9,0x27,0xec,0xc6,0x4e,0x65,0x27,0x76,0x87,0xa6,0xee,0xee,0xd7,
-0x8b,0xd1,0xa0,0x5c,0xb0,0x42,0x13,0x0e,0x95,0x4a,0xf2,0x06,0xc6,0x43,0x33,0xf4,
-0xc7,0xf8,0xe7,0x1f,0xdd,0xe4,0x46,0x4a,0x70,0x39,0x6c,0xd0,0xed,0xca,0xbe,0x60,
-0x3b,0xd1,0x7b,0x57,0x48,0xe5,0x3a,0x79,0xc1,0x69,0x33,0x53,0x1b,0x80,0xb8,0x91,
-0x7d,0xb4,0xf6,0x17,0x1a,0x1d,0x5a,0x32,0xd6,0xcc,0x71,0x29,0x3f,0x28,0xbb,0xf3,
-0x5e,0x71,0xb8,0x43,0xaf,0xf8,0xb9,0x64,0xef,0xc4,0xa5,0x6c,0x08,0x53,0xc7,0x00,
-0x10,0x39,0x4f,0xdd,0xe4,0xb6,0x19,0x27,0xfb,0xb8,0xf5,0x32,0x73,0xe5,0xcb,0x32,
-0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x84, 0x47, 0x51, 0xc1, 0x93, 0x22, 0x21, 0x24, 0x2f, 0x66, 0x60, 0x4d, 0xb0, 0x7c, 0xda, 0x88, 0x54, 0x15, 0x2b,
+    0xc6, 0x6c, 0x89, 0xc5, 0x9d, 0x48, 0xee, 0xe6, 0x8a, 0xb5, 0xf4, 0xcb, 0xfb, 0xf1, 0x0c, 0x2e, 0xa0, 0xd7, 0xc9,
+    0x1f, 0xd6, 0x06, 0x9a, 0x09, 0x41, 0x54, 0x67, 0x46, 0xc7, 0x74, 0xe3, 0xc8, 0xb6, 0x5d, 0xa6, 0x36, 0xc4, 0xab,
+    0x2c, 0x7e, 0x85, 0xa8, 0xa4, 0xa6, 0x4d, 0x96, 0x19, 0x19, 0x9a, 0xcc, 0xd8, 0xac, 0x39, 0x5e, 0x3c, 0xf2, 0xf5,
+    0x5a, 0x72, 0xe5, 0xa9, 0xd1, 0xb3, 0x23, 0x82, 0x6f, 0x29, 0xcb, 0xd1, 0xcc, 0x71, 0xfb, 0xea, 0x92, 0xeb, 0x1c,
+    0xca, 0x4c, 0x70, 0xfe, 0x4d, 0xc9, 0x67, 0x43, 0x47, 0x94, 0xb9, 0x47, 0xbc, 0x3f, 0x01, 0xab, 0x7b, 0xa6, 0xe2,
+    0x76, 0xef, 0x5a, 0x7a, 0x29, 0x0b, 0x51, 0x54, 0x67, 0xd8, 0x1c, 0x14, 0x3e, 0x29, 0xec, 0xe9, 0x2d, 0x48, 0x67,
+    0xff, 0xed, 0x54, 0x4f, 0x48, 0xc0, 0xaa, 0x61, 0xf7, 0x78, 0x12, 0x03, 0x7a, 0x9e, 0x8b, 0xcf, 0x83, 0x7b, 0xae,
+    0xca, 0x7b, 0xd9, 0xe9, 0x53, 0x2a, 0xeb, 0xd2, 0xd8, 0xcd, 0xa3, 0x10, 0x25, 0x78, 0x5a, 0xb5, 0x23, 0x06, 0x93,
+    0xb7, 0x84, 0xd2, 0xbd, 0x96, 0x75, 0xa5, 0x5e, 0xcf, 0x4e, 0xe9, 0x50, 0xa1, 0xe6, 0x9d, 0xb1, 0xe3, 0x85, 0x66,
+    0x28, 0x4e, 0x43, 0xdc, 0x6e, 0xbb, 0x33, 0x9e, 0xf3, 0x0d, 0x00, 0xc1, 0xcf, 0x67, 0x34, 0x06, 0x7c, 0x71, 0xe3,
+    0x63, 0xb7, 0xb7, 0xdf, 0x92, 0xc4, 0xc2, 0x25, 0x5c, 0xff, 0xc3, 0x6e, 0xfc, 0xaa, 0x1e, 0x2a, 0x48, 0x11, 0x1c,
+    0x36, 0x68, 0x78, 0x86, 0x79, 0x30, 0xc3, 0xd6, 0xde, 0xbc, 0x3a, 0x2a, 0x6d, 0x1e, 0x46, 0xdd, 0xe0, 0x80, 0x1e,
+    0x44, 0x3b, 0x6f, 0xaf, 0x31, 0xda, 0xa2, 0xbd, 0x77, 0x06, 0x56, 0xc0, 0xb7, 0x92, 0x4b, 0x37, 0xc0, 0xfc, 0xc2,
+    0xd5, 0xfb, 0xa8, 0xda, 0xf5, 0x57, 0xa8, 0x18, 0xc0, 0xdf, 0xe7, 0xaa, 0x2a, 0xe0, 0x7c, 0x6f, 0x77, 0xb1, 0x26,
+    0xba, 0xf9, 0x2e, 0x1d, 0x16, 0xcb, 0xb8, 0xa2, 0x44, 0xd5, 0x2f, 0x1a, 0x79, 0x74, 0x87, 0x4b, 0x00, 0xc9, 0x4a,
+    0x3a, 0x65, 0x8f, 0xe6, 0x5d, 0xe5, 0x0a, 0x77, 0xd8, 0x1a, 0x14, 0x41, 0x75, 0xb1, 0xe2, 0x50, 0x2c, 0x93, 0x38,
+    0x2b, 0x6d, 0xf3, 0xf6, 0xdb, 0x1f, 0xcd, 0xff, 0x14, 0x70, 0xe7, 0x16, 0xe8, 0x3d, 0xf0, 0xe3, 0xbc, 0x5e, 0xb6,
+    0x3f, 0xcc, 0x81, 0x24, 0x67, 0xf3, 0x97, 0x3b, 0xfe, 0x3a, 0x96, 0x85, 0xdf, 0xe4, 0x6e, 0x3c, 0x85, 0x05, 0x0e,
+    0xa3, 0x2b, 0x07, 0xc8, 0xbf, 0xe5, 0x13, 0x82, 0x62, 0x08, 0x61, 0x69, 0x4b, 0x47, 0x62, 0x73, 0x44, 0x64, 0x8e,
+    0xe2, 0x91, 0xa6, 0x9a, 0xb7, 0xe9, 0x04, 0xb6, 0x54, 0x0c, 0xc5, 0xa9, 0x47, 0xa6, 0xc9, 0x08, 0xfe, 0x4e, 0xa6,
+    0xcc, 0x8a, 0x5b, 0x90, 0x6f, 0x2b, 0x3f, 0xb6, 0x0a, 0x96, 0xc0, 0x78, 0x58, 0x3c, 0x76, 0x6d, 0x94, 0x1a, 0xe4,
+    0x4e, 0xb8, 0x38, 0xbb, 0xf5, 0xeb, 0x29, 0xd8, 0xb0, 0xf3, 0x15, 0x1e, 0x99, 0x96, 0x3c, 0x5d, 0x63, 0xd5, 0xb1,
+    0xad, 0x52, 0xb8, 0x55, 0x70, 0x75, 0x3e, 0x1a, 0xd5, 0xda, 0xf6, 0x7a, 0x48, 0x7d, 0x44, 0x41, 0xf9, 0x11, 0xce,
+    0xd7, 0xca, 0xa5, 0x3d, 0x7a, 0x79, 0x7e, 0x7d, 0x25, 0x1b, 0x77, 0xbc, 0xf7, 0xc7, 0x0f, 0x84, 0x95, 0x10, 0x92,
+    0x67, 0x15, 0x11, 0x5a, 0x5e, 0x41, 0x66, 0x0f, 0x38, 0x03, 0xb2, 0xf1, 0x5d, 0xf8, 0xab, 0xc0, 0x02, 0x76, 0x84,
+    0x28, 0xf4, 0x9d, 0x56, 0x46, 0x60, 0x20, 0xdb, 0x68, 0xa7, 0xbb, 0xee, 0xac, 0x15, 0x01, 0x2f, 0x20, 0x09, 0xdb,
+    0xc0, 0x16, 0xa1, 0x89, 0xf9, 0x94, 0x59, 0x00, 0xc1, 0x76, 0xbf, 0xc1, 0x4d, 0x5d, 0x2d, 0xa9, 0x85, 0x2c, 0xd6,
+    0xd3, 0x14, 0xcc, 0x02, 0xc3, 0xc2, 0xfa, 0x6b, 0xb7, 0xa6, 0xef, 0xdd, 0x12, 0x26, 0xa4, 0x63, 0xe3, 0x62, 0xbd,
+    0x56, 0x8a, 0x52, 0x2b, 0xb9, 0xdf, 0x09, 0xbc, 0x0e, 0x97, 0xa9, 0xb0, 0x82, 0x46, 0x08, 0xd5, 0x1a, 0x8e, 0x1b,
+    0xa7, 0x90, 0x98, 0xb9, 0xbb, 0x3c, 0x17, 0x9a, 0xf2, 0x82, 0xba, 0x64, 0x0a, 0x7f, 0xca, 0x5a, 0x8c, 0x7c, 0xd3,
+    0x79, 0x09, 0x5b, 0x26, 0xbb, 0xbd, 0x25, 0xdf, 0x3d, 0x6f, 0x9a, 0x8f, 0xee, 0x21, 0x66, 0xb0, 0x8d, 0x84, 0x4c,
+    0x91, 0x45, 0xd4, 0x77, 0x4f, 0xb3, 0x8c, 0xbc, 0xa8, 0x99, 0xaa, 0x19, 0x53, 0x7c, 0x02, 0x87, 0xbb, 0x0b, 0x7c,
+    0x1a, 0x2d, 0xdf, 0x48, 0x44, 0x06, 0xd6, 0x7d, 0x0c, 0x2d, 0x35, 0x76, 0xae, 0xc4, 0x5f, 0x71, 0x85, 0x97, 0xc4,
+    0x3d, 0xef, 0x52, 0xbe, 0x00, 0xe4, 0xcd, 0x49, 0xd1, 0xd1, 0x1c, 0x3c, 0xd0, 0x1c, 0x42, 0xaf, 0xd4, 0xbd, 0x58,
+    0x34, 0x07, 0x32, 0xee, 0xb9, 0xb5, 0xea, 0xff, 0xd7, 0x8c, 0x0d, 0x2e, 0x2f, 0xaf, 0x87, 0xbb, 0xe6, 0x52, 0x71,
+    0x22, 0xf5, 0x25, 0x17, 0xa1, 0x82, 0x04, 0xc2, 0x4a, 0xbd, 0x57, 0xc6, 0xab, 0xc8, 0x35, 0x0c, 0x3c, 0xd9, 0xc2,
+    0x43, 0xdb, 0x27, 0x92, 0xcf, 0xb8, 0x25, 0x60, 0xfa, 0x21, 0x3b, 0x04, 0x52, 0xc8, 0x96, 0xba, 0x74, 0xe3, 0x67,
+    0x3e, 0x8e, 0x8d, 0x61, 0x90, 0x92, 0x59, 0xb6, 0x1a, 0x1c, 0x5e, 0x21, 0xc1, 0x65, 0xe5, 0xa6, 0x34, 0x05, 0x6f,
+    0xc5, 0x60, 0xb1, 0x83, 0xc1, 0xd5, 0xd5, 0xed, 0xd9, 0xc7, 0x11, 0x7b, 0x49, 0x7a, 0xf9, 0xf9, 0x84, 0x47, 0x9b,
+    0xe2, 0xa5, 0x82, 0xe0, 0xc2, 0x88, 0xd0, 0xb2, 0x58, 0x88, 0x7f, 0x45, 0x09, 0x67, 0x74, 0x61, 0xbf, 0xe6, 0x40,
+    0xe2, 0x9d, 0xc2, 0x47, 0x05, 0x89, 0xed, 0xcb, 0xbb, 0xb7, 0x27, 0xe7, 0xdc, 0x7a, 0xfd, 0xbf, 0xa8, 0xd0, 0xaa,
+    0x10, 0x39, 0x3c, 0x20, 0xf0, 0xd3, 0x6e, 0xb1, 0x72, 0xf8, 0xe6, 0x0f, 0xef, 0x37, 0xe5, 0x09, 0x33, 0x5a, 0x83,
+    0x43, 0x80, 0x4f, 0x65, 0x2f, 0x7c, 0x8c, 0x6a, 0xa0, 0x82, 0x0c, 0xd4, 0xd4, 0xfa, 0x81, 0x60, 0x3d, 0xdf, 0x06,
+    0xf1, 0x5f, 0x08, 0x0d, 0x6d, 0x43, 0xf2, 0xe3, 0x11, 0x7d, 0x80, 0x32, 0xc5, 0xfb, 0xc5, 0xd9, 0x27, 0xec, 0xc6,
+    0x4e, 0x65, 0x27, 0x76, 0x87, 0xa6, 0xee, 0xee, 0xd7, 0x8b, 0xd1, 0xa0, 0x5c, 0xb0, 0x42, 0x13, 0x0e, 0x95, 0x4a,
+    0xf2, 0x06, 0xc6, 0x43, 0x33, 0xf4, 0xc7, 0xf8, 0xe7, 0x1f, 0xdd, 0xe4, 0x46, 0x4a, 0x70, 0x39, 0x6c, 0xd0, 0xed,
+    0xca, 0xbe, 0x60, 0x3b, 0xd1, 0x7b, 0x57, 0x48, 0xe5, 0x3a, 0x79, 0xc1, 0x69, 0x33, 0x53, 0x1b, 0x80, 0xb8, 0x91,
+    0x7d, 0xb4, 0xf6, 0x17, 0x1a, 0x1d, 0x5a, 0x32, 0xd6, 0xcc, 0x71, 0x29, 0x3f, 0x28, 0xbb, 0xf3, 0x5e, 0x71, 0xb8,
+    0x43, 0xaf, 0xf8, 0xb9, 0x64, 0xef, 0xc4, 0xa5, 0x6c, 0x08, 0x53, 0xc7, 0x00, 0x10, 0x39, 0x4f, 0xdd, 0xe4, 0xb6,
+    0x19, 0x27, 0xfb, 0xb8, 0xf5, 0x32, 0x73, 0xe5, 0xcb, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// Checksum a client-move block against its sequence (`blockSequenceChecksum`).
@@ -142,10 +129,7 @@ fn trunc_byte(value: f64) -> u8 {
 
 /// Whether an identity is a KEX wire.
 fn is_kex(protocol: ProtocolIdentity) -> bool {
-    matches!(
-        protocol,
-        ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo
-    )
+    matches!(protocol, ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo)
 }
 
 /// Whether an identity is a rerelease wire.
@@ -158,7 +142,12 @@ fn is_rerelease(protocol: ProtocolIdentity) -> bool {
 
 /// Write rerelease fog data (`writeQ2Fog`).
 pub fn write_q2_fog(writer: &mut MsgWriter, fog: &FogData) -> Result<(), MsgError> {
-    let bits = fog.bits | (if (fog.bits & 0xff00) != 0 { fog_bits::MORE_BITS } else { 0 });
+    let bits = fog.bits
+        | (if (fog.bits & 0xff00) != 0 {
+            fog_bits::MORE_BITS
+        } else {
+            0
+        });
     writer.write_byte(bits as u8)?;
     if (bits & fog_bits::MORE_BITS) != 0 {
         writer.write_byte((bits >> 8) as u8)?;
@@ -216,10 +205,7 @@ pub fn write_q2_fog(writer: &mut MsgWriter, fog: &FogData) -> Result<(), MsgErro
 ///
 /// Frames and mod-private messages have no encoder, matching the donor's
 /// `Exclude<Q2ServerEvent, { kind: 'frame' | 'private' }>` input.
-pub fn encode_q2_server_event(
-    wire: &mut Q2Wire,
-    event: &Q2ServerEvent,
-) -> Result<Vec<u8>, Q2NetError> {
+pub fn encode_q2_server_event(wire: &mut Q2Wire, event: &Q2ServerEvent) -> Result<Vec<u8>, Q2NetError> {
     let protocol = wire.protocol();
     let kex = is_kex(protocol);
     let rerelease = is_rerelease(protocol);
@@ -245,7 +231,9 @@ pub fn encode_q2_server_event(
                     | ProtocolIdentity::Q2PrivateClassic
             ) =>
         {
-            return Err(Q2NetError::Protocol("Selected Q2 protocol has no server setting message"));
+            return Err(Q2NetError::Protocol(
+                "Selected Q2 protocol has no server setting message",
+            ));
         }
         Q2ServerEvent::Frame { .. } | Q2ServerEvent::Private { .. } => {
             return Err(Q2NetError::Protocol("Q2 server event has no wire encoder"));
@@ -386,9 +374,7 @@ pub fn encode_q2_server_event(
             let mut flags = sound.flags;
             if !kex && sound.index > 255 {
                 if !rerelease && !wire.q2pro_extended() {
-                    return Err(Q2NetError::Protocol(
-                        "Q2 sound index needs extended game layout",
-                    ));
+                    return Err(Q2NetError::Protocol("Q2 sound index needs extended game layout"));
                 }
                 flags |= 32;
             }
@@ -513,11 +499,7 @@ pub struct Q2DownloadSender {
 
 impl Q2DownloadSender {
     /// Build a sender over a source at an offset.
-    pub fn new(
-        source: Box<dyn DownloadSource>,
-        offset: u64,
-        block_bytes: usize,
-    ) -> Result<Self, Q2NetError> {
+    pub fn new(source: Box<dyn DownloadSource>, offset: u64, block_bytes: usize) -> Result<Self, Q2NetError> {
         if offset > source.byte_length() || block_bytes < 1 || block_bytes > 32767 {
             return Err(Q2NetError::Range("Invalid Q2 download range"));
         }
@@ -722,9 +704,7 @@ pub fn read_q2_client_messages(
                     if let Some(expected) = checksum {
                         let block = wire.raw_slice(checksum_start).to_vec();
                         if block_sequence_checksum(&block, sequence)? != expected {
-                            return Err(Q2NetError::Protocol(
-                                "Q2 command sequence checksum mismatch",
-                            ));
+                            return Err(Q2NetError::Protocol("Q2 command sequence checksum mismatch"));
                         }
                     }
                     records.push(Q2ClientRecord {
@@ -806,10 +786,7 @@ pub fn encode_q2_batch_move(
 }
 
 /// Encode a non-move client event (`encodeQ2ClientControl`).
-pub fn encode_q2_client_control(
-    event: &Q2ClientEvent,
-    kex: bool,
-) -> Result<Vec<u8>, Q2NetError> {
+pub fn encode_q2_client_control(event: &Q2ClientEvent, kex: bool) -> Result<Vec<u8>, Q2NetError> {
     let mut writer = MsgWriter::new(65536, false);
     match event {
         Q2ClientEvent::Nop => writer.write_byte(1)?,
@@ -875,10 +852,7 @@ impl Q2CommandReplay {
         mut think: impl FnMut(&Usercmd),
     ) -> Result<(), Q2NetError> {
         match event {
-            Q2ClientEvent::Move {
-                last_frame,
-                commands,
-            } => {
+            Q2ClientEvent::Move { last_frame, commands } => {
                 self.last_frame = *last_frame;
                 if dropped < 20 {
                     while dropped > 2 {
@@ -1364,9 +1338,7 @@ impl MvdEncoder {
         let profile = mvd_profile(capture.revision, capture.flags)?;
         let old = self.previous.as_ref();
         let changed_world = old.is_none_or(|old| {
-            old.servercount != capture.servercount
-                || old.revision != capture.revision
-                || old.flags != capture.flags
+            old.servercount != capture.servercount || old.revision != capture.revision || old.flags != capture.flags
         });
         let mut wire = Q2Wire::new(mvd_wire_protocol(&profile))?;
         if let MvdProtocol::Q2Pro { revision } = profile.protocol {
@@ -1479,9 +1451,7 @@ impl MvdEncoder {
         let mut current = std::collections::HashSet::new();
         let fresh = EntityState::default();
         for entity in &capture.entities {
-            if entity.number < 1
-                || usize::from(entity.number) >= profile.max_entities
-                || !current.insert(entity.number)
+            if entity.number < 1 || usize::from(entity.number) >= profile.max_entities || !current.insert(entity.number)
             {
                 return Err(Q2NetError::Range("Invalid MVD entity identity"));
             }
@@ -1617,11 +1587,7 @@ impl MvdMessageFramer {
     }
 
     /// Push bytes; `message` returns `false` to halt after the current message.
-    pub fn push(
-        &mut self,
-        bytes: &[u8],
-        mut message: impl FnMut(&[u8]) -> bool,
-    ) -> Result<(), Q2NetError> {
+    pub fn push(&mut self, bytes: &[u8], mut message: impl FnMut(&[u8]) -> bool) -> Result<(), Q2NetError> {
         if self.ended && !bytes.is_empty() {
             return Err(Q2NetError::Protocol("Data after MVD terminator"));
         }
@@ -1706,29 +1672,13 @@ pub enum MvdChannel {
 /// Source-BSP visibility for MVD projection (`MvdVisibility`).
 pub trait MvdVisibility {
     /// Filter entities for the selected player.
-    fn entities(
-        &self,
-        entities: &[EntityState],
-        player: &PlayerState,
-        portal_bits: &[u8],
-    ) -> Vec<EntityState>;
+    fn entities(&self, entities: &[EntityState], player: &PlayerState, portal_bits: &[u8]) -> Vec<EntityState>;
     /// Whether a leaf is visible/audible to the player.
-    fn visible(
-        &self,
-        leaf: u16,
-        channel: MvdChannel,
-        player: &PlayerState,
-        portal_bits: &[u8],
-    ) -> bool;
+    fn visible(&self, leaf: u16, channel: MvdChannel, player: &PlayerState, portal_bits: &[u8]) -> bool;
     /// Area bits for the player.
     fn area_bits(&self, player: &PlayerState, portal_bits: &[u8]) -> Vec<u8>;
     /// Whether a world sound is audible to the player.
-    fn sound_audible(
-        &self,
-        origin: [f64; 3],
-        player: &PlayerState,
-        portal_bits: &[u8],
-    ) -> bool;
+    fn sound_audible(&self, origin: [f64; 3], player: &PlayerState, portal_bits: &[u8]) -> bool;
     /// World origin of a sound entity.
     fn sound_origin(&self, entity: &EntityState) -> [f64; 3];
 }
@@ -1868,10 +1818,8 @@ impl MvdPlayback {
                     None,
                 )?;
                 if let MvdProtocol::Q2Pro { revision } = header.profile.protocol {
-                    self.embedded.accept_q2pro_features(
-                        revision,
-                        if header.profile.v2 { 24 } else { 8 },
-                    )?;
+                    self.embedded
+                        .accept_q2pro_features(revision, if header.profile.v2 { 24 } else { 8 })?;
                 }
                 self.profile = header.profile.clone();
                 self.config_strings.clear();
@@ -1901,9 +1849,10 @@ impl MvdPlayback {
                 }
                 self.data = Some(mvd_server_data(&header, self.selected));
                 let raw = bytes[start..self.wire.position().min(bytes.len())].to_vec();
-                let data = self.data.clone().unwrap_or_else(|| {
-                    mvd_server_data(&header, self.selected)
-                });
+                let data = self
+                    .data
+                    .clone()
+                    .unwrap_or_else(|| mvd_server_data(&header, self.selected));
                 records.push(Q2ServerRecord {
                     seat: 0,
                     opcode: 12,
@@ -2004,8 +1953,7 @@ impl MvdPlayback {
                     || op == MvdOp::MulticastPhs as u8
                     || op == MvdOp::MulticastPhsR as u8
             ) {
-                let length =
-                    usize::from(self.wire.read_raw_byte()?) | (usize::from(command.extrabits) << 8);
+                let length = usize::from(self.wire.read_raw_byte()?) | (usize::from(command.extrabits) << 8);
                 let mut visible = true;
                 if command.op == MvdOp::Unicast as u8 || command.op == MvdOp::UnicastR as u8 {
                     let number = self.wire.read_raw_byte()?;
@@ -2013,20 +1961,17 @@ impl MvdPlayback {
                         return Err(Q2NetError::Protocol("Invalid MVD unicast player"));
                     }
                     visible = number == self.selected;
-                } else if command.op != MvdOp::MulticastAll as u8
-                    && command.op != MvdOp::MulticastAllR as u8
-                {
+                } else if command.op != MvdOp::MulticastAll as u8 && command.op != MvdOp::MulticastAllR as u8 {
                     let leaf = self.wire.with_reader(|reader| Ok(reader.word()?))?;
-                    let channel =
-                        if command.op == MvdOp::MulticastPvs as u8 || command.op == MvdOp::MulticastPvsR as u8
-                        {
-                            MvdChannel::Pvs
-                        } else {
-                            MvdChannel::Phs
-                        };
-                    visible =
-                        self.visibility
-                            .visible(leaf, channel, &self.player(), &self.portal_bits);
+                    let channel = if command.op == MvdOp::MulticastPvs as u8 || command.op == MvdOp::MulticastPvsR as u8
+                    {
+                        MvdChannel::Pvs
+                    } else {
+                        MvdChannel::Phs
+                    };
+                    visible = self
+                        .visibility
+                        .visible(leaf, channel, &self.player(), &self.portal_bits);
                 }
                 if length > self.wire.remaining() {
                     return Err(Q2NetError::Protocol("Truncated MVD embedded message"));
@@ -2049,31 +1994,30 @@ impl MvdPlayback {
         start: usize,
         extrabits: u8,
     ) -> Result<(), Q2NetError> {
-        let (flags, index, volume, attenuation, delay_seconds, channel) =
-            self.wire.with_reader(|reader| {
-                let flags = reader.byte()?;
-                let index = if (flags & 32) != 0 {
-                    u16::from(reader.word()?)
-                } else {
-                    u16::from(reader.byte()?)
-                };
-                let volume = if (flags & 1) != 0 {
-                    f64::from(reader.byte()?) / 255.0
-                } else {
-                    1.0
-                };
-                let attenuation = if (flags & 2) != 0 {
-                    f64::from(reader.byte()?) / 64.0
-                } else {
-                    1.0
-                };
-                let delay_seconds = if (flags & 16) != 0 {
-                    f64::from(reader.byte()?) / 1000.0
-                } else {
-                    0.0
-                };
-                Ok((flags, index, volume, attenuation, delay_seconds, reader.word()?))
-            })?;
+        let (flags, index, volume, attenuation, delay_seconds, channel) = self.wire.with_reader(|reader| {
+            let flags = reader.byte()?;
+            let index = if (flags & 32) != 0 {
+                u16::from(reader.word()?)
+            } else {
+                u16::from(reader.byte()?)
+            };
+            let volume = if (flags & 1) != 0 {
+                f64::from(reader.byte()?) / 255.0
+            } else {
+                1.0
+            };
+            let attenuation = if (flags & 2) != 0 {
+                f64::from(reader.byte()?) / 64.0
+            } else {
+                1.0
+            };
+            let delay_seconds = if (flags & 16) != 0 {
+                f64::from(reader.byte()?) / 1000.0
+            } else {
+                0.0
+            };
+            Ok((flags, index, volume, attenuation, delay_seconds, reader.word()?))
+        })?;
         let entity = channel >> 3;
         if usize::from(entity) >= self.profile.max_entities {
             return Err(Q2NetError::Protocol("Invalid MVD sound entity"));
@@ -2138,7 +2082,12 @@ impl MvdPlaybackTail<'_> {
                 return Err(Q2NetError::Protocol("Invalid MVD player number"));
             }
             let result: MvdPlayer = self.wire.with_reader(|reader| {
-                Ok(read_mvd_player(reader, self.players.get(&number), number, self.profile)?)
+                Ok(read_mvd_player(
+                    reader,
+                    self.players.get(&number),
+                    number,
+                    self.profile,
+                )?)
             })?;
             if result.removed {
                 self.players.remove(&number);
@@ -2165,9 +2114,7 @@ impl MvdPlaybackTail<'_> {
         }
         loop {
             let (number, classic_bits, extended_bits, wide) = if self.profile.extended {
-                let (number, bits) = self
-                    .wire
-                    .with_reader(|reader| Ok(read_q2pro_entity_bits(reader)?))?;
+                let (number, bits) = self.wire.with_reader(|reader| Ok(read_q2pro_entity_bits(reader)?))?;
                 (number, 0u32, bits, None)
             } else {
                 let header = self.wire.read_entity_bits()?;
@@ -2199,9 +2146,8 @@ impl MvdPlaybackTail<'_> {
                     lo: classic_bits,
                     hi: 0,
                 });
-                self.wire.with_reader(|reader| {
-                    Ok(RereleaseCodec::read_delta_entity(reader, &previous, number, wide)?)
-                })?
+                self.wire
+                    .with_reader(|reader| Ok(RereleaseCodec::read_delta_entity(reader, &previous, number, wide)?))?
             } else if self.profile.extended {
                 let features = Q2ProFeatures {
                     revision: if self.profile.fog {
@@ -2213,9 +2159,8 @@ impl MvdPlaybackTail<'_> {
                     },
                     flags: if self.profile.v2 { 24 } else { 8 },
                 };
-                self.wire.with_reader(|reader| {
-                    Ok(read_q2pro_entity(reader, features, &previous, number, extended_bits)?)
-                })?
+                self.wire
+                    .with_reader(|reader| Ok(read_q2pro_entity(reader, features, &previous, number, extended_bits)?))?
             } else {
                 self.wire.read_delta_entity(
                     &previous,
@@ -2241,13 +2186,10 @@ impl MvdPlaybackTail<'_> {
             if (mask_bits & u64::from(protocol::U_FRAME16)) != 0 {
                 entity.frame &= 65535;
             }
-            if (mask_bits & u64::from(protocol::U_SKIN8 | protocol::U_SKIN16))
-                == u64::from(protocol::U_SKIN16)
-            {
+            if (mask_bits & u64::from(protocol::U_SKIN8 | protocol::U_SKIN16)) == u64::from(protocol::U_SKIN16) {
                 entity.skinnum &= 65535;
             }
-            if (mask_bits & u64::from(protocol::U_EFFECTS8 | protocol::U_EFFECTS16))
-                == u64::from(protocol::U_EFFECTS16)
+            if (mask_bits & u64::from(protocol::U_EFFECTS8 | protocol::U_EFFECTS16)) == u64::from(protocol::U_EFFECTS16)
             {
                 entity.effects &= 65535;
             }
@@ -2302,9 +2244,9 @@ impl MvdPlaybackTail<'_> {
                 lo: bits,
                 hi: 0,
             };
-            Ok(self.wire.with_reader(|reader| {
-                Ok(RereleaseCodec::read_delta_entity(reader, from, number, wide)?)
-            })?)
+            Ok(self
+                .wire
+                .with_reader(|reader| Ok(RereleaseCodec::read_delta_entity(reader, from, number, wide)?))?)
         } else if self.profile.extended {
             let features = Q2ProFeatures {
                 revision: if self.profile.fog {
@@ -2362,9 +2304,7 @@ impl GtvCompression {
                     let produced = (compressor.total_out() - before_out) as usize;
                     out.extend_from_slice(&buf[..produced]);
                     if out.len() > MVD_MAX_MESSAGE * 64 {
-                        return Err(Q2NetError::Protocol(
-                            "GTV decompression output limit exceeded",
-                        ));
+                        return Err(Q2NetError::Protocol("GTV decompression output limit exceeded"));
                     }
                     input = &input[consumed.min(input.len())..];
                     if input.is_empty() && (produced < buf.len() || status != Status::Ok) {
@@ -2390,9 +2330,7 @@ impl GtvCompression {
                     let produced = (decompressor.total_out() - before_out) as usize;
                     out.extend_from_slice(&buf[..produced]);
                     if out.len() > MVD_MAX_MESSAGE * 64 {
-                        return Err(Q2NetError::Protocol(
-                            "GTV decompression output limit exceeded",
-                        ));
+                        return Err(Q2NetError::Protocol("GTV decompression output limit exceeded"));
                     }
                     input = &input[consumed.min(input.len())..];
                     if status == Status::BufError || (consumed == 0 && produced == 0) {
@@ -2416,9 +2354,7 @@ fn gtv_packet(op: u8, body: &[u8]) -> Result<Vec<u8>, Q2NetError> {
 /// Validate GTV identity/command text.
 fn checked_gtv_text(text: &str) -> Result<(), Q2NetError> {
     if text.contains('\0') || text.chars().any(|c| c as u32 > 255) {
-        return Err(Q2NetError::Protocol(
-            "GTV strings must be non-NUL single-byte text",
-        ));
+        return Err(Q2NetError::Protocol("GTV strings must be non-NUL single-byte text"));
     }
     Ok(())
 }
@@ -2527,10 +2463,7 @@ impl GtvClient {
         if self.phase != GtvPhase::Connected {
             return Err(Q2NetError::Protocol("GTV is not ready to start"));
         }
-        let packet = gtv_packet(
-            GtvClientOp::StreamStart as u8,
-            &max_buffered_packets.to_le_bytes(),
-        )?;
+        let packet = gtv_packet(GtvClientOp::StreamStart as u8, &max_buffered_packets.to_le_bytes())?;
         (self.send)(&packet)?;
         self.phase = GtvPhase::Starting;
         Ok(())
@@ -2558,9 +2491,7 @@ impl GtvClient {
         self.connected()?;
         checked_gtv_text(text)?;
         if (self.flags & u32::from(GTF_STRINGCMDS)) == 0 {
-            return Err(Q2NetError::Protocol(
-                "GTV command forwarding was not negotiated",
-            ));
+            return Err(Q2NetError::Protocol("GTV command forwarding was not negotiated"));
         }
         let clipped: String = text.chars().take(150).collect();
         let mut writer = MsgWriter::new(MAX_GTC_MSGLEN, false);
@@ -2576,10 +2507,7 @@ impl GtvClient {
     }
 
     fn connected(&self) -> Result<(), Q2NetError> {
-        if matches!(
-            self.phase,
-            GtvPhase::Magic | GtvPhase::Hello | GtvPhase::Closed
-        ) {
+        if matches!(self.phase, GtvPhase::Magic | GtvPhase::Hello | GtvPhase::Closed) {
             return Err(Q2NetError::Protocol("GTV is not connected"));
         }
         Ok(())
@@ -2634,11 +2562,7 @@ impl GtvClient {
         self.receive_framed(bytes, events)
     }
 
-    fn receive_framed(
-        &mut self,
-        bytes: &[u8],
-        mut events: Vec<GtvEvent>,
-    ) -> Result<Vec<GtvEvent>, Q2NetError> {
+    fn receive_framed(&mut self, bytes: &[u8], mut events: Vec<GtvEvent>) -> Result<Vec<GtvEvent>, Q2NetError> {
         let had_compression = self.compression.is_some();
         let mut switched = false;
         let mut failure: Option<Q2NetError> = None;
@@ -2652,8 +2576,7 @@ impl GtvClient {
                 if failure.is_some() {
                     return false;
                 }
-                match consume_gtv_message(message, &mut events, compression, phase, flags, requested)
-                {
+                match consume_gtv_message(message, &mut events, compression, phase, flags, requested) {
                     Ok(()) => {
                         if !had_compression && compression.is_some() {
                             switched = true;
@@ -2689,14 +2612,7 @@ impl GtvClient {
                         if failure.is_some() {
                             return false;
                         }
-                        match consume_gtv_message(
-                            message,
-                            &mut events,
-                            compression,
-                            phase,
-                            flags,
-                            requested,
-                        ) {
+                        match consume_gtv_message(message, &mut events, compression, phase, flags, requested) {
                             Ok(()) => true,
                             Err(error) => {
                                 failure = Some(error);
@@ -2934,10 +2850,7 @@ impl GtvServerStream {
         }
         self.greeted = true;
         if (flags & GTF_DEFLATE) != 0 {
-            self.compression = Some(GtvCompression::Encode(Compress::new(
-                Compression::default(),
-                true,
-            )));
+            self.compression = Some(GtvCompression::Encode(Compress::new(Compression::default(), true)));
         }
         gtv_packet(GtvServerOp::Hello as u8, &u32::from(flags).to_le_bytes())
     }
@@ -2970,31 +2883,27 @@ impl Default for GtvServerStream {
 /// Synthesize server data from an MVD header.
 fn mvd_server_data(header: &MvdHeader, selected: u8) -> Q2ServerData {
     match header.profile.protocol {
-        MvdProtocol::Q2Pro { revision } => {
-            Q2ServerData::Q2Pro(crate::q2_variants::Q2ProServerData {
-                servercount: header.servercount,
-                attractloop: true,
-                gamedir: header.gamedir.clone(),
-                clientnum: i16::from(selected),
-                levelname: header.levelname.clone(),
-                version: revision,
-                server_state: 2,
-                wire_flags: if header.profile.v2 { 24 } else { 8 },
-            })
-        }
-        MvdProtocol::Rerelease => {
-            Q2ServerData::Rerelease(crate::q2_variants::RereleaseServerData {
-                servercount: header.servercount,
-                attractloop: true,
-                gamedir: header.gamedir.clone(),
-                clientnum: i16::from(selected),
-                levelname: header.levelname.clone(),
-                protocol_revision: header.profile.revision,
-                server_state: 2,
-                wire_flags: 0,
-                server_fps: 10,
-            })
-        }
+        MvdProtocol::Q2Pro { revision } => Q2ServerData::Q2Pro(crate::q2_variants::Q2ProServerData {
+            servercount: header.servercount,
+            attractloop: true,
+            gamedir: header.gamedir.clone(),
+            clientnum: i16::from(selected),
+            levelname: header.levelname.clone(),
+            version: revision,
+            server_state: 2,
+            wire_flags: if header.profile.v2 { 24 } else { 8 },
+        }),
+        MvdProtocol::Rerelease => Q2ServerData::Rerelease(crate::q2_variants::RereleaseServerData {
+            servercount: header.servercount,
+            attractloop: true,
+            gamedir: header.gamedir.clone(),
+            clientnum: i16::from(selected),
+            levelname: header.levelname.clone(),
+            protocol_revision: header.profile.revision,
+            server_state: 2,
+            wire_flags: 0,
+            server_fps: 10,
+        }),
         MvdProtocol::Classic => Q2ServerData::Vanilla(crate::q2::ServerData {
             servercount: header.servercount,
             attractloop: true,
@@ -3153,8 +3062,8 @@ impl MvdBroadcast {
         if self.closed || self.listener.is_some() {
             return Err(Q2NetError::Protocol("GTV listener already owned or closed"));
         }
-        let listener = TcpListener::bind(format!("{host}:{port}"))
-            .map_err(|error| Q2NetError::Io(error.to_string()))?;
+        let listener =
+            TcpListener::bind(format!("{host}:{port}")).map_err(|error| Q2NetError::Io(error.to_string()))?;
         listener
             .set_nonblocking(true)
             .map_err(|error| Q2NetError::Io(error.to_string()))?;
@@ -3173,11 +3082,7 @@ impl MvdBroadcast {
         }
         if self.listener.is_some() {
             loop {
-                let accepted = self
-                    .listener
-                    .as_ref()
-                    .expect("checked")
-                    .accept();
+                let accepted = self.listener.as_ref().expect("checked").accept();
                 match accepted {
                     Ok((stream, _)) => self.attach(stream)?,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -3327,9 +3232,7 @@ impl MvdBroadcast {
                                 ..latest
                             })?;
                             for packet in &initial {
-                                let framed = self.viewers[index]
-                                    .gtv
-                                    .message(GtvServerOp::StreamData, packet)?;
+                                let framed = self.viewers[index].gtv.message(GtvServerOp::StreamData, packet)?;
                                 self.viewers[index].send(&framed)?;
                             }
                             self.viewers[index].needs_gamestate = false;
@@ -3414,13 +3317,11 @@ impl GtvConnection {
                 format!("{}:{}", options.host, options.port)
                     .to_socket_addrs()?
                     .next()
-                    .ok_or_else(|| {
-                        std::io::Error::new(std::io::ErrorKind::NotFound, "no GTV address")
-                    })
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no GTV address"))
             })
             .map_err(|error| Q2NetError::Io(error.to_string()))?;
-        let stream = TcpStream::connect_timeout(&address, options.timeout)
-            .map_err(|error| Q2NetError::Io(error.to_string()))?;
+        let stream =
+            TcpStream::connect_timeout(&address, options.timeout).map_err(|error| Q2NetError::Io(error.to_string()))?;
         stream
             .set_nodelay(true)
             .map_err(|error| Q2NetError::Io(error.to_string()))?;
@@ -3545,9 +3446,7 @@ impl GtvConnection {
                             events.extend(received);
                             break;
                         }
-                        let closed = received
-                            .iter()
-                            .any(|event| matches!(event, GtvEvent::Closed { .. }));
+                        let closed = received.iter().any(|event| matches!(event, GtvEvent::Closed { .. }));
                         events.extend(received);
                         if closed || self.client.phase == GtvPhase::Closed {
                             self.close();
@@ -3616,7 +3515,7 @@ mod tests {
     use super::*;
     use crate::q2::{Q2ProFog, ServerData};
     use crate::q2_net::Q2TempEntity;
-    use crate::q2_variants::{KexDamageIndicator, KexHelpPath, KexLocprint, KexPoi, fog_bits};
+    use crate::q2_variants::{fog_bits, KexDamageIndicator, KexHelpPath, KexLocprint, KexPoi};
     use crate::services::downloads::{DownloadError, DownloadSource};
 
     fn unhex(hex: &str) -> Vec<u8> {
@@ -3657,25 +3556,37 @@ mod tests {
         assert_eq!(
             encode(
                 &mut wire,
-                &Q2ServerEvent::CenterPrint { text: "mid".to_string() }
+                &Q2ServerEvent::CenterPrint {
+                    text: "mid".to_string()
+                }
             ),
             "0f6d696400"
         );
         assert_eq!(
             encode(
                 &mut wire,
-                &Q2ServerEvent::CommandText { text: "precache 7\n".to_string() }
+                &Q2ServerEvent::CommandText {
+                    text: "precache 7\n".to_string()
+                }
             ),
             "0b707265636163686520370a00"
         );
         assert_eq!(
-            encode(&mut wire, &Q2ServerEvent::Layout { text: "xv 1".to_string() }),
+            encode(
+                &mut wire,
+                &Q2ServerEvent::Layout {
+                    text: "xv 1".to_string()
+                }
+            ),
             "047876203100"
         );
         assert_eq!(
             encode(
                 &mut wire,
-                &Q2ServerEvent::ConfigString { index: 512, value: "dm1".to_string() }
+                &Q2ServerEvent::ConfigString {
+                    index: 512,
+                    value: "dm1".to_string()
+                }
             ),
             "0d0002646d3100"
         );
@@ -3686,25 +3597,44 @@ mod tests {
         assert_eq!(
             encode(
                 &mut wire,
-                &Q2ServerEvent::Download { percent: 33, bytes: Some(vec![9, 8, 7]) }
+                &Q2ServerEvent::Download {
+                    percent: 33,
+                    bytes: Some(vec![9, 8, 7])
+                }
             ),
             "10030021090807"
         );
         assert_eq!(
-            encode(&mut wire, &Q2ServerEvent::Download { percent: 100, bytes: Some(vec![]) }),
+            encode(
+                &mut wire,
+                &Q2ServerEvent::Download {
+                    percent: 100,
+                    bytes: Some(vec![])
+                }
+            ),
             "10000064"
         );
         assert_eq!(
             encode(
                 &mut wire,
-                &Q2ServerEvent::MuzzleFlash { entity: 300, flash: 5, monster: false, silenced: true }
+                &Q2ServerEvent::MuzzleFlash {
+                    entity: 300,
+                    flash: 5,
+                    monster: false,
+                    silenced: true
+                }
             ),
             "012c0185"
         );
         assert_eq!(
             encode(
                 &mut wire,
-                &Q2ServerEvent::MuzzleFlash { entity: 12, flash: 200, monster: true, silenced: false }
+                &Q2ServerEvent::MuzzleFlash {
+                    entity: 12,
+                    flash: 200,
+                    monster: true,
+                    silenced: false
+                }
             ),
             "020c00c8"
         );
@@ -3717,8 +3647,14 @@ mod tests {
             value: Q2TempEntity {
                 temp_type: 3,
                 fields: vec![
-                    Q2TempField::Vector { name: Q2TempVec::Position1, value: [100.5, -8.25, 0.0] },
-                    Q2TempField::Integer { name: Q2TempInt::Color, value: 7 },
+                    Q2TempField::Vector {
+                        name: Q2TempVec::Position1,
+                        value: [100.5, -8.25, 0.0],
+                    },
+                    Q2TempField::Integer {
+                        name: Q2TempInt::Color,
+                        value: 7,
+                    },
                 ],
                 raw: Vec::new(),
             },
@@ -3728,8 +3664,14 @@ mod tests {
         let rail = Q2TempEntity {
             temp_type: 3,
             fields: vec![
-                Q2TempField::Vector { name: Q2TempVec::Position1, value: [100.5, -8.25, 0.0] },
-                Q2TempField::Vector { name: Q2TempVec::Position2, value: [1.0, 2.0, 3.0] },
+                Q2TempField::Vector {
+                    name: Q2TempVec::Position1,
+                    value: [100.5, -8.25, 0.0],
+                },
+                Q2TempField::Vector {
+                    name: Q2TempVec::Position2,
+                    value: [1.0, 2.0, 3.0],
+                },
             ],
             raw: Vec::new(),
         };
@@ -3786,7 +3728,12 @@ mod tests {
         assert_eq!(
             encode(
                 &mut q2pro,
-                &Q2ServerEvent::MuzzleFlash { entity: 12, flash: 0x312, monster: true, silenced: false }
+                &Q2ServerEvent::MuzzleFlash {
+                    entity: 12,
+                    flash: 0x312,
+                    monster: true,
+                    silenced: false
+                }
             ),
             "020c6012"
         );
@@ -3796,13 +3743,23 @@ mod tests {
             "250300000063000000"
         );
         assert_eq!(
-            encode(&mut re, &Q2ServerEvent::Achievement { text: "won".to_string() }),
+            encode(
+                &mut re,
+                &Q2ServerEvent::Achievement {
+                    text: "won".to_string()
+                }
+            ),
             "21776f6e00"
         );
         assert_eq!(
             encode(
                 &mut re,
-                &Q2ServerEvent::MuzzleFlash { entity: 5000, flash: 0x234, monster: true, silenced: false }
+                &Q2ServerEvent::MuzzleFlash {
+                    entity: 5000,
+                    flash: 0x234,
+                    monster: true,
+                    silenced: false
+                }
             ),
             "2088133402"
         );
@@ -3828,7 +3785,14 @@ mod tests {
             encode(
                 &mut kex,
                 &Q2ServerEvent::Poi {
-                    value: KexPoi { key: 7, time: 30, pos: [1.0, 2.0, 3.0], image: 9, color: 4, flags: 2 }
+                    value: KexPoi {
+                        key: 7,
+                        time: 30,
+                        pos: [1.0, 2.0, 3.0],
+                        image: 9,
+                        color: 4,
+                        flags: 2
+                    }
                 }
             ),
             "1e07001e000000803f000000400000404009000402"
@@ -3837,7 +3801,11 @@ mod tests {
             encode(
                 &mut kex,
                 &Q2ServerEvent::HelpPath {
-                    value: KexHelpPath { start: true, pos: [4.0, 5.0, 6.0], dir: [0.0, 1.0, 0.0] }
+                    value: KexHelpPath {
+                        start: true,
+                        pos: [4.0, 5.0, 6.0],
+                        dir: [0.0, 1.0, 0.0]
+                    }
                 }
             ),
             "1f01000080400000a0400000c04020"
@@ -3846,7 +3814,11 @@ mod tests {
             encode(
                 &mut kex,
                 &Q2ServerEvent::Locprint {
-                    value: KexLocprint { flags: 3, base: "WIN".to_string(), args: vec!["a".to_string(), "b".to_string()] }
+                    value: KexLocprint {
+                        flags: 3,
+                        base: "WIN".to_string(),
+                        args: vec!["a".to_string(), "b".to_string()]
+                    }
                 }
             ),
             "1a0357494e000261006200"
@@ -3925,13 +3897,16 @@ mod tests {
         assert!(encode_q2_server_event(&mut classic, &Q2ServerEvent::Setting { index: 0, value: 0 }).is_err());
         assert!(encode_q2_server_event(&mut classic, &Q2ServerEvent::LevelRestart).is_err());
         assert!(encode_q2_server_event(&mut classic, &Q2ServerEvent::Seat { seat: 0 }).is_err());
-        assert!(
-            encode_q2_server_event(
-                &mut classic,
-                &Q2ServerEvent::MuzzleFlash { entity: 1, flash: 300, monster: true, silenced: false }
-            )
-            .is_err()
-        );
+        assert!(encode_q2_server_event(
+            &mut classic,
+            &Q2ServerEvent::MuzzleFlash {
+                entity: 1,
+                flash: 300,
+                monster: true,
+                silenced: false
+            }
+        )
+        .is_err());
         let wide_sound = Q2ServerEvent::Sound {
             sound: Q2SoundMessage {
                 flags: 0,
@@ -3957,9 +3932,23 @@ mod tests {
     #[test]
     fn client_move_byte_exact_and_reads_back() {
         let mut wire = classic_wire();
-        let a = Usercmd { forwardmove: 100, buttons: 3, ..Usercmd::default() };
-        let b = Usercmd { forwardmove: 100, buttons: 3, angles: [100, 0, 0], ..Usercmd::default() };
-        let c = Usercmd { forwardmove: 50, impulse: 9, msec: 33, ..Usercmd::default() };
+        let a = Usercmd {
+            forwardmove: 100,
+            buttons: 3,
+            ..Usercmd::default()
+        };
+        let b = Usercmd {
+            forwardmove: 100,
+            buttons: 3,
+            angles: [100, 0, 0],
+            ..Usercmd::default()
+        };
+        let c = Usercmd {
+            forwardmove: 50,
+            impulse: 9,
+            msec: 33,
+            ..Usercmd::default()
+        };
         let bytes = encode_q2_move(&mut wire, 41, 777, &[a, b, c]).unwrap();
         assert_eq!(hex(&bytes), "02a1090300004864000300000164000000c90000320000092100");
         let mut reader = classic_wire();
@@ -3971,7 +3960,10 @@ mod tests {
         assert_eq!(*last_frame, 777);
         assert_eq!((commands[0].forwardmove, commands[0].buttons), (100, 3));
         assert_eq!(commands[1].angles[0], 100);
-        assert_eq!((commands[2].forwardmove, commands[2].impulse, commands[2].msec), (50, 9, 33));
+        assert_eq!(
+            (commands[2].forwardmove, commands[2].impulse, commands[2].msec),
+            (50, 9, 33)
+        );
         assert_eq!(records[0].raw, bytes);
         // Corrupt the checksum.
         let mut bad = bytes.clone();
@@ -3982,7 +3974,10 @@ mod tests {
 
     #[test]
     fn client_control_byte_exact() {
-        assert_eq!(hex(&encode_q2_client_control(&Q2ClientEvent::Nop, false).unwrap()), "01");
+        assert_eq!(
+            hex(&encode_q2_client_control(&Q2ClientEvent::Nop, false).unwrap()),
+            "01"
+        );
         assert_eq!(
             hex(&encode_q2_client_control(&Q2ClientEvent::Userinfo("\\name\\x".to_string()), false).unwrap()),
             "035c6e616d655c7800"
@@ -3997,7 +3992,10 @@ mod tests {
         );
         assert_eq!(
             hex(&encode_q2_client_control(
-                &Q2ClientEvent::UserinfoDelta { name: "skin".to_string(), value: "male/grunt".to_string() },
+                &Q2ClientEvent::UserinfoDelta {
+                    name: "skin".to_string(),
+                    value: "male/grunt".to_string()
+                },
                 false
             )
             .unwrap()),
@@ -4006,10 +4004,7 @@ mod tests {
         let mut q2pro = Q2Wire::new(ProtocolIdentity::Q2Q2pro { revision: 1026 }).unwrap();
         let bytes = unhex("050400feff");
         let records = read_q2_client_messages(&mut q2pro, &bytes, 0, 1).unwrap();
-        assert_eq!(
-            records[0].event,
-            Q2ClientEvent::Setting { index: 4, value: -2 }
-        );
+        assert_eq!(records[0].event, Q2ClientEvent::Setting { index: 4, value: -2 });
         let mut classic = classic_wire();
         assert!(read_q2_client_messages(&mut classic, &bytes, 0, 1).is_err());
         assert_eq!(
@@ -4021,7 +4016,10 @@ mod tests {
     #[test]
     fn kex_move_byte_exact() {
         let mut wire = Q2Wire::new(ProtocolIdentity::Q2Kex).unwrap();
-        let k = Usercmd { server_frame: 5, ..Usercmd::default() };
+        let k = Usercmd {
+            server_frame: 5,
+            ..Usercmd::default()
+        };
         let bytes = encode_q2_move(&mut wire, 3, 99, &[Usercmd::default(), Usercmd::default(), k]).unwrap();
         assert_eq!(hex(&bytes), "02630000000000000000800500000000");
         let mut reader = Q2Wire::new(ProtocolIdentity::Q2Kex).unwrap();
@@ -4049,9 +4047,20 @@ mod tests {
     #[test]
     fn batch_moves_byte_exact() {
         let mut q2pro = Q2Wire::new(ProtocolIdentity::Q2Q2pro { revision: 1026 }).unwrap();
-        let f1 = Usercmd { forwardmove: 40, msec: 50, ..Usercmd::default() };
-        let f2 = Usercmd { forwardmove: 41, msec: 50, ..Usercmd::default() };
-        let frames = vec![BatchMoveFrame { cmds: vec![f1] }, BatchMoveFrame { cmds: vec![f2.clone()] }];
+        let f1 = Usercmd {
+            forwardmove: 40,
+            msec: 50,
+            ..Usercmd::default()
+        };
+        let f2 = Usercmd {
+            forwardmove: 41,
+            msec: 50,
+            ..Usercmd::default()
+        };
+        let frames = vec![
+            BatchMoveFrame { cmds: vec![f1] },
+            BatchMoveFrame { cmds: vec![f2.clone()] },
+        ];
         let bytes = encode_q2_batch_move(&mut q2pro, Some(55), &frames).unwrap();
         assert_eq!(hex(&bytes), "2b370000000021220a3221420a");
         let mut reader = Q2Wire::new(ProtocolIdentity::Q2Q2pro { revision: 1026 }).unwrap();
@@ -4062,8 +4071,16 @@ mod tests {
         assert_eq!((batch.lastframe, batch.num_dups), (55, 1));
         assert_eq!(batch.frames[1].cmds[0].forwardmove, 41);
         let mut re = Q2Wire::new(ProtocolIdentity::Q2Rerelease).unwrap();
-        let f1 = Usercmd { forwardmove: 40, msec: 50, ..Usercmd::default() };
-        let f2 = Usercmd { forwardmove: 41, msec: 50, ..Usercmd::default() };
+        let f1 = Usercmd {
+            forwardmove: 40,
+            msec: 50,
+            ..Usercmd::default()
+        };
+        let f2 = Usercmd {
+            forwardmove: 41,
+            msec: 50,
+            ..Usercmd::default()
+        };
         let bytes = encode_q2_batch_move(&mut re, None, &[BatchMoveFrame { cmds: vec![f1, f2] }]).unwrap();
         assert_eq!(hex(&bytes), "0a000022220a3211539001");
         let mut classic = classic_wire();
@@ -4091,8 +4108,14 @@ mod tests {
     #[test]
     fn command_replay_order_matches_donor() {
         let mut replay = Q2CommandReplay::new();
-        let mk = |fwd| Usercmd { forwardmove: fwd, ..Usercmd::default() };
-        let event = Q2ClientEvent::Move { last_frame: 9, commands: [mk(1), mk(2), mk(3)] };
+        let mk = |fwd| Usercmd {
+            forwardmove: fwd,
+            ..Usercmd::default()
+        };
+        let event = Q2ClientEvent::Move {
+            last_frame: 9,
+            commands: [mk(1), mk(2), mk(3)],
+        };
         let mut seen = Vec::new();
         replay.execute(&event, 3, |cmd| seen.push(cmd.forwardmove)).unwrap();
         assert_eq!(seen, vec![0, 1, 2, 3]);
@@ -4106,7 +4129,9 @@ mod tests {
                 num_dups: 1,
                 frames: vec![
                     BatchMoveFrame { cmds: vec![mk(7)] },
-                    BatchMoveFrame { cmds: vec![mk(8), mk(9)] },
+                    BatchMoveFrame {
+                        cmds: vec![mk(8), mk(9)],
+                    },
                 ],
             },
         };
@@ -4135,25 +4160,21 @@ mod tests {
     #[test]
     fn mvd_emission_recording_framer_byte_exact() {
         assert_eq!(
-            hex(
-                &encode_mvd_emission(&MvdEmission {
-                    recipient: MvdRecipient::Pvs(300),
-                    reliable: true,
-                    bytes: vec![1, 2, 3]
-                })
-                .unwrap()
-            ),
+            hex(&encode_mvd_emission(&MvdEmission {
+                recipient: MvdRecipient::Pvs(300),
+                reliable: true,
+                bytes: vec![1, 2, 3]
+            })
+            .unwrap()),
             "0f032c01010203"
         );
         assert_eq!(
-            hex(
-                &encode_mvd_emission(&MvdEmission {
-                    recipient: MvdRecipient::Player(7),
-                    reliable: false,
-                    bytes: vec![9]
-                })
-                .unwrap()
-            ),
+            hex(&encode_mvd_emission(&MvdEmission {
+                recipient: MvdRecipient::Player(7),
+                reliable: false,
+                bytes: vec![9]
+            })
+            .unwrap()),
             "08010709"
         );
         assert_eq!(hex(&mvd_magic()), "4d564432");
@@ -4165,10 +4186,7 @@ mod tests {
         recording.append(&[3]).unwrap();
         recording.close();
         assert_eq!(hex(&chunks.borrow()), "4d564432020001020100030000");
-        assert_eq!(
-            read_mvd_recording(&chunks.borrow()).unwrap(),
-            vec![vec![1, 2], vec![3]]
-        );
+        assert_eq!(read_mvd_recording(&chunks.borrow()).unwrap(), vec![vec![1, 2], vec![3]]);
     }
 
     fn mvd_test_capture(revision: u16, flags: u16) -> MvdCapture {
@@ -4266,7 +4284,10 @@ mod tests {
         let Q2ServerEvent::ServerData { data } = &records[0].event else {
             panic!("expected server-data");
         };
-        let Q2ServerData::Vanilla(ServerData { servercount, gamedir, .. }) = data else {
+        let Q2ServerData::Vanilla(ServerData {
+            servercount, gamedir, ..
+        }) = data
+        else {
             panic!("expected vanilla data");
         };
         assert_eq!((*servercount, gamedir.as_str()), (2, "baseq2"));
@@ -4310,7 +4331,10 @@ mod tests {
                 self.closed = true;
             }
         }
-        let source = Memory { bytes: vec![7u8; 2500], closed: false };
+        let source = Memory {
+            bytes: vec![7u8; 2500],
+            closed: false,
+        };
         let mut sender = Q2DownloadSender::new(Box::new(source), 0, 1024).unwrap();
         let mut percents = Vec::new();
         let mut total = 0;
@@ -4319,7 +4343,15 @@ mod tests {
             total += bytes.unwrap().len();
         }
         assert_eq!((percents.as_slice(), total), (&[40, 81, 100][..], 2500));
-        assert!(Q2DownloadSender::new(Box::new(Memory { bytes: vec![], closed: false }), 1, 1024).is_err());
+        assert!(Q2DownloadSender::new(
+            Box::new(Memory {
+                bytes: vec![],
+                closed: false
+            }),
+            1,
+            1024
+        )
+        .is_err());
     }
 
     #[test]
@@ -4331,7 +4363,15 @@ mod tests {
         let GtvRequest::Hello { hello } = request else {
             panic!("expected hello");
         };
-        assert_eq!((hello.username.as_str(), hello.password.as_str(), hello.version.as_str(), hello.flags), ("u", "p", "v", 3));
+        assert_eq!(
+            (
+                hello.username.as_str(),
+                hello.password.as_str(),
+                hello.version.as_str(),
+                hello.flags
+            ),
+            ("u", "p", "v", 3)
+        );
     }
 
     #[test]
@@ -4343,7 +4383,11 @@ mod tests {
                 sink.borrow_mut().extend_from_slice(bytes);
                 Ok(())
             },
-            GtvIdentity { username: "u".to_string(), password: "p".to_string(), version: "v".to_string() },
+            GtvIdentity {
+                username: "u".to_string(),
+                password: "p".to_string(),
+                version: "v".to_string(),
+            },
             3,
         )
         .unwrap();
@@ -4364,7 +4408,10 @@ mod tests {
         let ack = server.message(GtvServerOp::StreamStart, &[]).unwrap();
         assert_eq!(client.receive(&ack).unwrap(), vec![GtvEvent::Started]);
         let data = server.message(GtvServerOp::StreamData, &[9, 9, 9]).unwrap();
-        assert_eq!(client.receive(&data).unwrap(), vec![GtvEvent::Data { bytes: vec![9, 9, 9] }]);
+        assert_eq!(
+            client.receive(&data).unwrap(),
+            vec![GtvEvent::Data { bytes: vec![9, 9, 9] }]
+        );
         let suspended = server.message(GtvServerOp::StreamData, &[]).unwrap();
         assert_eq!(client.receive(&suspended).unwrap(), vec![GtvEvent::Suspended]);
         let resumed = server.message(GtvServerOp::StreamData, &[7]).unwrap();
@@ -4429,7 +4476,9 @@ mod tests {
         }
         let greeting = read_framed(&mut socket);
         assert_eq!(greeting, vec![GtvServerOp::Hello as u8, 0, 0, 0, 0]);
-        socket.write_all(&framed(GtvClientOp::StreamStart as u8, &10u16.to_le_bytes())).unwrap();
+        socket
+            .write_all(&framed(GtvClientOp::StreamStart as u8, &10u16.to_le_bytes()))
+            .unwrap();
         for _ in 0..4 {
             broadcast.poll().unwrap();
         }

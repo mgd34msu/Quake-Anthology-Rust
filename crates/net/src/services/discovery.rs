@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use thiserror::Error;
 
+use super::json::{parse_json, JsonError};
 use crate::common::endpoint::{address_key, parse_network_address, AddressRecord, NetworkAddress};
 use crate::common::session::{canonical, Json, WireSelection};
-use super::json::{parse_json, JsonError};
 
 /// Error for discovery failures.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -259,8 +259,7 @@ impl<'a> ServerBrowser<'a> {
         let Some(entry) = self.entries.get(&key) else {
             return;
         };
-        let sources: Vec<DiscoverySource> =
-            entry.sources.iter().copied().filter(|value| *value != source).collect();
+        let sources: Vec<DiscoverySource> = entry.sources.iter().copied().filter(|value| *value != source).collect();
         if sources.is_empty() {
             self.entries.remove(&key);
         } else {
@@ -339,7 +338,9 @@ impl<'a> ServerBrowser<'a> {
         for handle in replaced {
             self.release_request(handle);
         }
-        Ok(self.start_request(address.clone(), now, kind, false, RequestTimeout::Default)?.is_some())
+        Ok(self
+            .start_request(address.clone(), now, kind, false, RequestTimeout::Default)?
+            .is_some())
     }
 
     /// Tracked request with a timeout policy (`request`).
@@ -463,13 +464,15 @@ impl<'a> ServerBrowser<'a> {
         } else if let Some(expected) = challenge {
             self.broadcasts.get(expected).cloned()
         } else {
-            self.broadcasts.values().max_by_key(|broadcast| broadcast.sequence).cloned()
+            self.broadcasts
+                .values()
+                .max_by_key(|broadcast| broadcast.sequence)
+                .cloned()
         };
-        let pending = direct.clone().map(|query| (query.sent_at, true)).or_else(|| {
-            broadcast
-                .as_ref()
-                .map(|broadcast| (broadcast.sent_at, false))
-        });
+        let pending = direct
+            .clone()
+            .map(|query| (query.sent_at, true))
+            .or_else(|| broadcast.as_ref().map(|broadcast| (broadcast.sent_at, false)));
         let Some((sent_at, _)) = pending else {
             return false;
         };
@@ -520,18 +523,17 @@ impl<'a> ServerBrowser<'a> {
     }
 
     /// Broadcast an info query (`broadcast`).
-    pub fn broadcast(
-        &mut self,
-        addresses: &[NetworkAddress],
-        now: f64,
-    ) -> Result<usize, DiscoveryError> {
+    pub fn broadcast(&mut self, addresses: &[NetworkAddress], now: f64) -> Result<usize, DiscoveryError> {
         let mut sent = 0;
         self.query_sequence += 1;
         let challenge = self.query_sequence.to_string();
-        self.broadcasts.insert(challenge.clone(), PendingBroadcast {
-            sequence: self.query_sequence,
-            sent_at: now,
-        });
+        self.broadcasts.insert(
+            challenge.clone(),
+            PendingBroadcast {
+                sequence: self.query_sequence,
+                sent_at: now,
+            },
+        );
         for address in addresses {
             let bytes = self.wire.query(DiscoveryRequestKind::Info, &challenge)?;
             if self.transport.send(address, &bytes) {
@@ -564,9 +566,10 @@ impl<'a> ServerBrowser<'a> {
                 continue;
             };
             if let Some(entry) = self.entries.get(&address_key(&query.address, true)) {
-                if !expired.iter().any(|address: &NetworkAddress| {
-                    address_key(address, true) == address_key(&entry.address, true)
-                }) {
+                if !expired
+                    .iter()
+                    .any(|address: &NetworkAddress| address_key(address, true) == address_key(&entry.address, true))
+                {
                     expired.push(entry.address.clone());
                 }
             }
@@ -686,7 +689,10 @@ fn address_from_json(value: &Json) -> Result<NetworkAddress, DiscoveryError> {
         Some(Json::String(id)) => Some(id.clone()),
         _ => None,
     };
-    let network = fields.get("network").and_then(json_number).map(|network| network as u32);
+    let network = fields
+        .get("network")
+        .and_then(json_number)
+        .map(|network| network as u32);
     let node = match fields.get("node") {
         Some(Json::Array(bytes)) => {
             let mut octets = Vec::new();
@@ -718,11 +724,7 @@ pub struct MasterHeartbeat<'a> {
 
 impl<'a> MasterHeartbeat<'a> {
     /// Create a heartbeat scheduler.
-    pub fn new(
-        wire: &'a dyn DiscoveryWire,
-        transport: &'a mut dyn PacketSender,
-        interval_milliseconds: f64,
-    ) -> Self {
+    pub fn new(wire: &'a dyn DiscoveryWire, transport: &'a mut dyn PacketSender, interval_milliseconds: f64) -> Self {
         Self {
             wire,
             transport,
@@ -767,7 +769,15 @@ mod tests {
 
     impl DiscoveryWire for StubWire {
         fn query(&self, kind: DiscoveryRequestKind, challenge: &str) -> Result<Vec<u8>, DiscoveryError> {
-            Ok(format!("{}:{challenge}", if kind == DiscoveryRequestKind::Info { "info" } else { "status" }).into_bytes())
+            Ok(format!(
+                "{}:{challenge}",
+                if kind == DiscoveryRequestKind::Info {
+                    "info"
+                } else {
+                    "status"
+                }
+            )
+            .into_bytes())
         }
 
         fn master_query(&self) -> Result<Vec<u8>, DiscoveryError> {
@@ -806,7 +816,10 @@ mod tests {
         let mut transport = StubTransport { sent: Vec::new() };
         let mut browser = ServerBrowser::new(&wire, &mut transport);
         let address = ipv4_address([127, 0, 0, 1], 26000, false).unwrap();
-        let handle = browser.request(&address, 0.0, DiscoveryRequestKind::Info, RequestTimeout::Default).unwrap().unwrap();
+        let handle = browser
+            .request(&address, 0.0, DiscoveryRequestKind::Info, RequestTimeout::Default)
+            .unwrap()
+            .unwrap();
         assert_eq!(browser.pending_requests(), 1);
         assert!(browser.receive(&address, status(), None, 50.0, None));
         assert!(matches!(

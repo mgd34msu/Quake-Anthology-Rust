@@ -121,42 +121,33 @@ pub enum UnifiedPacket {
 impl UnifiedPacket {
     fn token(&self) -> &str {
         match self {
-            Self::Ack { token, .. }
-            | Self::Reliable { token, .. }
-            | Self::Frame { token, .. } => token,
+            Self::Ack { token, .. } | Self::Reliable { token, .. } | Self::Frame { token, .. } => token,
         }
     }
 
     fn sequence(&self) -> u32 {
         match self {
-            Self::Ack { sequence, .. }
-            | Self::Reliable { sequence, .. }
-            | Self::Frame { sequence, .. } => *sequence,
+            Self::Ack { sequence, .. } | Self::Reliable { sequence, .. } | Self::Frame { sequence, .. } => *sequence,
         }
     }
 
     fn acknowledged_reliable(&self) -> u32 {
         match self {
             Self::Ack {
-                acknowledged_reliable,
-                ..
+                acknowledged_reliable, ..
             }
             | Self::Reliable {
-                acknowledged_reliable,
-                ..
+                acknowledged_reliable, ..
             }
             | Self::Frame {
-                acknowledged_reliable,
-                ..
+                acknowledged_reliable, ..
             } => *acknowledged_reliable,
         }
     }
 
     fn fragment(&self) -> u16 {
         match self {
-            Self::Ack { fragment, .. }
-            | Self::Reliable { fragment, .. }
-            | Self::Frame { fragment, .. } => *fragment,
+            Self::Ack { fragment, .. } | Self::Reliable { fragment, .. } | Self::Frame { fragment, .. } => *fragment,
         }
     }
 }
@@ -213,8 +204,7 @@ pub fn encode_unified_packet(packet: &UnifiedPacket) -> Result<Vec<u8>, UnifiedE
                 || *fragments == 0
                 || u32::from(*fragment) >= u32::from(*fragments)
                 || payload.len() != fragment_length(*total_bytes, *fragment_bytes, *fragment)
-                || (matches!(packet, UnifiedPacket::Reliable { .. })
-                    && *required_reliable_sequence != 0)
+                || (matches!(packet, UnifiedPacket::Reliable { .. }) && *required_reliable_sequence != 0)
             {
                 return Err(UnifiedError::BadFragment);
             }
@@ -230,8 +220,8 @@ pub fn encode_unified_packet(packet: &UnifiedPacket) -> Result<Vec<u8>, UnifiedE
         UnifiedPacket::Frame { .. } => 2,
     };
     for index in 0..16 {
-        bytes[8 + index] = u8::from_str_radix(&token[index * 2..index * 2 + 2], 16)
-            .map_err(|_| UnifiedError::BadToken)?;
+        bytes[8 + index] =
+            u8::from_str_radix(&token[index * 2..index * 2 + 2], 16).map_err(|_| UnifiedError::BadToken)?;
     }
     bytes[24..28].copy_from_slice(&packet.sequence().to_le_bytes());
     bytes[28..32].copy_from_slice(&packet.acknowledged_reliable().to_le_bytes());
@@ -308,8 +298,7 @@ pub fn decode_unified_packet(bytes: &[u8]) -> Option<UnifiedPacket> {
         || fragment_bytes > (UNIFIED_DATAGRAM_MAX - UNIFIED_PACKET_HEADER_BYTES) as u32
         || u32::from(fragments) != fragment_count(total_bytes, fragment_bytes)
         || u32::from(fragment) >= u32::from(fragments)
-        || bytes.len() - UNIFIED_PACKET_HEADER_BYTES
-            != fragment_length(total_bytes, fragment_bytes, fragment)
+        || bytes.len() - UNIFIED_PACKET_HEADER_BYTES != fragment_length(total_bytes, fragment_bytes, fragment)
         || (kind == 1 && required_reliable_sequence != 0)
     {
         return None;
@@ -582,11 +571,7 @@ impl UnifiedChannel {
     }
 
     /// Queue a frame (`queueFrame`).
-    pub fn queue_frame(
-        &mut self,
-        payload: &[u8],
-        required_reliable_sequence: u32,
-    ) -> Result<(), UnifiedError> {
+    pub fn queue_frame(&mut self, payload: &[u8], required_reliable_sequence: u32) -> Result<(), UnifiedError> {
         self.open()?;
         if required_reliable_sequence >= self.next_reliable {
             return Err(UnifiedError::BadFrameDependency);
@@ -632,10 +617,16 @@ impl UnifiedChannel {
 
     fn accept_acknowledgment(&mut self, packet: &UnifiedPacket) {
         let acknowledged = packet.acknowledged_reliable();
-        if let Some(end) = self.reliable.iter().position(|message| message.sequence == acknowledged) {
+        if let Some(end) = self
+            .reliable
+            .iter()
+            .position(|message| message.sequence == acknowledged)
+        {
             let window = self.window_messages();
             let complete = end < window
-                && self.reliable[..=end].iter().all(|message| message.next == message.fragments);
+                && self.reliable[..=end]
+                    .iter()
+                    .all(|message| message.next == message.fragments);
             if complete {
                 let removed: Vec<Outgoing> = self.reliable.drain(..=end).collect();
                 for message in removed {
@@ -742,17 +733,11 @@ impl UnifiedChannel {
         }
         match &packet {
             UnifiedPacket::Reliable {
-                total_bytes,
-                fragments,
-                ..
+                total_bytes, fragments, ..
             }
             | UnifiedPacket::Frame {
-                total_bytes,
-                fragments,
-                ..
-            } if *total_bytes as usize > self.limits.message_bytes
-                || *fragments as usize > self.limits.fragments =>
-            {
+                total_bytes, fragments, ..
+            } if *total_bytes as usize > self.limits.message_bytes || *fragments as usize > self.limits.fragments => {
                 return Ok(Vec::new());
             }
             _ => {}
@@ -786,19 +771,17 @@ impl UnifiedChannel {
                             break;
                         }
                     }
-                    if self.received_bytes + total_bytes as usize + reserve
-                        > self.limits.queued_reliable_bytes
-                    {
+                    if self.received_bytes + total_bytes as usize + reserve > self.limits.queued_reliable_bytes {
                         return Ok(delivered);
                     }
-                    let assembly =
-                        Self::make_assembly(sequence, 0, fragment_bytes, fragments, total_bytes, now);
+                    let assembly = Self::make_assembly(sequence, 0, fragment_bytes, fragments, total_bytes, now);
                     self.received_bytes += total_bytes as usize;
                     self.reliable_assemblies.insert(sequence, assembly);
                 }
-                let assembly = self.reliable_assemblies.get_mut(&sequence).unwrap_or_else(|| {
-                    unreachable!("assembly was just inserted")
-                });
+                let assembly = self
+                    .reliable_assemblies
+                    .get_mut(&sequence)
+                    .unwrap_or_else(|| unreachable!("assembly was just inserted"));
                 if !Self::append(assembly, 0, total_bytes, fragment_bytes, fragments, fragment, &payload) {
                     return Ok(delivered);
                 }
@@ -812,9 +795,10 @@ impl UnifiedChannel {
                     if !ready {
                         break;
                     }
-                    let ready = self.reliable_assemblies.remove(&next).unwrap_or_else(|| {
-                        unreachable!("assembly readiness was just checked")
-                    });
+                    let ready = self
+                        .reliable_assemblies
+                        .remove(&next)
+                        .unwrap_or_else(|| unreachable!("assembly readiness was just checked"));
                     self.reliable_received = ready.sequence;
                     self.received_bytes -= ready.payload.len();
                     delivered.push(UnifiedDelivery::Reliable {
@@ -861,9 +845,10 @@ impl UnifiedChannel {
                     ));
                 }
                 let complete = {
-                    let assembly = self.frame_assembly.as_mut().unwrap_or_else(|| {
-                        unreachable!("frame assembly was just created")
-                    });
+                    let assembly = self
+                        .frame_assembly
+                        .as_mut()
+                        .unwrap_or_else(|| unreachable!("frame assembly was just created"));
                     if !Self::append(
                         assembly,
                         required_reliable_sequence,
@@ -878,9 +863,10 @@ impl UnifiedChannel {
                     assembly.received.len() == assembly.fragments as usize
                 };
                 if complete {
-                    let assembly = self.frame_assembly.take().unwrap_or_else(|| {
-                        unreachable!("frame assembly was just appended")
-                    });
+                    let assembly = self
+                        .frame_assembly
+                        .take()
+                        .unwrap_or_else(|| unreachable!("frame assembly was just appended"));
                     self.waiting_frame = Some(UnifiedDelivery::Frame {
                         sequence,
                         required_reliable_sequence: assembly.required,
@@ -982,8 +968,18 @@ impl UnifiedChannel {
         };
         let fragment = message.next as u16;
         message.next += 1;
-        let packet = self.encode_data(self.frame.as_ref().unwrap_or_else(|| unreachable!("frame was just checked")), false, fragment)?;
-        if self.frame.as_ref().is_some_and(|message| message.next == message.fragments) {
+        let packet = self.encode_data(
+            self.frame
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("frame was just checked")),
+            false,
+            fragment,
+        )?;
+        if self
+            .frame
+            .as_ref()
+            .is_some_and(|message| message.next == message.fragments)
+        {
             self.frame = self.pending_frame.take();
         }
         Ok(Some(packet))
@@ -1089,13 +1085,11 @@ mod tests {
         for packet in &packets {
             delivered.extend(receiver.receive(packet, 1.0).unwrap());
         }
-        assert!(delivered.iter().any(|delivery| matches!(
-            delivery,
-            UnifiedDelivery::Reliable { sequence: 1, .. }
-        )));
-        assert!(delivered.iter().any(|delivery| matches!(
-            delivery,
-            UnifiedDelivery::Frame { sequence: 1, .. }
-        )));
+        assert!(delivered
+            .iter()
+            .any(|delivery| matches!(delivery, UnifiedDelivery::Reliable { sequence: 1, .. })));
+        assert!(delivered
+            .iter()
+            .any(|delivery| matches!(delivery, UnifiedDelivery::Frame { sequence: 1, .. })));
     }
 }

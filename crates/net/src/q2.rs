@@ -847,11 +847,7 @@ pub fn player_state_bits(from: &PlayerState, to: &PlayerState) -> u32 {
 }
 
 /// Write a classic player-state delta (`writePlayerStateDelta`).
-pub fn write_player_state_delta(
-    writer: &mut MsgWriter,
-    from: &PlayerState,
-    to: &PlayerState,
-) -> Result<(), MsgError> {
+pub fn write_player_state_delta(writer: &mut MsgWriter, from: &PlayerState, to: &PlayerState) -> Result<(), MsgError> {
     let pflags = player_state_bits(from, to);
     writer.write_byte(protocol::Svc::Playerinfo as u8)?;
     writer.write_short(pflags as i16)?;
@@ -944,10 +940,7 @@ fn write_player_state_body(writer: &mut MsgWriter, to: &PlayerState, pflags: u32
 /// Read a classic player-state delta (`readPlayerStateDelta`).
 ///
 /// Unchanged fields inherit from the delta base.
-pub fn read_player_state_delta(
-    reader: &mut MsgReader<'_>,
-    from: &PlayerState,
-) -> Result<PlayerState, MsgError> {
+pub fn read_player_state_delta(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, MsgError> {
     let mut to = from.clone();
     let flags = u32::from(reader.short()? as u16);
     if (flags & protocol::PS_M_TYPE) != 0 {
@@ -1070,10 +1063,7 @@ pub fn read_frame_header(
 }
 
 /// Read the player state of a classic frame (`readFramePlayerstate`).
-pub fn read_frame_playerstate(
-    reader: &mut MsgReader<'_>,
-    from: &PlayerState,
-) -> Result<PlayerState, Q2CodecError> {
+pub fn read_frame_playerstate(reader: &mut MsgReader<'_>, from: &PlayerState) -> Result<PlayerState, Q2CodecError> {
     let opcode = reader.byte()?;
     if opcode != protocol::Svc::Playerinfo as u8 {
         return Err(Q2CodecError::UnexpectedOpcode {
@@ -1116,9 +1106,7 @@ pub fn write_dir(writer: &mut MsgWriter, dir: Option<[f64; 3]>) -> Result<(), Ms
     let mut best_dot = 0.0f64;
     let mut best = 0u8;
     for (index, normal) in BYTEDIRS.iter().enumerate() {
-        let dot = dir[0] * f64::from(normal[0])
-            + dir[1] * f64::from(normal[1])
-            + dir[2] * f64::from(normal[2]);
+        let dot = dir[0] * f64::from(normal[0]) + dir[1] * f64::from(normal[1]) + dir[2] * f64::from(normal[2]);
         if dot > best_dot {
             best_dot = dot;
             best = index as u8;
@@ -1483,7 +1471,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(writer.bytes(), decode_hex("140a0000000900000001013c11003800070000000000005a00000000120000").as_slice());
+        assert_eq!(
+            writer.bytes(),
+            decode_hex("140a0000000900000001013c11003800070000000000005a00000000120000").as_slice()
+        );
         let mut reader = MsgReader::new(writer.bytes());
         assert_eq!(reader.byte().unwrap(), protocol::Svc::Frame as u8);
         let mut areas = Vec::new();
