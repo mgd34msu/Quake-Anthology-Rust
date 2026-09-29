@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["BSP_VERSION_29","BSP_VERSION_2PSB","BSP_VERSION_BSP2","BSP_VERSION_QUAKE64","LUMP_NAMES"],"enum":["BspFormat","ClipChild","NodeChild"],"fn":["parse_q1_entities","q1_entity_value","read_q1_bsp"],"struct":["ClipNode","Edge","Face","IndexRange","Leaf","Lump","Node","Plane","Q1Entity","Q1Map","TextureInfo","WorldModel"]};

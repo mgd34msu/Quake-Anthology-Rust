@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ALIAS_NORMALS"],"fn":["alias_normal"]};

@@ -1,0 +1,1 @@
+&dyn for<'a, 'b> std::ops::Fn(&'a qa_core::identity::ProviderId, &'b str) -> std::option::Option<std::rc::Rc<(dyn for<'a, 'b> std::ops::Fn(&'a qa_core::identity::OwnedActor, qa_core::time::FrameContext, &'b scheduler::Scheduler) + 'static)>>

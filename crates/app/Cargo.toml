@@ -1,0 +1,15 @@
+[package]
+name = "qa-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+qa-core = { workspace = true }
+qa-content = { workspace = true }
+qa-world = { workspace = true }
+qa-net = { workspace = true }
+qa-guest = { workspace = true }
+qa-compat = { workspace = true }
+qa-client = { workspace = true }

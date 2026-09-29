@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["FrameSet"],"fn":["parse_mdl"],"struct":["AliasFrame","MdlModel","ModelVertex","TextureCoordinate","Triangle"]};

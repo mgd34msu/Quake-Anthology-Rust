@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PathComparison","PathError"],"fn":["find_content_path","normalize_resource_path","path_within_root"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MipTexture","WadImage","WadKind"],"fn":["decode_q1_mip_texture","decode_qpic","decode_wad","decode_wad_image","texture_rgba"],"struct":["QpicImage","WadArchive","WadLump"]};

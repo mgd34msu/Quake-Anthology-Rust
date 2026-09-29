@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["conjugate_quaternion","md5_quaternion","multiply_quaternion","normalize_quaternion","quaternion_rotation_rows","rotate_quaternion","rotate_quaternion_axis","rotate_quaternion_rows","slerp_quaternion"],"type":["QuaternionRotationRows"]};
