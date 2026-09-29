@@ -1629,7 +1629,15 @@ fn validate_client_outputs(
                 }
             }
             ModClientOutput::ViewOffsetField { field } => output_field(field, true)?,
-            ModClientOutput::ViewOffsetHeight { height } => output_field(height, false)?,
+            ModClientOutput::ViewOffsetHeight { height } => {
+                output_field(height, false)?;
+                let binding = declaration.actor_fields.iter().find(|value| value.field == *height);
+                if matches!(binding.map(|value| &value.binding), Some(ModActorBinding::ClientFlags { .. })) {
+                    return Err(GuestError::invalid(
+                        "QC client flag outputs must name an explicit mask of source-private bits",
+                    ));
+                }
+            }
             ModClientOutput::MovementMode { field, .. } | ModClientOutput::Stance { field, .. } => {
                 output_field(field, false)?;
             }
@@ -2210,7 +2218,7 @@ fn validate_objective_storage(
 
 /// Validate console commands.
 fn validate_commands(
-    program: &dyn QcProgramView,
+    _program: &dyn QcProgramView,
     declaration: &ModCallbackDeclaration,
     validate_call: &SourceCallValidator<'_>,
 ) -> Result<(), GuestError> {
@@ -2222,7 +2230,6 @@ fn validate_commands(
         if tokens.len() != 1 || tokens.first().is_none_or(|token| *token != command.name) || command.name.contains(';') || !commands.insert(name) {
             return Err(GuestError::invalid(format!("Invalid or duplicate mod command {}", command.name)));
         }
-        let _ = program;
         let call = ModSourceCall {
             function: command.function.clone(),
             arguments: command
@@ -2882,7 +2889,7 @@ pub struct QcHudVitals {
 }
 
 /// Client view description.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QcViewDescription {
     /// View target.
     pub target: ActorId,
@@ -2895,7 +2902,7 @@ pub struct QcViewDescription {
 }
 
 /// Client presentation frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QcClientFrame {
     /// HUD vitals.
     pub hud: Option<QcHudVitals>,
@@ -3094,7 +3101,6 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
                 }
             }
         }
-        let _ = actor;
         Ok(self.machine.entity_reference(slot))
     }
 
@@ -3302,9 +3308,6 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         let count = self.machine.entity_count();
         let mut projections = HashMap::new();
         let mut by_slot = HashMap::new();
-        for (saved_actor, slot) in &saved.precached_projection_order() {
-            let _ = (saved_actor, slot);
-        }
         for (actor, slot) in &saved.projections {
             let live = resolve(actor).ok_or_else(|| GuestError::BadSave("Saved mod actor has no live target".to_string()))?;
             if *slot >= count || by_slot.contains_key(slot) || projections.contains_key(&live) {
@@ -3445,7 +3448,7 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
             Some(field) => match &field.binding {
                 ModActorBinding::Team { values } => {
                     let offset = self.machine.field_offset(&field.field)?;
-                    Some(source_team(values, f64::from(self.machine.slot_float(slot, offset)?))?.unwrap_or_default())
+                    source_team(values, f64::from(self.machine.slot_float(slot, offset)?))?
                 }
                 _ => None,
             },
@@ -3539,7 +3542,7 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
     fn dispatch_operation(
         &mut self,
         operation: ModCallbackOperation,
-        context: &GameContext<'_>,
+        time: SourceTime,
         build: &dyn Fn(&mut QcModInputs),
     ) -> Result<bool, GuestError> {
         let calls: Vec<ModSourceCall> = self
@@ -3554,7 +3557,7 @@ impl<M: QcProviderMachine, S: QcProviderServices> QcModProvider<M, S> {
         }
         for call in &calls {
             let mut inputs = QcModInputs::new();
-            inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(context.frame.time.as_seconds_f64()));
+            inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(time.as_seconds_f64()));
             build(&mut inputs);
             self.invoke(call, &inputs)?;
         }
@@ -3596,7 +3599,8 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
 
     fn think(&mut self, context: &mut GameContext, actor: &ActorId) -> Result<bool, GuestError> {
         let owned = actor.clone();
-        self.dispatch_operation(ModCallbackOperation::ActorThink, context, &|inputs| {
+        let time = context.frame.time;
+        self.dispatch_operation(ModCallbackOperation::ActorThink, time, &|inputs| {
             inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(owned.clone())));
         })
     }
@@ -3604,7 +3608,8 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
     fn touch(&mut self, context: &mut GameContext, contact: &GameTouch) -> Result<bool, GuestError> {
         let target = contact.target.clone();
         let other = contact.other.clone();
-        self.dispatch_operation(ModCallbackOperation::ActorTouch, context, &|inputs| {
+        let time = context.frame.time;
+        self.dispatch_operation(ModCallbackOperation::ActorTouch, time, &|inputs| {
             inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(target.clone())));
             inputs.insert(ModCallbackInput::Other, ModRuntimeValue::Actor(Some(other.clone())));
         })
@@ -3620,7 +3625,8 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
         let target = target.clone();
         let other = other.cloned();
         let activator = activator.cloned();
-        self.dispatch_operation(ModCallbackOperation::ActorUse, context, &|inputs| {
+        let time = context.frame.time;
+        self.dispatch_operation(ModCallbackOperation::ActorUse, time, &|inputs| {
             inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(target.clone())));
             inputs.insert(ModCallbackInput::Other, ModRuntimeValue::Actor(other.clone()));
             inputs.insert(ModCallbackInput::Activator, ModRuntimeValue::Actor(activator.clone()));
@@ -3629,7 +3635,8 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
 
     fn pain(&mut self, context: &mut GameContext, reaction: &GameReaction) -> Result<bool, GuestError> {
         let reaction = reaction.clone();
-        self.dispatch_operation(ModCallbackOperation::ActorPain, context, &|inputs| {
+        let time = context.frame.time;
+        self.dispatch_operation(ModCallbackOperation::ActorPain, time, &|inputs| {
             inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(reaction.target.clone())));
             inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(reaction.attacker.clone()));
             inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(reaction.damage));
@@ -3639,7 +3646,8 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
 
     fn die(&mut self, context: &mut GameContext, reaction: &GameReaction) -> Result<bool, GuestError> {
         let reaction = reaction.clone();
-        self.dispatch_operation(ModCallbackOperation::ActorDie, context, &|inputs| {
+        let time = context.frame.time;
+        self.dispatch_operation(ModCallbackOperation::ActorDie, time, &|inputs| {
             inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(reaction.target.clone())));
             inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(reaction.attacker.clone()));
             inputs.insert(ModCallbackInput::Inflictor, ModRuntimeValue::Actor(reaction.inflictor.clone()));
@@ -3652,12 +3660,657 @@ impl<M: QcProviderMachine, S: QcProviderServices> GameModule for QcModProvider<M
     }
 }
 
-impl QcModCheckpoint {
-    /// Projection order helper for restore validation.
-    fn precached_projection_order(&self) -> Vec<(&SavedActorId, &u32)> {
-        self.projections.iter().map(|(actor, slot)| (actor, slot)).collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::identity::IdentityOwner;
+    use qa_core::math::vec3;
+    use qa_core::time::FramePhase;
+
+    use crate::fields::FieldTable;
+
+    #[derive(Debug, Clone)]
+    enum SlotWord {
+        Float(f32),
+        Int(i32),
+        Vector(Vec3),
+    }
+
+    struct FakeProgram {
+        digest: String,
+        fields: HashMap<String, QcValueType>,
+        globals: HashMap<String, QcValueType>,
+        functions: HashMap<String, QcFunctionView>,
+        by_index: HashMap<i32, QcFunctionView>,
+    }
+
+    impl QcProgramView for FakeProgram {
+        fn digest(&self) -> &str {
+            &self.digest
+        }
+
+        fn api_kind(&self) -> QcApiKind {
+            QcApiKind::Q1Netquake
+        }
+
+        fn field_type(&self, name: &str) -> Option<QcValueType> {
+            self.fields.get(name).copied()
+        }
+
+        fn global_type(&self, name: &str) -> Option<QcValueType> {
+            self.globals.get(name).copied()
+        }
+
+        fn function_named(&self, name: &str) -> Option<QcFunctionView> {
+            self.functions.get(name).cloned()
+        }
+
+        fn function_at(&self, index: i32) -> Option<QcFunctionView> {
+            self.by_index.get(&index).cloned()
+        }
+
+        fn functions(&self) -> Vec<QcFunctionView> {
+            self.functions.values().cloned().collect()
+        }
+    }
+
+    struct FakeMachine {
+        program: FakeProgram,
+        offsets: HashMap<String, i32>,
+        slots: Vec<HashMap<i32, SlotWord>>,
+        strings: Vec<String>,
+        globals: HashMap<String, f32>,
+        invocations: Vec<(String, Vec<ModRuntimeValue>, Vec<(String, ModRuntimeValue)>)>,
+        result: f64,
+    }
+
+    impl FakeMachine {
+        fn new() -> Self {
+            Self {
+                program: FakeProgram {
+                    digest: "abc".to_string(),
+                    fields: HashMap::new(),
+                    globals: HashMap::new(),
+                    functions: HashMap::new(),
+                    by_index: HashMap::new(),
+                },
+                offsets: HashMap::new(),
+                slots: vec![HashMap::new()],
+                strings: vec![String::new()],
+                globals: HashMap::new(),
+                invocations: Vec::new(),
+                result: 0.0,
+            }
+        }
+
+        fn with_field(mut self, name: &str, offset: i32, kind: QcValueType) -> Self {
+            self.program.fields.insert(name.to_string(), kind);
+            self.offsets.insert(name.to_string(), offset);
+            self
+        }
+    }
+
+    impl QcProviderMachine for FakeMachine {
+        fn program(&self) -> &dyn QcProgramView {
+            &self.program
+        }
+
+        fn field_offset(&self, name: &str) -> Result<i32, GuestError> {
+            self.offsets.get(name).copied().ok_or_else(|| GuestError::UnknownField(name.to_string()))
+        }
+
+        fn global_offset(&self, name: &str) -> Result<i32, GuestError> {
+            self.offsets.get(name).copied().ok_or_else(|| GuestError::UnknownField(name.to_string()))
+        }
+
+        fn entity_count(&self) -> u32 {
+            self.slots.len() as u32
+        }
+
+        fn set_entity_count(&mut self, count: u32) -> Result<(), GuestError> {
+            if (count as usize) < self.slots.len() {
+                return Err(GuestError::invalid("Cannot shrink entity storage"));
+            }
+            self.slots.resize(count as usize, HashMap::new());
+            Ok(())
+        }
+
+        fn entity_slot(&self, reference: i32) -> Result<u32, GuestError> {
+            if reference <= 0 || reference as usize >= self.slots.len() {
+                return Err(GuestError::invalid("Reference names no live slot"));
+            }
+            Ok(reference as u32)
+        }
+
+        fn entity_reference(&self, slot: u32) -> i32 {
+            slot as i32
+        }
+
+        fn zero_slot(&mut self, slot: u32) -> Result<(), GuestError> {
+            self.slots.get_mut(slot as usize).ok_or_else(|| GuestError::invalid("Slot is out of range"))?.clear();
+            Ok(())
+        }
+
+        fn slot_float(&self, slot: u32, offset: i32) -> Result<f32, GuestError> {
+            match self.slots.get(slot as usize).and_then(|slot| slot.get(&offset)) {
+                Some(SlotWord::Float(value)) => Ok(*value),
+                Some(_) => Err(GuestError::FieldType(format!("word {offset}"))),
+                None => Ok(0.0),
+            }
+        }
+
+        fn set_slot_float(&mut self, slot: u32, offset: i32, value: f32) -> Result<(), GuestError> {
+            self.slots
+                .get_mut(slot as usize)
+                .ok_or_else(|| GuestError::invalid("Slot is out of range"))?
+                .insert(offset, SlotWord::Float(value));
+            Ok(())
+        }
+
+        fn slot_vector(&self, slot: u32, offset: i32) -> Result<Vec3, GuestError> {
+            match self.slots.get(slot as usize).and_then(|slot| slot.get(&offset)) {
+                Some(SlotWord::Vector(value)) => Ok(*value),
+                Some(_) => Err(GuestError::FieldType(format!("word {offset}"))),
+                None => Ok(vec3(0.0, 0.0, 0.0)),
+            }
+        }
+
+        fn set_slot_vector(&mut self, slot: u32, offset: i32, value: Vec3) -> Result<(), GuestError> {
+            self.slots
+                .get_mut(slot as usize)
+                .ok_or_else(|| GuestError::invalid("Slot is out of range"))?
+                .insert(offset, SlotWord::Vector(value));
+            Ok(())
+        }
+
+        fn slot_int(&self, slot: u32, offset: i32) -> Result<i32, GuestError> {
+            match self.slots.get(slot as usize).and_then(|slot| slot.get(&offset)) {
+                Some(SlotWord::Int(value)) => Ok(*value),
+                Some(SlotWord::Float(value)) => Ok(*value as i32),
+                Some(_) => Err(GuestError::FieldType(format!("word {offset}"))),
+                None => Ok(0),
+            }
+        }
+
+        fn set_slot_int(&mut self, slot: u32, offset: i32, value: i32) -> Result<(), GuestError> {
+            self.slots
+                .get_mut(slot as usize)
+                .ok_or_else(|| GuestError::invalid("Slot is out of range"))?
+                .insert(offset, SlotWord::Int(value));
+            Ok(())
+        }
+
+        fn strings_get(&self, index: i32) -> Result<String, GuestError> {
+            self.strings.get(index as usize).cloned().ok_or_else(|| GuestError::invalid("String index is out of range"))
+        }
+
+        fn strings_allocate(&mut self, text: &str) -> Result<i32, GuestError> {
+            self.strings.push(text.to_string());
+            Ok(self.strings.len() as i32 - 1)
+        }
+
+        fn set_global_float(&mut self, name: &str, value: f32) -> Result<(), GuestError> {
+            self.globals.insert(name.to_string(), value);
+            Ok(())
+        }
+
+        fn invoke_resolved(
+            &mut self,
+            function: &str,
+            arguments: &[ModRuntimeValue],
+            globals: &[(String, ModRuntimeValue)],
+        ) -> Result<f64, GuestError> {
+            self.invocations.push((function.to_string(), arguments.to_vec(), globals.to_vec()));
+            Ok(self.result)
+        }
+    }
+
+    struct FakeServices {
+        owner: IdentityOwner,
+        live: HashSet<ActorId>,
+        owned: HashMap<ActorId, OwnedActor>,
+        world: Option<ActorId>,
+        published: usize,
+        flushed: usize,
+        client_slots: HashMap<ActorId, u32>,
+        admitted: HashSet<ActorId>,
+        source_slots: HashMap<ActorId, u32>,
+        owned_actors: Vec<OwnedActor>,
+        match_avail: bool,
+        view_targets: HashMap<ActorId, ActorId>,
+    }
+
+    impl FakeServices {
+        fn new() -> Self {
+            Self {
+                owner: IdentityOwner::create("test").unwrap(),
+                live: HashSet::new(),
+                owned: HashMap::new(),
+                world: None,
+                published: 0,
+                flushed: 0,
+                client_slots: HashMap::new(),
+                admitted: HashSet::new(),
+                source_slots: HashMap::new(),
+                owned_actors: Vec::new(),
+                match_avail: false,
+                view_targets: HashMap::new(),
+            }
+        }
+
+        fn admit(&mut self, slot: u32, provider: &ProviderId) -> ActorId {
+            let actor = self.owner.actor(slot, 1);
+            self.live.insert(actor.clone());
+            self.owned.insert(actor.clone(), self.owner.owned_actor(&actor, provider.clone()).unwrap());
+            actor
+        }
+    }
+
+    impl QcProviderServices for FakeServices {
+        fn now(&self) -> SourceTime {
+            SourceTime::Seconds(2.0)
+        }
+
+        fn is_live(&self, actor: &ActorId) -> bool {
+            self.live.contains(actor)
+        }
+
+        fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
+            self.owned.get(actor).cloned()
+        }
+
+        fn world_actor(&self) -> Option<ActorId> {
+            self.world.clone()
+        }
+
+        fn publish_client_outputs(&mut self) {
+            self.published += 1;
+        }
+
+        fn flush_messages(&mut self) {
+            self.flushed += 1;
+        }
+
+        fn owned_actors(&self) -> Vec<OwnedActor> {
+            self.owned_actors.clone()
+        }
+
+        fn source_slot(&self, actor: &ActorId) -> Option<u32> {
+            self.source_slots.get(actor).copied()
+        }
+
+        fn is_client_admitted(&self, actor: &ActorId) -> bool {
+            self.admitted.contains(actor)
+        }
+
+        fn client_slot(&self, actor: &ActorId) -> Option<u32> {
+            self.client_slots.get(actor).copied()
+        }
+
+        fn view_target(&self, actor: &ActorId) -> Option<ActorId> {
+            self.view_targets.get(actor).cloned()
+        }
+
+        fn match_available(&self) -> bool {
+            self.match_avail
+        }
+    }
+
+    fn module() -> ModuleIdentity {
+        ModuleIdentity { id: "test:mod".to_string(), artifact_path: "progs.dat".to_string(), digest: "abc".to_string(), revision: 1 }
+    }
+
+    fn provider_id() -> ProviderId {
+        ProviderId::new("mod", "test")
+    }
+
+    fn declaration() -> ModCallbackDeclaration {
+        ModCallbackDeclaration {
+            program: Some(ModProgramRef { path: "progs.dat".to_string(), digest: "abc".to_string() }),
+            ..ModCallbackDeclaration::default()
+        }
+    }
+
+    fn accept_call(_call: &ModSourceCall, _inputs: &[ModCallbackInput], _context: &str) -> Result<(), GuestError> {
+        Ok(())
+    }
+
+    fn fixture(declaration: ModCallbackDeclaration) -> QcModProvider<FakeMachine, FakeServices> {
+        QcModProvider::new(FakeMachine::new(), FakeServices::new(), module(), provider_id(), declaration, None, &accept_call).unwrap()
+    }
+
+    #[test]
+    fn selection_key_round_trip() {
+        let selection = ModSelection { product: "id1".to_string(), id: "maps/e1m1".to_string() };
+        assert_eq!(mod_selection_key(&selection).unwrap(), "id1/maps/e1m1");
+        assert_eq!(read_mod_selection("id1/maps/e1m1").unwrap(), selection);
+        assert!(read_mod_selection("no-slash").is_err());
+        assert!(mod_selection_key(&ModSelection { product: "".to_string(), id: "x".to_string() }).is_err());
+    }
+
+    #[test]
+    fn instance_provider_encodes_key() {
+        let selection = ModSelection { product: "id1".to_string(), id: "a/b:c".to_string() };
+        let provider = mod_instance_provider(&selection).unwrap();
+        assert_eq!(provider.namespace, "mod");
+        assert_eq!(provider.name, "id1%2Fa%2Fb%3Ac");
+    }
+
+    #[test]
+    fn same_identity_compares_fields() {
+        let identity = || ModIdentity {
+            selection: ModSelection { product: "id1".to_string(), id: "x".to_string() },
+            source: ProviderReference { provider: provider_id(), content: "c".to_string() },
+            declaration_digest: "d".to_string(),
+            modules: vec![module()],
+            providers: vec![ProviderCheckpointRef { provider: provider_id(), schema: "s".to_string(), version: 1 }],
+        };
+        assert!(same_mod_identity(&identity(), &identity()));
+        let mut other = identity();
+        other.declaration_digest = "other".to_string();
+        assert!(!same_mod_identity(&identity(), &other));
+    }
+
+    #[test]
+    fn team_mapping_round_trip() {
+        let values = vec![
+            SourceTeamValue { value: 1.0, team: Some("red".to_string()) },
+            SourceTeamValue { value: 2.0, team: None },
+        ];
+        assert_eq!(source_team(&values, 1.0).unwrap(), Some("red".to_string()));
+        assert_eq!(original_team(&values, Some("red")).unwrap(), 1.0);
+        assert!(source_team(&values, 9.0).is_err());
+        assert!(original_team(&values, Some("blue")).is_err());
+        assert!(validate_source_match_field(&ModActorBinding::Team { values }).is_ok());
+        assert!(validate_source_match_field(&ModActorBinding::Score).is_ok());
+        assert!(validate_source_match_field(&ModActorBinding::Team { values: vec![] }).is_err());
+    }
+
+    #[test]
+    fn ascii_fold_and_tokenize() {
+        assert_eq!(ascii_fold("AbC"), "abc");
+        assert_eq!(split_command_tokens("give \"super shotgun\" 5"), vec!["give", "super shotgun", "5"]);
+        assert_eq!(split_command_tokens("  solo  "), vec!["solo"]);
+    }
+
+    #[test]
+    fn validation_rejects_digest_mismatch() {
+        let program = FakeMachine::new().program;
+        let mut bad = declaration();
+        bad.program = Some(ModProgramRef { path: "progs.dat".to_string(), digest: "other".to_string() });
+        assert!(validate_qc_mod(&program, &bad, &accept_call).is_err());
+        assert!(validate_qc_mod(&program, &declaration(), &accept_call).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_duplicates_and_bad_clients() {
+        let program = FakeMachine::new().program;
+        let mut duplicated = declaration();
+        duplicated.cvars.push(ModCvar { name: "skill".to_string(), value: "1".to_string() });
+        duplicated.cvars.push(ModCvar { name: "skill".to_string(), value: "2".to_string() });
+        assert!(validate_qc_mod(&program, &duplicated, &accept_call).is_err());
+        let mut clients = declaration();
+        clients.clients = Some(ModClientDeclaration { maximum: 0, ..ModClientDeclaration::default() });
+        assert!(validate_qc_mod(&program, &clients, &accept_call).is_err());
+    }
+
+    #[test]
+    fn validation_requires_combat_fields() {
+        let program = FakeMachine::new().program;
+        let mut combat = declaration();
+        combat.combat = Some(ModCombatDeclaration {
+            damage: ModSourceCall { function: "T_Damage".to_string(), arguments: vec![], globals: vec![] },
+            damage_scale: None,
+            armor_stage: None,
+            empty_armor: None,
+        });
+        assert!(validate_qc_mod(&program, &combat, &accept_call).is_err());
+    }
+
+    #[test]
+    fn projections_round_trip_through_references() {
+        let mut provider = fixture(declaration());
+        let actor = provider.services_mut().admit(4, &provider_id());
+        let reference = provider.reference(Some(&actor)).unwrap();
+        assert!(reference > 0);
+        assert_eq!(provider.actor(reference).unwrap(), actor);
+        assert_eq!(provider.reference(Some(&actor)).unwrap(), reference);
+        assert_eq!(provider.reference(None).unwrap(), 0);
+        assert_eq!(provider.release_client_projection(&actor).unwrap(), ClientRelease::Released);
+        assert!(provider.actor(reference).is_err());
+    }
+
+    #[test]
+    fn world_actor_projects_to_zero() {
+        let mut provider = fixture(declaration());
+        let world = provider.services_mut().owner.actor(0, 1);
+        provider.services_mut().live.insert(world.clone());
+        provider.services_mut().world = Some(world.clone());
+        assert_eq!(provider.reference(Some(&world)).unwrap(), 0);
+        assert_eq!(provider.actor(0).unwrap(), world);
+    }
+
+    #[test]
+    fn invoke_resolves_inputs_and_publishes() {
+        let mut provider = fixture(declaration());
+        let owner = IdentityOwner::create("calls").unwrap();
+        let actor = owner.actor(1, 1);
+        let call = ModSourceCall {
+            function: "think".to_string(),
+            arguments: vec![ModCallbackValue::Input(ModCallbackInput::Self_), ModCallbackValue::Float(1.5)],
+            globals: vec![ModSourceGlobal { name: "time".to_string(), value: ModCallbackValue::Input(ModCallbackInput::Time) }],
+        };
+        let mut inputs = QcModInputs::new();
+        inputs.insert(ModCallbackInput::Self_, ModRuntimeValue::Actor(Some(actor.clone())));
+        inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(2.0));
+        provider.invoke(&call, &inputs).unwrap();
+        assert_eq!(provider.depth(), 0);
+        assert_eq!(provider.services().published, 1);
+        assert_eq!(provider.services().flushed, 1);
+        let (function, arguments, globals) = provider.machine().invocations.last().unwrap();
+        assert_eq!(function, "think");
+        assert_eq!(arguments[0], ModRuntimeValue::Actor(Some(actor)));
+        assert_eq!(globals[0].0, "time");
+        assert!(provider.invoke(&call, &QcModInputs::new()).is_err());
+    }
+
+    #[test]
+    fn invoke_owned_requires_no_argument_function() {
+        let mut provider = fixture(declaration());
+        provider.machine_mut().program.functions.insert(
+            "thinker".to_string(),
+            QcFunctionView { index: 7, name: "thinker".to_string(), first_statement: 3, parameter_start: 0, parameter_sizes: vec![], named_builtin: false },
+        );
+        provider.machine_mut().program.by_index.insert(
+            7,
+            QcFunctionView { index: 7, name: "thinker".to_string(), first_statement: 3, parameter_start: 0, parameter_sizes: vec![], named_builtin: false },
+        );
+        let owner = IdentityOwner::create("owned").unwrap();
+        let actor = owner.actor(2, 1);
+        provider.invoke_owned(7, &actor, None, &SourceTime::Seconds(1.0)).unwrap();
+        assert_eq!(provider.machine().invocations.last().unwrap().0, "thinker");
+        assert!(provider.invoke_owned(9, &actor, None, &SourceTime::Seconds(1.0)).is_err());
+    }
+
+    #[test]
+    fn console_command_dispatches_and_reports_unknown() {
+        let mut declared = declaration();
+        declared.commands.push(ModConsoleCommand {
+            name: "give".to_string(),
+            function: "cmd_give".to_string(),
+            arguments: vec![ModConsoleValue::ArgumentCount],
+            globals: vec![],
+        });
+        let mut provider = fixture(declared);
+        let argv = vec!["give".to_string(), "shells".to_string()];
+        assert!(provider.console_command(&argv, "shells").unwrap());
+        assert_eq!(provider.machine().invocations.last().unwrap().0, "cmd_give");
+        assert!(!provider.console_command(&["nope".to_string()], "").unwrap());
+    }
+
+    #[test]
+    fn initialize_runs_once() {
+        let mut declared = declaration();
+        declared.initialize.push(ModSourceCall { function: "init".to_string(), arguments: vec![], globals: vec![] });
+        let mut provider = fixture(declared);
+        provider.initialize().unwrap();
+        assert!(provider.is_initialized());
+        assert_eq!(provider.machine().invocations.len(), 1);
+        assert!(provider.initialize().is_err());
+    }
+
+    #[test]
+    fn advance_runs_frame_call_and_frametime() {
+        let mut declared = declaration();
+        declared.frame = Some(ModSourceCall { function: "frame".to_string(), arguments: vec![], globals: vec![] });
+        let mut provider = fixture(declared);
+        provider.machine_mut().program.globals.insert("frametime".to_string(), QcValueType::Float);
+        let frame = FrameContext { frame: 3, time: SourceTime::Seconds(1.0), elapsed: SourceTime::Seconds(0.1), phase: FramePhase::FrameEntry };
+        provider.advance(&frame).unwrap();
+        assert_eq!(provider.machine().invocations.last().unwrap().0, "frame");
+        assert!((provider.machine().globals["frametime"] - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn checkpoint_restore_round_trip() {
+        let mut provider = fixture(declaration());
+        let actor = provider.services_mut().admit(6, &provider_id());
+        provider.reference(Some(&actor)).unwrap();
+        let saved = provider.checkpoint();
+        assert_eq!(saved.projections.len(), 1);
+        let mut revived = fixture(declaration());
+        revived.machine_mut().set_entity_count(2).unwrap();
+        revived.services_mut().live.insert(actor.clone());
+        revived.restore(&saved, &|saved| (saved.slot == 6).then(|| actor.clone())).unwrap();
+        assert!(revived.is_initialized() == provider.is_initialized());
+        assert_eq!(revived.presentation_generation(), 1);
+        let mut missing = fixture(declaration());
+        assert!(missing.restore(&saved, &|_| None).is_err());
+    }
+
+    #[test]
+    fn lookup_assigns_per_kind_indices() {
+        let mut media = QcModMedia::default();
+        media.resources.insert("a.mdl".to_string(), QcMediaResource { requested_path: "a.mdl".to_string(), model_bounds: None });
+        media.resources.insert("b.wav".to_string(), QcMediaResource { requested_path: "b.wav".to_string(), model_bounds: None });
+        let mut provider =
+            QcModProvider::new(FakeMachine::new(), FakeServices::new(), module(), provider_id(), declaration(), Some(media), &accept_call).unwrap();
+        assert_eq!(provider.lookup("model", "a.mdl").unwrap().index, 1);
+        assert_eq!(provider.lookup("sound", "b.wav").unwrap().index, 1);
+        assert_eq!(provider.lookup("model", "a.mdl").unwrap().index, 1);
+        assert!(provider.lookup("model", "missing.mdl").is_none());
+    }
+
+    #[test]
+    fn match_player_reads_and_writes_team() {
+        let mut declared = declaration();
+        declared.actor_fields.push(ModActorField {
+            field: "team_no".to_string(),
+            binding: ModActorBinding::Team {
+                values: vec![
+                    SourceTeamValue { value: 1.0, team: Some("red".to_string()) },
+                    SourceTeamValue { value: 2.0, team: Some("blue".to_string()) },
+                ],
+            },
+        });
+        let machine = FakeMachine::new().with_field("team_no", 4, QcValueType::Float);
+        let mut provider = QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declared, None, &accept_call).unwrap();
+        let actor = provider.services_mut().admit(9, &provider_id());
+        let reference = provider.reference(Some(&actor)).unwrap();
+        let slot = provider.machine().entity_slot(reference).unwrap();
+        provider.services_mut().source_slots.insert(actor.clone(), slot);
+        provider.services_mut().match_avail = true;
+        provider.activate_match().unwrap();
+        provider.machine_mut().set_slot_float(slot, 4, 2.0).unwrap();
+        assert_eq!(provider.match_player(&actor).unwrap().unwrap().team, Some("blue".to_string()));
+        provider.set_match_team(&actor, Some("red".to_string())).unwrap();
+        assert_eq!(provider.machine().slot_float(slot, 4).unwrap(), 1.0);
+        assert!(provider.set_match_team(&actor, Some("green".to_string())).is_err());
+    }
+
+    #[test]
+    fn presentations_read_owned_models() {
+        let machine = FakeMachine::new()
+            .with_field("model", 1, QcValueType::String)
+            .with_field("origin", 2, QcValueType::Vector)
+            .with_field("angles", 3, QcValueType::Vector);
+        let mut media = QcModMedia::default();
+        media.resources.insert("progs/player.mdl".to_string(), QcMediaResource { requested_path: "progs/player.mdl".to_string(), model_bounds: None });
+        let mut provider =
+            QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declaration(), Some(media), &accept_call).unwrap();
+        let actor = provider.services_mut().admit(11, &provider_id());
+        let owned = provider.services().resolve_owned(&actor).unwrap();
+        provider.services_mut().owned_actors.push(owned);
+        let reference = provider.reference(Some(&actor)).unwrap();
+        let slot = provider.machine().entity_slot(reference).unwrap();
+        provider.services_mut().source_slots.insert(actor.clone(), slot);
+        let index = provider.machine_mut().strings_allocate("progs/player.mdl").unwrap();
+        provider.machine_mut().set_slot_int(slot, 1, index).unwrap();
+        provider.machine_mut().set_slot_vector(slot, 2, vec3(1.0, 2.0, 3.0)).unwrap();
+        let presentations = provider.presentations().unwrap();
+        assert_eq!(presentations.len(), 1);
+        assert_eq!(presentations[0].path, "progs/player.mdl");
+        assert_eq!(presentations[0].scale, 1.0);
+    }
+
+    #[test]
+    fn client_frame_reads_hud_and_view() {
+        let machine = FakeMachine::new()
+            .with_field("health", 1, QcValueType::Float)
+            .with_field("armorvalue", 2, QcValueType::Float)
+            .with_field("origin", 3, QcValueType::Vector)
+            .with_field("angles", 4, QcValueType::Vector)
+            .with_field("view_ofs", 5, QcValueType::Vector);
+        let mut declared = declaration();
+        declared.client_presentation = Some(QcModClientPresentation { hud: QcClientHud::ReplaceVitals, view: QcClientView::SetView });
+        let mut provider = QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declared, None, &accept_call).unwrap();
+        let actor = provider.services_mut().admit(12, &provider_id());
+        let reference = provider.reference(Some(&actor)).unwrap();
+        let slot = provider.machine().entity_slot(reference).unwrap();
+        provider.services_mut().admitted.insert(actor.clone());
+        provider.machine_mut().set_slot_float(slot, 1, 75.0).unwrap();
+        provider.machine_mut().set_slot_vector(slot, 3, vec3(4.0, 5.0, 6.0)).unwrap();
+        let frame = provider.client_frame(&actor).unwrap().unwrap();
+        assert_eq!(frame.hud.unwrap().health, 75.0);
+        assert_eq!(frame.view.unwrap().origin, vec3(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn game_module_spawns_and_dispatches() {
+        let mut declared = declaration();
+        declared.actor_fields.push(ModActorField {
+            field: "dmg".to_string(),
+            binding: ModActorBinding::Constant { value: ModConstantValue::Float(40.0) },
+        });
+        declared.callbacks.push(ModCallback {
+            binding: ModCallbackBinding {
+                id: "test:think".to_string(),
+                operation: ModCallbackOperation::ActorThink,
+                stage: ModCallbackStage::Observe,
+                result: None,
+            },
+            call: ModSourceCall { function: "think_cb".to_string(), arguments: vec![], globals: vec![] },
+        });
+        let machine = FakeMachine::new().with_field("dmg", 9, QcValueType::Float);
+        let mut provider = QcModProvider::new(machine, FakeServices::new(), module(), provider_id(), declared, None, &accept_call).unwrap();
+        assert_eq!(provider.name(), "test:mod");
+        let actor = provider.services_mut().admit(14, &provider_id());
+        let mut fields = FieldTable::new();
+        let mut events = Vec::new();
+        let frame = FrameContext { frame: 0, time: SourceTime::Seconds(0.0), elapsed: SourceTime::Seconds(0.0), phase: FramePhase::EntityThink };
+        let mut context = GameContext { fields: &mut fields, events: &mut events, frame, now: SourceTime::Seconds(0.0) };
+        assert!(provider.spawn(&mut context, &actor, "monster", &[]).unwrap());
+        assert_eq!(context.fields.get(&actor, "dmg").unwrap().as_float("dmg").unwrap(), 40.0);
+        assert!(provider.think(&mut context, &actor).unwrap());
+        assert_eq!(provider.machine().invocations.last().unwrap().0, "think_cb");
+        assert!(!provider.touch(&mut context, &GameTouch { target: actor.clone(), other: actor }).unwrap());
+        provider.close();
+        assert!(provider.is_closed());
+        assert!(provider.invoke(&ModSourceCall { function: "x".to_string(), arguments: vec![], globals: vec![] }, &QcModInputs::new()).is_err());
     }
 }
+
+
 
 /// Gameplay-mod callback declaration.
 #[derive(Debug, Clone, PartialEq, Default)]

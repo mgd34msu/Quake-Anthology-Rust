@@ -110,7 +110,13 @@ pub struct MovementBindings<W, S, B, R> {
 impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBindings<W, S, B, R> {
     /// Bind movement to its services.
     pub fn new(world: W, scene: S, bodies: B, random: R) -> Self {
-        Self { world, scene, bodies, random, touch_triggers: Vec::new() }
+        Self {
+            world,
+            scene,
+            bodies,
+            random,
+            touch_triggers: Vec::new(),
+        }
     }
 
     /// Actors whose triggers fired during linked moves (test inspection).
@@ -191,12 +197,7 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
     }
 
     /// `movetogoal` facing pass: turn toward `goal` without stepping.
-    pub fn move_to_goal(
-        &mut self,
-        fields: &mut FieldTable,
-        actor: &ActorId,
-        goal: &ActorId,
-    ) -> Result<(), GuestError> {
+    pub fn move_to_goal(&mut self, fields: &mut FieldTable, actor: &ActorId, goal: &ActorId) -> Result<(), GuestError> {
         let resolve = self.reference_resolver();
         let Some(mut state) = self.read_monster(fields, actor, &resolve)? else {
             return Ok(());
@@ -278,10 +279,18 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
             (0.0, 0.0),
         ];
         for (dx, dy) in corners {
-            let start = Vec3 { x: state.origin.x + dx, y: state.origin.y + dy, z: state.origin.z };
+            let start = Vec3 {
+                x: state.origin.x + dx,
+                y: state.origin.y + dy,
+                z: state.origin.z,
+            };
             let trace = self.scene.trace(&TraceParams {
                 start,
-                end: Vec3 { x: start.x, y: start.y, z: start.z - BOTTOM_DROP },
+                end: Vec3 {
+                    x: start.x,
+                    y: start.y,
+                    z: start.z - BOTTOM_DROP,
+                },
                 shape: TraceShape::Point,
                 move_kind: Q1MoveKind::Normal,
                 pass_actor: Some(actor.clone()),
@@ -302,9 +311,15 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
                 min: fields.get(goal, "absmin")?.as_vector("absmin")?,
                 max: fields.get(goal, "absmax")?.as_vector("absmax")?,
             },
-            _ => self.bodies.linked(goal).unwrap_or_else(|| qc_link_bounds(body.origin, body.bounds, 0)),
+            _ => self
+                .bodies
+                .linked(goal)
+                .unwrap_or_else(|| qc_link_bounds(body.origin, body.bounds, 0)),
         };
-        Ok(Some(MonsterTarget { origin: body.origin, absolute_bounds }))
+        Ok(Some(MonsterTarget {
+            origin: body.origin,
+            absolute_bounds,
+        }))
     }
 
     fn move_step(
@@ -326,7 +341,11 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
             return Ok(true);
         }
         // `SV_movestep` stair move: up, across, then down.
-        let up = Vec3 { x: state.origin.x, y: state.origin.y, z: state.origin.z + STEP_HEIGHT };
+        let up = Vec3 {
+            x: state.origin.x,
+            y: state.origin.y,
+            z: state.origin.z + STEP_HEIGHT,
+        };
         let up_trace = self.scene.trace(&TraceParams {
             start: state.origin,
             end: up,
@@ -337,7 +356,11 @@ impl<W: MovementWorld, S: Scene, B: MovementBodies, R: RandomSource> MovementBin
         if up_trace.all_solid || up_trace.start_solid {
             return Ok(false);
         }
-        let across = Vec3 { x: target.x, y: target.y, z: up_trace.end.z };
+        let across = Vec3 {
+            x: target.x,
+            y: target.y,
+            z: up_trace.end.z,
+        };
         let across_trace = self.scene.trace(&TraceParams {
             start: up_trace.end,
             end: across,
@@ -487,7 +510,7 @@ mod tests {
     use super::*;
     use crate::fields::FieldLayout;
     use qa_core::identity::IdentityOwner;
-    use qa_core::math::{Plane, vec3};
+    use qa_core::math::{vec3, Plane};
     use std::collections::HashMap;
 
     struct FakeWorld {
@@ -497,7 +520,10 @@ mod tests {
 
     impl MovementWorld for FakeWorld {
         fn slot_actor(&self, slot: usize) -> Result<ActorId, GuestError> {
-            self.actors.get(slot).cloned().ok_or_else(|| GuestError::invalid("free slot"))
+            self.actors
+                .get(slot)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid("free slot"))
         }
 
         fn reference(&self, actor: &ActorId) -> Result<i32, GuestError> {
@@ -546,8 +572,15 @@ mod tests {
                 in_water: false,
                 in_open: true,
                 end: if fraction == 1.0 { params.end } else { params.start },
-                plane: Plane { normal: vec3(0.0, 0.0, 1.0), distance: params.end.z },
-                hit: if going_down { TraceHit::World { model: 0 } } else { TraceHit::None },
+                plane: Plane {
+                    normal: vec3(0.0, 0.0, 1.0),
+                    distance: params.end.z,
+                },
+                hit: if going_down {
+                    TraceHit::World { model: 0 }
+                } else {
+                    TraceHit::None
+                },
             })
         }
 
@@ -601,25 +634,44 @@ mod tests {
         for actor in [&monster, &goal] {
             fields.allocate(actor, &layout()).unwrap();
         }
-        fields.set(&monster, "origin", FieldValue::Vector(vec3(0.0, 0.0, 0.0))).unwrap();
+        fields
+            .set(&monster, "origin", FieldValue::Vector(vec3(0.0, 0.0, 0.0)))
+            .unwrap();
         fields.set(&monster, "flags", FieldValue::Float(512.0)).unwrap();
         fields.set(&monster, "ideal_yaw", FieldValue::Float(0.0)).unwrap();
         fields.set(&monster, "yaw_speed", FieldValue::Float(200.0)).unwrap();
-        fields.set(&goal, "origin", FieldValue::Vector(vec3(64.0, 0.0, 0.0))).unwrap();
+        fields
+            .set(&goal, "origin", FieldValue::Vector(vec3(64.0, 0.0, 0.0)))
+            .unwrap();
         let mut bodies = HashMap::new();
-        bodies.insert(monster.clone(), MonsterBodySnapshot {
-            origin: vec3(0.0, 0.0, 0.0),
-            angles: vec3(0.0, 0.0, 0.0),
-            velocity: vec3(0.0, 0.0, 0.0),
-            bounds: Bounds { min: vec3(-16.0, -16.0, -24.0), max: vec3(16.0, 16.0, 32.0) },
-        });
-        bodies.insert(goal.clone(), MonsterBodySnapshot {
-            origin: vec3(64.0, 0.0, 0.0),
-            angles: vec3(0.0, 0.0, 0.0),
-            velocity: vec3(0.0, 0.0, 0.0),
-            bounds: Bounds { min: vec3(-1.0, -1.0, -1.0), max: vec3(1.0, 1.0, 1.0) },
-        });
-        let world = FakeWorld { actors: vec![owner.actor(0, 1), monster, goal], links: Vec::new() };
+        bodies.insert(
+            monster.clone(),
+            MonsterBodySnapshot {
+                origin: vec3(0.0, 0.0, 0.0),
+                angles: vec3(0.0, 0.0, 0.0),
+                velocity: vec3(0.0, 0.0, 0.0),
+                bounds: Bounds {
+                    min: vec3(-16.0, -16.0, -24.0),
+                    max: vec3(16.0, 16.0, 32.0),
+                },
+            },
+        );
+        bodies.insert(
+            goal.clone(),
+            MonsterBodySnapshot {
+                origin: vec3(64.0, 0.0, 0.0),
+                angles: vec3(0.0, 0.0, 0.0),
+                velocity: vec3(0.0, 0.0, 0.0),
+                bounds: Bounds {
+                    min: vec3(-1.0, -1.0, -1.0),
+                    max: vec3(1.0, 1.0, 1.0),
+                },
+            },
+        );
+        let world = FakeWorld {
+            actors: vec![owner.actor(0, 1), monster, goal],
+            links: Vec::new(),
+        };
         (owner, fields, world, FakeScene { blocked }, FakeBodies { bodies })
     }
 
@@ -692,7 +744,10 @@ mod tests {
             &world,
             &fields,
             &mut globals,
-            &TouchContact { this: trigger.clone(), other: other.clone() },
+            &TouchContact {
+                this: trigger.clone(),
+                other: other.clone(),
+            },
             3.5,
             &mut |callback| {
                 ran.push(callback);

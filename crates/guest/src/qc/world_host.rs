@@ -13,7 +13,7 @@
 
 use qa_core::identity::{ActorId, SavedActorId};
 
-use super::actor_state::{ActorResolver, BodyState, FLAG_ITEM, QcBodyBinding, create_qc_body_binding};
+use super::actor_state::{create_qc_body_binding, ActorResolver, BodyState, QcBodyBinding, FLAG_ITEM};
 use super::entity_host::reference_for_slot;
 use crate::error::GuestError;
 use qa_core::math::{Bounds, Vec3};
@@ -82,7 +82,12 @@ impl<S: WorldSlots, B: WorldBodies> QcWorldHost<S, B> {
     /// Build the host. `resolve` maps saved ground references back to live
     /// actors for body bindings.
     pub fn new(slots: S, bodies: B, resolve: ActorResolver) -> Self {
-        Self { slots, bodies, resolve, admit: None }
+        Self {
+            slots,
+            bodies,
+            resolve,
+            admit: None,
+        }
     }
 
     /// Install the admit hook run when a slot gains its first body binding.
@@ -228,13 +233,19 @@ mod tests {
 
         fn bind(&mut self, actor: &ActorId, slot: usize, _binding: QcBodyBinding) {
             self.bindings.push((actor.clone(), slot));
-            self.bodies.insert(actor.clone(), BodyState {
-                origin: vec3(0.0, 0.0, 0.0),
-                angles: vec3(0.0, 0.0, 0.0),
-                velocity: vec3(0.0, 0.0, 0.0),
-                bounds: Bounds { min: vec3(-1.0, -1.0, -1.0), max: vec3(1.0, 1.0, 1.0) },
-                ground: None,
-            });
+            self.bodies.insert(
+                actor.clone(),
+                BodyState {
+                    origin: vec3(0.0, 0.0, 0.0),
+                    angles: vec3(0.0, 0.0, 0.0),
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    bounds: Bounds {
+                        min: vec3(-1.0, -1.0, -1.0),
+                        max: vec3(1.0, 1.0, 1.0),
+                    },
+                    ground: None,
+                },
+            );
         }
 
         fn link(&mut self, actor: &ActorId) {
@@ -252,7 +263,11 @@ mod tests {
             slots: vec![Some(world), Some(player)],
             foreign: HashMap::new(),
         };
-        let bodies = FakeBodies { bodies: HashMap::new(), bindings: Vec::new(), links: Vec::new() };
+        let bodies = FakeBodies {
+            bodies: HashMap::new(),
+            bindings: Vec::new(),
+            links: Vec::new(),
+        };
         let live = owner.actor(1, 1);
         let resolve: ActorResolver =
             std::rc::Rc::new(move |saved: &SavedActorId| (*saved == SavedActorId::from(&live)).then(|| live.clone()));
@@ -262,7 +277,10 @@ mod tests {
     #[test]
     fn link_bounds_expand_items_horizontally() {
         let origin = vec3(10.0, 20.0, 30.0);
-        let bounds = Bounds { min: vec3(-8.0, -8.0, -8.0), max: vec3(8.0, 8.0, 8.0) };
+        let bounds = Bounds {
+            min: vec3(-8.0, -8.0, -8.0),
+            max: vec3(8.0, 8.0, 8.0),
+        };
         let item = qc_link_bounds(origin, bounds, FLAG_ITEM);
         assert_eq!(item.min, vec3(-13.0, -3.0, 21.0));
         assert_eq!(item.max, vec3(33.0, 43.0, 39.0));
@@ -314,7 +332,12 @@ mod tests {
         assert!(host.bodies().links.is_empty());
         host.link(1).unwrap();
         assert_eq!(host.bodies().links.len(), 1);
-        assert_eq!(host.resolve_ground(&SavedActorId { slot: 1, generation: 1 }).unwrap().slot(), 1);
+        assert_eq!(
+            host.resolve_ground(&SavedActorId { slot: 1, generation: 1 })
+                .unwrap()
+                .slot(),
+            1
+        );
         assert!(host.resolve_ground(&SavedActorId { slot: 8, generation: 8 }).is_none());
     }
 }

@@ -15,7 +15,7 @@
 use std::rc::Rc;
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Bounds, Vec3, vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 
 use crate::error::GuestError;
 use crate::fields::{FieldTable, FieldValue};
@@ -234,15 +234,10 @@ impl<L: ActorLookup> QcActorState<L> {
     }
 
     /// Project the motion record, or `None` for an unknown actor.
-    pub fn motion(
-        &self,
-        fields: &FieldTable,
-        actor: &ActorId,
-        body: &BodyState,
-    ) -> Result<Option<Motion>, GuestError> {
-        let Some(_) = self.lookup.source_slot(actor) else {
+    pub fn motion(&self, fields: &FieldTable, actor: &ActorId, body: &BodyState) -> Result<Option<Motion>, GuestError> {
+        if self.lookup.source_slot(actor).is_none() {
             return Ok(None);
-        };
+        }
         let movetype = fields.get(actor, "movetype")?.as_float("movetype")? as i32;
         let kind = match movetype {
             0 | 8 => MotionKind::Stationary,
@@ -258,7 +253,11 @@ impl<L: ActorLookup> QcActorState<L> {
         let gravity = match fields.get(actor, "gravity") {
             Ok(value) => {
                 let gravity = value.as_float("gravity")?;
-                if gravity == 0.0 { 1.0 } else { gravity }
+                if gravity == 0.0 {
+                    1.0
+                } else {
+                    gravity
+                }
             }
             Err(GuestError::UnknownField(_)) => 1.0,
             Err(error) => return Err(error),
@@ -276,7 +275,7 @@ impl<L: ActorLookup> QcActorState<L> {
 
     /// Project physics flags; unknown actors read back empty defaults.
     pub fn flags(&self, fields: &FieldTable, actor: &ActorId) -> Result<SharedPhysicsFlags, GuestError> {
-        let Some(_) = self.lookup.source_slot(actor) else {
+        if self.lookup.source_slot(actor).is_none() {
             return Ok(SharedPhysicsFlags {
                 fly: false,
                 swim: false,
@@ -286,7 +285,7 @@ impl<L: ActorLookup> QcActorState<L> {
                 water_type: 0.0,
                 dead: false,
             });
-        };
+        }
         let flags = fields.get(actor, "flags")?.as_float("flags")? as i32;
         Ok(SharedPhysicsFlags {
             fly: flags & FLAG_FLY != 0,
@@ -306,9 +305,9 @@ impl<L: ActorLookup> QcActorState<L> {
         actor: &ActorId,
         changes: &PhysicsFlagChanges,
     ) -> Result<(), GuestError> {
-        let Some(_) = self.lookup.source_slot(actor) else {
+        if self.lookup.source_slot(actor).is_none() {
             return Ok(());
-        };
+        }
         let mut flags = fields.get(actor, "flags")?.as_float("flags")? as i32;
         for (value, bit) in [
             (changes.fly, FLAG_FLY),
@@ -366,7 +365,10 @@ pub struct QcBodyBinding {
 
 impl std::fmt::Debug for QcBodyBinding {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("QcBodyBinding").field("actor", &self.actor).finish()
+        formatter
+            .debug_struct("QcBodyBinding")
+            .field("actor", &self.actor)
+            .finish()
     }
 }
 
@@ -408,7 +410,11 @@ impl BodyStateBinding for QcBodyBinding {
         fields.set(&self.actor, "mins", FieldValue::Vector(state.bounds.min))?;
         fields.set(&self.actor, "maxs", FieldValue::Vector(state.bounds.max))?;
         let flags = fields.get(&self.actor, "flags")?.as_float("flags")? as i32;
-        let updated = if state.ground.is_none() { flags & !FLAG_ONGROUND } else { flags | FLAG_ONGROUND };
+        let updated = if state.ground.is_none() {
+            flags & !FLAG_ONGROUND
+        } else {
+            flags | FLAG_ONGROUND
+        };
         fields.set(&self.actor, "flags", FieldValue::Float(updated as f32))?;
         // Source airborne motion clears onground without erasing the previous
         // ground word.
@@ -433,7 +439,10 @@ impl BodyStateBinding for QcBodyBinding {
 /// references back to live actors.
 #[must_use]
 pub fn create_qc_body_binding(actor: &ActorId, resolve: ActorResolver) -> QcBodyBinding {
-    QcBodyBinding { actor: actor.clone(), resolve }
+    QcBodyBinding {
+        actor: actor.clone(),
+        resolve,
+    }
 }
 
 #[cfg(test)]
@@ -498,7 +507,14 @@ mod tests {
         owners.insert(7, boss.clone());
         let mut slots = HashMap::new();
         slots.insert(actor.clone(), 3);
-        let state = QcActorState::new(FakeLookup { slots, clients: Vec::new(), owners }, false);
+        let state = QcActorState::new(
+            FakeLookup {
+                slots,
+                clients: Vec::new(),
+                owners,
+            },
+            false,
+        );
         let solid = state.collision(&fields, &actor).unwrap().unwrap();
         assert!(!solid.q1_corpse);
         assert_eq!(solid.solid, SolidKind::Brush);
@@ -520,7 +536,11 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert(world.clone(), 0);
         let classic = QcActorState::new(
-            FakeLookup { slots: slots.clone(), clients: Vec::new(), owners: HashMap::new() },
+            FakeLookup {
+                slots: slots.clone(),
+                clients: Vec::new(),
+                owners: HashMap::new(),
+            },
             false,
         );
         let solid = classic.collision(&fields, &world).unwrap().unwrap();
@@ -528,7 +548,11 @@ mod tests {
         assert_eq!(solid.model, Some(0));
         assert!(solid.owner.is_none());
         let rerelease = QcActorState::new(
-            FakeLookup { slots, clients: Vec::new(), owners: HashMap::new() },
+            FakeLookup {
+                slots,
+                clients: Vec::new(),
+                owners: HashMap::new(),
+            },
             true,
         );
         assert!(rerelease.rerelease());
@@ -542,7 +566,11 @@ mod tests {
         let (owner, fields) = fixture();
         let ghost = owner.actor(9, 1);
         let state = QcActorState::new(
-            FakeLookup { slots: HashMap::new(), clients: Vec::new(), owners: HashMap::new() },
+            FakeLookup {
+                slots: HashMap::new(),
+                clients: Vec::new(),
+                owners: HashMap::new(),
+            },
             false,
         );
         assert!(state.collision(&fields, &ghost).unwrap().is_none());
@@ -550,7 +578,10 @@ mod tests {
             origin: vec3(0.0, 0.0, 0.0),
             angles: vec3(0.0, 0.0, 0.0),
             velocity: vec3(0.0, 0.0, 0.0),
-            bounds: Bounds { min: vec3(-1.0, -1.0, -1.0), max: vec3(1.0, 1.0, 1.0) },
+            bounds: Bounds {
+                min: vec3(-1.0, -1.0, -1.0),
+                max: vec3(1.0, 1.0, 1.0),
+            },
             ground: None,
         };
         assert!(state.motion(&fields, &ghost, &body).unwrap().is_none());
@@ -568,18 +599,27 @@ mod tests {
         fields.set(&actor, "flags", FieldValue::Float(0.0)).unwrap();
         fields.set(&actor, "owner", FieldValue::Float(0.0)).unwrap();
         fields.set(&actor, "movetype", FieldValue::Float(7.0)).unwrap();
-        fields.set(&actor, "avelocity", FieldValue::Vector(vec3(0.0, 90.0, 0.0))).unwrap();
+        fields
+            .set(&actor, "avelocity", FieldValue::Vector(vec3(0.0, 90.0, 0.0)))
+            .unwrap();
         let mut slots = HashMap::new();
         slots.insert(actor.clone(), 1);
         let state = QcActorState::new(
-            FakeLookup { slots, clients: vec![actor.clone()], owners: HashMap::new() },
+            FakeLookup {
+                slots,
+                clients: vec![actor.clone()],
+                owners: HashMap::new(),
+            },
             false,
         );
         let body = BodyState {
             origin: vec3(1.0, 2.0, 3.0),
             angles: vec3(0.0, 0.0, 0.0),
             velocity: vec3(4.0, 5.0, 6.0),
-            bounds: Bounds { min: vec3(-1.0, -1.0, -1.0), max: vec3(1.0, 1.0, 1.0) },
+            bounds: Bounds {
+                min: vec3(-1.0, -1.0, -1.0),
+                max: vec3(1.0, 1.0, 1.0),
+            },
             ground: None,
         };
         let motion = state.motion(&fields, &actor, &body).unwrap().unwrap();
@@ -605,7 +645,11 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert(actor.clone(), 1);
         let state = QcActorState::new(
-            FakeLookup { slots, clients: vec![actor.clone()], owners: HashMap::new() },
+            FakeLookup {
+                slots,
+                clients: vec![actor.clone()],
+                owners: HashMap::new(),
+            },
             false,
         );
         let flags = state.flags(&fields, &actor).unwrap();
@@ -615,13 +659,20 @@ mod tests {
             .write_flags(
                 &mut fields,
                 &actor,
-                &PhysicsFlagChanges { fly: Some(false), swim: Some(true), water_level: Some(1.0), ..Default::default() },
+                &PhysicsFlagChanges {
+                    fly: Some(false),
+                    swim: Some(true),
+                    water_level: Some(1.0),
+                    ..Default::default()
+                },
             )
             .unwrap();
         let flags = state.flags(&fields, &actor).unwrap();
         assert!(!flags.fly && flags.swim && flags.partial_ground);
         assert_eq!(flags.water_level, 1.0);
-        state.write_angular_velocity(&mut fields, &actor, vec3(1.0, 2.0, 3.0)).unwrap();
+        state
+            .write_angular_velocity(&mut fields, &actor, vec3(1.0, 2.0, 3.0))
+            .unwrap();
         assert_eq!(
             fields.get(&actor, "avelocity").unwrap().as_vector("avelocity").unwrap(),
             vec3(1.0, 2.0, 3.0)
@@ -634,15 +685,22 @@ mod tests {
         let actor = owner.actor(1, 1);
         let ground = owner.actor(2, 1);
         fields.allocate(&actor, &layout()).unwrap();
-        fields.set(&actor, "origin", FieldValue::Vector(vec3(1.0, 2.0, 3.0))).unwrap();
+        fields
+            .set(&actor, "origin", FieldValue::Vector(vec3(1.0, 2.0, 3.0)))
+            .unwrap();
         fields.set(&actor, "flags", FieldValue::Float(512.0)).unwrap();
         fields
-            .set(&actor, "groundentity", FieldValue::Entity(Some(SavedActorId::from(&ground))))
+            .set(
+                &actor,
+                "groundentity",
+                FieldValue::Entity(Some(SavedActorId::from(&ground))),
+            )
             .unwrap();
         let live = ground.clone();
-        let binding = create_qc_body_binding(&actor, Rc::new(move |saved: &SavedActorId| {
-            (*saved == SavedActorId::from(&live)).then(|| live.clone())
-        }));
+        let binding = create_qc_body_binding(
+            &actor,
+            Rc::new(move |saved: &SavedActorId| (*saved == SavedActorId::from(&live)).then(|| live.clone())),
+        );
         assert_eq!(binding.actor(), &actor);
         let body = binding.read(&fields).unwrap();
         assert_eq!(body.origin, vec3(1.0, 2.0, 3.0));
@@ -654,7 +712,10 @@ mod tests {
                     origin: vec3(4.0, 5.0, 6.0),
                     angles: vec3(0.0, 90.0, 0.0),
                     velocity: vec3(0.0, 0.0, -1.0),
-                    bounds: Bounds { min: vec3(-16.0, -16.0, -24.0), max: vec3(16.0, 16.0, 32.0) },
+                    bounds: Bounds {
+                        min: vec3(-16.0, -16.0, -24.0),
+                        max: vec3(16.0, 16.0, 32.0),
+                    },
                     ground: None,
                 },
             )
@@ -665,11 +726,21 @@ mod tests {
         );
         // Airborne writes keep the previous ground word.
         assert_eq!(
-            fields.get(&actor, "groundentity").unwrap().as_entity("groundentity").unwrap(),
+            fields
+                .get(&actor, "groundentity")
+                .unwrap()
+                .as_entity("groundentity")
+                .unwrap(),
             Some(SavedActorId::from(&ground))
         );
         binding
-            .linked(&mut fields, &Bounds { min: vec3(-17.0, -17.0, -25.0), max: vec3(17.0, 17.0, 33.0) })
+            .linked(
+                &mut fields,
+                &Bounds {
+                    min: vec3(-17.0, -17.0, -25.0),
+                    max: vec3(17.0, 17.0, 33.0),
+                },
+            )
             .unwrap();
         assert_eq!(
             fields.get(&actor, "absmax").unwrap().as_vector("absmax").unwrap(),

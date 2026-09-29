@@ -18,7 +18,15 @@ use crate::error::GuestError;
 use crate::fields::{FieldTable, FieldValue};
 
 /// Fields zeroed by `ED_ClearEdict`.
-const CLEARED_FIELDS: &[&str] = &["model", "takedamage", "modelindex", "colormap", "skin", "frame", "solid"];
+const CLEARED_FIELDS: &[&str] = &[
+    "model",
+    "takedamage",
+    "modelindex",
+    "colormap",
+    "skin",
+    "frame",
+    "solid",
+];
 
 /// Metadata prefix layout inside each source edict row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +47,9 @@ pub fn create_qc_source_slot_storage(
 ) -> Result<SourceSlotStorage, GuestError> {
     for offset in [metadata.free_offset_bytes, metadata.free_time_offset_bytes] {
         if offset + 4 > variables_offset_bytes || offset % 4 != 0 {
-            return Err(GuestError::invalid("QC edict metadata must reside in the source prefix"));
+            return Err(GuestError::invalid(
+                "QC edict metadata must reside in the source prefix",
+            ));
         }
     }
     Ok(SourceSlotStorage::with_capacity(provider, capacity))
@@ -54,11 +64,15 @@ pub const fn reference_for_slot(slot: usize) -> i32 {
 /// Decode a QC entity reference back to a slot.
 pub fn slot_for_reference(reference: i32, count: usize) -> Result<usize, GuestError> {
     if reference < 0 {
-        return Err(GuestError::invalid(format!("QC entity reference {reference} is negative")));
+        return Err(GuestError::invalid(format!(
+            "QC entity reference {reference} is negative"
+        )));
     }
     let slot = reference as usize;
     if slot >= count {
-        return Err(GuestError::invalid(format!("QC entity reference {reference} is out of range")));
+        return Err(GuestError::invalid(format!(
+            "QC entity reference {reference} is out of range"
+        )));
     }
     Ok(slot)
 }
@@ -90,7 +104,11 @@ impl SourceSlotStorage {
     /// Empty storage with a fixed capacity.
     #[must_use]
     pub fn with_capacity(provider: &str, capacity: usize) -> Self {
-        Self { provider: provider.to_string(), capacity, slots: Vec::new() }
+        Self {
+            provider: provider.to_string(),
+            capacity,
+            slots: Vec::new(),
+        }
     }
 
     /// Provider name identifying QC-owned source rows.
@@ -114,14 +132,20 @@ impl SourceSlotStorage {
     /// Grow or shrink the row count. Shrinking drops only free tail rows.
     pub fn set_count(&mut self, count: usize) -> Result<(), GuestError> {
         if count > self.capacity {
-            return Err(GuestError::invalid(format!("QC row count {count} exceeds capacity {}", self.capacity)));
+            return Err(GuestError::invalid(format!(
+                "QC row count {count} exceeds capacity {}",
+                self.capacity
+            )));
         }
         if count < self.slots.len() && self.slots[count..].iter().any(|slot| slot.occupant.is_some()) {
             return Err(GuestError::invalid("QC row shrink would drop a live actor"));
         }
         self.slots.resize(
             count,
-            SlotEntry { occupant: None, freed_at_seconds: 0.0 },
+            SlotEntry {
+                occupant: None,
+                freed_at_seconds: 0.0,
+            },
         );
         Ok(())
     }
@@ -129,7 +153,10 @@ impl SourceSlotStorage {
     /// Read one slot's free state.
     pub fn read(&self, slot: usize) -> Result<SlotState, GuestError> {
         let entry = self.entry(slot)?;
-        Ok(SlotState { free: entry.occupant.is_none(), freed_at_seconds: entry.freed_at_seconds })
+        Ok(SlotState {
+            free: entry.occupant.is_none(),
+            freed_at_seconds: entry.freed_at_seconds,
+        })
     }
 
     /// Actor occupying a slot, if any.
@@ -153,7 +180,10 @@ impl SourceSlotStorage {
         if self.slots.len() >= self.capacity {
             return Err(GuestError::invalid("No free QC row for a dynamic actor"));
         }
-        self.slots.push(SlotEntry { occupant: Some(actor), freed_at_seconds: 0.0 });
+        self.slots.push(SlotEntry {
+            occupant: Some(actor),
+            freed_at_seconds: 0.0,
+        });
         Ok(self.slots.len() - 1)
     }
 
@@ -220,11 +250,7 @@ fn clear_words(fields: &mut FieldTable, actor: &ActorId) -> Result<(), GuestErro
 
 /// `spawn` builtin: allocate a dynamic row for a freshly minted actor and
 /// return its entity reference.
-pub fn qc_spawn(
-    storage: &mut SourceSlotStorage,
-    fields: &mut FieldTable,
-    actor: ActorId,
-) -> Result<i32, GuestError> {
+pub fn qc_spawn(storage: &mut SourceSlotStorage, fields: &mut FieldTable, actor: ActorId) -> Result<i32, GuestError> {
     let slot = storage.allocate(actor.clone())?;
     storage.initialize(slot, fields, &actor)?;
     Ok(reference_for_slot(slot))
@@ -264,7 +290,10 @@ mod tests {
     use crate::fields::FieldLayout;
     use qa_core::identity::IdentityOwner;
 
-    const METADATA: QcEdictMetadataLayout = QcEdictMetadataLayout { free_offset_bytes: 0, free_time_offset_bytes: 4 };
+    const METADATA: QcEdictMetadataLayout = QcEdictMetadataLayout {
+        free_offset_bytes: 0,
+        free_time_offset_bytes: 4,
+    };
 
     fn storage() -> SourceSlotStorage {
         create_qc_source_slot_storage(METADATA, 64, "quakec:edict", 8).unwrap()
@@ -273,9 +302,15 @@ mod tests {
     #[test]
     fn metadata_must_live_in_source_prefix() {
         assert!(create_qc_source_slot_storage(METADATA, 64, "quakec:edict", 8).is_ok());
-        let bad = QcEdictMetadataLayout { free_offset_bytes: 2, free_time_offset_bytes: 4 };
+        let bad = QcEdictMetadataLayout {
+            free_offset_bytes: 2,
+            free_time_offset_bytes: 4,
+        };
         assert!(create_qc_source_slot_storage(bad, 64, "quakec:edict", 8).is_err());
-        let outside = QcEdictMetadataLayout { free_offset_bytes: 64, free_time_offset_bytes: 68 };
+        let outside = QcEdictMetadataLayout {
+            free_offset_bytes: 64,
+            free_time_offset_bytes: 68,
+        };
         assert!(create_qc_source_slot_storage(outside, 64, "quakec:edict", 8).is_err());
     }
 

@@ -167,7 +167,7 @@ impl Default for TraceGlobals {
             in_open: 0.0,
             plane_dist: 0.0,
             end_pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-            plane_normal: Vec3 { x: 0.0, y: 0.0, 1.0 },
+            plane_normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
             ent_reference: 0,
         }
     }

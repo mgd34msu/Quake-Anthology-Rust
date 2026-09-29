@@ -141,12 +141,21 @@ pub fn quake_temporary_event(
     quakeworld: bool,
 ) -> Result<QcBroadcastEffect, GuestError> {
     match effect {
-        TempEntityEffect::ExplosionColors { origin, color_start, color_length } => Ok(QcBroadcastEffect::ColoredExplosion {
+        TempEntityEffect::ExplosionColors {
+            origin,
+            color_start,
+            color_length,
+        } => Ok(QcBroadcastEffect::ColoredExplosion {
             origin: *origin,
             color_start: *color_start,
             color_length: *color_length,
         }),
-        TempEntityEffect::Beam { entity, beam_type, start, end } => {
+        TempEntityEffect::Beam {
+            entity,
+            beam_type,
+            start,
+            end,
+        } => {
             let Some(actor) = actor else {
                 return Err(GuestError::invalid(format!(
                     "QC beam entity {entity} had no owned actor when written"
@@ -159,9 +168,18 @@ pub fn quake_temporary_event(
                 13 if !quakeworld => BeamStyle::Grapple,
                 _ => return Err(GuestError::invalid(format!("Unsupported QC beam {beam_type}"))),
             };
-            Ok(QcBroadcastEffect::Beam { style, actor: actor.clone(), start: *start, end: *end })
+            Ok(QcBroadcastEffect::Beam {
+                style,
+                actor: actor.clone(),
+                start: *start,
+                end: *end,
+            })
         }
-        TempEntityEffect::Point { effect_type, origin, count } => {
+        TempEntityEffect::Point {
+            effect_type,
+            origin,
+            count,
+        } => {
             if quakeworld && matches!(*effect_type, 2 | 12 | 13) {
                 let (color, count) = match *effect_type {
                     2 => (0, 20 * *count),
@@ -185,9 +203,18 @@ pub fn quake_temporary_event(
                 8 => PointEffect::KnightSpike,
                 10 => PointEffect::LavaSplash,
                 11 => PointEffect::Teleport,
-                _ => return Err(GuestError::invalid(format!("Unsupported QC point effect {effect_type}"))),
+                _ => {
+                    return Err(GuestError::invalid(format!(
+                        "Unsupported QC point effect {effect_type}"
+                    )))
+                }
             };
-            Ok(QcBroadcastEffect::Effect { effect: name, actor: None, origin: *origin, amount: *count })
+            Ok(QcBroadcastEffect::Effect {
+                effect: name,
+                actor: None,
+                origin: *origin,
+                amount: *count,
+            })
         }
     }
 }
@@ -214,25 +241,50 @@ mod tests {
         ];
         for (effect_type, expected) in cases {
             let event = quake_temporary_event(
-                &TempEntityEffect::Point { effect_type, origin, count: 6 },
+                &TempEntityEffect::Point {
+                    effect_type,
+                    origin,
+                    count: 6,
+                },
                 None,
                 false,
             )
             .unwrap();
             assert_eq!(
                 event,
-                QcBroadcastEffect::Effect { effect: expected, actor: None, origin, amount: 6 }
+                QcBroadcastEffect::Effect {
+                    effect: expected,
+                    actor: None,
+                    origin,
+                    amount: 6
+                }
             );
         }
-        assert!(quake_temporary_event(&TempEntityEffect::Point { effect_type: 5, origin, count: 1 }, None, false)
-            .is_err());
+        assert!(quake_temporary_event(
+            &TempEntityEffect::Point {
+                effect_type: 5,
+                origin,
+                count: 1
+            },
+            None,
+            false
+        )
+        .is_err());
     }
 
     #[test]
     fn quakeworld_blood_opcodes_become_particles() {
         let origin = vec3(0.0, 0.0, 8.0);
-        let event = quake_temporary_event(&TempEntityEffect::Point { effect_type: 2, origin, count: 3 }, None, true)
-            .unwrap();
+        let event = quake_temporary_event(
+            &TempEntityEffect::Point {
+                effect_type: 2,
+                origin,
+                count: 3,
+            },
+            None,
+            true,
+        )
+        .unwrap();
         assert_eq!(
             event,
             QcBroadcastEffect::Particles {
@@ -242,16 +294,31 @@ mod tests {
                 count: 60
             }
         );
-        let event =
-            quake_temporary_event(&TempEntityEffect::Point { effect_type: 13, origin, count: 9 }, None, true)
-                .unwrap();
+        let event = quake_temporary_event(
+            &TempEntityEffect::Point {
+                effect_type: 13,
+                origin,
+                count: 9,
+            },
+            None,
+            true,
+        )
+        .unwrap();
         assert!(matches!(
             event,
-            QcBroadcastEffect::Particles { color: 225, count: 50, .. }
+            QcBroadcastEffect::Particles {
+                color: 225,
+                count: 50,
+                ..
+            }
         ));
         // Same wire type on NetQuake is a beam opcode, rejected as a point effect.
         assert!(quake_temporary_event(
-            &TempEntityEffect::Point { effect_type: 13, origin, count: 9 },
+            &TempEntityEffect::Point {
+                effect_type: 13,
+                origin,
+                count: 9
+            },
             None,
             false
         )
@@ -264,25 +331,50 @@ mod tests {
         let actor = owner.actor(1, 1);
         let start = vec3(0.0, 0.0, 0.0);
         let end = vec3(0.0, 0.0, 64.0);
-        for (beam_type, style) in
-            [(5, BeamStyle::Lightning1), (6, BeamStyle::Lightning2), (9, BeamStyle::Lightning3)]
-        {
+        for (beam_type, style) in [
+            (5, BeamStyle::Lightning1),
+            (6, BeamStyle::Lightning2),
+            (9, BeamStyle::Lightning3),
+        ] {
             let event = quake_temporary_event(
-                &TempEntityEffect::Beam { entity: 4, beam_type, start, end },
+                &TempEntityEffect::Beam {
+                    entity: 4,
+                    beam_type,
+                    start,
+                    end,
+                },
                 Some(&actor),
                 true,
             )
             .unwrap();
-            assert_eq!(event, QcBroadcastEffect::Beam { style, actor: actor.clone(), start, end });
+            assert_eq!(
+                event,
+                QcBroadcastEffect::Beam {
+                    style,
+                    actor: actor.clone(),
+                    start,
+                    end
+                }
+            );
         }
         assert!(quake_temporary_event(
-            &TempEntityEffect::Beam { entity: 4, beam_type: 5, start, end },
+            &TempEntityEffect::Beam {
+                entity: 4,
+                beam_type: 5,
+                start,
+                end
+            },
             None,
             true
         )
         .is_err());
         assert!(quake_temporary_event(
-            &TempEntityEffect::Beam { entity: 4, beam_type: 7, start, end },
+            &TempEntityEffect::Beam {
+                entity: 4,
+                beam_type: 7,
+                start,
+                end
+            },
             Some(&actor),
             true
         )
@@ -301,7 +393,10 @@ mod tests {
         };
         assert!(matches!(
             quake_temporary_event(&beam, Some(&actor), false).unwrap(),
-            QcBroadcastEffect::Beam { style: BeamStyle::Grapple, .. }
+            QcBroadcastEffect::Beam {
+                style: BeamStyle::Grapple,
+                ..
+            }
         ));
         assert!(quake_temporary_event(&beam, Some(&actor), true).is_err());
     }
@@ -310,14 +405,22 @@ mod tests {
     fn explosion_colors_pass_through() {
         let origin = vec3(5.0, 5.0, 5.0);
         let event = quake_temporary_event(
-            &TempEntityEffect::ExplosionColors { origin, color_start: 10, color_length: 4 },
+            &TempEntityEffect::ExplosionColors {
+                origin,
+                color_start: 10,
+                color_length: 4,
+            },
             None,
             false,
         )
         .unwrap();
         assert_eq!(
             event,
-            QcBroadcastEffect::ColoredExplosion { origin, color_start: 10, color_length: 4 }
+            QcBroadcastEffect::ColoredExplosion {
+                origin,
+                color_start: 10,
+                color_length: 4
+            }
         );
     }
 }

@@ -19,7 +19,9 @@ use crate::error::GuestError;
 use crate::fields::{FieldLayout, FieldTable, FieldValue};
 
 /// Vector projection fields, in word order.
-const VECTORS: &[&str] = &["origin", "angles", "velocity", "mins", "maxs", "absmin", "absmax", "size"];
+const VECTORS: &[&str] = &[
+    "origin", "angles", "velocity", "mins", "maxs", "absmin", "absmax", "size",
+];
 /// Private writable fields (QC-owned scratch on borrowed rows).
 const PRIVATE_FIELDS: &[&str] = &["chain", "invincible_sound"];
 /// Scalar projection fields.
@@ -35,10 +37,11 @@ pub fn borrowed_layout() -> FieldLayout {
     for name in PRIVATE_FIELDS {
         layout = layout.field(name, "float");
     }
-    layout = layout.field("health", "float").field("takedamage", "float").field("classname", "string").field(
-        "solid",
-        "float",
-    );
+    layout = layout
+        .field("health", "float")
+        .field("takedamage", "float")
+        .field("classname", "string")
+        .field("solid", "float");
     layout
 }
 
@@ -202,7 +205,12 @@ pub struct QcBorrowedActors<H> {
 impl<H: BorrowedHost> QcBorrowedActors<H> {
     /// Build the borrowed-actor table over a slot pool.
     pub fn new(host: H, pool: BorrowedSlotPool) -> Self {
-        Self { host, pool, by_actor: HashMap::new(), by_slot: HashMap::new() }
+        Self {
+            host,
+            pool,
+            by_actor: HashMap::new(),
+            by_slot: HashMap::new(),
+        }
     }
 
     /// Borrow the host.
@@ -263,13 +271,19 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
             return Err(GuestError::invalid("No free QC row for a borrowed actor"));
         }
         if self.pool.is_source(selected) || self.by_slot.contains_key(&selected) {
-            return Err(GuestError::invalid("Borrowed QC row collides with a current source actor"));
+            return Err(GuestError::invalid(
+                "Borrowed QC row collides with a current source actor",
+            ));
         }
         if selected == count {
             self.pool.slots.push(SlotUse::Free { freed_at: now });
         }
         self.pool.slots[selected] = SlotUse::Borrowed(owned.clone());
-        let row = BorrowedRow { actor: owned.clone(), slot: selected, classname: None };
+        let row = BorrowedRow {
+            actor: owned.clone(),
+            slot: selected,
+            classname: None,
+        };
         self.by_actor.insert(owned.clone(), row);
         self.by_slot.insert(selected, owned.clone());
         if let Err(error) = self.refresh(fields, &owned, None) {
@@ -303,7 +317,9 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
         kind: AccessKind,
     ) -> Result<(), GuestError> {
         if words != 1 && words != 3 {
-            return Err(GuestError::invalid(format!("borrowed access width {words} must be 1 or 3")));
+            return Err(GuestError::invalid(format!(
+                "borrowed access width {words} must be 1 or 3"
+            )));
         }
         let slot = slot_for_reference(reference, self.pool.slots.len())?;
         let Some(actor) = self.by_slot.get(&slot).cloned() else {
@@ -340,7 +356,10 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
         let mut rows: Vec<BorrowedCheckpoint> = self
             .by_actor
             .values()
-            .map(|row| BorrowedCheckpoint { actor: SavedActorId::from(&row.actor), slot: row.slot })
+            .map(|row| BorrowedCheckpoint {
+                actor: SavedActorId::from(&row.actor),
+                slot: row.slot,
+            })
             .collect();
         rows.sort_by_key(|row| row.slot);
         rows
@@ -371,7 +390,14 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
                 return Err(GuestError::invalid("invalid borrowed QC actor mapping"));
             }
             let actor = actor.expect("validated above");
-            by_actor.insert(actor.clone(), BorrowedRow { actor: actor.clone(), slot: entry.slot, classname: None });
+            by_actor.insert(
+                actor.clone(),
+                BorrowedRow {
+                    actor: actor.clone(),
+                    slot: entry.slot,
+                    classname: None,
+                },
+            );
             by_slot.insert(entry.slot, actor);
         }
         for (slot, actor) in &by_slot {
@@ -388,7 +414,11 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
         actor: &ActorId,
         requested: Option<&[&str]>,
     ) -> Result<(), GuestError> {
-        let all: Vec<&str> = VECTORS.iter().copied().chain(["health", "takedamage", "classname", "solid"]).collect();
+        let all: Vec<&str> = VECTORS
+            .iter()
+            .copied()
+            .chain(["health", "takedamage", "classname", "solid"])
+            .collect();
         let requested = requested.unwrap_or(&all);
         if !fields.is_allocated(actor) {
             fields.allocate(actor, &borrowed_layout())?;
@@ -427,7 +457,10 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
                     },
                     _ => continue,
                 };
-                if ![value.x, value.y, value.z].iter().all(|component| component.is_finite()) {
+                if ![value.x, value.y, value.z]
+                    .iter()
+                    .all(|component| component.is_finite())
+                {
                     return Err(GuestError::invalid("Borrowed actor geometry exceeds QC binary32 range"));
                 }
                 fields.set(actor, name, FieldValue::Vector(value))?;
@@ -449,7 +482,10 @@ impl<H: BorrowedHost> QcBorrowedActors<H> {
         }
         if requested.contains(&"classname") {
             let classname = self.host.classname(actor);
-            let row = self.by_actor.get_mut(actor).ok_or_else(|| GuestError::invalid("borrowed row missing"))?;
+            let row = self
+                .by_actor
+                .get_mut(actor)
+                .ok_or_else(|| GuestError::invalid("borrowed row missing"))?;
             if row.classname.as_deref() != Some(classname.as_str()) {
                 fields.set(actor, "classname", FieldValue::Text(classname.clone()))?;
                 row.classname = Some(classname);
@@ -519,13 +555,19 @@ mod tests {
                 origin: vec3(10.0, 20.0, 30.0),
                 angles: vec3(0.0, 90.0, 0.0),
                 velocity: vec3(1.0, 2.0, 3.0),
-                bounds: Bounds { min: vec3(-8.0, -8.0, -8.0), max: vec3(8.0, 8.0, 8.0) },
+                bounds: Bounds {
+                    min: vec3(-8.0, -8.0, -8.0),
+                    max: vec3(8.0, 8.0, 8.0),
+                },
                 linked: None,
             })
         }
 
         fn combat(&self, actor: &ActorId) -> Option<BorrowedCombat> {
-            self.is_owned(actor).then(|| BorrowedCombat { health: 75.0, can_take_damage: true })
+            self.is_owned(actor).then(|| BorrowedCombat {
+                health: 75.0,
+                can_take_damage: true,
+            })
         }
 
         fn classname(&self, _actor: &ActorId) -> String {
@@ -544,7 +586,11 @@ mod tests {
     fn harness() -> (IdentityOwner, FieldTable, QcBorrowedActors<FakeHost>) {
         let owner = IdentityOwner::create("borrowed-actors").unwrap();
         let fields = FieldTable::new();
-        let host = FakeHost { live: vec![owner.actor(1, 1), owner.actor(2, 1)], source: vec![owner.actor(2, 1)], now: 5.0 };
+        let host = FakeHost {
+            live: vec![owner.actor(1, 1), owner.actor(2, 1)],
+            source: vec![owner.actor(2, 1)],
+            now: 5.0,
+        };
         let pool = BorrowedSlotPool::new(4, 1, 6, ReusePolicy::Immediate);
         (owner, fields, QcBorrowedActors::new(host, pool))
     }
@@ -566,7 +612,10 @@ mod tests {
         );
         assert_eq!(fields.get(&actor, "health").unwrap(), &FieldValue::Float(75.0));
         assert_eq!(fields.get(&actor, "takedamage").unwrap(), &FieldValue::Float(1.0));
-        assert_eq!(fields.get(&actor, "classname").unwrap().as_text("classname").unwrap(), "monster_ogre");
+        assert_eq!(
+            fields.get(&actor, "classname").unwrap().as_text("classname").unwrap(),
+            "monster_ogre"
+        );
         // Second borrow reuses the row.
         assert_eq!(borrowed.reference(&mut fields, &actor).unwrap(), 1);
     }
@@ -587,11 +636,17 @@ mod tests {
         let actor = owner.actor(1, 1);
         let reference = borrowed.reference(&mut fields, &actor).unwrap();
         // Private scratch writes are allowed.
-        borrowed.access(&mut fields, reference, 24, 1, AccessKind::Write).unwrap();
+        borrowed
+            .access(&mut fields, reference, 24, 1, AccessKind::Write)
+            .unwrap();
         // Public writes are rejected.
-        assert!(borrowed.access(&mut fields, reference, 0, 3, AccessKind::Write).is_err());
+        assert!(borrowed
+            .access(&mut fields, reference, 0, 3, AccessKind::Write)
+            .is_err());
         // Unknown words are rejected on read.
-        assert!(borrowed.access(&mut fields, reference, 99, 1, AccessKind::Read).is_err());
+        assert!(borrowed
+            .access(&mut fields, reference, 99, 1, AccessKind::Read)
+            .is_err());
         // Aligned reads refresh the projection.
         borrowed.access(&mut fields, reference, 0, 3, AccessKind::Read).unwrap();
         assert_eq!(
@@ -618,17 +673,28 @@ mod tests {
         let actor = owner.actor(1, 1);
         borrowed.reference(&mut fields, &actor).unwrap();
         let saved = borrowed.checkpoint();
-        assert_eq!(saved, vec![BorrowedCheckpoint { actor: SavedActorId::from(&actor), slot: 1 }]);
+        assert_eq!(
+            saved,
+            vec![BorrowedCheckpoint {
+                actor: SavedActorId::from(&actor),
+                slot: 1
+            }]
+        );
         let (_owner, _fields, mut restored) = harness();
         restored.pool_mut().mark_source(0).unwrap();
         let live = actor.clone();
         restored
-            .restore(&saved, &|saved| (*saved == SavedActorId::from(&live)).then(|| live.clone()), &|slot| {
-                slot == 0
-            })
+            .restore(
+                &saved,
+                &|saved| (*saved == SavedActorId::from(&live)).then(|| live.clone()),
+                &|slot| slot == 0,
+            )
             .unwrap();
         assert_eq!(restored.actor(1).unwrap(), Some(actor));
-        let bad = vec![BorrowedCheckpoint { actor: SavedActorId { slot: 9, generation: 9 }, slot: 1 }];
+        let bad = vec![BorrowedCheckpoint {
+            actor: SavedActorId { slot: 9, generation: 9 },
+            slot: 1,
+        }];
         assert!(restored.restore(&bad, &|_| None, &|_| false).is_err());
     }
 }

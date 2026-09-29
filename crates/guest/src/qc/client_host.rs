@@ -69,10 +69,16 @@ impl<S: VisibilityScene> QcClientHost<S> {
         }
         for slot in 0..=max_clients {
             if slots.at(slot).is_none() {
-                return Err(GuestError::invalid(format!("missing reserved QC client/world slot {slot}")));
+                return Err(GuestError::invalid(format!(
+                    "missing reserved QC client/world slot {slot}"
+                )));
             }
         }
-        Ok(Self { scene, max_clients, last_checked: 0 })
+        Ok(Self {
+            scene,
+            max_clients,
+            last_checked: 0,
+        })
     }
 
     /// Maximum client slot.
@@ -97,11 +103,22 @@ impl<S: VisibilityScene> QcClientHost<S> {
                 words.get(actor, "origin")?.as_vector("origin")?,
                 words.get(actor, "view_ofs")?.as_vector("view_ofs")?,
             ),
-            None => (0.0, false, Vec3 { x: 0.0, y: 0.0, z: 0.0 }, Vec3 { x: 0.0, y: 0.0, z: 0.0 }),
+            None => (
+                0.0,
+                false,
+                Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            ),
         };
-        let free = slots.is_free(slot)
-            || actor.as_ref().is_none_or(|actor| !slots.is_live(actor));
-        Ok(ClientRow { actor, free, health, notarget, origin, view_offset })
+        let free = slots.is_free(slot) || actor.as_ref().is_none_or(|actor| !slots.is_live(actor));
+        Ok(ClientRow {
+            actor,
+            free,
+            health,
+            notarget,
+            origin,
+            view_offset,
+        })
     }
 
     /// `checkclient`: cycle to the next visible, damageable client seen
@@ -162,21 +179,33 @@ pub struct AimServices {
     pub targets: Vec<AimTarget>,
 }
 
-/// `PF_aim`: select the best deflect target along `forward`, or return
-/// `forward` unchanged when no target qualifies. Reads `speed` for
-/// signature parity but never uses it, matching the donor note.
+/// `PF_aim` request: shooter, aim direction, and the unused speed word.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AimRequest {
+    /// Shooting actor.
+    pub shooter: ActorId,
+    /// Forward direction.
+    pub forward: Vec3,
+    /// Speed word, read but never used (donor parity).
+    pub speed: f32,
+}
+
+/// `PF_aim`: select the best deflect target along the request forward, or
+/// return it unchanged when no target qualifies.
 pub fn qc_aim<A: AimScene>(
     scene: &A,
     fields: &FieldTable,
-    shooter: &ActorId,
-    shooter_reference: i32,
-    forward: Vec3,
-    _speed: f32,
+    request: &AimRequest,
     services: &AimServices,
     no_aim: &dyn Fn(&ActorId) -> bool,
 ) -> Result<Vec3, GuestError> {
+    let AimRequest {
+        shooter,
+        forward,
+        speed: _,
+    } = request;
     if no_aim(shooter) {
-        return Ok(forward);
+        return Ok(*forward);
     }
     for name in ["team", "takedamage"] {
         if !matches!(fields.get(shooter, name), Ok(_)) {
@@ -187,7 +216,6 @@ pub fn qc_aim<A: AimScene>(
         return Err(GuestError::invalid("QC aim actor has no body"));
     };
     let shooter_team = fields.get(shooter, "team")?.as_float("team")?;
-    let _ = shooter_reference;
     let mut best: Option<(f32, Vec3)> = None;
     for target in &services.targets {
         if target.actor == *shooter {
@@ -214,7 +242,11 @@ pub fn qc_aim<A: AimScene>(
         if length == 0.0 {
             continue;
         }
-        let direction = Vec3 { x: delta.x / length, y: delta.y / length, z: delta.z / length };
+        let direction = Vec3 {
+            x: delta.x / length,
+            y: delta.y / length,
+            z: delta.z / length,
+        };
         let score = forward.x * direction.x + forward.y * direction.y + forward.z * direction.z;
         if score < services.aim_threshold {
             continue;
@@ -228,7 +260,7 @@ pub fn qc_aim<A: AimScene>(
             best = Some((score, direction));
         }
     }
-    Ok(best.map(|(_, direction)| direction).unwrap_or(forward))
+    Ok(best.map(|(_, direction)| direction).unwrap_or(*forward))
 }
 
 #[cfg(test)]
@@ -281,7 +313,10 @@ mod tests {
         }
 
         fn body_origin(&self, actor: &ActorId) -> Option<Vec3> {
-            self.origins.iter().find(|(id, _)| id == actor).map(|(_, origin)| *origin)
+            self.origins
+                .iter()
+                .find(|(id, _)| id == actor)
+                .map(|(_, origin)| *origin)
         }
     }
 
@@ -304,8 +339,12 @@ mod tests {
         }
         let one = actors[1].clone().unwrap();
         fields.set(&one, "health", FieldValue::Float(100.0)).unwrap();
-        fields.set(&one, "origin", FieldValue::Vector(vec3(64.0, 0.0, 0.0))).unwrap();
-        fields.set(&one, "view_ofs", FieldValue::Vector(vec3(0.0, 0.0, 22.0))).unwrap();
+        fields
+            .set(&one, "origin", FieldValue::Vector(vec3(64.0, 0.0, 0.0)))
+            .unwrap();
+        fields
+            .set(&one, "view_ofs", FieldValue::Vector(vec3(0.0, 0.0, 22.0)))
+            .unwrap();
         let two = actors[2].clone().unwrap();
         fields.set(&two, "health", FieldValue::Float(100.0)).unwrap();
         (owner, fields, FakeSlots { actors })
@@ -314,10 +353,17 @@ mod tests {
     #[test]
     fn constructor_validates_reserved_range() {
         let (_owner, _fields, slots) = harness();
-        assert_eq!(QcClientHost::new(&slots, FakeScene { visible: true }, 2).unwrap().max_clients(), 2);
+        assert_eq!(
+            QcClientHost::new(&slots, FakeScene { visible: true }, 2)
+                .unwrap()
+                .max_clients(),
+            2
+        );
         assert!(QcClientHost::new(&slots, FakeScene { visible: true }, 0).is_err());
         assert!(QcClientHost::new(&slots, FakeScene { visible: true }, 4).is_err());
-        let sparse = FakeSlots { actors: vec![None, None] };
+        let sparse = FakeSlots {
+            actors: vec![None, None],
+        };
         assert!(QcClientHost::new(&sparse, FakeScene { visible: true }, 1).is_err());
     }
 
@@ -326,9 +372,18 @@ mod tests {
         let (owner, fields, slots) = harness();
         let mut host = QcClientHost::new(&slots, FakeScene { visible: true }, 2).unwrap();
         let eye = vec3(0.0, 0.0, 22.0);
-        assert_eq!(host.check_client(&fields, &slots, eye).unwrap(), Some(owner.actor(1, 1)));
-        assert_eq!(host.check_client(&fields, &slots, eye).unwrap(), Some(owner.actor(2, 1)));
-        assert_eq!(host.check_client(&fields, &slots, eye).unwrap(), Some(owner.actor(1, 1)));
+        assert_eq!(
+            host.check_client(&fields, &slots, eye).unwrap(),
+            Some(owner.actor(1, 1))
+        );
+        assert_eq!(
+            host.check_client(&fields, &slots, eye).unwrap(),
+            Some(owner.actor(2, 1))
+        );
+        assert_eq!(
+            host.check_client(&fields, &slots, eye).unwrap(),
+            Some(owner.actor(1, 1))
+        );
     }
 
     #[test]
@@ -353,16 +408,36 @@ mod tests {
         fields.set(&shooter, "team", FieldValue::Float(1.0)).unwrap();
         fields.set(&target, "team", FieldValue::Float(2.0)).unwrap();
         let scene = FakeAim {
-            origins: vec![(shooter.clone(), vec3(0.0, 0.0, 0.0)), (target.clone(), vec3(100.0, 0.0, 0.0))],
+            origins: vec![
+                (shooter.clone(), vec3(0.0, 0.0, 0.0)),
+                (target.clone(), vec3(100.0, 0.0, 0.0)),
+            ],
             hit: Some(target.clone()),
         };
-        let services = AimServices { aim_threshold: 0.9, teamplay: 1.0, targets: vec![AimTarget { actor: target.clone(), reference: 2 }] };
+        let services = AimServices {
+            aim_threshold: 0.9,
+            teamplay: 1.0,
+            targets: vec![AimTarget {
+                actor: target.clone(),
+                reference: 2,
+            }],
+        };
         let none = |_: &ActorId| false;
-        let aimed = qc_aim(&scene, &fields, &shooter, 1, vec3(1.0, 0.0, 0.0), 1000.0, &services, &none).unwrap();
+        let request = AimRequest {
+            shooter: shooter.clone(),
+            forward: vec3(1.0, 0.0, 0.0),
+            speed: 1000.0,
+        };
+        let aimed = qc_aim(&scene, &fields, &request, &services, &none).unwrap();
         assert_eq!(aimed, vec3(1.0, 0.0, 0.0));
         // Same-team targets are skipped under teamplay.
         fields.set(&target, "team", FieldValue::Float(1.0)).unwrap();
-        let forward = qc_aim(&scene, &fields, &shooter, 1, vec3(0.0, 1.0, 0.0), 1000.0, &services, &none).unwrap();
+        let request = AimRequest {
+            shooter: shooter.clone(),
+            forward: vec3(0.0, 1.0, 0.0),
+            speed: 1000.0,
+        };
+        let forward = qc_aim(&scene, &fields, &request, &services, &none).unwrap();
         assert_eq!(forward, vec3(0.0, 1.0, 0.0));
     }
 
@@ -372,15 +447,35 @@ mod tests {
         let (shooter, target) = (owner.actor(1, 1), owner.actor(2, 1));
         fields.set(&target, "takedamage", FieldValue::Float(2.0)).unwrap();
         let blocked = FakeAim {
-            origins: vec![(shooter.clone(), vec3(0.0, 0.0, 0.0)), (target.clone(), vec3(100.0, 0.0, 0.0))],
+            origins: vec![
+                (shooter.clone(), vec3(0.0, 0.0, 0.0)),
+                (target.clone(), vec3(100.0, 0.0, 0.0)),
+            ],
             hit: None,
         };
-        let services = AimServices { aim_threshold: 0.5, teamplay: 0.0, targets: vec![AimTarget { actor: target, reference: 2 }] };
+        let services = AimServices {
+            aim_threshold: 0.5,
+            teamplay: 0.0,
+            targets: vec![AimTarget {
+                actor: target,
+                reference: 2,
+            }],
+        };
         let none = |_: &ActorId| false;
-        let forward = qc_aim(&blocked, &fields, &shooter, 1, vec3(1.0, 0.0, 0.0), 500.0, &services, &none).unwrap();
+        let request = AimRequest {
+            shooter: shooter.clone(),
+            forward: vec3(1.0, 0.0, 0.0),
+            speed: 500.0,
+        };
+        let forward = qc_aim(&blocked, &fields, &request, &services, &none).unwrap();
         assert_eq!(forward, vec3(1.0, 0.0, 0.0));
         let all = |_: &ActorId| true;
-        let forward = qc_aim(&blocked, &fields, &shooter, 1, vec3(0.0, 0.0, 1.0), 500.0, &services, &all).unwrap();
+        let request = AimRequest {
+            shooter: shooter.clone(),
+            forward: vec3(0.0, 0.0, 1.0),
+            speed: 500.0,
+        };
+        let forward = qc_aim(&blocked, &fields, &request, &services, &all).unwrap();
         assert_eq!(forward, vec3(0.0, 0.0, 1.0));
     }
 }
