@@ -757,7 +757,7 @@ mod tests {
         let eligible = |_: &ActorId| true;
         let trace = |_: Vec3, _: Vec3| None;
         let targets = Q1AimTargets {
-            targets: &[aligned.clone()],
+            targets: std::slice::from_ref(&aligned),
             body: &body,
             eligible: &eligible,
             trace: &trace,

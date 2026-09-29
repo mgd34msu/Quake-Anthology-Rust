@@ -921,7 +921,8 @@ mod tests {
                         }
                     )
                     .is_err());
-                for path in [game] {
+                {
+                    let path = game;
                     let mut file = overlay
                         .open_file(
                             path,

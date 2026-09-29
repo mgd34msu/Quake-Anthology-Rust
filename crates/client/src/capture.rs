@@ -381,11 +381,10 @@ mod tests {
         RgbaImage { width, height, pixels }
     }
 
-    fn encoders() -> (
-        impl Fn(&RgbaImage) -> Result<Vec<u8>, ClientError>,
-        impl Fn(&RgbaImage) -> Result<Vec<u8>, ClientError>,
-        impl Fn(&RgbaImage, u8) -> Result<Vec<u8>, ClientError>,
-    ) {
+    type StillEncoder = fn(&RgbaImage) -> Result<Vec<u8>, ClientError>;
+    type QualityEncoder = fn(&RgbaImage, u8) -> Result<Vec<u8>, ClientError>;
+
+    fn encoders() -> (StillEncoder, StillEncoder, QualityEncoder) {
         (
             |image: &RgbaImage| Ok(vec![b'T', image.width as u8, image.height as u8]),
             |image: &RgbaImage| Ok(vec![b'P', image.width as u8]),

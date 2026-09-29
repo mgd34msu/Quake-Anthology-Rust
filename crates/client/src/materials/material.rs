@@ -2316,7 +2316,7 @@ textures/test/rock
         assert_eq!(normalize_shader_name("A/B.TGA"), "a/b");
         assert!(same_shader_name("AbC", "aBc"));
         assert!(!same_shader_name("a/b", "a\\b"));
-        assert_eq!(shader_name_hash("test", 1024) < 1024, true);
+        assert!(shader_name_hash("test", 1024) < 1024);
     }
 
     #[test]

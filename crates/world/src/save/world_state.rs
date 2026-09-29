@@ -547,13 +547,15 @@ mod tests {
     use qa_core::identity::ProviderId;
     use qa_core::math::{Bounds, Vec3};
 
+    type LinkState = (u64, Option<(SavedBodyState, Bounds)>);
+
     #[derive(Default)]
     struct FixtureHost {
         active: HashSet<(u32, u32)>,
         owners: HashMap<(u32, u32), String>,
         storage: HashMap<(u32, u32), StorageKind>,
         bodies: HashMap<(u32, u32), SavedBodyState>,
-        links: HashMap<(u32, u32), (u64, Option<(SavedBodyState, Bounds)>)>,
+        links: HashMap<(u32, u32), LinkState>,
         combat: HashMap<(u32, u32), CombatState>,
         inventories: HashMap<(u32, u32), Vec<InventoryEntry>>,
     }

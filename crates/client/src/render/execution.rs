@@ -506,7 +506,10 @@ mod tests {
             filter: TextureFilter::Nearest,
         };
         executor.execute(&ExecutionCommand::ImageResource(operation.clone()));
-        assert_eq!(executor.backend.applied_images, [operation.clone()]);
+        assert_eq!(
+            executor.backend.applied_images.as_slice(),
+            std::slice::from_ref(&operation)
+        );
         assert_eq!(services.log.borrow().applied, [operation]);
     }
 

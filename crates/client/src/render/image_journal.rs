@@ -349,10 +349,12 @@ mod tests {
         let mut operation = create(&owner, 0);
         let mut journal = RenderImageJournal::new();
         journal.record(&operation).unwrap();
-        if let ImageResourceOperation::CreateImage { content, .. } = &mut operation {
-            if let RenderImage::Rgba8 { levels, .. } = content {
-                levels[0].pixels.fill(255);
-            }
+        if let ImageResourceOperation::CreateImage {
+            content: RenderImage::Rgba8 { levels, .. },
+            ..
+        } = &mut operation
+        {
+            levels[0].pixels.fill(255);
         }
         let mut replayed = Vec::new();
         journal.replay(&mut |op| replayed.push(op.clone()));

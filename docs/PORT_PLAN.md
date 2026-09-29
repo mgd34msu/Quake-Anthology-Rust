@@ -177,7 +177,7 @@ donor operation order and keep the graph auditable.
 
 ## 9. Phased build order (verifiable units)
 
-Gates every phase: `cargo fmt --check`, `cargo clippy -- -D warnings`,
+Gates every phase: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo test --workspace`. Toolchain verified: rustc/cargo 1.98,
 clippy 0.1.98, rustfmt 1.9.0.
 

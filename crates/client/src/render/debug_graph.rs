@@ -375,7 +375,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Incomplete debug graph palette")]
     fn short_palette_panics() {
-        debug_graph_color(&[1, 2, 3], 200);
+        let _ = debug_graph_color(&[1, 2, 3], 200);
     }
 
     struct RecordingSink {

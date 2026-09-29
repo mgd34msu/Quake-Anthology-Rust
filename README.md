@@ -23,7 +23,7 @@ Requires Rust 1.98+ (workspace uses edition 2021, resolver 2).
 cargo build                      # both binaries
 cargo test --workspace           # full suite incl. headless E2E
 cargo fmt --all -- --check       # formatting gate
-cargo clippy --all-targets -- -D warnings   # lint gate
+cargo clippy --workspace --all-targets -- -D warnings   # lint gate
 ```
 
 ## Binaries

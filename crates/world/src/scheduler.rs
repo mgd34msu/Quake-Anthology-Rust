@@ -804,7 +804,7 @@ mod tests {
             )
         };
         let ran = scheduler
-            .run(&registry, &resolver, actor.id(), current, ThinkBoundary::DuringPhysics)
+            .run(registry, &resolver, actor.id(), current, ThinkBoundary::DuringPhysics)
             .unwrap();
         assert_eq!(
             ran,
