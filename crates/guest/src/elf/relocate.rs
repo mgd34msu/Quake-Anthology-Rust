@@ -39,36 +39,36 @@ pub trait ElfTlsBindings {
 
     /// Resolve an imported TLS symbol, or `None` for a local definition.
     fn resolve(
-        &mut self,
+        &self,
         import: &GuestImport,
         requesting: &GuestImage,
     ) -> Result<Option<ElfTlsResolution>, GuestError>;
 }
 
 /// ELF relocation context: image, memory, resolver, and TLS bindings.
-pub struct ElfRelocationContext<'a> {
+pub struct ElfRelocationContext<'e, 'm, 'i, 'r, 't, 'd, 's, 'u, 'p> {
     /// ELF inspection.
-    pub elf: &'a ElfInspection,
+    pub elf: &'e ElfInspection,
     /// Guest memory.
-    pub memory: &'a mut SparseGuestMemory,
+    pub memory: &'m mut SparseGuestMemory,
     /// Requesting image.
-    pub image: &'a GuestImage,
+    pub image: &'i GuestImage,
     /// Load bias added to image-relative addresses.
     pub load_bias: u64,
     /// Import resolver.
-    pub resolver: &'a mut dyn GuestImportResolver,
+    pub resolver: &'r dyn GuestImportResolver,
     /// TLS bindings, if any.
-    pub tls: Option<&'a mut dyn ElfTlsBindings>,
+    pub tls: Option<&'t dyn ElfTlsBindings>,
     /// Explicit guest IFUNC resolver execution.
     pub resolve_indirect:
-        Option<&'a dyn Fn(GuestAddress) -> Result<GuestAddress, GuestError>>,
+        Option<&'d dyn Fn(GuestAddress) -> Result<GuestAddress, GuestError>>,
     /// Provider symbol-size metadata for COPY/SIZE relocations.
     pub resolve_symbol_size:
-        Option<&'a dyn Fn(&GuestImport, &GuestImage) -> Result<Option<usize>, GuestError>>,
+        Option<&'s dyn Fn(&GuestImport, &GuestImage) -> Result<Option<usize>, GuestError>>,
     /// Process-wide GNU unique-symbol registry.
-    pub unique_symbols: Option<&'a mut std::collections::HashMap<String, GuestAddress>>,
+    pub unique_symbols: Option<&'u mut std::collections::HashMap<String, GuestAddress>>,
     /// Collected imports (including TLS and COPY sources).
-    pub imports: &'a mut Vec<GuestImport>,
+    pub imports: &'p mut Vec<GuestImport>,
 }
 
 fn elf_error(detail: impl Into<String>) -> GuestError {
@@ -98,7 +98,7 @@ pub fn symbol_import(symbol: &ElfSymbol, slot: GuestAddress) -> GuestImport {
 
 /// Apply every relocation eagerly. GNU IFUNC slots defer until direct
 /// relocations have landed.
-pub fn relocate_elf(context: &mut ElfRelocationContext) -> Result<(), GuestError> {
+pub fn relocate_elf(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>) -> Result<(), GuestError> {
     let indirect_type = if context.elf.abi.pointer_bytes() == 8 {
         37
     } else {
@@ -121,7 +121,7 @@ pub fn relocate_elf(context: &mut ElfRelocationContext) -> Result<(), GuestError
 }
 
 #[allow(clippy::too_many_lines)]
-fn apply(context: &mut ElfRelocationContext, relocation: &ElfRelocation) -> Result<(), GuestError> {
+fn apply(context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>, relocation: &ElfRelocation) -> Result<(), GuestError> {
     let wide = context.elf.abi.pointer_bytes() == 8;
     let relocation_type = relocation.relocation_type;
     if relocation_type == 0 {
@@ -209,7 +209,7 @@ fn apply(context: &mut ElfRelocationContext, relocation: &ElfRelocation) -> Resu
         && [16, 17, 18, 23].contains(&relocation_type)
         || !wide && [14, 17, 34, 35, 36, 37].contains(&relocation_type)
     {
-        let Some(tls) = context.tls.as_deref_mut() else {
+        let Some(tls) = context.tls else {
             return Err(elf_error(format!(
                 "TLS relocation {relocation_type} requires a guest thread/module allocation"
             )));
@@ -396,7 +396,7 @@ fn apply(context: &mut ElfRelocationContext, relocation: &ElfRelocation) -> Resu
 }
 
 fn external_symbol_size(
-    context: &mut ElfRelocationContext,
+    context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
     symbol: &ElfSymbol,
     slot: GuestAddress,
 ) -> Result<usize, GuestError> {
@@ -416,7 +416,7 @@ fn external_symbol_size(
     }
 }
 
-fn got_address(context: &ElfRelocationContext) -> Result<u64, GuestError> {
+fn got_address(context: &ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>) -> Result<u64, GuestError> {
     let Some(got) = dynamic_value(&context.elf.dynamic, 3) else {
         return Err(elf_error("GOT relocation lacks DT_PLTGOT"));
     };
@@ -467,7 +467,7 @@ pub fn defined_symbol_address(
 /// Resolve one symbol through local definitions, unique symbols, and the
 /// import resolver.
 pub fn resolve_symbol(
-    context: &mut ElfRelocationContext,
+    context: &mut ElfRelocationContext<'_, '_, '_, '_, '_, '_, '_, '_, '_>,
     symbol: &ElfSymbol,
     slot: GuestAddress,
     copy: bool,
