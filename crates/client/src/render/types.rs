@@ -6,8 +6,8 @@
 //! `f32` storage follows the workspace math library; donor wire `number`
 //! fields that count pixels or ordinals use `u32`/`i32` here.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use qa_core::identity::{SeatId, SessionId};
 use qa_core::math::{Axis, Mat4, Plane, Vec2, Vec3, Vec4};
@@ -182,10 +182,7 @@ impl ResourceOwner {
 
     /// Check that `other` names this same lifetime.
     pub fn require(&self, other: &Self, what: &str) -> Result<(), RenderError> {
-        if self.identity == other.identity
-            && self.session == other.session
-            && self.generation == other.generation
-        {
+        if self.identity == other.identity && self.session == other.session && self.generation == other.generation {
             Ok(())
         } else {
             Err(RenderError::ForeignOwner(what.to_string()))
@@ -899,7 +896,7 @@ pub enum Q2ShadowProjection {
 }
 
 /// Q2 shadow depth atlas.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Q2ShadowAtlas {
     /// Atlas image.
     pub image: RendererImage,
@@ -1523,4 +1520,137 @@ pub trait OrderedBackend {
     fn finish(&mut self);
     /// Release backend resources. Idempotent.
     fn close(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::identity::IdentityOwner;
+    use qa_core::math::{vec3, vec4};
+
+    use super::*;
+
+    fn owner_pair() -> (ResourceOwner, ResourceOwner) {
+        let session = IdentityOwner::create("render").unwrap().session().clone();
+        let identity = fresh_owner_identity();
+        (
+            ResourceOwner::new(identity, session.clone(), 1),
+            ResourceOwner::new(identity, session, 1),
+        )
+    }
+
+    #[test]
+    fn owner_require_accepts_same_lifetime() {
+        let (left, right) = owner_pair();
+        assert!(left.require(&right, "frame").is_ok());
+        let foreign_session = IdentityOwner::create("other").unwrap().session().clone();
+        let foreign = ResourceOwner::new(left.identity, foreign_session, left.generation);
+        assert!(matches!(
+            left.require(&foreign, "frame"),
+            Err(RenderError::ForeignOwner(_))
+        ));
+        let next_generation = ResourceOwner::new(left.identity, left.session.clone(), 2);
+        assert!(left.require(&next_generation, "frame").is_err());
+    }
+
+    #[test]
+    fn texture_filter_predicates_match_donor() {
+        assert!(!TextureFilter::Nearest.uses_mipmap());
+        assert!(!TextureFilter::Linear.uses_mipmap());
+        assert!(TextureFilter::LinearMipmapLinear.uses_mipmap());
+        assert!(TextureFilter::Linear.is_linear());
+        assert!(TextureFilter::LinearMipmapNearest.is_linear());
+        assert!(!TextureFilter::NearestMipmapLinear.is_linear());
+        assert!(!TextureFilter::Nearest.is_linear());
+    }
+
+    #[test]
+    fn source_time_converts_units() {
+        assert_eq!(SourceTime::Seconds(1.5).as_milliseconds(), 1500.0);
+        assert_eq!(SourceTime::Milliseconds(1500.0).as_seconds(), 1.5);
+    }
+
+    #[test]
+    fn render_image_reports_encoding_and_levels() {
+        let level = ImageLevel {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 16],
+        };
+        let image = RenderImage::Rgba8 {
+            levels: vec![
+                level,
+                ImageLevel {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![0; 4],
+                },
+            ],
+            border_color: vec4(0.0, 0.0, 0.0, 1.0),
+        };
+        assert_eq!(image.encoding(), "rgba8");
+        assert_eq!(image.mip_levels(), 2);
+    }
+
+    #[test]
+    fn opaque_state_uses_blend_off_and_depth_write() {
+        let state = RenderState::opaque(CullFace::Back);
+        assert_eq!(state.blend, (BlendFactor::One, BlendFactor::Zero));
+        assert_eq!(state.depth_test, DepthTest::LessEqual);
+        assert!(state.depth_write);
+        assert_eq!(state.cull, CullFace::Back);
+    }
+
+    #[test]
+    fn image_source_display_name_prefers_generated_name() {
+        let generated = ImageSource::Generated {
+            name: "scratch".to_string(),
+        };
+        assert_eq!(generated.display_name(), "scratch");
+        let resource = ImageSource::Resource {
+            requested_path: "textures/wall.png".to_string(),
+        };
+        assert_eq!(resource.display_name(), "textures/wall.png");
+    }
+
+    #[test]
+    fn dynamic_binding_compares_by_identity() {
+        struct Fixed(RendererImage);
+        impl DynamicImageSource for Fixed {
+            fn resolve(&self, _apply: &mut dyn FnMut(ImageResourceOperation)) -> RendererImage {
+                self.0.clone()
+            }
+        }
+        let (left, _) = owner_pair();
+        let image = RendererImage {
+            owner: left,
+            ordinal: 1,
+            source: ImageSource::Generated {
+                name: "dyn".to_string(),
+            },
+            width: 4,
+            height: 4,
+        };
+        let source: Arc<dyn DynamicImageSource> = Arc::new(Fixed(image.clone()));
+        assert_eq!(
+            TextureBinding::DynamicImage(Arc::clone(&source)),
+            TextureBinding::DynamicImage(source)
+        );
+        assert_eq!(
+            TextureBinding::BindImage(image.clone()),
+            TextureBinding::BindImage(image)
+        );
+        assert_ne!(
+            TextureBinding::BindImage(RendererImage {
+                owner: owner_pair().0,
+                ordinal: 2,
+                source: ImageSource::Generated {
+                    name: "other".to_string(),
+                },
+                width: 4,
+                height: 4,
+            }),
+            TextureBinding::RetainCurrentTexture
+        );
+        let _ = vec3(0.0, 0.0, 0.0);
+    }
 }
