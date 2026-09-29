@@ -25,8 +25,8 @@ use qa_world::registry::ActorRegistry;
 
 use super::cvars::{ClassicQ2Cvars, ClassicCvarRegistry};
 use super::layout::{
-    classic_q2_export, classic_q2_imports, classic_signature, q2_int, q2_pointer, q2_trace,
-    ClassicQ2Error, ClassicResult, CLASSIC_Q2_IMPORT_BYTES,
+    classic_q2_export, classic_q2_imports, classic_signature, q2_pointer, q2_trace, ClassicQ2Error,
+    ClassicResult, CLASSIC_Q2_IMPORT_BYTES,
 };
 use super::pickup_profile::{classic_pickup_profile, ClassicPickupProfile};
 use super::pmove::{
@@ -1271,7 +1271,6 @@ impl ClassicQ2GuestHost {
         for slot in 0..count as u32 {
             slots.insert(slot, edicts.at(&mut self.memory, slot)?.address);
         }
-        drop(edicts);
         let mut trace = HostPmoveTrace {
             result: self.services.trace_result.clone(),
             contents: self.services.point_contents_value,
@@ -1295,11 +1294,7 @@ impl ClassicQ2GuestHost {
     pub fn link_entity(&mut self, address: GuestAddress) -> ClassicResult<()> {
         let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.from_pointer(&mut self.memory, address)?;
-        let actor = match edicts.observe(&mut self.memory, &mut self.registry, address)? {
-            Some(observation) => observation.actor().clone(),
-            None => return Ok(()),
-        };
-        if record.slot == 0 {
+        if record.slot == 0 || edicts.observe(&mut self.memory, &mut self.registry, address)?.is_none() {
             return Ok(());
         }
         if let Some(link) = self.services.body_links.get_mut(&record.slot) {
@@ -1404,7 +1399,6 @@ impl ClassicQ2GuestHost {
             }
             self.services.linked_entities.push(record.slot);
         }
-        let _ = actor;
         Ok(())
     }
 }
@@ -1577,19 +1571,18 @@ mod tests {
         host.register_guest_handler(
             get_game_api.offset,
             Box::new(move |memory, _| {
-                let exports = memory.allocate(&GuestAllocationOptions::bytes(80)).unwrap();
-                memory.write_i32(exports, 3).unwrap();
+                let exports = memory.allocate(&GuestAllocationOptions::bytes(80))?;
+                memory.write_i32(exports, 3)?;
                 for (index, entry) in classic_q2_exports().iter().enumerate() {
                     let target = code(space, 1 + index as u64);
-                    memory.write_pointer(memory.offset(exports, i64::from(entry.offset)).unwrap(), Some(target)).unwrap();
+                    memory.write_pointer(memory.offset(exports, i64::from(entry.offset))?, Some(target))?;
                 }
-                let edicts = memory.allocate(&GuestAllocationOptions::bytes(896 * 8)).unwrap();
-                memory.write_pointer(memory.offset(exports, 64).unwrap(), Some(edicts)).unwrap();
-                memory.write_i32(memory.offset(exports, 68).unwrap(), 896).unwrap();
-                memory.write_i32(memory.offset(exports, 72).unwrap(), 8).unwrap();
-                memory.write_i32(memory.offset(exports, 76).unwrap(), 8).unwrap();
-                memory.write_i32(edicts, 0).unwrap();
-                memory.write_i32(memory.offset(edicts, 88).unwrap(), 1).unwrap();
+                let edicts = memory.allocate(&GuestAllocationOptions::bytes(896 * 8))?;
+                memory.write_pointer(memory.offset(exports, 64)?, Some(edicts))?;
+                memory.write_i32(memory.offset(exports, 68)?, 896)?;
+                memory.write_i32(memory.offset(exports, 72)?, 8)?;
+                memory.write_i32(memory.offset(exports, 76)?, 8)?;
+                memory.write_i32(memory.offset(edicts, 88)?, 1)?;
                 Ok(pointer_result(Some(exports)))
             }),
         );
@@ -1725,8 +1718,26 @@ mod tests {
         assert!(host.import_call("bogus", &[]).is_err());
         assert!(host.call("Bogus", &[]).is_err());
         let image = host.memory.allocate(&GuestAllocationOptions::bytes(64)).unwrap();
-        assert!(host.bind_pickups(image, None).is_ok());
-        assert!(host.pickup_supply(&[], &PickupGrantPlan::Weapon { weapons: vec![], ammo: vec![] }).is_err());
+        host.bind_pickups(image, Some(super::super::pickup_profile::xatrix_pickup_profile())).unwrap();
+        assert!(host.bind_pickups(image, None).is_err());
+        let entries = vec![InventoryEntry {
+            item: "q2:shells".to_string(),
+            count: 0.0,
+            capacity: 50.0,
+            count_policy: None,
+        }];
+        let preview = host
+            .pickup_supply(
+                &entries,
+                &PickupGrantPlan::Ammo {
+                    acceptance: qa_world::pickups::AmmoAcceptance::Positive,
+                    ammo: vec![qa_world::pickups::PickupAmmoGrant { item: "q2:shells".to_string(), amount: 10.0 }],
+                    weapons: qa_world::pickups::AmmoWeapons::SharedAmmo { items: vec![] },
+                },
+            )
+            .unwrap();
+        assert!(preview.accepted);
+        assert_eq!(preview.ammo[0].given, 10.0);
         let lease = host.bind_pickup_supply("primary").unwrap();
         assert!(host.bind_pickup_supply("other").is_err());
         assert!(host.save("WriteGame", "game.sav", false).is_err());

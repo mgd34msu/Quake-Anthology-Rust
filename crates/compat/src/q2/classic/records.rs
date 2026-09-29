@@ -377,14 +377,15 @@ impl ClassicQ2Edicts {
         Ok(())
     }
 
-    /// Release actors past `num_edicts` and observe every live slot.
+    /// Release actors past `num_edicts`, observe every live slot, and report
+    /// freshly bound actors so the host can bind their services.
     pub fn reconcile(
         &mut self,
         memory: &mut SparseGuestMemory,
         registry: &mut ActorRegistry,
-    ) -> ClassicResult<()> {
+    ) -> ClassicResult<Vec<OwnedActor>> {
         if self.projection.is_some() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let descriptor = self.descriptor(memory)?;
         for actor in registry.owned_by(&self.provider) {
@@ -394,11 +395,14 @@ impl ClassicQ2Edicts {
                 }
             }
         }
+        let mut bound = Vec::new();
         for slot in 0..descriptor.count as u32 {
             let record = self.at(memory, slot)?;
-            self.observe(memory, registry, record.address)?;
+            if let Some(EdictObservation::Bound(actor)) = self.observe(memory, registry, record.address)? {
+                bound.push(actor);
+            }
         }
-        Ok(())
+        Ok(bound)
     }
 
     /// Mark an input client slot retired so primary callers stop resolving it.
@@ -554,7 +558,9 @@ mod tests {
         edicts.set_client_ping(&mut memory, 2, 75).unwrap();
         assert_eq!(memory.read_i32(memory.offset(client, 184).unwrap()).unwrap(), 75);
         assert!(edicts.set_client_ping(&mut memory, 1, 9).is_err());
-        edicts.reconcile(&mut memory, &mut registry).unwrap();
+        let bound = edicts.reconcile(&mut memory, &mut registry).unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(registry.source_of(bound[0].id()), Some((ProviderId::new("q2", "classic"), 2)));
         assert!(edicts.current(&mut memory, &registry, &two).unwrap().is_some());
         edicts.retire_input_client(2);
         assert!(edicts.current(&mut memory, &registry, &two).unwrap().is_none());
