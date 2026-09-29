@@ -72,6 +72,15 @@ pub struct Q1MovementParameters {
     pub entity_gravity: f64,
 }
 
+pub mod body_shape;
+pub mod client_outputs;
+pub mod q1;
+pub mod q2;
+pub mod q3;
+pub mod swept_body;
+/// Shared movement-local contract mirrors (see `types.rs` for provenance).
+pub mod types;
+
 /// Quake III movement types (`bg_public.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
