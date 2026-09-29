@@ -148,4 +148,7 @@ pub enum ClientError {
     /// A cinematic container or playback step failed (carries the donor message).
     #[error("{0}")]
     BadMedia(String),
+    /// A UI layout, menu, or HUD step failed (carries the donor message).
+    #[error("{0}")]
+    BadUi(String),
 }

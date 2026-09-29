@@ -28,6 +28,7 @@ pub mod media;
 pub mod prediction;
 pub mod render;
 pub mod text;
+pub mod ui;
 pub mod view;
 
 mod error;
