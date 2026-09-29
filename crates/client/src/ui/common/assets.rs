@@ -27,9 +27,10 @@ pub struct NativeUiArt {
 impl NativeUiArt {
     /// Look up one uploaded picture by resource.
     pub fn picture(&self, resource: &ResourceId) -> Result<ImagePicture, ClientError> {
-        self.pictures.get(resource).copied().ok_or_else(|| {
-            ClientError::BadUi(format!("Unregistered native UI image: {resource}"))
-        })
+        self.pictures
+            .get(resource)
+            .copied()
+            .ok_or_else(|| ClientError::BadUi(format!("Unregistered native UI image: {resource}")))
     }
 
     /// Release every owned image back to the registry.
@@ -64,10 +65,18 @@ pub fn load_native_ui_art(
         ResourceId::new("resource:engine-menu:panel")?,
         ResourceId::new("resource:engine-menu:focus")?,
     ];
-    let files = [menu_background, main_menu_background, menu_panel.file(), menu_focus.file()];
+    let files = [
+        menu_background,
+        main_menu_background,
+        menu_panel.file(),
+        menu_focus.file(),
+    ];
     let mut pictures = HashMap::with_capacity(files.len());
     let mut owned: Vec<RendererImage> = Vec::with_capacity(files.len() + 1);
-    let sampling = TextureSampling { repeat: false, filter: TextureFilter::Linear };
+    let sampling = TextureSampling {
+        repeat: false,
+        filter: TextureFilter::Linear,
+    };
     for (resource, file) in resources.iter().zip(files.iter()) {
         let level = match read(file.file) {
             Ok(level) => level,
@@ -87,7 +96,11 @@ pub fn load_native_ui_art(
             Ok(image) => {
                 pictures.insert(
                     resource.clone(),
-                    ImagePicture { image: image.ordinal, width: image.width, height: image.height },
+                    ImagePicture {
+                        image: image.ordinal,
+                        width: image.width,
+                        height: image.height,
+                    },
                 );
                 owned.push(image);
             }
@@ -97,8 +110,15 @@ pub fn load_native_ui_art(
             }
         }
     }
-    let white_level = ImageLevel { width: 1, height: 1, pixels: vec![255, 255, 255, 255] };
-    let white_sampling = TextureSampling { repeat: false, filter: TextureFilter::Nearest };
+    let white_level = ImageLevel {
+        width: 1,
+        height: 1,
+        pixels: vec![255, 255, 255, 255],
+    };
+    let white_sampling = TextureSampling {
+        repeat: false,
+        filter: TextureFilter::Nearest,
+    };
     let white_image = match images.register("menu-white", rgba_image(white_level), white_sampling) {
         Ok(image) => image,
         Err(error) => {
@@ -106,13 +126,22 @@ pub fn load_native_ui_art(
             return Err(ClientError::BadUi(format!("Menu image upload failed: {error}")));
         }
     };
-    let white = ImagePicture { image: white_image.ordinal, width: white_image.width, height: white_image.height };
+    let white = ImagePicture {
+        image: white_image.ordinal,
+        width: white_image.width,
+        height: white_image.height,
+    };
     owned.push(white_image);
     let mut skin = default_ui_skin(font);
     skin.background = Some(resources[0].clone());
     skin.panel = Some(slice(&resources[2], &menu_panel));
     skin.focus = Some(slice(&resources[3], &menu_focus));
-    Ok(NativeUiArt { skin, white, pictures, owned })
+    Ok(NativeUiArt {
+        skin,
+        white,
+        pictures,
+        owned,
+    })
 }
 
 /// Build one skin slice from a manifest frame.
@@ -152,7 +181,11 @@ mod tests {
     }
 
     fn solid(width: u32, height: u32) -> ImageLevel {
-        ImageLevel { width, height, pixels: vec![9; (width * height * 4) as usize] }
+        ImageLevel {
+            width,
+            height,
+            pixels: vec![9; (width * height * 4) as usize],
+        }
     }
 
     fn reader() -> impl FnMut(&str) -> Result<ImageLevel, ClientError> {

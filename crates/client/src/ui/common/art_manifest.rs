@@ -66,7 +66,12 @@ impl MenuArtFrame {
     /// View this frame as a plain manifest file.
     #[must_use]
     pub const fn file(&self) -> MenuArtFile {
-        MenuArtFile { file: self.file, width: self.width, height: self.height, sha256: self.sha256 }
+        MenuArtFile {
+            file: self.file,
+            width: self.width,
+            height: self.height,
+            sha256: self.sha256,
+        }
     }
 }
 
@@ -92,7 +97,12 @@ pub const menu_panel: MenuArtFrame = MenuArtFrame {
         height: 1254,
         uv: [Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 }],
     },
-    border: MenuArtBorder { l: 160, t: 160, r: 160, b: 160 },
+    border: MenuArtBorder {
+        l: 160,
+        t: 160,
+        r: 160,
+        b: 160,
+    },
     border_scale: 0.2,
 };
 
@@ -106,9 +116,23 @@ pub const menu_focus: MenuArtFrame = MenuArtFrame {
     region: MenuArtRegion {
         width: 2172,
         height: 633,
-        uv: [Vec2 { x: 0.0, y: 68.0 / 724.0 }, Vec2 { x: 1.0, y: 701.0 / 724.0 }],
+        uv: [
+            Vec2 {
+                x: 0.0,
+                y: 68.0 / 724.0,
+            },
+            Vec2 {
+                x: 1.0,
+                y: 701.0 / 724.0,
+            },
+        ],
     },
-    border: MenuArtBorder { l: 96, t: 96, r: 96, b: 96 },
+    border: MenuArtBorder {
+        l: 96,
+        t: 96,
+        r: 96,
+        b: 96,
+    },
     border_scale: 0.0625,
 };
 
@@ -124,7 +148,12 @@ pub const main_menu_background: MenuArtFile = MenuArtFile {
 /// Every menu art file in load order.
 #[must_use]
 pub fn menu_art_files() -> [MenuArtFile; 4] {
-    [menu_background, menu_panel.file(), menu_focus.file(), main_menu_background]
+    [
+        menu_background,
+        menu_panel.file(),
+        menu_focus.file(),
+        main_menu_background,
+    ]
 }
 
 #[cfg(test)]
@@ -135,9 +164,20 @@ mod tests {
     fn manifest_matches_donor_values() {
         assert_eq!(menu_background.width, 1536);
         assert_eq!(menu_background.height, 1024);
-        assert_eq!(menu_background.sha256, "04c4fd787c4b47f1ba27ec293c361cdf1c87406fe4d1f0005b8ba6fbe1287ffa");
+        assert_eq!(
+            menu_background.sha256,
+            "04c4fd787c4b47f1ba27ec293c361cdf1c87406fe4d1f0005b8ba6fbe1287ffa"
+        );
         assert_eq!(menu_panel.region.width, 1254);
-        assert_eq!(menu_panel.border, MenuArtBorder { l: 160, t: 160, r: 160, b: 160 });
+        assert_eq!(
+            menu_panel.border,
+            MenuArtBorder {
+                l: 160,
+                t: 160,
+                r: 160,
+                b: 160
+            }
+        );
         assert_eq!(menu_panel.border_scale, 0.2);
         assert_eq!(menu_focus.region.height, 633);
         assert_eq!(menu_focus.region.uv[0].y, 68.0 / 724.0);
@@ -145,7 +185,10 @@ mod tests {
         assert_eq!(menu_focus.border_scale, 0.0625);
         assert_eq!(main_menu_background.width, 1672);
         assert_eq!(main_menu_background.height, 941);
-        assert_eq!(main_menu_background.sha256, "53630f6ca2d86492e983f7e54b54ce913cbebe58df6bd847c316753ef306a718");
+        assert_eq!(
+            main_menu_background.sha256,
+            "53630f6ca2d86492e983f7e54b54ce913cbebe58df6bd847c316753ef306a718"
+        );
     }
 
     #[test]

@@ -24,7 +24,9 @@ pub struct UiTransform {
 /// Fit UI space into a safe area at one scale, letterboxing the remainder.
 pub fn fit_ui(area: &Rect, scale: f32) -> Result<UiTransform, ClientError> {
     if !scale.is_finite() || scale <= 0.0 || area.width <= 0.0 || area.height <= 0.0 {
-        return Err(ClientError::BadUi("UI requires a positive scale and safe area".to_string()));
+        return Err(ClientError::BadUi(
+            "UI requires a positive scale and safe area".to_string(),
+        ));
     }
     let factor = (area.width / 640.0).min(area.height / 480.0) * scale;
     Ok(UiTransform {
@@ -71,15 +73,33 @@ pub fn transform_ui(command: &UiDrawCommand, transform: &UiTransform) -> UiDrawC
         height: value.height * transform.scale,
     };
     match command {
-        UiDrawCommand::Fill { rect: value, color } => UiDrawCommand::Fill { rect: rect(value), color: *color },
-        UiDrawCommand::Image { rect: value, resource, tex_coords, color } => UiDrawCommand::Image {
+        UiDrawCommand::Fill { rect: value, color } => UiDrawCommand::Fill {
+            rect: rect(value),
+            color: *color,
+        },
+        UiDrawCommand::Image {
+            rect: value,
+            resource,
+            tex_coords,
+            color,
+        } => UiDrawCommand::Image {
             rect: rect(value),
             resource: resource.clone(),
             tex_coords: *tex_coords,
             color: *color,
         },
-        UiDrawCommand::Clip { rect: value } => UiDrawCommand::Clip { rect: value.as_ref().map(rect) },
-        UiDrawCommand::Text { origin, text, font, scale, color, align, shadow } => UiDrawCommand::Text {
+        UiDrawCommand::Clip { rect: value } => UiDrawCommand::Clip {
+            rect: value.as_ref().map(rect),
+        },
+        UiDrawCommand::Text {
+            origin,
+            text,
+            font,
+            scale,
+            color,
+            align,
+            shadow,
+        } => UiDrawCommand::Text {
             origin: Vec2 {
                 x: transform.x + origin.x * transform.scale,
                 y: transform.y + origin.y * transform.scale,
@@ -127,27 +147,76 @@ mod tests {
 
     #[test]
     fn fit_ui_matches_donor_letterbox() {
-        let area = Rect { x: 0.0, y: 0.0, width: 640.0, height: 480.0 };
-        assert_eq!(fit_ui(&area, 1.0).unwrap(), UiTransform { x: 0.0, y: 0.0, scale: 1.0 });
-        let wide = Rect { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
-        assert_eq!(fit_ui(&wide, 1.0).unwrap(), UiTransform { x: 160.0, y: 0.0, scale: 1.5 });
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 640.0,
+            height: 480.0,
+        };
+        assert_eq!(
+            fit_ui(&area, 1.0).unwrap(),
+            UiTransform {
+                x: 0.0,
+                y: 0.0,
+                scale: 1.0
+            }
+        );
+        let wide = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        };
+        assert_eq!(
+            fit_ui(&wide, 1.0).unwrap(),
+            UiTransform {
+                x: 160.0,
+                y: 0.0,
+                scale: 1.5
+            }
+        );
         let scaled = fit_ui(&area, 2.0).unwrap();
-        assert_eq!(scaled, UiTransform { x: -320.0, y: -240.0, scale: 2.0 });
+        assert_eq!(
+            scaled,
+            UiTransform {
+                x: -320.0,
+                y: -240.0,
+                scale: 2.0
+            }
+        );
         assert!(fit_ui(&area, 0.0).is_err());
         assert!(fit_ui(&area, f32::NAN).is_err());
-        assert!(fit_ui(&Rect { x: 0.0, y: 0.0, width: 0.0, height: 480.0 }, 1.0).is_err());
+        assert!(fit_ui(
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 480.0
+            },
+            1.0
+        )
+        .is_err());
     }
 
     #[test]
     fn ui_point_round_trips() {
-        let transform = UiTransform { x: 160.0, y: 0.0, scale: 1.5 };
+        let transform = UiTransform {
+            x: 160.0,
+            y: 0.0,
+            scale: 1.5,
+        };
         assert_eq!(ui_point(vec2(160.0, 0.0), &transform), vec2(0.0, 0.0));
         assert_eq!(ui_point(vec2(1120.0, 720.0), &transform), vec2(640.0, 480.0));
     }
 
     #[test]
     fn contains_uses_exclusive_far_edges() {
-        let rect = Rect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 };
+        let rect = Rect {
+            x: 10.0,
+            y: 20.0,
+            width: 30.0,
+            height: 40.0,
+        };
         assert!(contains(&rect, vec2(10.0, 20.0)));
         assert!(!contains(&rect, vec2(40.0, 20.0)));
         assert!(!contains(&rect, vec2(10.0, 60.0)));
@@ -156,21 +225,72 @@ mod tests {
 
     #[test]
     fn intersect_clamps_empty() {
-        let a = Rect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
-        let b = Rect { x: 5.0, y: 5.0, width: 10.0, height: 10.0 };
-        assert_eq!(intersect(&a, &b), Rect { x: 5.0, y: 5.0, width: 5.0, height: 5.0 });
-        let far = Rect { x: 50.0, y: 50.0, width: 5.0, height: 5.0 };
-        assert_eq!(intersect(&a, &far), Rect { x: 50.0, y: 50.0, width: 0.0, height: 0.0 });
+        let a = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let b = Rect {
+            x: 5.0,
+            y: 5.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert_eq!(
+            intersect(&a, &b),
+            Rect {
+                x: 5.0,
+                y: 5.0,
+                width: 5.0,
+                height: 5.0
+            }
+        );
+        let far = Rect {
+            x: 50.0,
+            y: 50.0,
+            width: 5.0,
+            height: 5.0,
+        };
+        assert_eq!(
+            intersect(&a, &far),
+            Rect {
+                x: 50.0,
+                y: 50.0,
+                width: 0.0,
+                height: 0.0
+            }
+        );
     }
 
     #[test]
     fn transform_ui_maps_every_kind() {
-        let transform = UiTransform { x: 160.0, y: 0.0, scale: 1.5 };
+        let transform = UiTransform {
+            x: 160.0,
+            y: 0.0,
+            scale: 1.5,
+        };
         let white = vec4(1.0, 1.0, 1.0, 1.0);
-        let fill = UiDrawCommand::Fill { rect: Rect { x: 0.0, y: 0.0, width: 640.0, height: 480.0 }, color: white };
+        let fill = UiDrawCommand::Fill {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 640.0,
+                height: 480.0,
+            },
+            color: white,
+        };
         match transform_ui(&fill, &transform) {
             UiDrawCommand::Fill { rect, .. } => {
-                assert_eq!(rect, Rect { x: 160.0, y: 0.0, width: 960.0, height: 720.0 });
+                assert_eq!(
+                    rect,
+                    Rect {
+                        x: 160.0,
+                        y: 0.0,
+                        width: 960.0,
+                        height: 720.0
+                    }
+                );
             }
             other => panic!("expected fill, got {other:?}"),
         }
@@ -197,9 +317,38 @@ mod tests {
     #[test]
     fn menu_row_defaults_and_overrides() {
         let defaults = MenuRowOptions::default();
-        assert_eq!(menu_row(0, &defaults), Rect { x: 64.0, y: 92.0, width: 512.0, height: 28.0 });
-        assert_eq!(menu_row(2, &defaults), Rect { x: 64.0, y: 148.0, width: 512.0, height: 28.0 });
-        let custom = MenuRowOptions { x: Some(10.0), y: Some(20.0), width: Some(30.0), height: Some(40.0) };
-        assert_eq!(menu_row(1, &custom), Rect { x: 10.0, y: 60.0, width: 30.0, height: 40.0 });
+        assert_eq!(
+            menu_row(0, &defaults),
+            Rect {
+                x: 64.0,
+                y: 92.0,
+                width: 512.0,
+                height: 28.0
+            }
+        );
+        assert_eq!(
+            menu_row(2, &defaults),
+            Rect {
+                x: 64.0,
+                y: 148.0,
+                width: 512.0,
+                height: 28.0
+            }
+        );
+        let custom = MenuRowOptions {
+            x: Some(10.0),
+            y: Some(20.0),
+            width: Some(30.0),
+            height: Some(40.0),
+        };
+        assert_eq!(
+            menu_row(1, &custom),
+            Rect {
+                x: 10.0,
+                y: 60.0,
+                width: 30.0,
+                height: 40.0
+            }
+        );
     }
 }

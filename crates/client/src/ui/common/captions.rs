@@ -72,7 +72,12 @@ pub fn caption_commands(
     let y = area.y + area.height - height;
     let mut commands = Vec::with_capacity(visible.len() + 1);
     commands.push(UiDrawCommand::Fill {
-        rect: Rect { x: area.x, y, width: area.width, height },
+        rect: Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height,
+        },
         color: vec4(0.0, 0.0, 0.0, 0.92),
     });
     for (index, text) in visible.iter().enumerate() {
@@ -172,7 +177,12 @@ mod tests {
     }
 
     fn area() -> Rect {
-        Rect { x: 0.0, y: 0.0, width: 200.0, height: 100.0 }
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        }
     }
 
     fn ink() -> CapInk {
@@ -187,10 +197,20 @@ mod tests {
     fn empty_or_tiny_areas_emit_nothing() {
         let measure = |_: &str, _: f32| 0.0;
         assert!(caption_commands(&[], &area(), &font(), 1.0, &measure, &ink()).is_empty());
-        let tiny = Rect { x: 0.0, y: 0.0, width: 10.0, height: 100.0 };
+        let tiny = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 100.0,
+        };
         let captions = [caption("hi", None)];
         assert!(caption_commands(&captions, &tiny, &font(), 1.0, &measure, &ink()).is_empty());
-        let short = Rect { x: 0.0, y: 0.0, width: 200.0, height: 10.0 };
+        let short = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 10.0,
+        };
         assert!(caption_commands(&captions, &short, &font(), 1.0, &measure, &ink()).is_empty());
     }
 
@@ -202,13 +222,23 @@ mod tests {
         assert_eq!(commands.len(), 2);
         match &commands[0] {
             UiDrawCommand::Fill { rect, color } => {
-                assert_eq!(*rect, Rect { x: 0.0, y: 80.0, width: 200.0, height: 20.0 });
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 0.0,
+                        y: 80.0,
+                        width: 200.0,
+                        height: 20.0
+                    }
+                );
                 assert_eq!(*color, vec4(0.0, 0.0, 0.0, 0.92));
             }
             other => panic!("expected fill, got {other:?}"),
         }
         match &commands[1] {
-            UiDrawCommand::Text { origin, text, align, .. } => {
+            UiDrawCommand::Text {
+                origin, text, align, ..
+            } => {
                 assert_eq!(*origin, vec2(100.0, 84.0));
                 assert_eq!(text, "hi");
                 assert_eq!(*align, TextAlign::Center);
@@ -221,7 +251,12 @@ mod tests {
     fn speaker_prefix_and_wrapping() {
         let measure = |text: &str, scale: f32| text.chars().count() as f32 * 8.0 * scale;
         let captions = [caption("one two three four five", Some("Bob"))];
-        let narrow = Rect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 };
+        let narrow = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
         let commands = caption_commands(&captions, &narrow, &font(), 1.0, &measure, &ink());
         let texts: Vec<&str> = commands
             .iter()
@@ -237,7 +272,12 @@ mod tests {
     fn long_words_split_by_character() {
         let measure = |text: &str, scale: f32| text.chars().count() as f32 * 8.0 * scale;
         let captions = [caption("abcdefghijklmnop", None)];
-        let narrow = Rect { x: 0.0, y: 0.0, width: 48.0, height: 100.0 };
+        let narrow = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 48.0,
+            height: 100.0,
+        };
         let commands = caption_commands(&captions, &narrow, &font(), 1.0, &measure, &ink());
         let texts: Vec<&str> = commands
             .iter()
@@ -253,7 +293,12 @@ mod tests {
     fn visible_window_keeps_last_lines() {
         let measure = |_: &str, _: f32| 0.0;
         let captions = [caption("a\nb\nc\nd", None)];
-        let short = Rect { x: 0.0, y: 0.0, width: 200.0, height: 40.0 };
+        let short = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 40.0,
+        };
         let commands = caption_commands(&captions, &short, &font(), 1.0, &measure, &ink());
         let texts: Vec<&str> = commands
             .iter()

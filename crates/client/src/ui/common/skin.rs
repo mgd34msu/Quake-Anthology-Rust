@@ -100,12 +100,42 @@ pub fn default_ui_skin(font: &ResourceId) -> UiSkin {
         focus: None,
         background: None,
         colors: UiSkinColors {
-            text: Vec4 { x: 0.92, y: 0.88, z: 0.78, w: 1.0 },
-            disabled: Vec4 { x: 0.4, y: 0.4, z: 0.4, w: 1.0 },
-            accent: Vec4 { x: 1.0, y: 0.65, z: 0.22, w: 1.0 },
-            panel: Vec4 { x: 0.055, y: 0.06, z: 0.065, w: 0.94 },
-            control: Vec4 { x: 0.12, y: 0.13, z: 0.14, w: 0.9 },
-            focused: Vec4 { x: 0.3, y: 0.19, z: 0.09, w: 0.98 },
+            text: Vec4 {
+                x: 0.92,
+                y: 0.88,
+                z: 0.78,
+                w: 1.0,
+            },
+            disabled: Vec4 {
+                x: 0.4,
+                y: 0.4,
+                z: 0.4,
+                w: 1.0,
+            },
+            accent: Vec4 {
+                x: 1.0,
+                y: 0.65,
+                z: 0.22,
+                w: 1.0,
+            },
+            panel: Vec4 {
+                x: 0.055,
+                y: 0.06,
+                z: 0.065,
+                w: 0.94,
+            },
+            control: Vec4 {
+                x: 0.12,
+                y: 0.13,
+                z: 0.14,
+                w: 0.9,
+            },
+            focused: Vec4 {
+                x: 0.3,
+                y: 0.19,
+                z: 0.09,
+                w: 0.98,
+            },
         },
     }
 }
@@ -157,12 +187,32 @@ pub fn nine_slice(slice: &UiImageSlice, rect: &Rect, color: Vec4) -> Result<Vec<
     let border_scale = slice.border_scale.unwrap_or(1.0);
     let sx = border_scale.min(rect.width / (left + right).max(1.0));
     let sy = border_scale.min(rect.height / (top + bottom).max(1.0));
-    let xs = [rect.x, rect.x + left * sx, rect.x + rect.width - right * sx, rect.x + rect.width];
-    let ys = [rect.y, rect.y + top * sy, rect.y + rect.height - bottom * sy, rect.y + rect.height];
+    let xs = [
+        rect.x,
+        rect.x + left * sx,
+        rect.x + rect.width - right * sx,
+        rect.x + rect.width,
+    ];
+    let ys = [
+        rect.y,
+        rect.y + top * sy,
+        rect.y + rect.height - bottom * sy,
+        rect.y + rect.height,
+    ];
     let (uv0, uv1) = (slice.uv[0], slice.uv[1]);
     let (du, dv) = (uv1.x - uv0.x, uv1.y - uv0.y);
-    let us = [uv0.x, uv0.x + du * left / slice.width, uv1.x - du * right / slice.width, uv1.x];
-    let vs = [uv0.y, uv0.y + dv * top / slice.height, uv1.y - dv * bottom / slice.height, uv1.y];
+    let us = [
+        uv0.x,
+        uv0.x + du * left / slice.width,
+        uv1.x - du * right / slice.width,
+        uv1.x,
+    ];
+    let vs = [
+        uv0.y,
+        uv0.y + dv * top / slice.height,
+        uv1.y - dv * bottom / slice.height,
+        uv1.y,
+    ];
     let mut commands = Vec::with_capacity(9);
     for y in 0..3 {
         for x in 0..3 {
@@ -172,7 +222,12 @@ pub fn nine_slice(slice: &UiImageSlice, rect: &Rect, color: Vec4) -> Result<Vec<
                 continue;
             }
             commands.push(UiDrawCommand::Image {
-                rect: Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
+                rect: Rect {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                },
                 resource: slice.resource.clone(),
                 tex_coords: [Vec2 { x: u0, y: v0 }, Vec2 { x: u1, y: v1 }],
                 color,
@@ -196,7 +251,12 @@ mod tests {
             width: 100.0,
             height: 60.0,
             uv: [Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 }],
-            border: UiBorder { l: 10.0, t: 10.0, r: 10.0, b: 10.0 },
+            border: UiBorder {
+                l: 10.0,
+                t: 10.0,
+                r: 10.0,
+                b: 10.0,
+            },
             border_scale: None,
         }
     }
@@ -206,14 +266,25 @@ mod tests {
         let skin = default_ui_skin(&font());
         assert_eq!(skin.font_scale, 1.5);
         assert_eq!(skin.line_height, 14.0);
-        assert_eq!(skin.colors.accent, Vec4 { x: 1.0, y: 0.65, z: 0.22, w: 1.0 });
+        assert_eq!(
+            skin.colors.accent,
+            Vec4 {
+                x: 1.0,
+                y: 0.65,
+                z: 0.22,
+                w: 1.0
+            }
+        );
         assert!(skin.panel.is_none() && skin.background.is_none());
     }
 
     #[test]
     fn skin_font_scales_line_height() {
         let atlas = crate::text::atlas::classic_charset(7, 128, 128, "test", false).unwrap();
-        let font_selection = TextFontSelection::Classic { classic: atlas, unicode: None };
+        let font_selection = TextFontSelection::Classic {
+            classic: atlas,
+            unicode: None,
+        };
         let skin = ui_skin_font(&default_ui_skin(&font()), &font_selection, 24.0).unwrap();
         assert_eq!(skin.font_scale, 3.0);
         assert_eq!(skin.line_height, 24.0);
@@ -223,28 +294,60 @@ mod tests {
     #[test]
     fn hud_font_captures_cap_ink() {
         let atlas = crate::text::atlas::classic_charset(7, 128, 128, "test", false).unwrap();
-        let font_selection = TextFontSelection::Classic { classic: atlas, unicode: None };
+        let font_selection = TextFontSelection::Classic {
+            classic: atlas,
+            unicode: None,
+        };
         let skin = hud_skin_font(&default_ui_skin(&font()), &font_selection);
         assert_eq!(skin.cap_ink, Some(CapInk { top: 0.0, height: 8.0 }));
     }
 
     #[test]
     fn nine_slice_emits_exact_cells() {
-        let rect = Rect { x: 0.0, y: 0.0, width: 100.0, height: 60.0 };
-        let white = Vec4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 };
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 60.0,
+        };
+        let white = Vec4 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+            w: 1.0,
+        };
         let commands = nine_slice(&slice(), &rect, white).unwrap();
         assert_eq!(commands.len(), 9);
         match &commands[0] {
             UiDrawCommand::Image { rect, tex_coords, .. } => {
-                assert_eq!(*rect, Rect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 });
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 10.0
+                    }
+                );
                 assert_eq!(*tex_coords, [Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 0.1, y: 10.0 / 60.0 }]);
             }
             other => panic!("expected image, got {other:?}"),
         }
         match &commands[4] {
             UiDrawCommand::Image { rect, tex_coords, .. } => {
-                assert_eq!(*rect, Rect { x: 10.0, y: 10.0, width: 80.0, height: 40.0 });
-                assert_eq!(*tex_coords, [Vec2 { x: 0.1, y: 10.0 / 60.0 }, Vec2 { x: 0.9, y: 50.0 / 60.0 }]);
+                assert_eq!(
+                    *rect,
+                    Rect {
+                        x: 10.0,
+                        y: 10.0,
+                        width: 80.0,
+                        height: 40.0
+                    }
+                );
+                assert_eq!(
+                    *tex_coords,
+                    [Vec2 { x: 0.1, y: 10.0 / 60.0 }, Vec2 { x: 0.9, y: 50.0 / 60.0 }]
+                );
             }
             other => panic!("expected image, got {other:?}"),
         }
@@ -252,16 +355,36 @@ mod tests {
 
     #[test]
     fn nine_slice_skips_degenerate_cells() {
-        let rect = Rect { x: 0.0, y: 0.0, width: 20.0, height: 20.0 };
-        let white = Vec4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 };
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+        };
+        let white = Vec4 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+            w: 1.0,
+        };
         let commands = nine_slice(&slice(), &rect, white).unwrap();
         assert_eq!(commands.len(), 4);
     }
 
     #[test]
     fn nine_slice_rejects_bad_geometry() {
-        let rect = Rect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
-        let white = Vec4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 };
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        let white = Vec4 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+            w: 1.0,
+        };
         let mut bad = slice();
         bad.border.l = 60.0;
         bad.border.r = 60.0;

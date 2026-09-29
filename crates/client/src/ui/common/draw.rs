@@ -10,8 +10,8 @@ use qa_core::math::Vec4;
 
 use crate::error::ClientError;
 use crate::text::draw2d::{
-    clip_picture, CoordinateSpace, Draw2D, DrawCommand, ImagePicture, MaterialPicture, PictureAsset, Rect, TextDrawSink,
-    TextureRect, WHITE,
+    clip_picture, CoordinateSpace, Draw2D, DrawCommand, ImagePicture, MaterialPicture, PictureAsset, Rect,
+    TextDrawSink, TextureRect, WHITE,
 };
 use crate::ui::common::layout::intersect;
 use crate::ui::types::{ResourceId, UiDrawCommand, UiDrawContext};
@@ -78,7 +78,13 @@ struct UiDrawSink {
 impl UiDrawSink {
     /// Sink clipped to one seat viewport.
     fn new(seat: SeatId, target: Rect) -> Self {
-        Self { seat, target, clip: target, color: WHITE, commands: Vec::new() }
+        Self {
+            seat,
+            target,
+            clip: target,
+            color: WHITE,
+            commands: Vec::new(),
+        }
     }
 }
 
@@ -135,10 +141,24 @@ pub fn render_ui_commands(
             UiDrawCommand::Fill { rect, color } => {
                 let white = services.white();
                 sink.set_color(Some(*color));
-                sink.stretch_pixels(*rect, TextureRect { s: 0.0, t: 0.0, s2: 0.0, t2: 0.0 }, white);
+                sink.stretch_pixels(
+                    *rect,
+                    TextureRect {
+                        s: 0.0,
+                        t: 0.0,
+                        s2: 0.0,
+                        t2: 0.0,
+                    },
+                    white,
+                );
                 drain(&mut sink, services);
             }
-            UiDrawCommand::Image { rect, resource, tex_coords, color } => {
+            UiDrawCommand::Image {
+                rect,
+                resource,
+                tex_coords,
+                color,
+            } => {
                 let picture = services.picture(resource)?;
                 sink.set_color(Some(*color));
                 sink.stretch_pixels(
@@ -169,11 +189,29 @@ fn drain(sink: &mut UiDrawSink, services: &mut dyn UiRenderServices) {
             DrawCommand::StretchPic { rect, uv, picture } => match picture {
                 PictureAsset::Image(image) => services.emit(UiEmitCommand::StretchPic { rect, uv, image }),
                 PictureAsset::Material(material) => {
-                    services.material(UiMaterialDraw { seat: seat.clone(), rect, uv, color, picture: material });
+                    services.material(UiMaterialDraw {
+                        seat: seat.clone(),
+                        rect,
+                        uv,
+                        color,
+                        picture: material,
+                    });
                 }
             },
-            DrawCommand::Material { seat, rect, uv, color, picture } => {
-                services.material(UiMaterialDraw { seat, rect, uv, color, picture });
+            DrawCommand::Material {
+                seat,
+                rect,
+                uv,
+                color,
+                picture,
+            } => {
+                services.material(UiMaterialDraw {
+                    seat,
+                    rect,
+                    uv,
+                    color,
+                    picture,
+                });
             }
         }
     }
@@ -205,7 +243,11 @@ mod tests {
     impl FakeServices {
         fn new() -> Self {
             Self {
-                white: PictureAsset::Image(ImagePicture { image: 1, width: 1, height: 1 }),
+                white: PictureAsset::Image(ImagePicture {
+                    image: 1,
+                    width: 1,
+                    height: 1,
+                }),
                 pictures: HashMap::new(),
                 texts: Vec::new(),
                 emits: Vec::new(),
@@ -222,12 +264,24 @@ mod tests {
             command: &UiDrawCommand,
             draw: &mut Draw2D,
         ) -> Result<(), ClientError> {
-            if let UiDrawCommand::Text { text, origin, scale, color, .. } = command {
+            if let UiDrawCommand::Text {
+                text,
+                origin,
+                scale,
+                color,
+                ..
+            } = command
+            {
                 self.texts.push(text.clone());
                 if self.draw_glyph {
                     draw.set_color(Some(*color));
                     draw.stretch_pixels(
-                        Rect { x: origin.x, y: origin.y, width: 8.0 * scale, height: 8.0 * scale },
+                        Rect {
+                            x: origin.x,
+                            y: origin.y,
+                            width: 8.0 * scale,
+                            height: 8.0 * scale,
+                        },
                         FULL_UV,
                         self.white,
                     );
@@ -241,9 +295,10 @@ mod tests {
         }
 
         fn picture(&self, resource: &ResourceId) -> Result<PictureAsset, ClientError> {
-            self.pictures.get(resource.as_str()).copied().ok_or_else(|| {
-                ClientError::BadUi(format!("missing picture: {resource}"))
-            })
+            self.pictures
+                .get(resource.as_str())
+                .copied()
+                .ok_or_else(|| ClientError::BadUi(format!("missing picture: {resource}")))
         }
 
         fn emit(&mut self, command: UiEmitCommand) {
@@ -268,9 +323,18 @@ mod tests {
                     doppler: DopplerSelection::Disabled,
                     environment: EnvironmentSelection::Disabled,
                     assets: ContentId::new("assets"),
-                    hud: ProviderRef { provider: "hud".to_string(), content: ContentId::new("hud") },
-                    effects: ProviderRef { provider: "fx".to_string(), content: ContentId::new("fx") },
-                    audio: ProviderRef { provider: "audio".to_string(), content: ContentId::new("audio") },
+                    hud: ProviderRef {
+                        provider: "hud".to_string(),
+                        content: ContentId::new("hud"),
+                    },
+                    effects: ProviderRef {
+                        provider: "fx".to_string(),
+                        content: ContentId::new("fx"),
+                    },
+                    audio: ProviderRef {
+                        provider: "audio".to_string(),
+                        content: ContentId::new("audio"),
+                    },
                 },
             },
             time_ms: 0,
@@ -278,7 +342,12 @@ mod tests {
     }
 
     fn viewport() -> Rect {
-        Rect { x: 0.0, y: 0.0, width: 640.0, height: 480.0 }
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 640.0,
+            height: 480.0,
+        }
     }
 
     #[test]
@@ -286,7 +355,12 @@ mod tests {
         let context = context(viewport());
         let red = vec4(1.0, 0.0, 0.0, 1.0);
         let commands = [UiDrawCommand::Fill {
-            rect: Rect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 },
+            rect: Rect {
+                x: 10.0,
+                y: 20.0,
+                width: 30.0,
+                height: 40.0,
+            },
             color: red,
         }];
         let mut services = FakeServices::new();
@@ -296,9 +370,23 @@ mod tests {
             [
                 UiEmitCommand::SetColor(red),
                 UiEmitCommand::StretchPic {
-                    rect: Rect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 },
-                    uv: TextureRect { s: 0.0, t: 0.0, s2: 0.0, t2: 0.0 },
-                    image: ImagePicture { image: 1, width: 1, height: 1 },
+                    rect: Rect {
+                        x: 10.0,
+                        y: 20.0,
+                        width: 30.0,
+                        height: 40.0
+                    },
+                    uv: TextureRect {
+                        s: 0.0,
+                        t: 0.0,
+                        s2: 0.0,
+                        t2: 0.0
+                    },
+                    image: ImagePicture {
+                        image: 1,
+                        width: 1,
+                        height: 1
+                    },
                 },
                 UiEmitCommand::SetColor(WHITE),
             ]
@@ -311,15 +399,30 @@ mod tests {
         let white = vec4(1.0, 1.0, 1.0, 1.0);
         let commands = [
             UiDrawCommand::Clip {
-                rect: Some(Rect { x: 600.0, y: 0.0, width: 100.0, height: 480.0 }),
+                rect: Some(Rect {
+                    x: 600.0,
+                    y: 0.0,
+                    width: 100.0,
+                    height: 480.0,
+                }),
             },
             UiDrawCommand::Fill {
-                rect: Rect { x: 590.0, y: 0.0, width: 60.0, height: 10.0 },
+                rect: Rect {
+                    x: 590.0,
+                    y: 0.0,
+                    width: 60.0,
+                    height: 10.0,
+                },
                 color: white,
             },
             UiDrawCommand::Clip { rect: None },
             UiDrawCommand::Fill {
-                rect: Rect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
                 color: white,
             },
         ];
@@ -327,13 +430,29 @@ mod tests {
         render_ui_commands(&context, &commands, &mut services).unwrap();
         match services.emits[1] {
             UiEmitCommand::StretchPic { rect, .. } => {
-                assert_eq!(rect, Rect { x: 600.0, y: 0.0, width: 40.0, height: 10.0 });
+                assert_eq!(
+                    rect,
+                    Rect {
+                        x: 600.0,
+                        y: 0.0,
+                        width: 40.0,
+                        height: 10.0
+                    }
+                );
             }
             ref other => panic!("expected stretch, got {other:?}"),
         }
         match services.emits[3] {
             UiEmitCommand::StretchPic { rect, .. } => {
-                assert_eq!(rect, Rect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 });
+                assert_eq!(
+                    rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 10.0
+                    }
+                );
             }
             ref other => panic!("expected stretch, got {other:?}"),
         }
@@ -343,7 +462,12 @@ mod tests {
     fn clipped_away_fill_emits_nothing_until_reset() {
         let context = context(viewport());
         let commands = [UiDrawCommand::Fill {
-            rect: Rect { x: 700.0, y: 0.0, width: 10.0, height: 10.0 },
+            rect: Rect {
+                x: 700.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
             color: vec4(1.0, 1.0, 1.0, 1.0),
         }];
         let mut services = FakeServices::new();
@@ -358,10 +482,19 @@ mod tests {
         let mut services = FakeServices::new();
         services.pictures.insert(
             resource.as_str().to_string(),
-            PictureAsset::Image(ImagePicture { image: 9, width: 64, height: 64 }),
+            PictureAsset::Image(ImagePicture {
+                image: 9,
+                width: 64,
+                height: 64,
+            }),
         );
         let commands = [UiDrawCommand::Image {
-            rect: Rect { x: 0.0, y: 0.0, width: 64.0, height: 64.0 },
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
             resource: resource.clone(),
             tex_coords: [vec2(0.0, 0.25), vec2(0.5, 0.75)],
             color: WHITE,
@@ -369,13 +502,26 @@ mod tests {
         render_ui_commands(&context, &commands, &mut services).unwrap();
         match services.emits[1] {
             UiEmitCommand::StretchPic { uv, image, .. } => {
-                assert_eq!(uv, TextureRect { s: 0.0, t: 0.25, s2: 0.5, t2: 0.75 });
+                assert_eq!(
+                    uv,
+                    TextureRect {
+                        s: 0.0,
+                        t: 0.25,
+                        s2: 0.5,
+                        t2: 0.75
+                    }
+                );
                 assert_eq!(image.image, 9);
             }
             ref other => panic!("expected stretch, got {other:?}"),
         }
         let missing = [UiDrawCommand::Image {
-            rect: Rect { x: 0.0, y: 0.0, width: 8.0, height: 8.0 },
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 8.0,
+                height: 8.0,
+            },
             resource: ResourceId::new("resource:test:missing").unwrap(),
             tex_coords: [vec2(0.0, 0.0), vec2(1.0, 1.0)],
             color: WHITE,
@@ -387,7 +533,14 @@ mod tests {
     fn text_forwards_and_glyphs_clip() {
         let context = context(viewport());
         let commands = [
-            UiDrawCommand::Clip { rect: Some(Rect { x: 0.0, y: 0.0, width: 4.0, height: 480.0 }) },
+            UiDrawCommand::Clip {
+                rect: Some(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 4.0,
+                    height: 480.0,
+                }),
+            },
             UiDrawCommand::Text {
                 origin: vec2(0.0, 0.0),
                 text: "hi".to_string(),
@@ -404,7 +557,15 @@ mod tests {
         assert_eq!(services.texts, ["hi"]);
         match services.emits[1] {
             UiEmitCommand::StretchPic { rect, uv, .. } => {
-                assert_eq!(rect, Rect { x: 0.0, y: 0.0, width: 4.0, height: 16.0 });
+                assert_eq!(
+                    rect,
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 4.0,
+                        height: 16.0
+                    }
+                );
                 assert_eq!(uv.s2, 0.25);
             }
             ref other => panic!("expected stretch, got {other:?}"),
@@ -416,16 +577,32 @@ mod tests {
         let context = context(viewport());
         let resource = ResourceId::new("resource:test:shader").unwrap();
         let mut services = FakeServices::new();
-        services.pictures.insert(resource.as_str().to_string(), PictureAsset::Material(MaterialPicture { order: 3 }));
+        services.pictures.insert(
+            resource.as_str().to_string(),
+            PictureAsset::Material(MaterialPicture { order: 3 }),
+        );
         let commands = [UiDrawCommand::Image {
-            rect: Rect { x: 0.0, y: 0.0, width: 16.0, height: 16.0 },
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0,
+            },
             resource,
             tex_coords: [vec2(0.0, 0.0), vec2(1.0, 1.0)],
             color: WHITE,
         }];
         render_ui_commands(&context, &commands, &mut services).unwrap();
         assert_eq!(services.materials.len(), 1);
-        assert_eq!(services.materials[0].rect, Rect { x: 0.0, y: 0.0, width: 16.0, height: 16.0 });
+        assert_eq!(
+            services.materials[0].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0
+            }
+        );
         assert_eq!(services.emits.len(), 2);
     }
 }

@@ -612,7 +612,9 @@ pub struct ListRowAction {
 
 impl std::fmt::Debug for ListRowAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ListRowAction").field("label", &self.label).finish_non_exhaustive()
+        f.debug_struct("ListRowAction")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
     }
 }
 
@@ -725,24 +727,28 @@ impl std::fmt::Debug for UiControlKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UiControlKind::Button { .. } => write!(f, "Button"),
-            UiControlKind::Toggle { checked, .. } => {
-                f.debug_struct("Toggle").field("checked", checked).finish_non_exhaustive()
-            }
+            UiControlKind::Toggle { checked, .. } => f
+                .debug_struct("Toggle")
+                .field("checked", checked)
+                .finish_non_exhaustive(),
             UiControlKind::Slider { value, .. } => {
                 f.debug_struct("Slider").field("value", value).finish_non_exhaustive()
             }
             UiControlKind::TextEntry { text, .. } => {
                 f.debug_struct("TextEntry").field("text", text).finish_non_exhaustive()
             }
-            UiControlKind::Choice { selected, .. } => {
-                f.debug_struct("Choice").field("selected", selected).finish_non_exhaustive()
-            }
-            UiControlKind::List { selected, .. } => {
-                f.debug_struct("List").field("selected", selected).finish_non_exhaustive()
-            }
-            UiControlKind::OwnerDraw { source_id, .. } => {
-                f.debug_struct("OwnerDraw").field("source_id", source_id).finish_non_exhaustive()
-            }
+            UiControlKind::Choice { selected, .. } => f
+                .debug_struct("Choice")
+                .field("selected", selected)
+                .finish_non_exhaustive(),
+            UiControlKind::List { selected, .. } => f
+                .debug_struct("List")
+                .field("selected", selected)
+                .finish_non_exhaustive(),
+            UiControlKind::OwnerDraw { source_id, .. } => f
+                .debug_struct("OwnerDraw")
+                .field("source_id", source_id)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -839,7 +845,9 @@ pub struct LegacyUiFeeder {
 
 impl std::fmt::Debug for LegacyUiFeeder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LegacyUiFeeder").field("source_id", &self.source_id).finish_non_exhaustive()
+        f.debug_struct("LegacyUiFeeder")
+            .field("source_id", &self.source_id)
+            .finish_non_exhaustive()
     }
 }
 

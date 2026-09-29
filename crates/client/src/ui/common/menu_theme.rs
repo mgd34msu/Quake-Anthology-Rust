@@ -54,16 +54,32 @@ pub fn menu_backdrop(context: &UiDrawContext) -> UiDrawCommand {
     let viewport = &context.binding.viewport;
     let ratio = viewport.width / viewport.height;
     let art_ratio = 1672.0 / 941.0;
-    let crop_x = if ratio < art_ratio { (1.0 - ratio / art_ratio) / 2.0 } else { 0.0 };
-    let crop_y = if ratio > art_ratio { (1.0 - art_ratio / ratio) / 2.0 } else { 0.0 };
+    let crop_x = if ratio < art_ratio {
+        (1.0 - ratio / art_ratio) / 2.0
+    } else {
+        0.0
+    };
+    let crop_y = if ratio > art_ratio {
+        (1.0 - art_ratio / ratio) / 2.0
+    } else {
+        0.0
+    };
     UiDrawCommand::Image {
         rect: *viewport,
         resource: engine_resource("resource:engine-menu:main-background"),
         tex_coords: [
             qa_core::math::Vec2 { x: crop_x, y: crop_y },
-            qa_core::math::Vec2 { x: 1.0 - crop_x, y: 1.0 - crop_y },
+            qa_core::math::Vec2 {
+                x: 1.0 - crop_x,
+                y: 1.0 - crop_y,
+            },
         ],
-        color: Vec4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 },
+        color: Vec4 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+            w: 1.0,
+        },
     }
 }
 
@@ -109,9 +125,18 @@ mod tests {
                     doppler: DopplerSelection::Disabled,
                     environment: EnvironmentSelection::Disabled,
                     assets: ContentId::new("assets"),
-                    hud: ProviderRef { provider: "hud".to_string(), content: ContentId::new("hud") },
-                    effects: ProviderRef { provider: "fx".to_string(), content: ContentId::new("fx") },
-                    audio: ProviderRef { provider: "audio".to_string(), content: ContentId::new("audio") },
+                    hud: ProviderRef {
+                        provider: "hud".to_string(),
+                        content: ContentId::new("hud"),
+                    },
+                    effects: ProviderRef {
+                        provider: "fx".to_string(),
+                        content: ContentId::new("fx"),
+                    },
+                    audio: ProviderRef {
+                        provider: "audio".to_string(),
+                        content: ContentId::new("audio"),
+                    },
                 },
             },
             time_ms: 0,
@@ -131,10 +156,20 @@ mod tests {
 
     #[test]
     fn backdrop_crops_to_viewport_ratio() {
-        let viewport = Rect { x: 0.0, y: 0.0, width: 640.0, height: 480.0 };
+        let viewport = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 640.0,
+            height: 480.0,
+        };
         let command = menu_backdrop(&context(viewport, viewport));
         match command {
-            UiDrawCommand::Image { rect, resource, tex_coords, .. } => {
+            UiDrawCommand::Image {
+                rect,
+                resource,
+                tex_coords,
+                ..
+            } => {
                 assert_eq!(rect, viewport);
                 assert_eq!(resource.as_str(), "resource:engine-menu:main-background");
                 let ratio = 640.0 / 480.0;
@@ -151,11 +186,24 @@ mod tests {
 
     #[test]
     fn panel_maps_into_safe_area() {
-        let area = Rect { x: 0.0, y: 0.0, width: 640.0, height: 480.0 };
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 640.0,
+            height: 480.0,
+        };
         let command = menu_panel(&context(area, area), false);
         match command {
             UiDrawCommand::Fill { rect, color } => {
-                assert_eq!(rect, Rect { x: 40.0, y: 28.0, width: 560.0, height: 420.0 });
+                assert_eq!(
+                    rect,
+                    Rect {
+                        x: 40.0,
+                        y: 28.0,
+                        width: 560.0,
+                        height: 420.0
+                    }
+                );
                 assert_eq!(color, vec4(0.025, 0.035, 0.045, 0.96));
             }
             other => panic!("expected fill, got {other:?}"),

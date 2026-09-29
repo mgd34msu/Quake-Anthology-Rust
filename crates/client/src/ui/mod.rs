@@ -15,3 +15,20 @@ pub mod mods;
 pub mod saves;
 pub mod settings;
 pub mod types;
+
+#[cfg(test)]
+mod tests {
+    use super::types::DEFAULT_UI_PREFERENCES;
+
+    #[test]
+    fn ui_mount_exposes_all_subsystems() {
+        fn assert_module<T>(_: &str) {}
+        assert_module::<super::common::UiTransform>("common");
+        assert_module::<super::hud::WheelMode>("hud");
+        assert_module::<super::library::LibraryEntry>("library");
+        assert_module::<super::mods::ModMenuRow>("mods");
+        assert_module::<super::saves::SaveListRow>("saves");
+        assert_module::<super::settings::SettingCategory>("settings");
+        assert!((DEFAULT_UI_PREFERENCES.hud_scale - 1.0).abs() < f32::EPSILON);
+    }
+}

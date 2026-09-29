@@ -12,7 +12,7 @@ use crate::ui::types::{InterfaceColorMode, UiAppearance};
 pub fn accessible_colors(colors: &UiSkinColors, appearance: &UiAppearance) -> UiSkinColors {
     let white = vec4(1.0, 1.0, 1.0, 1.0);
     let black = vec4(0.0, 0.0, 0.0, 1.0);
-    let mut base = colors.clone();
+    let mut base = *colors;
     if appearance.high_contrast {
         base.text = white;
         base.disabled = vec4(0.65, 0.65, 0.65, 1.0);
@@ -54,7 +54,10 @@ mod tests {
 
     #[test]
     fn high_contrast_matches_donor() {
-        let appearance = UiAppearance { high_contrast: true, ..UiAppearance::default() };
+        let appearance = UiAppearance {
+            high_contrast: true,
+            ..UiAppearance::default()
+        };
         let remapped = accessible_colors(&colors(), &appearance);
         assert_eq!(remapped.text, vec4(1.0, 1.0, 1.0, 1.0));
         assert_eq!(remapped.disabled, vec4(0.65, 0.65, 0.65, 1.0));
@@ -66,12 +69,18 @@ mod tests {
 
     #[test]
     fn color_modes_remap_accent_and_focus() {
-        let mono = UiAppearance { color_mode: InterfaceColorMode::Monochrome, ..UiAppearance::default() };
+        let mono = UiAppearance {
+            color_mode: InterfaceColorMode::Monochrome,
+            ..UiAppearance::default()
+        };
         let remapped = accessible_colors(&colors(), &mono);
         assert_eq!(remapped.text, vec4(1.0, 1.0, 1.0, 1.0));
         assert_eq!(remapped.accent, vec4(1.0, 1.0, 1.0, 1.0));
         assert_eq!(remapped.focused, vec4(0.25, 0.25, 0.25, 1.0));
-        let blue_yellow = UiAppearance { color_mode: InterfaceColorMode::BlueYellow, ..UiAppearance::default() };
+        let blue_yellow = UiAppearance {
+            color_mode: InterfaceColorMode::BlueYellow,
+            ..UiAppearance::default()
+        };
         let remapped = accessible_colors(&colors(), &blue_yellow);
         assert_eq!(remapped.accent, vec4(1.0, 0.9, 0.2, 1.0));
         assert_eq!(remapped.focused, vec4(0.06, 0.2, 0.42, 1.0));
