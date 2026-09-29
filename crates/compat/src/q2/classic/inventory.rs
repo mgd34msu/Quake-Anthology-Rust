@@ -53,8 +53,7 @@ impl ClassicSourceInventory {
         image: GuestAddress,
         declared: Option<ClassicPrimaryWorldProfile>,
     ) -> ClassicResult<Option<Self>> {
-        let digest = host.memory.module().digest.clone();
-        let profile = declared.or_else(|| classic_primary_world_profile(&digest));
+        let profile = declared.or_else(|| classic_primary_world_profile(&host.memory.module().digest));
         let Some(profile) = profile else {
             return Ok(None);
         };
@@ -71,25 +70,23 @@ impl ClassicSourceInventory {
                 image,
                 (profile.combat.globals.item_list as usize + index * profile.combat.globals.item_bytes) as i64,
             )?;
-            let classname = read_classic_string(
-                &mut host.memory,
-                host.memory
-                    .read_pointer(host.memory.offset(address, table.class_name as i64)?)?,
-                65536,
-            )?;
-            let label = read_classic_string(
-                &mut host.memory,
-                host.memory
-                    .read_pointer(host.memory.offset(address, table.label as i64)?)?,
-                65536,
-            )?;
-            let item = match table
-                .unnamed
-                .iter()
-                .find(|value| value.index == index && value.label == label)
-            {
-                Some(unnamed) if classname.is_empty() => unnamed.item.clone(),
-                _ => {
+            let class_name_at = host.memory.offset(address, table.class_name as i64)?;
+            let class_name = host.memory.read_pointer(class_name_at)?;
+            let classname = read_classic_string(&mut host.memory, class_name, 65536)?;
+            let label_at = host.memory.offset(address, table.label as i64)?;
+            let label_ptr = host.memory.read_pointer(label_at)?;
+            let label = read_classic_string(&mut host.memory, label_ptr, 65536)?;
+            let mut item = None;
+            if classname.is_empty() {
+                item = table
+                    .unnamed
+                    .iter()
+                    .find(|value| value.index == index && value.label == label)
+                    .map(|entry| entry.item.clone());
+            }
+            let item = match item {
+                Some(item) => item,
+                None => {
                     if !is_classname(&classname) {
                         return Err(ClassicQ2Error::invalid("Native item has no qualified classname"));
                     }
@@ -263,9 +260,8 @@ impl ClassicInventoryBinding<'_> {
 
 fn is_classname(value: &str) -> bool {
     let mut bytes = value.bytes();
-    match bytes.next() {
-        Some(first) if first.is_ascii_lowercase() => {}
-        _ => return false,
+    if !bytes.next().is_some_and(|first| first.is_ascii_lowercase()) {
+        return false;
     }
     bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }

@@ -239,25 +239,27 @@ pub fn classic_printf(
             ));
         }
         let mut text = match entry.conv {
-            's' | 'p' => match take()? {
-                GuestCallValue::Pointer(address) => {
-                    if entry.conv == 's' {
-                        let text = read_classic_string(memory, *address, 65536)?;
-                        match precision {
-                            Some(limit) => text.chars().take(limit).collect(),
-                            None => text,
-                        }
-                    } else {
-                        let offset = address.map_or(0, |value| value.offset);
-                        format!("{offset:08x}")
+            's' | 'p' => {
+                let GuestCallValue::Pointer(address) = take()? else {
+                    return Err(ClassicQ2Error::invalid("API 3 printf pointer required"));
+                };
+                if entry.conv == 's' {
+                    let text = read_classic_string(memory, *address, 65536)?;
+                    match precision {
+                        Some(limit) => text.chars().take(limit).collect(),
+                        None => text,
                     }
+                } else {
+                    let offset = address.map_or(0, |value| value.offset);
+                    format!("{offset:08x}")
                 }
-                _ => return Err(ClassicQ2Error::invalid("API 3 printf pointer required")),
-            },
-            conv if "feEgG".contains(conv) => match take()? {
-                GuestCallValue::Float64(value) => format_float(conv, *value, precision),
-                _ => return Err(ClassicQ2Error::invalid("API 3 printf promoted double required")),
-            },
+            }
+            conv if "feEgG".contains(conv) => {
+                let GuestCallValue::Float64(value) = take()? else {
+                    return Err(ClassicQ2Error::invalid("API 3 printf promoted double required"));
+                };
+                format_float(conv, *value, precision)
+            }
             conv => {
                 let (signed, unsigned) = match take()? {
                     GuestCallValue::Int32(value) => (*value, *value as u32),

@@ -362,12 +362,12 @@ fn int_result(value: i32) -> GuestCallResult {
 }
 
 fn arg_pointer(args: &[GuestCallValue], index: usize) -> ClassicResult<Option<GuestAddress>> {
-    match args.get(index) {
-        Some(GuestCallValue::Pointer(value)) => Ok(*value),
-        _ => Err(ClassicQ2Error::invalid(format!(
+    let Some(GuestCallValue::Pointer(value)) = args.get(index) else {
+        return Err(ClassicQ2Error::invalid(format!(
             "API 3 argument {index} must be a pointer"
-        ))),
-    }
+        )));
+    };
+    Ok(*value)
 }
 
 fn arg_required(args: &[GuestCallValue], index: usize) -> ClassicResult<GuestAddress> {
@@ -933,7 +933,7 @@ impl ClassicQ2GuestHost {
         if image.space != self.memory.address_space() {
             return Err(ClassicQ2Error::invalid("Foreign pickup image address space"));
         }
-        let profile = declared.or_else(|| classic_pickup_profile(&self.memory.module().digest.clone()));
+        let profile = declared.or_else(|| classic_pickup_profile(&self.memory.module().digest));
         if profile.is_none() {
             return Ok(());
         }
@@ -1074,10 +1074,11 @@ impl ClassicQ2GuestHost {
                 Ok(pointer_result(self.cvars.pointer(&mut self.memory, &name)?))
             }
             "cvar_set" | "cvar_forceset" => {
-                let name = arg_string(&mut self.memory, args, 0)?;
+                let forced = name == "cvar_forceset";
+                let var = arg_string(&mut self.memory, args, 0)?;
                 let value = arg_string(&mut self.memory, args, 1)?;
-                self.cvars.registry_mut().set(&name, &value, name == "cvar_forceset");
-                Ok(pointer_result(self.cvars.pointer(&mut self.memory, &name)?))
+                self.cvars.registry_mut().set(&var, &value, forced);
+                Ok(pointer_result(self.cvars.pointer(&mut self.memory, &var)?))
             }
             "configstring" => {
                 let index = arg_int(args, 0)?;
@@ -1167,13 +1168,14 @@ impl ClassicQ2GuestHost {
                 self.models.insert(index, model.clone());
                 self.memory.write_i32(self.memory.offset(record.address, 40)?, index)?;
                 if model.starts_with('*') {
-                    let number: usize = model[1..]
-                        .parse()
+                    model[1..]
+                        .parse::<usize>()
                         .map_err(|_| ClassicQ2Error::invalid("API 3 inline model name is not numeric"))?;
-                    let _ = number;
                     let bounds = self.services.inline_bounds;
-                    write_classic_vector(&mut self.memory, self.memory.offset(record.address, 188)?, bounds.min)?;
-                    write_classic_vector(&mut self.memory, self.memory.offset(record.address, 200)?, bounds.max)?;
+                    let mins_at = self.memory.offset(record.address, 188)?;
+                    write_classic_vector(&mut self.memory, mins_at, bounds.min)?;
+                    let maxs_at = self.memory.offset(record.address, 200)?;
+                    write_classic_vector(&mut self.memory, maxs_at, bounds.max)?;
                     self.link_entity(record.address)?;
                 }
                 Ok(void_result())
@@ -1445,10 +1447,14 @@ impl ClassicQ2GuestHost {
         if let Some(link) = self.services.body_links.get_mut(&record.slot) {
             link.linked = false;
         }
-        let origin = read_classic_vector(&mut self.memory, self.memory.offset(address, 4)?)?;
-        let angles = read_classic_vector(&mut self.memory, self.memory.offset(address, 16)?)?;
-        let mins = read_classic_vector(&mut self.memory, self.memory.offset(address, 188)?)?;
-        let maxs = read_classic_vector(&mut self.memory, self.memory.offset(address, 200)?)?;
+        let origin_at = self.memory.offset(address, 4)?;
+        let origin = read_classic_vector(&mut self.memory, origin_at)?;
+        let angles_at = self.memory.offset(address, 16)?;
+        let angles = read_classic_vector(&mut self.memory, angles_at)?;
+        let mins_at = self.memory.offset(address, 188)?;
+        let mins = read_classic_vector(&mut self.memory, mins_at)?;
+        let maxs_at = self.memory.offset(address, 200)?;
+        let maxs = read_classic_vector(&mut self.memory, maxs_at)?;
         let solid = self.memory.read_i32(self.memory.offset(address, 248)?)?;
         let flags = self.memory.read_i32(self.memory.offset(address, 184)?)?;
         if solid < 0 || solid > 3 {
@@ -1502,11 +1508,14 @@ impl ClassicQ2GuestHost {
                 },
             },
         };
-        write_classic_vector(&mut self.memory, self.memory.offset(address, 212)?, bounds.min)?;
-        write_classic_vector(&mut self.memory, self.memory.offset(address, 224)?, bounds.max)?;
+        let absmin_at = self.memory.offset(address, 212)?;
+        write_classic_vector(&mut self.memory, absmin_at, bounds.min)?;
+        let absmax_at = self.memory.offset(address, 224)?;
+        write_classic_vector(&mut self.memory, absmax_at, bounds.max)?;
+        let size_at = self.memory.offset(address, 236)?;
         write_classic_vector(
             &mut self.memory,
-            self.memory.offset(address, 236)?,
+            size_at,
             Vec3 {
                 x: maxs.x - mins.x,
                 y: maxs.y - mins.y,
@@ -1532,7 +1541,8 @@ impl ClassicQ2GuestHost {
             }
         }
         if self.memory.read_i32(self.memory.offset(address, 92)?)? == 0 {
-            write_classic_vector(&mut self.memory, self.memory.offset(address, 28)?, origin)?;
+            let old_origin_at = self.memory.offset(address, 28)?;
+            write_classic_vector(&mut self.memory, old_origin_at, origin)?;
         }
         let linkcount = self.memory.read_i32(self.memory.offset(address, 92)?)?;
         self.memory.write_i32(self.memory.offset(address, 92)?, linkcount + 1)?;

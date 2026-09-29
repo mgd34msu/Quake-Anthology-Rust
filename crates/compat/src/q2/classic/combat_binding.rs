@@ -282,8 +282,7 @@ impl ClassicCombatBindings {
         image: GuestAddress,
         declared: Option<ClassicCombatProfile>,
     ) -> ClassicResult<Option<Self>> {
-        let digest = host.memory.module().digest.clone();
-        let profile = declared.or_else(|| classic_combat_profile(&digest));
+        let profile = declared.or_else(|| classic_combat_profile(&host.memory.module().digest));
         let Some(profile) = profile else {
             return Ok(None);
         };
@@ -352,9 +351,14 @@ impl ClassicCombatBindings {
     }
 
     fn slot_of(&self, host: &ClassicQ2GuestHost, actor: &ActorId) -> ClassicResult<u32> {
-        match host.registry.source_of(actor) {
-            Some((provider, slot)) if provider == host.provider => Ok(slot),
-            _ => Err(ClassicQ2Error::invalid("Damage actor is not a live source actor")),
+        let slot = host
+            .registry
+            .source_of(actor)
+            .filter(|(provider, _)| provider == &host.provider)
+            .map(|(_, slot)| slot);
+        match slot {
+            Some(slot) => Ok(slot),
+            None => Err(ClassicQ2Error::invalid("Damage actor is not a live source actor")),
         }
     }
 
@@ -383,12 +387,9 @@ impl ClassicCombatBindings {
             self.image,
             (self.profile.globals.item_list as usize + index * self.profile.globals.item_bytes) as i64,
         )?;
-        let name = read_classic_string(
-            &mut host.memory,
-            host.memory
-                .read_pointer(host.memory.offset(record, self.profile.item_fields.class_name as i64)?)?,
-            65536,
-        )?;
+        let class_name_at = host.memory.offset(record, self.profile.item_fields.class_name as i64)?;
+        let class_name = host.memory.read_pointer(class_name_at)?;
+        let name = read_classic_string(&mut host.memory, class_name, 65536)?;
         let info = host
             .memory
             .read_pointer(host.memory.offset(record, self.profile.item_fields.armor_info as i64)?)?;
@@ -515,11 +516,9 @@ impl ClassicCombatBindings {
             .read_i32(host.memory.offset(address, self.profile.fields.flags as i64)?)?;
         let team = match client {
             Some(client) => {
-                let info = read_classic_string(
-                    &mut host.memory,
-                    Some(host.memory.offset(client, self.profile.client.userinfo as i64)?),
-                    self.profile.client.userinfo_bytes,
-                )?;
+                let userinfo_at = host.memory.offset(client, self.profile.client.userinfo as i64)?;
+                let info =
+                    read_classic_string(&mut host.memory, Some(userinfo_at), self.profile.client.userinfo_bytes)?;
                 let skin = info_value_for_key(&info, "skin", self.profile.client.userinfo_bytes + 1)
                     .map_err(|error| ClassicQ2Error::invalid(error.to_string()))?;
                 let rules = host.cvars.registry().variable_value("dmflags") as i32;
@@ -601,9 +600,14 @@ impl ClassicCombatBindings {
                     continue;
                 }
             }
-            let points = match &armor.regular {
-                RegularArmor::Q2 { item, points, .. } if *item == name => *points as i32,
-                _ => 0,
+            let points = if let RegularArmor::Q2 { item, points, .. } = &armor.regular {
+                if item == &name {
+                    *points as i32
+                } else {
+                    0
+                }
+            } else {
+                0
             };
             let at = host
                 .memory
@@ -757,12 +761,12 @@ impl ClassicCombatBindings {
             let result = host.invoke(entry, &signature, &lowered, host.instruction_budget);
             bindings.bypass = previous;
             host.memory.unmap(scratch, 24)?;
-            match result? {
-                GuestCallResult::Value(GuestCallValue::Int32(saved)) => Ok(saved),
-                _ => Err(ClassicQ2Error::invalid(
+            let GuestCallResult::Value(GuestCallValue::Int32(saved)) = result? else {
+                return Err(ClassicQ2Error::invalid(
                     "Classic armor stage returned a non-integer result",
-                )),
-            }
+                ));
+            };
+            Ok(saved)
         };
         if self.bypass == Some(channel) {
             return run_original(&mut *self, &mut *host);
@@ -807,15 +811,16 @@ impl ClassicCombatBindings {
             return Err(ClassicQ2Error::invalid("Source G_Spawn returned no damage projection"));
         };
         temporary.push(value);
-        write_classic_vector(&mut host.memory, host.memory.offset(value, 4)?, body.origin)?;
-        write_classic_vector(&mut host.memory, host.memory.offset(value, 16)?, body.angles)?;
-        write_classic_vector(&mut host.memory, host.memory.offset(value, 188)?, body.mins)?;
-        write_classic_vector(&mut host.memory, host.memory.offset(value, 200)?, body.maxs)?;
-        write_classic_vector(
-            &mut host.memory,
-            host.memory.offset(value, self.profile.fields.velocity as i64)?,
-            body.velocity,
-        )?;
+        for (offset, vector) in [
+            (4i64, body.origin),
+            (16, body.angles),
+            (188, body.mins),
+            (200, body.maxs),
+            (self.profile.fields.velocity as i64, body.velocity),
+        ] {
+            let at = host.memory.offset(value, offset)?;
+            write_classic_vector(&mut host.memory, at, vector)?;
+        }
         Ok(value)
     }
 
@@ -857,10 +862,8 @@ impl ClassicCombatBindings {
             .memory
             .read_i32(host.memory.offset(address, self.profile.fields.health as i64)?)?;
         let before_armor = self.armor_state(host, slot)?;
-        let before_velocity = read_classic_vector(
-            &mut host.memory,
-            host.memory.offset(address, self.profile.fields.velocity as i64)?,
-        )?;
+        let velocity_at = host.memory.offset(address, self.profile.fields.velocity as i64)?;
+        let before_velocity = read_classic_vector(&mut host.memory, velocity_at)?;
         let mut temporary = Vec::new();
         let attacker = self.party_address(host, request.attacker.as_ref(), &mut temporary)?;
         let inflictor = if request.attacker.is_some() && request.inflictor == request.attacker {
@@ -872,8 +875,10 @@ impl ClassicCombatBindings {
             .memory
             .allocate(&qa_guest::core::contracts::GuestAllocationOptions::bytes(36))?;
         write_classic_vector(&mut host.memory, vectors, request.direction)?;
-        write_classic_vector(&mut host.memory, host.memory.offset(vectors, 12)?, request.point)?;
-        write_classic_vector(&mut host.memory, host.memory.offset(vectors, 24)?, request.normal)?;
+        let point_at = host.memory.offset(vectors, 12)?;
+        write_classic_vector(&mut host.memory, point_at, request.point)?;
+        let normal_at = host.memory.offset(vectors, 24)?;
+        write_classic_vector(&mut host.memory, normal_at, request.normal)?;
         let (damage_flags, native) = q2_native_damage_arguments(request, self.profile.game)?;
         let semantic = vec![
             GuestCallValue::Pointer(Some(address)),
@@ -913,10 +918,8 @@ impl ClassicCombatBindings {
             .memory
             .read_i32(host.memory.offset(address, self.profile.fields.health as i64)?)?;
         let after_armor = self.armor_state(host, slot)?;
-        let after_velocity = read_classic_vector(
-            &mut host.memory,
-            host.memory.offset(address, self.profile.fields.velocity as i64)?,
-        )?;
+        let velocity_at = host.memory.offset(address, self.profile.fields.velocity as i64)?;
+        let after_velocity = read_classic_vector(&mut host.memory, velocity_at)?;
         let mut observations = Vec::new();
         if after_health != before_health {
             observations.push(StoredObservation::Health {
@@ -974,11 +977,14 @@ impl ClassicCombatBindings {
             };
             vectors.push(read_classic_vector(&mut host.memory, *address)?);
         }
-        let number = |index: usize| match semantic.get(index) {
-            Some(GuestCallValue::Int32(value)) => Ok(*value),
-            _ => Err(ClassicQ2Error::invalid(format!(
-                "API 3 argument {index} must be numeric"
-            ))),
+        let number = |index: usize| {
+            if let Some(GuestCallValue::Int32(value)) = semantic.get(index) {
+                Ok(*value)
+            } else {
+                Err(ClassicQ2Error::invalid(format!(
+                    "API 3 argument {index} must be numeric"
+                )))
+            }
         };
         let flags = number(8)?;
         let native = number(9)?;

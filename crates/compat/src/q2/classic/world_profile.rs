@@ -178,9 +178,13 @@ pub fn native_scalar(reader: &ProfileReader) -> ClassicResult<GuestStorage> {
 /// Read a `namespace:name` identity.
 pub fn namespaced(reader: &ProfileReader) -> ClassicResult<String> {
     let value = reader.string()?;
-    match value.find(':') {
-        Some(colon) if colon > 0 && colon + 1 < value.len() => Ok(value),
-        _ => reader.fail("expected a namespaced identity"),
+    let qualified = value
+        .find(':')
+        .is_some_and(|colon| colon > 0 && colon + 1 < value.len());
+    if qualified {
+        Ok(value)
+    } else {
+        reader.fail("expected a namespaced identity")
     }
 }
 

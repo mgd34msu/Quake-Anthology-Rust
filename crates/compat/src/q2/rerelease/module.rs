@@ -884,6 +884,9 @@ impl RereleaseGuestModule {
             .state
             .memory
             .read_u32(self.state.memory.offset(table, capacity_field)?)?;
+        if stride == 0 {
+            return Err(ModuleError::BadEdictTable);
+        }
         if address.offset < base.offset
             || (address.offset - base.offset) % stride != 0
             || (address.offset - base.offset) / stride >= u64::from(capacity)

@@ -850,7 +850,7 @@ impl<C: CombatCalls, S: SharedActorCallbacks> NativeModCombat<C, S> {
         let Some(GuestCallValue::Pointer(address)) = value else {
             return Err(CombatError::BadActorArgument);
         };
-        address
+        (*address)
             .map(|address| self.calls.actor_at(address))
             .transpose()
     }

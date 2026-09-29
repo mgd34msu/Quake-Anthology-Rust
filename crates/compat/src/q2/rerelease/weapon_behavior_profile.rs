@@ -805,7 +805,6 @@ mod tests {
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
             values.sort();
-            self.values.len();
             values
         }
         fn get(&self, name: &str) -> Option<String> {

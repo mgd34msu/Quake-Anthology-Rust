@@ -383,9 +383,10 @@ mod tests {
         }
 
         fn pointer(&mut self, hit: &MovementEntity) -> ClassicResult<Option<GuestAddress>> {
-            match hit {
-                MovementEntity::None => Ok(None),
-                _ => Err(ClassicQ2Error::invalid("unexpected pmove touch entity")),
+            if *hit == MovementEntity::None {
+                Ok(None)
+            } else {
+                Err(ClassicQ2Error::invalid("unexpected pmove touch entity"))
             }
         }
     }

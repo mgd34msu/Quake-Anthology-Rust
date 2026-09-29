@@ -528,9 +528,8 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(registry.at_source(&provider, 1).is_none());
-        assert!(edicts
-            .record_from_pointer(&mut memory, memory.offset(one.address, 1).unwrap())
-            .is_err());
+        let skewed = memory.offset(one.address, 1).unwrap();
+        assert!(edicts.record_from_pointer(&mut memory, skewed).is_err());
     }
 
     #[test]
