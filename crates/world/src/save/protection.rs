@@ -249,10 +249,12 @@ mod tests {
         // Duplicate schema records.
         assert!(read_primary_protection(&[record.clone(), record.clone()], &|_| None).is_err());
         // Owner mismatch.
-        assert!(read_primary_protection(&[record.clone()], &|_| Some(ProtectionOwner {
-            owner: "q2:game".to_string()
-        }))
-        .is_err());
+        assert!(
+            read_primary_protection(std::slice::from_ref(&record), &|_| Some(ProtectionOwner {
+                owner: "q2:game".to_string()
+            }))
+            .is_err()
+        );
         // Source-formula regular layer.
         let source = ProtectionCapture {
             actor,

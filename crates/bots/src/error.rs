@@ -166,6 +166,30 @@ pub enum BotsError {
     /// Internal invariant violation (donor `throw new Error` sites).
     #[error("{0}")]
     Internal(String),
+    /// Bot memory used after shutdown.
+    #[error("Bot memory used after shutdown")]
+    BotLibraryShutdown,
+    /// Bot memory handle is freed or foreign.
+    #[error("Bot memory handle is freed or foreign")]
+    BotMemoryFree,
+    /// Bot library call outside its lifetime.
+    #[error("{0}")]
+    BotLifetime(String),
+    /// Bot script parse failure.
+    #[error("{0}")]
+    BotScript(String),
+    /// Bot checkpoint decode failure.
+    #[error("{0}")]
+    BotCheckpoint(String),
+    /// Unknown bot client slot.
+    #[error("Unknown bot client")]
+    UnknownBotClient {
+        /// Requested slot.
+        client: i32,
+    },
+    /// Bot roster is full.
+    #[error("Bot roster is full")]
+    BotRosterFull,
 }
 
 /// Borrow a record by index, matching the donor's throwing accessors.
