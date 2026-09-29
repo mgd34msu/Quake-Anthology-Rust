@@ -17,5 +17,6 @@ pub mod floating_point;
 pub mod registry;
 pub mod save;
 pub mod traits;
+pub mod x64;
 
 pub use error::GuestError;
