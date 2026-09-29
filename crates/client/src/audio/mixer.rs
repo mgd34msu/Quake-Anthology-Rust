@@ -17,7 +17,7 @@ use super::error::AudioError;
 use super::paint::{int32, write_linear_blast_stereo16_float};
 use super::types::{SharedPcm, SoundAsset, VoiceStopReason};
 use super::wav::PcmSound;
-use crate::audio::{source_sound_channel, ChannelCommand, SoundChannel, SoundFamily};
+use crate::audio::{source_sound_channel, spatialize_sound_origin, ChannelCommand, OutputChannels, SoundChannel, SoundFamily};
 
 /// SDL paint epoch (`SOUND_TIME_EPOCH`).
 pub const SOUND_TIME_EPOCH: i64 = 0x4000_0000;
@@ -943,6 +943,7 @@ impl AudioMixer {
                 return Err(AudioError::BadRandom);
             }
             offset = (prepared.output_frames as i64 - 1).min(value % 1.max((0.1 * f64::from(self.output_rate)).trunc() as i64));
+            }
         }
         let start = match scheduled {
             None => VoiceStart::Started {
@@ -1560,5 +1561,899 @@ impl AudioMixer {
     pub fn queue_music(&mut self, sound: &PcmSound) -> Result<(), AudioError> {
         let volume = self.music_volume;
         self.queue_raw(sound, volume)
+    }
+
+    /// Prepare a sound for painting, borrowing bank memory when bound.
+    fn prepare(&mut self, sound: &SharedPcm) -> Result<PreparedSound, AudioError> {
+        if let Some(memory) = self.sound_memory.as_ref() {
+            let output_frames = memory.borrow().frame_count(sound);
+            return Ok(PreparedSound {
+                doppler_sums: None,
+                sound: sound.clone(),
+                step256: 256.0,
+                memory: Some(memory.clone()),
+                output_frames,
+            });
+        }
+        let scale = (sound.sample_rate as f32) / (self.output_rate as f32);
+        let output_frames = ((sound.frame_count as f32) / scale).trunc();
+        if !output_frames.is_finite() || output_frames < 0.0 || output_frames > i64::MAX as f32 {
+            return Err(AudioError::BadResampleFrames);
+        }
+        Ok(PreparedSound {
+            doppler_sums: None,
+            sound: sound.clone(),
+            step256: f64::from((scale * 256.0).trunc()),
+            memory: None,
+            output_frames: output_frames as usize,
+        })
+    }
+
+    /// Read the signed-int allocation clock.
+    fn allocation_time(&self) -> Result<i64, AudioError> {
+        let time = (self.milliseconds)();
+        if time < i64::from(i32::MIN) || time > i64::from(i32::MAX) {
+            return Err(AudioError::BadAllocationClock);
+        }
+        Ok(time)
+    }
+
+    /// Free every channel and rebuild the free list.
+    fn reset_channels(&mut self) -> Result<(), AudioError> {
+        for index in 0..self.voices.len() {
+            if self.voices[index].is_some() {
+                self.voice_stopped(index, VoiceStopReason::Stopped, None);
+            }
+        }
+        self.voices.fill(None);
+        self.free_channels.clear();
+        self.free_channels.extend(0..self.voices.len());
+        self.raw_debug_print("Channel memory manager started\n")
+    }
+
+    /// Free one channel slot.
+    fn free_channel(&mut self, index: usize, reason: VoiceStopReason) {
+        if self.voices[index].is_some() {
+            self.voice_stopped(index, reason, None);
+        }
+        self.voices[index] = None;
+        self.free_channels.push(index);
+    }
+
+    /// Read an integer sound diagnostic, defaulting to zero when unbound.
+    fn diagnostic_setting(&self, name: &str) -> Result<i32, AudioError> {
+        let Some(cvars) = self.sound_cvars.as_ref() else {
+            return Ok(0);
+        };
+        cvars
+            .get(name)
+            .map(|cvar| cvar.integer_value)
+            .ok_or_else(|| AudioError::MissingCvar(name.to_string()))
+    }
+
+    /// Read an entity position cell.
+    fn position_for_entity(&self, entity: i64) -> Result<Vec3, AudioError> {
+        if entity < 0 {
+            return Err(AudioError::MissingEntityPosition(entity));
+        }
+        self.entity_positions
+            .get(entity as usize)
+            .copied()
+            .ok_or(AudioError::MissingEntityPosition(entity))
+    }
+
+    /// Resolve a voice origin to a position.
+    fn resolve_origin(&self, origin: &MixerVoiceOrigin) -> Result<Vec3, AudioError> {
+        match origin {
+            MixerVoiceOrigin::Local => Ok(self.listener_origin),
+            MixerVoiceOrigin::Fixed { position } => Ok(*position),
+            MixerVoiceOrigin::Entity { entity } => {
+                require_entity(*entity, self.entity_capacity, None)?;
+                self.position_for_entity(*entity)
+            }
+        }
+    }
+
+    /// Spatialize a policy-less voice.
+    fn spatialize(&mut self, entity: i64, origin: &MixerVoiceOrigin, volume: f64) -> Result<MixerStereoVolume, AudioError> {
+        if matches!(origin, MixerVoiceOrigin::Local) || entity == self.listener_entity {
+            return Ok(MixerStereoVolume {
+                left: volume,
+                right: volume,
+            });
+        }
+        let position = self.resolve_origin(origin)?;
+        self.spatialize_origin(position, volume)
+    }
+
+    /// Spatialize a position with geometry transmission.
+    fn spatialize_origin(&mut self, position: Vec3, volume: f64) -> Result<MixerStereoVolume, AudioError> {
+        let channels = if self.output_channels == 1 {
+            OutputChannels::Mono
+        } else {
+            OutputChannels::Stereo
+        };
+        let volume = spatialize_sound_origin(position, self.listener_origin, self.listener_axis, volume as f32, channels);
+        Ok(self.transmit(
+            position,
+            MixerStereoVolume {
+                left: f64::from(volume.left),
+                right: f64::from(volume.right),
+            },
+        ))
+    }
+
+    /// Start pending voices and retire ended ones (`S_ScanChannelStarts`).
+    pub fn scan_channel_starts(&mut self) -> bool {
+        let mut new_samples = false;
+        for index in 0..self.voices.len() {
+            let action = match &self.voices[index] {
+                None => None,
+                Some(voice) => match voice.start {
+                    VoiceStart::Pending => Some(false),
+                    VoiceStart::Started { sample } if voice.policy.is_none_or(|policy| policy.loop_start.is_none()) && sample + voice.prepared.output_frames as i64 <= self.painted_time => {
+                        Some(true)
+                    }
+                    _ => None,
+                },
+            };
+            match action {
+                Some(false) => {
+                    if let Some(voice) = self.voices[index].as_mut() {
+                        voice.start = VoiceStart::Started {
+                            sample: self.painted_time,
+                        };
+                    }
+                    self.voice_started(index);
+                    new_samples = true;
+                }
+                Some(true) => {
+                    let end = match &self.voices[index] {
+                        Some(voice) => match voice.start {
+                            VoiceStart::Started { sample } => sample + voice.prepared.output_frames as i64,
+                            _ => self.painted_time,
+                        },
+                        None => self.painted_time,
+                    };
+                    self.voice_stopped(index, VoiceStopReason::Ended, Some(end));
+                    self.free_channel(index, VoiceStopReason::Ended);
+                }
+                None => {}
+            }
+        }
+        new_samples
+    }
+
+    /// Start scheduled voices whose deadline has passed.
+    fn issue_scheduled_sounds(&mut self) -> Result<(), AudioError> {
+        let mut due: Vec<(usize, i64, i64)> = Vec::new();
+        for (index, voice) in self.voices.iter().enumerate() {
+            if let Some(voice) = voice {
+                if let VoiceStart::Scheduled { sample, order } = voice.start {
+                    if sample <= self.painted_time {
+                        due.push((index, sample, order));
+                    }
+                }
+            }
+        }
+        due.sort_by(|left, right| left.1.cmp(&right.1).then(right.2.cmp(&left.2)));
+        for (index, _, _) in due {
+            let Some(voice) = self.voices[index].clone() else {
+                continue;
+            };
+            if !matches!(voice.start, VoiceStart::Scheduled { .. }) {
+                continue;
+            }
+            if let Some(channel) = voice.channel {
+                self.replace_channel(voice.entity, &ChannelCommand::Channel(channel), false, VoiceStopReason::Replaced);
+            }
+            let stereo = self.policy_spatialize(&voice)?;
+            if let Some(slot) = self.voices[index].as_mut() {
+                slot.start = VoiceStart::Started {
+                    sample: self.painted_time,
+                };
+                slot.stereo_volume = stereo;
+            }
+            self.voice_started(index);
+        }
+        Ok(())
+    }
+
+    /// Sample one output frame of a prepared sound.
+    fn effect_sample(memory: &Option<SharedMixerMemory>, prepared: &PreparedSound, output_frame: usize) -> Result<i32, AudioError> {
+        if let Some(memory) = memory {
+            return Ok(memory.borrow().sample(&prepared.sound, output_frame));
+        }
+        let source_frame = (output_frame as f64 * prepared.step256 / 256.0).trunc() as usize;
+        checked_sample(&prepared.sound.samples, source_frame)
+    }
+
+    /// Paint one effect sample into a stereo paint buffer.
+    fn paint_effect(paint: &mut [f64], output_frame: usize, sample: i32, volume: MixerStereoVolume, effects_gain: f64) -> Result<(), AudioError> {
+        let left_gain = volume.left * effects_gain;
+        let right_gain = volume.right * effects_gain;
+        let left_index = output_frame * 2;
+        let right_index = left_index + 1;
+        if right_index >= paint.len() {
+            return Err(AudioError::BadPaintIndex {
+                index: right_index.to_string(),
+                length: paint.len().to_string(),
+            });
+        }
+        paint[left_index] += (f64::from(sample) * left_gain / 256.0).floor();
+        paint[right_index] += (f64::from(sample) * right_gain / 256.0).floor();
+        Ok(())
+    }
+
+    /// Sample a Doppler loop chunk, stabilizing overrun tails as zero.
+    fn doppler_sample(memory: &Option<SharedMixerMemory>, prepared: &PreparedSound, chunk: i64, sample_offset: i64) -> Result<i32, AudioError> {
+        let output_frame = chunk * SND_CHUNK_SIZE as i64 + (sample_offset & (SND_CHUNK_SIZE as i64 - 1));
+        if memory.is_some() {
+            let frame = usize::try_from(output_frame).map_err(|_| AudioError::NegativeLoopAccess)?;
+            if let Some(memory) = memory {
+                return Ok(memory.borrow().sample(&prepared.sound, frame));
+            }
+        }
+        if output_frame < 0 {
+            return Err(AudioError::NegativeLoopAccess);
+        }
+        if output_frame >= prepared.output_frames as i64 {
+            return Ok(0);
+        }
+        Self::effect_sample(memory, prepared, output_frame as usize)
+    }
+
+    /// Paint a loop mix across a paint block.
+    fn paint_loop(
+        paint: &mut [f64],
+        memory: &Option<SharedMixerMemory>,
+        doppler_enabled: bool,
+        painted_time: i64,
+        frames: i64,
+        loop_mix: &mut LoopMix,
+        effects_gain: f64,
+    ) -> Result<(), AudioError> {
+        let mut output_frame = 0i64;
+        while output_frame < frames {
+            let output_frames = loop_mix.prepared.output_frames as i64;
+            if output_frames <= 0 {
+                return Ok(());
+            }
+            let sample_offset = (painted_time + output_frame) % output_frames;
+            let count = (frames - output_frame).min(output_frames - sample_offset);
+            if !doppler_enabled || !loop_mix.doppler || loop_mix.doppler_scale == 1.0 {
+                for index in 0..count {
+                    if sample_offset + index < 0 {
+                        return Err(AudioError::NegativeLoopAccess);
+                    }
+                    let sample = Self::effect_sample(memory, &loop_mix.prepared, (sample_offset + index) as usize)?;
+                    Self::paint_effect(
+                        paint,
+                        (output_frame + index) as usize,
+                        sample,
+                        MixerStereoVolume {
+                            left: loop_mix.left_volume,
+                            right: loop_mix.right_volume,
+                        },
+                        effects_gain,
+                    )?;
+                }
+            } else {
+                Self::paint_doppler_loop(paint, memory, output_frame, count, sample_offset, loop_mix, effects_gain)?;
+            }
+            output_frame += count;
+        }
+        Ok(())
+    }
+
+    /// Paint a Doppler-scaled loop span.
+    fn paint_doppler_loop(
+        paint: &mut [f64],
+        memory: &Option<SharedMixerMemory>,
+        output_frame: i64,
+        count: i64,
+        source_offset: i64,
+        loop_mix: &mut LoopMix,
+        effects_gain: f64,
+    ) -> Result<(), AudioError> {
+        if loop_mix.doppler_scale > SND_CHUNK_SIZE as f64 {
+            return Self::paint_wide_doppler_loop(paint, memory, output_frame, count, source_offset, loop_mix, effects_gain);
+        }
+        let output_frames = loop_mix.prepared.output_frames as i64;
+        let scaled_offset = ((source_offset as f32) * loop_mix.old_doppler_scale as f32).trunc() as i64;
+        let chunk_count = output_frames.div_ceil(SND_CHUNK_SIZE as i64).max(1);
+        let mut chunk = if scaled_offset < 0 {
+            0
+        } else {
+            (scaled_offset / SND_CHUNK_SIZE as i64) % chunk_count
+        };
+        let mut offset = (if scaled_offset < 0 { scaled_offset } else { scaled_offset % SND_CHUNK_SIZE as i64 }) as f32;
+        let left_volume = loop_mix.left_volume as f32 * effects_gain as f32;
+        let right_volume = loop_mix.right_volume as f32 * effects_gain as f32;
+        for index in 0..count {
+            let first = offset.trunc() as i64;
+            offset += loop_mix.doppler_scale as f32;
+            let last = offset.trunc() as i64;
+            let mut sample_total = 0f32;
+            for source in first..last {
+                if source == SND_CHUNK_SIZE as i64 {
+                    chunk = (chunk + 1) % chunk_count;
+                    offset -= SND_CHUNK_SIZE as f32;
+                }
+                sample_total += Self::doppler_sample(memory, &loop_mix.prepared, chunk, source)? as f32;
+            }
+            let divisor = 256.0f32 * (last - first) as f32;
+            let left_contribution = (sample_total * left_volume) / divisor;
+            let right_contribution = (sample_total * right_volume) / divisor;
+            Self::add_float_paint(paint, ((output_frame + index) * 2) as usize, f64::from(left_contribution))?;
+            Self::add_float_paint(paint, ((output_frame + index) * 2 + 1) as usize, f64::from(right_contribution))?;
+        }
+        Ok(())
+    }
+
+    /// Paint a wide Doppler span with periodic range sums.
+    fn paint_wide_doppler_loop(
+        paint: &mut [f64],
+        memory: &Option<SharedMixerMemory>,
+        output_frame: i64,
+        count: i64,
+        source_offset: i64,
+        loop_mix: &mut LoopMix,
+        effects_gain: f64,
+    ) -> Result<(), AudioError> {
+        let output_frames = loop_mix.prepared.output_frames;
+        let period = output_frames.div_ceil(SND_CHUNK_SIZE) * SND_CHUNK_SIZE;
+        if loop_mix.prepared.doppler_sums.as_ref().is_none_or(|sums| sums.len() != period + 1) {
+            let mut sums = vec![0.0f64; period + 1];
+            let mut total = 0.0f64;
+            for frame in 0..period {
+                if frame < output_frames {
+                    total += f64::from(Self::effect_sample(memory, &loop_mix.prepared, frame)?);
+                }
+                sums[frame + 1] = total;
+            }
+            loop_mix.prepared.doppler_sums = Some(sums);
+        }
+        let sums = loop_mix.prepared.doppler_sums.as_ref().expect("cached");
+        let sum = |index: i64| -> Result<f64, AudioError> {
+            if index < 0 {
+                return Err(AudioError::DopplerRange);
+            }
+            sums.get(index as usize).copied().ok_or(AudioError::DopplerRange)
+        };
+        let period_float = period as f64;
+        let cycles = (loop_mix.doppler_scale / period_float).floor();
+        let remainder = loop_mix.doppler_scale % period_float;
+        let cycle_samples = cycles * period_float;
+        let cycle_total = cycles * sum(period as i64)?;
+        let mut offset = (source_offset % period as i64) as f64;
+        for index in 0..count {
+            let end = offset + remainder;
+            let first = offset.trunc() as i64;
+            let last = end.trunc() as i64;
+            let tail = sum(last.min(period as i64))? - sum(first)? + if last > period as i64 { sum(last - period as i64)? } else { 0.0 };
+            let average = (cycle_total + tail) / (cycle_samples + (last - first) as f64);
+            Self::add_float_paint(
+                paint,
+                ((output_frame + index) * 2) as usize,
+                average * loop_mix.left_volume * effects_gain / 256.0,
+            )?;
+            Self::add_float_paint(
+                paint,
+                ((output_frame + index) * 2 + 1) as usize,
+                average * loop_mix.right_volume * effects_gain / 256.0,
+            )?;
+            offset = end % period_float;
+        }
+        Ok(())
+    }
+
+    /// Add a truncated float contribution to a paint cell.
+    fn add_float_paint(paint: &mut [f64], index: usize, contribution: f64) -> Result<(), AudioError> {
+        let cell = paint.get_mut(index).ok_or_else(|| AudioError::BadPaintIndex {
+            index: index.to_string(),
+            length: paint.len().to_string(),
+        })?;
+        *cell += contribution.trunc();
+        Ok(())
+    }
+
+    /// Collect active loops into merged mixes by entity order.
+    fn collect_loop_mixes(&mut self) -> Result<Vec<LoopMix>, AudioError> {
+        self.loop_channels.clear();
+        let time = if self.sound_memory.is_some() {
+            Some(self.allocation_time()?)
+        } else {
+            None
+        };
+        let mut loops: Vec<LoopVoice> = self.loops.values().filter(|loop_voice| loop_voice.active).cloned().collect();
+        loops.sort_by_key(|loop_voice| loop_voice.entity);
+        let mut merged: HashSet<i64> = HashSet::new();
+        let mut mixes: Vec<LoopMix> = Vec::new();
+        for index in 0..loops.len() {
+            if merged.contains(&loops[index].entity) {
+                continue;
+            }
+            let position = self.position_for_entity(loops[index].entity)?;
+            let volume = self.spatialize_origin(position, loops[index].volume)?;
+            if let (Some(time), Some(memory)) = (time, self.sound_memory.as_ref()) {
+                memory.borrow_mut().touch(&loops[index].prepared.sound, time);
+            }
+            let mut left_volume = volume.left;
+            let mut right_volume = volume.right;
+            for later in index + 1..loops.len() {
+                if loops[later].doppler || !Rc::ptr_eq(&loops[later].prepared.sound, &loops[index].prepared.sound) {
+                    continue;
+                }
+                merged.insert(loops[later].entity);
+                let position = self.position_for_entity(loops[later].entity)?;
+                let volume = self.spatialize_origin(position, loops[later].volume)?;
+                if let (Some(time), Some(memory)) = (time, self.sound_memory.as_ref()) {
+                    memory.borrow_mut().touch(&loops[later].prepared.sound, time);
+                }
+                left_volume += volume.left;
+                right_volume += volume.right;
+            }
+            if left_volume == 0.0 && right_volume == 0.0 {
+                continue;
+            }
+            mixes.push(LoopMix {
+                prepared: loops[index].prepared.clone(),
+                left_volume: left_volume.min(255.0),
+                right_volume: right_volume.min(255.0),
+                doppler: loops[index].doppler,
+                doppler_scale: loops[index].doppler_scale,
+                old_doppler_scale: loops[index].old_doppler_scale,
+            });
+        }
+        Ok(mixes)
+    }
+
+    /// Paint the raw stream into a paint block (replacing covered frames).
+    fn paint_raw(&self, paint: &mut [f64], frames: i64) -> Result<(), AudioError> {
+        let stop = (self.painted_time + frames).min(self.raw_end_time);
+        let mut absolute = self.painted_time;
+        while absolute < stop {
+            let output_frame = (absolute - self.painted_time) as usize;
+            let raw_index = (absolute & (RAW_SAMPLE_CAPACITY as i64 - 1)) as usize;
+            let left = self.raw_samples.get(raw_index * 2).copied().ok_or(AudioError::BadRawIndex {
+                index: (raw_index * 2).to_string(),
+                length: self.raw_samples.len().to_string(),
+            })?;
+            let right = self.raw_samples.get(raw_index * 2 + 1).copied().ok_or(AudioError::BadRawIndex {
+                index: (raw_index * 2 + 1).to_string(),
+                length: self.raw_samples.len().to_string(),
+            })?;
+            let Some(left_cell) = paint.get_mut(output_frame * 2) else {
+                return Err(AudioError::BadPaintIndex {
+                    index: (output_frame * 2).to_string(),
+                    length: paint.len().to_string(),
+                });
+            };
+            *left_cell = f64::from(left);
+            let Some(right_cell) = paint.get_mut(output_frame * 2 + 1) else {
+                return Err(AudioError::BadPaintIndex {
+                    index: (output_frame * 2 + 1).to_string(),
+                    length: paint.len().to_string(),
+                });
+            };
+            *right_cell = f64::from(right);
+            absolute += 1;
+        }
+        Ok(())
+    }
+
+    /// Mix frames, consuming the paint clock or painting an explicit range.
+    pub fn mix(&mut self, request: MixRequest) -> Result<Vec<i16>, AudioError> {
+        let (start_frame, frames) = match request {
+            MixRequest::Consume(frames) => (self.painted_time, frames),
+            MixRequest::Range(range) => (range.start_frame, range.end_frame.checked_sub(range.start_frame).ok_or(AudioError::BadMixFrames)?),
+        };
+        if frames < 0 {
+            return Err(AudioError::BadMixFrames);
+        }
+        let sample_count = frames.checked_mul(2).ok_or(AudioError::MixOutputTooLarge)?;
+        let end_frame = start_frame.checked_add(frames).ok_or(AudioError::BadPaintEnd)?;
+        if matches!(request, MixRequest::Consume(_)) && end_frame < self.sound_time {
+            return Err(AudioError::MixRewind);
+        }
+        let mut output = vec![0i16; sample_count as usize];
+        self.painted_time = start_frame;
+        self.scan_channel_starts();
+        let effects_gain = f64::from((self.effects_volume * 255.0).trunc());
+        while self.painted_time < end_frame {
+            self.issue_scheduled_sounds()?;
+            let mut count = (PAINTBUFFER_SIZE as i64).min(end_frame - self.painted_time);
+            for voice in self.voices.iter().flatten() {
+                if let VoiceStart::Scheduled { sample, .. } = voice.start {
+                    count = count.min(sample - self.painted_time);
+                }
+            }
+            let mut paint = vec![0.0f64; (count * 2) as usize];
+            self.paint_raw(&mut paint, count)?;
+            let voices = self.voices.clone();
+            let mut merged_voices: HashSet<usize> = HashSet::new();
+            for (index, voice) in voices.iter().enumerate() {
+                let Some(voice) = voice else {
+                    continue;
+                };
+                if matches!(voice.start, VoiceStart::Scheduled { .. }) || merged_voices.contains(&index) {
+                    continue;
+                }
+                if !matches!(voice.start, VoiceStart::Started { .. }) {
+                    return Err(AudioError::PendingSound);
+                }
+                let mut stereo = voice.stereo_volume;
+                if let Some(limit) = voice.policy.and_then(|policy| policy.synchronized_gain_limit) {
+                    let mut left = stereo.left;
+                    let mut right = stereo.right;
+                    merged_voices.insert(index);
+                    for (candidate_index, candidate) in voices.iter().enumerate() {
+                        let Some(candidate) = candidate else {
+                            continue;
+                        };
+                        if merged_voices.contains(&candidate_index) || !matches!(candidate.start, VoiceStart::Started { .. }) {
+                            continue;
+                        }
+                        if candidate.policy.and_then(|policy| policy.synchronized_gain_limit) != Some(limit) {
+                            continue;
+                        }
+                        if !Rc::ptr_eq(&candidate.prepared.sound, &voice.prepared.sound) {
+                            continue;
+                        }
+                        merged_voices.insert(candidate_index);
+                        left += candidate.stereo_volume.left;
+                        right += candidate.stereo_volume.right;
+                    }
+                    stereo = MixerStereoVolume {
+                        left: left.min(limit),
+                        right: right.min(limit),
+                    };
+                }
+                if stereo.left == 0.0 && stereo.right == 0.0 {
+                    continue;
+                }
+                let VoiceStart::Started { sample: start_sample } = voice.start else {
+                    return Err(AudioError::PendingSound);
+                };
+                let first_offset = self.painted_time - start_sample;
+                for output_frame in 0..count {
+                    let mut sound_frame = first_offset + output_frame;
+                    if let Some(loop_start) = voice.policy.and_then(|policy| policy.loop_start) {
+                        let output_frames = voice.prepared.output_frames as i64;
+                        if sound_frame >= output_frames {
+                            sound_frame = loop_start as i64 + (sound_frame - output_frames) % (output_frames - loop_start as i64);
+                        }
+                    }
+                    if sound_frame < 0 || sound_frame >= voice.prepared.output_frames as i64 {
+                        continue;
+                    }
+                    let sample = Self::effect_sample(&self.sound_memory, &voice.prepared, sound_frame as usize)?;
+                    Self::paint_effect(&mut paint, output_frame as usize, sample, stereo, effects_gain)?;
+                }
+            }
+            for index in 0..self.loop_channels.len() {
+                let skip = self.sound_memory.as_ref().is_some_and(|memory| {
+                    let prepared = &self.loop_channels[index].prepared;
+                    !memory.borrow().has_data(&prepared.sound) || memory.borrow().frame_count(&prepared.sound) == 0
+                });
+                if skip {
+                    continue;
+                }
+                let memory = self.sound_memory.clone();
+                let painted_time = self.painted_time;
+                let doppler_enabled = self.doppler_enabled;
+                let loop_mix = &mut self.loop_channels[index];
+                Self::paint_loop(&mut paint, &memory, doppler_enabled, painted_time, count, loop_mix, effects_gain)?;
+            }
+            if self.diagnostic_setting("s_testsound")? != 0 {
+                for frame in 0..count {
+                    let sample = (((self.painted_time + frame) as f64 * 0.1).sin() * 20000.0 * 256.0).trunc();
+                    paint[(frame * 2) as usize] = sample;
+                    paint[(frame * 2 + 1) as usize] = sample;
+                }
+            }
+            let output_offset = ((self.painted_time - start_frame) * 2) as usize;
+            write_linear_blast_stereo16_float(&paint, &mut output[output_offset..], paint.len())?;
+            self.painted_time += count;
+            for index in 0..self.voices.len() {
+                let ended = matches!(&self.voices[index], Some(voice) if matches!(voice.start, VoiceStart::Started { sample } if (voice.policy.is_none() || voice.policy.is_some_and(|policy| policy.loop_start.is_none())) && sample + voice.prepared.output_frames as i64 <= self.painted_time));
+                if ended {
+                    let end = match &self.voices[index] {
+                        Some(voice) => match voice.start {
+                            VoiceStart::Started { sample } => sample + voice.prepared.output_frames as i64,
+                            _ => self.painted_time,
+                        },
+                        None => self.painted_time,
+                    };
+                    self.voice_stopped(index, VoiceStopReason::Ended, Some(end));
+                }
+            }
+        }
+        if matches!(request, MixRequest::Consume(_)) {
+            self.sound_time = end_frame;
+        }
+        Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use qa_core::math::{vec3, Axis};
+
+    use super::*;
+
+    fn axis() -> Axis {
+        [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)]
+    }
+
+    fn blip(frames: usize, loop_start: Option<usize>) -> SharedPcm {
+        Rc::new(PcmSound {
+            sample_rate: 44100,
+            channels: 1,
+            samples: vec![1000i16; frames],
+            frame_count: frames,
+            loop_start,
+        })
+    }
+
+    fn mixer() -> AudioMixer {
+        AudioMixer::new(44100, Box::new(|| 100), 96, 2, 1024).unwrap()
+    }
+
+    #[test]
+    fn starts_and_paints_q3() {
+        let mut mixer = mixer();
+        let sound = blip(4410, None);
+        assert!(mixer
+            .start_sound(
+                &sound,
+                &StartSoundOptions {
+                    entity: 0,
+                    channel: 0,
+                    origin: MixerVoiceOrigin::Entity { entity: 0 },
+                    volume: 127,
+                },
+                Some("blip"),
+            )
+            .unwrap());
+        let mixed = mixer.mix(MixRequest::Consume(8)).unwrap();
+        assert_eq!(mixed.len(), 16);
+        assert!(mixed.iter().any(|sample| *sample != 0));
+        assert_eq!(mixer.sound_clock(), 8);
+        assert_eq!(mixer.sample_clock(), 8);
+        assert_eq!(mixer.channel_volumes().len(), 1);
+    }
+
+    #[test]
+    fn paints_ranges_without_advancing_sound_time() {
+        let mut mixer = mixer();
+        let sound = blip(4410, None);
+        mixer
+            .start_sound(
+                &sound,
+                &StartSoundOptions {
+                    entity: 0,
+                    channel: 0,
+                    origin: MixerVoiceOrigin::Entity { entity: 0 },
+                    volume: 127,
+                },
+                None,
+            )
+            .unwrap();
+        let ranged = mixer
+            .mix(MixRequest::Range(SoundPaintRange {
+                start_frame: 0,
+                end_frame: 8,
+            }))
+            .unwrap();
+        assert!(ranged.iter().any(|sample| *sample != 0));
+        assert_eq!(mixer.sound_clock(), 0);
+        assert_eq!(mixer.sample_clock(), 8);
+        assert!(matches!(mixer.mix(MixRequest::Consume(-1)), Err(AudioError::BadMixFrames)));
+    }
+
+    #[test]
+    fn jitters_q1_and_drops_silence() {
+        let mut mixer = mixer();
+        let sound = blip(4410, None);
+        let options = SourceSoundOptions {
+            entity: 0,
+            origin: MixerVoiceOrigin::Local,
+            volume: 1.0,
+            attenuation: 0.0,
+        };
+        let mut random = || 3i64;
+        assert!(mixer.start_q1_sound(&sound, &options, &ChannelCommand::Auto, Some(&mut random), None).unwrap());
+        assert!(mixer.start_q1_sound(&sound, &options, &ChannelCommand::Auto, Some(&mut random), None).unwrap());
+        let far = SourceSoundOptions {
+            entity: 5,
+            origin: MixerVoiceOrigin::Fixed {
+                position: vec3(100000.0, 0.0, 0.0),
+            },
+            volume: 1.0,
+            attenuation: 10.0,
+        };
+        assert!(!mixer.start_q1_sound(&sound, &far, &ChannelCommand::Auto, None, None).unwrap());
+        assert!(mixer.mix(MixRequest::Consume(4)).unwrap().iter().any(|sample| *sample != 0));
+    }
+
+    #[test]
+    fn schedules_q2_and_notifies() {
+        let mut mixer = mixer();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        let events: Rc<RefCell<Vec<MixerVoiceEvent>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&events);
+        mixer.set_voice_observer(Some(Box::new(move |event| seen.borrow_mut().push(event))), None);
+        let sound = blip(4410, None);
+        let asset = SoundAsset {
+            resource: "test".to_string(),
+            name: "q2".to_string(),
+            pcm: sound.clone(),
+        };
+        assert!(mixer
+            .start_q2_sound(
+                &sound,
+                &Q2SoundOptions {
+                    entity: 0,
+                    origin: MixerVoiceOrigin::Local,
+                    volume: 1.0,
+                    attenuation: 1.0,
+                    delay_seconds: Some(0.001),
+                    server_milliseconds: Some(0.0),
+                },
+                &ChannelCommand::Auto,
+                Some(asset),
+            )
+            .unwrap());
+        mixer.mix(MixRequest::Consume(5000)).unwrap();
+        assert!(events.borrow().iter().any(|event| matches!(event, MixerVoiceEvent::Start { .. })));
+        assert!(events.borrow().iter().any(|event| matches!(event, MixerVoiceEvent::Stop { .. })));
+    }
+
+    #[test]
+    fn paints_loops_and_raw() {
+        let mut mixer = mixer();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        let sound = blip(1024, Some(0));
+        mixer
+            .update_looping_sound(
+                &sound,
+                &FrameLoopingSoundOptions {
+                    entity: 1,
+                    origin: vec3(0.0, 0.0, 0.0),
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    frame_number: 1,
+                    volume: Some(127),
+                },
+            )
+            .unwrap();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        assert!(mixer.mix(MixRequest::Consume(8)).unwrap().iter().any(|sample| *sample != 0));
+        mixer.clear_looping_sounds(true);
+        mixer
+            .update_real_looping_sound(
+                &sound,
+                &RealLoopingSoundOptions {
+                    entity: 2,
+                    origin: vec3(0.0, 0.0, 0.0),
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    volume: None,
+                },
+            )
+            .unwrap();
+        mixer.stop_looping_sound(2).unwrap();
+        mixer.clear_looping_sounds(false);
+        mixer.queue_raw(&sound, 1.0).unwrap();
+        assert!(mixer.raw_end() > 0);
+        mixer.clear_raw();
+        assert_eq!(mixer.raw_end(), mixer.sample_clock());
+        mixer.stop_all().unwrap();
+    }
+
+    #[test]
+    fn scans_starts_and_rebases_clocks() {
+        let mut mixer = mixer();
+        let sound = blip(16, None);
+        mixer.start_local_sound(&sound, 0, None).unwrap();
+        assert!(mixer.scan_channel_starts());
+        assert!(!mixer.scan_channel_starts());
+        mixer.mix(MixRequest::Consume(32)).unwrap();
+        assert!(!mixer.scan_channel_starts());
+        assert!(mixer.select_time(32, 40).is_ok());
+        assert!(matches!(mixer.select_time(10, 40), Err(AudioError::BadTimeSelect)));
+        mixer.select_time(100, 100).unwrap();
+        let rebased = mixer.rebase_time(SOUND_TIME_EPOCH + 50).unwrap();
+        assert_eq!(rebased, 50);
+    }
+
+    #[test]
+    fn manages_static_ambient_and_entity_loops() {
+        let mut mixer = mixer();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        let plain = blip(64, None);
+        assert!(matches!(mixer.add_static_sound(&plain, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1), Err(AudioError::StaticLoop)));
+        let looping = blip(64, Some(0));
+        assert!(mixer.add_static_sound(&looping, vec3(0.0, 0.0, 0.0), 200.0, 1.0, 1).unwrap());
+        mixer.remove_static_sound(1);
+        mixer.update_ambient(&[looping.clone()], &[1.0], 0.016, 0.3, 100.0).unwrap();
+        mixer.update_ambient(&[], &[], 0.016, 0.0, 100.0).unwrap();
+        mixer
+            .set_source_loop_sounds(&[SourceLoopEntry {
+                family: SoundFamily::Q2,
+                entity: 3,
+                sound: looping,
+                origin: vec3(0.0, 0.0, 0.0),
+                volume: 1.0,
+                attenuation: Some(1.0),
+            }])
+            .unwrap();
+        assert!(mixer.mix(MixRequest::Consume(8)).unwrap().iter().any(|sample| *sample != 0));
+        mixer.set_source_loop_sounds(&[]).unwrap();
+    }
+
+    #[test]
+    fn replaces_channels_and_stops_entities() {
+        let mut mixer = mixer();
+        let sound = blip(4410, None);
+        let options = StartSoundOptions {
+            entity: 1,
+            channel: 1,
+            origin: MixerVoiceOrigin::Entity { entity: 1 },
+            volume: 127,
+        };
+        mixer.start_sound(&sound, &options, None).unwrap();
+        mixer.start_sound(&sound, &options, None).unwrap();
+        mixer.stop_channel(1, 1).unwrap();
+        mixer.start_sound(&sound, &options, None).unwrap();
+        mixer.stop_entity(1).unwrap();
+        mixer.start_sound(&sound, &options, None).unwrap();
+        mixer.clear_sound_buffer().unwrap();
+        assert!(mixer.channel_volumes().is_empty());
+        mixer.set_music_volume(0.5).unwrap();
+        mixer.queue_music(&sound).unwrap();
+        mixer.reset_raw_to_sound_time();
+        mixer.stop_raw();
+    }
+
+    #[test]
+    fn applies_geometry_and_doppler_loops() {
+        let mut mixer = mixer();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        mixer.set_geometry_transmission(Some(Box::new(|_| 0.5)));
+        let sound = blip(2048, Some(0));
+        mixer
+            .update_looping_sound(
+                &sound,
+                &FrameLoopingSoundOptions {
+                    entity: 1,
+                    origin: vec3(10.0, 0.0, 0.0),
+                    velocity: vec3(100.0, 0.0, 0.0),
+                    frame_number: 1,
+                    volume: Some(127),
+                },
+            )
+            .unwrap();
+        mixer
+            .update_looping_sound(
+                &sound,
+                &FrameLoopingSoundOptions {
+                    entity: 2,
+                    origin: vec3(10.0, 0.0, 0.0),
+                    velocity: vec3(10000.0, 0.0, 0.0),
+                    frame_number: 1,
+                    volume: Some(127),
+                },
+            )
+            .unwrap();
+        mixer.set_listener(0, vec3(0.0, 0.0, 0.0), axis()).unwrap();
+        let mixed = mixer.mix(MixRequest::Consume(2048)).unwrap();
+        assert!(mixed.iter().any(|sample| *sample != 0));
+        mixer.set_geometry_transmission(None);
+        mixer.set_doppler_enabled(false);
+        mixer.mix(MixRequest::Consume(8)).unwrap();
     }
 }

@@ -112,7 +112,7 @@ pub fn encode_output_pcm(stereo: &[i16], format: &AudioOutputFormat) -> Result<E
     Ok(EncodedPcm::U8(samples))
 }
 
-fn to_int16(value: f64) -> i16 {
+pub(crate) fn to_int16(value: f64) -> i16 {
     let mut wrapped = value.trunc() % 65536.0;
     if wrapped < 0.0 {
         wrapped += 65536.0;

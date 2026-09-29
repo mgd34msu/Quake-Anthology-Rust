@@ -51,6 +51,9 @@ pub enum AudioError {
     /// Audio output selection and recovery failed.
     #[error("Audio output selection and recovery failed: {0}")]
     OutputSelectionFailed(String),
+    /// Audio device failure: {0}.
+    #[error("audio device failure: {0}")]
+    Device(String),
     /// Sound volume must be 0..1.
     #[error("Sound volume must be 0..1")]
     BadVolume,
