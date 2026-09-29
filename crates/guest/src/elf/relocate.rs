@@ -510,7 +510,8 @@ pub fn resolve_symbol(
         );
     }
     let import = symbol_import(symbol, slot);
-    let resolution = context.resolver.resolve(&import, context.image);
+    let resolver = context.resolver;
+    let resolution = resolver.resolve(context.memory, &import, context.image);
     if !matches!(resolution, GuestImportResolution::Unresolved { .. }) {
         let address = match &resolution {
             GuestImportResolution::Guest { address, .. }

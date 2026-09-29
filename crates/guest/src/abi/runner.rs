@@ -16,7 +16,7 @@ use crate::abi::adapter::X86AbiAdapter;
 use crate::abi::classify::plan_guest_call_layouts;
 use crate::abi::values::inferred_layout;
 use crate::abi::GuestCpu;
-use crate::core::callbacks::{CallbackHandle, GuestHostCallback, HookState};
+use crate::core::callbacks::{CallbackHandle, GuestHostCallback, HookState, HostCallContext};
 use crate::core::contracts::{
     CallbackId, GuestAccess, GuestAddress, GuestCallContext, GuestCallResult,
     GuestCallbackReference, GuestCallSignature, GuestCallValue, GuestExecutionStop,
@@ -155,6 +155,16 @@ impl<'a> GuestCallRunner<'a> {
     #[must_use]
     pub fn hooks(&self) -> &Rc<HookState> {
         &self.hooks
+    }
+
+    /// Borrow processor state and memory together.
+    pub fn cpu_parts(
+        &mut self,
+    ) -> (
+        &mut crate::core::registers::GuestProcessorState,
+        &mut crate::core::memory::SparseGuestMemory,
+    ) {
+        self.cpu.parts()
     }
 
     /// Active call depth.
@@ -470,8 +480,12 @@ impl<'a> GuestCallRunner<'a> {
             callback_adapter.arguments(self.cpu, &handle.signature, &extra)?
         };
         let previous = self.callback_context.replace(context.clone());
-        let result = (handle.invoke)(&context, &arguments);
+        let outcome = {
+            let mut dispatch = HostCallContext::new(self);
+            (handle.invoke)(&mut dispatch, &context, &arguments)
+        };
         self.callback_context = previous;
+        let result = outcome?;
         callback_adapter.leave(self.cpu, &handle.signature, &result)?;
         Ok(())
     }
@@ -519,8 +533,10 @@ impl<'a> GuestCallRunner<'a> {
                         result: None,
                         variadic: false,
                     },
-                    invoke: Rc::new(|_, _| {
-                        panic!("Inline region cannot be invoked as an ABI callback")
+                    invoke: Rc::new(|_, _, _| {
+                        Err(GuestError::callback(
+                            "Inline region cannot be invoked as an ABI callback",
+                        ))
                     }),
                 },
                 gate,

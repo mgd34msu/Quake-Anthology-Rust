@@ -1060,8 +1060,14 @@ pub enum GuestExportTarget {
 
 /// Resolves image imports to guest definitions or host traps.
 pub trait GuestImportResolver {
-    /// Resolve one import requested by `requesting`.
-    fn resolve(&self, import: &GuestImport, requesting: &GuestImage) -> GuestImportResolution;
+    /// Resolve one import requested by `requesting`. Runtimes may bind host
+    /// traps or reserve guest pages through `memory` while resolving.
+    fn resolve(
+        &self,
+        memory: &mut crate::core::memory::SparseGuestMemory,
+        import: &GuestImport,
+        requesting: &GuestImage,
+    ) -> GuestImportResolution;
 }
 
 /// Thread-local-storage template of one image.

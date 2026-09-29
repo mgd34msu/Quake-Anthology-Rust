@@ -9,12 +9,76 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::abi::runner::{GuestCallFailure, GuestCallRequest, GuestCallRunner};
 use crate::core::contracts::{
     CallbackId, GuestAccess, GuestAddress, GuestCallContext, GuestCallResult, GuestCallSignature,
     GuestCallValue,
 };
 use crate::core::memory::SparseGuestMemory;
+use crate::core::registers::GuestProcessorState;
 use crate::error::GuestError;
+
+/// Live dispatch access handed to a host callback: guest memory, processor
+/// state, nested guest calls, and callback binding. The borrow is
+/// short-lived: every accessor reborrows the runner, so closures must not
+/// hold the returned references across a nested [`Self::invoke`].
+pub struct HostCallContext<'r, 'm> {
+    runner: &'r mut GuestCallRunner<'m>,
+}
+
+impl<'r, 'm> HostCallContext<'r, 'm> {
+    /// Wrap the dispatching runner.
+    pub fn new(runner: &'r mut GuestCallRunner<'m>) -> Self {
+        Self { runner }
+    }
+
+    /// Guest memory of the dispatching CPU.
+    pub fn memory(&mut self) -> &mut SparseGuestMemory {
+        self.runner.cpu_parts().1
+    }
+
+    /// Processor state of the dispatching CPU.
+    pub fn cpu_state(&mut self) -> &mut GuestProcessorState {
+        self.runner.cpu_parts().0
+    }
+
+    /// Shared hook state (callback table).
+    pub fn hooks(&self) -> &Rc<HookState> {
+        self.runner.hooks()
+    }
+
+    /// Invoke a nested guest call re-entrantly.
+    pub fn invoke(
+        &mut self,
+        request: &GuestCallRequest,
+    ) -> Result<GuestCallResult, GuestCallFailure> {
+        self.runner.invoke(request)
+    }
+
+    /// Bind a host callback to a fresh trap address in this guest.
+    pub fn bind_callback(
+        &mut self,
+        callback: GuestHostCallback,
+    ) -> Result<GuestAddress, GuestError> {
+        let hooks = Rc::clone(self.hooks());
+        let address = hooks
+            .callbacks
+            .borrow_mut()
+            .bind(self.memory(), callback)?;
+        Ok(address)
+    }
+}
+
+/// Host implementation: dispatch access plus the donor's context and
+/// arguments. Failures return [`GuestError`]; the runner maps them onto the
+/// failing call.
+pub type HostCallbackFn = Rc<
+    dyn for<'r, 'm> Fn(
+        &mut HostCallContext<'r, 'm>,
+        &GuestCallContext,
+        &[GuestCallValue],
+    ) -> Result<GuestCallResult, GuestError>,
+>;
 
 /// Host callback served through a guest trap address.
 pub struct GuestHostCallback {
@@ -24,7 +88,7 @@ pub struct GuestHostCallback {
     pub signature: GuestCallSignature,
     /// Host implementation. Shared so runners can invoke without holding a
     /// table borrow across re-entrant nested calls.
-    pub invoke: Rc<dyn Fn(&GuestCallContext, &[GuestCallValue]) -> GuestCallResult>,
+    pub invoke: HostCallbackFn,
 }
 
 impl Clone for GuestHostCallback {
@@ -45,7 +109,7 @@ pub struct CallbackHandle {
     /// Call signature.
     pub signature: GuestCallSignature,
     /// Host implementation.
-    pub invoke: Rc<dyn Fn(&GuestCallContext, &[GuestCallValue]) -> GuestCallResult>,
+    pub invoke: HostCallbackFn,
 }
 
 impl std::fmt::Debug for CallbackHandle {
@@ -404,41 +468,23 @@ impl GuestCallbackTable {
         }))
     }
 
-    /// Invoke the callback at `address`.
+    /// Invoke the callback at `address` with live dispatch access.
     pub fn invoke(
         &mut self,
         memory: &mut SparseGuestMemory,
+        dispatch: &mut HostCallContext<'_, '_>,
         address: GuestAddress,
         context: &GuestCallContext,
         arguments: &[GuestCallValue],
     ) -> Result<GuestCallResult, GuestError> {
         // Borrow dance: resolve validates, then invoke without holding the borrow.
-        let has = self.resolve(memory, address)?.is_some();
-        if !has {
-            return Err(GuestError::callback(format!(
-                "No host callback at guest address 0x{:x}",
-                address.offset
-            )));
-        }
-        let id = self.by_address.get(&address.offset).cloned().ok_or_else(|| {
+        let handle = self.handle(memory, address)?.ok_or_else(|| {
             GuestError::callback(format!(
                 "No host callback at guest address 0x{:x}",
                 address.offset
             ))
         })?;
-        let entry = self.by_id.get(&id).ok_or_else(|| {
-            GuestError::callback(format!(
-                "No host callback at guest address 0x{:x}",
-                address.offset
-            ))
-        })?;
-        let callback = entry.callback.as_ref().ok_or_else(|| {
-            GuestError::callback(format!(
-                "No host callback at guest address 0x{:x}",
-                address.offset
-            ))
-        })?;
-        Ok((callback.invoke)(context, arguments))
+        (handle.invoke)(dispatch, context, arguments)
     }
 
     /// Snapshot the trap addresses with their binding states.
@@ -539,6 +585,38 @@ mod tests {
         }
     }
 
+    struct FakeCpu {
+        state: crate::core::registers::GuestProcessorState,
+        memory: SparseGuestMemory,
+        hooks: Option<Rc<HookState>>,
+    }
+
+    impl crate::abi::GuestCpu for FakeCpu {
+        fn parts(
+            &mut self,
+        ) -> (
+            &mut crate::core::registers::GuestProcessorState,
+            &mut SparseGuestMemory,
+        ) {
+            (&mut self.state, &mut self.memory)
+        }
+
+        fn set_hook_state(&mut self, hooks: Option<Rc<HookState>>) {
+            self.hooks = hooks;
+        }
+
+        fn run(
+            &mut self,
+            _instruction_budget: u64,
+            _return_address: Option<GuestAddress>,
+        ) -> crate::core::contracts::GuestExecutionStop {
+            crate::core::contracts::GuestExecutionStop::Halt {
+                instructions: 0,
+                address: GuestAddress::new(self.memory.address_space(), 0),
+            }
+        }
+    }
+
     #[test]
     fn bind_invoke_unbind_round_trip() {
         let mut memory = SparseGuestMemory::new(test_module(), 8, 0x10000).unwrap();
@@ -550,7 +628,9 @@ mod tests {
                 GuestHostCallback {
                     id: CallbackId::new("test", "trap"),
                     signature: signature.clone(),
-                    invoke: Rc::new(|_, _| GuestCallResult::Value(GuestCallValue::Int32(7))),
+                    invoke: Rc::new(|_, _, _| {
+                        Ok(GuestCallResult::Value(GuestCallValue::Int32(7)))
+                    }),
                 },
             )
             .unwrap();
@@ -565,7 +645,42 @@ mod tests {
             itself: None,
             other: None,
         };
-        let result = table.invoke(&mut memory, address, &context, &[]).unwrap();
+        let state = crate::core::registers::GuestProcessorState::create(
+            crate::core::registers::GuestProcessorInitialState {
+                architecture: crate::core::contracts::GuestArchitecture::X86_64,
+                instruction_pointer: 0x10000,
+                stack_pointer: 0x20000,
+                flags: 2,
+                x87_control_word: 0x37f,
+                mxcsr: 0x1f80,
+                mxcsr_mask: 0xffff,
+            },
+        )
+        .unwrap();
+        let dispatch_memory = SparseGuestMemory::new(test_module(), 8, 0x10000).unwrap();
+        let mut cpu = FakeCpu {
+            state,
+            memory: dispatch_memory,
+            hooks: None,
+        };
+        let hooks = Rc::new(HookState::new());
+        let trap = cpu
+            .memory
+            .map(&crate::core::contracts::GuestMapOptions {
+                base: 0x10000,
+                byte_length: 0x1000,
+                permissions: crate::core::contracts::GuestPermissions::ReadExecute,
+                label: "return".to_string(),
+                bytes: None,
+            })
+            .unwrap();
+        let mut runner =
+            crate::abi::runner::GuestCallRunner::new(&mut cpu, Rc::clone(&hooks), trap, None)
+                .unwrap();
+        let mut dispatch = HostCallContext::new(&mut runner);
+        let result = table
+            .invoke(&mut memory, &mut dispatch, address, &context, &[])
+            .unwrap();
         assert_eq!(result, GuestCallResult::Value(GuestCallValue::Int32(7)));
         table.unbind(&CallbackId::new("test", "trap"));
         assert!(!table.has_bound_trap(address.offset));

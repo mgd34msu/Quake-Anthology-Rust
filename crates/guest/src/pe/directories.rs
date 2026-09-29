@@ -377,7 +377,7 @@ pub fn read_load_configuration(
     let guard_offset = if width == 4 { 88 } else { 144 };
     let address = reader.address(table.rva, size)?;
     let bytes = reader.copy(table.rva, size)?;
-    let mut field = |reader: &mut ImageReader, offset: u32| -> Result<Option<GuestAddress>, GuestError> {
+    let field = |reader: &mut ImageReader, offset: u32| -> Result<Option<GuestAddress>, GuestError> {
         if offset + width > size as u32 {
             return Ok(None);
         }

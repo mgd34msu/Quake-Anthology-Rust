@@ -297,7 +297,7 @@ pub fn bind_pe_imports(
     let mut resolutions = Vec::new();
     let mut writes: Vec<(GuestAddress, Vec<u8>, Vec<u8>)> = Vec::new();
     for import in &image.image.imports {
-        let resolution = resolver.resolve(import, &image.image);
+        let resolution = resolver.resolve(memory, import, &image.image);
         match &resolution {
             GuestImportResolution::Unresolved { detail, .. } => {
                 return Err(pe_error(
