@@ -15,6 +15,8 @@ pub mod q1_net;
 pub mod q1_wide;
 pub mod q2;
 pub mod q2_adapters;
+pub mod q2_kex_channel;
+pub mod q2_kex_packet;
 pub mod q2_net;
 pub mod q2_prediction;
 pub mod q2_server_demo;
