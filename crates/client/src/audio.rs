@@ -5,8 +5,34 @@
 //! `SOUND_TIME_EPOCH`) and `src/audio/types.ts` (`sourceSoundChannel`,
 //! `SoundFamily`, `SharedSoundChannel`).
 //!
-//! Headless only: this computes per-channel stereo volumes and voice
-//! lifetimes. PCM mixing and device output stay in the platform layer.
+//! Voice allocation, respatialization, PCM decoding, software mixing,
+//! music, reverb, and the unified output engine live here; only the raw
+//! SDL/file backends stay in `qa-platform`.
+//!
+//! Donor provenance: `src/audio/types.ts`, `src/audio/wav.ts`,
+//! `src/audio/adpcm.ts`, `src/audio/wavelet.ts`,
+//! `src/audio/source-paint.ts`, `src/audio/mixer.ts`,
+//! `src/audio/streams.ts`, `src/audio/music.ts`,
+//! `src/audio/output.ts`, `src/audio/reverb.ts`,
+//! `src/audio/reverb-presets.ts`, `src/audio/environments.ts`,
+//! `src/audio/geometry.ts`, `src/audio/bank.ts`, `src/audio/engine.ts`.
+
+pub mod adpcm;
+pub mod bank;
+pub mod engine;
+pub mod environments;
+pub mod error;
+pub mod geometry;
+pub mod mixer;
+pub mod music;
+pub mod output;
+pub mod paint;
+pub mod reverb;
+pub mod reverb_presets;
+pub mod streams;
+pub mod types;
+pub mod wav;
+pub mod wavelet;
 
 use qa_core::math::{dot3, length3, normalize3, sub3, vec3, Axis, Vec3};
 

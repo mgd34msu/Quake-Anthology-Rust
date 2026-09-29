@@ -9,3 +9,4 @@ thiserror = { workspace = true }
 qa-core = { workspace = true }
 qa-content = { workspace = true }
 qa-world = { workspace = true }
+qa-platform = { workspace = true }

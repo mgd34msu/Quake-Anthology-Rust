@@ -1,4 +1,5 @@
-//! Input handling: buttons, mouse, seats, and per-family commands.
+//! Input handling: buttons, mouse, seats, bindings, gamepad, MIDI,
+//! haptics, source devices, routing, and per-family commands.
 //!
 //! Donor provenance: `src/input/buttons.ts` (`InputButton`),
 //! `src/input/mouse.ts` (`MouseInput`), `src/input/pitch-drift.ts`
@@ -7,11 +8,42 @@
 //! `src/input/binding-store.ts` (`BindingStore`, `physicalInputKey`),
 //! `src/input/key-codes.ts` (`KeyCode`, `KEY_CHAR_FLAG`),
 //! `src/input/mouse-buttons.ts` (`quakeMouseButton`),
-//! `src/input/seat.ts` (`SeatInput`, `SourceAction`) and
+//! `src/input/seat.ts` (`SeatInput`, `SourceAction`),
+//! `src/input/keys.ts` (`stringToKeynum`, `keynumToString`),
+//! `src/input/bindings.ts` (named inputs, defaults, `bind` family),
+//! `src/input/sdl-keys.ts` (`sdlGameKey`, `sdlEventTime`),
+//! `src/input/mouse-settings.ts` (`MouseSettings`),
+//! `src/input/device-settings.ts` (MIDI/source cvars),
+//! `src/input/weapon-bindings.ts` (catalogs, `use` resolution),
+//! `src/input/client-commands.ts` (`ClientCommandBindings`),
+//! `src/input/router.ts` (`InputRouter`), `src/input/haptics.ts`
+//! (BNVIB), `src/input/gamepad.ts` (`GamepadInput`),
+//! `src/input/midi.ts` (`SourceMidiInput`),
+//! `src/input/source-input.ts` (`SourceInputState`),
+//! `src/input/source-joystick.ts` (`SourceJoystickState`),
+//! `src/input/source-midi.ts` (`SourceMidiDecoder`) and
 //! `src/contracts/{protocol.ts (UserCommand),ui.ts,common.ts}`.
 //!
-//! Script execution for key bindings stays with application wiring;
-//! this module owns device state, bindings, and command generation.
+//! Script execution for key bindings stays with application wiring
+//! through [`commands::CommandRegistry`]; this module owns device
+//! state, bindings, and command generation. SDL and controller event
+//! shapes come from `qa-platform`; headless tests inject synthetic
+//! events and fake backends.
+
+pub mod bindings;
+pub mod commands;
+pub mod device;
+pub mod gamepad;
+pub mod haptics;
+pub mod joystick;
+pub mod keycodes;
+pub mod midi;
+pub mod mouse_settings;
+pub mod router;
+pub mod sdl_keys;
+pub mod source;
+pub mod source_midi;
+pub mod weapons;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -92,6 +124,48 @@ pub enum KeyCode {
     F11 = 155,
     /// F12.
     F12 = 156,
+    /// F13.
+    F13 = 157,
+    /// F14.
+    F14 = 158,
+    /// F15.
+    F15 = 159,
+    /// Keypad home.
+    KeypadHome = 160,
+    /// Keypad up.
+    KeypadUp = 161,
+    /// Keypad page up.
+    KeypadPageUp = 162,
+    /// Keypad left.
+    KeypadLeft = 163,
+    /// Keypad 5.
+    Keypad5 = 164,
+    /// Keypad right.
+    KeypadRight = 165,
+    /// Keypad end.
+    KeypadEnd = 166,
+    /// Keypad down.
+    KeypadDown = 167,
+    /// Keypad page down.
+    KeypadPageDown = 168,
+    /// Keypad enter.
+    KeypadEnter = 169,
+    /// Keypad insert.
+    KeypadInsert = 170,
+    /// Keypad delete.
+    KeypadDelete = 171,
+    /// Keypad slash.
+    KeypadSlash = 172,
+    /// Keypad minus.
+    KeypadMinus = 173,
+    /// Keypad plus.
+    KeypadPlus = 174,
+    /// Keypad num lock.
+    KeypadNumLock = 175,
+    /// Keypad star.
+    KeypadStar = 176,
+    /// Keypad equals.
+    KeypadEquals = 177,
     /// Mouse button 1.
     Mouse1 = 178,
     /// Mouse button 2.
@@ -106,6 +180,102 @@ pub enum KeyCode {
     MouseWheelDown = 183,
     /// Wheel up.
     MouseWheelUp = 184,
+    /// Joystick button 1.
+    Joy1 = 185,
+    /// Joystick button 2.
+    Joy2 = 186,
+    /// Joystick button 3.
+    Joy3 = 187,
+    /// Joystick button 4.
+    Joy4 = 188,
+    /// Joystick button 5.
+    Joy5 = 189,
+    /// Joystick button 6.
+    Joy6 = 190,
+    /// Joystick button 7.
+    Joy7 = 191,
+    /// Joystick button 8.
+    Joy8 = 192,
+    /// Joystick button 9.
+    Joy9 = 193,
+    /// Joystick button 10.
+    Joy10 = 194,
+    /// Joystick button 11.
+    Joy11 = 195,
+    /// Joystick button 12.
+    Joy12 = 196,
+    /// Joystick button 13.
+    Joy13 = 197,
+    /// Joystick button 14.
+    Joy14 = 198,
+    /// Joystick button 15.
+    Joy15 = 199,
+    /// Joystick button 16.
+    Joy16 = 200,
+    /// Joystick button 17.
+    Joy17 = 201,
+    /// Joystick button 18.
+    Joy18 = 202,
+    /// Joystick button 19.
+    Joy19 = 203,
+    /// Joystick button 20.
+    Joy20 = 204,
+    /// Joystick button 21.
+    Joy21 = 205,
+    /// Joystick button 22.
+    Joy22 = 206,
+    /// Joystick button 23.
+    Joy23 = 207,
+    /// Joystick button 24.
+    Joy24 = 208,
+    /// Joystick button 25.
+    Joy25 = 209,
+    /// Joystick button 26.
+    Joy26 = 210,
+    /// Joystick button 27.
+    Joy27 = 211,
+    /// Joystick button 28.
+    Joy28 = 212,
+    /// Joystick button 29.
+    Joy29 = 213,
+    /// Joystick button 30.
+    Joy30 = 214,
+    /// Joystick button 31.
+    Joy31 = 215,
+    /// Joystick button 32.
+    Joy32 = 216,
+    /// Auxiliary key 1.
+    Aux1 = 217,
+    /// Auxiliary key 2.
+    Aux2 = 218,
+    /// Auxiliary key 3.
+    Aux3 = 219,
+    /// Auxiliary key 4.
+    Aux4 = 220,
+    /// Auxiliary key 5.
+    Aux5 = 221,
+    /// Auxiliary key 6.
+    Aux6 = 222,
+    /// Auxiliary key 7.
+    Aux7 = 223,
+    /// Auxiliary key 8.
+    Aux8 = 224,
+    /// Auxiliary key 9.
+    Aux9 = 225,
+    /// Auxiliary key 10.
+    Aux10 = 226,
+    /// Auxiliary key 11.
+    Aux11 = 227,
+    /// Auxiliary key 12.
+    Aux12 = 228,
+    /// Auxiliary key 13.
+    Aux13 = 229,
+    /// Auxiliary key 14.
+    Aux14 = 230,
+    /// Auxiliary key 15.
+    Aux15 = 231,
+    /// Auxiliary key 16.
+    Aux16 = 232,
 }
 
 /// Flag ORed onto character codes delivered as keys.
