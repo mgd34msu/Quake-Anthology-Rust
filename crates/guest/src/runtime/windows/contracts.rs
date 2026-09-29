@@ -594,6 +594,46 @@ impl WindowsContext {
             .map(|entry| entry.size)
     }
 
+    /// Add a library reference; null (with `last-error` 126) when unknown.
+    pub fn load_library(
+        &self,
+        memory: &mut SparseGuestMemory,
+        teb: GuestAddress,
+        library: &str,
+    ) -> Result<Option<GuestAddress>, GuestError> {
+        let handle = self.library_handle(library);
+        let Some(handle) = handle else {
+            set_last_error(memory, teb, 126)?;
+            return Ok(None);
+        };
+        let mut shared = self.shared.borrow_mut();
+        *shared.library_references.entry(handle.offset).or_insert(0) += 1;
+        Ok(Some(handle))
+    }
+
+    /// Release a library reference.
+    pub fn free_library(
+        &self,
+        memory: &mut SparseGuestMemory,
+        teb: GuestAddress,
+        handle: GuestAddress,
+    ) -> Result<bool, GuestError> {
+        let count = self.shared.borrow().library_references.get(&handle.offset).copied().unwrap_or(0);
+        if count == 0 {
+            set_last_error(memory, teb, 6)?;
+            return Ok(false);
+        }
+        let mut shared = self.shared.borrow_mut();
+        if count == 1 {
+            shared.library_references.remove(&handle.offset);
+        } else {
+            shared.library_references.insert(handle.offset, count - 1);
+        }
+        // Prepared images and built-in services retain their owner's initial
+        // reference.
+        Ok(true)
+    }
+
     /// Release every allocation owned by `heap`.
     pub fn destroy_heap(
         &self,
@@ -754,32 +794,12 @@ impl<'m> WindowsServiceRegistrar<'m> {
 
     /// Add a library reference; null (with `last-error` 126) when unknown.
     pub fn load_library(&mut self, library: &str) -> Result<Option<GuestAddress>, GuestError> {
-        let handle = self.context.library_handle(library);
-        let Some(handle) = handle else {
-            self.set_last_error(126)?;
-            return Ok(None);
-        };
-        let mut shared = self.shared.borrow_mut();
-        *shared.library_references.entry(handle.offset).or_insert(0) += 1;
-        Ok(Some(handle))
+        self.context.load_library(self.memory, self.teb, library)
     }
 
     /// Release a library reference.
     pub fn free_library(&mut self, handle: GuestAddress) -> Result<bool, GuestError> {
-        let count = self.shared.borrow().library_references.get(&handle.offset).copied().unwrap_or(0);
-        if count == 0 {
-            self.set_last_error(6)?;
-            return Ok(false);
-        }
-        let mut shared = self.shared.borrow_mut();
-        if count == 1 {
-            shared.library_references.remove(&handle.offset);
-        } else {
-            shared.library_references.insert(handle.offset, count - 1);
-        }
-        // Prepared images and built-in services retain their owner's initial
-        // reference.
-        Ok(true)
+        self.context.free_library(self.memory, self.teb, handle)
     }
 
     /// Resolve an import to its resolution, registering an unsupported trap
