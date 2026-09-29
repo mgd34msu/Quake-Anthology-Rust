@@ -26,6 +26,8 @@ pub mod q2_solid;
 pub mod q2_svc;
 pub mod q2_variants;
 pub mod q3;
+pub mod q3_authorization;
+pub mod q3_client_authorization;
 pub mod q3_net;
 pub mod qw;
 pub mod services;
