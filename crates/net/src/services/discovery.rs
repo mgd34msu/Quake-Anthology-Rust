@@ -8,9 +8,16 @@ use std::collections::{BTreeMap, HashMap};
 
 use thiserror::Error;
 
+use qa_core::cmd::{tokenize_command, Dialect, TextMode};
+use qa_core::numeric::native_atoi;
+
 use super::json::{parse_json, JsonError};
 use crate::common::endpoint::{address_key, parse_network_address, AddressRecord, NetworkAddress};
 use crate::common::session::{canonical, Json, WireSelection};
+use crate::protocol::ProtocolIdentity;
+use crate::q3_net::{
+    decode_connectionless, encode_connectionless_text, q3_info_value, ConnectionlessReceiver, Q3NetError,
+};
 
 /// Error for discovery failures.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -756,11 +763,234 @@ impl<'a> MasterHeartbeat<'a> {
     }
 }
 
+/// Quake III master protocol version.
+pub const Q3_MASTER_PROTOCOL: i32 = 68;
+
+/// Quake III discovery wire (`q3DiscoveryWire` in
+/// `src/network/q3/discovery.ts`: `CL_GlobalServers_f`,
+/// `CL_ServersResponsePacket`, `SVC_Info`/`Status`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Q3DiscoveryWire {
+    keywords: Vec<String>,
+    protocol: i32,
+}
+
+impl Q3DiscoveryWire {
+    /// Build a wire for master keywords and protocol.
+    pub fn new(keywords: &[String], protocol: i32) -> Result<Self, Q3NetError> {
+        if protocol <= 0 {
+            return Err(Q3NetError::Range("Invalid Q3 master protocol"));
+        }
+        for keyword in keywords {
+            if keyword.chars().any(|cell| cell.is_whitespace() || cell == '\0') {
+                return Err(Q3NetError::Range("Q3 master keywords must be source words"));
+            }
+        }
+        Ok(Self {
+            keywords: keywords.to_vec(),
+            protocol,
+        })
+    }
+}
+
+impl Default for Q3DiscoveryWire {
+    /// Default wire: no keywords, protocol 68.
+    fn default() -> Self {
+        Self {
+            keywords: Vec::new(),
+            protocol: Q3_MASTER_PROTOCOL,
+        }
+    }
+}
+
+impl DiscoveryWire for Q3DiscoveryWire {
+    fn query(&self, kind: DiscoveryRequestKind, challenge: &str) -> Result<Vec<u8>, DiscoveryError> {
+        let command = if kind == DiscoveryRequestKind::Info {
+            "getinfo"
+        } else {
+            "getstatus"
+        };
+        encode_connectionless_text(&format!("{command} {challenge}"))
+            .map_err(|error| DiscoveryError::Wire(error.to_string()))
+    }
+
+    fn master_query(&self) -> Result<Vec<u8>, DiscoveryError> {
+        let keywords = if self.keywords.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", self.keywords.join(" "))
+        };
+        encode_connectionless_text(&format!("getservers {}{keywords}", self.protocol))
+            .map_err(|error| DiscoveryError::Wire(error.to_string()))
+    }
+
+    fn heartbeat(&self, _active: bool) -> Result<Vec<u8>, DiscoveryError> {
+        // The donor sends the same heartbeat regardless of server state.
+        encode_connectionless_text("heartbeat QuakeArena-1\n")
+            .map_err(|error| DiscoveryError::Wire(error.to_string()))
+    }
+}
+
+/// Decoded master response (`decodeQ3MasterPacket`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Q3MasterPacket {
+    /// Server addresses.
+    pub addresses: Vec<NetworkAddress>,
+    /// Whether the EOT marker closed the list.
+    pub complete: bool,
+}
+
+/// Decode a master response (`decodeQ3MasterPacket`).
+pub fn decode_q3_master_packet(bytes: &[u8]) -> Result<Q3MasterPacket, Q3NetError> {
+    let prefix = b"getserversResponse";
+    if bytes.len() < prefix.len() + 4 || bytes[0..4] != [255, 255, 255, 255] || bytes[4..4 + prefix.len()] != *prefix
+    {
+        return Err(Q3NetError::Range("Not a Q3 master response"));
+    }
+    let mut addresses = Vec::new();
+    let mut cursor = 4 + prefix.len();
+    while cursor < bytes.len() && bytes[cursor] != b'\\' {
+        cursor += 1;
+    }
+    while cursor < bytes.len() && bytes[cursor] == b'\\' {
+        cursor += 1;
+        if bytes.get(cursor..cursor + 3) == Some(b"EOT".as_slice()) {
+            return Ok(Q3MasterPacket {
+                addresses,
+                complete: true,
+            });
+        }
+        if addresses.len() >= 256 {
+            break;
+        }
+        let Some(entry) = bytes.get(cursor..cursor + 6) else {
+            break;
+        };
+        cursor += 6;
+        if bytes.get(cursor) != Some(&b'\\') {
+            break;
+        }
+        addresses.push(NetworkAddress::Ipv4 {
+            host: [entry[0], entry[1], entry[2], entry[3]],
+            port: (u16::from(entry[4]) << 8) | u16::from(entry[5]),
+        });
+    }
+    Ok(Q3MasterPacket {
+        addresses,
+        complete: false,
+    })
+}
+
+/// Decode master addresses only (`decodeQ3MasterResponse`).
+pub fn decode_q3_master_response(bytes: &[u8]) -> Result<Vec<NetworkAddress>, Q3NetError> {
+    decode_q3_master_packet(bytes).map(|packet| packet.addresses)
+}
+
+/// Sanitize a response payload (`payloadText`).
+fn q3_payload_text(bytes: &[u8]) -> String {
+    let mut text = String::new();
+    for byte in bytes {
+        if *byte == 0 {
+            break;
+        }
+        text.push(char::from(if *byte == 37 || *byte > 127 { 46 } else { *byte }));
+    }
+    text
+}
+
+/// Decoded server browser response (`decodeQ3ServerStatus`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q3ServerStatus {
+    /// Echoed challenge.
+    pub challenge: String,
+    /// Server status.
+    pub status: ServerStatus,
+}
+
+/// Decode a server browser response (`decodeQ3ServerStatus`).
+pub fn decode_q3_server_status(bytes: &[u8]) -> Result<Q3ServerStatus, Q3NetError> {
+    let packet = decode_connectionless(bytes, ConnectionlessReceiver::Client)?;
+    let command = packet.command.to_lowercase();
+    if command != "inforesponse" && command != "statusresponse" {
+        return Err(Q3NetError::Range("Not a Q3 server browser response"));
+    }
+    let text = q3_payload_text(&packet.payload);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let info = lines.first().copied().unwrap_or("");
+    let mut rules = BTreeMap::new();
+    let fields: Vec<&str> = info.split('\\').collect();
+    let mut index = usize::from(info.starts_with('\\'));
+    while index + 1 < fields.len() {
+        rules.insert(fields[index].to_owned(), fields[index + 1].to_owned());
+        index += 2;
+    }
+    if command == "inforesponse" && native_atoi(&q3_info_value(info, "protocol")?)? != Q3_MASTER_PROTOCOL {
+        return Err(Q3NetError::Range("Server uses another Q3 wire version"));
+    }
+    let mut player_details = Vec::new();
+    if command == "statusresponse" {
+        for line in lines.iter().skip(1) {
+            if line.is_empty() {
+                continue;
+            }
+            let argv = tokenize_command(line, Dialect::Q3, TextMode::Source)?.argv;
+            if argv.len() >= 3 {
+                player_details.push(PlayerDetail {
+                    name: argv[2].clone(),
+                    score: i64::from(native_atoi(&argv[0])?),
+                    ping: i64::from(native_atoi(&argv[1])?),
+                });
+            }
+        }
+    }
+    let players = if command == "statusresponse" {
+        player_details.len() as i64
+    } else {
+        i64::from(native_atoi(&q3_info_value(info, "clients")?)?)
+    };
+    let mut name = q3_info_value(info, "hostname")?;
+    if name.is_empty() {
+        name = q3_info_value(info, "sv_hostname")?;
+    }
+    Ok(Q3ServerStatus {
+        challenge: q3_info_value(info, "challenge")?,
+        status: ServerStatus {
+            name,
+            map: q3_info_value(info, "mapname")?,
+            players,
+            max_players: i64::from(native_atoi(&q3_info_value(info, "sv_maxclients")?)?),
+            rules,
+            player_details,
+            wire: WireSelection::Source {
+                protocol: ProtocolIdentity::Q3,
+            },
+        },
+    })
+}
+
+/// Encode a status response (`encodeQ3Status`).
+pub fn encode_q3_status(info: &str, players: &[PlayerDetail]) -> Result<Vec<u8>, Q3NetError> {
+    let mut rows = String::new();
+    for player in players {
+        let row = format!("{} {} \"{}\"\n", player.score, player.ping, player.name);
+        let row = String::from_utf16_lossy(&row.encode_utf16().take(1023).collect::<Vec<_>>());
+        if rows.encode_utf16().count() + row.encode_utf16().count() >= 16384 {
+            break;
+        }
+        rows.push_str(&row);
+    }
+    encode_connectionless_text(&format!("statusResponse\n{info}\n{rows}"))
+}
+
+/// Encode an info response (`encodeQ3Info`).
+pub fn encode_q3_info(info: &str) -> Result<Vec<u8>, Q3NetError> {
+    encode_connectionless_text(&format!("infoResponse\n{info}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::endpoint::ipv4_address;
-    use crate::protocol::ProtocolIdentity;
 
     struct FakeWire;
     struct FakeTransport {
@@ -842,5 +1072,131 @@ mod tests {
         let mut restored = ServerBrowser::new(&wire, &mut transport);
         restored.restore_favorites(&saved).unwrap();
         assert_eq!(restored.favorite_addresses().len(), 1);
+    }
+
+    #[test]
+    fn q3_wire_packets_match_donor() {
+        let wire = Q3DiscoveryWire::new(&["ctf".to_owned(), "tour".to_owned()], 68).unwrap();
+        assert_eq!(
+            wire.query(DiscoveryRequestKind::Info, "xyz").unwrap(),
+            encode_connectionless_text("getinfo xyz").unwrap()
+        );
+        assert_eq!(
+            wire.query(DiscoveryRequestKind::Status, "xyz").unwrap(),
+            encode_connectionless_text("getstatus xyz").unwrap()
+        );
+        assert_eq!(
+            wire.master_query().unwrap(),
+            encode_connectionless_text("getservers 68 ctf tour").unwrap()
+        );
+        assert_eq!(
+            wire.heartbeat(true).unwrap(),
+            encode_connectionless_text("heartbeat QuakeArena-1\n").unwrap()
+        );
+        assert_eq!(
+            Q3DiscoveryWire::new(&[], 0),
+            Err(Q3NetError::Range("Invalid Q3 master protocol"))
+        );
+        assert_eq!(
+            Q3DiscoveryWire::new(&["two words".to_owned()], 68),
+            Err(Q3NetError::Range("Q3 master keywords must be source words"))
+        );
+    }
+
+    fn master_bytes(entries: &[[u8; 6]], complete: bool) -> Vec<u8> {
+        let mut bytes = vec![255, 255, 255, 255];
+        bytes.extend_from_slice(b"getserversResponse");
+        for entry in entries {
+            bytes.push(b'\\');
+            bytes.extend_from_slice(entry);
+        }
+        bytes.push(b'\\');
+        if complete {
+            bytes.extend_from_slice(b"EOT");
+        }
+        bytes
+    }
+
+    #[test]
+    fn q3_master_packet_round_trip() {
+        let bytes = master_bytes(&[[10, 0, 0, 1, 0x13, 0xCD], [10, 0, 0, 2, 0x13, 0xCE]], true);
+        let packet = decode_q3_master_packet(&bytes).unwrap();
+        assert!(packet.complete);
+        assert_eq!(
+            packet.addresses,
+            vec![
+                ipv4_address([10, 0, 0, 1], 5069, false).unwrap(),
+                ipv4_address([10, 0, 0, 2], 5070, false).unwrap(),
+            ]
+        );
+        assert_eq!(decode_q3_master_response(&bytes).unwrap(), packet.addresses);
+        let partial = decode_q3_master_packet(&master_bytes(&[[10, 0, 0, 1, 0, 80]], false)).unwrap();
+        assert!(!partial.complete);
+        assert_eq!(partial.addresses.len(), 1);
+    }
+
+    #[test]
+    fn q3_master_packet_rejects_garbage() {
+        assert_eq!(
+            decode_q3_master_packet(b"nope"),
+            Err(Q3NetError::Range("Not a Q3 master response"))
+        );
+        // Entry without a closing backslash is dropped.
+        let mut bytes = vec![255, 255, 255, 255];
+        bytes.extend_from_slice(b"getserversResponse\\");
+        bytes.extend_from_slice(&[1, 2, 3, 4, 0, 80]);
+        assert!(decode_q3_master_packet(&bytes).unwrap().addresses.is_empty());
+    }
+
+    #[test]
+    fn q3_info_response_round_trip() {
+        let info = "\\hostname\\Frag House\\mapname\\q3dm1\\clients\\3\\sv_maxclients\\8\\protocol\\68\\challenge\\abc";
+        let decoded = decode_q3_server_status(&encode_q3_info(info).unwrap()).unwrap();
+        assert_eq!(decoded.challenge, "abc");
+        assert_eq!(decoded.status.name, "Frag House");
+        assert_eq!(decoded.status.map, "q3dm1");
+        assert_eq!(decoded.status.players, 3);
+        assert_eq!(decoded.status.max_players, 8);
+        assert!(matches!(
+            decoded.status.wire,
+            WireSelection::Source {
+                protocol: ProtocolIdentity::Q3
+            }
+        ));
+    }
+
+    #[test]
+    fn q3_status_response_counts_players() {
+        let players = vec![
+            PlayerDetail {
+                name: "alice".to_owned(),
+                score: 10,
+                ping: 20,
+            },
+            PlayerDetail {
+                name: "bob".to_owned(),
+                score: -5,
+                ping: 30,
+            },
+        ];
+        let info = "\\hostname\\Duel\\mapname\\q3tourney1\\sv_maxclients\\2\\challenge\\z9";
+        let decoded = decode_q3_server_status(&encode_q3_status(info, &players).unwrap()).unwrap();
+        assert_eq!(decoded.challenge, "z9");
+        assert_eq!(decoded.status.players, 2);
+        assert_eq!(decoded.status.player_details, players);
+    }
+
+    #[test]
+    fn q3_responses_validate_wire() {
+        let wrong = encode_q3_info("\\hostname\\x\\protocol\\67").unwrap();
+        assert_eq!(
+            decode_q3_server_status(&wrong),
+            Err(Q3NetError::Range("Server uses another Q3 wire version"))
+        );
+        let other = encode_connectionless_text("print\nhello").unwrap();
+        assert_eq!(
+            decode_q3_server_status(&other),
+            Err(Q3NetError::Range("Not a Q3 server browser response"))
+        );
     }
 }
