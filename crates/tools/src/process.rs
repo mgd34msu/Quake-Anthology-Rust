@@ -88,7 +88,8 @@ pub fn wait_timeout_group(child: &mut Child, timeout_ms: u64) -> Result<(bool, O
             kill_process_group(child.id(), SIGKILL);
             let _ = child.kill();
             let _ = child.wait();
-            return Ok((true, child.try_wait().unwrap_or(None).and_then(|status| status.code()));
+            let code = child.try_wait().unwrap_or(None).and_then(|status| status.code());
+            return Ok((true, code));
         }
         thread::sleep(Duration::from_millis(5));
     }

@@ -2,7 +2,7 @@
 //! directories, exclusive copies, and cryptographically random hex.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::error::ToolsError;
