@@ -23,7 +23,7 @@ Usage: qa-muse [options]
   +command [arguments]       Run source startup command (use '+bind x \"+attack\"' as one shell argument)
   --menu                     Open the startup menu (default without launch selections)
   --preset q2-q1-q3|q1-q2     Select an initial mixed-game profile
-  --content-root PATH        Game data root
+  --content-root PATH        Game data root (default: beside the executable)
   --user-content-root PATH   Writable user content root
   --game PRODUCT             Installed catalog product, e.g. q2-classic-baseq2
   --map-game PRODUCT         Select map content independently from the game module
@@ -75,7 +75,7 @@ pub const WEAPON_BEHAVIOR_HELP: &str = "Usage:
   qa-muse weapon-behavior declare-native PRODUCT --profile MOUNTED_PROFILE_JSON [options]
   qa-muse weapon-behavior declare PRODUCT --id NAMESPACE:ID --role ROLE --fire CALLBACK [options]
 
-  --content PATH        Installed content root
+  --content PATH        Installed content root (default: beside the executable)
   --user-content PATH   Writable user content root
   --artifact PATH       Mounted program (QC descriptor/progs.dat/qwprogs.dat, vm/qagame.qvm, or native game DLL)
   --profile PATH        Author-written mounted QVM or API2023 Windows x64 native profile with exact digest, entries and entity layout
@@ -467,15 +467,15 @@ pub enum ProjectileRole {
     Grapple,
 }
 
-/// Default game data root (`~/Projects/qfiles`, resolved against the home
-/// directory; falls back to the working directory when `HOME` is unset).
+/// Default game data root: executable-relative discovery (the executable's
+/// own directory, then its parent), falling back to the executable's own
+/// directory when no game content is found nearby.
 #[must_use]
 pub fn default_corpus_root() -> String {
-    let projects = Path::new("Projects").join("qfiles");
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() => Path::new(&home).join(projects).to_string_lossy().into_owned(),
-        _ => resolve_path("Projects/qfiles"),
-    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    crate::directories::resolve_corpus_root(None, exe_dir.as_deref(), &crate::directories::FsProbe)
 }
 
 /// Default writable user content root
@@ -1348,7 +1348,13 @@ mod tests {
         assert_eq!(options.frame_limit, None);
         assert!(!options.hidden);
         assert_eq!(options.network, Network::Offline);
-        assert!(options.corpus_root.ends_with("Projects/qfiles"));
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        match exe_dir {
+            Some(dir) => assert_eq!(Path::new(&options.corpus_root), dir.as_path()),
+            None => assert!(!options.corpus_root.is_empty()),
+        }
     }
 
     #[test]

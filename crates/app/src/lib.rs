@@ -15,6 +15,7 @@ pub mod application;
 pub mod cli;
 pub mod console;
 pub mod debug;
+pub mod directories;
 pub mod error;
 pub mod llm;
 pub mod options;

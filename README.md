@@ -38,7 +38,7 @@ cargo run --bin qa-muse -- --help
 cargo run --bin qa-muse -- --version
 cargo run --bin qa-muse -- --dedicated --movement q3 --frames 120
 cargo run --bin qa-dedicated -- --movement q1 --frames 120
-cargo run --bin qa-muse -- --list-content --content-root ~/Projects/qfiles
+cargo run --bin qa-muse -- --list-content
 ```
 
 Headless runs print a summary line, e.g.
