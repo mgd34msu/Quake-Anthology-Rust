@@ -4,9 +4,9 @@
 //! notify entries over a headless synthetic cgame module.
 
 use qa_core::math::Vec3;
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{cgame_server_data_layout, field_offset, player_state_layout};
@@ -189,20 +189,12 @@ impl SyntheticCgameModule {
             memory,
             calls: Vec::new(),
             scripted_ints: std::collections::HashMap::new(),
-            flash_offset: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            flash_offset: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
         }
     }
 
     /// Allocate scratch bytes, run, then release.
-    pub fn temporary<R>(
-        &mut self,
-        size: usize,
-        run: impl FnOnce(&mut Self, GuestAddress) -> R,
-    ) -> R {
+    pub fn temporary<R>(&mut self, size: usize, run: impl FnOnce(&mut Self, GuestAddress) -> R) -> R {
         let address = self
             .memory
             .allocate(&GuestAllocationOptions::bytes(size))
@@ -212,12 +204,7 @@ impl SyntheticCgameModule {
         result
     }
 
-    fn call(
-        &mut self,
-        export: CgameExport,
-        args: &[GuestCallValue],
-        seat: Option<u32>,
-    ) -> GuestCallResult {
+    fn call(&mut self, export: CgameExport, args: &[GuestCallValue], seat: Option<u32>) -> GuestCallResult {
         self.calls.push(CgameCall {
             export,
             arguments: args.len(),
@@ -270,22 +257,14 @@ impl RereleaseCgame {
 
     fn split(&self, seat: u32) -> Result<usize, CgameError> {
         let index = usize::try_from(seat).map_err(|_| CgameError::UnknownSeat)?;
-        let split = self
-            .splits
-            .get(index)
-            .copied()
-            .ok_or(CgameError::UnknownSeat)?;
+        let split = self.splits.get(index).copied().ok_or(CgameError::UnknownSeat)?;
         if split >= MAX_SPLIT_PLAYERS {
             return Err(CgameError::BadSplit);
         }
         Ok(split)
     }
 
-    fn with_seat<R>(
-        &mut self,
-        seat: u32,
-        run: impl FnOnce(&mut Self) -> R,
-    ) -> R {
+    fn with_seat<R>(&mut self, seat: u32, run: impl FnOnce(&mut Self) -> R) -> R {
         let previous = self.bound_seat;
         self.bound_seat = Some(seat);
         let result = run(self);
@@ -362,10 +341,9 @@ impl RereleaseCgame {
         self.module.memory.write(data, encoded)?;
         for index in 0..256 {
             let value = frame.server_data.inventory.get(index).copied().unwrap_or(0);
-            self.module.memory.write_i16(
-                self.module.memory.offset(data, 1024 + index as i64 * 2)?,
-                value,
-            )?;
+            self.module
+                .memory
+                .write_i16(self.module.memory.offset(data, 1024 + index as i64 * 2)?, value)?;
         }
         let viewport = frame.viewport;
         let safe = frame.safe_area;
@@ -385,19 +363,11 @@ impl RereleaseCgame {
         Ok(())
     }
 
-    fn stat(
-        &mut self,
-        export: CgameExport,
-        player: &CgamePlayer,
-        index: Option<i32>,
-    ) -> Result<i32, CgameError> {
+    fn stat(&mut self, export: CgameExport, player: &CgamePlayer, index: Option<i32>) -> Result<i32, CgameError> {
         let address = self.write_player(player)?;
         let args = match index {
             None => vec![GuestCallValue::Pointer(Some(address))],
-            Some(index) => vec![
-                GuestCallValue::Pointer(Some(address)),
-                GuestCallValue::Int32(index),
-            ],
+            Some(index) => vec![GuestCallValue::Pointer(Some(address)), GuestCallValue::Int32(index)],
         };
         let result = self.module.call(export, &args, None);
         self.release(address, player_state_layout().byte_length)?;
@@ -410,36 +380,22 @@ impl RereleaseCgame {
     }
 
     /// Active weapon-wheel weapon.
-    pub fn active_weapon_wheel_weapon(
-        &mut self,
-        player: &CgamePlayer,
-    ) -> Result<i32, CgameError> {
+    pub fn active_weapon_wheel_weapon(&mut self, player: &CgamePlayer) -> Result<i32, CgameError> {
         self.stat(CgameExport::ActiveWeaponWheelWeapon, player, None)
     }
 
     /// Owned weapon-wheel weapons bitmask.
-    pub fn owned_weapon_wheel_weapons(
-        &mut self,
-        player: &CgamePlayer,
-    ) -> Result<i32, CgameError> {
+    pub fn owned_weapon_wheel_weapons(&mut self, player: &CgamePlayer) -> Result<i32, CgameError> {
         self.stat(CgameExport::OwnedWeaponWheelWeapons, player, None)
     }
 
     /// Weapon-wheel ammunition count.
-    pub fn weapon_wheel_ammo_count(
-        &mut self,
-        player: &CgamePlayer,
-        ammo_id: i32,
-    ) -> Result<i32, CgameError> {
+    pub fn weapon_wheel_ammo_count(&mut self, player: &CgamePlayer, ammo_id: i32) -> Result<i32, CgameError> {
         self.stat(CgameExport::WeaponWheelAmmoCount, player, Some(ammo_id))
     }
 
     /// Powerup-wheel count.
-    pub fn powerup_wheel_count(
-        &mut self,
-        player: &CgamePlayer,
-        powerup_id: i32,
-    ) -> Result<i32, CgameError> {
+    pub fn powerup_wheel_count(&mut self, player: &CgamePlayer, powerup_id: i32) -> Result<i32, CgameError> {
         self.stat(CgameExport::PowerupWheelCount, player, Some(powerup_id))
     }
 
@@ -450,28 +406,18 @@ impl RereleaseCgame {
 
     /// Raw Pmove passthrough.
     pub fn pmove_raw(&mut self, address: GuestAddress) {
-        self.module.call(
-            CgameExport::Pmove,
-            &[GuestCallValue::Pointer(Some(address))],
-            None,
-        );
+        self.module
+            .call(CgameExport::Pmove, &[GuestCallValue::Pointer(Some(address))], None);
     }
 
-    fn with_text<R>(
-        &mut self,
-        text: &str,
-        run: impl FnOnce(&mut Self, GuestAddress) -> R,
-    ) -> R {
+    fn with_text<R>(&mut self, text: &str, run: impl FnOnce(&mut Self, GuestAddress) -> R) -> R {
         let bytes = text.as_bytes();
         let address = self
             .module
             .memory
             .allocate(&GuestAllocationOptions::bytes(bytes.len() + 1))
             .expect("cgame text");
-        self.module
-            .memory
-            .write(address, bytes)
-            .expect("cgame text write");
+        self.module.memory.write(address, bytes).expect("cgame text write");
         let result = run(self, address);
         self.module
             .memory
@@ -485,22 +431,14 @@ impl RereleaseCgame {
         self.with_text(value, |cgame, address| {
             cgame.module.call(
                 CgameExport::ParseConfigString,
-                &[
-                    GuestCallValue::Int32(index),
-                    GuestCallValue::Pointer(Some(address)),
-                ],
+                &[GuestCallValue::Int32(index), GuestCallValue::Pointer(Some(address))],
                 None,
             );
         });
     }
 
     /// Parse center print for a seat.
-    pub fn parse_center_print(
-        &mut self,
-        seat: u32,
-        text: &str,
-        instant: bool,
-    ) -> Result<(), CgameError> {
+    pub fn parse_center_print(&mut self, seat: u32, text: &str, instant: bool) -> Result<(), CgameError> {
         let split = self.split(seat)? as i32;
         self.with_text(text, |cgame, address| {
             cgame.with_seat(seat, |cgame| {
@@ -521,22 +459,16 @@ impl RereleaseCgame {
     /// Clear notify for a seat.
     pub fn clear_notify(&mut self, seat: u32) -> Result<(), CgameError> {
         let split = self.split(seat)? as i32;
-        self.module.call(
-            CgameExport::ClearNotify,
-            &[GuestCallValue::Int32(split)],
-            None,
-        );
+        self.module
+            .call(CgameExport::ClearNotify, &[GuestCallValue::Int32(split)], None);
         Ok(())
     }
 
     /// Clear center print for a seat.
     pub fn clear_center_print(&mut self, seat: u32) -> Result<(), CgameError> {
         let split = self.split(seat)? as i32;
-        self.module.call(
-            CgameExport::ClearCenterPrint,
-            &[GuestCallValue::Int32(split)],
-            None,
-        );
+        self.module
+            .call(CgameExport::ClearCenterPrint, &[GuestCallValue::Int32(split)], None);
         Ok(())
     }
 
@@ -561,16 +493,10 @@ impl RereleaseCgame {
 
     /// Monster flash offset for a flash id.
     pub fn monster_flash_offset(&mut self, flash_id: i32) -> Result<Vec3, CgameError> {
-        let address = self
-            .module
-            .memory
-            .allocate(&GuestAllocationOptions::bytes(12))?;
+        let address = self.module.memory.allocate(&GuestAllocationOptions::bytes(12))?;
         self.module.call(
             CgameExport::MonsterFlashOffset,
-            &[
-                GuestCallValue::Int32(flash_id),
-                GuestCallValue::Pointer(Some(address)),
-            ],
+            &[GuestCallValue::Int32(flash_id), GuestCallValue::Pointer(Some(address))],
             None,
         );
         let offset = self.module.memory.read_f32x3(address)?;
@@ -601,51 +527,24 @@ mod tests {
         let mut cgame = test_cgame();
         cgame.init().expect("init");
         cgame.touch_pictures();
-        cgame
-            .module
-            .scripted_ints
-            .insert(CgameExport::LayoutFlags, 9);
-        cgame
-            .module
-            .scripted_ints
-            .insert(CgameExport::WeaponWheelAmmoCount, 42);
+        cgame.module.scripted_ints.insert(CgameExport::LayoutFlags, 9);
+        cgame.module.scripted_ints.insert(CgameExport::WeaponWheelAmmoCount, 42);
         let player = CgamePlayer::zero();
         assert_eq!(cgame.layout_flags(&player).expect("flags"), 9);
-        assert_eq!(
-            cgame
-                .weapon_wheel_ammo_count(&player, 3)
-                .expect("ammo"),
-            42
-        );
+        assert_eq!(cgame.weapon_wheel_ammo_count(&player, 3).expect("ammo"), 42);
         assert_eq!(cgame.cvar_refreshes, 1);
-        cgame.module.flash_offset = Vec3 {
-            x: 1.0,
-            y: 2.0,
-            z: 3.0,
-        };
+        cgame.module.flash_offset = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
         let offset = cgame.monster_flash_offset(5).expect("flash");
-        assert_eq!(
-            offset,
-            Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0
-            }
-        );
+        assert_eq!(offset, Vec3 { x: 1.0, y: 2.0, z: 3.0 });
         assert!(cgame.clear_notify(99).is_err());
         cgame.splits[1] = 99;
-        assert_eq!(
-            cgame.clear_notify(1).unwrap_err(),
-            CgameError::BadSplit
-        );
+        assert_eq!(cgame.clear_notify(1).unwrap_err(), CgameError::BadSplit);
         cgame.shutdown();
-        assert!(
-            cgame
-                .module
-                .calls
-                .iter()
-                .any(|call| call.export == CgameExport::Shutdown)
-        );
+        assert!(cgame
+            .module
+            .calls
+            .iter()
+            .any(|call| call.export == CgameExport::Shutdown));
     }
 
     #[test]
@@ -676,25 +575,16 @@ mod tests {
             })
             .expect("hud");
         assert!(cgame.bound_seat.is_none());
-        assert!(
-            cgame
-                .module
-                .calls
-                .iter()
-                .any(|call| call.export == CgameExport::DrawHud)
-        );
-        cgame.parse_config_string(1, "cs");
-        cgame
-            .parse_center_print(0, "go", true)
-            .expect("center");
-        cgame.notify_message(0, "hi", false).expect("notify");
-        cgame.clear_center_print(0).expect("clear");
-        let bound: Vec<u32> = cgame
+        assert!(cgame
             .module
             .calls
             .iter()
-            .filter_map(|call| call.seat)
-            .collect();
+            .any(|call| call.export == CgameExport::DrawHud));
+        cgame.parse_config_string(1, "cs");
+        cgame.parse_center_print(0, "go", true).expect("center");
+        cgame.notify_message(0, "hi", false).expect("notify");
+        cgame.clear_center_print(0).expect("clear");
+        let bound: Vec<u32> = cgame.module.calls.iter().filter_map(|call| call.seat).collect();
         assert!(bound.contains(&0));
         let bad = cgame
             .draw_hud(&HudDraw {

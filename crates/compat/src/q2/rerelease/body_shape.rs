@@ -4,9 +4,9 @@
 //! dimension decisions and trace policy around native movement.
 
 use qa_core::math::{Bounds, Vec3};
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{field_offset, pmove_layout};
@@ -50,11 +50,7 @@ pub struct BodyBoundary {
 /// A requested local hull expands only after the selected source collision
 /// query accepts it (`movement/body-shape.ts`).
 #[must_use]
-pub fn movement_bounds(
-    previous: &Bounds,
-    requested: &Bounds,
-    clear: &dyn Fn(&Bounds) -> bool,
-) -> Bounds {
+pub fn movement_bounds(previous: &Bounds, requested: &Bounds, clear: &dyn Fn(&Bounds) -> bool) -> Bounds {
     let expands = requested.min.x < previous.min.x
         || requested.min.y < previous.min.y
         || requested.min.z < previous.min.z
@@ -68,11 +64,7 @@ pub fn movement_bounds(
     }
 }
 
-fn read_vec3(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-) -> Result<Vec3, GuestError> {
+fn read_vec3(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64) -> Result<Vec3, GuestError> {
     let at = memory.offset(base, offset)?;
     Ok(Vec3 {
         x: memory.read_f32(at)?,
@@ -81,12 +73,7 @@ fn read_vec3(
     })
 }
 
-fn write_vec3(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-    value: Vec3,
-) -> Result<(), GuestError> {
+fn write_vec3(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64, value: Vec3) -> Result<(), GuestError> {
     let at = memory.offset(base, offset)?;
     memory.write_f32(at, value.x)?;
     memory.write_f32(memory.offset(at, 4)?, value.y)?;
@@ -141,14 +128,8 @@ pub fn apply_body_frame(
     let next = movement_bounds(accepted, desired, &|bounds| probe(origin, bounds));
     if next != *desired {
         let flags = memory.read_u16(memory.offset(pmove, fields.flags)?)?;
-        memory.write_u16(
-            memory.offset(pmove, fields.flags)?,
-            (flags & !1) | (previous_duck & 1),
-        )?;
-        memory.write_i8(
-            memory.offset(pmove, fields.viewheight)?,
-            previous_height,
-        )?;
+        memory.write_u16(memory.offset(pmove, fields.flags)?, (flags & !1) | (previous_duck & 1))?;
+        memory.write_i8(memory.offset(pmove, fields.viewheight)?, previous_height)?;
     }
     write_vec3(memory, pmove, fields.mins, next.min)?;
     write_vec3(memory, pmove, fields.maxs, next.max)?;
@@ -295,40 +276,24 @@ mod tests {
         };
         let seen: std::cell::RefCell<Vec<Bounds>> = std::cell::RefCell::new(Vec::new());
         let probe = |origin: Vec3, bounds: &Bounds| {
-            assert_eq!(origin, Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0
-            });
+            assert_eq!(origin, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
             seen.borrow_mut().push(*bounds);
             true
         };
-        with_body_shape(
-            &mut memory,
-            pmove,
-            Some(&boundary()),
-            Some(&body),
-            &probe,
-            |memory| {
-                memory
-                    .write_u16(
-                        memory
-                            .offset(pmove, field_offset(&pmove_layout(), "s.pm_flags").expect("f") as i64)
-                            .expect("o"),
-                        1,
-                    )
-                    .expect("flags");
-            },
-        )
+        with_body_shape(&mut memory, pmove, Some(&boundary()), Some(&body), &probe, |memory| {
+            memory
+                .write_u16(
+                    memory
+                        .offset(pmove, field_offset(&pmove_layout(), "s.pm_flags").expect("f") as i64)
+                        .expect("o"),
+                    1,
+                )
+                .expect("flags");
+        })
         .expect("guard");
         assert_eq!(seen.borrow().len(), 1);
         let layout = pmove_layout();
-        let max = read_vec3(
-            &mut memory,
-            pmove,
-            field_offset(&layout, "maxs").expect("maxs") as i64,
-        )
-        .expect("read");
+        let max = read_vec3(&mut memory, pmove, field_offset(&layout, "maxs").expect("maxs") as i64).expect("read");
         assert_eq!(max.z, 48.0);
     }
 
@@ -372,15 +337,9 @@ mod tests {
         )
         .expect("guard");
         let layout = pmove_layout();
-        let min = read_vec3(
-            &mut memory,
-            pmove,
-            field_offset(&layout, "mins").expect("mins") as i64,
-        )
-        .expect("read");
+        let min = read_vec3(&mut memory, pmove, field_offset(&layout, "mins").expect("mins") as i64).expect("read");
         assert_eq!(min.x, -16.0);
-        let err = with_body_shape(&mut memory, pmove, None, Some(&body), &|_, _| true, |_| {})
-            .unwrap_err();
+        let err = with_body_shape(&mut memory, pmove, None, Some(&body), &|_, _| true, |_| {}).unwrap_err();
         assert_eq!(err, BodyShapeError::MissingBoundary);
         with_body_shape(&mut memory, pmove, None, None, &|_, _| true, |_| {}).expect("passthrough");
         assert!(trace_accepts(&GuestCallResult::Void).is_err());

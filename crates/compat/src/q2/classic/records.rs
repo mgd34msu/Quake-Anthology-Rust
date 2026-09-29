@@ -15,8 +15,7 @@ use qa_guest::runtime::common::memory::{allocate_native_memory, native_allocatio
 use qa_world::registry::ActorRegistry;
 
 use super::layout::{
-    ClassicQ2Error, ClassicResult, CLASSIC_Q2_CLIENT_PREFIX_BYTES, CLASSIC_Q2_EDICT_BYTES,
-    CLASSIC_Q2_EXPORT_BYTES,
+    ClassicQ2Error, ClassicResult, CLASSIC_Q2_CLIENT_PREFIX_BYTES, CLASSIC_Q2_EDICT_BYTES, CLASSIC_Q2_EXPORT_BYTES,
 };
 
 /// Read a NUL-terminated guest string (null reads as empty).
@@ -36,9 +35,9 @@ pub fn read_classic_string(
         }
         text.push(char::from(byte));
     }
+    let offset = base.offset;
     Err(ClassicQ2Error::invalid(format!(
-        "Unterminated API 3 string at 0x{:x}",
-        base.offset
+        "Unterminated API 3 string at 0x{offset:x}"
     )))
 }
 
@@ -65,10 +64,7 @@ pub fn write_classic_string(
 }
 
 /// Allocate a guest string with native word-load tail rounding.
-pub fn allocate_classic_string(
-    memory: &mut SparseGuestMemory,
-    text: &str,
-) -> ClassicResult<GuestAddress> {
+pub fn allocate_classic_string(memory: &mut SparseGuestMemory, text: &str) -> ClassicResult<GuestAddress> {
     let address = allocate_native_memory(memory, text.len() + 1, "API 3 string")?;
     write_classic_string(memory, address, text, text.len() + 1)?;
     Ok(address)
@@ -80,19 +76,12 @@ pub fn classic_string_allocation_bytes(text: &str) -> ClassicResult<usize> {
 }
 
 /// Read three consecutive floats as a vector.
-pub fn read_classic_vector(
-    memory: &mut SparseGuestMemory,
-    address: GuestAddress,
-) -> ClassicResult<Vec3> {
+pub fn read_classic_vector(memory: &mut SparseGuestMemory, address: GuestAddress) -> ClassicResult<Vec3> {
     Ok(memory.read_f32x3(address)?)
 }
 
 /// Write a vector as three consecutive floats (no allocation).
-pub fn write_classic_vector(
-    memory: &mut SparseGuestMemory,
-    address: GuestAddress,
-    vector: Vec3,
-) -> ClassicResult<()> {
+pub fn write_classic_vector(memory: &mut SparseGuestMemory, address: GuestAddress, vector: Vec3) -> ClassicResult<()> {
     memory.write_f32(address, vector.x)?;
     memory.write_f32(memory.offset(address, 4)?, vector.y)?;
     memory.write_f32(memory.offset(address, 8)?, vector.z)?;
@@ -126,11 +115,7 @@ pub struct ClassicEdictDescriptor {
 /// Component projection for callers that resolve actors externally.
 pub trait ClassicQ2ActorProjection {
     /// Project a record to its actor, if any.
-    fn project(
-        &self,
-        memory: &mut SparseGuestMemory,
-        record: &RawEntityView,
-    ) -> ClassicResult<Option<OwnedActor>>;
+    fn project(&self, memory: &mut SparseGuestMemory, record: &RawEntityView) -> ClassicResult<Option<OwnedActor>>;
     /// Resolve an actor back to its record address.
     fn address(&self, actor: &ActorId) -> ClassicResult<GuestAddress>;
 }
@@ -222,11 +207,7 @@ impl ClassicQ2Edicts {
             count: count as usize,
             capacity: capacity as usize,
         };
-        memory.check(
-            base,
-            descriptor.stride * descriptor.capacity,
-            GuestAccess::Read,
-        )?;
+        memory.check(base, descriptor.stride * descriptor.capacity, GuestAccess::Read)?;
         if self.descriptor != Some(descriptor) {
             self.descriptor = Some(descriptor);
         }
@@ -234,11 +215,7 @@ impl ClassicQ2Edicts {
     }
 
     /// Borrow the record at `slot`.
-    pub fn at(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        slot: u32,
-    ) -> ClassicResult<RawEntityView> {
+    pub fn at(&mut self, memory: &mut SparseGuestMemory, slot: u32) -> ClassicResult<RawEntityView> {
         let descriptor = self.descriptor(memory)?;
         if slot as usize >= descriptor.count {
             return Err(ClassicQ2Error::invalid("API 3 edict slot exceeds num_edicts"));
@@ -251,7 +228,7 @@ impl ClassicQ2Edicts {
     }
 
     /// Borrow the record starting at `address`.
-    pub fn from_pointer(
+    pub fn record_from_pointer(
         &mut self,
         memory: &mut SparseGuestMemory,
         address: GuestAddress,
@@ -325,7 +302,7 @@ impl ClassicQ2Edicts {
         registry: &mut ActorRegistry,
         address: GuestAddress,
     ) -> ClassicResult<Option<EdictObservation>> {
-        let record = self.from_pointer(memory, address)?;
+        let record = self.record_from_pointer(memory, address)?;
         if self.retired.contains(&record.slot) {
             return Ok(None);
         }
@@ -430,12 +407,7 @@ impl ClassicQ2Edicts {
     }
 
     /// Store the client ping word at prefix offset 184.
-    pub fn set_client_ping(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        slot: u32,
-        ping: i32,
-    ) -> ClassicResult<()> {
+    pub fn set_client_ping(&mut self, memory: &mut SparseGuestMemory, slot: u32, ping: i32) -> ClassicResult<()> {
         match self.client_prefix_address(memory, slot)? {
             Some(address) => {
                 memory.write_i32(memory.offset(address, 184)?, ping)?;
@@ -493,7 +465,9 @@ mod tests {
             ))
             .unwrap();
         memory.write_i32(exports, 3).unwrap();
-        memory.write_pointer(memory.offset(exports, 64).unwrap(), Some(edicts)).unwrap();
+        memory
+            .write_pointer(memory.offset(exports, 64).unwrap(), Some(edicts))
+            .unwrap();
         memory.write_i32(memory.offset(exports, 68).unwrap(), stride).unwrap();
         memory.write_i32(memory.offset(exports, 72).unwrap(), count).unwrap();
         memory.write_i32(memory.offset(exports, 76).unwrap(), count).unwrap();
@@ -510,7 +484,11 @@ mod tests {
         write_classic_string(&mut memory, address, "hi", 3).unwrap();
         assert_eq!(read_classic_string(&mut memory, Some(address), 64).unwrap(), "hi");
         assert!(write_classic_string(&mut memory, address, "toolong", 3).is_err());
-        let vector = Vec3 { x: 1.0, y: -2.0, z: 3.5 };
+        let vector = Vec3 {
+            x: 1.0,
+            y: -2.0,
+            z: 3.5,
+        };
         write_classic_vector(&mut memory, address, vector).unwrap();
         assert_eq!(read_classic_vector(&mut memory, address).unwrap(), vector);
     }
@@ -525,17 +503,34 @@ mod tests {
         let one = edicts.at(&mut memory, 1).unwrap();
         assert_eq!(one.slot, 1);
         assert_eq!(one.stride_bytes, 896);
-        assert!(edicts.observe(&mut memory, &mut registry, one.address).unwrap().is_none());
+        assert!(edicts
+            .observe(&mut memory, &mut registry, one.address)
+            .unwrap()
+            .is_none());
         memory.write_i32(memory.offset(one.address, 88).unwrap(), 1).unwrap();
-        let bound = edicts.observe(&mut memory, &mut registry, one.address).unwrap().unwrap();
+        let bound = edicts
+            .observe(&mut memory, &mut registry, one.address)
+            .unwrap()
+            .unwrap();
         assert!(matches!(bound, EdictObservation::Bound(_)));
-        let again = edicts.observe(&mut memory, &mut registry, one.address).unwrap().unwrap();
+        let again = edicts
+            .observe(&mut memory, &mut registry, one.address)
+            .unwrap()
+            .unwrap();
         assert!(matches!(again, EdictObservation::Existing(_)));
-        assert_eq!(edicts.pointer(&mut memory, &registry, bound.actor().id()).unwrap(), one.address);
+        assert_eq!(
+            edicts.pointer(&mut memory, &registry, bound.actor().id()).unwrap(),
+            one.address
+        );
         memory.write_i32(memory.offset(one.address, 88).unwrap(), 0).unwrap();
-        assert!(edicts.observe(&mut memory, &mut registry, one.address).unwrap().is_none());
+        assert!(edicts
+            .observe(&mut memory, &mut registry, one.address)
+            .unwrap()
+            .is_none());
         assert!(registry.at_source(&provider, 1).is_none());
-        assert!(edicts.from_pointer(&mut memory, memory.offset(one.address, 1).unwrap()).is_err());
+        assert!(edicts
+            .record_from_pointer(&mut memory, memory.offset(one.address, 1).unwrap())
+            .is_err());
     }
 
     #[test]
@@ -554,13 +549,18 @@ mod tests {
         let client = memory
             .allocate(&qa_guest::core::contracts::GuestAllocationOptions::bytes(512))
             .unwrap();
-        memory.write_pointer(memory.offset(two.address, 84).unwrap(), Some(client)).unwrap();
+        memory
+            .write_pointer(memory.offset(two.address, 84).unwrap(), Some(client))
+            .unwrap();
         edicts.set_client_ping(&mut memory, 2, 75).unwrap();
         assert_eq!(memory.read_i32(memory.offset(client, 184).unwrap()).unwrap(), 75);
         assert!(edicts.set_client_ping(&mut memory, 1, 9).is_err());
         let bound = edicts.reconcile(&mut memory, &mut registry).unwrap();
         assert_eq!(bound.len(), 1);
-        assert_eq!(registry.source_of(bound[0].id()), Some((ProviderId::new("q2", "classic"), 2)));
+        assert_eq!(
+            registry.source_of(bound[0].id()),
+            Some((ProviderId::new("q2", "classic"), 2))
+        );
         assert!(edicts.current(&mut memory, &registry, &two).unwrap().is_some());
         edicts.retire_input_client(2);
         assert!(edicts.current(&mut memory, &registry, &two).unwrap().is_none());

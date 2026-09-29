@@ -42,6 +42,14 @@ fn fault<T>(message: impl Into<String>) -> HostResult<T> {
     Err(NativeHostError::Fault(message.into()))
 }
 
+fn factor_at(factors: &[f64], flag: f64) -> Option<f64> {
+    if flag >= 0.0 && flag.fract() == 0.0 && flag <= usize::MAX as f64 {
+        factors.get(flag as usize).copied()
+    } else {
+        None
+    }
+}
+
 /// Generational id for one synthetic actor (entity slot plus generation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeActorId {
@@ -1090,15 +1098,13 @@ impl NativePrimaryWeapons {
             } => (*address, *encoding, factors.clone()),
         };
         let value = host.core.read_scalar(host.core.at(address)?, encoding)?;
-        let factor = factors
-            .get(value as usize)
-            .copied()
-            .unwrap_or_else(|| f64::NAN);
-        if factor.is_nan() {
-            return fault("original weapon damage flag has no declared source factor");
+        match factor_at(&factors, value) {
+            Some(factor) => {
+                self.damage_factors.insert(actor, factor);
+                Ok(())
+            }
+            None => fault("original weapon damage flag has no declared source factor"),
         }
-        self.damage_factors.insert(actor, factor);
-        Ok(())
     }
 
     /// Damage factor for an actor: sampled factor or helper result.
@@ -1172,13 +1178,10 @@ impl NativePrimaryWeapons {
             None => return fault("original firing modifier has not run for this actor"),
         };
         match &self.profile.delay.evaluate {
-            DelayEvaluate::SourceFlag { factors } => {
-                let factor = factors.get(flag as usize).copied().unwrap_or(f64::NAN);
-                if factor.is_nan() {
-                    return fault("original firing flag has no declared source factor");
-                }
-                Ok(milliseconds * factor)
-            }
+            DelayEvaluate::SourceFlag { factors } => match factor_at(factors, flag) {
+                Some(factor) => Ok(milliseconds * factor),
+                None => fault("original firing flag has no declared source factor"),
+            },
             DelayEvaluate::SourceAnimation {
                 entry,
                 baseline_milliseconds,

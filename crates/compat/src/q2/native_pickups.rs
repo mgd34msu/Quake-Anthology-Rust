@@ -651,9 +651,9 @@ impl NativePrimaryPickups {
         self.frames.pop();
     }
 
-    /// Run a grant for the current frame. Blocked selections refuse; original
-    /// selections must run the original (the caller does so on `Accepted`
-    /// with an untouched recipient region).
+    /// Run a grant for the current frame. Blocked selections refuse; on
+    /// `Accepted` the caller runs the emulated original, skipping the
+    /// recipient region for replacements and running it for originals.
     pub fn grant(
         &mut self,
         host: &mut SyntheticHost,

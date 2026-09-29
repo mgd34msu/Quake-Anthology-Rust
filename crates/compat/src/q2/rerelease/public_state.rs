@@ -4,9 +4,9 @@
 //! published edict prefix (no `g_local.h` private members) into host reads.
 
 use qa_core::math::Vec3;
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAccess, GuestAddress, GuestLayout};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{client_layout, edict_layout, entity_state_layout, field_offset};
@@ -115,10 +115,7 @@ pub struct RereleasePublicEdict<'m> {
 
 impl<'m> RereleasePublicEdict<'m> {
     /// Create over an edict record address.
-    pub fn new(
-        memory: &'m mut SparseGuestMemory,
-        address: GuestAddress,
-    ) -> Result<Self, PublicStateError> {
+    pub fn new(memory: &'m mut SparseGuestMemory, address: GuestAddress) -> Result<Self, PublicStateError> {
         let edict = edict_layout();
         memory.check(address, edict.byte_length, GuestAccess::Read)?;
         Ok(Self {
@@ -182,19 +179,13 @@ impl<'m> RereleasePublicEdict<'m> {
     pub fn set_vector(&mut self, name: &str, value: Vec3) -> Result<(), PublicStateError> {
         let address = self.at(name)?;
         self.memory.write_f32(address, value.x)?;
-        self.memory
-            .write_f32(self.memory.offset(address, 4)?, value.y)?;
-        self.memory
-            .write_f32(self.memory.offset(address, 8)?, value.z)?;
+        self.memory.write_f32(self.memory.offset(address, 4)?, value.y)?;
+        self.memory.write_f32(self.memory.offset(address, 8)?, value.z)?;
         Ok(())
     }
 
     /// Body snapshot, reusing the cached record when unchanged.
-    pub fn body(
-        &mut self,
-        velocity: Option<Vec3>,
-        origin: Option<Vec3>,
-    ) -> Result<PublicBody, PublicStateError> {
+    pub fn body(&mut self, velocity: Option<Vec3>, origin: Option<Vec3>) -> Result<PublicBody, PublicStateError> {
         let next_origin = match origin {
             Some(origin) => origin,
             None => self.vector("s.origin")?,
@@ -230,8 +221,7 @@ impl<'m> RereleasePublicEdict<'m> {
     /// Client record address.
     pub fn client(&mut self) -> Result<GuestAddress, PublicStateError> {
         let address = self.pointer("client")?.ok_or(PublicStateError::NoClient)?;
-        self.memory
-            .check(address, self.client.byte_length, GuestAccess::Read)?;
+        self.memory.check(address, self.client.byte_length, GuestAccess::Read)?;
         Ok(address)
     }
 
@@ -244,8 +234,7 @@ impl<'m> RereleasePublicEdict<'m> {
     /// Raw player-state bytes for the owning player module.
     pub fn player_state_bytes(&mut self) -> Result<Vec<u8>, PublicStateError> {
         let client = self.client()?;
-        let length =
-            field_offset(&self.client, "ping").map_err(|_| PublicStateError::NoClient)?;
+        let length = field_offset(&self.client, "ping").map_err(|_| PublicStateError::NoClient)?;
         Ok(self.memory.copy(client, length)?)
     }
 
@@ -270,9 +259,7 @@ impl<'m> RereleasePublicEdict<'m> {
         let height = self.client_field("ps.pmove.viewheight")?;
         let offset = self.client_field("ps.viewoffset")?;
         Ok(PlayerView {
-            view_offset: self
-                .memory
-                .read_f32x3(self.memory.offset(client, offset)?)?,
+            view_offset: self.memory.read_f32x3(self.memory.offset(client, offset)?)?,
             view_height: self.memory.read_i8(self.memory.offset(client, height)?)?,
             movement_flags: self.memory.read_u16(self.memory.offset(client, flags)?)?,
         })
@@ -323,8 +310,7 @@ impl<'m> RereleasePublicEdict<'m> {
         }
         let client = self.client()?;
         let offset = self.client_field("ping")?;
-        self.memory
-            .write_i32(self.memory.offset(client, offset)?, value)?;
+        self.memory.write_i32(self.memory.offset(client, offset)?, value)?;
         Ok(())
     }
 
@@ -423,35 +409,14 @@ mod tests {
         let address = edict_block(&mut memory);
         let mut edict = RereleasePublicEdict::new(&mut memory, address).expect("edict");
         edict
-            .set_vector(
-                "s.origin",
-                Vec3 {
-                    x: 1.0,
-                    y: 2.0,
-                    z: 3.0,
-                },
-            )
+            .set_vector("s.origin", Vec3 { x: 1.0, y: 2.0, z: 3.0 })
             .expect("origin");
-        assert_eq!(
-            edict.vector("s.origin").expect("read"),
-            Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0
-            }
-        );
+        assert_eq!(edict.vector("s.origin").expect("read"), Vec3 { x: 1.0, y: 2.0, z: 3.0 });
         let first = edict.body(None, None).expect("body");
         let second = edict.body(None, None).expect("cached");
         assert_eq!(first, second);
         let moved = edict
-            .body(
-                None,
-                Some(Vec3 {
-                    x: 9.0,
-                    y: 9.0,
-                    z: 9.0,
-                }),
-            )
+            .body(None, Some(Vec3 { x: 9.0, y: 9.0, z: 9.0 }))
             .expect("override");
         assert_eq!(moved.origin.x, 9.0);
         assert_eq!(edict.uint("svflags").expect("flags"), 0);
@@ -468,10 +433,7 @@ mod tests {
             .expect("alloc");
         let edict_layout = edict_layout();
         let client_field = memory
-            .offset(
-                address,
-                field_offset(&edict_layout, "client").expect("c") as i64,
-            )
+            .offset(address, field_offset(&edict_layout, "client").expect("c") as i64)
             .expect("o");
         memory.write_pointer(client_field, Some(client)).expect("link");
         let mut edict = RereleasePublicEdict::new(&mut memory, address).expect("edict");
@@ -485,14 +447,7 @@ mod tests {
         assert_eq!(models.model_indexes, [0, 0, 0, 0]);
         let state = edict.state().expect("state");
         assert_eq!(state.number, 0);
-        assert_eq!(
-            state.origin,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0
-            }
-        );
+        assert_eq!(state.origin, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
         let blob = edict.player_state_bytes().expect("blob");
         assert_eq!(blob.len(), 296);
     }

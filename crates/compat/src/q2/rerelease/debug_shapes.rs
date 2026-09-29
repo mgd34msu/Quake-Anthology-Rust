@@ -4,9 +4,9 @@
 //! `Draw_*` imports into tessellated debug lines with source lifetimes.
 
 use qa_core::math::{Vec3, Vec4};
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 /// Debug-shape import failure.
@@ -252,23 +252,12 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
             direction,
             length,
             size,
-        } => arrow(
-            *origin,
-            add3(*origin, scale3(*direction, *length)),
-            *size,
-            color,
-            color,
-        ),
+        } => arrow(*origin, add3(*origin, scale3(*direction, *length)), *size, color, color),
     }
     lines
 }
 
-fn circle_lines(
-    origin: Vec3,
-    radius: f32,
-    line: &mut dyn FnMut(Vec3, Vec3, Vec4),
-    color: Vec4,
-) {
+fn circle_lines(origin: Vec3, radius: f32, line: &mut dyn FnMut(Vec3, Vec3, Vec4), color: Vec4) {
     let count = (5.0 + radius / 8.0).min(16.0).trunc() as usize;
     let point = |i: usize| {
         let angle = i as f32 * std::f32::consts::PI * 2.0 / count as f32;
@@ -283,13 +272,7 @@ fn circle_lines(
     }
 }
 
-fn cylinder_lines(
-    origin: Vec3,
-    half_height: f32,
-    radius: f32,
-    line: &mut dyn FnMut(Vec3, Vec3, Vec4),
-    color: Vec4,
-) {
+fn cylinder_lines(origin: Vec3, half_height: f32, radius: f32, line: &mut dyn FnMut(Vec3, Vec3, Vec4), color: Vec4) {
     let count = (5.0 + radius / 8.0).min(16.0).trunc() as usize;
     let point = |i: usize, z: f32| Vec3 {
         x: origin.x + (i as f32 * std::f32::consts::PI * 2.0 / count as f32).cos() * radius,
@@ -305,12 +288,7 @@ fn cylinder_lines(
     }
 }
 
-fn sphere_lines(
-    origin: Vec3,
-    radius: f32,
-    line: &mut dyn FnMut(Vec3, Vec3, Vec4),
-    color: Vec4,
-) {
+fn sphere_lines(origin: Vec3, radius: f32, line: &mut dyn FnMut(Vec3, Vec3, Vec4), color: Vec4) {
     let stacks = (4.0 + radius / 32.0).min(10.0).trunc() as usize;
     let slices = (6.0 + radius / 32.0).min(16.0).trunc() as usize;
     let ring = |stack: usize, slice: usize| {
@@ -398,8 +376,8 @@ impl RereleaseDebugShapeImports {
             return None;
         }
         match name {
-            "Draw_Line" | "Draw_Point" | "Draw_Circle" | "Draw_Bounds" | "Draw_Sphere"
-            | "Draw_Cylinder" | "Draw_Ray" | "Draw_Arrow" => {}
+            "Draw_Line" | "Draw_Point" | "Draw_Circle" | "Draw_Bounds" | "Draw_Sphere" | "Draw_Cylinder"
+            | "Draw_Ray" | "Draw_Arrow" => {}
             _ => return None,
         }
         Some(self.dispatch(memory, name, args))
@@ -426,30 +404,28 @@ impl RereleaseDebugShapeImports {
                 _ => 0,
             }
         };
-        let mut vector =
-            |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec3, DebugShapeError> {
-                let address = pointer(index).ok_or(DebugShapeError::NonFinite)?;
-                Ok(memory.read_f32x3(address)?)
-            };
+        let mut vector = |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec3, DebugShapeError> {
+            let address = pointer(index).ok_or(DebugShapeError::NonFinite)?;
+            Ok(memory.read_f32x3(address)?)
+        };
         let float = |index: usize| -> Result<f32, DebugShapeError> {
             match args.get(index) {
                 Some(GuestCallValue::Float32(value)) if value.is_finite() => Ok(*value),
                 _ => Err(DebugShapeError::NonFinite),
             }
         };
-        let mut color =
-            |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec4, DebugShapeError> {
-                let address = pointer(index).ok_or(DebugShapeError::NonFinite)?;
-                let byte = |offset: i64| -> Result<f32, DebugShapeError> {
-                    Ok(f32::from(memory.read_u8(memory.offset(address, offset)?)?) / 255.0)
-                };
-                Ok(Vec4 {
-                    x: byte(0)?,
-                    y: byte(1)?,
-                    z: byte(2)?,
-                    w: byte(3)?,
-                })
+        let mut color = |memory: &mut SparseGuestMemory, index: usize| -> Result<Vec4, DebugShapeError> {
+            let address = pointer(index).ok_or(DebugShapeError::NonFinite)?;
+            let byte = |offset: i64| -> Result<f32, DebugShapeError> {
+                Ok(f32::from(memory.read_u8(memory.offset(address, offset)?)?) / 255.0)
             };
+            Ok(Vec4 {
+                x: byte(0)?,
+                y: byte(1)?,
+                z: byte(2)?,
+                w: byte(3)?,
+            })
+        };
         let (shape, color_index, lifetime_index) = match name {
             "Draw_Line" => (
                 DebugShape::Line {
@@ -555,9 +531,7 @@ mod tests {
     }
 
     fn write_vec(memory: &mut SparseGuestMemory, value: Vec3) -> GuestAddress {
-        let address = memory
-            .allocate(&GuestAllocationOptions::bytes(12))
-            .expect("alloc");
+        let address = memory.allocate(&GuestAllocationOptions::bytes(12)).expect("alloc");
         memory.write_f32(address, value.x).expect("x");
         memory
             .write_f32(memory.offset(address, 4).expect("o"), value.y)
@@ -569,9 +543,7 @@ mod tests {
     }
 
     fn write_color(memory: &mut SparseGuestMemory) -> GuestAddress {
-        let address = memory
-            .allocate(&GuestAllocationOptions::bytes(4))
-            .expect("alloc");
+        let address = memory.allocate(&GuestAllocationOptions::bytes(4)).expect("alloc");
         for (index, byte) in [255u8, 0, 0, 255].into_iter().enumerate() {
             memory
                 .write_u8(memory.offset(address, index as i64).expect("o"), byte)
@@ -584,22 +556,8 @@ mod tests {
     fn draw_line_and_point_emit_lines() {
         let mut memory = test_memory();
         let mut imports = RereleaseDebugShapeImports::new();
-        let start = write_vec(
-            &mut memory,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        );
-        let end = write_vec(
-            &mut memory,
-            Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
-        );
+        let start = write_vec(&mut memory, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+        let end = write_vec(&mut memory, Vec3 { x: 1.0, y: 2.0, z: 3.0 });
         let tint = write_color(&mut memory);
         imports
             .invoke(
@@ -651,24 +609,12 @@ mod tests {
             w: 1.0,
         };
         let bounds = DebugShape::Bounds {
-            min: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            max: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
+            min: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            max: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
         };
         assert_eq!(debug_shape_lines(&bounds, red, false).len(), 12);
         let circle = DebugShape::Circle {
-            origin: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             radius: 8.0,
         };
         assert_eq!(debug_shape_lines(&circle, red, true).len(), 6);
@@ -680,10 +626,6 @@ mod tests {
         );
         let mut imports = RereleaseDebugShapeImports::new();
         let mut memory = test_memory();
-        assert!(
-            imports
-                .invoke(&mut memory, "game", "Com_Print", &[])
-                .is_none()
-        );
+        assert!(imports.invoke(&mut memory, "game", "Com_Print", &[]).is_none());
     }
 }

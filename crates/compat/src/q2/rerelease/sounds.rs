@@ -4,9 +4,9 @@
 //! `sound` / `positioned_sound` / `local_sound` imports into audio events.
 
 use qa_core::math::Vec3;
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 /// Sound import failure.
@@ -77,9 +77,7 @@ impl RereleaseSoundImports {
         args: &[GuestCallValue],
         source_slot: &dyn Fn(GuestAddress) -> u32,
     ) -> Option<Result<GuestCallResult, SoundError>> {
-        if api != "game"
-            || (name != "sound" && name != "positioned_sound" && name != "local_sound")
-        {
+        if api != "game" || (name != "sound" && name != "positioned_sound" && name != "local_sound") {
             return None;
         }
         Some(self.dispatch(memory, name, args, source_slot))
@@ -215,12 +213,8 @@ mod tests {
         assert_eq!(first.channel, 1);
         assert_eq!(first.sound_index, 7);
         assert_eq!(first.audience, SoundAudience::World);
-        let origin = memory
-            .allocate(&GuestAllocationOptions::bytes(12))
-            .expect("alloc");
-        memory
-            .write_f32(memory.offset(origin, 8).expect("o"), 4.0)
-            .expect("z");
+        let origin = memory.allocate(&GuestAllocationOptions::bytes(12)).expect("alloc");
+        memory.write_f32(memory.offset(origin, 8).expect("o"), 4.0).expect("z");
         imports
             .invoke(
                 &mut memory,
@@ -241,14 +235,7 @@ mod tests {
             .expect("positioned");
         let second = &imports.events[1];
         assert_eq!(second.entity_slot, None);
-        assert_eq!(
-            second.origin,
-            Some(Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 4.0
-            })
-        );
+        assert_eq!(second.origin, Some(Vec3 { x: 0.0, y: 0.0, z: 4.0 }));
         assert_eq!(second.time_offset, 0.25);
     }
 
@@ -294,11 +281,9 @@ mod tests {
             }
         );
         assert_eq!(imports.events[0].entity_slot, Some(5));
-        assert!(
-            imports
-                .invoke(&mut memory, "game", "Com_Print", &[], &slot_of)
-                .is_none()
-        );
+        assert!(imports
+            .invoke(&mut memory, "game", "Com_Print", &[], &slot_of)
+            .is_none());
         let bad = imports
             .invoke(
                 &mut memory,

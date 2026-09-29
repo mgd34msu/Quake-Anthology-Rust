@@ -55,10 +55,7 @@ fn storage_bytes(storage: GuestStorage) -> usize {
         GuestStorage::Int8 | GuestStorage::Uint8 => 1,
         GuestStorage::Int16 | GuestStorage::Uint16 => 2,
         GuestStorage::Int32 | GuestStorage::Uint32 | GuestStorage::Float32 => 4,
-        GuestStorage::Int64
-        | GuestStorage::Uint64
-        | GuestStorage::Float64
-        | GuestStorage::Pointer => 8,
+        GuestStorage::Int64 | GuestStorage::Uint64 | GuestStorage::Float64 | GuestStorage::Pointer => 8,
     }
 }
 
@@ -504,20 +501,11 @@ pub fn private_client_layout() -> GuestLayout {
     members.push(scalar("weapon_fire_buffered", GuestStorage::Uint8, 1));
     members.push(scalar("weapon_thunk", GuestStorage::Uint8, 1));
     members.push(scalar("newweapon", GuestStorage::Pointer, 1));
-    for name in [
-        "damage_armor",
-        "damage_parmor",
-        "damage_blood",
-        "damage_knockback",
-    ] {
+    for name in ["damage_armor", "damage_parmor", "damage_blood", "damage_knockback"] {
         members.push(scalar(name, GuestStorage::Int32, 1));
     }
     members.push(scalar("damage_from", GuestStorage::Float32, 3));
-    members.push(nested(
-        "damage_indicators",
-        damage_indicator_layout(),
-        4,
-    ));
+    members.push(nested("damage_indicators", damage_indicator_layout(), 4));
     members.push(scalar("num_damage_indicators", GuestStorage::Uint8, 1));
     members.push(scalar("killer_yaw", GuestStorage::Float32, 1));
     members.push(scalar("weaponstate", GuestStorage::Int32, 1));
@@ -667,13 +655,7 @@ pub fn server_entity_layout() -> GuestLayout {
         members.push(scalar(name, GuestStorage::Int32, 1));
     }
     members.push(scalar("waterlevel", GuestStorage::Uint8, 1));
-    for name in [
-        "viewangles",
-        "viewforward",
-        "velocity",
-        "start_origin",
-        "end_origin",
-    ] {
+    for name in ["viewangles", "viewforward", "velocity", "start_origin", "end_origin"] {
         members.push(scalar(name, GuestStorage::Float32, 3));
     }
     for name in ["enemy", "ground_entity", "classname", "targetname"] {
@@ -763,15 +745,7 @@ pub fn private_edict_prefix_layout() -> GuestLayout {
     members.push(scalar("yaw_speed", GuestStorage::Float32, 1));
     members.push(scalar("ideal_yaw", GuestStorage::Float32, 1));
     members.push(scalar("nextthink", GuestStorage::Int64, 1));
-    for name in [
-        "prethink",
-        "postthink",
-        "think",
-        "touch",
-        "use",
-        "pain",
-        "die",
-    ] {
+    for name in ["prethink", "postthink", "think", "touch", "use", "pain", "die"] {
         members.push(nested(name, save.clone(), 1));
     }
     for name in [
@@ -800,11 +774,7 @@ pub fn private_edict_prefix_layout() -> GuestLayout {
     for name in ["chain", "enemy", "oldenemy", "activator", "groundentity"] {
         members.push(scalar(name, GuestStorage::Pointer, 1));
     }
-    members.push(scalar(
-        "groundentity_linkcount",
-        GuestStorage::Int32,
-        1,
-    ));
+    members.push(scalar("groundentity_linkcount", GuestStorage::Int32, 1));
     structure("edict_t_private_prefix", members)
 }
 
@@ -857,15 +827,9 @@ pub fn export_table_layout(kind: &str, names: &[&str]) -> GuestLayout {
     }
     if kind == "game" {
         let at = members.len().min(20);
-        for (index, name) in [
-            "edicts",
-            "edict_size",
-            "num_edicts",
-            "max_edicts",
-            "server_flags",
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, name) in ["edicts", "edict_size", "num_edicts", "max_edicts", "server_flags"]
+            .into_iter()
+            .enumerate()
         {
             let storage = match name {
                 "edicts" => GuestStorage::Pointer,

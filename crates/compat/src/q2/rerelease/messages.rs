@@ -4,9 +4,9 @@
 //! `Write*` imports and `q2repro` `PF_Unicast` into transport events.
 
 use qa_core::math::Vec3;
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 /// Message import failure.
@@ -131,8 +131,7 @@ impl SizeBuf {
         let mut best = 0u8;
         let mut best_dot = 0.0f32;
         for (index, candidate) in BYTEDIRS.iter().enumerate() {
-            let dot =
-                direction.x * candidate[0] + direction.y * candidate[1] + direction.z * candidate[2];
+            let dot = direction.x * candidate[0] + direction.y * candidate[1] + direction.z * candidate[2];
             if dot > best_dot {
                 best_dot = dot;
                 best = index as u8;
@@ -263,10 +262,7 @@ impl<S: RereleaseMessageServices> RereleaseMessageImports<S> {
         Self { services }
     }
 
-    fn vector(
-        memory: &mut SparseGuestMemory,
-        address: GuestAddress,
-    ) -> Result<Vec3, GuestError> {
+    fn vector(memory: &mut SparseGuestMemory, address: GuestAddress) -> Result<Vec3, GuestError> {
         memory.read_f32x3(address)
     }
 
@@ -310,19 +306,13 @@ impl<S: RereleaseMessageServices> RereleaseMessageImports<S> {
         };
         match name {
             "WriteChar" | "WriteByte" => {
-                self.services
-                    .buffer_mut()
-                    .write_byte(integer(0) as i32)?;
+                self.services.buffer_mut().write_byte(integer(0) as i32)?;
             }
             "WriteShort" => {
-                self.services
-                    .buffer_mut()
-                    .write_short(integer(0) as i32)?;
+                self.services.buffer_mut().write_short(integer(0) as i32)?;
             }
             "WriteLong" => {
-                self.services
-                    .buffer_mut()
-                    .write_long(integer(0) as i32)?;
+                self.services.buffer_mut().write_long(integer(0) as i32)?;
             }
             "WriteFloat" | "WriteAngle" => {
                 let value = match args.first() {
@@ -371,9 +361,7 @@ impl<S: RereleaseMessageServices> RereleaseMessageImports<S> {
             },
             "WriteEntity" => {
                 let address = pointer(0).ok_or(MessageError::MissingOrigin)?;
-                self.services
-                    .buffer_mut()
-                    .write_short(source_slot(address) as i32)?;
+                self.services.buffer_mut().write_short(source_slot(address) as i32)?;
             }
             "unicast" => {
                 if self.services.buffer_mut().overflowed {
@@ -385,11 +373,7 @@ impl<S: RereleaseMessageServices> RereleaseMessageImports<S> {
                         let slot = source_slot(address);
                         let (reliable, dupe_key, bytes) = {
                             let buffer = self.services.buffer_mut();
-                            (
-                                integer(1) != 0,
-                                integer(2) as u32,
-                                buffer.committed().to_vec(),
-                            )
+                            (integer(1) != 0, integer(2) as u32, buffer.committed().to_vec())
                         };
                         if self.services.accepts_client(slot) && !bytes.is_empty() {
                             self.services.unicast(RereleaseUnicast {
@@ -469,10 +453,7 @@ mod tests {
         }
     }
 
-    fn harness() -> (
-        SparseGuestMemory,
-        RereleaseMessageImports<FakeServices>,
-    ) {
+    fn harness() -> (SparseGuestMemory, RereleaseMessageImports<FakeServices>) {
         let module = ModuleIdentity::new(
             ProviderId::new("q2", "messages-test"),
             "game.dll",
@@ -496,7 +477,11 @@ mod tests {
     fn writers_encode_and_unicast_delivers() {
         let (mut memory, mut imports) = harness();
         let slot_of = |address: GuestAddress| {
-            if address.offset == 0x100 { 1 } else { 7 }
+            if address.offset == 0x100 {
+                1
+            } else {
+                7
+            }
         };
         imports
             .invoke(&mut memory, "game", "WriteByte", &[int(0x41)], &slot_of)
@@ -523,11 +508,7 @@ mod tests {
                 &mut memory,
                 "game",
                 "unicast",
-                &[
-                    GuestCallValue::Pointer(Some(entity)),
-                    int(1),
-                    int(9),
-                ],
+                &[GuestCallValue::Pointer(Some(entity)), int(1), int(9)],
                 &slot_of,
             )
             .unwrap()
@@ -539,27 +520,19 @@ mod tests {
         assert_eq!(sent.dupe_key, 9);
         assert_eq!(sent.bytes.len(), 7);
         assert_eq!(imports.services.buffer.cursize, 0);
-        assert!(
-            imports
-                .invoke(&mut memory, "cgame", "WriteByte", &[int(1)], &slot_of)
-                .is_none()
-        );
+        assert!(imports
+            .invoke(&mut memory, "cgame", "WriteByte", &[int(1)], &slot_of)
+            .is_none());
     }
 
     #[test]
     fn multicast_validates_destination_and_dir() {
         let (mut memory, mut imports) = harness();
         let slot_of = |_: GuestAddress| 1;
-        let origin = memory
-            .allocate(&GuestAllocationOptions::bytes(12))
-            .expect("alloc");
+        let origin = memory.allocate(&GuestAllocationOptions::bytes(12)).expect("alloc");
         memory.write_f32(origin, 1.0).expect("x");
-        memory
-            .write_f32(memory.offset(origin, 4).expect("o"), 2.0)
-            .expect("y");
-        memory
-            .write_f32(memory.offset(origin, 8).expect("o"), 3.0)
-            .expect("z");
+        memory.write_f32(memory.offset(origin, 4).expect("o"), 2.0).expect("y");
+        memory.write_f32(memory.offset(origin, 8).expect("o"), 3.0).expect("z");
         imports
             .invoke(
                 &mut memory,
@@ -575,11 +548,7 @@ mod tests {
                 &mut memory,
                 "game",
                 "multicast",
-                &[
-                    GuestCallValue::Pointer(Some(origin)),
-                    int(2),
-                    int(0),
-                ],
+                &[GuestCallValue::Pointer(Some(origin)), int(2), int(0)],
                 &slot_of,
             )
             .unwrap()

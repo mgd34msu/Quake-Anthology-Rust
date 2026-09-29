@@ -4,9 +4,9 @@
 //! external equipment velocity, gravity, speed and pose around native Pmove.
 
 use qa_core::math::{Bounds, Vec3};
-use qa_guest::GuestError;
 use qa_guest::core::contracts::GuestAddress;
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{field_offset, pmove_layout};
@@ -79,12 +79,7 @@ pub struct SpeedLoad {
     pub register: usize,
 }
 
-fn write_vec3(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-    value: Vec3,
-) -> Result<(), GuestError> {
+fn write_vec3(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64, value: Vec3) -> Result<(), GuestError> {
     let at = memory.offset(base, offset)?;
     memory.write_f32(at, value.x)?;
     memory.write_f32(memory.offset(at, 4)?, value.y)?;
@@ -109,8 +104,7 @@ pub fn prepare_equipment_movement(
         write_vec3(memory, pmove, at("s.velocity")?, velocity)?;
     }
     let gravity = at("s.gravity")?;
-    let scaled = f32::from(memory.read_i16(memory.offset(pmove, gravity)?)?)
-        * equipment.gravity_scale;
+    let scaled = f32::from(memory.read_i16(memory.offset(pmove, gravity)?)?) * equipment.gravity_scale;
     memory.write_i16(memory.offset(pmove, gravity)?, scaled.trunc() as i16)?;
     let flags = at("s.pm_flags")?;
     let current = memory.read_u16(memory.offset(pmove, flags)?)?;
@@ -176,16 +170,7 @@ pub fn with_equipment_movement<R>(
     let pose = equipment.and_then(|value| value.pose);
     if pose.is_some() {
         memory.write_i32(memory.offset(pmove, move_type)?, KEX_PM_FREEZE)?;
-        write_vec3(
-            memory,
-            pmove,
-            at("s.velocity")?,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        )?;
+        write_vec3(memory, pmove, at("s.velocity")?, Vec3 { x: 0.0, y: 0.0, z: 0.0 })?;
     }
     let result = execute(memory);
     if pose.is_some() {
@@ -232,10 +217,7 @@ mod tests {
         memory
             .write_i16(
                 memory
-                    .offset(
-                        address,
-                        field_offset(&layout, "s.gravity").expect("g") as i64,
-                    )
+                    .offset(address, field_offset(&layout, "s.gravity").expect("g") as i64)
                     .expect("o"),
                 800,
             )
@@ -252,11 +234,7 @@ mod tests {
             &mut memory,
             pmove,
             &EquipmentMovement {
-                velocity: Some(Vec3 {
-                    x: 1.0,
-                    y: 2.0,
-                    z: 3.0,
-                }),
+                velocity: Some(Vec3 { x: 1.0, y: 2.0, z: 3.0 }),
                 gravity_scale: 0.5,
                 prediction_suppressed: true,
                 ..EquipmentMovement::default()
@@ -264,24 +242,15 @@ mod tests {
         )
         .expect("prepare");
         let velocity = memory
-            .offset(
-                pmove,
-                field_offset(&layout, "s.velocity").expect("v") as i64,
-            )
+            .offset(pmove, field_offset(&layout, "s.velocity").expect("v") as i64)
             .expect("o");
         assert_eq!(memory.read_f32(velocity).expect("x"), 1.0);
         let gravity = memory
-            .offset(
-                pmove,
-                field_offset(&layout, "s.gravity").expect("g") as i64,
-            )
+            .offset(pmove, field_offset(&layout, "s.gravity").expect("g") as i64)
             .expect("o");
         assert_eq!(memory.read_i16(gravity).expect("g"), 400);
         let flags = memory
-            .offset(
-                pmove,
-                field_offset(&layout, "s.pm_flags").expect("f") as i64,
-            )
+            .offset(pmove, field_offset(&layout, "s.pm_flags").expect("f") as i64)
             .expect("o");
         assert_eq!(
             memory.read_u16(flags).expect("f") & PMF_NO_POSITIONAL_PREDICTION,
@@ -295,10 +264,7 @@ mod tests {
         let pmove = pmove_block(&mut memory);
         let layout = pmove_layout();
         let type_at = memory
-            .offset(
-                pmove,
-                field_offset(&layout, "s.pm_type").expect("t") as i64,
-            )
+            .offset(pmove, field_offset(&layout, "s.pm_type").expect("t") as i64)
             .expect("o");
         memory.write_i32(type_at, 1).expect("type");
         let mut lanes = [1.0f32; 16];
@@ -322,36 +288,22 @@ mod tests {
                         y: -8.0,
                         z: -8.0,
                     },
-                    max: Vec3 {
-                        x: 8.0,
-                        y: 8.0,
-                        z: 8.0,
-                    },
+                    max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
                 },
                 crouched: true,
             }),
             ..EquipmentMovement::default()
         };
-        with_equipment_movement(
-            &mut memory,
-            pmove,
-            &mut lanes,
-            &loads,
-            Some(&equipment),
-            |memory| {
-                assert_eq!(memory.read_i32(type_at).expect("frozen"), KEX_PM_FREEZE);
-            },
-        )
+        with_equipment_movement(&mut memory, pmove, &mut lanes, &loads, Some(&equipment), |memory| {
+            assert_eq!(memory.read_i32(type_at).expect("frozen"), KEX_PM_FREEZE);
+        })
         .expect("guard");
         assert_eq!(lanes[0], 2.0);
         assert_eq!(lanes[1], 2.0);
         assert_eq!(lanes[2], 1.0);
         assert_eq!(memory.read_i32(type_at).expect("type"), 1);
         let flags = memory
-            .offset(
-                pmove,
-                field_offset(&layout, "s.pm_flags").expect("f") as i64,
-            )
+            .offset(pmove, field_offset(&layout, "s.pm_flags").expect("f") as i64)
             .expect("o");
         assert_eq!(memory.read_u16(flags).expect("f") & PMF_DUCKED, PMF_DUCKED);
         let bad = EquipmentMovement {
@@ -359,8 +311,7 @@ mod tests {
             ..EquipmentMovement::default()
         };
         assert_eq!(
-            with_equipment_movement(&mut memory, pmove, &mut lanes, &loads, Some(&bad), |_| {})
-                .unwrap_err(),
+            with_equipment_movement(&mut memory, pmove, &mut lanes, &loads, Some(&bad), |_| {}).unwrap_err(),
             EquipmentMovementError::BadSpeed
         );
     }

@@ -362,12 +362,12 @@ impl NativePrimaryDrop {
                 )
             }
             _ => {
-                execute(host)?;
+                execute(&mut *host)?;
                 return Ok(DebitState::Pending);
             }
         };
         let before = host.core.memory.read_i32(counter)?;
-        execute(host)?;
+        execute(&mut *host)?;
         let after = host.core.memory.read_i32(counter)?;
         if let Some(frame) = self.frames.last_mut() {
             self.restore_frame(host, frame)?;

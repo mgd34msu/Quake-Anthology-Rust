@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{cvar_layout, field_offset};
@@ -102,12 +102,7 @@ pub trait RereleaseCoreServices {
     /// Resolve an extension, if present.
     fn extension(&self, name: &str, api: &str) -> Option<GuestAddress>;
     /// Optional override for transport/localization/rendering calls.
-    fn invoke_override(
-        &mut self,
-        _api: &str,
-        _name: &str,
-        _args: &[GuestCallValue],
-    ) -> Option<GuestCallResult> {
+    fn invoke_override(&mut self, _api: &str, _name: &str, _args: &[GuestCallValue]) -> Option<GuestCallResult> {
         None
     }
 }
@@ -155,11 +150,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
     }
 
     /// Intern an engine string in guest memory.
-    pub fn intern(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        text: &str,
-    ) -> Result<GuestAddress, GuestError> {
+    pub fn intern(&mut self, memory: &mut SparseGuestMemory, text: &str) -> Result<GuestAddress, GuestError> {
         if let Some(previous) = self.strings.get(text) {
             return Ok(*previous);
         }
@@ -174,10 +165,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
     }
 
     /// Refresh every guest cvar record from the registry.
-    pub fn refresh_cvars(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-    ) -> Result<(), CoreImportError> {
+    pub fn refresh_cvars(&mut self, memory: &mut SparseGuestMemory) -> Result<(), CoreImportError> {
         let names: Vec<String> = self.cvars.keys().cloned().collect();
         for name in names {
             if let Some(value) = self.cvars_registry.get(&name) {
@@ -227,19 +215,13 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
         };
         if !self.cvars.contains_key(&value.name) {
             let layout = cvar_layout();
-            let address = memory.allocate(
-                &qa_guest::core::contracts::GuestAllocationOptions::bytes(layout.byte_length),
-            )?;
+            let address = memory.allocate(&qa_guest::core::contracts::GuestAllocationOptions::bytes(
+                layout.byte_length,
+            ))?;
             let at = |memory: &SparseGuestMemory, name: &str| {
                 field_offset(&layout, name)
-                    .map_err(|_| {
-                        CoreImportError::MissingImport("game".to_string(), name.to_string())
-                    })
-                    .and_then(|offset| {
-                        memory
-                            .offset(address, offset as i64)
-                            .map_err(CoreImportError::Guest)
-                    })
+                    .map_err(|_| CoreImportError::MissingImport("game".to_string(), name.to_string()))
+                    .and_then(|offset| memory.offset(address, offset as i64).map_err(CoreImportError::Guest))
             };
             let record = GuestCvar {
                 address,
@@ -270,11 +252,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
         let Some(address) = address else {
             return Ok(());
         };
-        memory.check(
-            address,
-            1,
-            qa_guest::core::contracts::GuestAccess::Write,
-        )?;
+        memory.check(address, 1, qa_guest::core::contracts::GuestAccess::Write)?;
         let Some(record) = self.allocations.remove(&address.offset) else {
             return Err(CoreImportError::UnownedFree);
         };
@@ -324,9 +302,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
             "get_configstring" => {
                 let value = self.services.get_configstring(integer(0) as i32);
                 let address = self.intern(memory, &value)?;
-                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(
-                    address,
-                ))))
+                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
             }
             "configstring" => {
                 let value = match pointer(1) {
@@ -350,21 +326,14 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
             ))),
             "argv" => {
                 let list = self.services.command_arguments();
-                let text = list
-                    .get(integer(0) as usize)
-                    .cloned()
-                    .unwrap_or_default();
+                let text = list.get(integer(0) as usize).cloned().unwrap_or_default();
                 let address = self.intern(memory, &text)?;
-                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(
-                    address,
-                ))))
+                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
             }
             "args" => {
                 let tail = self.services.command_tail();
                 let address = self.intern(memory, &tail)?;
-                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(
-                    address,
-                ))))
+                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
             }
             "AddCommandString" => {
                 let text = read_guest_string(memory, required(0)?, 1_048_576)?;
@@ -380,20 +349,16 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
             "cvar" => {
                 let name_text = read_guest_string(memory, required(0)?, 1_048_576)?;
                 let value_text = read_guest_string(memory, required(1)?, 1_048_576)?;
-                let snapshot =
-                    self.cvars_registry
-                        .register(&name_text, &value_text, integer(2) as u32);
+                let snapshot = self.cvars_registry.register(&name_text, &value_text, integer(2) as u32);
                 let address = self.cvar(memory, snapshot)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(address)))
             }
             "cvar_set" | "cvar_forceset" => {
                 let name_text = read_guest_string(memory, required(0)?, 1_048_576)?;
                 let value_text = read_guest_string(memory, required(1)?, 1_048_576)?;
-                let snapshot = self.cvars_registry.set(
-                    &name_text,
-                    &value_text,
-                    name == "cvar_forceset",
-                );
+                let snapshot = self
+                    .cvars_registry
+                    .set(&name_text, &value_text, name == "cvar_forceset");
                 let address = self.cvar(memory, snapshot)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Pointer(address)))
             }
@@ -404,14 +369,9 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
                 }
                 let size = (raw as usize).max(1);
                 let tag = integer(1) as i32;
-                let address = memory.allocate(
-                    &qa_guest::core::contracts::GuestAllocationOptions::bytes(size),
-                )?;
-                self.allocations
-                    .insert(address.offset, Allocation { size, tag });
-                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(
-                    address,
-                ))))
+                let address = memory.allocate(&qa_guest::core::contracts::GuestAllocationOptions::bytes(size))?;
+                self.allocations.insert(address.offset, Allocation { size, tag });
+                Ok(GuestCallResult::Value(GuestCallValue::Pointer(Some(address))))
             }
             "TagFree" => {
                 self.free(memory, pointer(0))?;
@@ -431,10 +391,7 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
                 }
                 Ok(GuestCallResult::Void)
             }
-            _ => Err(CoreImportError::MissingImport(
-                api.to_string(),
-                name.to_string(),
-            )),
+            _ => Err(CoreImportError::MissingImport(api.to_string(), name.to_string())),
         }
     }
 
@@ -487,17 +444,11 @@ impl<C: CvarRegistry, S: RereleaseCoreServices> RereleaseCoreImports<C, S> {
         if maximum != 0 {
             let output = pointer(2).ok_or(CoreImportError::Unterminated)?;
             let count = bytes.len().min(maximum as usize - 1);
-            memory.check(
-                output,
-                count + 1,
-                qa_guest::core::contracts::GuestAccess::Write,
-            )?;
+            memory.check(output, count + 1, qa_guest::core::contracts::GuestAccess::Write)?;
             memory.write(output, &bytes[..count])?;
             memory.write_u8(memory.offset(output, count as i64)?, 0)?;
         }
-        Ok(GuestCallResult::Value(GuestCallValue::Uint64(
-            bytes.len() as u64,
-        )))
+        Ok(GuestCallResult::Value(GuestCallValue::Uint64(bytes.len() as u64)))
     }
 }
 
@@ -570,10 +521,7 @@ mod tests {
         }
     }
 
-    fn harness() -> (
-        SparseGuestMemory,
-        RereleaseCoreImports<FakeRegistry, FakeServices>,
-    ) {
+    fn harness() -> (SparseGuestMemory, RereleaseCoreImports<FakeRegistry, FakeServices>) {
         let module = ModuleIdentity::new(
             ProviderId::new("q2", "imports-test"),
             "game.dll",
@@ -582,9 +530,7 @@ mod tests {
         );
         let memory = SparseGuestMemory::new(module, 8, 0x1_0000).expect("memory");
         let imports = RereleaseCoreImports::new(
-            FakeRegistry {
-                values: HashMap::new(),
-            },
+            FakeRegistry { values: HashMap::new() },
             FakeServices {
                 printed: Vec::new(),
                 configstrings: HashMap::new(),
@@ -607,12 +553,7 @@ mod tests {
         let (mut memory, mut imports) = harness();
         let text = write_bytes(&mut memory, b"hello\0");
         imports
-            .invoke(
-                &mut memory,
-                "game",
-                "Com_Print",
-                &[GuestCallValue::Pointer(Some(text))],
-            )
+            .invoke(&mut memory, "game", "Com_Print", &[GuestCallValue::Pointer(Some(text))])
             .expect("print");
         assert_eq!(imports.services.printed, vec!["hello".to_string()]);
         let value = write_bytes(&mut memory, b"dm1\0");
@@ -621,27 +562,16 @@ mod tests {
                 &mut memory,
                 "game",
                 "configstring",
-                &[
-                    GuestCallValue::Int32(2),
-                    GuestCallValue::Pointer(Some(value)),
-                ],
+                &[GuestCallValue::Int32(2), GuestCallValue::Pointer(Some(value))],
             )
             .expect("set");
         let fetched = imports
-            .invoke(
-                &mut memory,
-                "game",
-                "get_configstring",
-                &[GuestCallValue::Int32(2)],
-            )
+            .invoke(&mut memory, "game", "get_configstring", &[GuestCallValue::Int32(2)])
             .expect("get");
         let GuestCallResult::Value(GuestCallValue::Pointer(Some(address))) = fetched else {
             panic!("pointer result");
         };
-        assert_eq!(
-            read_guest_string(&mut memory, address, 64).expect("read"),
-            "dm1"
-        );
+        assert_eq!(read_guest_string(&mut memory, address, 64).expect("read"), "dm1");
         let name = write_bytes(&mut memory, b"sv_gravity\0");
         let initial = write_bytes(&mut memory, b"800\0");
         let cvar = imports
@@ -656,18 +586,10 @@ mod tests {
                 ],
             )
             .expect("cvar");
-        assert!(matches!(
-            cvar,
-            GuestCallResult::Value(GuestCallValue::Pointer(Some(_)))
-        ));
+        assert!(matches!(cvar, GuestCallResult::Value(GuestCallValue::Pointer(Some(_)))));
         imports.refresh_cvars(&mut memory).expect("refresh");
-        let frame = imports
-            .invoke(&mut memory, "game", "ServerFrame", &[])
-            .expect("frame");
-        assert_eq!(
-            frame,
-            GuestCallResult::Value(GuestCallValue::Uint32(44))
-        );
+        let frame = imports.invoke(&mut memory, "game", "ServerFrame", &[]).expect("frame");
+        assert_eq!(frame, GuestCallResult::Value(GuestCallValue::Uint32(44)));
     }
 
     #[test]
@@ -701,9 +623,7 @@ mod tests {
         assert_eq!(again.unwrap_err(), CoreImportError::UnownedFree);
         let info = write_bytes(&mut memory, b"\\name\\soldier\\team\\red\0");
         let key = write_bytes(&mut memory, b"team\0");
-        let output = memory
-            .allocate(&GuestAllocationOptions::bytes(16))
-            .expect("alloc");
+        let output = memory.allocate(&GuestAllocationOptions::bytes(16)).expect("alloc");
         let length = imports
             .invoke(
                 &mut memory,
@@ -717,13 +637,7 @@ mod tests {
                 ],
             )
             .expect("info");
-        assert_eq!(
-            length,
-            GuestCallResult::Value(GuestCallValue::Uint64(3))
-        );
-        assert_eq!(
-            read_guest_string(&mut memory, output, 16).expect("read"),
-            "red"
-        );
+        assert_eq!(length, GuestCallResult::Value(GuestCallValue::Uint64(3)));
+        assert_eq!(read_guest_string(&mut memory, output, 16).expect("read"), "red");
     }
 }

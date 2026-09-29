@@ -21,8 +21,7 @@ pub struct LinkBody {
 #[must_use]
 pub fn rerelease_link_bounds(state: &LinkBody, solid: i32) -> Bounds {
     let (mut min, mut max) = (state.bounds.min, state.bounds.max);
-    if solid == 3 && (state.angles.x != 0.0 || state.angles.y != 0.0 || state.angles.z != 0.0)
-    {
+    if solid == 3 && (state.angles.x != 0.0 || state.angles.y != 0.0 || state.angles.z != 0.0) {
         let extent = min
             .x
             .abs()
@@ -65,20 +64,20 @@ pub fn rerelease_network_solid(bounds: &Bounds, solid: i32, server_flags: i32) -
     }
     if solid != 2
         || (server_flags & 2) != 0
-        || (bounds.min.x == bounds.max.x
-            && bounds.min.y == bounds.max.y
-            && bounds.min.z == bounds.max.z)
+        || (bounds.min.x == bounds.max.x && bounds.min.y == bounds.max.y && bounds.min.z == bounds.max.z)
     {
         return 0;
     }
-    let clamp = |value: f32, minimum: i32| -> u32 {
-        (value.trunc() as i32).clamp(minimum, 255) as u32
-    };
+    let clamp = |value: f32, minimum: i32| -> u32 { (value.trunc() as i32).clamp(minimum, 255) as u32 };
     let packed = (clamp(bounds.max.z + 32.0, 0) << 24)
         | (clamp(-bounds.min.z, 0) << 16)
         | (clamp(bounds.max.y, 1) << 8)
         | clamp(bounds.max.x, 1);
-    if packed == 31 { 0 } else { packed }
+    if packed == 31 {
+        0
+    } else {
+        packed
+    }
 }
 
 #[cfg(test)]
@@ -92,11 +91,7 @@ mod tests {
                 y: 0.0,
                 z: 0.0,
             },
-            angles: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
             bounds: Bounds {
                 min: Vec3 {
                     x: -16.0,
@@ -155,16 +150,8 @@ mod tests {
         let packed = rerelease_network_solid(&bounds, 2, 0);
         assert_eq!(packed, (64 << 24) | (24 << 16) | (16 << 8) | 16);
         let point = Bounds {
-            min: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-            max: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
+            min: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+            max: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
         };
         assert_eq!(rerelease_network_solid(&point, 2, 0), 0);
     }

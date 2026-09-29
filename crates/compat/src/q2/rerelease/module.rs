@@ -6,12 +6,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use qa_core::math::Vec3;
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue,
-    GuestLayout, GuestStorage, GuestValueLayout, ModuleIdentity, RawEntityView,
+    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestLayout, GuestStorage,
+    GuestValueLayout, ModuleIdentity, RawEntityView,
 };
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::{edict_layout, export_table_layout, field_offset};
@@ -169,9 +169,7 @@ pub struct ModuleState {
     /// World summary, if selected.
     pub world_summary: Option<ModuleWorldSummary>,
     /// Pmove interceptors around scripted Pmove calls.
-    pub pmove_interceptors: Vec<
-        Box<dyn FnMut(&mut SparseGuestMemory, GuestAddress) -> Result<(), ModuleError>>,
-    >,
+    pub pmove_interceptors: Vec<Box<dyn FnMut(&mut SparseGuestMemory, GuestAddress) -> Result<(), ModuleError>>>,
     /// Whether an input owner is bound.
     pub input_bound: bool,
 }
@@ -376,8 +374,7 @@ pub struct RereleaseGuestModule {
     pub game_layout: GuestLayout,
     /// Cgame export table layout.
     pub cgame_layout: GuestLayout,
-    import_handler:
-        Box<dyn FnMut(&mut ModuleState, &RereleaseImportCall) -> Result<GuestCallResult, ModuleError>>,
+    import_handler: Box<dyn FnMut(&mut ModuleState, &RereleaseImportCall) -> Result<GuestCallResult, ModuleError>>,
 }
 
 impl RereleaseGuestModule {
@@ -386,8 +383,7 @@ impl RereleaseGuestModule {
         memory: SparseGuestMemory,
         world_summary: Option<ModuleWorldSummary>,
         frame_milliseconds: u32,
-        import_handler: impl FnMut(&mut ModuleState, &RereleaseImportCall) -> Result<GuestCallResult, ModuleError>
-        + 'static,
+        import_handler: impl FnMut(&mut ModuleState, &RereleaseImportCall) -> Result<GuestCallResult, ModuleError> + 'static,
     ) -> Result<Self, ModuleError> {
         if memory.pointer_bytes() != 8 {
             return Err(ModuleError::BadPointerWidth);
@@ -415,16 +411,8 @@ impl RereleaseGuestModule {
             pmove_interceptors: Vec::new(),
             input_bound: false,
         };
-        let game_import_table = Self::build_import_table(
-            &mut state.memory,
-            GAME_IMPORT_NAMES,
-            frame_milliseconds,
-        )?;
-        let cgame_import_table = Self::build_import_table(
-            &mut state.memory,
-            CGAME_IMPORT_NAMES,
-            frame_milliseconds,
-        )?;
+        let game_import_table = Self::build_import_table(&mut state.memory, GAME_IMPORT_NAMES, frame_milliseconds)?;
+        let cgame_import_table = Self::build_import_table(&mut state.memory, CGAME_IMPORT_NAMES, frame_milliseconds)?;
         let game_table = state
             .memory
             .allocate(&GuestAllocationOptions::bytes(game_layout.byte_length))?;
@@ -433,9 +421,8 @@ impl RereleaseGuestModule {
             let slot = state.memory.allocate(&GuestAllocationOptions::bytes(1))?;
             let at = state.memory.offset(
                 game_table,
-                field_offset(&game_layout, name).map_err(|_| {
-                    ModuleError::UnknownGameExport((*name).to_string())
-                })? as i64,
+                field_offset(&game_layout, name).map_err(|_| ModuleError::UnknownGameExport((*name).to_string()))?
+                    as i64,
             )?;
             state.memory.write_pointer(at, Some(slot))?;
         }
@@ -447,9 +434,8 @@ impl RereleaseGuestModule {
             let slot = state.memory.allocate(&GuestAllocationOptions::bytes(1))?;
             let at = state.memory.offset(
                 cgame_table,
-                field_offset(&cgame_layout, name).map_err(|_| {
-                    ModuleError::UnknownCgameExport((*name).to_string())
-                })? as i64,
+                field_offset(&cgame_layout, name).map_err(|_| ModuleError::UnknownCgameExport((*name).to_string()))?
+                    as i64,
             )?;
             state.memory.write_pointer(at, Some(slot))?;
         }
@@ -467,36 +453,32 @@ impl RereleaseGuestModule {
         state.memory.write_pointer(
             state.memory.offset(
                 game_table,
-                field_offset(&game_layout, "edicts").map_err(|_| {
-                    ModuleError::UnknownGameExport("edicts".to_string())
-                })? as i64,
+                field_offset(&game_layout, "edicts")
+                    .map_err(|_| ModuleError::UnknownGameExport("edicts".to_string()))? as i64,
             )?,
             Some(base),
         )?;
         state.memory.write_u64(
             state.memory.offset(
                 game_table,
-                field_offset(&game_layout, "edict_size").map_err(|_| {
-                    ModuleError::UnknownGameExport("edict_size".to_string())
-                })? as i64,
+                field_offset(&game_layout, "edict_size")
+                    .map_err(|_| ModuleError::UnknownGameExport("edict_size".to_string()))? as i64,
             )?,
             stride as u64,
         )?;
         state.memory.write_u32(
             state.memory.offset(
                 game_table,
-                field_offset(&game_layout, "num_edicts").map_err(|_| {
-                    ModuleError::UnknownGameExport("num_edicts".to_string())
-                })? as i64,
+                field_offset(&game_layout, "num_edicts")
+                    .map_err(|_| ModuleError::UnknownGameExport("num_edicts".to_string()))? as i64,
             )?,
             1,
         )?;
         state.memory.write_u32(
             state.memory.offset(
                 game_table,
-                field_offset(&game_layout, "max_edicts").map_err(|_| {
-                    ModuleError::UnknownGameExport("max_edicts".to_string())
-                })? as i64,
+                field_offset(&game_layout, "max_edicts")
+                    .map_err(|_| ModuleError::UnknownGameExport("max_edicts".to_string()))? as i64,
             )?,
             capacity,
         )?;
@@ -520,10 +502,7 @@ impl RereleaseGuestModule {
         let layout = super::layouts::import_table_layout("game", names);
         let table = memory.allocate(&GuestAllocationOptions::bytes(layout.byte_length))?;
         memory.write_u32(table, 1000 / frame_milliseconds)?;
-        memory.write_f32(
-            memory.offset(table, 4)?,
-            frame_milliseconds as f32 / 1000.0,
-        )?;
+        memory.write_f32(memory.offset(table, 4)?, frame_milliseconds as f32 / 1000.0)?;
         memory.write_u32(memory.offset(table, 8)?, frame_milliseconds)?;
         for name in names {
             let slot = memory.allocate(&GuestAllocationOptions::bytes(1))?;
@@ -540,10 +519,7 @@ impl RereleaseGuestModule {
 
     /// Require the selected world summary.
     pub fn require_world_summary(&self) -> Result<&ModuleWorldSummary, ModuleError> {
-        self.state
-            .world_summary
-            .as_ref()
-            .ok_or(ModuleError::NoWorldProfile)
+        self.state.world_summary.as_ref().ok_or(ModuleError::NoWorldProfile)
     }
 
     /// Bind the game table, checking API 2023.
@@ -576,9 +552,7 @@ impl RereleaseGuestModule {
         layout: &GuestLayout,
         name: &str,
     ) -> Result<GuestAddress, ModuleError> {
-        let offset = field_offset(layout, name)
-            .map_err(|_| ModuleError::UnknownGameExport(name.to_string()))?
-            as i64;
+        let offset = field_offset(layout, name).map_err(|_| ModuleError::UnknownGameExport(name.to_string()))? as i64;
         let address = state.memory.read_pointer(state.memory.offset(table, offset)?)?;
         address.ok_or_else(|| ModuleError::NullExport(name.to_string()))
     }
@@ -611,28 +585,15 @@ impl RereleaseGuestModule {
         ))
     }
 
-    fn export_name_at(
-        &mut self,
-        target: GuestAddress,
-        game: bool,
-    ) -> Result<Option<String>, ModuleError> {
+    fn export_name_at(&mut self, target: GuestAddress, game: bool) -> Result<Option<String>, ModuleError> {
         let (table, layout, names) = if game {
-            (
-                self.state.game_table,
-                self.game_layout.clone(),
-                GAME_EXPORT_NAMES,
-            )
+            (self.state.game_table, self.game_layout.clone(), GAME_EXPORT_NAMES)
         } else {
-            (
-                self.state.cgame_table,
-                self.cgame_layout.clone(),
-                CGAME_EXPORT_NAMES,
-            )
+            (self.state.cgame_table, self.cgame_layout.clone(), CGAME_EXPORT_NAMES)
         };
         for name in names {
-            let offset = field_offset(&layout, name)
-                .map_err(|_| ModuleError::UnknownGameExport((*name).to_string()))?
-                as i64;
+            let offset =
+                field_offset(&layout, name).map_err(|_| ModuleError::UnknownGameExport((*name).to_string()))? as i64;
             let slot = self
                 .state
                 .memory
@@ -644,26 +605,17 @@ impl RereleaseGuestModule {
         Ok(None)
     }
 
-    fn import_name_at(
-        &mut self,
-        target: GuestAddress,
-    ) -> Result<Option<(GuestApi, String)>, ModuleError> {
+    fn import_name_at(&mut self, target: GuestAddress) -> Result<Option<(GuestApi, String)>, ModuleError> {
         for (api, table, names) in [
             (GuestApi::Game, self.state.game_import_table, GAME_IMPORT_NAMES),
-            (
-                GuestApi::Cgame,
-                self.state.cgame_import_table,
-                CGAME_IMPORT_NAMES,
-            ),
+            (GuestApi::Cgame, self.state.cgame_import_table, CGAME_IMPORT_NAMES),
         ] {
-            let layout = super::layouts::import_table_layout(
-                if api == GuestApi::Game { "game" } else { "cgame" },
-                &names,
-            );
+            let layout =
+                super::layouts::import_table_layout(if api == GuestApi::Game { "game" } else { "cgame" }, &names);
             for name in names {
-                let offset = field_offset(&layout, name).map_err(|_| {
-                    ModuleError::MissingImport("table".to_string(), (*name).to_string())
-                })? as i64;
+                let offset = field_offset(&layout, name)
+                    .map_err(|_| ModuleError::MissingImport("table".to_string(), (*name).to_string()))?
+                    as i64;
                 let slot = self
                     .state
                     .memory
@@ -676,11 +628,7 @@ impl RereleaseGuestModule {
         Ok(None)
     }
 
-    fn run_export(
-        &mut self,
-        name: &str,
-        arguments: &[GuestCallValue],
-    ) -> Result<GuestCallResult, ModuleError> {
+    fn run_export(&mut self, name: &str, arguments: &[GuestCallValue]) -> Result<GuestCallResult, ModuleError> {
         if name == "Pmove" && !self.state.pmove_interceptors.is_empty() {
             let movement = match arguments.first() {
                 Some(GuestCallValue::Pointer(Some(address))) => *address,
@@ -715,11 +663,7 @@ impl RereleaseGuestModule {
     }
 
     /// Call a game export by name.
-    pub fn call_game(
-        &mut self,
-        name: &str,
-        arguments: &[GuestCallValue],
-    ) -> Result<GuestCallResult, ModuleError> {
+    pub fn call_game(&mut self, name: &str, arguments: &[GuestCallValue]) -> Result<GuestCallResult, ModuleError> {
         if !GAME_EXPORT_NAMES.contains(&name) {
             return Err(ModuleError::UnknownGameExport(name.to_string()));
         }
@@ -730,11 +674,7 @@ impl RereleaseGuestModule {
     }
 
     /// Call a cgame export by name.
-    pub fn call_cgame(
-        &mut self,
-        name: &str,
-        arguments: &[GuestCallValue],
-    ) -> Result<GuestCallResult, ModuleError> {
+    pub fn call_cgame(&mut self, name: &str, arguments: &[GuestCallValue]) -> Result<GuestCallResult, ModuleError> {
         if !CGAME_EXPORT_NAMES.contains(&name) {
             return Err(ModuleError::UnknownCgameExport(name.to_string()));
         }
@@ -791,18 +731,11 @@ impl RereleaseGuestModule {
         social_id: &str,
         is_bot: bool,
     ) -> Result<ClientConnectOutcome, ModuleError> {
-        if userinfo.len() >= 2048
-            || social_id.len() >= 256
-            || userinfo.contains('\0')
-            || social_id.contains('\0')
-        {
+        if userinfo.len() >= 2048 || social_id.len() >= 256 || userinfo.contains('\0') || social_id.contains('\0') {
             return Err(ModuleError::IdentityTooLong);
         }
         let view = self.entity_at_slot(slot)?;
-        let info = self
-            .state
-            .memory
-            .allocate(&GuestAllocationOptions::bytes(2048))?;
+        let info = self.state.memory.allocate(&GuestAllocationOptions::bytes(2048))?;
         let social = self.string(social_id)?;
         self.state.memory.write(info, userinfo.as_bytes())?;
         let result = self.call_game(
@@ -842,23 +775,13 @@ impl RereleaseGuestModule {
     }
 
     /// `ClientThink` entry with a host-provided command blob.
-    pub fn client_think(
-        &mut self,
-        slot: u32,
-        command: &[u8; 28],
-    ) -> Result<(), ModuleError> {
+    pub fn client_think(&mut self, slot: u32, command: &[u8; 28]) -> Result<(), ModuleError> {
         let view = self.entity_at_slot(slot)?;
-        let address = self
-            .state
-            .memory
-            .allocate(&GuestAllocationOptions::bytes(28))?;
+        let address = self.state.memory.allocate(&GuestAllocationOptions::bytes(28))?;
         self.state.memory.write(address, command)?;
         let result = self.call_game(
             "ClientThink",
-            &[
-                guest_pointer(Some(view.address)),
-                guest_pointer(Some(address)),
-            ],
+            &[guest_pointer(Some(view.address)), guest_pointer(Some(address))],
         );
         self.state.memory.unmap(address, 28)?;
         result?;
@@ -873,19 +796,13 @@ impl RereleaseGuestModule {
     }
 
     /// `SpawnEntities` entry.
-    pub fn spawn_entities(
-        &mut self,
-        map: &str,
-        entities: &str,
-        spawnpoint: &str,
-    ) -> Result<(), ModuleError> {
+    pub fn spawn_entities(&mut self, map: &str, entities: &str, spawnpoint: &str) -> Result<(), ModuleError> {
         let strings = [map, entities, spawnpoint];
         let mut addresses = Vec::with_capacity(3);
         for text in strings {
             addresses.push(self.string(text)?);
         }
-        let args: Vec<GuestCallValue> =
-            addresses.iter().map(|at| guest_pointer(Some(*at))).collect();
+        let args: Vec<GuestCallValue> = addresses.iter().map(|at| guest_pointer(Some(*at))).collect();
         let result = self.call_game("SpawnEntities", &args);
         for (address, text) in addresses.iter().zip(strings) {
             self.state.memory.unmap(*address, text.len() + 1)?;
@@ -912,30 +829,13 @@ impl RereleaseGuestModule {
         let read_field = |state: &mut ModuleState, name: &str| {
             field_offset(&layout, name)
                 .map_err(|_| ModuleError::UnknownGameExport(name.to_string()))
-                .and_then(|offset| {
-                    state
-                        .memory
-                        .offset(table, offset as i64)
-                        .map_err(ModuleError::from)
-                })
+                .and_then(|offset| state.memory.offset(table, offset as i64).map_err(ModuleError::from))
         };
         let edict_layout = edict_layout();
-        let base = self
-            .state
-            .memory
-            .read_pointer(read_field(&mut self.state, "edicts")?)?;
-        let stride = self
-            .state
-            .memory
-            .read_u64(read_field(&mut self.state, "edict_size")?)?;
-        let count = self
-            .state
-            .memory
-            .read_u32(read_field(&mut self.state, "num_edicts")?)?;
-        let capacity = self
-            .state
-            .memory
-            .read_u32(read_field(&mut self.state, "max_edicts")?)?;
+        let base = self.state.memory.read_pointer(read_field(&mut self.state, "edicts")?)?;
+        let stride = self.state.memory.read_u64(read_field(&mut self.state, "edict_size")?)?;
+        let count = self.state.memory.read_u32(read_field(&mut self.state, "num_edicts")?)?;
+        let capacity = self.state.memory.read_u32(read_field(&mut self.state, "max_edicts")?)?;
         let Some(base) = base else {
             return Err(ModuleError::NoEdicts);
         };
@@ -945,14 +845,8 @@ impl RereleaseGuestModule {
         if slot >= capacity {
             return Err(ModuleError::SlotOutOfRange);
         }
-        let address = self
-            .state
-            .memory
-            .offset(base, i64::from(slot) * stride as i64)?;
-        let bytes = self
-            .state
-            .memory
-            .copy(address, stride as usize)?;
+        let address = self.state.memory.offset(base, i64::from(slot) * stride as i64)?;
+        let bytes = self.state.memory.copy(address, stride as usize)?;
         Ok(RawEntityView {
             module: self.state.memory.module().clone(),
             slot,
@@ -964,25 +858,19 @@ impl RereleaseGuestModule {
     }
 
     /// Entity view from a guest pointer.
-    pub fn entity_from_pointer(
-        &mut self,
-        address: GuestAddress,
-    ) -> Result<RawEntityView, ModuleError> {
+    pub fn entity_from_pointer(&mut self, address: GuestAddress) -> Result<RawEntityView, ModuleError> {
         let table = self.bind_game()?;
         let layout = self.game_layout.clone();
         let edict_layout = edict_layout();
         self.state
             .memory
             .check(address, edict_layout.byte_length, GuestAccess::Read)?;
-        let base_field = field_offset(&layout, "edicts")
-            .map_err(|_| ModuleError::UnknownGameExport("edicts".to_string()))?
-            as i64;
+        let base_field =
+            field_offset(&layout, "edicts").map_err(|_| ModuleError::UnknownGameExport("edicts".to_string()))? as i64;
         let stride_field = field_offset(&layout, "edict_size")
-            .map_err(|_| ModuleError::UnknownGameExport("edict_size".to_string()))?
-            as i64;
+            .map_err(|_| ModuleError::UnknownGameExport("edict_size".to_string()))? as i64;
         let capacity_field = field_offset(&layout, "max_edicts")
-            .map_err(|_| ModuleError::UnknownGameExport("max_edicts".to_string()))?
-            as i64;
+            .map_err(|_| ModuleError::UnknownGameExport("max_edicts".to_string()))? as i64;
         let base = self
             .state
             .memory
@@ -1057,11 +945,7 @@ impl RereleaseGuestModule {
     /// Zero vector helper available to handlers.
     #[must_use]
     pub fn zero_vec() -> Vec3 {
-        Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }
+        Vec3 { x: 0.0, y: 0.0, z: 0.0 }
     }
 }
 
@@ -1090,10 +974,7 @@ mod tests {
                 if call.name == "ServerFrame" {
                     Ok(GuestCallResult::Value(GuestCallValue::Uint32(7)))
                 } else {
-                    Err(ModuleError::MissingImport(
-                        "game".to_string(),
-                        call.name.clone(),
-                    ))
+                    Err(ModuleError::MissingImport("game".to_string(), call.name.clone()))
                 }
             },
         )
@@ -1108,13 +989,9 @@ mod tests {
             module.bind_cgame().expect("cgame").offset,
             module.state.cgame_table.offset
         );
-        module
-            .script("CanSave", GuestCallResult::Value(GuestCallValue::Int32(1)));
+        module.script("CanSave", GuestCallResult::Value(GuestCallValue::Int32(1)));
         let saved = module.call_game("CanSave", &[]).expect("cansave");
-        assert_eq!(
-            saved,
-            GuestCallResult::Value(GuestCallValue::Int32(1))
-        );
+        assert_eq!(saved, GuestCallResult::Value(GuestCallValue::Int32(1)));
         module.pre_init().expect("preinit");
         module.init().expect("init");
         module.prep_frame().expect("prep");
@@ -1133,25 +1010,15 @@ mod tests {
         assert_eq!(view.stride_bytes, edict_layout().byte_length);
         let back = module.entity_from_pointer(view.address).expect("pointer");
         assert_eq!(back.slot, 0);
-        assert_eq!(
-            module.entity_at_slot(5000).unwrap_err(),
-            ModuleError::SlotOutOfRange
-        );
-        module.script(
-            "ClientConnect",
-            GuestCallResult::Value(GuestCallValue::Uint32(1)),
-        );
-        let outcome = module
-            .client_connect(1, "name\\x", "social", false)
-            .expect("connect");
+        assert_eq!(module.entity_at_slot(5000).unwrap_err(), ModuleError::SlotOutOfRange);
+        module.script("ClientConnect", GuestCallResult::Value(GuestCallValue::Uint32(1)));
+        let outcome = module.client_connect(1, "name\\x", "social", false).expect("connect");
         assert!(outcome.accepted);
         assert_eq!(outcome.userinfo, "name\\x");
         module.client_begin(1).expect("begin");
         module.client_think(1, &[0u8; 28]).expect("think");
         module.client_disconnect(1).expect("disconnect");
-        module
-            .spawn_entities("base1", "{ }", "start")
-            .expect("spawn");
+        module.spawn_entities("base1", "{ }", "start").expect("spawn");
         let data = module
             .state
             .memory

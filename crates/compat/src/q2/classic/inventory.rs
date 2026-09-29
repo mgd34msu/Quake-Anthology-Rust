@@ -59,7 +59,9 @@ impl ClassicSourceInventory {
             return Ok(None);
         };
         if profile.combat.digest != host.memory.module().digest {
-            return Err(ClassicQ2Error::invalid("Classic inventory profile belongs to another artifact"));
+            return Err(ClassicQ2Error::invalid(
+                "Classic inventory profile belongs to another artifact",
+            ));
         }
         let table = &profile.inventory_table;
         let mut items = Vec::with_capacity(table.count);
@@ -71,15 +73,21 @@ impl ClassicSourceInventory {
             )?;
             let classname = read_classic_string(
                 &mut host.memory,
-                host.memory.read_pointer(host.memory.offset(address, table.class_name as i64)?)?,
+                host.memory
+                    .read_pointer(host.memory.offset(address, table.class_name as i64)?)?,
                 65536,
             )?;
             let label = read_classic_string(
                 &mut host.memory,
-                host.memory.read_pointer(host.memory.offset(address, table.label as i64)?)?,
+                host.memory
+                    .read_pointer(host.memory.offset(address, table.label as i64)?)?,
                 65536,
             )?;
-            let item = match table.unnamed.iter().find(|value| value.index == index && value.label == label) {
+            let item = match table
+                .unnamed
+                .iter()
+                .find(|value| value.index == index && value.label == label)
+            {
                 Some(unnamed) if classname.is_empty() => unnamed.item.clone(),
                 _ => {
                     if !is_classname(&classname) {
@@ -93,13 +101,23 @@ impl ClassicSourceInventory {
             }
             let flags = host.memory.read_i32(host.memory.offset(address, table.flags as i64)?)?;
             if (i64::from(flags) & table.ammo_flag) as i32 == 0 {
-                items.push(ClassicNativeItem { item, index, capacity: NativeCapacity::Counter });
+                items.push(ClassicNativeItem {
+                    item,
+                    index,
+                    capacity: NativeCapacity::Counter,
+                });
             } else {
                 let tag = host.memory.read_i32(host.memory.offset(address, table.tag as i64)?)?;
-                let offset = table.capacities.get(tag as usize).copied().ok_or_else(|| {
-                    ClassicQ2Error::invalid("Native ammo tag has no qualified capacity field")
-                })?;
-                items.push(ClassicNativeItem { item, index, capacity: NativeCapacity::Ammo { offset } });
+                let offset = table
+                    .capacities
+                    .get(tag as usize)
+                    .copied()
+                    .ok_or_else(|| ClassicQ2Error::invalid("Native ammo tag has no qualified capacity field"))?;
+                items.push(ClassicNativeItem {
+                    item,
+                    index,
+                    capacity: NativeCapacity::Ammo { offset },
+                });
             }
         }
         if table.sentinel {
@@ -107,8 +125,15 @@ impl ClassicSourceInventory {
                 image,
                 (profile.combat.globals.item_list as usize + table.count * profile.combat.globals.item_bytes) as i64,
             )?;
-            if host.memory.copy(sentinel, profile.combat.globals.item_bytes)?.iter().any(|byte| *byte != 0) {
-                return Err(ClassicQ2Error::invalid("Native item table exceeds its qualified roster"));
+            if host
+                .memory
+                .copy(sentinel, profile.combat.globals.item_bytes)?
+                .iter()
+                .any(|byte| *byte != 0)
+            {
+                return Err(ClassicQ2Error::invalid(
+                    "Native item table exceeds its qualified roster",
+                ));
             }
         }
         Ok(Some(Self { profile, items }))
@@ -123,12 +148,17 @@ impl ClassicSourceInventory {
     /// Whether an item has a mutable ammo capacity.
     #[must_use]
     pub fn mutable_capacity(&self, item: &str) -> bool {
-        self.items.iter().any(|value| value.item == item && matches!(value.capacity, NativeCapacity::Ammo { .. }))
+        self.items
+            .iter()
+            .any(|value| value.item == item && matches!(value.capacity, NativeCapacity::Ammo { .. }))
     }
 
     /// Bind one live client slot.
     pub fn bind(&self, host: &mut ClassicQ2GuestHost, slot: u32) -> ClassicResult<ClassicInventoryBinding<'_>> {
-        let edicts = host.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = host
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut host.memory, slot)?;
         if edicts.current(&mut host.memory, &host.registry, &record)?.is_none() {
             return Err(ClassicQ2Error::invalid("Native inventory requires a live source actor"));
@@ -137,7 +167,10 @@ impl ClassicSourceInventory {
     }
 
     fn client(&self, host: &mut ClassicQ2GuestHost, slot: u32) -> ClassicResult<GuestAddress> {
-        let edicts = host.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = host
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut host.memory, slot)?;
         if edicts.current(&mut host.memory, &host.registry, &record)?.is_none() {
             return Err(ClassicQ2Error::invalid("Native inventory owner was released"));
@@ -171,7 +204,9 @@ impl ClassicInventoryBinding<'_> {
         let client = self.inventory.client(host, self.slot)?;
         let mut entries = Vec::with_capacity(self.inventory.items.len());
         for item in &self.inventory.items {
-            let count = host.memory.read_i32(host.memory.offset(client, self.inventory.count_offset(item))?)?;
+            let count = host
+                .memory
+                .read_i32(host.memory.offset(client, self.inventory.count_offset(item))?)?;
             let capacity = match item.capacity {
                 NativeCapacity::Ammo { offset } => host.memory.read_i32(host.memory.offset(client, offset as i64)?)?,
                 NativeCapacity::Counter => {
@@ -194,9 +229,12 @@ impl ClassicInventoryBinding<'_> {
 
     /// Write one entry's count and capacity.
     pub fn write(&self, host: &mut ClassicQ2GuestHost, item: &str, count: i32, capacity: i32) -> ClassicResult<()> {
-        let native = self.inventory.items.iter().find(|value| value.item == item).ok_or_else(|| {
-            ClassicQ2Error::invalid("Item has no native inventory binding")
-        })?;
+        let native = self
+            .inventory
+            .items
+            .iter()
+            .find(|value| value.item == item)
+            .ok_or_else(|| ClassicQ2Error::invalid("Item has no native inventory binding"))?;
         if capacity < 0 {
             return Err(ClassicQ2Error::invalid("Native inventory exceeds int32"));
         }
@@ -207,14 +245,18 @@ impl ClassicInventoryBinding<'_> {
                 0x7fff_ffff
             };
             if capacity != fixed {
-                return Err(ClassicQ2Error::invalid("Native item has a fixed source counter capacity"));
+                return Err(ClassicQ2Error::invalid(
+                    "Native item has a fixed source counter capacity",
+                ));
             }
         }
         let client = self.inventory.client(host, self.slot)?;
         if let NativeCapacity::Ammo { offset } = native.capacity {
-            host.memory.write_i32(host.memory.offset(client, offset as i64)?, capacity)?;
+            host.memory
+                .write_i32(host.memory.offset(client, offset as i64)?, capacity)?;
         }
-        host.memory.write_i32(host.memory.offset(client, self.inventory.count_offset(native))?, count)?;
+        host.memory
+            .write_i32(host.memory.offset(client, self.inventory.count_offset(native))?, count)?;
         Ok(())
     }
 }
@@ -230,11 +272,11 @@ fn is_classname(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::combat_profile::XATRIX_DIGEST_VALUE;
+    use super::super::records::{allocate_classic_string, ClassicQ2Edicts};
     use super::*;
     use qa_core::identity::ProviderId;
     use qa_guest::core::contracts::{ContentDigest, GuestAllocationOptions, ModuleIdentity};
-    use super::super::combat_profile::XATRIX_DIGEST_VALUE;
-    use super::super::records::{allocate_classic_string, ClassicQ2Edicts};
 
     fn test_host() -> ClassicQ2GuestHost {
         ClassicQ2GuestHost::new(
@@ -257,7 +299,10 @@ mod tests {
         for index in 0..table.count {
             let address = host
                 .memory
-                .offset(image, (profile.combat.globals.item_list as usize + index * profile.combat.globals.item_bytes) as i64)
+                .offset(
+                    image,
+                    (profile.combat.globals.item_list as usize + index * profile.combat.globals.item_bytes) as i64,
+                )
                 .unwrap();
             let (classname, label, flags, tag): (String, &str, i32, i32) = match index {
                 0 => (String::new(), "", 0, 0),
@@ -267,26 +312,57 @@ mod tests {
             };
             let classname_ptr = allocate_classic_string(&mut host.memory, &classname).unwrap();
             let label_ptr = allocate_classic_string(&mut host.memory, label).unwrap();
-            host.memory.write_pointer(host.memory.offset(address, table.class_name as i64).unwrap(), Some(classname_ptr)).unwrap();
-            host.memory.write_pointer(host.memory.offset(address, table.label as i64).unwrap(), Some(label_ptr)).unwrap();
-            host.memory.write_i32(host.memory.offset(address, table.flags as i64).unwrap(), flags).unwrap();
-            host.memory.write_i32(host.memory.offset(address, table.tag as i64).unwrap(), tag).unwrap();
+            host.memory
+                .write_pointer(
+                    host.memory.offset(address, table.class_name as i64).unwrap(),
+                    Some(classname_ptr),
+                )
+                .unwrap();
+            host.memory
+                .write_pointer(
+                    host.memory.offset(address, table.label as i64).unwrap(),
+                    Some(label_ptr),
+                )
+                .unwrap();
+            host.memory
+                .write_i32(host.memory.offset(address, table.flags as i64).unwrap(), flags)
+                .unwrap();
+            host.memory
+                .write_i32(host.memory.offset(address, table.tag as i64).unwrap(), tag)
+                .unwrap();
         }
         let client = host.memory.allocate(&GuestAllocationOptions::bytes(4096)).unwrap();
-        host.memory.write_i32(host.memory.offset(client, 740 + 5 * 4).unwrap(), 12).unwrap();
-        host.memory.write_i32(host.memory.offset(client, 0x6e8).unwrap(), 50).unwrap();
-        host.memory.write_i32(host.memory.offset(client, 740).unwrap(), 0).unwrap();
+        host.memory
+            .write_i32(host.memory.offset(client, 740 + 5 * 4).unwrap(), 12)
+            .unwrap();
+        host.memory
+            .write_i32(host.memory.offset(client, 0x6e8).unwrap(), 50)
+            .unwrap();
+        host.memory
+            .write_i32(host.memory.offset(client, 740).unwrap(), 0)
+            .unwrap();
         let edicts = host.memory.allocate(&GuestAllocationOptions::bytes(896 * 4)).unwrap();
         let exports = host.memory.allocate(&GuestAllocationOptions::bytes(80)).unwrap();
         host.memory.write_i32(exports, 3).unwrap();
-        host.memory.write_pointer(host.memory.offset(exports, 64).unwrap(), Some(edicts)).unwrap();
-        host.memory.write_i32(host.memory.offset(exports, 68).unwrap(), 896).unwrap();
-        host.memory.write_i32(host.memory.offset(exports, 72).unwrap(), 4).unwrap();
-        host.memory.write_i32(host.memory.offset(exports, 76).unwrap(), 4).unwrap();
+        host.memory
+            .write_pointer(host.memory.offset(exports, 64).unwrap(), Some(edicts))
+            .unwrap();
+        host.memory
+            .write_i32(host.memory.offset(exports, 68).unwrap(), 896)
+            .unwrap();
+        host.memory
+            .write_i32(host.memory.offset(exports, 72).unwrap(), 4)
+            .unwrap();
+        host.memory
+            .write_i32(host.memory.offset(exports, 76).unwrap(), 4)
+            .unwrap();
         let one = host.memory.offset(edicts, 896).unwrap();
         host.memory.write_i32(host.memory.offset(one, 88).unwrap(), 1).unwrap();
-        host.memory.write_pointer(host.memory.offset(one, 84).unwrap(), Some(client)).unwrap();
-        host.edicts = Some(ClassicQ2Edicts::new(&mut host.memory, exports, ProviderId::new("q2", "classic"), None).unwrap());
+        host.memory
+            .write_pointer(host.memory.offset(one, 84).unwrap(), Some(client))
+            .unwrap();
+        host.edicts =
+            Some(ClassicQ2Edicts::new(&mut host.memory, exports, ProviderId::new("q2", "classic"), None).unwrap());
         image
     }
 
@@ -305,7 +381,10 @@ mod tests {
         let entries = binding.read(&mut host).unwrap();
         let shells = entries.iter().find(|entry| entry.item == "q2:ammo_shells").unwrap();
         assert_eq!((shells.count, shells.capacity), (12.0, 50.0));
-        assert_eq!(shells.count_policy, Some(CountPolicy::SourceCounter(CountArithmetic::Int32)));
+        assert_eq!(
+            shells.count_policy,
+            Some(CountPolicy::SourceCounter(CountArithmetic::Int32))
+        );
         let empty = entries.iter().find(|entry| entry.item == "q2:none").unwrap();
         assert_eq!(empty.capacity, 0.0);
         let counter = entries.iter().find(|entry| entry.item == "q2:item_1").unwrap();
@@ -339,6 +418,8 @@ mod tests {
             0x10000,
         )
         .unwrap();
-        assert!(ClassicSourceInventory::create(&mut foreign, image, None).unwrap().is_none());
+        assert!(ClassicSourceInventory::create(&mut foreign, image, None)
+            .unwrap()
+            .is_none());
     }
 }

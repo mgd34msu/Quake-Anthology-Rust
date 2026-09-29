@@ -8,12 +8,11 @@
 
 use qa_guest::abi::values::{decode_value, validate_value_layout, value_bytes};
 use qa_guest::core::contracts::{
-    ContentDigest, GuestAddress, GuestCallSignature, GuestCallValue, GuestStorage, GuestValueLayout,
-    NativeCallAbi,
+    ContentDigest, GuestAddress, GuestCallSignature, GuestCallValue, GuestStorage, GuestValueLayout, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 
-use super::layout::{classic_signature, q2_int, q2_pointer, ClassicQ2Error, ClassicResult};
+use super::layout::{q2_int, q2_pointer, ClassicQ2Error, ClassicResult};
 
 /// Semantic combat field carried by one native argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -165,7 +164,13 @@ impl ClassicCombatOperation {
             ],
             Self::PowerArmor => &[Field::Target, Field::Point, Field::Normal, Field::Amount, Field::Flags],
             Self::Pain => &[Field::Target, Field::Attacker, Field::Kick, Field::Amount],
-            Self::Death => &[Field::Target, Field::Inflictor, Field::Attacker, Field::Amount, Field::Point],
+            Self::Death => &[
+                Field::Target,
+                Field::Inflictor,
+                Field::Attacker,
+                Field::Amount,
+                Field::Point,
+            ],
         }
     }
 
@@ -245,9 +250,7 @@ pub fn validate_native_combat_call(
         match argument {
             ClassicNativeCombatArgument::Field(field) => {
                 if !required.contains(field) || seen.contains(field) {
-                    return Err(ClassicQ2Error::invalid(
-                        "Native combat fields must occur exactly once",
-                    ));
+                    return Err(ClassicQ2Error::invalid("Native combat fields must occur exactly once"));
                 }
                 seen.push(*field);
             }
@@ -256,10 +259,9 @@ pub fn validate_native_combat_call(
                 validate_value_layout(layout, 4)?;
                 let has_pointer = match layout {
                     GuestValueLayout::Scalar(storage) => *storage == GuestStorage::Pointer,
-                    GuestValueLayout::Aggregate(record) => record
-                        .fields
-                        .iter()
-                        .any(|field| field.storage == GuestStorage::Pointer),
+                    GuestValueLayout::Aggregate(record) => {
+                        record.fields.iter().any(|field| field.storage == GuestStorage::Pointer)
+                    }
                 };
                 if has_pointer {
                     return Err(ClassicQ2Error::invalid(
@@ -315,9 +317,7 @@ pub fn lower_native_combat_arguments(
     original: Option<&[GuestCallValue]>,
 ) -> ClassicResult<Vec<GuestCallValue>> {
     let semantic = operation.fields();
-    if values.len() != semantic.len()
-        || original.map_or(false, |captured| captured.len() != call.arguments.len())
-    {
+    if values.len() != semantic.len() || original.map_or(false, |captured| captured.len() != call.arguments.len()) {
         return Err(ClassicQ2Error::invalid(
             "Native combat continuation changed its argument extent",
         ));
@@ -626,12 +626,38 @@ pub fn xatrix_combat_profile() -> ClassicCombatProfile {
             spawn: 0x19090,
             free: 0x19140,
         },
-        globals: CombatGlobals { level_frame: 0x76800, item_list: 0x4b828, item_bytes: 76 },
-        items: CombatItems { jacket: 3, combat: 2, body: 1, screen: 5, shield: 6, cells: 23, grenades: 12 },
-        item_fields: CombatItemFields { class_name: 0, armor_info: 64 },
-        armor_info: CombatArmorInfo { normal_protection: 8, energy_protection: 12 },
-        armor: CombatArmor { regular: vec![3, 2, 1], empty: 1 },
-        flags: CombatFlags { invulnerable: 16, notarget: 32, no_knockback: 2048, power_armor: 4096 },
+        globals: CombatGlobals {
+            level_frame: 0x76800,
+            item_list: 0x4b828,
+            item_bytes: 76,
+        },
+        items: CombatItems {
+            jacket: 3,
+            combat: 2,
+            body: 1,
+            screen: 5,
+            shield: 6,
+            cells: 23,
+            grenades: 12,
+        },
+        item_fields: CombatItemFields {
+            class_name: 0,
+            armor_info: 64,
+        },
+        armor_info: CombatArmorInfo {
+            normal_protection: 8,
+            energy_protection: 12,
+        },
+        armor: CombatArmor {
+            regular: vec![3, 2, 1],
+            empty: 1,
+        },
+        flags: CombatFlags {
+            invulnerable: 16,
+            notarget: 32,
+            no_knockback: 2048,
+            power_armor: 4096,
+        },
         teams: CombatTeams { model: 64, skin: 128 },
     }
 }
@@ -655,7 +681,9 @@ pub fn validate_classic_combat_profile(profile: &ClassicCombatProfile) -> Classi
     scalar(profile.entity_bytes as u64, 0)?;
     scalar(profile.globals.item_bytes as u64, 0)?;
     if profile.entity_bytes < 260 || profile.globals.item_bytes < 4 || profile.client.inventory_count < 1 {
-        return Err(ClassicQ2Error::invalid("Classic combat source record sizes are invalid"));
+        return Err(ClassicQ2Error::invalid(
+            "Classic combat source record sizes are invalid",
+        ));
     }
     let fields = [
         ("health", profile.fields.health, 4),
@@ -687,10 +715,15 @@ pub fn validate_classic_combat_profile(profile: &ClassicCombatProfile) -> Classi
         }
     }
     if profile.client.userinfo_bytes < 1 {
-        return Err(ClassicQ2Error::invalid("Classic combat userinfo requires a bounded source string"));
+        return Err(ClassicQ2Error::invalid(
+            "Classic combat userinfo requires a bounded source string",
+        ));
     }
     scalar(profile.client.userinfo as u64, profile.client.userinfo_bytes as u64)?;
-    scalar(profile.client.inventory as u64, profile.client.inventory_count as u64 * 4)?;
+    scalar(
+        profile.client.inventory as u64,
+        profile.client.inventory_count as u64 * 4,
+    )?;
     for value in [
         profile.entries.damage,
         profile.entries.power_armor,
@@ -710,7 +743,10 @@ pub fn validate_classic_combat_profile(profile: &ClassicCombatProfile) -> Classi
             ));
         }
     }
-    for offset in [profile.armor_info.normal_protection, profile.armor_info.energy_protection] {
+    for offset in [
+        profile.armor_info.normal_protection,
+        profile.armor_info.energy_protection,
+    ] {
         scalar(offset as u64, 4)?;
         if offset % 4 != 0 {
             return Err(ClassicQ2Error::invalid("Classic armor information is unaligned"));
@@ -796,7 +832,8 @@ mod tests {
         assert!(classic_combat_profile(&ContentDigest::new("sha256", "00")).is_none());
         let damage = native_combat_signature(&profile.calls.damage, ClassicCombatOperation::Damage).unwrap();
         assert_eq!(damage.result, None);
-        let armor = native_combat_signature(&profile.calls.regular_armor, ClassicCombatOperation::RegularArmor).unwrap();
+        let armor =
+            native_combat_signature(&profile.calls.regular_armor, ClassicCombatOperation::RegularArmor).unwrap();
         assert_eq!(armor.result, Some(q2_int()));
     }
 
@@ -805,14 +842,19 @@ mod tests {
         let mut memory = test_memory();
         let image = memory.allocate(&GuestAllocationOptions::bytes(0x400)).unwrap();
         let target = memory.allocate(&GuestAllocationOptions::bytes(4)).unwrap();
-        memory.write_pointer(memory.offset(image, 0x100).unwrap(), Some(target)).unwrap();
+        memory
+            .write_pointer(memory.offset(image, 0x100).unwrap(), Some(target))
+            .unwrap();
         let mut call = stock_native_combat_call(ClassicCombatOperation::PowerArmor);
         call.arguments.push(ClassicNativeCombatArgument::Value {
             layout: q2_int(),
             bytes: 9i32.to_le_bytes().to_vec(),
         });
         call.arguments.push(ClassicNativeCombatArgument::Address {
-            target: Some(CombatAddressDefault { rva: 0x100, indirections: vec![0] }),
+            target: Some(CombatAddressDefault {
+                rva: 0x100,
+                indirections: vec![0],
+            }),
         });
         validate_native_combat_call(&call, ClassicCombatOperation::PowerArmor).unwrap();
         let semantic: Vec<GuestCallValue> = vec![

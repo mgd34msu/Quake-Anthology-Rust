@@ -3,13 +3,10 @@
 //! Donor: `src/compat/q2/rerelease/api.ts` — bridges `rerelease/game.h`
 //! function order and widths into ABI signatures and table layouts.
 
-use qa_guest::core::contracts::{
-    GuestCallSignature, GuestLayout, GuestStorage, GuestValueLayout, NativeCallAbi,
-};
+use qa_guest::core::contracts::{GuestCallSignature, GuestLayout, GuestStorage, GuestValueLayout, NativeCallAbi};
 
 use super::layouts::{
-    export_table_layout, field_offset, import_table_layout, rectangle_layout, trace_layout,
-    vec2_layout,
+    export_table_layout, field_offset, import_table_layout, rectangle_layout, trace_layout, vec2_layout,
 };
 
 /// Rerelease native ABI: 64-bit Windows PE+ with Microsoft x64 calls.
@@ -28,10 +25,7 @@ fn aggregate(layout: GuestLayout) -> GuestValueLayout {
 
 /// Build a non-variadic rerelease call signature.
 #[must_use]
-pub fn signature(
-    parameters: Vec<GuestValueLayout>,
-    result: Option<GuestValueLayout>,
-) -> GuestCallSignature {
+pub fn signature(parameters: Vec<GuestValueLayout>, result: Option<GuestValueLayout>) -> GuestCallSignature {
     GuestCallSignature {
         abi: rerelease_abi(),
         parameters,
@@ -49,11 +43,7 @@ pub struct ApiEntry {
     pub signature: GuestCallSignature,
 }
 
-fn entry(
-    name: &'static str,
-    parameters: Vec<GuestValueLayout>,
-    result: Option<GuestValueLayout>,
-) -> ApiEntry {
+fn entry(name: &'static str, parameters: Vec<GuestValueLayout>, result: Option<GuestValueLayout>) -> ApiEntry {
     ApiEntry {
         name,
         signature: signature(parameters, result),
@@ -95,16 +85,8 @@ pub fn game_imports() -> Vec<ApiEntry> {
         entry("Client_Print", vec![p(), i(), p()], None),
         entry("Center_Print", vec![p(), p()], None),
         entry("sound", vec![p(), b(), i(), f(), f(), f()], None),
-        entry(
-            "positioned_sound",
-            vec![p(), p(), b(), i(), f(), f(), f()],
-            None,
-        ),
-        entry(
-            "local_sound",
-            vec![p(), p(), p(), b(), i(), f(), f(), f(), u()],
-            None,
-        ),
+        entry("positioned_sound", vec![p(), p(), b(), i(), f(), f(), f()], None),
+        entry("local_sound", vec![p(), p(), p(), b(), i(), f(), f(), f(), u()], None),
         entry("configstring", vec![i(), p()], None),
         entry("get_configstring", vec![i()], Some(p())),
         entry("Com_Error", vec![p()], None),
@@ -157,27 +139,11 @@ pub fn game_imports() -> Vec<ApiEntry> {
         entry("Draw_Circle", vec![p(), f(), p(), f(), b()], None),
         entry("Draw_Bounds", vec![p(), p(), p(), f(), b()], None),
         entry("Draw_Sphere", vec![p(), f(), p(), f(), b()], None),
-        entry(
-            "Draw_OrientedWorldText",
-            vec![p(), p(), p(), f(), f(), b()],
-            None,
-        ),
-        entry(
-            "Draw_StaticWorldText",
-            vec![p(), p(), p(), p(), f(), f(), b()],
-            None,
-        ),
+        entry("Draw_OrientedWorldText", vec![p(), p(), p(), f(), f(), b()], None),
+        entry("Draw_StaticWorldText", vec![p(), p(), p(), p(), f(), f(), b()], None),
         entry("Draw_Cylinder", vec![p(), f(), f(), p(), f(), b()], None),
-        entry(
-            "Draw_Ray",
-            vec![p(), p(), f(), f(), p(), f(), b()],
-            None,
-        ),
-        entry(
-            "Draw_Arrow",
-            vec![p(), p(), f(), p(), p(), f(), b()],
-            None,
-        ),
+        entry("Draw_Ray", vec![p(), p(), f(), f(), p(), f(), b()], None),
+        entry("Draw_Arrow", vec![p(), p(), f(), p(), p(), f(), b()], None),
         entry("ReportMatchDetails_Multicast", vec![b()], None),
         entry("ServerFrame", vec![], Some(u())),
         entry("SendToClipBoard", vec![p()], None),
@@ -204,11 +170,7 @@ pub fn game_exports() -> Vec<ApiEntry> {
         entry("WriteLevelJson", vec![b(), p()], Some(p())),
         entry("ReadLevelJson", vec![p()], None),
         entry("CanSave", vec![], Some(b())),
-        entry(
-            "ClientChooseSlot",
-            vec![p(), p(), b(), p(), q(), b()],
-            Some(p()),
-        ),
+        entry("ClientChooseSlot", vec![p(), p(), b(), p(), q(), b()], Some(p())),
         entry("ClientConnect", vec![p(), p(), p(), b()], Some(b())),
         entry("ClientBegin", vec![p()], None),
         entry("ClientUserinfoChanged", vec![p(), p()], None),
@@ -270,11 +232,7 @@ pub fn cgame_imports() -> Vec<ApiEntry> {
         entry("SCR_DrawPic", vec![i(), i(), i(), i(), p()], None),
         entry("SCR_DrawColorPic", vec![i(), i(), i(), i(), p(), p()], None),
         entry("SCR_SetAltTypeface", vec![b()], None),
-        entry(
-            "SCR_DrawFontString",
-            vec![p(), i(), i(), i(), p(), b(), i()],
-            None,
-        ),
+        entry("SCR_DrawFontString", vec![p(), i(), i(), i(), p(), b(), i()], None),
         entry("SCR_MeasureFontString", vec![p(), i()], Some(v2())),
         entry("SCR_FontLineHeight", vec![i()], Some(f())),
         entry("CL_GetTextInput", vec![p(), p()], Some(b())),
@@ -299,11 +257,7 @@ pub fn cgame_exports() -> Vec<ApiEntry> {
     vec![
         entry("Init", vec![], None),
         entry("Shutdown", vec![], None),
-        entry(
-            "DrawHUD",
-            vec![i(), p(), r(), r(), i(), i(), p()],
-            None,
-        ),
+        entry("DrawHUD", vec![i(), p(), r(), r(), i(), i(), p()], None),
         entry("TouchPics", vec![], None),
         entry("LayoutFlags", vec![p()], Some(h())),
         entry("GetActiveWeaponWheelWeapon", vec![p()], Some(i())),
@@ -359,10 +313,7 @@ pub fn cgame_export_layout() -> GuestLayout {
 /// `GetGameAPI`/`GetCGameAPI` signature: pointer in, pointer out.
 #[must_use]
 pub fn get_api_signature() -> GuestCallSignature {
-    signature(
-        vec![scalar(GuestStorage::Pointer)],
-        Some(scalar(GuestStorage::Pointer)),
-    )
+    signature(vec![scalar(GuestStorage::Pointer)], Some(scalar(GuestStorage::Pointer)))
 }
 
 /// Find an entry by name.
@@ -385,10 +336,7 @@ mod tests {
         assert_eq!(cgame_exports().len(), 18);
         let trace = find_entry(&game_imports(), "trace").unwrap();
         assert_eq!(trace.signature.parameters.len(), 6);
-        assert!(matches!(
-            trace.signature.result,
-            Some(GuestValueLayout::Aggregate(_))
-        ));
+        assert!(matches!(trace.signature.result, Some(GuestValueLayout::Aggregate(_))));
         let draw = find_entry(&cgame_exports(), "DrawHUD").unwrap();
         assert_eq!(draw.signature.parameters.len(), 7);
         assert!(draw.signature.result.is_none());
@@ -406,11 +354,7 @@ mod tests {
             (cgame_export_layout(), cgame_exports()),
         ] {
             for entry in &entries {
-                assert!(
-                    field_offset(&layout, entry.name).is_ok(),
-                    "missing {}",
-                    entry.name
-                );
+                assert!(field_offset(&layout, entry.name).is_ok(), "missing {}", entry.name);
             }
             assert_eq!(layout.pointer_bytes, 8);
         }

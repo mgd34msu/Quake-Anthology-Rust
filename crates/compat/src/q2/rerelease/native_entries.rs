@@ -3,12 +3,11 @@
 //! Donor: `src/compat/q2/rerelease/native-entries.ts` — bridges
 //! artifact-qualified source functions and data into entry addresses.
 
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestCallSignature, GuestLayout, GuestStorage, GuestValueLayout,
-    NativeCallAbi,
+    GuestAccess, GuestAddress, GuestCallSignature, GuestLayout, GuestStorage, GuestValueLayout, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 use super::layouts::field_offset;
@@ -89,8 +88,16 @@ pub fn free_signature() -> GuestCallSignature {
 
 /// Stock `T_Damage` semantic fields.
 pub const DAMAGE_FIELDS: &[&str] = &[
-    "target", "inflictor", "attacker", "direction", "point", "normal", "amount", "knockback",
-    "flags", "cause",
+    "target",
+    "inflictor",
+    "attacker",
+    "direction",
+    "point",
+    "normal",
+    "amount",
+    "knockback",
+    "flags",
+    "cause",
 ];
 
 /// Stock `P_Damage` power-armor semantic fields.
@@ -98,9 +105,7 @@ pub const POWER_ARMOR_FIELDS: &[&str] = &["target", "point", "normal", "amount",
 
 fn field_layout(field: &str) -> GuestValueLayout {
     match field {
-        "target" | "inflictor" | "attacker" | "direction" | "point" | "normal" => {
-            scalar(GuestStorage::Pointer)
-        }
+        "target" | "inflictor" | "attacker" | "direction" | "point" | "normal" => scalar(GuestStorage::Pointer),
         "cause" => GuestValueLayout::Aggregate(mod_layout()),
         _ => scalar(GuestStorage::Int32),
     }
@@ -109,20 +114,14 @@ fn field_layout(field: &str) -> GuestValueLayout {
 /// Stock damage signature over the ten semantic fields.
 #[must_use]
 pub fn damage_signature() -> GuestCallSignature {
-    signature(
-        DAMAGE_FIELDS.iter().map(|field| field_layout(field)).collect(),
-        None,
-    )
+    signature(DAMAGE_FIELDS.iter().map(|field| field_layout(field)).collect(), None)
 }
 
 /// Stock power-armor signature with an integer result.
 #[must_use]
 pub fn power_armor_signature() -> GuestCallSignature {
     signature(
-        POWER_ARMOR_FIELDS
-            .iter()
-            .map(|field| field_layout(field))
-            .collect(),
+        POWER_ARMOR_FIELDS.iter().map(|field| field_layout(field)).collect(),
         Some(scalar(GuestStorage::Int32)),
     )
 }
@@ -190,9 +189,7 @@ pub fn rerelease_entries(
         return Err(NativeEntryError::ForeignProfile);
     }
     let entry = |memory: &mut SparseGuestMemory, rva: u64| {
-        memory
-            .offset(image_base, rva as i64)
-            .map_err(NativeEntryError::from)
+        memory.offset(image_base, rva as i64).map_err(NativeEntryError::from)
     };
     let data = |memory: &mut SparseGuestMemory, rva: u64, bytes: usize| {
         let address = memory.offset(image_base, rva as i64)?;
@@ -267,27 +264,18 @@ mod tests {
         assert!(free_signature().result.is_none());
         let damage = damage_signature();
         assert_eq!(damage.parameters.len(), 10);
-        assert!(matches!(
-            damage.parameters[9],
-            GuestValueLayout::Aggregate(_)
-        ));
+        assert!(matches!(damage.parameters[9], GuestValueLayout::Aggregate(_)));
         let power = power_armor_signature();
         assert_eq!(power.parameters.len(), 5);
-        assert_eq!(
-            power.result,
-            Some(GuestValueLayout::Scalar(GuestStorage::Int32))
-        );
+        assert_eq!(power.result, Some(GuestValueLayout::Scalar(GuestStorage::Int32)));
         assert_eq!(mod_layout().byte_length, 3);
     }
 
     #[test]
     fn entries_resolve_within_the_image() {
         let mut memory = test_memory();
-        let image_base = memory
-            .allocate(&GuestAllocationOptions::bytes(0x3000))
-            .expect("alloc");
-        let entries =
-            rerelease_entries(&mut memory, DIGEST, image_base, &profile()).expect("entries");
+        let image_base = memory.allocate(&GuestAllocationOptions::bytes(0x3000)).expect("alloc");
+        let entries = rerelease_entries(&mut memory, DIGEST, image_base, &profile()).expect("entries");
         assert_eq!(entries.spawn.offset, image_base.offset + 0x100);
         assert_eq!(entries.regular_armor_join.offset, image_base.offset + 0x600);
         assert_eq!(entries.time.offset, image_base.offset + 0x2000);

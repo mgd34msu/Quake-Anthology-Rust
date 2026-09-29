@@ -4,9 +4,9 @@
 //! `Draw_OrientedWorldText` / `Draw_StaticWorldText` imports into text events.
 
 use qa_core::math::{Vec3, Vec4};
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAddress, GuestCallResult, GuestCallValue};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use thiserror::Error;
 
 /// World-text import failure.
@@ -120,9 +120,7 @@ impl RereleaseWorldTextImports {
         name: &str,
         args: &[GuestCallValue],
     ) -> Option<Result<GuestCallResult, WorldTextError>> {
-        if api != "game"
-            || (name != "Draw_OrientedWorldText" && name != "Draw_StaticWorldText")
-        {
+        if api != "game" || (name != "Draw_OrientedWorldText" && name != "Draw_StaticWorldText") {
             return None;
         }
         Some(self.dispatch(memory, name, args))
@@ -175,9 +173,7 @@ impl RereleaseWorldTextImports {
             text.push(byte as char);
         }
         let channel = |index: i64| -> Result<f32, WorldTextError> {
-            Ok(f32::from(
-                memory.read_u8(memory.offset(color_address, index)?)?,
-            ) / 255.0)
+            Ok(f32::from(memory.read_u8(memory.offset(color_address, index)?)?) / 255.0)
         };
         let color = Vec4 {
             x: channel(0)?,
@@ -223,9 +219,7 @@ mod tests {
     }
 
     fn write_vec(memory: &mut SparseGuestMemory, value: Vec3) -> GuestAddress {
-        let address = memory
-            .allocate(&GuestAllocationOptions::bytes(12))
-            .expect("alloc");
+        let address = memory.allocate(&GuestAllocationOptions::bytes(12)).expect("alloc");
         memory.write_f32(address, value.x).expect("x");
         memory
             .write_f32(memory.offset(address, 4).expect("o"), value.y)
@@ -248,14 +242,7 @@ mod tests {
     fn oriented_text_is_billboard() {
         let mut memory = test_memory();
         let mut imports = RereleaseWorldTextImports::new();
-        let origin = write_vec(
-            &mut memory,
-            Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
-        );
+        let origin = write_vec(&mut memory, Vec3 { x: 1.0, y: 2.0, z: 3.0 });
         let string = write_bytes(&mut memory, b"hi\0");
         let color = write_bytes(&mut memory, &[0, 255, 0, 255]);
         imports
@@ -278,10 +265,7 @@ mod tests {
         let event = &imports.events[0];
         assert_eq!(event.text.text, "hi");
         assert_eq!(event.text.cell_size, 16.0);
-        assert_eq!(
-            event.text.orientation,
-            WorldTextOrientation::Billboard
-        );
+        assert_eq!(event.text.orientation, WorldTextOrientation::Billboard);
         assert!(event.text.depth_test);
         assert_eq!(event.lifetime, 5.0);
         assert_eq!(event.text.color.y, 1.0);
@@ -291,14 +275,7 @@ mod tests {
     fn static_text_is_fixed_and_truncates() {
         let mut memory = test_memory();
         let mut imports = RereleaseWorldTextImports::new();
-        let origin = write_vec(
-            &mut memory,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        );
+        let origin = write_vec(&mut memory, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
         let angles = write_vec(
             &mut memory,
             Vec3 {
@@ -330,15 +307,8 @@ mod tests {
             .expect("text");
         let event = &imports.events[0];
         assert_eq!(event.text.text.len(), 127);
-        assert!(matches!(
-            event.text.orientation,
-            WorldTextOrientation::Fixed { .. }
-        ));
+        assert!(matches!(event.text.orientation, WorldTextOrientation::Fixed { .. }));
         assert!(!event.text.depth_test);
-        assert!(
-            imports
-                .invoke(&mut memory, "game", "Draw_Line", &[])
-                .is_none()
-        );
+        assert!(imports.invoke(&mut memory, "game", "Draw_Line", &[]).is_none());
     }
 }

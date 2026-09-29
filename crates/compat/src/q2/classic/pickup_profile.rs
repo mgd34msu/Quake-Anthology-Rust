@@ -184,13 +184,19 @@ pub fn xatrix_pickup_profile() -> ClassicPickupProfile {
         grants: vec![
             PickupGrant {
                 entry: 0xa780,
-                recipient: PickupRegion { entry: 0xa795, join: 0xa8cb },
+                recipient: PickupRegion {
+                    entry: 0xa795,
+                    join: 0xa8cb,
+                },
                 resource: PickupGrantResource::Regular,
                 supply: None,
             },
             PickupGrant {
                 entry: 0xa3e0,
-                recipient: PickupRegion { entry: 0xa3e4, join: 0xa4b8 },
+                recipient: PickupRegion {
+                    entry: 0xa3e4,
+                    join: 0xa4b8,
+                },
                 resource: PickupGrantResource::Inventory,
                 supply: Some(PickupGrantSupply::Ammo(PickupAmmoSupply {
                     entry: 0xa41c,
@@ -199,28 +205,46 @@ pub fn xatrix_pickup_profile() -> ClassicPickupProfile {
             },
             PickupGrant {
                 entry: 0x35ff0,
-                recipient: PickupRegion { entry: 0x36064, join: 0x36077 },
+                recipient: PickupRegion {
+                    entry: 0x36064,
+                    join: 0x36077,
+                },
                 resource: PickupGrantResource::Inventory,
                 supply: Some(PickupGrantSupply::Weapon(PickupWeaponSupply {
                     ammo_return: 0x360dc,
                     settle: 0x360e5,
-                    autoswitch: PickupRegion { entry: 0x3614a, join: 0x3619b },
+                    autoswitch: PickupRegion {
+                        entry: 0x3614a,
+                        join: 0x3619b,
+                    },
                 })),
             },
             PickupGrant {
                 entry: 0x9960,
-                recipient: PickupRegion { entry: 0x996b, join: 0x9a72 },
+                recipient: PickupRegion {
+                    entry: 0x996b,
+                    join: 0x9a72,
+                },
                 resource: PickupGrantResource::Inventory,
                 supply: None,
             },
             PickupGrant {
                 entry: 0x9ac0,
-                recipient: PickupRegion { entry: 0x9acb, join: 0x9d98 },
+                recipient: PickupRegion {
+                    entry: 0x9acb,
+                    join: 0x9d98,
+                },
                 resource: PickupGrantResource::Inventory,
                 supply: None,
             },
         ],
-        items: PickupItemTable { table: 0x4b828, stride: 76, count: 48, classname: 0, pickup: 4 },
+        items: PickupItemTable {
+            table: 0x4b828,
+            stride: 76,
+            count: 48,
+            classname: 0,
+            pickup: 4,
+        },
         entity: PickupEntityFields {
             item: 0x288,
             count: 0x214,
@@ -228,7 +252,10 @@ pub fn xatrix_pickup_profile() -> ClassicPickupProfile {
             inuse: 88,
             inuse_bytes: 4,
         },
-        time: PickupTime { address: 0x76804, storage: "float32-seconds" },
+        time: PickupTime {
+            address: 0x76804,
+            storage: "float32-seconds",
+        },
         supply: PickupSupply {
             client: 0x54,
             inventory: 0x2e4,
@@ -236,11 +263,7 @@ pub fn xatrix_pickup_profile() -> ClassicPickupProfile {
             weapon_flag: 1,
             ammo: PickupAmmoInterface {
                 entry: 0xa310,
-                signature: classic_signature(
-                    vec![q2_pointer(), q2_pointer(), q2_int()],
-                    Some(q2_int()),
-                    false,
-                ),
+                signature: classic_signature(vec![q2_pointer(), q2_pointer(), q2_int()], Some(q2_int()), false),
                 tag: 0x44,
                 capacities: vec![0x6e4, 0x6e8, 0x6ec, 0x6f0, 0x6f4, 0x6f8, 0x6fc, 0x700],
                 capacity_bytes: 4,
@@ -280,7 +303,10 @@ mod tests {
     #[test]
     fn grant_regions_and_signatures_match_donor() {
         let profile = xatrix_pickup_profile();
-        assert!(profile.grants.iter().all(|grant| grant.recipient.entry < grant.recipient.join));
+        assert!(profile
+            .grants
+            .iter()
+            .all(|grant| grant.recipient.entry < grant.recipient.join));
         let ammo = profile.grants[1].supply.unwrap();
         assert!(matches!(ammo, PickupGrantSupply::Ammo(_)));
         let weapon = profile.grants[2].supply.unwrap();

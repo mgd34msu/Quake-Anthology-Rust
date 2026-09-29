@@ -73,11 +73,7 @@ impl<'e, E: ProtectionEngine> ProtectionScope<'e, E> {
 
     /// Re-check ownership after a step.
     pub fn checkpoint(&self) -> Result<(), ProtectionError> {
-        if self
-            .engine
-            .protection_owner(self.recipient, self.channel)
-            .is_some()
-        {
+        if self.engine.protection_owner(self.recipient, self.channel).is_some() {
             return Err(ProtectionError::OwnershipChanged);
         }
         Ok(())
@@ -94,12 +90,8 @@ impl<'e, E: ProtectionEngine> ProtectionScope<'e, E> {
             .read_armor(self.recipient)
             .ok_or(ProtectionError::NoBinding)?;
         match self.channel {
-            ProtectionChannel::Powered => self
-                .engine
-                .set_powered_protection(self.recipient, state.powered),
-            ProtectionChannel::Regular => self
-                .engine
-                .set_regular_armor(self.recipient, state.regular),
+            ProtectionChannel::Powered => self.engine.set_powered_protection(self.recipient, state.powered),
+            ProtectionChannel::Regular => self.engine.set_regular_armor(self.recipient, state.regular),
         }
         Ok(())
     }
@@ -110,10 +102,7 @@ impl<'e, E: ProtectionEngine> ProtectionScope<'e, E> {
         committed: &dyn Fn() -> bool,
         operation: impl FnOnce(Publisher<'_, 'e, E>) -> Result<T, ProtectionError>,
     ) -> Result<T, ProtectionError> {
-        let owned = self
-            .engine
-            .protection_owner(self.recipient, self.channel)
-            .is_some();
+        let owned = self.engine.protection_owner(self.recipient, self.channel).is_some();
         if !owned {
             self.checkpoint()?;
         }
@@ -209,8 +198,7 @@ mod tests {
     fn grant_publishes_regular_armor() {
         let mut engine = FakeEngine::new();
         engine.armor.insert(3, armor());
-        let scope = ProtectionScope::open(&mut engine, Some(3), ProtectionChannel::Regular)
-            .expect("scope");
+        let scope = ProtectionScope::open(&mut engine, Some(3), ProtectionChannel::Regular).expect("scope");
         let committed = || true;
         let result = scope
             .run(&committed, |mut publish| {
@@ -230,8 +218,7 @@ mod tests {
         engine
             .owners
             .insert((4, ProtectionChannel::Powered), "other".to_string());
-        let scope = ProtectionScope::open(&mut engine, Some(4), ProtectionChannel::Powered)
-            .expect("scope");
+        let scope = ProtectionScope::open(&mut engine, Some(4), ProtectionChannel::Powered).expect("scope");
         let committed = || true;
         scope
             .run(&committed, |mut publish| {
@@ -242,23 +229,17 @@ mod tests {
         assert!(engine.published_powered.is_empty());
         let mut engine = FakeEngine::new();
         assert_eq!(
-            ProtectionScope::open(&mut engine, None, ProtectionChannel::Regular)
-                .unwrap_err(),
+            ProtectionScope::open(&mut engine, None, ProtectionChannel::Regular).unwrap_err(),
             ProtectionError::NoRecipient
         );
         let mut engine = FakeEngine::new();
         engine.observing.push(5);
         engine.armor.insert(5, armor());
-        let mut scope =
-            ProtectionScope::open(&mut engine, Some(5), ProtectionChannel::Regular).expect("scope");
+        let mut scope = ProtectionScope::open(&mut engine, Some(5), ProtectionChannel::Regular).expect("scope");
         scope.publish(true).expect("publish");
         assert!(engine.published_regular.is_empty());
         let mut engine = FakeEngine::new();
-        let mut scope =
-            ProtectionScope::open(&mut engine, Some(6), ProtectionChannel::Regular).expect("scope");
-        assert_eq!(
-            scope.publish(true).unwrap_err(),
-            ProtectionError::NoBinding
-        );
+        let mut scope = ProtectionScope::open(&mut engine, Some(6), ProtectionChannel::Regular).expect("scope");
+        assert_eq!(scope.publish(true).unwrap_err(), ProtectionError::NoBinding);
     }
 }

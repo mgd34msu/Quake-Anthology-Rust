@@ -79,7 +79,14 @@ fn conversions(format: &str) -> ClassicResult<Vec<Conversion>> {
             )));
         }
         index += 1;
-        entries.push(Conversion { start, end: index, flags, width, precision, conv });
+        entries.push(Conversion {
+            start,
+            end: index,
+            flags,
+            width,
+            precision,
+            conv,
+        });
     }
     Ok(entries)
 }
@@ -122,7 +129,11 @@ fn format_exponent(value: f64, digits: usize) -> String {
 
 fn strip_mantissa(text: &str) -> String {
     match text.find('e') {
-        Some(at) => format!("{}e{}", strip_mantissa(&text[..at]), &text[at + 1..]),
+        Some(at) => {
+            let mantissa = strip_mantissa(&text[..at]);
+            let exponent = &text[at + 1..];
+            format!("{mantissa}e{exponent}")
+        }
         None => {
             if text.contains('.') {
                 text.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -152,7 +163,11 @@ fn format_float(conv: char, value: f64, precision: Option<usize>) -> String {
         return "NaN".to_string();
     }
     if value.is_infinite() {
-        return if value.is_sign_negative() { "-Infinity".to_string() } else { "Infinity".to_string() };
+        return if value.is_sign_negative() {
+            "-Infinity".to_string()
+        } else {
+            "Infinity".to_string()
+        };
     }
     let mut text = match conv {
         'f' => format!("{value:.prec$}", prec = precision.unwrap_or(6)),
@@ -164,7 +179,7 @@ fn format_float(conv: char, value: f64, precision: Option<usize>) -> String {
     }
     let exponent = text.find('e').map(|at| {
         let exp: i32 = text[at + 1..].parse().unwrap_or(0);
-        format!("{:+03}", exp)
+        format!("{exp:+03}")
     });
     if let Some(exponent) = exponent {
         let at = text.find('e').unwrap();
@@ -186,12 +201,14 @@ pub fn classic_printf(
 ) -> ClassicResult<String> {
     let mut next = 0;
     let mut take = || -> ClassicResult<&GuestCallValue> {
-        let item = arguments.get(next).ok_or_else(|| ClassicQ2Error::invalid("API 3 printf argument missing"))?;
+        let item = arguments
+            .get(next)
+            .ok_or_else(|| ClassicQ2Error::invalid("API 3 printf argument missing"))?;
         next += 1;
         Ok(item)
     };
-    let mut integer = || -> ClassicResult<i64> {
-        match take()? {
+    let integer = |value: &GuestCallValue| -> ClassicResult<i64> {
+        match value {
             GuestCallValue::Int32(value) => Ok(i64::from(*value)),
             GuestCallValue::Uint32(value) => Ok(i64::from(*value)),
             _ => Err(ClassicQ2Error::invalid("API 3 printf integer required")),
@@ -207,11 +224,11 @@ pub fn classic_printf(
             continue;
         }
         let width = match entry.width {
-            StarOrNumber::Star => integer()?,
+            StarOrNumber::Star => integer(take()?)?,
             StarOrNumber::Number(value) => value,
         };
         let precision_input = match entry.precision {
-            Some(StarOrNumber::Star) => Some(integer()?),
+            Some(StarOrNumber::Star) => Some(integer(take()?)?),
             Some(StarOrNumber::Number(value)) => Some(value),
             None => None,
         };
@@ -231,7 +248,8 @@ pub fn classic_printf(
                             None => text,
                         }
                     } else {
-                        format!("{:08x}", address.map_or(0, |value| value.offset))
+                        let offset = address.map_or(0, |value| value.offset);
+                        format!("{offset:08x}")
                     }
                 }
                 _ => return Err(ClassicQ2Error::invalid("API 3 printf pointer required")),
@@ -261,14 +279,18 @@ pub fn classic_printf(
                     text = text.to_uppercase();
                 }
                 if precision == Some(0) && unsigned == 0 && conv != 'c' {
-                    text = if conv == 'o' && entry.flags.contains('#') { "0".to_string() } else { String::new() };
+                    text = if conv == 'o' && entry.flags.contains('#') {
+                        "0".to_string()
+                    } else {
+                        String::new()
+                    };
                 }
                 if let Some(limit) = precision {
                     if conv != 'c' {
                         text = if let Some(rest) = text.strip_prefix('-') {
-                            format!("-{:0>limit$}", rest, limit = limit)
+                            format!("-{rest:0>limit$}")
                         } else {
-                            format!("{text:0>limit$}", limit = limit)
+                            format!("{text:0>limit$}")
                         };
                     }
                 }
@@ -303,10 +325,12 @@ pub fn classic_printf(
             }
         } else if fill == '0' && text.starts_with(['+', '-']) {
             let (sign, rest) = text.split_at(1);
-            text = format!("{sign}{rest:0>width$}", width = target.saturating_sub(1));
+            let width = target.saturating_sub(1);
+            text = format!("{sign}{rest:0>width$}");
         } else if fill == '0' && (text.starts_with("0x") || text.starts_with("0X")) {
             let (prefix, rest) = text.split_at(2);
-            text = format!("{prefix}{rest:0>width$}", width = target.saturating_sub(2));
+            let width = target.saturating_sub(2);
+            text = format!("{prefix}{rest:0>width$}");
         } else {
             while text.len() < target {
                 text.insert(0, fill);
@@ -320,10 +344,10 @@ pub fn classic_printf(
 
 #[cfg(test)]
 mod tests {
+    use super::super::records::allocate_classic_string;
     use super::*;
     use qa_core::identity::ProviderId;
     use qa_guest::core::contracts::{ContentDigest, ModuleIdentity};
-    use super::super::records::allocate_classic_string;
 
     fn test_memory() -> SparseGuestMemory {
         SparseGuestMemory::new(
@@ -361,7 +385,12 @@ mod tests {
         .unwrap();
         assert!(text.starts_with("soldier has 100 health and 0xff armor (A) "), "{text}");
         assert!(text.ends_with('%'), "{text}");
-        let padded = classic_printf(&mut memory, "[%8d][%-8d][%04d][%.3d]", &[int(42), int(42), int(42), int(42)]).unwrap();
+        let padded = classic_printf(
+            &mut memory,
+            "[%8d][%-8d][%04d][%.3d]",
+            &[int(42), int(42), int(42), int(42)],
+        )
+        .unwrap();
         assert_eq!(padded, "[      42][42      ][0042][042]");
         let layouts = classic_printf_layouts("%s has %d health and 0x%x armor (%c) %p%%").unwrap();
         assert_eq!(layouts, vec![q2_pointer(), q2_int(), q2_int(), q2_int(), q2_pointer()]);

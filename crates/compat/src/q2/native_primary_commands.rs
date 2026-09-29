@@ -492,7 +492,7 @@ impl NativePrimaryCommands {
     ) -> HostResult<()> {
         let actor = match self.giving.last().copied().flatten() {
             Some(actor) if self.current(host, actor) => actor,
-            _ => return execute(host),
+            _ => return execute(&mut *host),
         };
         let grant = self.profile.give.ammo_grants.get(grant_index).ok_or_else(|| {
             NativeHostError::Fault("unknown original ammo grant".to_string())
@@ -533,7 +533,7 @@ impl NativePrimaryCommands {
             i64::from(self.profile.client.inventory) + i64::from(row.index) * 4,
         )?;
         let before = host.core.memory.read_i32(counter)?;
-        execute(host)?;
+        execute(&mut *host)?;
         if self.current(host, actor) {
             let after = host.core.memory.read_i32(counter)?;
             let amount = match grant.kind {
@@ -561,7 +561,7 @@ impl NativePrimaryCommands {
         let actor = match self.dropping.last().copied().flatten() {
             Some(actor) if self.current(host, actor) => actor,
             _ => {
-                execute(host)?;
+                execute(&mut *host)?;
                 return Ok(false);
             }
         };
@@ -569,7 +569,7 @@ impl NativePrimaryCommands {
         let projection = match projection {
             Some(projection) => projection,
             None => {
-                execute(host)?;
+                execute(&mut *host)?;
                 return Ok(false);
             }
         };
@@ -636,7 +636,7 @@ impl NativePrimaryCommands {
         for (address, value) in &words {
             host.core.memory.write_i32(*address, *value)?;
         }
-        let outcome = execute(host);
+        let outcome = execute(&mut *host);
         if self.current(host, actor)
             && host.core.entity_of(actor).map_or(false, |current| current == entity)
         {
@@ -663,7 +663,7 @@ impl NativePrimaryCommands {
             ));
         }
         let item = match item {
-            None => return run(host),
+            None => return run(&mut *host),
             Some(item) => item,
         };
         let descriptor = self
@@ -690,7 +690,7 @@ impl NativePrimaryCommands {
             .offset(client, i64::from(self.profile.client.weapon))?;
         let previous = host.core.memory.read_pointer(address)?;
         host.core.memory.write_pointer(address, Some(descriptor.address))?;
-        let outcome = run(host);
+        let outcome = run(&mut *host);
         if self.current(host, actor)
             && host.core.entity_of(actor).map_or(false, |current| current == entity)
         {

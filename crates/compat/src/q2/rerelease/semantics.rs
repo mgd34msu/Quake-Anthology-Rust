@@ -96,10 +96,7 @@ pub fn rerelease_inventory_items(
             }
             RosterSource::Remaining => continue,
         };
-        if index < 0
-            || index as usize >= inventory_count
-            || !seen.insert(index)
-        {
+        if index < 0 || index as usize >= inventory_count || !seen.insert(index) {
             return Err(SemanticsError::RosterMismatch(row.item.clone()));
         }
         items.push(ResolvedInventoryItem {
@@ -179,16 +176,9 @@ mod tests {
             SemanticsError::RosterMismatch("q2:ammo_cells".to_string())
         );
         let unknown = rerelease_inventory_items(&rows(), 3, "q2:ammo_cells", 1, &|_| None);
-        assert!(matches!(
-            unknown.unwrap_err(),
-            SemanticsError::RosterMismatch(_)
-        ));
-        let wrong_cells =
-            rerelease_inventory_items(&rows(), 3, "q2:ammo_cells", 2, &|_| Some(1));
-        assert_eq!(
-            wrong_cells.unwrap_err(),
-            SemanticsError::RosterStorageMismatch
-        );
+        assert!(matches!(unknown.unwrap_err(), SemanticsError::RosterMismatch(_)));
+        let wrong_cells = rerelease_inventory_items(&rows(), 3, "q2:ammo_cells", 2, &|_| Some(1));
+        assert_eq!(wrong_cells.unwrap_err(), SemanticsError::RosterStorageMismatch);
         let short = rerelease_inventory_items(&rows(), 4, "q2:ammo_cells", 1, &|_| Some(1));
         assert_eq!(short.unwrap_err(), SemanticsError::BadRemaining);
     }

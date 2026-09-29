@@ -4,9 +4,9 @@
 //! `player_state_t` / `usercmd_t` bytes and host-side state records.
 
 use qa_core::math::{Vec3, Vec4};
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{GuestAccess, GuestAddress};
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use qa_world::client::{ClientCommand, ClientFamily};
 use thiserror::Error;
 
@@ -98,12 +98,7 @@ pub struct RereleaseUserCommand {
     pub server_frame: u32,
 }
 
-fn write_vec3(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-    value: Vec3,
-) -> Result<(), GuestError> {
+fn write_vec3(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64, value: Vec3) -> Result<(), GuestError> {
     let at = memory.offset(base, offset)?;
     memory.write_f32(at, value.x)?;
     memory.write_f32(memory.offset(at, 4)?, value.y)?;
@@ -111,11 +106,7 @@ fn write_vec3(
     Ok(())
 }
 
-fn read_vec3(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-) -> Result<Vec3, GuestError> {
+fn read_vec3(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64) -> Result<Vec3, GuestError> {
     let at = memory.offset(base, offset)?;
     Ok(Vec3 {
         x: memory.read_f32(at)?,
@@ -124,12 +115,7 @@ fn read_vec3(
     })
 }
 
-fn write_color(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-    value: Vec4,
-) -> Result<(), GuestError> {
+fn write_color(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64, value: Vec4) -> Result<(), GuestError> {
     write_vec3(
         memory,
         base,
@@ -144,11 +130,7 @@ fn write_color(
     Ok(())
 }
 
-fn read_color(
-    memory: &mut SparseGuestMemory,
-    base: GuestAddress,
-    offset: i64,
-) -> Result<Vec4, GuestError> {
+fn read_color(memory: &mut SparseGuestMemory, base: GuestAddress, offset: i64) -> Result<Vec4, GuestError> {
     let rgb = read_vec3(memory, base, offset)?;
     Ok(Vec4 {
         x: rgb.x,
@@ -325,24 +307,12 @@ mod tests {
     fn sample_movement() -> RereleaseMovementState {
         RereleaseMovementState {
             move_type: 1,
-            origin: Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
-            velocity: Vec3 {
-                x: 4.0,
-                y: 5.0,
-                z: 6.0,
-            },
+            origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
+            velocity: Vec3 { x: 4.0, y: 5.0, z: 6.0 },
             flags: 7,
             time_milliseconds: 25,
             gravity: 800,
-            delta_angles: Vec3 {
-                x: 0.5,
-                y: 1.5,
-                z: 2.5,
-            },
+            delta_angles: Vec3 { x: 0.5, y: 1.5, z: 2.5 },
             view_height: 22,
         }
     }
@@ -350,9 +320,7 @@ mod tests {
     #[test]
     fn player_state_round_trips() {
         let mut memory = test_memory();
-        let address = memory
-            .allocate(&GuestAllocationOptions::bytes(296))
-            .expect("alloc");
+        let address = memory.allocate(&GuestAllocationOptions::bytes(296)).expect("alloc");
         let value = RereleasePlayerState {
             movement: sample_movement(),
             view_angles: Vec3 {
@@ -365,21 +333,9 @@ mod tests {
                 y: 0.0,
                 z: 22.0,
             },
-            kick_angles: Vec3 {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            gun_angles: Vec3 {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            gun_offset: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
+            kick_angles: Vec3 { x: 1.0, y: 0.0, z: 0.0 },
+            gun_angles: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+            gun_offset: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
             gun_index: 5,
             gun_skin: 6,
             gun_frame: 7,
@@ -421,17 +377,11 @@ mod tests {
     #[test]
     fn user_command_round_trips_and_converts() {
         let mut memory = test_memory();
-        let address = memory
-            .allocate(&GuestAllocationOptions::bytes(28))
-            .expect("alloc");
+        let address = memory.allocate(&GuestAllocationOptions::bytes(28)).expect("alloc");
         let value = RereleaseUserCommand {
             milliseconds: 25,
             buttons: 9,
-            angles: Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
+            angles: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
             forward_move: 100.0,
             side_move: -50.0,
             server_frame: 1234,

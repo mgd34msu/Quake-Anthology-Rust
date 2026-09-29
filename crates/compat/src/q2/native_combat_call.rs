@@ -316,7 +316,7 @@ pub fn native_combat_signature(
 
 /// Marshalled length of one value layout.
 #[must_use]
-pub const fn value_bytes(layout: &GuestValueLayout, pointer_bytes: usize) -> usize {
+pub fn value_bytes(layout: &GuestValueLayout, pointer_bytes: usize) -> usize {
     match layout {
         GuestValueLayout::Scalar(storage) => storage.byte_length(pointer_bytes),
         GuestValueLayout::Aggregate(layout) => layout.byte_length,
@@ -369,17 +369,9 @@ pub fn validate_native_combat_call(
                 }
                 seen.push(*field);
             }
-            CombatArgument::Address(address) => {
-                if let Some(address) = address {
-                    for value in core::iter::once(address.rva).chain(address.indirections.iter().copied()) {
-                        if u64::from(value) > u64::from(u32::MAX) {
-                            return Err(
-                                "native combat address exceeds its image declaration".to_string()
-                            );
-                        }
-                    }
-                }
-            }
+            // Address components are `u32` by construction, which enforces the
+            // donor image-declaration bound structurally.
+            CombatArgument::Address(_) => {}
             CombatArgument::Value { layout, bytes } => {
                 validate_layout(layout, abi.pointer_bytes())?;
                 if bytes.len() != value_bytes(layout, abi.pointer_bytes()) {

@@ -425,7 +425,7 @@ impl NativePrimaryInventory {
     ) -> HostResult<()> {
         self.check_host(host)?;
         if self.evaluating != 0 {
-            return run_original(host);
+            return run_original(&mut *host);
         }
         let rows = (self.hooks.rows)(actor);
         let chosen = match &rows {
@@ -441,13 +441,13 @@ impl NativePrimaryInventory {
                 )?;
                 let count = host.core.memory.read_i32(address)?;
                 host.core.memory.write_i32(address, Self::source_count(&row))?;
-                let outcome = run_original(host);
+                let outcome = run_original(&mut *host);
                 if self.current(host, actor) {
                     host.core.memory.write_i32(address, count)?;
                 }
                 outcome
             }
-            _ => run_original(host),
+            _ => run_original(&mut *host),
         }
     }
 
@@ -623,11 +623,12 @@ impl NativePrimaryInventory {
         };
         match chosen {
             Some(row) if row.selected => {
+                let live = self.current(host, actor);
                 if let Some(frame) = self.frames.last_mut() {
-                    if let (Some((address, bytes)), true) =
-                        (frame.restore.take(), self.current(host, actor))
-                    {
-                        host.core.memory.write(address, &bytes)?;
+                    if let Some((address, bytes)) = frame.restore.take() {
+                        if live {
+                            host.core.memory.write(address, &bytes)?;
+                        }
                     }
                 }
                 (self.hooks.use_item)(actor, row.item);

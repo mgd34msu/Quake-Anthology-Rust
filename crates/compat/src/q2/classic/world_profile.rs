@@ -12,11 +12,10 @@ use qa_guest::core::contracts::{
 use qa_world::combat::ItemId;
 
 use super::combat_profile::{
-    classic_combat_profile, validate_classic_combat_profile, validate_native_combat_call,
-    ClassicCombatOperation, ClassicCombatProfile, ClassicGame, ClassicNativeCombatArgument,
-    ClassicNativeCombatCall, ClassicNativeCombatField, CombatAddressDefault, CombatArmor,
-    CombatArmorInfo, CombatCalls, CombatClientFields, CombatEntries, CombatEntityFields, CombatFlags,
-    CombatGlobals, CombatItemFields, CombatItems, CombatTeams,
+    classic_combat_profile, validate_classic_combat_profile, validate_native_combat_call, ClassicCombatOperation,
+    ClassicCombatProfile, ClassicGame, ClassicNativeCombatArgument, ClassicNativeCombatCall, ClassicNativeCombatField,
+    CombatAddressDefault, CombatArmor, CombatArmorInfo, CombatCalls, CombatClientFields, CombatEntityFields,
+    CombatEntries, CombatFlags, CombatGlobals, CombatItemFields, CombatItems, CombatTeams,
 };
 use super::layout::{ClassicQ2Error, ClassicResult};
 
@@ -50,12 +49,16 @@ impl<'a> ProfileReader<'a> {
     /// Read from a root value.
     #[must_use]
     pub fn root(value: &'a ProfileValue) -> Self {
-        Self { value, path: "profile".to_string() }
+        Self {
+            value,
+            path: "profile".to_string(),
+        }
     }
 
     /// Fail with the reader path attached.
     pub fn fail<T>(&self, detail: &str) -> ClassicResult<T> {
-        Err(ClassicQ2Error::invalid(format!("{}: {detail}", self.path)))
+        let path = &self.path;
+        Err(ClassicQ2Error::invalid(format!("{path}: {detail}")))
     }
 
     /// Read a named record field.
@@ -64,9 +67,10 @@ impl<'a> ProfileReader<'a> {
             ProfileValue::Map(map) => map.get(name).map_or_else(
                 || self.fail(&format!("missing field {name}")),
                 |value| {
+                    let parent = &self.path;
                     Ok(ProfileReader {
                         value,
-                        path: format!("{}.{}", self.path, name),
+                        path: format!("{parent}.{name}"),
                     })
                 },
             ),
@@ -121,9 +125,10 @@ impl<'a> ProfileReader<'a> {
             ProfileValue::List(values) => values
                 .iter()
                 .map(|value| {
+                    let parent = &self.path;
                     each(&ProfileReader {
                         value,
-                        path: format!("{}[]", self.path),
+                        path: format!("{parent}[]"),
                     })
                 })
                 .collect(),
@@ -152,7 +157,9 @@ pub fn native_offset(reader: &ProfileReader) -> ClassicResult<u32> {
 /// Read a native scalar storage name.
 pub fn native_scalar(reader: &ProfileReader) -> ClassicResult<GuestStorage> {
     match reader
-        .choice(&["int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float32", "float64"])?
+        .choice(&[
+            "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float32", "float64",
+        ])?
         .as_str()
     {
         "int8" => Ok(GuestStorage::Int8),
@@ -195,7 +202,10 @@ fn read_layout(reader: &ProfileReader) -> ClassicResult<GuestLayout> {
 }
 
 fn read_convention(reader: &ProfileReader) -> ClassicResult<NativeCallAbi> {
-    match reader.choice(&["cdecl", "stdcall", "fastcall", "thiscall", "microsoft-x64"])?.as_str() {
+    match reader
+        .choice(&["cdecl", "stdcall", "fastcall", "thiscall", "microsoft-x64"])?
+        .as_str()
+    {
         "cdecl" => Ok(NativeCallAbi::Cdecl),
         "stdcall" => Ok(NativeCallAbi::Stdcall),
         "fastcall" => Ok(NativeCallAbi::Fastcall),
@@ -215,8 +225,18 @@ pub fn read_native_combat_call(
             match value.field("kind")?.choice(&["field", "value", "address"])?.as_str() {
                 "field" => {
                     let name = value.field("field")?.choice(&[
-                        "target", "inflictor", "attacker", "direction", "point", "normal", "amount",
-                        "knockback", "flags", "cause", "sparks", "kick",
+                        "target",
+                        "inflictor",
+                        "attacker",
+                        "direction",
+                        "point",
+                        "normal",
+                        "amount",
+                        "knockback",
+                        "flags",
+                        "cause",
+                        "sparks",
+                        "kick",
                     ])?;
                     ClassicNativeCombatField::parse(&name)
                         .map(ClassicNativeCombatArgument::Field)
@@ -226,9 +246,7 @@ pub fn read_native_combat_call(
                     target: value.field("address")?.nullable(|address| {
                         Ok(CombatAddressDefault {
                             rva: native_offset(&address.field("rva")?)?,
-                            indirections: address
-                                .field("indirections")?
-                                .list(native_offset)?,
+                            indirections: address.field("indirections")?.list(native_offset)?,
                         })
                     })?,
                 }),
@@ -319,8 +337,16 @@ pub fn classic_primary_world_profile(digest: &ContentDigest) -> Option<ClassicPr
             tag: 68,
             capacities: vec![0x6e4, 0x6e8, 0x6ec, 0x6f0, 0x6f4, 0x6f8, 0x6fc, 0x700],
             unnamed: vec![
-                UnnamedItem { index: 0, label: String::new(), item: "q2:none".to_string() },
-                UnnamedItem { index: 47, label: "Health".to_string(), item: "q2:item_health".to_string() },
+                UnnamedItem {
+                    index: 0,
+                    label: String::new(),
+                    item: "q2:none".to_string(),
+                },
+                UnnamedItem {
+                    index: 47,
+                    label: "Health".to_string(),
+                    item: "q2:item_health".to_string(),
+                },
             ],
             empty_index: 0,
             sentinel: true,
@@ -356,14 +382,10 @@ pub fn read_classic_primary_world_profile(
                     &calls.field("regularArmor")?,
                     ClassicCombatOperation::RegularArmor,
                 )?,
-                power_armor: read_native_combat_call(
-                    &calls.field("powerArmor")?,
-                    ClassicCombatOperation::PowerArmor,
-                )?,
+                power_armor: read_native_combat_call(&calls.field("powerArmor")?, ClassicCombatOperation::PowerArmor)?,
             },
             digest,
-            game: ClassicGame::parse(&game)
-                .ok_or_else(|| ClassicQ2Error::invalid("unknown classic game"))?,
+            game: ClassicGame::parse(&game).ok_or_else(|| ClassicQ2Error::invalid("unknown classic game"))?,
             entity_bytes: reader.field("entityBytes")?.integer(1)? as usize,
             fields: CombatEntityFields {
                 health: native_offset(&fields.field("health")?)? as usize,
@@ -423,7 +445,12 @@ pub fn read_classic_primary_world_profile(
                 skin: native_offset(&teams.field("skin")?)?,
             },
             armor: CombatArmor {
-                regular: armor.field("regular")?.list(native_offset)?.into_iter().map(|value| value as usize).collect(),
+                regular: armor
+                    .field("regular")?
+                    .list(native_offset)?
+                    .into_iter()
+                    .map(|value| value as usize)
+                    .collect(),
                 empty: native_offset(&armor.field("empty")?)? as usize,
             },
         },
@@ -434,7 +461,12 @@ pub fn read_classic_primary_world_profile(
             flags: native_offset(&table.field("flags")?)? as usize,
             ammo_flag: table.field("ammoFlag")?.integer(1)?,
             tag: native_offset(&table.field("tag")?)? as usize,
-            capacities: table.field("capacities")?.list(native_offset)?.into_iter().map(|value| value as usize).collect(),
+            capacities: table
+                .field("capacities")?
+                .list(native_offset)?
+                .into_iter()
+                .map(|value| value as usize)
+                .collect(),
             unnamed: table.field("unnamed")?.list(|value| {
                 Ok(UnnamedItem {
                     index: native_offset(&value.field("index")?)? as usize,
@@ -481,7 +513,10 @@ pub fn read_classic_primary_world_profile(
     let mut indices = std::collections::HashSet::new();
     let mut names = std::collections::HashSet::new();
     for entry in &profile.inventory_table.unnamed {
-        if entry.index >= profile.inventory_table.count || !indices.insert(entry.index) || !names.insert(entry.item.clone()) {
+        if entry.index >= profile.inventory_table.count
+            || !indices.insert(entry.index)
+            || !names.insert(entry.item.clone())
+        {
             return table.fail("unnamed item identities must be unique source slots");
         }
     }
@@ -490,8 +525,8 @@ pub fn read_classic_primary_world_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::combat_profile::XATRIX_DIGEST_VALUE;
+    use super::*;
 
     fn int(value: i64) -> ProfileValue {
         ProfileValue::Int(value)
@@ -502,7 +537,12 @@ mod tests {
     }
 
     fn map(entries: Vec<(&str, ProfileValue)>) -> ProfileValue {
-        ProfileValue::Map(entries.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
+        ProfileValue::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        )
     }
 
     fn call(operation: ClassicCombatOperation) -> ProfileValue {
@@ -511,9 +551,11 @@ mod tests {
             (
                 "arguments",
                 ProfileValue::List(
-                    operation.fields().iter().map(|field| {
-                        map(vec![("kind", str_("field")), ("field", str_(field.name()))])
-                    }).collect(),
+                    operation
+                        .fields()
+                        .iter()
+                        .map(|field| map(vec![("kind", str_("field")), ("field", str_(field.name()))]))
+                        .collect(),
                 ),
             ),
         ])
@@ -524,94 +566,145 @@ mod tests {
         let combat = &profile.combat;
         let table = &profile.inventory_table;
         map(vec![
-            ("calls", map(vec![
-                ("pain", call(ClassicCombatOperation::Pain)),
-                ("death", call(ClassicCombatOperation::Death)),
-                ("damage", call(ClassicCombatOperation::Damage)),
-                ("regularArmor", call(ClassicCombatOperation::RegularArmor)),
-                ("powerArmor", call(ClassicCombatOperation::PowerArmor)),
-            ])),
+            (
+                "calls",
+                map(vec![
+                    ("pain", call(ClassicCombatOperation::Pain)),
+                    ("death", call(ClassicCombatOperation::Death)),
+                    ("damage", call(ClassicCombatOperation::Damage)),
+                    ("regularArmor", call(ClassicCombatOperation::RegularArmor)),
+                    ("powerArmor", call(ClassicCombatOperation::PowerArmor)),
+                ]),
+            ),
             ("game", str_(combat.game.name())),
             ("entityBytes", int(combat.entity_bytes as i64)),
-            ("fields", map(vec![
-                ("health", int(combat.fields.health as i64)),
-                ("damageable", int(combat.fields.damageable as i64)),
-                ("flags", int(combat.fields.flags as i64)),
-                ("mass", int(combat.fields.mass as i64)),
-                ("velocity", int(combat.fields.velocity as i64)),
-                ("pain", int(combat.fields.pain as i64)),
-                ("die", int(combat.fields.die as i64)),
-            ])),
-            ("client", map(vec![
-                ("inventory", int(combat.client.inventory as i64)),
-                ("inventoryCount", int(combat.client.inventory_count as i64)),
-                ("maxGrenades", int(combat.client.max_grenades as i64)),
-                ("invincibleFrame", int(combat.client.invincible_frame as i64)),
-                ("userinfo", int(combat.client.userinfo as i64)),
-                ("viewAngles", int(combat.client.view_angles as i64)),
-                ("userinfoBytes", int(combat.client.userinfo_bytes as i64)),
-            ])),
-            ("entries", map(vec![
-                ("damage", int(i64::from(combat.entries.damage))),
-                ("powerArmor", int(i64::from(combat.entries.power_armor))),
-                ("regularArmor", int(i64::from(combat.entries.regular_armor))),
-                ("spawn", int(i64::from(combat.entries.spawn))),
-                ("free", int(i64::from(combat.entries.free))),
-            ])),
-            ("globals", map(vec![
-                ("levelFrame", int(i64::from(combat.globals.level_frame))),
-                ("itemList", int(i64::from(combat.globals.item_list))),
-                ("itemBytes", int(combat.globals.item_bytes as i64)),
-            ])),
-            ("items", map(vec![
-                ("jacket", int(combat.items.jacket as i64)),
-                ("combat", int(combat.items.combat as i64)),
-                ("body", int(combat.items.body as i64)),
-                ("screen", int(combat.items.screen as i64)),
-                ("shield", int(combat.items.shield as i64)),
-                ("cells", int(combat.items.cells as i64)),
-                ("grenades", int(combat.items.grenades as i64)),
-            ])),
-            ("itemFields", map(vec![
-                ("className", int(combat.item_fields.class_name as i64)),
-                ("armorInfo", int(combat.item_fields.armor_info as i64)),
-            ])),
-            ("armorInfo", map(vec![
-                ("normalProtection", int(combat.armor_info.normal_protection as i64)),
-                ("energyProtection", int(combat.armor_info.energy_protection as i64)),
-            ])),
-            ("flags", map(vec![
-                ("invulnerable", int(i64::from(combat.flags.invulnerable))),
-                ("notarget", int(i64::from(combat.flags.notarget))),
-                ("noKnockback", int(i64::from(combat.flags.no_knockback))),
-                ("powerArmor", int(i64::from(combat.flags.power_armor))),
-            ])),
-            ("teams", map(vec![
-                ("model", int(i64::from(combat.teams.model))),
-                ("skin", int(i64::from(combat.teams.skin))),
-            ])),
-            ("armor", map(vec![
-                ("regular", ProfileValue::List(combat.armor.regular.iter().map(|value| int(*value as i64)).collect())),
-                ("empty", int(combat.armor.empty as i64)),
-            ])),
-            ("inventoryTable", map(vec![
-                ("count", int(table.count as i64)),
-                ("className", int(table.class_name as i64)),
-                ("label", int(table.label as i64)),
-                ("flags", int(table.flags as i64)),
-                ("ammoFlag", int(table.ammo_flag)),
-                ("tag", int(table.tag as i64)),
-                ("capacities", ProfileValue::List(table.capacities.iter().map(|value| int(*value as i64)).collect())),
-                ("unnamed", ProfileValue::List(table.unnamed.iter().map(|entry| {
-                    map(vec![
-                        ("index", int(entry.index as i64)),
-                        ("label", str_(&entry.label)),
-                        ("item", str_(&entry.item)),
-                    ])
-                }).collect())),
-                ("emptyIndex", int(table.empty_index as i64)),
-                ("sentinel", ProfileValue::Bool(table.sentinel)),
-            ])),
+            (
+                "fields",
+                map(vec![
+                    ("health", int(combat.fields.health as i64)),
+                    ("damageable", int(combat.fields.damageable as i64)),
+                    ("flags", int(combat.fields.flags as i64)),
+                    ("mass", int(combat.fields.mass as i64)),
+                    ("velocity", int(combat.fields.velocity as i64)),
+                    ("pain", int(combat.fields.pain as i64)),
+                    ("die", int(combat.fields.die as i64)),
+                ]),
+            ),
+            (
+                "client",
+                map(vec![
+                    ("inventory", int(combat.client.inventory as i64)),
+                    ("inventoryCount", int(combat.client.inventory_count as i64)),
+                    ("maxGrenades", int(combat.client.max_grenades as i64)),
+                    ("invincibleFrame", int(combat.client.invincible_frame as i64)),
+                    ("userinfo", int(combat.client.userinfo as i64)),
+                    ("viewAngles", int(combat.client.view_angles as i64)),
+                    ("userinfoBytes", int(combat.client.userinfo_bytes as i64)),
+                ]),
+            ),
+            (
+                "entries",
+                map(vec![
+                    ("damage", int(i64::from(combat.entries.damage))),
+                    ("powerArmor", int(i64::from(combat.entries.power_armor))),
+                    ("regularArmor", int(i64::from(combat.entries.regular_armor))),
+                    ("spawn", int(i64::from(combat.entries.spawn))),
+                    ("free", int(i64::from(combat.entries.free))),
+                ]),
+            ),
+            (
+                "globals",
+                map(vec![
+                    ("levelFrame", int(i64::from(combat.globals.level_frame))),
+                    ("itemList", int(i64::from(combat.globals.item_list))),
+                    ("itemBytes", int(combat.globals.item_bytes as i64)),
+                ]),
+            ),
+            (
+                "items",
+                map(vec![
+                    ("jacket", int(combat.items.jacket as i64)),
+                    ("combat", int(combat.items.combat as i64)),
+                    ("body", int(combat.items.body as i64)),
+                    ("screen", int(combat.items.screen as i64)),
+                    ("shield", int(combat.items.shield as i64)),
+                    ("cells", int(combat.items.cells as i64)),
+                    ("grenades", int(combat.items.grenades as i64)),
+                ]),
+            ),
+            (
+                "itemFields",
+                map(vec![
+                    ("className", int(combat.item_fields.class_name as i64)),
+                    ("armorInfo", int(combat.item_fields.armor_info as i64)),
+                ]),
+            ),
+            (
+                "armorInfo",
+                map(vec![
+                    ("normalProtection", int(combat.armor_info.normal_protection as i64)),
+                    ("energyProtection", int(combat.armor_info.energy_protection as i64)),
+                ]),
+            ),
+            (
+                "flags",
+                map(vec![
+                    ("invulnerable", int(i64::from(combat.flags.invulnerable))),
+                    ("notarget", int(i64::from(combat.flags.notarget))),
+                    ("noKnockback", int(i64::from(combat.flags.no_knockback))),
+                    ("powerArmor", int(i64::from(combat.flags.power_armor))),
+                ]),
+            ),
+            (
+                "teams",
+                map(vec![
+                    ("model", int(i64::from(combat.teams.model))),
+                    ("skin", int(i64::from(combat.teams.skin))),
+                ]),
+            ),
+            (
+                "armor",
+                map(vec![
+                    (
+                        "regular",
+                        ProfileValue::List(combat.armor.regular.iter().map(|value| int(*value as i64)).collect()),
+                    ),
+                    ("empty", int(combat.armor.empty as i64)),
+                ]),
+            ),
+            (
+                "inventoryTable",
+                map(vec![
+                    ("count", int(table.count as i64)),
+                    ("className", int(table.class_name as i64)),
+                    ("label", int(table.label as i64)),
+                    ("flags", int(table.flags as i64)),
+                    ("ammoFlag", int(table.ammo_flag)),
+                    ("tag", int(table.tag as i64)),
+                    (
+                        "capacities",
+                        ProfileValue::List(table.capacities.iter().map(|value| int(*value as i64)).collect()),
+                    ),
+                    (
+                        "unnamed",
+                        ProfileValue::List(
+                            table
+                                .unnamed
+                                .iter()
+                                .map(|entry| {
+                                    map(vec![
+                                        ("index", int(entry.index as i64)),
+                                        ("label", str_(&entry.label)),
+                                        ("item", str_(&entry.item)),
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    ("emptyIndex", int(table.empty_index as i64)),
+                    ("sentinel", ProfileValue::Bool(table.sentinel)),
+                ]),
+            ),
         ])
     }
 
@@ -645,12 +738,49 @@ mod tests {
             }
         }
         assert!(read_classic_primary_world_profile(&ProfileReader::root(&tree), digest).is_err());
-        let bad = map(vec![("convention", str_("cdecl")), ("arguments", ProfileValue::List(vec![]))]);
+        let bad = map(vec![
+            ("convention", str_("cdecl")),
+            ("arguments", ProfileValue::List(vec![])),
+        ]);
         assert!(read_native_combat_call(&ProfileReader::root(&bad), ClassicCombatOperation::Damage).is_err());
+        let mut fields: Vec<ProfileValue> = ClassicCombatOperation::PowerArmor
+            .fields()
+            .iter()
+            .map(|field| map(vec![("kind", str_("field")), ("field", str_(field.name()))]))
+            .collect();
+        fields.push(map(vec![
+            ("kind", str_("value")),
+            (
+                "layout",
+                map(vec![("kind", str_("scalar")), ("storage", str_("int32"))]),
+            ),
+            ("bytes", ProfileValue::List(vec![int(9), int(0), int(0), int(0)])),
+        ]));
+        fields.push(map(vec![
+            ("kind", str_("address")),
+            (
+                "address",
+                map(vec![
+                    ("rva", int(0x100)),
+                    ("indirections", ProfileValue::List(vec![int(0)])),
+                ]),
+            ),
+        ]));
+        fields.push(map(vec![("kind", str_("address")), ("address", ProfileValue::Null)]));
+        let mixed = map(vec![
+            ("convention", str_("stdcall")),
+            ("arguments", ProfileValue::List(fields)),
+        ]);
+        let mixed_call =
+            read_native_combat_call(&ProfileReader::root(&mixed), ClassicCombatOperation::PowerArmor).unwrap();
+        assert_eq!(mixed_call.arguments.len(), 8);
         let missing = map(vec![]);
         assert!(namespaced(&ProfileReader::root(&missing)).is_err());
         assert_eq!(namespaced(&ProfileReader::root(&str_("q2:none"))).unwrap(), "q2:none");
         assert!(native_scalar(&ProfileReader::root(&str_("pointer"))).is_err());
-        assert_eq!(native_scalar(&ProfileReader::root(&str_("float32"))).unwrap(), GuestStorage::Float32);
+        assert_eq!(
+            native_scalar(&ProfileReader::root(&str_("float32"))).unwrap(),
+            GuestStorage::Float32
+        );
     }
 }

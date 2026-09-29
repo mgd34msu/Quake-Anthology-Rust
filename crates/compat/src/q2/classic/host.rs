@@ -7,6 +7,7 @@
 //! CPU. Async loading twins from the donor collapse into the synchronous
 //! calls below; yielding has no meaning without real guest execution.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use qa_core::identity::{OwnedActor, ProviderId};
@@ -14,8 +15,8 @@ use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::{float_to_wrapped_i32, NumericOps, Q2_DONOR_PROFILE};
 use qa_guest::abi::values::validate_value_layout;
 use qa_guest::core::contracts::{
-    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallSignature,
-    GuestCallValue, GuestPermissions, GuestValueLayout, ModuleIdentity,
+    GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallSignature, GuestCallValue,
+    GuestPermissions, GuestValueLayout, ModuleIdentity,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::runtime::common::memory::{allocate_native_memory, native_allocation_bytes};
@@ -23,32 +24,28 @@ use qa_world::inventory::InventoryEntry;
 use qa_world::pickups::{preview_pickup_grants, PickupGrantPlan, PickupSupplyPreview};
 use qa_world::registry::ActorRegistry;
 
-use super::cvars::{ClassicQ2Cvars, ClassicCvarRegistry};
+use super::cvars::{ClassicCvarRegistry, ClassicQ2Cvars};
 use super::layout::{
-    classic_q2_export, classic_q2_imports, classic_signature, q2_pointer, q2_trace, ClassicQ2Error,
-    ClassicResult, CLASSIC_Q2_IMPORT_BYTES,
+    classic_q2_export, classic_q2_imports, classic_signature, q2_pointer, q2_trace, ClassicQ2Error, ClassicResult,
+    CLASSIC_Q2_IMPORT_BYTES,
 };
 use super::pickup_profile::{classic_pickup_profile, ClassicPickupProfile};
 use super::pmove::{
-    run_classic_guest_pmove, ClassicGuestPmoveOptions, ClassicMovementBody, MovementEntity,
-    PmoveEntities, PmoveTrace, SrcVec3,
+    run_classic_guest_pmove, ClassicGuestPmoveOptions, ClassicMovementBody, MovementEntity, PmoveEntities, PmoveTrace,
+    SrcVec3,
 };
 use super::printf::{classic_printf, classic_printf_layouts};
 use super::records::{
-    allocate_classic_string, classic_string_allocation_bytes, read_classic_string,
-    read_classic_vector, write_classic_string, write_classic_vector, ClassicQ2Edicts,
+    allocate_classic_string, classic_string_allocation_bytes, read_classic_string, read_classic_vector,
+    write_classic_string, write_classic_vector, ClassicQ2Edicts,
 };
 
 /// Synthetic guest function answering one invocation.
-pub type GuestHandler =
-    Box<dyn FnMut(&mut SparseGuestMemory, &[GuestCallValue]) -> ClassicResult<GuestCallResult>>;
+pub type GuestHandler = Box<dyn FnMut(&mut SparseGuestMemory, &[GuestCallValue]) -> ClassicResult<GuestCallResult>>;
 
 /// Input-movement boundary wrapping one movement run.
 pub type InputMovementBoundary = Box<
-    dyn FnMut(
-        GuestAddress,
-        &mut dyn FnMut(Option<&ClassicMovementBody>) -> ClassicResult<()>,
-    ) -> ClassicResult<()>,
+    dyn FnMut(GuestAddress, &mut dyn FnMut(Option<&ClassicMovementBody>) -> ClassicResult<()>) -> ClassicResult<()>,
 >;
 
 /// Print destination for formatted game text.
@@ -276,7 +273,11 @@ impl ClassicEngineServices {
             sounds: Vec::new(),
             area_portals: HashMap::new(),
             areas_connected: HashMap::new(),
-            world_link: ClassicWorldLink { clusters: None, headnode: 0, areas: (0, 0) },
+            world_link: ClassicWorldLink {
+                clusters: None,
+                headnode: 0,
+                areas: (0, 0),
+            },
             box_edict_slots: Vec::new(),
             box_edict_queries: Vec::new(),
             messages: Vec::new(),
@@ -313,13 +314,14 @@ impl ClassicEngineServices {
 
     /// Assign or reuse a resource index.
     pub fn resource_index(&mut self, kind: &str, name: &str) -> i32 {
-        if let Some(index) = self.resources.get(&(kind.to_string(), name.to_string())) {
-            return *index;
+        match self.resources.entry((kind.to_string(), name.to_string())) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let index = self.next_resource;
+                self.next_resource += 1;
+                *entry.insert(index)
+            }
         }
-        let index = self.next_resource;
-        self.next_resource += 1;
-        self.resources.insert((kind.to_string(), name.to_string()), index);
-        index
     }
 }
 
@@ -362,14 +364,18 @@ fn int_result(value: i32) -> GuestCallResult {
 fn arg_pointer(args: &[GuestCallValue], index: usize) -> ClassicResult<Option<GuestAddress>> {
     match args.get(index) {
         Some(GuestCallValue::Pointer(value)) => Ok(*value),
-        _ => Err(ClassicQ2Error::invalid(format!("API 3 argument {index} must be a pointer"))),
+        _ => Err(ClassicQ2Error::invalid(format!(
+            "API 3 argument {index} must be a pointer"
+        ))),
     }
 }
 
 fn arg_required(args: &[GuestCallValue], index: usize) -> ClassicResult<GuestAddress> {
     match arg_pointer(args, index)? {
         Some(address) => Ok(address),
-        None => Err(ClassicQ2Error::invalid(format!("API 3 argument {index} cannot be null"))),
+        None => Err(ClassicQ2Error::invalid(format!(
+            "API 3 argument {index} cannot be null"
+        ))),
     }
 }
 
@@ -379,7 +385,9 @@ fn arg_int(args: &[GuestCallValue], index: usize) -> ClassicResult<i32> {
         Some(GuestCallValue::Uint32(value)) => Ok(*value as i32),
         Some(GuestCallValue::Float32(value)) => Ok(float_to_wrapped_i32(f64::from(*value))),
         Some(GuestCallValue::Float64(value)) => Ok(float_to_wrapped_i32(*value)),
-        _ => Err(ClassicQ2Error::invalid(format!("API 3 argument {index} must be numeric"))),
+        _ => Err(ClassicQ2Error::invalid(format!(
+            "API 3 argument {index} must be numeric"
+        ))),
     }
 }
 
@@ -389,23 +397,17 @@ fn arg_float(args: &[GuestCallValue], index: usize) -> ClassicResult<f32> {
         Some(GuestCallValue::Float64(value)) => Ok(*value as f32),
         Some(GuestCallValue::Int32(value)) => Ok(*value as f32),
         Some(GuestCallValue::Uint32(value)) => Ok(*value as f32),
-        _ => Err(ClassicQ2Error::invalid(format!("API 3 argument {index} must be numeric"))),
+        _ => Err(ClassicQ2Error::invalid(format!(
+            "API 3 argument {index} must be numeric"
+        ))),
     }
 }
 
-fn arg_string(
-    memory: &mut SparseGuestMemory,
-    args: &[GuestCallValue],
-    index: usize,
-) -> ClassicResult<String> {
+fn arg_string(memory: &mut SparseGuestMemory, args: &[GuestCallValue], index: usize) -> ClassicResult<String> {
     read_classic_string(memory, arg_pointer(args, index)?, 65536)
 }
 
-fn arg_vector(
-    memory: &mut SparseGuestMemory,
-    args: &[GuestCallValue],
-    index: usize,
-) -> ClassicResult<Vec3> {
+fn arg_vector(memory: &mut SparseGuestMemory, args: &[GuestCallValue], index: usize) -> ClassicResult<Vec3> {
     read_classic_vector(memory, arg_required(args, index)?)
 }
 
@@ -513,12 +515,16 @@ impl ClassicQ2GuestHost {
             return Err(ClassicQ2Error::invalid("API 3 instruction budget exhausted"));
         }
         if !signature.variadic && args.len() != signature.parameters.len() {
-            return Err(ClassicQ2Error::invalid("API 3 invocation differs from its declared signature"));
+            return Err(ClassicQ2Error::invalid(
+                "API 3 invocation differs from its declared signature",
+            ));
         }
         self.instructions_executed += 1 + args.len() as u64;
-        let handler = self.guest_handlers.get_mut(&target.offset).ok_or_else(|| {
-            ClassicQ2Error::invalid(format!("no synthetic guest function at 0x{:x}", target.offset))
-        })?;
+        let offset = target.offset;
+        let handler = self
+            .guest_handlers
+            .get_mut(&target.offset)
+            .ok_or_else(|| ClassicQ2Error::invalid(format!("no synthetic guest function at 0x{offset:x}")))?;
         handler(&mut self.memory, args)
     }
 
@@ -528,15 +534,25 @@ impl ClassicQ2GuestHost {
             return Err(ClassicQ2Error::invalid("GetGameAPI already bound"));
         }
         let signature = classic_signature(vec![q2_pointer()], Some(q2_pointer()), false);
-        let result = self.invoke(target, &signature, &[GuestCallValue::Pointer(Some(self.imports))], self.instruction_budget)?;
+        let result = self.invoke(
+            target,
+            &signature,
+            &[GuestCallValue::Pointer(Some(self.imports))],
+            self.instruction_budget,
+        )?;
         let GuestCallResult::Value(GuestCallValue::Pointer(Some(exports))) = result else {
-            return Err(ClassicQ2Error::invalid("GetGameAPI returned null or a non-pointer result"));
+            return Err(ClassicQ2Error::invalid(
+                "GetGameAPI returned null or a non-pointer result",
+            ));
         };
         let mut edicts = ClassicQ2Edicts::new(&mut self.memory, exports, self.provider.clone(), None)?;
         for entry in super::layout::classic_q2_exports() {
-            let address = self.memory.read_pointer(self.memory.offset(exports, i64::from(entry.offset))?)?;
+            let address = self
+                .memory
+                .read_pointer(self.memory.offset(exports, i64::from(entry.offset))?)?;
             let Some(address) = address else {
-                return Err(ClassicQ2Error::invalid(format!("Null API 3 export at byte {}", entry.offset)));
+                let at = entry.offset;
+                return Err(ClassicQ2Error::invalid(format!("Null API 3 export at byte {at}")));
             };
             self.memory.check(address, 1, GuestAccess::Execute)?;
         }
@@ -551,18 +567,16 @@ impl ClassicQ2GuestHost {
         self.call_with_budget(name, args, self.instruction_budget)
     }
 
-    fn call_with_budget(
-        &mut self,
-        name: &str,
-        args: &[GuestCallValue],
-        budget: u64,
-    ) -> ClassicResult<GuestCallResult> {
-        let exports = self.exports.ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI must run before lifecycle calls"))?;
-        let entry = classic_q2_export(name)
-            .ok_or_else(|| ClassicQ2Error::invalid(format!("Unknown API 3 export {name}")))?;
-        let target = self.memory.read_pointer(self.memory.offset(exports, i64::from(entry.offset))?)?.ok_or_else(|| {
-            ClassicQ2Error::invalid(format!("Null API 3 export {name}"))
-        })?;
+    fn call_with_budget(&mut self, name: &str, args: &[GuestCallValue], budget: u64) -> ClassicResult<GuestCallResult> {
+        let exports = self
+            .exports
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI must run before lifecycle calls"))?;
+        let entry =
+            classic_q2_export(name).ok_or_else(|| ClassicQ2Error::invalid(format!("Unknown API 3 export {name}")))?;
+        let target = self
+            .memory
+            .read_pointer(self.memory.offset(exports, i64::from(entry.offset))?)?
+            .ok_or_else(|| ClassicQ2Error::invalid(format!("Null API 3 export {name}")))?;
         self.cvars.refresh(&mut self.memory)?;
         let result = self.invoke(target, &entry.signature, args, budget)?;
         if self.initialized && !self.suppress_reconcile && name != "Shutdown" {
@@ -573,7 +587,10 @@ impl ClassicQ2GuestHost {
 
     /// Reconcile the roster, logging fresh binds.
     pub fn reconcile(&mut self) -> ClassicResult<()> {
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         for actor in edicts.reconcile(&mut self.memory, &mut self.registry)? {
             if let Some((_, slot)) = self.registry.source_of(actor.id()) {
                 self.services.bound_entities.push(slot);
@@ -584,7 +601,10 @@ impl ClassicQ2GuestHost {
 
     /// Observe one record, logging fresh binds.
     pub fn observe_edict(&mut self, address: GuestAddress) -> ClassicResult<Option<OwnedActor>> {
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         match edicts.observe(&mut self.memory, &mut self.registry, address)? {
             Some(observation) => {
                 let actor = observation.actor().clone();
@@ -617,7 +637,7 @@ impl ClassicQ2GuestHost {
         self.pickup_supply_owner = None;
         self.initialized = false;
         result?;
-        for actor in self.registry.owned_by(&self.provider.clone()) {
+        for actor in self.registry.owned_by(&self.provider) {
             self.registry.release(&actor)?;
         }
         Ok(())
@@ -625,7 +645,7 @@ impl ClassicQ2GuestHost {
 
     /// Run `SpawnEntities` with a tenfold budget, tracking instructions.
     pub fn spawn_entities(&mut self, map: &str, entities: &str, spawn_point: &str) -> ClassicResult<()> {
-        for actor in self.registry.owned_by(&self.provider.clone()) {
+        for actor in self.registry.owned_by(&self.provider) {
             self.registry.release(&actor)?;
         }
         let before = self.instructions_executed;
@@ -644,7 +664,7 @@ impl ClassicQ2GuestHost {
         }
         self.check_pickups_idle()?;
         if matches!(name, "ReadGame" | "ReadLevel") {
-            for actor in self.registry.owned_by(&self.provider.clone()) {
+            for actor in self.registry.owned_by(&self.provider) {
                 self.registry.release(&actor)?;
             }
         }
@@ -668,9 +688,11 @@ impl ClassicQ2GuestHost {
             let address = allocate_classic_string(&mut self.memory, text)?;
             records.push((*text, address));
         }
-        let pointers: Vec<GuestCallValue> =
-            records.iter().map(|(_, address)| GuestCallValue::Pointer(Some(*address))).collect();
-        let result = operation(self, pointers);
+        let pointers: Vec<GuestCallValue> = records
+            .iter()
+            .map(|(_, address)| GuestCallValue::Pointer(Some(*address)))
+            .collect();
+        let result = operation(&mut *self, pointers);
         for (text, address) in records {
             self.memory.unmap(address, classic_string_allocation_bytes(text)?)?;
         }
@@ -680,11 +702,20 @@ impl ClassicQ2GuestHost {
     /// Rebind the roster after the world underneath was replaced.
     pub fn rebind_world(&mut self) -> ClassicResult<()> {
         self.check_pickups_idle()?;
-        let exports = self.exports.ok_or_else(|| ClassicQ2Error::invalid("API 3 world rebind requires an idle initialized module"))?;
+        let exports = self
+            .exports
+            .ok_or_else(|| ClassicQ2Error::invalid("API 3 world rebind requires an idle initialized module"))?;
         if !self.initialized {
-            return Err(ClassicQ2Error::invalid("API 3 world rebind requires an idle initialized module"));
+            return Err(ClassicQ2Error::invalid(
+                "API 3 world rebind requires an idle initialized module",
+            ));
         }
-        self.edicts = Some(ClassicQ2Edicts::new(&mut self.memory, exports, self.provider.clone(), None)?);
+        self.edicts = Some(ClassicQ2Edicts::new(
+            &mut self.memory,
+            exports,
+            self.provider.clone(),
+            None,
+        )?);
         self.models.clear();
         Ok(())
     }
@@ -705,18 +736,26 @@ impl ClassicQ2GuestHost {
     /// Save a travel level with clients temporarily marked free.
     pub fn write_travel_level(&mut self, filename: &str, max_clients: u32) -> ClassicResult<()> {
         if !self.initialized || self.suppress_reconcile {
-            return Err(ClassicQ2Error::invalid("API 3 travel save requires an idle initialized module"));
+            return Err(ClassicQ2Error::invalid(
+                "API 3 travel save requires an idle initialized module",
+            ));
         }
         let mut in_use = Vec::with_capacity(max_clients as usize);
         for slot in 1..=max_clients {
-            let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+            let edicts = self
+                .edicts
+                .as_mut()
+                .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
             let record = edicts.at(&mut self.memory, slot)?;
             in_use.push(self.memory.read_i32(self.memory.offset(record.address, 88)?)?);
         }
         self.suppress_reconcile = true;
         let mut failure: Option<String> = None;
         for slot in 1..=max_clients {
-            let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+            let edicts = self
+                .edicts
+                .as_mut()
+                .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
             let record = edicts.at(&mut self.memory, slot)?;
             self.memory.write_i32(self.memory.offset(record.address, 88)?, 0)?;
         }
@@ -724,9 +763,13 @@ impl ClassicQ2GuestHost {
             failure = Some(error.to_string());
         }
         for (index, slot) in (1..=max_clients).enumerate() {
-            let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+            let edicts = self
+                .edicts
+                .as_mut()
+                .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
             let record = edicts.at(&mut self.memory, slot)?;
-            self.memory.write_i32(self.memory.offset(record.address, 88)?, in_use[index])?;
+            self.memory
+                .write_i32(self.memory.offset(record.address, 88)?, in_use[index])?;
         }
         self.suppress_reconcile = false;
         match (failure, self.reconcile()) {
@@ -749,19 +792,30 @@ impl ClassicQ2GuestHost {
     pub fn client_connect(&mut self, slot: u32, userinfo: &str) -> ClassicResult<ClientConnectOutcome> {
         let buffer = self.memory.allocate(&GuestAllocationOptions::bytes(516))?;
         write_classic_string(&mut self.memory, buffer, userinfo, 512)?;
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut self.memory, slot)?;
         let result = self.call(
             "ClientConnect",
-            &[GuestCallValue::Pointer(Some(record.address)), GuestCallValue::Pointer(Some(buffer))],
+            &[
+                GuestCallValue::Pointer(Some(record.address)),
+                GuestCallValue::Pointer(Some(buffer)),
+            ],
         )?;
         let GuestCallResult::Value(GuestCallValue::Int32(value)) = result else {
             self.memory.unmap(buffer, 516)?;
-            return Err(ClassicQ2Error::invalid("API 3 ClientConnect returned a non-integer result"));
+            return Err(ClassicQ2Error::invalid(
+                "API 3 ClientConnect returned a non-integer result",
+            ));
         };
         let userinfo = read_classic_string(&mut self.memory, Some(buffer), 512)?;
         self.memory.unmap(buffer, 516)?;
-        Ok(ClientConnectOutcome { allowed: value != 0, userinfo })
+        Ok(ClientConnectOutcome {
+            allowed: value != 0,
+            userinfo,
+        })
     }
 
     /// Run a client lifecycle event.
@@ -769,7 +823,10 @@ impl ClassicQ2GuestHost {
         if !matches!(name, "ClientBegin" | "ClientDisconnect" | "ClientCommand") {
             return Err(ClassicQ2Error::invalid(format!("Unknown API 3 client event {name}")));
         }
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut self.memory, slot)?;
         self.call(name, &[GuestCallValue::Pointer(Some(record.address))])?;
         Ok(())
@@ -779,11 +836,17 @@ impl ClassicQ2GuestHost {
     pub fn client_userinfo_changed(&mut self, slot: u32, userinfo: &str) -> ClassicResult<String> {
         let buffer = self.memory.allocate(&GuestAllocationOptions::bytes(516))?;
         write_classic_string(&mut self.memory, buffer, userinfo, 512)?;
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut self.memory, slot)?;
         self.call(
             "ClientUserinfoChanged",
-            &[GuestCallValue::Pointer(Some(record.address)), GuestCallValue::Pointer(Some(buffer))],
+            &[
+                GuestCallValue::Pointer(Some(record.address)),
+                GuestCallValue::Pointer(Some(buffer)),
+            ],
         )?;
         let userinfo = read_classic_string(&mut self.memory, Some(buffer), 512)?;
         self.memory.unmap(buffer, 516)?;
@@ -797,11 +860,17 @@ impl ClassicQ2GuestHost {
         }
         let address = self.memory.allocate(&GuestAllocationOptions::bytes(16))?;
         self.memory.write(address, command)?;
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let record = edicts.at(&mut self.memory, slot)?;
         let result = self.call(
             "ClientThink",
-            &[GuestCallValue::Pointer(Some(record.address)), GuestCallValue::Pointer(Some(address))],
+            &[
+                GuestCallValue::Pointer(Some(record.address)),
+                GuestCallValue::Pointer(Some(address)),
+            ],
         );
         self.memory.unmap(address, 16)?;
         result?;
@@ -811,7 +880,9 @@ impl ClassicQ2GuestHost {
     /// Variadic layouts for one import's fixed arguments.
     pub fn variadic_layouts(&mut self, name: &str, fixed: &[GuestCallValue]) -> ClassicResult<Vec<GuestValueLayout>> {
         if !classic_q2_imports().iter().any(|entry| entry.name == name) {
-            return Err(ClassicQ2Error::invalid(format!("Variadic callback {name} is not an API 3 import")));
+            return Err(ClassicQ2Error::invalid(format!(
+                "Variadic callback {name} is not an API 3 import"
+            )));
         }
         let index = if name == "bprintf" || name == "centerprintf" {
             1
@@ -873,13 +944,17 @@ impl ClassicQ2GuestHost {
     /// Bind the exclusive pickup supply owner.
     pub fn bind_pickup_supply(&mut self, owner: &str) -> ClassicResult<PickupSupplyLease> {
         if self.pickup_profile.is_none() {
-            return Err(ClassicQ2Error::invalid("This original game has no admitted pickup supply interface"));
+            return Err(ClassicQ2Error::invalid(
+                "This original game has no admitted pickup supply interface",
+            ));
         }
         if self.pickup_supply_owner.is_some() {
             return Err(ClassicQ2Error::invalid("API3 pickup supply already has an owner"));
         }
         self.pickup_supply_owner = Some(owner.to_string());
-        Ok(PickupSupplyLease { owner: owner.to_string() })
+        Ok(PickupSupplyLease {
+            owner: owner.to_string(),
+        })
     }
 
     /// Preview pickup grants against admitted entries.
@@ -889,7 +964,9 @@ impl ClassicQ2GuestHost {
         plan: &PickupGrantPlan,
     ) -> ClassicResult<PickupSupplyPreview> {
         if self.pickup_profile.is_none() {
-            return Err(ClassicQ2Error::invalid("This original game has no admitted pickup supply interface"));
+            return Err(ClassicQ2Error::invalid(
+                "This original game has no admitted pickup supply interface",
+            ));
         }
         Ok(preview_pickup_grants(entries, plan)?)
     }
@@ -944,7 +1021,12 @@ impl ClassicQ2GuestHost {
                 } else {
                     0
                 };
-                self.services.prints.push(PrintRecord { destination, entity, level, text });
+                self.services.prints.push(PrintRecord {
+                    destination,
+                    entity,
+                    level,
+                    text,
+                });
                 Ok(void_result())
             }
             "TagMalloc" => {
@@ -954,15 +1036,18 @@ impl ClassicQ2GuestHost {
                     return Err(ClassicQ2Error::invalid("TagMalloc requires a nonnegative byte count"));
                 }
                 let bytes = native_allocation_bytes(requested as usize)?;
-                let address = allocate_native_memory(&mut self.memory, requested as usize, &format!("API 3 tag {tag}"))?;
-                self.allocations.insert(address.offset, ClassicAllocation { address, bytes, tag });
+                let address =
+                    allocate_native_memory(&mut self.memory, requested as usize, &format!("API 3 tag {tag}"))?;
+                self.allocations
+                    .insert(address.offset, ClassicAllocation { address, bytes, tag });
                 Ok(pointer_result(Some(address)))
             }
             "TagFree" => {
                 let address = arg_required(args, 0)?;
-                let record = self.allocations.remove(&address.offset).ok_or_else(|| {
-                    ClassicQ2Error::invalid("TagFree pointer is not a live API 3 allocation")
-                })?;
+                let record = self
+                    .allocations
+                    .remove(&address.offset)
+                    .ok_or_else(|| ClassicQ2Error::invalid("TagFree pointer is not a live API 3 allocation"))?;
                 self.memory.unmap(record.address, record.bytes)?;
                 Ok(void_result())
             }
@@ -1059,17 +1144,24 @@ impl ClassicQ2GuestHost {
                 Ok(int_result(i32::from(self.services.in_phs_result)))
             }
             "SetAreaPortalState" => {
-                self.services.area_portals.insert(arg_int(args, 0)?, arg_int(args, 1)? != 0);
+                self.services
+                    .area_portals
+                    .insert(arg_int(args, 0)?, arg_int(args, 1)? != 0);
                 Ok(void_result())
             }
             "AreasConnected" => {
                 let pair = (arg_int(args, 0)?, arg_int(args, 1)?);
-                Ok(int_result(i32::from(self.services.areas_connected.get(&pair).copied().unwrap_or(true))))
+                Ok(int_result(i32::from(
+                    self.services.areas_connected.get(&pair).copied().unwrap_or(true),
+                )))
             }
             "setmodel" => {
                 let address = arg_required(args, 0)?;
-                let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
-                let record = edicts.from_pointer(&mut self.memory, address)?;
+                let edicts = self
+                    .edicts
+                    .as_mut()
+                    .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+                let record = edicts.record_from_pointer(&mut self.memory, address)?;
                 let model = arg_string(&mut self.memory, args, 1)?;
                 let index = self.services.resource_index("model", &model);
                 self.models.insert(index, model.clone());
@@ -1120,18 +1212,29 @@ impl ClassicQ2GuestHost {
                     kind: kind.to_string(),
                     maximum,
                 });
-                let slots: Vec<u32> = self.services.box_edict_slots.iter().copied().take(maximum as usize).collect();
+                let slots: Vec<u32> = self
+                    .services
+                    .box_edict_slots
+                    .iter()
+                    .copied()
+                    .take(maximum as usize)
+                    .collect();
                 let mut actors = Vec::with_capacity(slots.len());
                 for slot in &slots {
-                    let actor = self.registry.at_source(&self.provider.clone(), *slot).ok_or_else(|| {
-                        ClassicQ2Error::invalid(format!("BoxEdicts slot {slot} has no live actor"))
-                    })?;
+                    let actor = self
+                        .registry
+                        .at_source(&self.provider, *slot)
+                        .ok_or_else(|| ClassicQ2Error::invalid(format!("BoxEdicts slot {slot} has no live actor")))?;
                     actors.push(actor);
                 }
                 for (index, actor) in actors.iter().enumerate() {
-                    let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+                    let edicts = self
+                        .edicts
+                        .as_mut()
+                        .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
                     let address = edicts.pointer(&mut self.memory, &self.registry, actor.id())?;
-                    self.memory.write_pointer(self.memory.offset(out, index as i64 * 4)?, Some(address))?;
+                    self.memory
+                        .write_pointer(self.memory.offset(out, index as i64 * 4)?, Some(address))?;
                 }
                 Ok(int_result(actors.len() as i32))
             }
@@ -1155,7 +1258,14 @@ impl ClassicQ2GuestHost {
                     },
                     None => None,
                 };
-                self.services.trace_queries.push(TraceQuery { start, end, mins, maxs, ignore, mask });
+                self.services.trace_queries.push(TraceQuery {
+                    start,
+                    end,
+                    mins,
+                    maxs,
+                    ignore,
+                    mask,
+                });
                 let result = self.services.trace_result.clone();
                 let bytes = self.trace_bytes(&result)?;
                 Ok(GuestCallResult::Value(GuestCallValue::Aggregate {
@@ -1178,7 +1288,12 @@ impl ClassicQ2GuestHost {
             "argc" => Ok(int_result(self.services.command_args.len() as i32)),
             "argv" => {
                 let index = arg_int(args, 0)?;
-                let value = self.services.command_args.get(index as usize).cloned().unwrap_or_default();
+                let value = self
+                    .services
+                    .command_args
+                    .get(index as usize)
+                    .cloned()
+                    .unwrap_or_default();
                 Ok(pointer_result(Some(self.cvars.string(&mut self.memory, &value)?)))
             }
             "args" => {
@@ -1191,14 +1306,22 @@ impl ClassicQ2GuestHost {
                 Ok(void_result())
             }
             "DebugGraph" => {
-                self.services.debug_graphs.push((arg_float(args, 0)?, arg_int(args, 1)?));
+                self.services
+                    .debug_graphs
+                    .push((arg_float(args, 0)?, arg_int(args, 1)?));
                 Ok(void_result())
             }
-            "multicast" | "unicast" | "WriteChar" | "WriteByte" | "WriteShort" | "WriteLong" | "WriteFloat" | "WriteString" | "WritePosition" | "WriteDir" | "WriteAngle" => {
-                self.services.messages.push(MessageRecord { operation: name.to_string(), values: args.to_vec() });
+            "multicast" | "unicast" | "WriteChar" | "WriteByte" | "WriteShort" | "WriteLong" | "WriteFloat"
+            | "WriteString" | "WritePosition" | "WriteDir" | "WriteAngle" => {
+                self.services.messages.push(MessageRecord {
+                    operation: name.to_string(),
+                    values: args.to_vec(),
+                });
                 Ok(void_result())
             }
-            _ => Err(ClassicQ2Error::invalid(format!("Unsupported API 3 engine import {name}"))),
+            _ => Err(ClassicQ2Error::invalid(format!(
+                "Unsupported API 3 engine import {name}"
+            ))),
         }
     }
 
@@ -1218,10 +1341,12 @@ impl ClassicQ2GuestHost {
         bytes[41] = trace.plane_signbits;
         bytes[48..52].copy_from_slice(&trace.contents.to_le_bytes());
         if let Some(surface) = &trace.surface {
-            let key = (surface.name.clone(), surface.flags, surface.value);
-            let address = match self.surfaces.get(&key) {
-                Some(address) => *address,
-                None => {
+            let address = match self
+                .surfaces
+                .entry((surface.name.clone(), surface.flags, surface.value))
+            {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
                     let address = self.memory.allocate(&GuestAllocationOptions {
                         byte_length: 24,
                         alignment: 4,
@@ -1235,8 +1360,7 @@ impl ClassicQ2GuestHost {
                     raw[16..20].copy_from_slice(&surface.flags.to_le_bytes());
                     raw[20..24].copy_from_slice(&surface.value.to_le_bytes());
                     self.memory.write(address, &raw)?;
-                    self.surfaces.insert(key, address);
-                    address
+                    *entry.insert(address)
                 }
             };
             bytes[44..48].copy_from_slice(&(address.offset as u32).to_le_bytes());
@@ -1244,14 +1368,21 @@ impl ClassicQ2GuestHost {
         let entity = match trace.hit {
             TraceHitSlot::None => None,
             TraceHitSlot::World => {
-                let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+                let edicts = self
+                    .edicts
+                    .as_mut()
+                    .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
                 Some(edicts.at(&mut self.memory, 0)?.address)
             }
             TraceHitSlot::Slot(slot) => {
-                let actor = self.registry.at_source(&self.provider.clone(), slot).ok_or_else(|| {
-                    ClassicQ2Error::invalid(format!("Trace hit slot {slot} has no live actor"))
-                })?;
-                let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+                let actor = self
+                    .registry
+                    .at_source(&self.provider, slot)
+                    .ok_or_else(|| ClassicQ2Error::invalid(format!("Trace hit slot {slot} has no live actor")))?;
+                let edicts = self
+                    .edicts
+                    .as_mut()
+                    .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
                 Some(edicts.pointer(&mut self.memory, &self.registry, actor.id())?)
             }
         };
@@ -1265,7 +1396,10 @@ impl ClassicQ2GuestHost {
     }
 
     fn run_pmove_with_body(&mut self, address: GuestAddress, body: Option<&ClassicMovementBody>) -> ClassicResult<()> {
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
         let count = edicts.descriptor(&mut self.memory)?.count;
         let mut slots = HashMap::with_capacity(count);
         for slot in 0..count as u32 {
@@ -1285,15 +1419,26 @@ impl ClassicQ2GuestHost {
         };
         let options = self.services.pmove_options.clone();
         let numeric = self.services.numeric;
-        run_classic_guest_pmove(&mut self.memory, address, &options, numeric, body, &mut trace, &mut entities)?;
+        run_classic_guest_pmove(
+            &mut self.memory,
+            address,
+            &options,
+            numeric,
+            body,
+            &mut trace,
+            &mut entities,
+        )?;
         self.services.trace_queries.extend(trace.queries);
         Ok(())
     }
 
     /// Link one entity record into the world.
     pub fn link_entity(&mut self, address: GuestAddress) -> ClassicResult<()> {
-        let edicts = self.edicts.as_mut().ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
-        let record = edicts.from_pointer(&mut self.memory, address)?;
+        let edicts = self
+            .edicts
+            .as_mut()
+            .ok_or_else(|| ClassicQ2Error::invalid("GetGameAPI has not returned its export table"))?;
+        let record = edicts.record_from_pointer(&mut self.memory, address)?;
         if record.slot == 0 || edicts.observe(&mut self.memory, &mut self.registry, address)?.is_none() {
             return Ok(());
         }
@@ -1319,7 +1464,15 @@ impl ClassicQ2GuestHost {
         };
         self.memory.write_i32(self.memory.offset(address, 72)?, encoded)?;
         let radius = if solid == 3 && (angles.x != 0.0 || angles.y != 0.0 || angles.z != 0.0) {
-            Some(mins.x.abs().max(mins.y.abs()).max(mins.z.abs()).max(maxs.x.abs()).max(maxs.y.abs()).max(maxs.z.abs()))
+            Some(
+                mins.x
+                    .abs()
+                    .max(mins.y.abs())
+                    .max(mins.z.abs())
+                    .max(maxs.x.abs())
+                    .max(maxs.y.abs())
+                    .max(maxs.z.abs()),
+            )
         } else {
             None
         };
@@ -1354,20 +1507,28 @@ impl ClassicQ2GuestHost {
         write_classic_vector(
             &mut self.memory,
             self.memory.offset(address, 236)?,
-            Vec3 { x: maxs.x - mins.x, y: maxs.y - mins.y, z: maxs.z - mins.z },
+            Vec3 {
+                x: maxs.x - mins.x,
+                y: maxs.y - mins.y,
+                z: maxs.z - mins.z,
+            },
         )?;
         let link = self.services.world_link.clone();
         let clustered = link.clusters.as_ref().map_or(false, |clusters| clusters.len() <= 16);
         self.memory.write_i32(
             self.memory.offset(address, 104)?,
-            link.clusters.as_ref().map_or(-1, |clusters| if clustered { clusters.len() as i32 } else { -1 }),
+            link.clusters
+                .as_ref()
+                .map_or(-1, |clusters| if clustered { clusters.len() as i32 } else { -1 }),
         )?;
-        self.memory.write_i32(self.memory.offset(address, 172)?, link.headnode)?;
+        self.memory
+            .write_i32(self.memory.offset(address, 172)?, link.headnode)?;
         self.memory.write_i32(self.memory.offset(address, 176)?, link.areas.0)?;
         self.memory.write_i32(self.memory.offset(address, 180)?, link.areas.1)?;
         if let Some(clusters) = &link.clusters {
             for (index, cluster) in clusters.iter().take(16).enumerate() {
-                self.memory.write_i32(self.memory.offset(address, 108 + index as i64 * 4)?, *cluster)?;
+                self.memory
+                    .write_i32(self.memory.offset(address, 108 + index as i64 * 4)?, *cluster)?;
             }
         }
         if self.memory.read_i32(self.memory.offset(address, 92)?)? == 0 {
@@ -1382,7 +1543,9 @@ impl ClassicQ2GuestHost {
                 !name.starts_with('*') || name.len() < 2 || !name[1..].bytes().all(|byte| byte.is_ascii_digit())
             })
         {
-            return Err(ClassicQ2Error::invalid("API 3 solid brush has no registered inline model"));
+            return Err(ClassicQ2Error::invalid(
+                "API 3 solid brush has no registered inline model",
+            ));
         }
         let brush_model = if solid == 3 {
             model_name.as_ref().and_then(|name| name[1..].parse::<i32>().ok())
@@ -1391,7 +1554,11 @@ impl ClassicQ2GuestHost {
         };
         self.services.body_links.insert(
             record.slot,
-            BodyLinkRecord { solid, brush_model, linked: false },
+            BodyLinkRecord {
+                solid,
+                brush_model,
+                linked: false,
+            },
         );
         if solid != 0 {
             if let Some(link) = self.services.body_links.get_mut(&record.slot) {
@@ -1416,7 +1583,11 @@ fn to_src(vector: Vec3) -> SrcVec3 {
 }
 
 fn to_vec3(vector: SrcVec3) -> Vec3 {
-    Vec3 { x: vector[0] as f32, y: vector[1] as f32, z: vector[2] as f32 }
+    Vec3 {
+        x: vector[0] as f32,
+        y: vector[1] as f32,
+        z: vector[2] as f32,
+    }
 }
 
 impl PmoveTrace for HostPmoveTrace<'_> {
@@ -1443,7 +1614,9 @@ impl PmoveTrace for HostPmoveTrace<'_> {
             TraceHitSlot::Slot(slot) => self
                 .registry
                 .at_source(&self.provider, slot)
-                .map(|actor| TraceHit::Actor { actor: actor.id().clone() }),
+                .map(|actor| TraceHit::Actor {
+                    actor: actor.id().clone(),
+                }),
         };
         qa_world::movement::q2::types::TraceT {
             allsolid: self.result.all_solid,
@@ -1497,7 +1670,9 @@ impl PmoveEntities for HostPmoveEntities<'_> {
             return Ok(Some(TraceHit::World { model: 0 }));
         }
         match self.registry.at_source(&self.provider, slot) {
-            Some(actor) => Ok(Some(TraceHit::Actor { actor: actor.id().clone() })),
+            Some(actor) => Ok(Some(TraceHit::Actor {
+                actor: actor.id().clone(),
+            })),
             None => Err(ClassicQ2Error::invalid("Pmove callback returned an inactive edict")),
         }
     }
@@ -1506,21 +1681,28 @@ impl PmoveEntities for HostPmoveEntities<'_> {
         use qa_world::movement::types::TraceHit;
         match hit {
             TraceHit::None => Ok(None),
-            TraceHit::World { .. } => self.slots.get(&0).copied().map(Some).ok_or_else(|| {
-                ClassicQ2Error::invalid("Pmove world entity has no edict address")
-            }),
+            TraceHit::World { .. } => self
+                .slots
+                .get(&0)
+                .copied()
+                .map(Some)
+                .ok_or_else(|| ClassicQ2Error::invalid("Pmove world entity has no edict address")),
             TraceHit::Actor { actor } => {
                 let Some((provider, slot)) = self.registry.source_of(actor) else {
-                    return Err(ClassicQ2Error::invalid("Foreign actor requires an explicit native semantic edict adapter"));
+                    return Err(ClassicQ2Error::invalid(
+                        "Foreign actor requires an explicit native semantic edict adapter",
+                    ));
                 };
                 if provider != self.provider {
                     return Err(ClassicQ2Error::invalid(
                         "Foreign actor requires an explicit native semantic edict adapter",
                     ));
                 }
-                self.slots.get(&slot).copied().map(Some).ok_or_else(|| {
-                    ClassicQ2Error::invalid(format!("Pmove actor slot {slot} has no edict address"))
-                })
+                self.slots
+                    .get(&slot)
+                    .copied()
+                    .map(Some)
+                    .ok_or_else(|| ClassicQ2Error::invalid(format!("Pmove actor slot {slot} has no edict address")))
             }
         }
     }
@@ -1528,9 +1710,9 @@ impl PmoveEntities for HostPmoveEntities<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::layout::classic_q2_exports;
     use super::*;
     use qa_guest::core::contracts::{ContentDigest, GuestMapOptions};
-    use super::super::layout::classic_q2_exports;
 
     const CODE_BASE: u64 = 0x10000000;
 
@@ -1589,15 +1771,9 @@ mod tests {
         for index in 0..classic_q2_exports().len() as u64 {
             let name = classic_q2_exports()[index as usize].name;
             if name == "ClientConnect" {
-                host.register_guest_handler(
-                    code(space, 1 + index).offset,
-                    Box::new(|_, _| Ok(int_result(1))),
-                );
+                host.register_guest_handler(code(space, 1 + index).offset, Box::new(|_, _| Ok(int_result(1))));
             } else {
-                host.register_guest_handler(
-                    code(space, 1 + index).offset,
-                    Box::new(|_, _| Ok(void_result())),
-                );
+                host.register_guest_handler(code(space, 1 + index).offset, Box::new(|_, _| Ok(void_result())));
             }
         }
         host.get_game_api(get_game_api).unwrap();
@@ -1631,37 +1807,64 @@ mod tests {
         let format = allocate_classic_string(&mut host.memory, "health %d").unwrap();
         host.import_call(
             "bprintf",
-            &[GuestCallValue::Int32(2), GuestCallValue::Pointer(Some(format)), GuestCallValue::Int32(75)],
+            &[
+                GuestCallValue::Int32(2),
+                GuestCallValue::Pointer(Some(format)),
+                GuestCallValue::Int32(75),
+            ],
         )
         .unwrap();
         assert_eq!(host.services.prints[0].text, "health 75");
         assert_eq!(host.services.prints[0].level, 2);
-        assert!(host.import_call("error", &[GuestCallValue::Pointer(Some(format))]).is_err());
+        assert!(host
+            .import_call("error", &[GuestCallValue::Pointer(Some(format))])
+            .is_err());
         let name = allocate_classic_string(&mut host.memory, "skill").unwrap();
         let value = allocate_classic_string(&mut host.memory, "2").unwrap();
         let record = host
             .import_call(
                 "cvar",
-                &[GuestCallValue::Pointer(Some(name)), GuestCallValue::Pointer(Some(value)), GuestCallValue::Int32(0)],
+                &[
+                    GuestCallValue::Pointer(Some(name)),
+                    GuestCallValue::Pointer(Some(value)),
+                    GuestCallValue::Int32(0),
+                ],
             )
             .unwrap();
-        assert!(matches!(record, GuestCallResult::Value(GuestCallValue::Pointer(Some(_)))));
+        assert!(matches!(
+            record,
+            GuestCallResult::Value(GuestCallValue::Pointer(Some(_)))
+        ));
         let alloc = host
             .import_call("TagMalloc", &[GuestCallValue::Int32(64), GuestCallValue::Int32(7)])
             .unwrap();
         let GuestCallResult::Value(GuestCallValue::Pointer(Some(block))) = alloc else {
             panic!("TagMalloc must return a pointer");
         };
-        host.import_call("TagFree", &[GuestCallValue::Pointer(Some(block))]).unwrap();
-        assert!(host.import_call("TagFree", &[GuestCallValue::Pointer(Some(block))]).is_err());
+        host.import_call("TagFree", &[GuestCallValue::Pointer(Some(block))])
+            .unwrap();
+        assert!(host
+            .import_call("TagFree", &[GuestCallValue::Pointer(Some(block))])
+            .is_err());
         host.import_call("FreeTags", &[GuestCallValue::Int32(7)]).unwrap();
         let model = allocate_classic_string(&mut host.memory, "models/ammo.md2").unwrap();
-        let index = host.import_call("modelindex", &[GuestCallValue::Pointer(Some(model))]).unwrap();
+        let index = host
+            .import_call("modelindex", &[GuestCallValue::Pointer(Some(model))])
+            .unwrap();
         assert_eq!(index, int_result(1));
         host.services.box_edict_slots = vec![0];
         let mins = allocate_classic_string(&mut host.memory, "mmmmmmmmmmmm").unwrap();
         let out = host.memory.allocate(&GuestAllocationOptions::bytes(16)).unwrap();
-        write_classic_vector(&mut host.memory, mins, Vec3 { x: -8.0, y: -8.0, z: -8.0 }).unwrap();
+        write_classic_vector(
+            &mut host.memory,
+            mins,
+            Vec3 {
+                x: -8.0,
+                y: -8.0,
+                z: -8.0,
+            },
+        )
+        .unwrap();
         let maxs = host.memory.offset(mins, 12).unwrap();
         let found = host
             .import_call(
@@ -1697,12 +1900,17 @@ mod tests {
         assert_eq!(host.services.trace_queries.len(), 1);
         let edicts = host.edicts.as_mut().unwrap();
         let one = edicts.at(&mut host.memory, 1).unwrap();
-        host.memory.write_i32(host.memory.offset(one.address, 88).unwrap(), 1).unwrap();
-        host.memory.write_i32(host.memory.offset(one.address, 248).unwrap(), 2).unwrap();
+        host.memory
+            .write_i32(host.memory.offset(one.address, 88).unwrap(), 1)
+            .unwrap();
+        host.memory
+            .write_i32(host.memory.offset(one.address, 248).unwrap(), 2)
+            .unwrap();
         host.link_entity(one.address).unwrap();
         assert_eq!(host.services.linked_entities, vec![1]);
         assert!(host.services.body_links[&1].linked);
-        host.import_call("unlinkentity", &[GuestCallValue::Pointer(Some(one.address))]).unwrap();
+        host.import_call("unlinkentity", &[GuestCallValue::Pointer(Some(one.address))])
+            .unwrap();
         assert!(!host.services.body_links[&1].linked);
         assert_eq!(host.services.unlinked_entities, vec![1]);
     }
@@ -1718,7 +1926,8 @@ mod tests {
         assert!(host.import_call("bogus", &[]).is_err());
         assert!(host.call("Bogus", &[]).is_err());
         let image = host.memory.allocate(&GuestAllocationOptions::bytes(64)).unwrap();
-        host.bind_pickups(image, Some(super::super::pickup_profile::xatrix_pickup_profile())).unwrap();
+        host.bind_pickups(image, Some(super::super::pickup_profile::xatrix_pickup_profile()))
+            .unwrap();
         assert!(host.bind_pickups(image, None).is_err());
         let entries = vec![InventoryEntry {
             item: "q2:shells".to_string(),
@@ -1731,7 +1940,10 @@ mod tests {
                 &entries,
                 &PickupGrantPlan::Ammo {
                     acceptance: qa_world::pickups::AmmoAcceptance::Positive,
-                    ammo: vec![qa_world::pickups::PickupAmmoGrant { item: "q2:shells".to_string(), amount: 10.0 }],
+                    ammo: vec![qa_world::pickups::PickupAmmoGrant {
+                        item: "q2:shells".to_string(),
+                        amount: 10.0,
+                    }],
                     weapons: qa_world::pickups::AmmoWeapons::SharedAmmo { items: vec![] },
                 },
             )
@@ -1745,7 +1957,9 @@ mod tests {
         assert!(host.release_pickup_supply(&lease).is_err());
         host.set_model_name(3, "*4").unwrap();
         assert!(host.set_model_name(300, "x").is_err());
-        let layouts = host.variadic_layouts("bprintf", &[GuestCallValue::Int32(0), GuestCallValue::Pointer(None)]).unwrap();
+        let layouts = host
+            .variadic_layouts("bprintf", &[GuestCallValue::Int32(0), GuestCallValue::Pointer(None)])
+            .unwrap();
         assert_eq!(layouts, vec![]);
     }
 }

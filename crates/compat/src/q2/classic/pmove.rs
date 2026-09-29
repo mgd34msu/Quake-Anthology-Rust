@@ -8,6 +8,8 @@
 //! callback; synthetic callbacks receive decoded vectors and return decoded
 //! traces, which makes that marshal round-trip vacuous.
 
+use std::cell::RefCell;
+
 use qa_core::math::{Bounds, Vec3};
 use qa_core::numeric::{float_to_wrapped_i32, NumericOps};
 use qa_guest::core::contracts::GuestAddress;
@@ -39,10 +41,7 @@ pub trait PmoveTrace {
 /// Synthetic edict/entity mapping for touches and ground.
 pub trait PmoveEntities {
     /// Map a guest edict pointer to a movement entity.
-    fn entity(
-        &mut self,
-        address: Option<GuestAddress>,
-    ) -> ClassicResult<Option<MovementEntity>>;
+    fn entity(&mut self, address: Option<GuestAddress>) -> ClassicResult<Option<MovementEntity>>;
     /// Map a movement entity back to its guest edict pointer.
     fn pointer(&mut self, hit: &MovementEntity) -> ClassicResult<Option<GuestAddress>>;
 }
@@ -74,7 +73,7 @@ pub struct EquipmentMovement {
 }
 
 /// Options for one guest pmove run.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClassicGuestPmoveOptions {
     /// Character bounds override.
     pub character_bounds: Option<Bounds>,
@@ -82,12 +81,6 @@ pub struct ClassicGuestPmoveOptions {
     pub air_accelerate: f64,
     /// Equipment adjustments.
     pub equipment: Option<EquipmentMovement>,
-}
-
-impl Default for ClassicGuestPmoveOptions {
-    fn default() -> Self {
-        Self { character_bounds: None, air_accelerate: 0.0, equipment: None }
-    }
 }
 
 fn read_i16(memory: &mut SparseGuestMemory, address: GuestAddress, offset: i64) -> ClassicResult<i16> {
@@ -130,7 +123,12 @@ fn read_short3(memory: &mut SparseGuestMemory, address: GuestAddress, offset: i6
     ])
 }
 
-fn write_short3(memory: &mut SparseGuestMemory, address: GuestAddress, offset: i64, value: [i32; 3]) -> ClassicResult<()> {
+fn write_short3(
+    memory: &mut SparseGuestMemory,
+    address: GuestAddress,
+    offset: i64,
+    value: [i32; 3],
+) -> ClassicResult<()> {
     for (index, word) in value.iter().enumerate() {
         write_i16(memory, address, offset + index as i64 * 2, *word as i16)?;
     }
@@ -145,7 +143,12 @@ fn read_float3(memory: &mut SparseGuestMemory, address: GuestAddress, offset: i6
     ])
 }
 
-fn write_float3(memory: &mut SparseGuestMemory, address: GuestAddress, offset: i64, value: SrcVec3) -> ClassicResult<()> {
+fn write_float3(
+    memory: &mut SparseGuestMemory,
+    address: GuestAddress,
+    offset: i64,
+    value: SrcVec3,
+) -> ClassicResult<()> {
     for (index, word) in value.iter().enumerate() {
         write_f32(memory, address, offset + index as i64 * 4, *word as f32)?;
     }
@@ -164,7 +167,16 @@ fn apply_equipment(
         .map_err(|error| ClassicQ2Error::invalid(format!("API 3 Pmove gravity overflow: {error}")))?;
     write_i16(memory, address, 18, gravity as i16)?;
     let flags = read_u8(memory, address, 16)?;
-    write_u8(memory, address, 16, if equipment.prediction_suppressed { flags | 64 } else { flags & !64 })?;
+    write_u8(
+        memory,
+        address,
+        16,
+        if equipment.prediction_suppressed {
+            flags | 64
+        } else {
+            flags & !64
+        },
+    )?;
     if let Some(velocity) = equipment.velocity {
         for (index, value) in [velocity.x, velocity.y, velocity.z].iter().enumerate() {
             let scaled = numeric.mul(f64::from(*value), 8.0);
@@ -221,7 +233,11 @@ pub fn run_classic_guest_pmove(
     trace: &mut dyn PmoveTrace,
     entities: &mut dyn PmoveEntities,
 ) -> ClassicResult<()> {
-    memory.check(address, CLASSIC_Q2_PMOVE_BYTES, qa_guest::core::contracts::GuestAccess::Read)?;
+    memory.check(
+        address,
+        CLASSIC_Q2_PMOVE_BYTES,
+        qa_guest::core::contracts::GuestAccess::Read,
+    )?;
     if memory.read_pointer(memory.offset(address, 232)?)?.is_none()
         || memory.read_pointer(memory.offset(address, 236)?)?.is_none()
     {
@@ -231,6 +247,7 @@ pub fn run_classic_guest_pmove(
         apply_equipment(memory, address, equipment, numeric)?;
     }
     let ground = entities.entity(memory.read_pointer(memory.offset(address, 220)?)?)?;
+    let trace = RefCell::new(trace);
     let mut pm = ClassicPmove {
         s: ClassicPmoveState {
             pm_type: memory.read_i32(memory.offset(address, 0)?)?,
@@ -262,8 +279,8 @@ pub fn run_classic_guest_pmove(
         groundentity: ground,
         watertype: memory.read_i32(memory.offset(address, 224)?)?,
         waterlevel: memory.read_i32(memory.offset(address, 228)?)?,
-        trace: Box::new(|start, mins, maxs, end| trace.trace(start, mins, maxs, end)),
-        pointcontents: Box::new(|point| trace.point_contents(point)),
+        trace: Box::new(|start, mins, maxs, end| trace.borrow_mut().trace(start, mins, maxs, end)),
+        pointcontents: Box::new(|point| trace.borrow_mut().point_contents(point)),
         character_bounds: options.character_bounds.unwrap_or(Q2_PLAYER_BOUNDS),
         body_bounds: body.and_then(|body| body.requested),
         previous_bounds: body.map(|body| body.current),
@@ -285,8 +302,16 @@ pub fn run_classic_guest_pmove(
     if let Some(pose) = pose {
         pm.s.pm_type = pm_type_saved;
         pm.viewheight = pose.view_height;
-        pm.mins = [f64::from(pose.bounds.min.x), f64::from(pose.bounds.min.y), f64::from(pose.bounds.min.z)];
-        pm.maxs = [f64::from(pose.bounds.max.x), f64::from(pose.bounds.max.y), f64::from(pose.bounds.max.z)];
+        pm.mins = [
+            f64::from(pose.bounds.min.x),
+            f64::from(pose.bounds.min.y),
+            f64::from(pose.bounds.min.z),
+        ];
+        pm.maxs = [
+            f64::from(pose.bounds.max.x),
+            f64::from(pose.bounds.max.y),
+            f64::from(pose.bounds.max.z),
+        ];
         if pose.crouched {
             pm.s.pm_flags |= pm_flags::DUCKED;
         } else {
@@ -302,9 +327,7 @@ mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
     use qa_core::numeric::Q2_DONOR_PROFILE;
-    use qa_guest::core::contracts::{
-        ContentDigest, GuestAllocationOptions, ModuleIdentity,
-    };
+    use qa_guest::core::contracts::{ContentDigest, GuestAllocationOptions, ModuleIdentity};
     use qa_world::movement::q2::types::plane;
 
     fn test_memory() -> SparseGuestMemory {
@@ -368,10 +391,16 @@ mod tests {
     }
 
     fn pmove_block(memory: &mut SparseGuestMemory) -> GuestAddress {
-        let address = memory.allocate(&GuestAllocationOptions::bytes(CLASSIC_Q2_PMOVE_BYTES)).unwrap();
+        let address = memory
+            .allocate(&GuestAllocationOptions::bytes(CLASSIC_Q2_PMOVE_BYTES))
+            .unwrap();
         let code = memory.allocate(&GuestAllocationOptions::bytes(8)).unwrap();
-        memory.write_pointer(memory.offset(address, 232).unwrap(), Some(code)).unwrap();
-        memory.write_pointer(memory.offset(address, 236).unwrap(), Some(code)).unwrap();
+        memory
+            .write_pointer(memory.offset(address, 232).unwrap(), Some(code))
+            .unwrap();
+        memory
+            .write_pointer(memory.offset(address, 236).unwrap(), Some(code))
+            .unwrap();
         memory.write_i32(address, pm_type::NORMAL).unwrap();
         address
     }
@@ -425,14 +454,31 @@ mod tests {
         };
         let mut trace = OpenTrace { calls: 0 };
         let mut entities = NullEntities;
-        run_classic_guest_pmove(&mut memory, address, &options, numeric(), None, &mut trace, &mut entities)
-            .unwrap();
+        run_classic_guest_pmove(
+            &mut memory,
+            address,
+            &options,
+            numeric(),
+            None,
+            &mut trace,
+            &mut entities,
+        )
+        .unwrap();
         assert_eq!(memory.read_i16(memory.offset(address, 18).unwrap()).unwrap(), 400);
         assert_eq!(memory.read_u8(memory.offset(address, 16).unwrap()).unwrap() & 64, 64);
         assert_eq!(memory.read_f32(memory.offset(address, 192).unwrap()).unwrap(), 22.0);
         assert_eq!(memory.read_i32(address).unwrap(), pm_type::NORMAL);
         let null = pmove_block(&mut memory);
         memory.write_pointer(memory.offset(null, 232).unwrap(), None).unwrap();
-        assert!(run_classic_guest_pmove(&mut memory, null, &ClassicGuestPmoveOptions::default(), numeric(), None, &mut trace, &mut entities).is_err());
+        assert!(run_classic_guest_pmove(
+            &mut memory,
+            null,
+            &ClassicGuestPmoveOptions::default(),
+            numeric(),
+            None,
+            &mut trace,
+            &mut entities
+        )
+        .is_err());
     }
 }

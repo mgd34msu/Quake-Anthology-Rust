@@ -7,11 +7,11 @@
 use std::collections::{HashMap, VecDeque};
 
 use qa_core::math::Vec3;
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{
     GuestAccess, GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestLayout,
 };
 use qa_guest::core::memory::SparseGuestMemory;
+use qa_guest::GuestError;
 use qa_world::combat::{ArmorState, CombatState, ItemId};
 use qa_world::inventory::{CountArithmetic, CountPolicy, InventoryEntry};
 use thiserror::Error;
@@ -271,35 +271,32 @@ impl<'m> RereleaseSourceClient<'m> {
         if index >= self.inventory_count {
             return Err(SourceStateError::BadItemIndex);
         }
-        Ok(self.memory.offset(
-            self.address,
-            (self.fields.inventory + index * 4) as i64,
-        )?)
+        Ok(self
+            .memory
+            .offset(self.address, (self.fields.inventory + index * 4) as i64)?)
     }
 
     fn ammo_address(&self, index: usize) -> Result<GuestAddress, SourceStateError> {
         if index >= self.ammo_count {
             return Err(SourceStateError::BadAmmoIndex);
         }
-        Ok(self.memory.offset(
-            self.address,
-            (self.fields.max_ammo + index * 2) as i64,
-        )?)
+        Ok(self
+            .memory
+            .offset(self.address, (self.fields.max_ammo + index * 2) as i64)?)
     }
 
     /// Invulnerability deadline in milliseconds.
     pub fn invincible_until_milliseconds(&mut self) -> Result<i64, SourceStateError> {
-        Ok(self.memory.read_i64(
-            self.memory
-                .offset(self.address, self.fields.invincible_time as i64)?,
-        )?)
+        Ok(self
+            .memory
+            .read_i64(self.memory.offset(self.address, self.fields.invincible_time as i64)?)?)
     }
 
     /// Capture-turret team field.
     pub fn ctf_team(&mut self) -> Result<i32, SourceStateError> {
-        Ok(self.memory.read_i32(
-            self.memory.offset(self.address, self.fields.ctf_team as i64)?,
-        )?)
+        Ok(self
+            .memory
+            .read_i32(self.memory.offset(self.address, self.fields.ctf_team as i64)?)?)
     }
 
     /// Read one inventory counter.
@@ -318,9 +315,9 @@ impl<'m> RereleaseSourceClient<'m> {
     /// Whether an item has a mutable ammunition capacity.
     #[must_use]
     pub fn mutable_capacity(items: &[RereleaseInventoryItem], item: &str) -> bool {
-        items.iter().any(|value| {
-            value.item == item && matches!(value.capacity, ItemCapacity::Ammo { .. })
-        })
+        items
+            .iter()
+            .any(|value| value.item == item && matches!(value.capacity, ItemCapacity::Ammo { .. }))
     }
 
     /// Read the declared roster as shared inventory entries.
@@ -360,10 +357,7 @@ impl<'m> RereleaseSourceClient<'m> {
         let Some(item) = items.iter().find(|value| value.item == entry.item) else {
             return Err(SourceStateError::UnboundItem);
         };
-        if !entry.count.is_finite()
-            || entry.count < f64::from(i32::MIN)
-            || entry.count > f64::from(i32::MAX)
-        {
+        if !entry.count.is_finite() || entry.count < f64::from(i32::MIN) || entry.count > f64::from(i32::MAX) {
             return Err(SourceStateError::CountOutOfRange);
         }
         match item.capacity {
@@ -373,10 +367,7 @@ impl<'m> RereleaseSourceClient<'m> {
                 }
             }
             ItemCapacity::Ammo { source_index } => {
-                if !entry.capacity.is_finite()
-                    || entry.capacity < 0.0
-                    || entry.capacity > f64::from(i16::MAX)
-                {
+                if !entry.capacity.is_finite() || entry.capacity < 0.0 || entry.capacity > f64::from(i16::MAX) {
                     return Err(SourceStateError::CapacityOutOfRange);
                 }
                 let at = self.ammo_address(source_index)?;
@@ -417,11 +408,7 @@ impl<'m> RereleaseSourceClient<'m> {
     }
 
     /// Write power-armor cells.
-    pub fn write_cells(
-        &mut self,
-        cells_index: usize,
-        count: f64,
-    ) -> Result<(), SourceStateError> {
+    pub fn write_cells(&mut self, cells_index: usize, count: f64) -> Result<(), SourceStateError> {
         if !count.is_finite() || count < f64::from(i32::MIN) || count > f64::from(i32::MAX) {
             return Err(SourceStateError::CellsOutOfRange);
         }
@@ -508,10 +495,7 @@ impl<'m> RereleaseSourceEdict<'m> {
 
     /// Queue a scripted callback result.
     pub fn script(&mut self, name: &str, result: GuestCallResult) {
-        self.scripted
-            .entry(name.to_string())
-            .or_default()
-            .push_back(result);
+        self.scripted.entry(name.to_string()).or_default().push_back(result);
     }
 
     /// Record address.
@@ -566,11 +550,7 @@ impl<'m> RereleaseSourceEdict<'m> {
     }
 
     /// Assemble shared combat state from source stores.
-    pub fn combat_state(
-        &mut self,
-        armor: ArmorState,
-        traits: CombatTraits,
-    ) -> Result<CombatState, SourceStateError> {
+    pub fn combat_state(&mut self, armor: ArmorState, traits: CombatTraits) -> Result<CombatState, SourceStateError> {
         let health = self.health()?;
         let mass = self.memory.read_i32(self.at("mass")?)?;
         Ok(CombatState {
@@ -594,18 +574,13 @@ impl<'m> RereleaseSourceEdict<'m> {
     pub fn write_vector(&mut self, name: &str, value: Vec3) -> Result<(), SourceStateError> {
         let at = self.at(name)?;
         self.memory.write_f32(at, value.x)?;
-        self.memory
-            .write_f32(self.memory.offset(at, 4)?, value.y)?;
-        self.memory
-            .write_f32(self.memory.offset(at, 8)?, value.z)?;
+        self.memory.write_f32(self.memory.offset(at, 4)?, value.y)?;
+        self.memory.write_f32(self.memory.offset(at, 8)?, value.z)?;
         Ok(())
     }
 
     /// Read body state.
-    pub fn read_body(
-        &mut self,
-        addresses: &BodyAddresses,
-    ) -> Result<SourceBodyState, SourceStateError> {
+    pub fn read_body(&mut self, addresses: &BodyAddresses) -> Result<SourceBodyState, SourceStateError> {
         let ground = self.memory.read_pointer(self.at("groundentity")?)?;
         Ok(SourceBodyState {
             origin: self.vector("shared.s.origin")?,
@@ -618,11 +593,7 @@ impl<'m> RereleaseSourceEdict<'m> {
     }
 
     /// Write body state.
-    pub fn write_body(
-        &mut self,
-        addresses: &BodyAddresses,
-        state: &SourceBodyState,
-    ) -> Result<(), SourceStateError> {
+    pub fn write_body(&mut self, addresses: &BodyAddresses, state: &SourceBodyState) -> Result<(), SourceStateError> {
         self.write_vector("shared.s.origin", state.origin)?;
         self.write_vector("shared.s.angles", state.angles)?;
         self.write_vector("velocity", state.velocity)?;
@@ -642,11 +613,7 @@ impl<'m> RereleaseSourceEdict<'m> {
 
     /// Invoke a source callback by name. Values are fetched per call since
     /// native assignments can replace callbacks at runtime.
-    pub fn call(
-        &mut self,
-        name: &str,
-        arguments: &[GuestCallValue],
-    ) -> Result<GuestCallResult, SourceStateError> {
+    pub fn call(&mut self, name: &str, arguments: &[GuestCallValue]) -> Result<GuestCallResult, SourceStateError> {
         let field = format!("{name}.value");
         let at = self.at(&field)?;
         if self.memory.read_pointer(at)?.is_none() {
@@ -703,9 +670,7 @@ impl<'m> RereleaseSourceEdict<'m> {
         let Some(trace) = trace_bytes else {
             return Err(SourceStateError::MissingTouchTrace);
         };
-        let address = self
-            .memory
-            .allocate(&GuestAllocationOptions::bytes(trace.len()))?;
+        let address = self.memory.allocate(&GuestAllocationOptions::bytes(trace.len()))?;
         self.memory.write(address, trace)?;
         let result = self.call(
             "touch",
@@ -757,10 +722,8 @@ impl<'m> RereleaseSourceEdict<'m> {
         let (id, friendly, no_point_loss) = cause.native()?;
         let address = self.memory.allocate(&GuestAllocationOptions::bytes(12))?;
         self.memory.write_f32(address, point.x)?;
-        self.memory
-            .write_f32(self.memory.offset(address, 4)?, point.y)?;
-        self.memory
-            .write_f32(self.memory.offset(address, 8)?, point.z)?;
+        self.memory.write_f32(self.memory.offset(address, 4)?, point.y)?;
+        self.memory.write_f32(self.memory.offset(address, 8)?, point.z)?;
         let result = self.call(
             "die",
             &[
@@ -815,9 +778,11 @@ mod tests {
         let address = memory
             .allocate(&GuestAllocationOptions::bytes(fields.byte_length))
             .expect("alloc");
-        let mut client =
-            RereleaseSourceClient::new(&mut memory, address, fields, 84, 12).expect("client");
-        assert!(!RereleaseSourceClient::mutable_capacity(&roster(), "q2:item_armor_body"));
+        let mut client = RereleaseSourceClient::new(&mut memory, address, fields, 84, 12).expect("client");
+        assert!(!RereleaseSourceClient::mutable_capacity(
+            &roster(),
+            "q2:item_armor_body"
+        ));
         assert!(RereleaseSourceClient::mutable_capacity(&roster(), "q2:ammo_cells"));
         client.write_counter(30, 17).expect("cells");
         assert_eq!(client.read_cells(30).expect("read"), 17);
@@ -827,9 +792,7 @@ mod tests {
         let mut updated = entries[0].clone();
         updated.count = 25.0;
         updated.capacity = 100.0;
-        client
-            .write_inventory(&roster(), &updated)
-            .expect("write");
+        client.write_inventory(&roster(), &updated).expect("write");
         assert_eq!(client.read_counter(30).expect("read"), 25);
         let mut fixed = entries[1].clone();
         fixed.capacity = 1.0;
@@ -837,14 +800,8 @@ mod tests {
             client.write_inventory(&roster(), &fixed).unwrap_err(),
             SourceStateError::FixedCapacity
         );
-        assert_eq!(
-            client.read_counter(84).unwrap_err(),
-            SourceStateError::BadItemIndex
-        );
-        assert_eq!(
-            client.invincible_until_milliseconds().expect("time"),
-            0
-        );
+        assert_eq!(client.read_counter(84).unwrap_err(), SourceStateError::BadItemIndex);
+        assert_eq!(client.invincible_until_milliseconds().expect("time"), 0);
     }
 
     #[test]
@@ -856,15 +813,12 @@ mod tests {
             .expect("alloc");
         let space = memory.address_space();
         let actor_of = |address: GuestAddress| (address.offset == 0x500).then_some(9u32);
-        let address_of = |actor: u32| {
-            GuestAddress::new(space, if actor == 9 { 0x500 } else { 0x600 })
-        };
+        let address_of = |actor: u32| GuestAddress::new(space, if actor == 9 { 0x500 } else { 0x600 });
         let addresses = BodyAddresses {
             actor_of: &actor_of,
             address_of: &address_of,
         };
-        let mut edict =
-            RereleaseSourceEdict::new(&mut memory, address, prefix.byte_length).expect("edict");
+        let mut edict = RereleaseSourceEdict::new(&mut memory, address, prefix.byte_length).expect("edict");
         edict.set_health(120).expect("health");
         assert_eq!(edict.health().expect("read"), 120);
         assert_eq!(edict.generation().expect("gen"), 0);
@@ -885,31 +839,19 @@ mod tests {
         assert_eq!(state.health, 120.0);
         assert!(state.invulnerable);
         let body = SourceBodyState {
-            origin: Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
+            origin: Vec3 { x: 1.0, y: 2.0, z: 3.0 },
             angles: Vec3 {
                 x: 0.0,
                 y: 90.0,
                 z: 0.0,
             },
-            velocity: Vec3 {
-                x: 4.0,
-                y: 5.0,
-                z: 6.0,
-            },
+            velocity: Vec3 { x: 4.0, y: 5.0, z: 6.0 },
             min: Vec3 {
                 x: -1.0,
                 y: -1.0,
                 z: -1.0,
             },
-            max: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
+            max: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
             ground: Some(9),
         };
         edict.write_body(&addresses, &body).expect("write");
@@ -929,9 +871,7 @@ mod tests {
             friendly_fire: false,
             no_point_loss: false,
         };
-        edict
-            .pain(Some(address_of(7)), 2.0, 10, &cause)
-            .expect("pain");
+        edict.pain(Some(address_of(7)), 2.0, 10, &cause).expect("pain");
         assert_eq!(edict.invocations.len(), 1);
         assert_eq!(edict.invocations[0].name, "pain");
         assert_eq!(canonical_cause_from_native(22, false), Some(57));
@@ -952,8 +892,6 @@ mod tests {
             edict.die(None, None, 1, body.origin, &bad).unwrap_err(),
             SourceStateError::NoModRepresentation
         );
-        edict
-            .die(None, None, 1, body.origin, &cause)
-            .expect("die");
+        edict.die(None, None, 1, body.origin, &cause).expect("die");
     }
 }

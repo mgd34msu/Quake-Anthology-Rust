@@ -4,16 +4,15 @@
 //! artifact-qualified pickup touch/grant regions into a supply profile.
 
 use qa_guest::core::contracts::{GuestCallSignature, GuestStorage, GuestValueLayout, NativeCallAbi};
-use qa_world::WorldError;
 use qa_world::inventory::InventoryEntry;
-use qa_world::pickups::{PickupGrantPlan, PickupSupplyPreview, preview_pickup_grants};
+use qa_world::pickups::{preview_pickup_grants, PickupGrantPlan, PickupSupplyPreview};
+use qa_world::WorldError;
 use thiserror::Error;
 
 use super::layouts::{edict_layout, field_offset, private_edict_prefix_layout};
 
 /// Retail artifact digest admitting the pickup profile.
-pub const RETAIL_ARTIFACT_DIGEST: &str =
-    "sha256:045d49c53722d9b922caf14f168dd28a97d4c514a6e443a3140560f8668baccd";
+pub const RETAIL_ARTIFACT_DIGEST: &str = "sha256:045d49c53722d9b922caf14f168dd28a97d4c514a6e443a3140560f8668baccd";
 
 /// Pickup profile failure.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -63,10 +62,7 @@ pub fn touch_signature() -> GuestCallSignature {
 #[must_use]
 pub fn grant_signature() -> GuestCallSignature {
     signature(
-        vec![
-            scalar(GuestStorage::Pointer),
-            scalar(GuestStorage::Pointer),
-        ],
+        vec![scalar(GuestStorage::Pointer), scalar(GuestStorage::Pointer)],
         Some(scalar(GuestStorage::Uint8)),
     )
 }

@@ -281,7 +281,7 @@ impl NativePrimaryPlayer {
                 }
             }
             self.current(host, actor)?;
-            let vector = |address: GuestAddress| {
+            let mut vector = |address: GuestAddress| {
                 let x = host.core.memory.read_f32(address)?;
                 let y = host.core.memory.read_f32(host.core.memory.offset(address, 4)?)?;
                 let z = host.core.memory.read_f32(host.core.memory.offset(address, 8)?)?;
@@ -316,21 +316,12 @@ impl NativePrimaryPlayer {
                 .write_f32(host.core.memory.offset(address, 8)?, value.z)
                 .map_err(NativeHostError::from)
         };
-        write_vector(
-            host,
-            host.core.memory.offset(entity, 4)?,
-            origin,
-        )?;
-        write_vector(
-            host,
-            host.core.memory.offset(entity, 28)?,
-            origin,
-        )?;
-        write_vector(
-            host,
-            host.core.memory.offset(entity, i64::from(self.profile.velocity))?,
-            velocity,
-        )?;
+        let origin_link = host.core.memory.offset(entity, 4)?;
+        write_vector(&mut *host, origin_link, origin)?;
+        let old_origin = host.core.memory.offset(entity, 28)?;
+        write_vector(&mut *host, old_origin, origin)?;
+        let velocity_slot = host.core.memory.offset(entity, i64::from(self.profile.velocity))?;
+        write_vector(&mut *host, velocity_slot, velocity)?;
         let wrap_i16 = |value: i32| (value & 0xFFFF) as u16 as i16;
         for (axis, value) in [origin.x, origin.y, origin.z].into_iter().enumerate() {
             if classic {
@@ -395,11 +386,8 @@ impl NativePrimaryPlayer {
             host.core.memory.write_f32(view, value)?;
         }
         if let Some(forward) = self.profile.forward {
-            write_vector(
-                host,
-                host.core.memory.offset(client, i64::from(forward))?,
-                qvm_forward(angles),
-            )?;
+            let forward_slot = host.core.memory.offset(client, i64::from(forward))?;
+            write_vector(&mut *host, forward_slot, qvm_forward(angles))?;
         }
         Ok(())
     }

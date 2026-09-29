@@ -4,6 +4,7 @@
 //! Bridges the engine-owned variable registry to stable 28-byte guest
 //! `cvar_t` records chained through their `next` pointers.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use qa_guest::core::contracts::{GuestAddress, GuestAllocationOptions};
@@ -137,11 +138,7 @@ impl ClassicQ2Cvars {
     }
 
     /// Intern a guest string, reusing the previous allocation.
-    pub fn string(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        value: &str,
-    ) -> ClassicResult<GuestAddress> {
+    pub fn string(&mut self, memory: &mut SparseGuestMemory, value: &str) -> ClassicResult<GuestAddress> {
         if let Some(address) = self.strings.get(value) {
             return Ok(*address);
         }
@@ -151,11 +148,7 @@ impl ClassicQ2Cvars {
     }
 
     /// Guest record for a variable, refreshing the view first.
-    pub fn pointer(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        name: &str,
-    ) -> ClassicResult<Option<GuestAddress>> {
+    pub fn pointer(&mut self, memory: &mut SparseGuestMemory, name: &str) -> ClassicResult<Option<GuestAddress>> {
         if self.registry.find(name).is_none() {
             return Ok(None);
         }
@@ -163,21 +156,18 @@ impl ClassicQ2Cvars {
         Ok(self.records.get(name).map(|record| record.address))
     }
 
-    fn update(
-        &mut self,
-        memory: &mut SparseGuestMemory,
-        state: &ClassicCvarState,
-    ) -> ClassicResult<GuestCvar> {
-        if !self.records.contains_key(&state.name) {
-            let address = memory.allocate(&GuestAllocationOptions {
-                byte_length: 28,
-                alignment: 4,
-                permissions: qa_guest::core::contracts::GuestPermissions::ReadWrite,
-                label: format!("API 3 cvar {}", state.name),
-            })?;
-            self.records.insert(
-                state.name.clone(),
-                GuestCvar {
+    fn update(&mut self, memory: &mut SparseGuestMemory, state: &ClassicCvarState) -> ClassicResult<GuestCvar> {
+        let name = state.name.clone();
+        let record = match self.records.entry(name.clone()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let address = memory.allocate(&GuestAllocationOptions {
+                    byte_length: 28,
+                    alignment: 4,
+                    permissions: qa_guest::core::contracts::GuestPermissions::ReadWrite,
+                    label: format!("API 3 cvar {name}"),
+                })?;
+                *entry.insert(GuestCvar {
                     address,
                     string: memory.offset(address, 4)?,
                     latched: memory.offset(address, 8)?,
@@ -185,10 +175,9 @@ impl ClassicQ2Cvars {
                     modified: memory.offset(address, 16)?,
                     value: memory.offset(address, 20)?,
                     next: memory.offset(address, 24)?,
-                },
-            );
-        }
-        let record = self.records[&state.name];
+                })
+            }
+        };
         let name = self.string(memory, &state.name)?;
         memory.write_pointer(record.address, Some(name))?;
         let value = self.string(memory, &state.value)?;
@@ -211,9 +200,11 @@ impl ClassicQ2Cvars {
         for state in &snapshots {
             records.push(self.update(memory, state)?);
         }
-        for (index, record) in records.iter().enumerate() {
-            let next = records.get(index + 1).map(|record| record.address);
-            memory.write_pointer(record.next, next)?;
+        for window in records.windows(2) {
+            memory.write_pointer(window[0].next, Some(window[1].address))?;
+        }
+        if let Some(last) = records.last() {
+            memory.write_pointer(last.next, None)?;
         }
         Ok(())
     }
@@ -221,10 +212,10 @@ impl ClassicQ2Cvars {
 
 #[cfg(test)]
 mod tests {
+    use super::super::records::read_classic_string;
     use super::*;
     use qa_core::identity::ProviderId;
     use qa_guest::core::contracts::{ContentDigest, ModuleIdentity};
-    use super::super::records::read_classic_string;
 
     fn test_memory() -> SparseGuestMemory {
         SparseGuestMemory::new(
@@ -252,11 +243,17 @@ mod tests {
         assert!(cvars.pointer(&mut memory, "missing").unwrap().is_none());
         let name = memory.read_pointer(dmflags).unwrap().unwrap();
         assert_eq!(read_classic_string(&mut memory, Some(name), 64).unwrap(), "dmflags");
-        let value = memory.read_pointer(memory.offset(dmflags, 4).unwrap()).unwrap().unwrap();
+        let value = memory
+            .read_pointer(memory.offset(dmflags, 4).unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(read_classic_string(&mut memory, Some(value), 64).unwrap(), "64");
         assert_eq!(memory.read_i32(memory.offset(dmflags, 12).unwrap()).unwrap(), 1);
         assert_eq!(memory.read_f32(memory.offset(dmflags, 20).unwrap()).unwrap(), 64.0);
-        let next = memory.read_pointer(memory.offset(dmflags, 24).unwrap()).unwrap().unwrap();
+        let next = memory
+            .read_pointer(memory.offset(dmflags, 24).unwrap())
+            .unwrap()
+            .unwrap();
         assert_eq!(next, coop);
         assert!(memory.read_pointer(memory.offset(coop, 24).unwrap()).unwrap().is_none());
         assert_eq!(cvars.string(&mut memory, "dmflags").unwrap(), name);

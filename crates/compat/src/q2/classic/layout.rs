@@ -5,10 +5,10 @@
 //! alignment) to `qa-guest` layouts and call signatures. Also carries the
 //! shared classic error type used by every other module in this directory.
 
-use qa_guest::GuestError;
 use qa_guest::core::contracts::{
     GuestCallSignature, GuestFieldLayout, GuestLayout, GuestStorage, GuestValueLayout, NativeCallAbi,
 };
+use qa_guest::GuestError;
 use qa_world::WorldError;
 use thiserror::Error;
 
@@ -281,23 +281,54 @@ pub fn classic_q2_imports() -> Vec<ClassicQ2Import> {
                 false,
             ),
         ),
-        import("configstring", classic_signature(vec![q2_int(), q2_pointer()], None, false)),
+        import(
+            "configstring",
+            classic_signature(vec![q2_int(), q2_pointer()], None, false),
+        ),
         import("error", classic_signature(vec![q2_pointer()], None, true)),
-        import("modelindex", classic_signature(vec![q2_pointer()], Some(q2_int()), false)),
-        import("soundindex", classic_signature(vec![q2_pointer()], Some(q2_int()), false)),
-        import("imageindex", classic_signature(vec![q2_pointer()], Some(q2_int()), false)),
-        import("setmodel", classic_signature(vec![q2_pointer(), q2_pointer()], None, false)),
+        import(
+            "modelindex",
+            classic_signature(vec![q2_pointer()], Some(q2_int()), false),
+        ),
+        import(
+            "soundindex",
+            classic_signature(vec![q2_pointer()], Some(q2_int()), false),
+        ),
+        import(
+            "imageindex",
+            classic_signature(vec![q2_pointer()], Some(q2_int()), false),
+        ),
+        import(
+            "setmodel",
+            classic_signature(vec![q2_pointer(), q2_pointer()], None, false),
+        ),
         import(
             "trace",
             classic_signature(
-                vec![q2_pointer(), q2_pointer(), q2_pointer(), q2_pointer(), q2_pointer(), q2_int()],
+                vec![
+                    q2_pointer(),
+                    q2_pointer(),
+                    q2_pointer(),
+                    q2_pointer(),
+                    q2_pointer(),
+                    q2_int(),
+                ],
                 Some(q2_trace()),
                 false,
             ),
         ),
-        import("pointcontents", classic_signature(vec![q2_pointer()], Some(q2_int()), false)),
-        import("inPVS", classic_signature(vec![q2_pointer(), q2_pointer()], Some(q2_int()), false)),
-        import("inPHS", classic_signature(vec![q2_pointer(), q2_pointer()], Some(q2_int()), false)),
+        import(
+            "pointcontents",
+            classic_signature(vec![q2_pointer()], Some(q2_int()), false),
+        ),
+        import(
+            "inPVS",
+            classic_signature(vec![q2_pointer(), q2_pointer()], Some(q2_int()), false),
+        ),
+        import(
+            "inPHS",
+            classic_signature(vec![q2_pointer(), q2_pointer()], Some(q2_int()), false),
+        ),
         import(
             "SetAreaPortalState",
             classic_signature(vec![q2_int(), q2_int()], None, false),
@@ -317,7 +348,10 @@ pub fn classic_q2_imports() -> Vec<ClassicQ2Import> {
             ),
         ),
         import("Pmove", classic_signature(vec![q2_pointer()], None, false)),
-        import("multicast", classic_signature(vec![q2_pointer(), q2_int()], None, false)),
+        import(
+            "multicast",
+            classic_signature(vec![q2_pointer(), q2_int()], None, false),
+        ),
         import("unicast", classic_signature(vec![q2_pointer(), q2_int()], None, false)),
         import("WriteChar", classic_signature(vec![q2_int()], None, false)),
         import("WriteByte", classic_signature(vec![q2_int()], None, false)),
@@ -366,7 +400,11 @@ pub struct ClassicQ2Export {
 }
 
 fn export(name: &'static str, offset: u32, signature: GuestCallSignature) -> ClassicQ2Export {
-    ClassicQ2Export { name, offset, signature }
+    ClassicQ2Export {
+        name,
+        offset,
+        signature,
+    }
 }
 
 /// The 14-entry game export table in donor order.
@@ -399,7 +437,11 @@ pub fn classic_q2_exports() -> Vec<ClassicQ2Export> {
             40,
             classic_signature(vec![q2_pointer(), q2_pointer()], None, false),
         ),
-        export("ClientDisconnect", 44, classic_signature(vec![q2_pointer()], None, false)),
+        export(
+            "ClientDisconnect",
+            44,
+            classic_signature(vec![q2_pointer()], None, false),
+        ),
         export("ClientCommand", 48, classic_signature(vec![q2_pointer()], None, false)),
         export(
             "ClientThink",
@@ -433,8 +475,22 @@ mod tests {
         assert_eq!(names[21], "Pmove");
         assert_eq!(names[43], "DebugGraph");
         assert!(imports.iter().all(|entry| entry.signature.abi == CLASSIC_Q2_ABI));
-        assert!(imports.iter().find(|entry| entry.name == "bprintf").unwrap().signature.variadic);
-        assert!(!imports.iter().find(|entry| entry.name == "trace").unwrap().signature.variadic);
+        assert!(
+            imports
+                .iter()
+                .find(|entry| entry.name == "bprintf")
+                .unwrap()
+                .signature
+                .variadic
+        );
+        assert!(
+            !imports
+                .iter()
+                .find(|entry| entry.name == "trace")
+                .unwrap()
+                .signature
+                .variadic
+        );
     }
 
     #[test]
@@ -474,10 +530,16 @@ mod tests {
             0x10000,
         )
         .unwrap();
-        let encoded = encode_value(&q2_int(), &qa_guest::core::contracts::GuestCallValue::Int32(-7), &memory).unwrap();
+        let encoded = encode_value(
+            &q2_int(),
+            &qa_guest::core::contracts::GuestCallValue::Int32(-7),
+            &memory,
+        )
+        .unwrap();
         assert_eq!(encoded, (-7i32).to_le_bytes());
         let decoded = decode_value(&q2_int(), &encoded, &memory).unwrap();
         assert_eq!(decoded, qa_guest::core::contracts::GuestCallValue::Int32(-7));
-        assert_eq!(format!("{}", ClassicQ2Error::invalid("probe")), "classic q2: probe");
+        let error = ClassicQ2Error::invalid("probe");
+        assert_eq!(format!("{error}"), "classic q2: probe");
     }
 }

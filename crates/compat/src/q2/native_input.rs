@@ -490,7 +490,7 @@ impl NativeInputBinding {
         let outcome = (|| {
             self.assert_live(identity)?;
             if scope == ApplicationScope::ClientCommand {
-                let effective = match &self.services.original_command {
+                let effective = match self.services.original_command.as_mut() {
                     Some(rewrite) => rewrite(identity, command),
                     None => command,
                 };
