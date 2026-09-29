@@ -56,6 +56,9 @@ pub enum AppError {
     /// Persistence failure.
     #[error("Persistence error: {0}")]
     Persistence(String),
+    /// Guest VM failure during startup or the host loop.
+    #[error("Guest error: {0}")]
+    Guest(String),
 }
 
 impl From<qa_world::WorldError> for AppError {
@@ -67,6 +70,12 @@ impl From<qa_world::WorldError> for AppError {
 impl From<qa_client::ClientError> for AppError {
     fn from(error: qa_client::ClientError) -> Self {
         Self::Client(error.to_string())
+    }
+}
+
+impl From<qa_guest::GuestError> for AppError {
+    fn from(error: qa_guest::GuestError) -> Self {
+        Self::Guest(error.to_string())
     }
 }
 

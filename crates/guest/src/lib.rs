@@ -19,6 +19,7 @@ pub mod pe;
 pub mod registry;
 pub mod runtime;
 pub mod save;
+pub mod server;
 pub mod traits;
 pub mod x64;
 

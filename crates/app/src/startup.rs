@@ -12,7 +12,9 @@ use qa_core::identity::ProviderId;
 use qa_core::math::{vec3, Bounds};
 use qa_core::time::{ClockProfile, SourceTime};
 use qa_world::client::ClientFamily;
-use qa_world::server::{plan_for_profile, NullLogic, Server, TickPlan};
+use qa_guest::core::contracts::{ContentDigest, ModuleIdentity};
+use qa_guest::server::GuestServerLogic;
+use qa_world::server::{plan_for_profile, Server, TickPlan};
 use qa_world::session::Simulation;
 use qa_world::spawn::{SpawnFields, SpawnRegistry, SpawnRequest};
 
@@ -209,8 +211,9 @@ pub fn register_stub_spawns(registry: &mut SpawnRegistry) {
 }
 
 /// Build the headless server for a configuration, with stub spawns
-/// registered.
-pub fn open_server(config: &StartupConfig) -> Result<Server<NullLogic>, AppError> {
+/// registered. Game logic runs in the guest VM; no game module is bound
+/// here, so logic hooks are no-ops until the host loads one.
+pub fn open_server(config: &StartupConfig) -> Result<Server<GuestServerLogic>, AppError> {
     let initial = match config.step {
         SourceTime::Seconds(_) => SourceTime::Seconds(0.0),
         SourceTime::Milliseconds(_) => SourceTime::Milliseconds(0),
@@ -222,9 +225,15 @@ pub fn open_server(config: &StartupConfig) -> Result<Server<NullLogic>, AppError
         initial,
         config.capacity,
     )?;
+    let logic = GuestServerLogic::new(ModuleIdentity::new(
+        config.game_provider.clone(),
+        "",
+        ContentDigest::new("none", ""),
+        "0",
+    ))?;
     let mut server = Server::new(
         simulation,
-        NullLogic,
+        logic,
         config.plan,
         config.game_provider.clone(),
         config.default_bounds,
@@ -236,7 +245,7 @@ pub fn open_server(config: &StartupConfig) -> Result<Server<NullLogic>, AppError
 
 /// Spawn every stub-map entity, returning the live actors in spawn order.
 pub fn spawn_stub_map(
-    server: &mut Server<NullLogic>,
+    server: &mut Server<GuestServerLogic>,
     stub: &StubMap,
 ) -> Result<Vec<qa_core::identity::OwnedActor>, AppError> {
     let mut actors = Vec::with_capacity(stub.entities.len());
