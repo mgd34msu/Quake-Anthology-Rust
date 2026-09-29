@@ -75,6 +75,9 @@ const CLIENT_BLOCK: i64 = 64;
 const FRAME_BLOCK: i64 = 128;
 /// Game stack size in bytes.
 const STACK_BYTES: usize = 0x100000;
+/// ELF load bias: relocatable game images map here, clear of the stack,
+/// scratch, and allocation areas.
+const ELF_LOAD_BIAS: u64 = 0x1000_0000;
 
 /// Game CPU: width follows the loaded image.
 enum ServerCpu {
@@ -201,6 +204,7 @@ impl GuestServerLogic {
         let abi = game_abi(bytes)?;
         let width = abi.pointer_bytes();
         let system_v = matches!(abi, NativeAbi::LinuxI386 | NativeAbi::LinuxX86_64);
+        self.hooks = Rc::new(HookState::new());
         self.cpu = build_cpu(&self.module, width)?;
         self.runtime = build_runtime(&self.hooks, &mut self.cpu, system_v)?;
         self.signature.abi = match abi {
@@ -231,7 +235,7 @@ impl GuestServerLogic {
                 unreachable!("system-v guest rebuilds a system-v runtime");
             };
             let (_, memory) = cpu.as_cpu().parts();
-            runtime.load(memory, bytes, module.clone(), 0)?
+            runtime.load(memory, bytes, module.clone(), ELF_LOAD_BIAS)?
         };
         self.vmmain = find_vmmain(&image.image.exports);
         let context = self.root_context(image.image.base);
