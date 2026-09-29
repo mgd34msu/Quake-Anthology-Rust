@@ -236,8 +236,7 @@ pub fn shift(
             } else {
                 (result >> (effective - 1)) & 1 != 0
             };
-            let signed = (((result << (64 - width)) as i64) >> effective) as u64;
-            result = signed & mask(width);
+            result = (sign_extend(result, width) >> effective) as u64 & mask(width);
         }
     }
     if rotate || effective < width || operation == ShiftOperation::Sar {
