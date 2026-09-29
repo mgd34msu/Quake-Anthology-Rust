@@ -20,9 +20,7 @@ use crate::msg::{MsgError, MsgWriter};
 use crate::protocol::q2 as protocol;
 use crate::protocol::ProtocolIdentity;
 use crate::q2::{write_packet_entities_begin, EntityState, MAX_EDICTS};
-use crate::q2_net::{
-    Q2EntityBits, Q2NetError, Q2ServerMessageOptions, Q2ServerMessageReader, Q2ServerRecord, Q2Wire,
-};
+use crate::q2_net::{Q2EntityBits, Q2NetError, Q2ServerMessageOptions, Q2ServerMessageReader, Q2ServerRecord, Q2Wire};
 
 /// Server-demo message capacity (`createMessage(32768)`).
 pub const Q2_SERVER_DEMO_MESSAGE_BYTES: usize = 32768;
@@ -297,10 +295,7 @@ mod tests {
         assert_eq!(state.servercount, 5);
         assert_eq!(state.gamedir, "baseq2");
         assert_eq!(state.config_strings.get(&0).map(String::as_str), Some("q2dm1"));
-        assert_eq!(
-            state.config_strings.get(&1).map(String::as_str),
-            Some("maxclients\\8")
-        );
+        assert_eq!(state.config_strings.get(&1).map(String::as_str), Some("maxclients\\8"));
         // Empty configstrings are skipped on encode.
         assert!(!state.config_strings.contains_key(&5));
         let Q2ServerDemoRecord::Frame {

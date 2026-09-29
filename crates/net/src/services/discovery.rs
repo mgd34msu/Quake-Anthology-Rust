@@ -826,8 +826,7 @@ impl DiscoveryWire for Q3DiscoveryWire {
 
     fn heartbeat(&self, _active: bool) -> Result<Vec<u8>, DiscoveryError> {
         // The donor sends the same heartbeat regardless of server state.
-        encode_connectionless_text("heartbeat QuakeArena-1\n")
-            .map_err(|error| DiscoveryError::Wire(error.to_string()))
+        encode_connectionless_text("heartbeat QuakeArena-1\n").map_err(|error| DiscoveryError::Wire(error.to_string()))
     }
 }
 
@@ -843,8 +842,7 @@ pub struct Q3MasterPacket {
 /// Decode a master response (`decodeQ3MasterPacket`).
 pub fn decode_q3_master_packet(bytes: &[u8]) -> Result<Q3MasterPacket, Q3NetError> {
     let prefix = b"getserversResponse";
-    if bytes.len() < prefix.len() + 4 || bytes[0..4] != [255, 255, 255, 255] || bytes[4..4 + prefix.len()] != *prefix
-    {
+    if bytes.len() < prefix.len() + 4 || bytes[0..4] != [255, 255, 255, 255] || bytes[4..4 + prefix.len()] != *prefix {
         return Err(Q3NetError::Range("Not a Q3 master response"));
     }
     let mut addresses = Vec::new();

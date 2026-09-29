@@ -14,11 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::endpoint::{address_key, same_address, NetworkAddress};
-use crate::common::transport::{
-    Clock, DatagramLimits, DatagramTransport, PacketQueue, ReceiveEvent, TransportError,
-};
+use crate::common::transport::{Clock, DatagramLimits, DatagramTransport, PacketQueue, ReceiveEvent, TransportError};
 use crate::q2_kex_channel::{KexChannel, KexMode};
-use crate::q2_kex_discovery::KexMdns;
+use crate::q2_kex_discovery::{KexMdns, KexMdnsSend};
 use crate::q2_kex_packet::{kex_text, read_kex_text, write_kex_packet, KexError, KexPacket, KexReader, KexWriter};
 
 /// KEX LAN port.
@@ -87,7 +85,7 @@ pub struct KexMdnsConfig {
     /// Advertised IPv4 hosts.
     pub ipv4_hosts: Vec<[u8; 4]>,
     /// Multicast send closure.
-    pub send: Box<dyn FnMut(&[u8]) -> Result<(), String> + Send>,
+    pub send: KexMdnsSend,
 }
 
 impl KexMdnsConfig {
@@ -161,11 +159,7 @@ pub struct KexLanTransport<T: DatagramTransport<Address = NetworkAddress>> {
 
 impl<T: DatagramTransport<Address = NetworkAddress> + 'static> KexLanTransport<T> {
     /// Open a lobby over an IP transport (`constructor`).
-    pub fn open(
-        transport: T,
-        options: KexLanOptions,
-        mdns: Option<KexMdnsConfig>,
-    ) -> Result<Arc<Self>, KexError> {
+    pub fn open(transport: T, options: KexLanOptions, mdns: Option<KexMdnsConfig>) -> Result<Arc<Self>, KexError> {
         let transport = Arc::new(transport);
         if transport.address().kind() == "ipx" {
             return Err(KexError::Protocol("KEX LAN requires an IP transport"));
@@ -341,11 +335,7 @@ impl<T: DatagramTransport<Address = NetworkAddress> + 'static> KexLanTransport<T
             Ok(inner) => inner,
             Err(_) => return Ok(()),
         };
-        if let KexLanOptions::Client {
-            server,
-            local_players,
-        } = &self.options
-        {
+        if let KexLanOptions::Client { server, local_players } = &self.options {
             if !inner.joined && now - inner.retry_at >= JOIN_RETRY_MILLISECONDS {
                 inner.retry_at = now;
                 let mut writer = KexWriter::new();
@@ -495,8 +485,7 @@ impl<T: DatagramTransport<Address = NetworkAddress> + 'static> KexLanTransport<T
             // Unknown endpoints may only enter through an unsequenced lobby query/join.
             let key = address_key(&from, true);
             if !inner.peers.contains_key(&key) {
-                if payload.len() < 3 || payload[1] % 16 != 0 || (payload[2] != JOIN_KIND && payload[2] != QUERY_KIND)
-                {
+                if payload.len() < 3 || payload[1] % 16 != 0 || (payload[2] != JOIN_KIND && payload[2] != QUERY_KIND) {
                     continue;
                 }
                 if inner.peers.len() >= KEX_MAX_PEERS {
@@ -630,7 +619,7 @@ impl<T: DatagramTransport<Address = NetworkAddress> + 'static> KexLanTransport<T
             }
             let count = reader.byte()?;
             reader.end()?;
-            if count < 1 || count > KEX_MAX_LOCAL_PLAYERS {
+            if !(1..=KEX_MAX_LOCAL_PLAYERS).contains(&count) {
                 return Ok(());
             }
             let admitted = inner.peers.get(key).is_some_and(|peer| !peer.players.is_empty());
@@ -679,7 +668,11 @@ impl<T: DatagramTransport<Address = NetworkAddress> + 'static> KexLanTransport<T
                 response.integer(player.id);
             }
             let response = response.finish();
-            let attributes: Vec<(String, String)> = inner.attributes.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+            let attributes: Vec<(String, String)> = inner
+                .attributes
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
             if let Some(peer) = inner.peers.get_mut(key) {
                 peer.channel.send(JOIN_KIND, &response, KexMode::Unsequenced, clock)?;
                 for (attr, value) in &attributes {
@@ -871,8 +864,7 @@ impl<T: DatagramTransport<Address = NetworkAddress> + 'static> DatagramTransport
         if !self.admitted(to) {
             return Ok(false);
         }
-        let reliable =
-            payload.len() >= 8 && payload[0..4] == [0, 0, 0, 0x80] && payload[4..8] == [0, 0, 0, 0x80];
+        let reliable = payload.len() >= 8 && payload[0..4] == [0, 0, 0, 0x80] && payload[4..8] == [0, 0, 0, 0x80];
         let clock = self.clock();
         let result = {
             let mut inner = self
@@ -883,7 +875,11 @@ impl<T: DatagramTransport<Address = NetworkAddress> + 'static> DatagramTransport
             peer.channel.send(
                 GAME_KIND,
                 payload,
-                if reliable { KexMode::Reliable } else { KexMode::Sequential },
+                if reliable {
+                    KexMode::Reliable
+                } else {
+                    KexMode::Sequential
+                },
                 clock,
             )
         };
@@ -959,7 +955,10 @@ mod tests {
     }
 
     /// Pump both lobbies until the client joins or attempts run out.
-    fn join(host: &Arc<KexLanTransport<crate::common::loopback::LoopbackTransport>>, client: &Arc<KexLanTransport<crate::common::loopback::LoopbackTransport>>) {
+    fn join(
+        host: &Arc<KexLanTransport<crate::common::loopback::LoopbackTransport>>,
+        client: &Arc<KexLanTransport<crate::common::loopback::LoopbackTransport>>,
+    ) {
         for step in 0..10 {
             let now = f64::from(step) * 600.0;
             client.tick(now).unwrap();

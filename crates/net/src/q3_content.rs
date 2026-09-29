@@ -248,7 +248,14 @@ mod tests {
     }
 
     fn pak(id: &str, generation: u64, byte: u8) -> Q3MountedPak {
-        register_q3_pak(mount(id, generation, digest(byte)), &archive(), "baseq3", &format!("{id}.pk3"), 1).unwrap()
+        register_q3_pak(
+            mount(id, generation, digest(byte)),
+            &archive(),
+            "baseq3",
+            &format!("{id}.pk3"),
+            1,
+        )
+        .unwrap()
     }
 
     #[test]

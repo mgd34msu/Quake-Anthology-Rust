@@ -123,7 +123,12 @@ where
     }
 
     /// Evict entries at or below `sequence - capacity`.
-    fn evict(commands: &mut BTreeMap<i32, TCommand>, origins: &mut BTreeMap<i32, Q2PredictionVec>, sequence: i32, capacity: usize) {
+    fn evict(
+        commands: &mut BTreeMap<i32, TCommand>,
+        origins: &mut BTreeMap<i32, Q2PredictionVec>,
+        sequence: i32,
+        capacity: usize,
+    ) {
         let threshold = i64::from(sequence) - capacity as i64;
         commands.retain(|key, _| i64::from(*key) > threshold);
         origins.retain(|key, _| i64::from(*key) > threshold);

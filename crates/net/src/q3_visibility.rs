@@ -144,7 +144,7 @@ impl Select<'_> {
         if self.selected.len() == 256 {
             return Ok(());
         }
-        if number < 0 || number >= 1024 {
+        if !(0..1024).contains(&number) {
             return Err(Q3NetError::Range("Server snapshot entity outside source storage"));
         }
         self.selected.push(number);
@@ -177,9 +177,7 @@ impl Select<'_> {
             if entity.flags & Q3ServerEntityFlags::SINGLE_CLIENT != 0 && entity.single_client != self.client_num {
                 continue;
             }
-            if entity.flags & Q3ServerEntityFlags::NOT_SINGLE_CLIENT != 0
-                && entity.single_client == self.client_num
-            {
+            if entity.flags & Q3ServerEntityFlags::NOT_SINGLE_CLIENT != 0 && entity.single_client == self.client_num {
                 continue;
             }
             if entity.flags & Q3ServerEntityFlags::CLIENT_MASK != 0 {
@@ -405,7 +403,7 @@ mod tests {
             printed: Vec::new(),
         };
         let visible = select_q3_snapshot_entities(&player(), &mut fixture).unwrap();
-        assert_eq!(visible.area_mask, vec![0xFF ^ 0]);
+        assert_eq!(visible.area_mask, vec![0xFF]);
         assert_eq!(visible.entities.len(), 2);
         assert_eq!(visible.entities[0].number, 1);
         assert_eq!(visible.entities[1].number, 2);
@@ -493,6 +491,6 @@ mod tests {
         let visible = select_q3_snapshot_entities(&player(), &mut fixture).unwrap();
         assert_eq!(visible.entities.len(), 1);
         assert_eq!(visible.entities[0].number, 1);
-        assert_eq!(visible.area_mask, vec![0xFF ^ 0]);
+        assert_eq!(visible.area_mask, vec![0xFF]);
     }
 }

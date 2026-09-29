@@ -7,9 +7,7 @@
 //! file sink is caller-provided, and the filesystem owner chooses and
 //! opens the `.dm_68` path.
 
-use crate::q3_net::{
-    encode_server_message, Q3ClientConnection, Q3NetError, ServerMessageContext, ServerOperation,
-};
+use crate::q3_net::{encode_server_message, Q3ClientConnection, Q3NetError, ServerMessageContext, ServerOperation};
 
 /// Demo file sink (donor `Q3DemoSink`).
 pub trait Q3DemoSink {

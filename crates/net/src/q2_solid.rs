@@ -7,7 +7,7 @@
 //! the donor's operation order in `f64`, including its single-precision
 //! rounding of the packed height bias.
 
-use qa_core::math::{Bounds, vec3};
+use qa_core::math::{vec3, Bounds};
 
 use crate::protocol::q2;
 use crate::protocol::ProtocolIdentity;
@@ -73,7 +73,9 @@ pub fn pack_q2_solid(bounds: &Bounds, encoding: Q2SolidEncoding) -> u32 {
             clamp(max_x / 8.0, 1, 31) | clamp(-min_z / 8.0, 1, 31) << 5 | clamp((max_z + 32.0) / 8.0, 1, 63) << 10
         }
         Q2SolidEncoding::R1q2 => {
-            clamp(max_x, 1, 255) | clamp(-min_z, 0, 255) << 8 | clamp(f64::from((max_z + 32768.0) as f32), 0, 65535) << 16
+            clamp(max_x, 1, 255)
+                | clamp(-min_z, 0, 255) << 8
+                | clamp(f64::from((max_z + 32768.0) as f32), 0, 65535) << 16
         }
         Q2SolidEncoding::Q2proV2 => {
             clamp(max_x, 1, 255)
@@ -164,7 +166,10 @@ mod tests {
 
     #[test]
     fn short_vectors_match_donor() {
-        let packed = pack_q2_solid(&bounds([-16.0, -16.0, -16.0], [16.0, 16.0, 16.0]), Q2SolidEncoding::Short);
+        let packed = pack_q2_solid(
+            &bounds([-16.0, -16.0, -16.0], [16.0, 16.0, 16.0]),
+            Q2SolidEncoding::Short,
+        );
         assert_eq!(packed, 2 | 2 << 5 | 6 << 10);
         let unpacked = unpack_q2_solid(packed, Q2SolidEncoding::Short);
         assert_eq!(unpacked, bounds([-16.0, -16.0, -16.0], [16.0, 16.0, 16.0]));
@@ -188,9 +193,12 @@ mod tests {
 
     #[test]
     fn packing_clamps_and_round_trips() {
-        let packed = pack_q2_solid(&bounds([-500.0, -500.0, -500.0], [9000.0, 9000.0, 9000.0]), Q2SolidEncoding::Short);
+        let packed = pack_q2_solid(
+            &bounds([-500.0, -500.0, -500.0], [9000.0, 9000.0, 9000.0]),
+            Q2SolidEncoding::Short,
+        );
         assert_eq!(packed, 31 | 31 << 5 | 63 << 10);
         let packed = pack_q2_solid(&bounds([0.0, 0.0, 0.0], [0.0, 0.0, -40.0]), Q2SolidEncoding::Q2proV2);
-        assert_eq!(packed, 1 | 1 << 8 | 0 << 16 | 0 << 24);
+        assert_eq!(packed, 1 | (1 << 8));
     }
 }

@@ -71,9 +71,8 @@ impl<'a> Q3ServerAuthorization<'a> {
         match self.bindings.resolve_authority() {
             Ok(address) => {
                 if !matches!(address, NetworkAddress::Ipv4 { .. }) {
-                    self.bindings.print(
-                        "Couldn't resolve Q3 authorization server: Q3 authorization requires IPv4\n",
-                    );
+                    self.bindings
+                        .print("Couldn't resolve Q3 authorization server: Q3 authorization requires IPv4\n");
                     return None;
                 }
                 self.resolved = Some(address.clone());
@@ -255,7 +254,10 @@ mod tests {
         auth.request(&request).unwrap();
         assert!(fixture.sent.is_empty());
         assert_eq!(fixture.resolves, 1);
-        assert_eq!(fixture.printed, vec!["Couldn't resolve Q3 authorization server: no route\n"]);
+        assert_eq!(
+            fixture.printed,
+            vec!["Couldn't resolve Q3 authorization server: no route\n"]
+        );
     }
 
     #[test]

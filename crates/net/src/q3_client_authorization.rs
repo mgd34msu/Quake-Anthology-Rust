@@ -98,7 +98,10 @@ impl<'a> Q3ClientAuthorization<'a> {
         }
         self.cvars
             .register("cl_anonymous", "0", flags::INIT | flags::SYSTEM_INFO)?;
-        let anonymous = self.cvars.get("cl_anonymous").map_or(0, |snapshot| snapshot.integer_value);
+        let anonymous = self
+            .cvars
+            .get("cl_anonymous")
+            .map_or(0, |snapshot| snapshot.integer_value);
         assert_current();
         let Some(address) = self.address.clone() else {
             return Ok(());
@@ -229,7 +232,9 @@ mod tests {
     #[test]
     fn anonymous_cvar_flows_into_packet() {
         let mut cvars = CvarRegistry::new(Dialect::Q3);
-        cvars.register("cl_anonymous", "1", flags::INIT | flags::SYSTEM_INFO).unwrap();
+        cvars
+            .register("cl_anonymous", "1", flags::INIT | flags::SYSTEM_INFO)
+            .unwrap();
         let mut keys = Keys { bytes: [0; 33] };
         let mut fixture = Fixture {
             demo_restricted: true,

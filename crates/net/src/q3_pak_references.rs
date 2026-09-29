@@ -209,7 +209,10 @@ pub fn is_pak_pure(checksum: u32, server_checksums: &[i32]) -> bool {
 }
 
 /// Reorder search paths to match server checksums (`reorderPurePaks`).
-pub fn reorder_pure_paks<T: Clone>(search_paths: &[PureSearchPath<T>], server_checksums: &[i32]) -> Vec<PureSearchPath<T>> {
+pub fn reorder_pure_paks<T: Clone>(
+    search_paths: &[PureSearchPath<T>],
+    server_checksums: &[i32],
+) -> Vec<PureSearchPath<T>> {
     let mut reordered = search_paths.to_vec();
     let mut insertion = 0;
     for server in server_checksums {
@@ -316,7 +319,11 @@ impl PakReferences {
 
     /// Validate and stage a catalog pack (`addState`).
     fn add_state(&mut self, pack: PakCatalogEntry) -> Result<PakReferenceState, Q3PakError> {
-        if self.states.iter().any(|state| state.pack.archive_path == pack.archive_path) {
+        if self
+            .states
+            .iter()
+            .any(|state| state.pack.archive_path == pack.archive_path)
+        {
             return Err(Q3PakError::Range(
                 "Pak catalog contains the same identity more than once".to_owned(),
             ));
@@ -354,7 +361,9 @@ impl PakReferences {
                 .find(|state| state.pack.archive_path == pack.archive_path)
                 .cloned()
             else {
-                return Err(Q3PakError::Range("Pak reorder contains an unmounted identity".to_owned()));
+                return Err(Q3PakError::Range(
+                    "Pak reorder contains an unmounted identity".to_owned(),
+                ));
             };
             states.push(state);
         }

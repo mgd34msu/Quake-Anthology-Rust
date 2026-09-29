@@ -8,8 +8,8 @@
 use std::collections::VecDeque;
 use std::io::Read;
 
-use flate2::Compression;
 use flate2::read::{ZlibDecoder, ZlibEncoder};
+use flate2::Compression;
 
 use crate::q2_kex_packet::{
     read_kex_packet, write_kex_packet, KexError, KexPacket, KEX_DATAGRAM_BYTES, KEX_MESSAGE_BYTES,
@@ -95,9 +95,12 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>, KexError> {
     Ok(out)
 }
 
+/// KEX datagram emit sink.
+pub type KexEmit = Box<dyn FnMut(&[u8]) -> bool + Send>;
+
 /// KEX channel (`KexChannel`).
 pub struct KexChannel {
-    emit: Box<dyn FnMut(&[u8]) -> bool + Send>,
+    emit: KexEmit,
     sequence: u16,
     reliable: u16,
     incoming_sequence: u16,
@@ -153,8 +156,7 @@ impl KexChannel {
             return Err(KexError::Protocol("Unsequenced KEX message cannot be fragmented"));
         }
         if mode == KexMode::Reliable
-            && self.pending_bytes + data.len() + data.len().div_ceil(FIRST_FRAGMENT_BYTES) * 7
-                > KEX_MESSAGE_BYTES * 2
+            && self.pending_bytes + data.len() + data.len().div_ceil(FIRST_FRAGMENT_BYTES) * 7 > KEX_MESSAGE_BYTES * 2
         {
             return Err(KexError::Protocol("KEX reliable queue is full"));
         }
@@ -162,9 +164,7 @@ impl KexChannel {
         let mut first = true;
         let mut accepted = true;
         loop {
-            let capacity = KEX_DATAGRAM_BYTES
-                - if mode == KexMode::Unsequenced { 2 } else { 6 }
-                - usize::from(first);
+            let capacity = KEX_DATAGRAM_BYTES - if mode == KexMode::Unsequenced { 2 } else { 6 } - usize::from(first);
             let end = (position + capacity).min(data.len());
             let final_fragment = end == data.len();
             let fragment_flags = if !fragmented {
@@ -222,7 +222,11 @@ impl KexChannel {
             let acknowledgment = u16::from_be_bytes([packet.payload[1], packet.payload[2]]);
             // The native sender uses an unsigned ordinary comparison,
             // including at wrap.
-            while self.pending.front().is_some_and(|pending| pending.reliable <= acknowledgment) {
+            while self
+                .pending
+                .front()
+                .is_some_and(|pending| pending.reliable <= acknowledgment)
+            {
                 if let Some(removed) = self.pending.pop_front() {
                     self.pending_bytes -= removed.bytes.len();
                 }
@@ -362,6 +366,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// Emit sink recording every datagram.
+    #[allow(clippy::type_complexity)]
     fn recorder() -> (Arc<Mutex<Vec<Vec<u8>>>>, impl FnMut(&[u8]) -> bool + Send) {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let sink = sent.clone();

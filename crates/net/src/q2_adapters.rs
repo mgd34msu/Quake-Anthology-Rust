@@ -16,9 +16,7 @@
 
 use thiserror::Error;
 
-use crate::q2::{
-    angle_to_short, short_to_angle, EntityState, PlayerState, Usercmd, MAX_STATS_STORAGE,
-};
+use crate::q2::{angle_to_short, short_to_angle, EntityState, PlayerState, Usercmd, MAX_STATS_STORAGE};
 
 /// Adapter failure.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -312,12 +310,7 @@ fn fill_entity(wire: &mut EntityState, state: &Q2EntityState) {
     wire.origin = vec_to_array(&state.origin);
     wire.angles = vec_to_array(&state.angles);
     wire.old_origin = vec_to_array(&state.old_origin);
-    [
-        wire.modelindex,
-        wire.modelindex2,
-        wire.modelindex3,
-        wire.modelindex4,
-    ] = state.model_indexes;
+    [wire.modelindex, wire.modelindex2, wire.modelindex3, wire.modelindex4] = state.model_indexes;
     wire.frame = state.frame;
     wire.skinnum = state.skin;
     wire.renderfx = state.render_effects as i32;
@@ -579,8 +572,16 @@ mod tests {
     fn entity_state() -> Q2EntityState {
         Q2EntityState {
             number: 7,
-            origin: Q2Vec3 { x: 1.5, y: -2.5, z: 100.0 },
-            angles: Q2Vec3 { x: 0.0, y: 90.0, z: 0.0 },
+            origin: Q2Vec3 {
+                x: 1.5,
+                y: -2.5,
+                z: 100.0,
+            },
+            angles: Q2Vec3 {
+                x: 0.0,
+                y: 90.0,
+                z: 0.0,
+            },
             old_origin: Q2Vec3 { x: 1.0, y: 1.0, z: 1.0 },
             model_indexes: [1, 2, 3, 4],
             frame: 9,
@@ -631,8 +632,16 @@ mod tests {
 
     fn player_view_fixture() -> Q2PlayerView {
         Q2PlayerView {
-            view_angles: Q2Vec3 { x: 10.0, y: 20.0, z: 30.0 },
-            view_offset: Q2Vec3 { x: 0.0, y: 0.0, z: 22.0 },
+            view_angles: Q2Vec3 {
+                x: 10.0,
+                y: 20.0,
+                z: 30.0,
+            },
+            view_offset: Q2Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 22.0,
+            },
             kick_angles: Q2Vec3 { x: 1.0, y: 2.0, z: 3.0 },
             gun_angles: Q2Vec3 { x: 4.0, y: 5.0, z: 6.0 },
             gun_offset: Q2Vec3 { x: 7.0, y: 8.0, z: 9.0 },
@@ -657,7 +666,12 @@ mod tests {
                 gravity: 800,
                 delta_angle_shorts: [100, 200, 300],
             },
-            blend: Q2Vec4 { x: 0.1, y: 0.2, z: 0.3, w: 0.4 },
+            blend: Q2Vec4 {
+                x: 0.1,
+                y: 0.2,
+                z: 0.3,
+                w: 0.4,
+            },
         };
         let wire = from_q2_player(&Q2Player::Classic(state.clone())).unwrap();
         assert_eq!(wire.pmove.origin, [80, -160, 240]);
@@ -678,18 +692,36 @@ mod tests {
             view: player_view_fixture(),
             movement: Q2RereleaseMovementState {
                 move_type: 4,
-                origin: Q2Vec3 { x: 10.0, y: -20.0, z: 30.0 },
+                origin: Q2Vec3 {
+                    x: 10.0,
+                    y: -20.0,
+                    z: 30.0,
+                },
                 velocity: Q2Vec3 { x: 1.0, y: 2.0, z: 3.0 },
                 flags: 7,
                 time: 120,
                 gravity: 800,
-                delta_angles: Q2Vec3 { x: 90.0, y: 180.0, z: 0.0 },
+                delta_angles: Q2Vec3 {
+                    x: 90.0,
+                    y: 180.0,
+                    z: 0.0,
+                },
                 view_height: 22,
             },
             gun_skin: 5,
             gun_rate: 40,
-            screen_blend: Q2Vec4 { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
-            damage_blend: Q2Vec4 { x: 1.0, y: 0.0, z: 0.0, w: 0.5 },
+            screen_blend: Q2Vec4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+            damage_blend: Q2Vec4 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.5,
+            },
             team_id: 2,
         };
         let wire = from_q2_player(&Q2Player::Rerelease(state)).unwrap();
@@ -746,7 +778,11 @@ mod tests {
     fn rerelease_command_packs_angles() {
         let command = Q2RereleaseUserCommand {
             milliseconds: 50,
-            angles: Q2Vec3 { x: 90.0, y: 180.0, z: 0.0 },
+            angles: Q2Vec3 {
+                x: 90.0,
+                y: 180.0,
+                z: 0.0,
+            },
             forward_move: 100,
             side_move: -50,
             buttons: 3,

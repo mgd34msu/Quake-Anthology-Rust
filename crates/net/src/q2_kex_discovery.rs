@@ -103,7 +103,13 @@ fn dns_record(name: &str, record_type: u16, data: &[u8], ttl: u16) -> Result<Vec
 pub fn mdns_target(hostname: &str) -> String {
     let sanitized: String = hostname
         .chars()
-        .map(|cell| if cell.is_ascii_alphanumeric() || cell == '-' { cell } else { '-' })
+        .map(|cell| {
+            if cell.is_ascii_alphanumeric() || cell == '-' {
+                cell
+            } else {
+                '-'
+            }
+        })
         .take(63)
         .collect();
     format!("{sanitized}.local")
@@ -224,6 +230,9 @@ impl<'a> DnsReader<'a> {
 /// status at the resolved endpoint. The host owns the multicast socket:
 /// `send` emits datagrams to the group, `found` receives resolved lobby
 /// endpoints, and `failed` receives errors. Malformed or unrelated
+/// KEX mDNS send sink.
+pub type KexMdnsSend = Box<dyn FnMut(&[u8]) -> Result<(), String> + Send>;
+
 /// inbound traffic is ignored.
 pub struct KexMdns {
     advertised_port: Option<u16>,
@@ -232,7 +241,7 @@ pub struct KexMdns {
     addresses: HashMap<String, NetworkAddress>,
     hostname: String,
     ipv4_hosts: Vec<[u8; 4]>,
-    send: Box<dyn FnMut(&[u8]) -> Result<(), String> + Send>,
+    send: KexMdnsSend,
     found: Box<dyn FnMut(NetworkAddress) + Send>,
     failed: Box<dyn FnMut(String) + Send>,
 }
@@ -406,14 +415,14 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn owner(
-        advertised_port: Option<u16>,
-    ) -> (
+    type MdnsOwner = (
         KexMdns,
         Arc<Mutex<Vec<Vec<u8>>>>,
         Arc<Mutex<Vec<NetworkAddress>>>,
         Arc<Mutex<Vec<String>>>,
-    ) {
+    );
+
+    fn owner(advertised_port: Option<u16>) -> MdnsOwner {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let found = Arc::new(Mutex::new(Vec::new()));
         let failed = Arc::new(Mutex::new(Vec::new()));
