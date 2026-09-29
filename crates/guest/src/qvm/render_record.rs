@@ -186,12 +186,7 @@ fn read_axis(bytes: &[u8], offset: usize) -> Axis {
 }
 
 fn read_color(bytes: &[u8], offset: usize) -> [u8; 4] {
-    [
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ]
+    [bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]]
 }
 
 /// Copy a source record without resolving its model, shader, or skin handles.
@@ -274,10 +269,7 @@ pub fn read_qvm_poly_vertices(bytes: &[u8], count: usize) -> Result<Vec<QvmPolyV
             let offset = index * QVM_POLY_VERTEX_BYTES;
             QvmPolyVertex {
                 position: read_vec3(bytes, offset),
-                tex_coord: vec2(
-                    read_f32(bytes, offset + 12),
-                    read_f32(bytes, offset + 16),
-                ),
+                tex_coord: vec2(read_f32(bytes, offset + 12), read_f32(bytes, offset + 16)),
                 color: read_color(bytes, offset + 20),
             }
         })
@@ -285,11 +277,7 @@ pub fn read_qvm_poly_vertices(bytes: &[u8], count: usize) -> Result<Vec<QvmPolyV
 }
 
 /// Write a lerp-tag result into `orientation_t`, checking extent first.
-pub fn write_qvm_orientation(
-    bytes: &mut [u8],
-    origin: &Vec3,
-    axes: &Axis,
-) -> Result<(), GuestError> {
+pub fn write_qvm_orientation(bytes: &mut [u8], origin: &Vec3, axes: &Axis) -> Result<(), GuestError> {
     check_bytes(bytes, QVM_ORIENTATION_BYTES, "QVM orientation_t")?;
     let mut write = |offset: usize, value: &Vec3| {
         bytes[offset..offset + 4].copy_from_slice(&value.x.to_le_bytes());

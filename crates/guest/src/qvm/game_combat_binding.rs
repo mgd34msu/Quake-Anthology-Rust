@@ -24,19 +24,16 @@ use qa_world::body::BodyState;
 use qa_world::combat::{ArmorState, PoweredProtection, RegularArmor};
 
 use super::game_combat::{
-    qvm_attack_damage_flags, qvm_canonical_damage_flags, qvm_source_damage_flags,
-    validate_qvm_combat_call, validate_qvm_combat_positions, QvmArmorRole, QvmCombatCall,
-    QvmCombatMass, QvmCombatTeam, QvmDamageFlags, QvmDamageRequest, QvmDamageRole,
-    QvmGameArmorDefinition, QvmGameCombat, QvmGameCombatDefinition, QvmGameDamage,
+    qvm_attack_damage_flags, qvm_canonical_damage_flags, qvm_source_damage_flags, validate_qvm_combat_call,
+    validate_qvm_combat_positions, QvmArmorRole, QvmCombatCall, QvmCombatMass, QvmCombatTeam, QvmDamageFlags,
+    QvmDamageRequest, QvmDamageRole, QvmGameArmorDefinition, QvmGameCombat, QvmGameCombatDefinition, QvmGameDamage,
     QvmGameInflictor, QvmQ1ArmorEffect, QvmReactionCall,
 };
 use super::game_combat_scope::{
-    QvmDamageReaction, QvmDamageReactions, QvmDamageScopeOptions, QvmDamageScopes,
+    QvmDamageReaction, QvmDamageReactions, QvmDamageScopeOptions, QvmDamageScopes, QvmScopeDamageRequest,
     SharedDamageObserver, SourceDamageResult,
 };
-use super::game_data::{
-    QvmArtifact, QvmFunctionCall, QvmGameData, QvmHookFn, QvmModule, QvmOpcode,
-};
+use super::game_data::{QvmArtifact, QvmFunctionCall, QvmGameData, QvmHookFn, QvmModule, QvmOpcode};
 use super::shared_entity_record::qvm_shared_entity_bytes;
 use crate::error::GuestError;
 
@@ -149,8 +146,7 @@ pub struct AuthorityProvenance {
 }
 
 /// Armor intercept: computes savings, defaulting to the original behavior.
-pub type ArmorIntercept =
-    Rc<dyn Fn(&ArmorHit, &mut dyn FnMut() -> i32) -> f64>;
+pub type ArmorIntercept = Rc<dyn Fn(&ArmorHit, &mut dyn FnMut() -> i32) -> f64>;
 
 /// Armor stage kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,13 +273,13 @@ pub trait CombatAuthority {
     fn apply(
         &self,
         request: &AuthorityDamageRequest,
-        run: &dyn Fn(&AuthorityDamageRequest) -> SourceDamageResult,
+        run: &mut dyn FnMut(&AuthorityDamageRequest) -> SourceDamageResult,
     ) -> SourceDamageResult;
     /// Run source damage, reporting through an observer.
     fn run_source_damage(
         &self,
         request: &AuthorityDamageRequest,
-        run: &dyn Fn(&SharedDamageObserver, &AuthorityDamageRequest) -> SourceDamageResult,
+        run: &mut dyn FnMut(&SharedDamageObserver, &AuthorityDamageRequest) -> SourceDamageResult,
     ) -> SourceDamageResult;
 }
 
@@ -313,8 +309,7 @@ pub struct CombatSource {
     /// Resolve the actor owning a slot.
     pub actor: Rc<dyn Fn(usize) -> Option<ActorId>>,
     /// Build provenance for attacker/inflictor/target.
-    pub provenance:
-        Rc<dyn Fn(Option<&ActorId>, Option<&ActorId>, &ActorId) -> AuthorityProvenance>,
+    pub provenance: Rc<dyn Fn(Option<&ActorId>, Option<&ActorId>, &ActorId) -> AuthorityProvenance>,
     /// After-free hook.
     pub after_free: Option<Rc<dyn Fn(i32, &mut QvmFunctionCall)>>,
 }
@@ -549,10 +544,7 @@ impl QvmCombatBindings {
                 "Source combat requires its declared Q3 client pointer",
             ));
         }
-        validate_qvm_combat_call(
-            &armor.call,
-            options.artifact.image.data_end(),
-        )?;
+        validate_qvm_combat_call(&armor.call, options.artifact.image.data_end())?;
         for call in [&definition.reactions.pain_call, &definition.reactions.die_call] {
             validate_qvm_combat_positions(&[call.target, call.amount], call.arguments)?;
         }
@@ -623,17 +615,14 @@ impl QvmCombatBindings {
                     || *offset < qvm_shared_entity_bytes(definition.abi_profile)
                     || offset + 4 > definition.entity_stride
                 {
-                    return Err(GuestError::invalid(
-                        "Source mass field is outside its entity record",
-                    ));
+                    return Err(GuestError::invalid("Source mass field is outside its entity record"));
                 }
             }
         }
         if let Some(tiers) = &armor.tiers {
             stat(tiers.stat)?;
             protection(f64::from(tiers.fallback))?;
-            if tiers.stat == armor.points_stat || tiers.when_any.is_empty() || tiers.values.is_empty()
-            {
+            if tiers.stat == armor.points_stat || tiers.when_any.is_empty() || tiers.values.is_empty() {
                 return Err(GuestError::invalid(
                     "Source armor tier declaration is incomplete or aliases its points",
                 ));
@@ -648,9 +637,7 @@ impl QvmCombatBindings {
                 protection(f64::from(entry.protection))?;
             }
             for condition in &tiers.when_any {
-                if condition.offset % 4 != 0
-                    || condition.offset + 4 > options.artifact.image.data_end()
-                {
+                if condition.offset % 4 != 0 || condition.offset + 4 > options.artifact.image.data_end() {
                     return Err(GuestError::invalid("Source armor mode word is outside source data"));
                 }
             }
@@ -694,10 +681,7 @@ impl QvmCombatBindings {
                 module: options.module.clone(),
                 data: options.data.clone(),
                 health: definition.fields.health,
-                target_argument: definition
-                    .damage_call
-                    .role(QvmDamageRole::Target.name())
-                    .unwrap_or(0),
+                target_argument: definition.damage_call.role(QvmDamageRole::Target.name()).unwrap_or(0),
                 points_stat: definition.armor.points_stat,
                 tier_stat: definition.armor.tiers.as_ref().map(|tiers| tiers.stat),
                 mode_words: definition
@@ -723,7 +707,11 @@ impl QvmCombatBindings {
             let bindings = bindings.clone();
             Rc::new(move |call| bindings.enter_damage(call))
         };
-        bindings.inner.borrow_mut().removals.push(module.bind_invocation(damage_entry, hook));
+        bindings
+            .inner
+            .borrow_mut()
+            .removals
+            .push(module.bind_invocation(damage_entry, hook));
         if bindings.inner.borrow().options.source.is_some() {
             let free_entry = bindings.inner.borrow().options.definition.callbacks.free;
             let hook: QvmHookFn = {
@@ -766,7 +754,11 @@ impl QvmCombatBindings {
         ArmorState {
             regular: RegularArmor::Q3 {
                 points: f64::from(
-                    state.stats.get(inner.options.definition.armor.points_stat as usize).copied().unwrap_or(0),
+                    state
+                        .stats
+                        .get(inner.options.definition.armor.points_stat as usize)
+                        .copied()
+                        .unwrap_or(0),
                 ),
                 protection: Self::protection_fraction_of(inner, &state.stats, tiers.as_ref()),
             },
@@ -872,16 +864,16 @@ impl QvmCombatBindings {
         let Some(slot) = (inner.options.slot)(actor) else {
             return Ok(None);
         };
-        let flags = inner.options.data.entity_bytes(slot)?.get_i32(inner.options.definition.reactions.flags)?;
+        let flags = inner
+            .options
+            .data
+            .entity_bytes(slot)?
+            .get_i32(inner.options.definition.reactions.flags)?;
         Ok(Some(flags & inner.options.definition.state.flags.notarget != 0))
     }
 
     /// Project legacy saves through the original source armor.
-    pub fn normalize_legacy_armor(
-        &self,
-        actor: &ActorId,
-        saved: &ArmorState,
-    ) -> Result<ArmorState, GuestError> {
+    pub fn normalize_legacy_armor(&self, actor: &ActorId, saved: &ArmorState) -> Result<ArmorState, GuestError> {
         let inner = self.inner.borrow();
         let slot = (inner.options.slot)(actor);
         if slot.is_none() || slot.is_some_and(|slot| slot >= 1022) {
@@ -905,11 +897,7 @@ impl QvmCombatBindings {
     }
 
     /// Lower armor values to source words.
-    pub fn armor_write(
-        &self,
-        slot: usize,
-        armor: &ArmorState,
-    ) -> Result<Option<ArmorWrite>, GuestError> {
+    pub fn armor_write(&self, slot: usize, armor: &ArmorState) -> Result<Option<ArmorWrite>, GuestError> {
         let inner = self.inner.borrow();
         if !matches!(armor.powered, PoweredProtection::None)
             || !matches!(armor.regular, RegularArmor::None | RegularArmor::Q3 { .. })
@@ -928,7 +916,9 @@ impl QvmCombatBindings {
             _ => 0.0,
         };
         if points.fract() != 0.0 || points < 0.0 || points > f64::from(i32::MAX) {
-            return Err(GuestError::invalid("Source armor points require a nonnegative signed integer"));
+            return Err(GuestError::invalid(
+                "Source armor points require a nonnegative signed integer",
+            ));
         }
         let points = points as i32;
         if matches!(armor.regular, RegularArmor::None) {
@@ -944,7 +934,10 @@ impl QvmCombatBindings {
             return Ok(Some(ArmorWrite { points, tier: None }));
         }
         let selected = tiers.as_ref().and_then(|tiers| {
-            tiers.values.iter().find(|entry| f64::from(entry.protection) == requested)
+            tiers
+                .values
+                .iter()
+                .find(|entry| f64::from(entry.protection) == requested)
         });
         match (tiers.as_ref(), selected) {
             (Some(tiers), Some(selected)) => Ok(Some(ArmorWrite {
@@ -1032,7 +1025,11 @@ impl QvmCombatBindings {
     fn read_binding(&self, actor: &ActorId, slot: usize) -> Result<CombatBindingRead, GuestError> {
         let inner = self.inner.borrow();
         let state = inner.source.state(slot)?;
-        let flags = inner.options.data.entity_bytes(slot)?.get_i32(inner.options.definition.reactions.flags)?;
+        let flags = inner
+            .options
+            .data
+            .entity_bytes(slot)?
+            .get_i32(inner.options.definition.reactions.flags)?;
         let team = if slot < inner.options.data.num_clients() {
             let players = inner.options.data.public_player_bytes(slot)?;
             Some(players.get_i32(248 + inner.options.definition.state.team.persistent_stat as usize * 4)?)
@@ -1078,14 +1075,12 @@ impl QvmCombatBindings {
     fn write_health(&self, slot: usize, health: i32) {
         let inner = self.inner.borrow();
         let _ = inner.options.data.entity_bytes(slot).and_then(|view| {
-            view.set_i32(inner.options.definition.fields.health, health).map(|()| view)
+            view.set_i32(inner.options.definition.fields.health, health)
+                .map(|()| view)
         });
         if slot < inner.options.data.num_clients() {
             let _ = inner.options.data.public_player_bytes(slot).and_then(|players| {
-                players.set_i32(
-                    184 + inner.options.definition.state.health_stat as usize * 4,
-                    health,
-                )
+                players.set_i32(184 + inner.options.definition.state.health_stat as usize * 4, health)
             });
         }
     }
@@ -1113,7 +1108,7 @@ impl QvmCombatBindings {
         let bindings = self.clone();
         let actor = actor.clone();
         ArmorStage {
-            bind: Rc::new(move |intercept| {
+            bind: Rc::new(move |intercept| -> Result<Box<dyn FnOnce()>, GuestError> {
                 let mut inner = bindings.inner.borrow_mut();
                 if !Self::live_of(&inner, &actor) {
                     return Err(GuestError::invalid("Source armor owner is retired"));
@@ -1184,9 +1179,27 @@ impl QvmCombatBindings {
         let (target_role, amount_role, flags_role, no_armor_mask) = {
             let inner = self.inner.borrow();
             (
-                inner.options.definition.armor.call.role(QvmArmorRole::Target.name()).unwrap_or(0),
-                inner.options.definition.armor.call.role(QvmArmorRole::Amount.name()).unwrap_or(0),
-                inner.options.definition.armor.call.role(QvmArmorRole::Flags.name()).unwrap_or(0),
+                inner
+                    .options
+                    .definition
+                    .armor
+                    .call
+                    .role(QvmArmorRole::Target.name())
+                    .unwrap_or(0),
+                inner
+                    .options
+                    .definition
+                    .armor
+                    .call
+                    .role(QvmArmorRole::Amount.name())
+                    .unwrap_or(0),
+                inner
+                    .options
+                    .definition
+                    .armor
+                    .call
+                    .role(QvmArmorRole::Flags.name())
+                    .unwrap_or(0),
                 inner.options.definition.damage_flags.no_armor,
             )
         };
@@ -1206,7 +1219,14 @@ impl QvmCombatBindings {
             self.scopes.cancel(&frame, call);
             return 0;
         }
-        let context = self.inner.borrow().contexts.iter().rev().find(|context| context.pointer == frame.pointer()).map(|context| context.request.clone());
+        let context = self
+            .inner
+            .borrow()
+            .contexts
+            .iter()
+            .rev()
+            .find(|context| context.pointer == frame.pointer())
+            .map(|context| context.request.clone());
         let Some(request) = context else {
             return call.proceed();
         };
@@ -1236,7 +1256,11 @@ impl QvmCombatBindings {
                     },
                 };
                 let saved = power(&hit, &mut || 0);
-                if valid(saved, amount) { saved as i32 } else { 0 }
+                if valid(saved, amount) {
+                    saved as i32
+                } else {
+                    0
+                }
             }
         };
         if !self.live(&actor) {
@@ -1268,7 +1292,11 @@ impl QvmCombatBindings {
                         },
                     };
                     let saved = regular(&hit, &mut || call.proceed());
-                    if valid(saved, remaining) { saved as i32 } else { call.proceed() }
+                    if valid(saved, remaining) {
+                        saved as i32
+                    } else {
+                        call.proceed()
+                    }
                 }
             }
         };
@@ -1295,7 +1323,7 @@ impl QvmCombatBindings {
         if inner.source.state(slot).ok()?.is_none() {
             return None;
         }
-        source.actor(slot)
+        (source.actor)(slot)
     }
 
     fn enter_damage(&self, call: &mut QvmFunctionCall) -> i32 {
@@ -1369,8 +1397,8 @@ impl QvmCombatBindings {
         };
         let combat = self.inner.borrow().options.combat.clone();
         let bindings = self.clone();
-        combat.apply(&request, &|composed| {
-            combat.run_source_damage(composed, &|observer, effective| {
+        combat.apply(&request, &mut |composed| {
+            combat.run_source_damage(composed, &mut |observer, effective| {
                 bindings.enter_composed(call, &request, observer, effective, flags)
             })
         });
@@ -1417,8 +1445,7 @@ impl QvmCombatBindings {
                 for (index, _) in &saved {
                     let unchanged = (*index == role_index(QvmDamageRole::Direction)
                         && effective.direction == request.direction)
-                        || (*index == role_index(QvmDamageRole::Point)
-                            && effective.point == request.point)
+                        || (*index == role_index(QvmDamageRole::Point) && effective.point == request.point)
                         || (*index == role_index(QvmDamageRole::Attacker)
                             && effective.attack.attacker == request.attack.attacker)
                         || (*index == role_index(QvmDamageRole::Inflictor)
@@ -1426,8 +1453,7 @@ impl QvmCombatBindings {
                     if unchanged {
                         continue;
                     }
-                    if let (Some(slot), Some(word)) = (call.words.get_mut(*index), words.get(*index))
-                    {
+                    if let (Some(slot), Some(word)) = (call.words.get_mut(*index), words.get(*index)) {
                         *slot = *word;
                     }
                 }
@@ -1472,7 +1498,14 @@ impl QvmCombatBindings {
                 }
             }
         }
-        if let Some(after_free) = self.inner.borrow().options.source.clone().and_then(|source| source.after_free) {
+        if let Some(after_free) = self
+            .inner
+            .borrow()
+            .options
+            .source
+            .clone()
+            .and_then(|source| source.after_free)
+        {
             after_free(pointer, call);
         }
         result
@@ -1493,12 +1526,7 @@ impl QvmCombatBindings {
         qvm_canonical_damage_flags(&inner.options.definition.damage_flags, source)
     }
 
-    fn lower(
-        &self,
-        request: &AuthorityDamageRequest,
-        slot: usize,
-        original: i32,
-    ) -> Result<QvmGameDamage, GuestError> {
+    fn lower(&self, request: &AuthorityDamageRequest, slot: usize, original: i32) -> Result<QvmGameDamage, GuestError> {
         let inner = self.inner.borrow();
         let inflictor = request.attack.inflictor.as_ref();
         let source_inflictor = inflictor.and_then(|actor| (inner.options.slot)(actor));
@@ -1510,7 +1538,9 @@ impl QvmCombatBindings {
         );
         let amount = request.amount.trunc();
         if amount < f64::from(i32::MIN) || amount > f64::from(i32::MAX) {
-            return Err(GuestError::invalid("Source damage arguments require signed integer words"));
+            return Err(GuestError::invalid(
+                "Source damage arguments require signed integer words",
+            ));
         }
         let grapple_weapons = [
             "q3:weapon_grapplinghook",
@@ -1518,7 +1548,12 @@ impl QvmCombatBindings {
             "q2:weapon_hook",
             "ctf:grapple",
         ];
-        let method = if request.attack.weapon.as_deref().is_some_and(|weapon| grapple_weapons.contains(&weapon)) {
+        let method = if request
+            .attack
+            .weapon
+            .as_deref()
+            .is_some_and(|weapon| grapple_weapons.contains(&weapon))
+        {
             inner.options.definition.grapple_damage_method
         } else {
             match request.attack.cause {
@@ -1531,7 +1566,11 @@ impl QvmCombatBindings {
         };
         Ok(QvmGameDamage {
             target: slot,
-            attacker: request.attack.attacker.as_ref().and_then(|actor| (inner.options.slot)(actor)),
+            attacker: request
+                .attack
+                .attacker
+                .as_ref()
+                .and_then(|actor| (inner.options.slot)(actor)),
             inflictor: match (source_inflictor, inflictor_body) {
                 (Some(slot), _) => Some(QvmGameInflictor::Entity { slot }),
                 (None, Some(body)) => Some(QvmGameInflictor::Foreign { body }),
@@ -1555,14 +1594,21 @@ impl QvmCombatBindings {
     ) -> SourceDamageResult {
         let pointer = {
             let inner = self.inner.borrow();
-            let role = inner.options.definition.damage_call.role(QvmDamageRole::Target.name()).unwrap_or(0);
+            let role = inner
+                .options
+                .definition
+                .damage_call
+                .role(QvmDamageRole::Target.name())
+                .unwrap_or(0);
             call.argument(role).unwrap_or(0)
         };
         self.inner.borrow_mut().contexts.push(DamageContext {
             pointer,
             request: request.clone(),
         });
-        let outcome = self.scopes.run(call, actor, slot, &request.to_scope_request(), observer, None);
+        let outcome = self
+            .scopes
+            .run(call, actor, slot, &request.to_scope_request(), observer, None);
         self.inner.borrow_mut().contexts.pop();
         outcome.unwrap_or(SourceDamageResult {
             applied_damage: 0,
@@ -1577,7 +1623,7 @@ impl QvmCombatBindings {
         };
         let combat = self.inner.borrow().options.combat.clone();
         let bindings = self.clone();
-        combat.run_source_damage(input, &|observer, request| {
+        combat.run_source_damage(input, &mut |observer, request| {
             let slot = bindings.inner.borrow().options.slot.clone()(&request.target);
             let result = Rc::new(RefCell::new(zeros));
             let Some(slot) = slot else {
@@ -1598,7 +1644,8 @@ impl QvmCombatBindings {
             let _ = source.damage(
                 &lowered,
                 Some(&mut |words: &[i32]| {
-                    let previous = bindings.inner.borrow_mut().incoming.replace(pending.take());
+                    let previous = bindings.inner.borrow_mut().incoming.take();
+                    bindings.inner.borrow_mut().incoming = pending.take();
                     let outcome = module.call(words, entry);
                     let _ = bindings.inner.borrow_mut().incoming.take();
                     bindings.inner.borrow_mut().incoming = previous;
@@ -1630,14 +1677,12 @@ pub struct ArmorTierWrite {
 
 #[cfg(test)]
 mod tests {
+    use super::super::game_combat::{QvmArmorTiers, QvmCombatCallbacks, QvmCombatExtra};
+    use super::super::game_combat_scope::{QvmStoredDamage, SourceDamageObserver};
+    use super::super::game_data::{AbiProfile, QvmImage, QvmInstruction, QvmRole, QvmSharedMemory};
     use super::*;
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
-    use super::super::game_combat::{QvmArmorTiers, QvmCombatCallbacks, QvmCombatExtra};
-    use super::super::game_data::{
-        AbiProfile, QvmImage, QvmInstruction, QvmRole, QvmSharedMemory,
-    };
-    use super::super::game_combat_scope::{QvmStoredDamage, SourceDamageObserver};
 
     struct FixtureObserver {
         stored: Vec<QvmStoredDamage>,
@@ -1674,7 +1719,7 @@ mod tests {
         fn apply(
             &self,
             request: &AuthorityDamageRequest,
-            run: &dyn Fn(&AuthorityDamageRequest) -> SourceDamageResult,
+            run: &mut dyn FnMut(&AuthorityDamageRequest) -> SourceDamageResult,
         ) -> SourceDamageResult {
             run(request)
         }
@@ -1682,7 +1727,7 @@ mod tests {
         fn run_source_damage(
             &self,
             request: &AuthorityDamageRequest,
-            run: &dyn Fn(&SharedDamageObserver, &AuthorityDamageRequest) -> SourceDamageResult,
+            run: &mut dyn FnMut(&SharedDamageObserver, &AuthorityDamageRequest) -> SourceDamageResult,
         ) -> SourceDamageResult {
             let observer: SharedDamageObserver = Rc::new(RefCell::new(FixtureObserver {
                 stored: Vec::new(),
@@ -1742,11 +1787,20 @@ mod tests {
 
     fn damage_call() -> QvmCombatCall {
         QvmCombatCall {
-            roles: ["target", "inflictor", "attacker", "direction", "point", "amount", "flags", "method"]
-                .iter()
-                .enumerate()
-                .map(|(index, role)| ((*role).to_string(), index))
-                .collect(),
+            roles: [
+                "target",
+                "inflictor",
+                "attacker",
+                "direction",
+                "point",
+                "amount",
+                "flags",
+                "method",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(index, role)| ((*role).to_string(), index))
+            .collect(),
             extras: Vec::<QvmCombatExtra>::new(),
         }
     }
@@ -1850,7 +1904,7 @@ mod tests {
         };
         let module = QvmModule::new(artifact.clone(), None, None).unwrap();
         let memory = module.memory();
-        let mut data = QvmGameData::new(memory.clone(), AbiProfile::Modern);
+        let data = QvmGameData::new(memory.clone(), AbiProfile::Modern);
         data.locate(64, 2, 560, 4096, 480).unwrap();
         let owner = IdentityOwner::create("test").unwrap();
         let actor = owner.actor(0, 1);
@@ -1936,8 +1990,6 @@ mod tests {
 
     #[test]
     fn bind_rejects_overlapping_masks() {
-        let Fixture { bindings, .. } = fixture(false);
-        let _ = bindings;
         let mut image = QvmImage::default();
         image.instructions = (0..4)
             .map(|entry| QvmInstruction::word(QvmOpcode::OpEnter, 16, entry * 5))
@@ -1956,7 +2008,7 @@ mod tests {
             image,
         };
         let module = QvmModule::new(artifact.clone(), None, None).unwrap();
-        let mut data = QvmGameData::new(module.memory(), AbiProfile::Modern);
+        let data = QvmGameData::new(module.memory(), AbiProfile::Modern);
         data.locate(64, 2, 560, 4096, 480).unwrap();
         let mut bad = profile(&module_id);
         bad.damage_flags.no_protection = 1;
@@ -2011,7 +2063,10 @@ mod tests {
     #[test]
     fn legacy_armor_projection_validates_saved_values() {
         let Fixture {
-            bindings, memory, actor, ..
+            bindings,
+            memory,
+            actor,
+            ..
         } = fixture(false);
         bindings.admit(&actor).unwrap();
         memory.write_i32(4096 + 184 + 3 * 4, 30).unwrap();
@@ -2041,11 +2096,15 @@ mod tests {
     #[test]
     fn incoming_damage_consumes_and_calls_source_entry() {
         let Fixture {
-            bindings, memory, actor, ..
+            bindings,
+            memory,
+            actor,
+            ..
         } = fixture(false);
         memory.write_i32(64 + 516, 1).unwrap();
         memory.write_i32(64 + 520, 100).unwrap();
         memory.write_i32(64 + 524, 1).unwrap();
+        memory.write_i32(0, 0x1234_5678).unwrap();
         bindings.admit(&actor).unwrap();
         let module = bindings.inner.borrow().options.module.clone();
         let before = module.calls().len();
@@ -2059,7 +2118,7 @@ mod tests {
         assert_eq!(calls[before].words[0], 64);
         assert_eq!(calls[before].words[5], 25);
         assert!(bindings.inner.borrow().incoming.is_none());
-        assert!(memory.read_i32(0).is_ok());
+        assert_eq!(memory.read_i32(0).unwrap(), 0x1234_5678);
     }
 
     #[test]
@@ -2114,8 +2173,7 @@ mod tests {
                 &request.to_scope_request(),
                 &observer,
                 Some(&|call| {
-                    let mut armor_call =
-                        QvmFunctionCall::entered(3, vec![64, 40, 0], memory_hook.clone());
+                    let mut armor_call = QvmFunctionCall::entered(3, vec![64, 40, 0], memory_hook.clone());
                     let total = bindings_hook.check_armor(&mut armor_call);
                     *saved_hook.borrow_mut() = total;
                     assert_eq!(armor_call.words[1], 40);

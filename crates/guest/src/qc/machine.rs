@@ -24,6 +24,18 @@ use crate::error::GuestError;
 /// A builtin implementation: synchronous, may reenter this same machine.
 pub type QcBuiltin = Rc<dyn Fn(&mut QcMachine) -> Result<(), GuestError>>;
 
+/// Per-statement tracer (runs only while `trace_enabled`).
+pub type QcTraceHook = Rc<dyn Fn(&QcMachine)>;
+
+/// Guest-call observer.
+pub type QcObserveCallHook = Rc<dyn Fn(&QcCallSite)>;
+
+/// Entity-store observer.
+pub type QcObserveStoreHook = Rc<dyn Fn(&QcEntityStoreObservation)>;
+
+/// Entity-access validator (reads and writes).
+pub type QcValidateAccessHook = Rc<dyn Fn(i32, usize, u8, QcAccessKind) -> Result<(), GuestError>>;
+
 /// Numbered (`-firstStatement`) and named (`ex_*`) builtin bindings.
 #[derive(Clone, Default)]
 pub struct QcBuiltinRegistry {
@@ -162,17 +174,17 @@ pub struct QcMachineOptions {
     /// Local-word limit across live frames.
     pub local_stack_words: usize,
     /// Per-statement tracer (runs only while `trace_enabled`).
-    pub trace: Option<Rc<dyn Fn(&QcMachine)>>,
+    pub trace: Option<QcTraceHook>,
     /// Call observer (runs before argument staging is restored).
-    pub observe_call: Option<Rc<dyn Fn(&QcCallSite)>>,
+    pub observe_call: Option<QcObserveCallHook>,
     /// Function boundary over admitted functions.
     pub function_boundary: Option<Rc<dyn QcFunctionBoundary>>,
     /// Inline boundary over admitted regions.
     pub inline_boundary: Option<Rc<dyn QcInlineBoundary>>,
     /// Entity-store observer.
-    pub observe_entity_store: Option<Rc<dyn Fn(&QcEntityStoreObservation)>>,
+    pub observe_entity_store: Option<QcObserveStoreHook>,
     /// Entity-access validator (reads and writes).
-    pub validate_entity_access: Option<Rc<dyn Fn(i32, usize, u8, QcAccessKind) -> Result<(), GuestError>>>,
+    pub validate_entity_access: Option<QcValidateAccessHook>,
 }
 
 impl QcMachineOptions {
@@ -275,12 +287,12 @@ pub struct QcMachine {
     profiling: Vec<u32>,
     builtins: QcBuiltinRegistry,
     server_active: Rc<dyn Fn() -> bool>,
-    trace: Option<Rc<dyn Fn(&QcMachine)>>,
-    observe_call: Option<Rc<dyn Fn(&QcCallSite)>>,
+    trace: Option<QcTraceHook>,
+    observe_call: Option<QcObserveCallHook>,
     function_boundary: Option<Rc<dyn QcFunctionBoundary>>,
     inline_boundary: Option<Rc<dyn QcInlineBoundary>>,
-    observe_entity_store: Option<Rc<dyn Fn(&QcEntityStoreObservation)>>,
-    validate_entity_access: Option<Rc<dyn Fn(i32, usize, u8, QcAccessKind) -> Result<(), GuestError>>>,
+    observe_entity_store: Option<QcObserveStoreHook>,
+    validate_entity_access: Option<QcValidateAccessHook>,
     frames: Vec<Frame>,
     statement_limit: usize,
     stack_limit: usize,
@@ -1134,8 +1146,11 @@ impl QcMachine {
                     let (ax, ay, az) = self.global_triple(a)?;
                     let (bx, by, bz) = self.global_triple(b)?;
                     let dot = numeric.add(
-                        numeric.add(numeric.mul(ax, bx), numeric.mul(ay, by)),
-                        numeric.mul(az, bz),
+                        numeric.add(
+                            numeric.mul(f64::from(ax), f64::from(bx)),
+                            numeric.mul(f64::from(ay), f64::from(by)),
+                        ),
+                        numeric.mul(f64::from(az), f64::from(bz)),
                     );
                     self.set_global_float(c, dot as f32)?;
                 }
@@ -1641,7 +1656,7 @@ mod tests {
             (0i32, 0i32, 0i32, 0i32, 1i32, 6i32, 0i32),
             (fn1_first, 31i32, 0i32, 0i32, 1i32, 6i32, 2i32),
         ];
-        let header_len = 56i32;
+        let header_len = 60i32;
         let mut blobs: Vec<Vec<u8>> = Vec::new();
         let mut statement_blob = Vec::new();
         for (op, a, b, c) in statements {

@@ -7,8 +7,7 @@
 use qa_core::numeric::native_atof;
 
 use super::mod_provider::{
-    ModCallbackValue, ModConsoleArgType, ModConsoleCommand, ModConsoleGlobal, ModConsoleValue, ModSourceCall,
-    ModSourceGlobal,
+    ModCallbackValue, ModConsoleArgType, ModConsoleCommand, ModConsoleValue, ModSourceCall, ModSourceGlobal,
 };
 use crate::error::GuestError;
 
@@ -58,6 +57,8 @@ pub fn qc_console_call(
 mod tests {
     use super::*;
     use qa_core::math::vec3;
+
+    use super::super::mod_provider::ModConsoleGlobal;
 
     fn command() -> ModConsoleCommand {
         ModConsoleCommand {

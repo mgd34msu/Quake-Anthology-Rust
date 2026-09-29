@@ -26,7 +26,7 @@ pub struct QcWords {
 impl QcWords {
     /// Wrap `bytes`; the length must be a whole number of words.
     pub fn new(bytes: Vec<u8>) -> Result<Self, GuestError> {
-        if bytes.len() % 4 != 0 {
+        if !bytes.len().is_multiple_of(4) {
             return Err(GuestError::invalid("QC storage must contain whole words"));
         }
         Ok(Self { bytes })
@@ -64,23 +64,18 @@ impl QcWords {
     }
 
     fn check(&self, word: usize, count: usize) -> Result<usize, GuestError> {
-        let end = word.checked_add(count).ok_or_else(|| {
+        let fault = || {
             GuestError::memory_fault(
                 "word-range",
-                word as u64 * 4,
-                count * 4,
+                (word as u64).saturating_mul(4),
+                count.saturating_mul(4),
                 "read",
                 format!("word {word} outside {}-word storage", self.len_words()),
             )
-        })?;
+        };
+        let end = word.checked_add(count).ok_or_else(fault)?;
         if end > self.len_words() {
-            return Err(GuestError::memory_fault(
-                "word-range",
-                word as u64 * 4,
-                count * 4,
-                "read",
-                format!("word {word} outside {}-word storage", self.len_words()),
-            ));
+            return Err(fault());
         }
         Ok(word * 4)
     }
@@ -178,7 +173,7 @@ impl QcWords {
                 .ok_or_else(|| {
                     GuestError::memory_fault(
                         "word-range",
-                        source_word as u64 * 4,
+                        (source_word as u64).saturating_mul(4),
                         4,
                         "read",
                         "entity word outside variable storage",
@@ -219,8 +214,8 @@ impl QcEntityMemory {
             || count < 1
             || count > capacity
             || layout.stride_bytes == 0
-            || layout.stride_bytes % 4 != 0
-            || layout.variables_offset_bytes % 4 != 0
+            || !layout.stride_bytes.is_multiple_of(4)
+            || !layout.variables_offset_bytes.is_multiple_of(4)
             || layout.field_words == 0
             || layout.variables_offset_bytes + layout.field_words * 4 > layout.stride_bytes
             || (capacity as u128) * (layout.stride_bytes as u128) > 0x7fff_ffff
@@ -276,7 +271,7 @@ impl QcEntityMemory {
 
     /// Slot addressed by a byte reference.
     pub fn slot(&self, reference: i32) -> Result<u32, GuestError> {
-        if reference < 0 || reference as usize % self.layout.stride_bytes != 0 {
+        if reference < 0 || !(reference as usize).is_multiple_of(self.layout.stride_bytes) {
             return Err(self.entity_error(format!("invalid entity reference {reference}")));
         }
         let slot = reference as usize / self.layout.stride_bytes;
@@ -335,7 +330,7 @@ impl QcEntityMemory {
         let at = word.checked_mul(4).filter(|at| at + 4 <= fields.len()).ok_or_else(|| {
             GuestError::memory_fault(
                 "word-range",
-                word as u64 * 4,
+                (word as u64).saturating_mul(4),
                 4,
                 "read",
                 "entity word outside variable storage",
@@ -364,7 +359,7 @@ impl QcEntityMemory {
             .ok_or_else(|| {
                 GuestError::memory_fault(
                     "word-range",
-                    word as u64 * 4,
+                    (word as u64).saturating_mul(4),
                     4,
                     "write",
                     "entity word outside variable storage",
@@ -578,7 +573,7 @@ impl QcStrings {
     pub fn snapshot(&self) -> Result<Vec<u8>, GuestError> {
         let mut writer =
             BinaryWriter::new(16 + self.used + self.engines.iter().map(|entry| 12 + entry.name.len()).sum::<usize>());
-        let mut write = |writer: &mut BinaryWriter| -> Result<(), qa_core::binary::BinaryError> {
+        let write = |writer: &mut BinaryWriter| -> Result<(), qa_core::binary::BinaryError> {
             writer.u32(QC_STRINGS_MAGIC)?;
             writer.u32(u32::from(self.quakeworld))?;
             writer.u32(self.used as u32)?;

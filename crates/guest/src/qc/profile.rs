@@ -883,7 +883,7 @@ mod tests {
             vec![0u8; 28 * 4],
         ];
         let counts = [1i32, 1, 1, 1, strings.len() as i32, 28];
-        let mut offset = 56i32;
+        let mut offset = 60i32;
         push_i32(&mut image, 6);
         push_i32(&mut image, 5927);
         for (blob, count) in blobs.iter().zip(counts) {

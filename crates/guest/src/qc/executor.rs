@@ -308,7 +308,7 @@ pub fn capture_qc_checkpoint(
     }
     let format = saved.state.format.as_bytes();
     let mut writer = BinaryWriter::new(24 + snapshot.profiling.len() * 4 + format.len() + saved.state.bytes.len());
-    let mut write = |writer: &mut BinaryWriter| -> Result<(), qa_core::binary::BinaryError> {
+    let write = |writer: &mut BinaryWriter| -> Result<(), qa_core::binary::BinaryError> {
         writer.u32(QC_HOST_CHECKPOINT_MAGIC)?;
         writer.u32(u32::from(snapshot.trace_enabled))?;
         writer.u32(snapshot.profiling.len() as u32)?;
@@ -760,7 +760,8 @@ mod tests {
             other: None,
         };
         assert!(executor.invoke(&local, &[GuestCallValue::Float64(1.0)]).is_err());
-        assert!(executor.invoke(&local, &[GuestCallValue::Int32(1); 9]).is_err());
+        let nine = vec![GuestCallValue::Int32(1); 9];
+        assert!(executor.invoke(&local, &nine).is_err());
     }
 
     #[test]

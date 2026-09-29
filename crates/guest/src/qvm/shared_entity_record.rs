@@ -193,9 +193,7 @@ pub fn read_qvm_shared_entity(bytes: &[u8], profile: AbiProfile) -> Result<QvmSh
     let s = read_source_qvm_entity_state(bytes, profile)?;
     let sv_flags = read_i32(bytes, at(SV_FLAGS));
     let model = if read_i32(bytes, at(BMODEL)) != 0 {
-        QvmEntityCollisionModel::Inline {
-            index: s.modelindex,
-        }
+        QvmEntityCollisionModel::Inline { index: s.modelindex }
     } else if sv_flags & SVF_CAPSULE != 0 {
         QvmEntityCollisionModel::Capsule
     } else {
@@ -304,10 +302,7 @@ mod tests {
         let entity = sample();
         let mut bytes = vec![0u8; QVM_SHARED_ENTITY_BYTES];
         write_qvm_shared_entity(&mut bytes, &entity, AbiProfile::Modern).unwrap();
-        assert_eq!(
-            read_qvm_shared_entity(&bytes, AbiProfile::Modern).unwrap(),
-            entity
-        );
+        assert_eq!(read_qvm_shared_entity(&bytes, AbiProfile::Modern).unwrap(), entity);
         assert_eq!(i32::from_le_bytes(bytes[512..516].try_into().unwrap()), 11);
     }
 

@@ -9,9 +9,7 @@
 //! byte profile); save state uses the [`super::game_data`] profile-value
 //! mirror of `SaveReader` instead of the persistence crate.
 
-use super::game_data::{
-    CallKind, ProfileReader, ProfileValue, QvmGameImport, QvmHostCall, QvmRole,
-};
+use super::game_data::{CallKind, ProfileReader, ProfileValue, QvmGameImport, QvmHostCall, QvmRole};
 use crate::error::GuestError;
 
 /// Maximum token storage in bytes.
@@ -122,11 +120,7 @@ impl CommonParseState {
     }
 
     /// Parse the next token (`COM_Parse` semantics).
-    pub fn parse(
-        &mut self,
-        cursor: &mut CommonParseCursor,
-        allow_line_breaks: bool,
-    ) -> Result<String, GuestError> {
+    pub fn parse(&mut self, cursor: &mut CommonParseCursor, allow_line_breaks: bool) -> Result<String, GuestError> {
         let Some(mut data) = cursor.current_offset else {
             self.token.clear();
             return Ok(String::new());
@@ -292,23 +286,19 @@ pub fn qvm_entity_token_syscall(
     call: &QvmHostCall,
     services: &mut dyn QvmEntityTokenServices,
 ) -> Result<Option<i32>, GuestError> {
-    if call.kind != CallKind::Engine
-        || call.role != QvmRole::Qagame
-        || call.code != QvmGameImport::G_GET_ENTITY_TOKEN
-    {
+    if call.kind != CallKind::Engine || call.role != QvmRole::Qagame || call.code != QvmGameImport::G_GET_ENTITY_TOKEN {
         return Ok(None);
     }
     let (token, ended) = services.entity_token();
-    call.guest
-        .write_string(call.int(1)?, &token, call.int(2)? as usize)?;
+    call.guest.write_string(call.int(1)?, &token, call.int(2)? as usize)?;
     Ok(Some(i32::from(!ended || !token.is_empty())))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn stream(text: &str) -> QvmEntityTokens {
         QvmEntityTokens::new(text.as_bytes().to_vec())
@@ -379,7 +369,9 @@ mod tests {
                 (String::new(), true)
             }
         }
-        let mut counting = Counting { calls: Rc::clone(&calls) };
+        let mut counting = Counting {
+            calls: Rc::clone(&calls),
+        };
         assert_eq!(qvm_entity_token_syscall(&other, &mut counting).unwrap(), None);
         assert_eq!(*calls.borrow(), 0);
     }

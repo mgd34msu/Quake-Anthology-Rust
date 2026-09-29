@@ -66,13 +66,7 @@ pub struct ScriptTokenInput {
 impl ScriptTokenInput {
     /// Build from a lexer token kind.
     #[must_use]
-    pub fn record(
-        kind: ScriptTokenKind,
-        text: &str,
-        subtype: i32,
-        integer_value: i64,
-        float_value: f32,
-    ) -> Self {
+    pub fn record(kind: ScriptTokenKind, text: &str, subtype: i32, integer_value: i64, float_value: f32) -> Self {
         Self {
             text: text.to_string(),
             token_type: kind.token_type(),

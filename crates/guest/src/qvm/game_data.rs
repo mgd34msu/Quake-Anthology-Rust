@@ -248,17 +248,9 @@ impl QvmOpcode {
     #[must_use]
     pub const fn operand_width(self) -> u8 {
         match self {
-            Self::OpEnter
-            | Self::OpLeave
-            | Self::OpConst
-            | Self::OpLocal
-            | Self::OpBlockCopy => 4,
+            Self::OpEnter | Self::OpLeave | Self::OpConst | Self::OpLocal | Self::OpBlockCopy => 4,
             Self::OpArg => 1,
-            _ if (self as u8) >= (Self::OpEq as u8)
-                && (self as u8) <= (Self::OpGef as u8) =>
-            {
-                4
-            }
+            _ if (self as u8) >= (Self::OpEq as u8) && (self as u8) <= (Self::OpGef as u8) => 4,
             _ => 0,
         }
     }
@@ -355,9 +347,7 @@ impl QvmImage {
     #[must_use]
     pub fn function_end(&self, entry: usize) -> usize {
         let mut end = entry + 1;
-        while end < self.instructions.len()
-            && self.instructions[end].opcode != QvmOpcode::OpEnter
-        {
+        while end < self.instructions.len() && self.instructions[end].opcode != QvmOpcode::OpEnter {
             end += 1;
         }
         end
@@ -645,9 +635,9 @@ impl QvmSharedMemory {
 
     fn check_span(&self, offset: usize, len: usize) -> Result<usize, GuestError> {
         self.assert_live()?;
-        let end = offset.checked_add(len).ok_or_else(|| {
-            GuestError::invalid("QVM memory span exceeds the allocation")
-        })?;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| GuestError::invalid("QVM memory span exceeds the allocation"))?;
         if end > self.len() {
             return Err(GuestError::invalid("QVM memory span exceeds the allocation"));
         }
@@ -662,7 +652,7 @@ impl QvmSharedMemory {
         }
         let offset = word as usize;
         if offset >= self.len() {
-            return None
+            return None;
         } else {
             Some(offset)
         }
@@ -785,12 +775,7 @@ impl QvmSharedMemory {
     }
 
     /// Copy bytes within the allocation.
-    pub fn copy_bytes(
-        &self,
-        destination: usize,
-        source: usize,
-        len: usize,
-    ) -> Result<(), GuestError> {
+    pub fn copy_bytes(&self, destination: usize, source: usize, len: usize) -> Result<(), GuestError> {
         let bytes = self.read_bytes(source, len)?;
         self.write_bytes(destination, &bytes)
     }
@@ -817,12 +802,7 @@ impl QvmSharedMemory {
 
     /// Write `text` with `qStrncpyz` semantics: at most `capacity - 1` bytes
     /// plus a NUL terminator.
-    pub fn write_string(
-        &self,
-        word: i32,
-        text: &str,
-        capacity: usize,
-    ) -> Result<(), GuestError> {
+    pub fn write_string(&self, word: i32, text: &str, capacity: usize) -> Result<(), GuestError> {
         let Some(offset) = self.pointer(word) else {
             return Err(GuestError::invalid("QVM string write through a null pointer"));
         };
@@ -839,23 +819,13 @@ impl QvmSharedMemory {
     }
 
     /// Bounded string write: capacity must fit the allocation.
-    pub fn write_bounded_string(
-        &self,
-        word: i32,
-        text: &str,
-        capacity: usize,
-    ) -> Result<(), GuestError> {
+    pub fn write_bounded_string(&self, word: i32, text: &str, capacity: usize) -> Result<(), GuestError> {
         self.write_string(word, text, capacity)
     }
 
     /// Mutate a span, then publish one committed write to intersecting
     /// observers (publish callbacks first, commit callbacks second).
-    pub fn mutate(
-        &self,
-        offset: usize,
-        len: usize,
-        apply: impl FnOnce(&mut [u8]),
-    ) -> Result<(), GuestError> {
+    pub fn mutate(&self, offset: usize, len: usize, apply: impl FnOnce(&mut [u8])) -> Result<(), GuestError> {
         let end = self.check_span(offset, len)?;
         let before = self.inner.borrow().bytes[offset..end].to_vec();
         {
@@ -878,12 +848,7 @@ impl QvmSharedMemory {
             .borrow()
             .watches
             .iter()
-            .filter(|watch| {
-                watch
-                    .ranges
-                    .iter()
-                    .any(|range| event.touches(range))
-            })
+            .filter(|watch| watch.ranges.iter().any(|range| event.touches(range)))
             .map(|watch| (Rc::clone(&watch.publish), watch.commit.clone()))
             .collect();
         for (publish, _) in &callbacks {
@@ -945,11 +910,7 @@ impl QvmMemoryWindow {
     /// Open a window over `memory`.
     pub fn new(memory: QvmSharedMemory, offset: usize, len: usize) -> Result<Self, GuestError> {
         memory.check_span(offset, len)?;
-        Ok(Self {
-            memory,
-            offset,
-            len,
-        })
+        Ok(Self { memory, offset, len })
     }
 
     /// Whether the window is empty.
@@ -959,9 +920,9 @@ impl QvmMemoryWindow {
     }
 
     fn at(&self, offset: usize, len: usize) -> Result<usize, GuestError> {
-        let end = offset.checked_add(len).ok_or_else(|| {
-            GuestError::invalid("QVM window access exceeds its extent")
-        })?;
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| GuestError::invalid("QVM window access exceeds its extent"))?;
         if end > self.len {
             return Err(GuestError::invalid("QVM window access exceeds its extent"));
         }
@@ -1046,9 +1007,10 @@ pub struct QvmHostCall {
 impl QvmHostCall {
     /// Read word `index` as `i32`.
     pub fn int(&self, index: usize) -> Result<i32, GuestError> {
-        self.words.get(index).copied().ok_or_else(|| {
-            GuestError::invalid("QVM host call word is outside its frame")
-        })
+        self.words
+            .get(index)
+            .copied()
+            .ok_or_else(|| GuestError::invalid("QVM host call word is outside its frame"))
     }
 
     /// Read word `index` as `f32`.
@@ -1058,7 +1020,7 @@ impl QvmHostCall {
 }
 
 /// Host trap handler: `None` declines, `Some` supplies the trap result.
-pub type QvmHostFn = Rc<dyn Fn(&QvmHostCall) -> Option<i32>>;
+pub type QvmHostFn = Rc<dyn Fn(&QvmHostCall) -> Result<Option<i32>, GuestError>>;
 
 /// Cancellation scope token (mirror of `QvmCancellationScope`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1076,9 +1038,10 @@ pub struct QvmRegionControl {
 impl QvmRegionControl {
     /// Read a region local word.
     pub fn local_word(&self, offset: usize) -> Result<i32, GuestError> {
-        self.locals.get(&offset).copied().ok_or_else(|| {
-            GuestError::invalid("QVM region local is not initialized")
-        })
+        self.locals
+            .get(&offset)
+            .copied()
+            .ok_or_else(|| GuestError::invalid("QVM region local is not initialized"))
     }
 
     /// Cancel the enclosing invocation (records the request; the caller
@@ -1161,6 +1124,8 @@ pub struct QvmFunctionCall {
     pub caller_instruction: Option<usize>,
     /// Live argument words.
     pub words: Vec<i32>,
+    /// Allocation-relative stack address of word zero.
+    pub stack_address: usize,
     /// Full guest allocation.
     pub memory: QvmSharedMemory,
     /// Guest allocation handle (same allocation as `memory`).
@@ -1191,6 +1156,7 @@ impl QvmFunctionCall {
             instruction_index,
             caller_instruction: None,
             words,
+            stack_address: 0,
             memory: memory.clone(),
             guest: memory,
             proceed_value: 0,
@@ -1206,9 +1172,10 @@ impl QvmFunctionCall {
 
     /// Read argument word `index`.
     pub fn argument(&self, index: usize) -> Result<i32, GuestError> {
-        self.words.get(index).copied().ok_or_else(|| {
-            GuestError::invalid("QVM call argument is outside its frame")
-        })
+        self.words
+            .get(index)
+            .copied()
+            .ok_or_else(|| GuestError::invalid("QVM call argument is outside its frame"))
     }
 
     /// Run the original body once; returns the canned fixture value.
@@ -1274,9 +1241,10 @@ pub struct QvmFunctionObservation {
 impl QvmFunctionObservation {
     /// Read argument word `index`.
     pub fn argument(&self, index: usize) -> Result<i32, GuestError> {
-        self.words.get(index).copied().ok_or_else(|| {
-            GuestError::invalid("QVM observation argument is outside its frame")
-        })
+        self.words
+            .get(index)
+            .copied()
+            .ok_or_else(|| GuestError::invalid("QVM observation argument is outside its frame"))
     }
 
     /// Cancel the observed invocation.
@@ -1421,11 +1389,7 @@ impl QvmModule {
         let len = artifact.image.allocated_data_length.max(64);
         let memory = QvmSharedMemory::new(len)?;
         if !artifact.image.initialized_data.is_empty() {
-            let count = artifact
-                .image
-                .initialized_data
-                .len()
-                .min(memory.len());
+            let count = artifact.image.initialized_data.len().min(memory.len());
             memory.write_bytes(0, &artifact.image.initialized_data[..count])?;
         }
         Ok(Self {
@@ -1530,11 +1494,7 @@ impl QvmModule {
         let mut inner = self.inner.borrow_mut();
         let id = inner.next_hook;
         inner.next_hook += 1;
-        inner.observers.push(QvmHookEntryObserver {
-            id,
-            entry,
-            observer,
-        });
+        inner.observers.push(QvmHookEntryObserver { id, entry, observer });
         id
     }
 
@@ -1627,6 +1587,11 @@ impl QvmModule {
         self.inner.borrow_mut().default_return = value;
     }
 
+    /// Install or clear the host trap handler.
+    pub fn set_host(&self, host: Option<QvmHostFn>) {
+        self.inner.borrow_mut().host = host;
+    }
+
     /// Invoke a source callback under a live call (fixture-canned).
     pub fn invoke_source_callback(&self, callback: usize, arguments: &[i32]) -> i32 {
         self.inner
@@ -1664,13 +1629,7 @@ impl QvmModule {
     }
 
     /// Evaluate a counter operation (fixture-canned).
-    pub fn evaluate_counter(
-        &self,
-        _arguments: &[i32],
-        _owner: usize,
-        _address: usize,
-        _functions: &[usize],
-    ) -> i32 {
+    pub fn evaluate_counter(&self, _arguments: &[i32], _owner: usize, _address: usize, _functions: &[usize]) -> i32 {
         self.inner.borrow().counter_value
     }
 
@@ -1699,12 +1658,18 @@ impl QvmModule {
     /// Dispatch a host trap through the module host.
     pub fn dispatch_host(&self, call: &QvmHostCall) -> Result<i32, GuestError> {
         let host = self.inner.borrow().host.clone();
-        match host.and_then(|host| host(call)) {
-            Some(value) => Ok(value),
+        match host {
             None => Err(GuestError::callback(format!(
                 "Unbound {:?} QVM syscall {}",
                 call.role, call.code
             ))),
+            Some(host) => match host(call)? {
+                Some(value) => Ok(value),
+                None => Err(GuestError::callback(format!(
+                    "Unbound {:?} QVM syscall {}",
+                    call.role, call.code
+                ))),
+            },
         }
     }
 
@@ -1743,7 +1708,9 @@ impl QvmModule {
         self.assert_live()?;
         let memory = self.memory();
         if checkpoint.data.len() != memory.len() {
-            return Err(GuestError::BadSave("QVM checkpoint differs from the allocation".to_string()));
+            return Err(GuestError::BadSave(
+                "QVM checkpoint differs from the allocation".to_string(),
+            ));
         }
         memory.write_bytes(0, &checkpoint.data)?;
         if let Some(state) = self.inner.borrow().host_state.clone() {
@@ -1782,10 +1749,7 @@ impl ProfileValue {
     #[must_use]
     pub fn record_get(&self, name: &str) -> Option<&ProfileValue> {
         match self {
-            Self::Record(fields) => fields
-                .iter()
-                .find(|(key, _)| key == name)
-                .map(|(_, value)| value),
+            Self::Record(fields) => fields.iter().find(|(key, _)| key == name).map(|(_, value)| value),
             _ => None,
         }
     }
@@ -1891,11 +1855,7 @@ impl<'a> ProfileReader<'a> {
     pub fn integer(&self, minimum: i64) -> Result<i64, GuestError> {
         match self.value {
             ProfileValue::Int(value) if *value >= minimum => Ok(*value),
-            ProfileValue::Float(value)
-                if value.fract() == 0.0 && *value >= minimum as f64 =>
-            {
-                Ok(*value as i64)
-            }
+            ProfileValue::Float(value) if value.fract() == 0.0 && *value >= minimum as f64 => Ok(*value as i64),
             _ => self.fail("expected an integer in range"),
         }
     }
@@ -1941,10 +1901,7 @@ impl<'a> ProfileReader<'a> {
     }
 
     /// Read an array with an item reader.
-    pub fn list<T>(
-        &self,
-        read: impl Fn(&ProfileReader<'a>) -> Result<T, GuestError>,
-    ) -> Result<Vec<T>, GuestError> {
+    pub fn list<T>(&self, read: impl Fn(&ProfileReader<'a>) -> Result<T, GuestError>) -> Result<Vec<T>, GuestError> {
         match self.value {
             ProfileValue::Array(items) => items
                 .iter()
@@ -2027,10 +1984,8 @@ pub fn qualify_qvm_region(
             QvmOpcode::OpPop | QvmOpcode::OpArg | QvmOpcode::OpJump => (1, -1),
             QvmOpcode::OpStore1 | QvmOpcode::OpStore2 | QvmOpcode::OpStore4 | QvmOpcode::OpBlockCopy => (2, -2),
             _ if opcode.is_branch() => (2, -2),
-            _ if (opcode as u8) >= (QvmOpcode::OpAdd as u8)
-                && (opcode as u8) <= (QvmOpcode::OpRshu as u8)
-                || (opcode as u8) >= (QvmOpcode::OpAddf as u8)
-                    && (opcode as u8) <= (QvmOpcode::OpMulf as u8) =>
+            _ if (opcode as u8) >= (QvmOpcode::OpAdd as u8) && (opcode as u8) <= (QvmOpcode::OpRshu as u8)
+                || (opcode as u8) >= (QvmOpcode::OpAddf as u8) && (opcode as u8) <= (QvmOpcode::OpMulf as u8) =>
             {
                 if opcode == QvmOpcode::OpBcom {
                     (1, 0)
@@ -2058,7 +2013,9 @@ pub fn qualify_qvm_region(
         let mut targets = vec![pc + 1];
         if opcode == QvmOpcode::OpJump {
             targets.clear();
-            let target = instructions.get(pc.wrapping_sub(1)).ok_or_else(|| fail("indirect jump"))?;
+            let target = instructions
+                .get(pc.wrapping_sub(1))
+                .ok_or_else(|| fail("indirect jump"))?;
             if target.opcode != QvmOpcode::OpConst || target.operand < 0 {
                 return Err(fail("indirect jump"));
             }
@@ -2114,10 +2071,7 @@ enum QvmRegionOperand {
 }
 
 fn operand_is_local(operand: &QvmRegionOperand) -> bool {
-    matches!(
-        operand,
-        QvmRegionOperand::Local(_) | QvmRegionOperand::LocalDerived
-    )
+    matches!(operand, QvmRegionOperand::Local(_) | QvmRegionOperand::LocalDerived)
 }
 
 /// Check scalar live-ins of a standalone source frame; returns the owning
@@ -2159,17 +2113,17 @@ pub fn qualify_qvm_region_evaluation(
                     .map(|(index, value)| {
                         let before = previous.stack.get(index);
                         match (&value, before) {
-                            (
-                                QvmRegionOperand::Local(offset),
-                                Some(QvmRegionOperand::Local(previous)),
-                            ) if offset == previous => value,
-                            (
-                                QvmRegionOperand::Constant(value),
-                                Some(QvmRegionOperand::Constant(previous)),
-                            ) if value == previous => value,
-                            _ if operand_is_local(&value)
-                                || before.is_some_and(operand_is_local) =>
+                            (QvmRegionOperand::Local(offset), Some(QvmRegionOperand::Local(previous)))
+                                if offset == previous =>
                             {
+                                value
+                            }
+                            (QvmRegionOperand::Constant(current), Some(QvmRegionOperand::Constant(previous)))
+                                if current == previous =>
+                            {
+                                QvmRegionOperand::Constant(*current)
+                            }
+                            _ if operand_is_local(&value) || before.is_some_and(operand_is_local) => {
                                 QvmRegionOperand::LocalDerived
                             }
                             _ => QvmRegionOperand::Unknown,
@@ -2209,7 +2163,9 @@ pub fn qualify_qvm_region_evaluation(
             }
             continue;
         }
-        let instruction = instructions.get(pc).ok_or_else(|| fail("missing instruction".to_string()))?;
+        let instruction = instructions
+            .get(pc)
+            .ok_or_else(|| fail("missing instruction".to_string()))?;
         let mut stack = path.stack;
         let mut initialized = path.initialized;
         let opcode = instruction.opcode;
@@ -2219,7 +2175,9 @@ pub fn qualify_qvm_region_evaluation(
                 QvmOpcode::OpCall | QvmOpcode::OpArg | QvmOpcode::OpBlockCopy | QvmOpcode::OpBreak
             )
         {
-            return Err(fail("read-only region cannot call, publish arguments, copy memory or break".to_string()));
+            return Err(fail(
+                "read-only region cannot call, publish arguments, copy memory or break".to_string(),
+            ));
         }
         let pop = |stack: &mut Vec<QvmRegionOperand>| -> Result<QvmRegionOperand, GuestError> {
             stack.pop().ok_or_else(|| fail("invalid operand proof".to_string()))
@@ -2252,19 +2210,18 @@ pub fn qualify_qvm_region_evaluation(
                 }
             }
             stack.push(QvmRegionOperand::Unknown);
-        } else if (opcode as u8) >= (QvmOpcode::OpStore1 as u8)
-            && (opcode as u8) <= (QvmOpcode::OpStore4 as u8)
-        {
+        } else if (opcode as u8) >= (QvmOpcode::OpStore1 as u8) && (opcode as u8) <= (QvmOpcode::OpStore4 as u8) {
             if operand_is_local(&pop(&mut stack)?) {
                 return Err(fail("stores an escaping source local pointer".to_string()));
             }
             let address = pop(&mut stack)?;
             if access == QvmRegionAccess::ReadOnly {
                 match address {
-                    QvmRegionOperand::Local(offset)
-                        if offset >= 8 && offset + 4 <= frame => {}
+                    QvmRegionOperand::Local(offset) if offset >= 8 && offset + 4 <= frame => {}
                     _ => {
-                        return Err(fail("read-only region cannot write outside its own local frame".to_string()));
+                        return Err(fail(
+                            "read-only region cannot write outside its own local frame".to_string(),
+                        ));
                     }
                 }
             }
@@ -2330,9 +2287,9 @@ pub fn qualify_qvm_region_evaluation(
                     if opcode == QvmOpcode::OpAdd || opcode == QvmOpcode::OpSub =>
                 {
                     let next = if opcode == QvmOpcode::OpAdd {
-                        *offset as i32 + value
+                        offset as i32 + value
                     } else {
-                        *offset as i32 - value
+                        offset as i32 - value
                     };
                     stack.push(QvmRegionOperand::Local(next.max(0) as usize));
                 }
@@ -2388,18 +2345,20 @@ pub fn qualify_qvm_body_calls<P: Clone>(
     if player.map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
         || mesh.map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
     {
-        return Err(GuestError::invalid("Source body scope requires original function entries"));
+        return Err(GuestError::invalid(
+            "Source body scope requires original function entries",
+        ));
     }
     let end = image.function_end(player_entry);
     let valid = |index: usize| {
         index > player_entry
             && index < end
-            && image.instruction(index).is_some_and(|instruction| {
-                instruction.opcode == QvmOpcode::OpCall
-            })
-            && image.instruction(index - 1).is_some_and(|target| {
-                target.opcode == QvmOpcode::OpConst && target.operand as usize == mesh_entry
-            })
+            && image
+                .instruction(index)
+                .is_some_and(|instruction| instruction.opcode == QvmOpcode::OpCall)
+            && image
+                .instruction(index - 1)
+                .is_some_and(|target| target.opcode == QvmOpcode::OpConst && target.operand as usize == mesh_entry)
     };
     let mut calls: Vec<(usize, P)> = Vec::new();
     match parts {
@@ -2422,15 +2381,16 @@ pub fn qualify_qvm_body_calls<P: Clone>(
         }
     }
     if calls.is_empty() {
-        return Err(GuestError::invalid("Source body scope has no qualified original mesh calls"));
+        return Err(GuestError::invalid(
+            "Source body scope has no qualified original mesh calls",
+        ));
     }
     calls.sort_by_key(|(site, _)| *site);
     Ok(calls)
 }
 
 fn check_i32(value: i64, what: &str) -> Result<i32, GuestError> {
-    i32::try_from(value)
-        .map_err(|_| GuestError::invalid(format!("{what} requires a signed 32-bit word")))
+    i32::try_from(value).map_err(|_| GuestError::invalid(format!("{what} requires a signed 32-bit word")))
 }
 
 /// Located game-data state: table words plus strides.
@@ -2448,20 +2408,26 @@ pub struct QvmGameDataState {
     pub client_stride: usize,
 }
 
-/// Located entity/client tables (port of `SV_LocateGameData` and friends).
-///
-/// Windows borrow the shared allocation; relocation changes table
-/// descriptors, not previously opened windows.
-#[derive(Debug, Clone)]
-pub struct QvmGameData {
-    memory: QvmSharedMemory,
-    abi_profile: AbiProfile,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QvmGameTables {
     entities: Option<usize>,
     entity_stride: usize,
     count: usize,
     clients: Option<usize>,
     client_stride: usize,
     client_count: usize,
+}
+
+/// Located entity/client tables (port of `SV_LocateGameData` and friends).
+///
+/// Windows borrow the shared allocation; relocation changes table
+/// descriptors, not previously opened windows. Clones share one descriptor
+/// block, so hosts, combat, and providers observe the same tables.
+#[derive(Debug, Clone)]
+pub struct QvmGameData {
+    memory: QvmSharedMemory,
+    abi_profile: AbiProfile,
+    tables: Rc<RefCell<QvmGameTables>>,
 }
 
 impl QvmGameData {
@@ -2471,12 +2437,14 @@ impl QvmGameData {
         Self {
             memory,
             abi_profile,
-            entities: None,
-            entity_stride: 0,
-            count: 0,
-            clients: None,
-            client_stride: 0,
-            client_count: 64,
+            tables: Rc::new(RefCell::new(QvmGameTables {
+                entities: None,
+                entity_stride: 0,
+                count: 0,
+                clients: None,
+                client_stride: 0,
+                client_count: 64,
+            })),
         }
     }
 
@@ -2487,98 +2455,92 @@ impl QvmGameData {
     }
 
     /// Narrow the native client capacity (1..=64).
-    pub fn set_client_count(&mut self, count: usize) -> Result<(), GuestError> {
+    pub fn set_client_count(&self, count: usize) -> Result<(), GuestError> {
         if !(1..=64).contains(&count) {
             return Err(GuestError::invalid("Q3 client count must be within 1..64"));
         }
-        self.client_count = count;
+        self.tables.borrow_mut().client_count = count;
         Ok(())
     }
 
     /// Configured client capacity.
     #[must_use]
     pub fn num_clients(&self) -> usize {
-        self.client_count
+        self.tables.borrow().client_count
     }
 
     /// Located entity count.
     #[must_use]
     pub fn num_entities(&self) -> usize {
-        self.count
+        self.tables.borrow().count
     }
 
     /// Entity stride in bytes.
     #[must_use]
     pub fn entity_stride_bytes(&self) -> usize {
-        self.entity_stride
+        self.tables.borrow().entity_stride
     }
 
     /// Client stride in bytes.
     #[must_use]
     pub fn client_stride_bytes(&self) -> usize {
-        self.client_stride
+        self.tables.borrow().client_stride
     }
 
     /// Full entity record window.
     pub fn entity_bytes(&self, number: usize) -> Result<QvmMemoryWindow, GuestError> {
         let offset = self.entity_offset(number)?;
-        QvmMemoryWindow::new(self.memory.clone(), offset, self.entity_stride)
+        QvmMemoryWindow::new(self.memory.clone(), offset, self.entity_stride_bytes())
     }
 
     /// Full client record window.
     pub fn client_bytes(&self, number: usize) -> Result<QvmMemoryWindow, GuestError> {
         let offset = self.client_offset(number)?;
-        QvmMemoryWindow::new(self.memory.clone(), offset, self.client_stride)
+        QvmMemoryWindow::new(self.memory.clone(), offset, self.client_stride_bytes())
     }
 
     /// Public shared-entity prefix window.
     pub fn public_entity_bytes(&self, number: usize) -> Result<QvmMemoryWindow, GuestError> {
         let offset = self.entity_offset(number)?;
-        QvmMemoryWindow::new(
-            self.memory.clone(),
-            offset,
-            qvm_shared_entity_bytes(self.abi_profile),
-        )
+        QvmMemoryWindow::new(self.memory.clone(), offset, qvm_shared_entity_bytes(self.abi_profile))
     }
 
     /// Public player-state prefix window.
     pub fn public_player_bytes(&self, number: usize) -> Result<QvmMemoryWindow, GuestError> {
         let offset = self.client_offset(number)?;
-        QvmMemoryWindow::new(
-            self.memory.clone(),
-            offset,
-            qvm_player_state_bytes(self.abi_profile),
-        )
+        QvmMemoryWindow::new(self.memory.clone(), offset, qvm_player_state_bytes(self.abi_profile))
     }
 
     /// Clear located tables.
-    pub fn clear(&mut self) {
-        self.entities = None;
-        self.clients = None;
-        self.entity_stride = 0;
-        self.client_stride = 0;
-        self.count = 0;
+    pub fn clear(&self) {
+        let mut tables = self.tables.borrow_mut();
+        tables.entities = None;
+        tables.clients = None;
+        tables.entity_stride = 0;
+        tables.client_stride = 0;
+        tables.count = 0;
     }
 
     /// Capture table descriptors.
     #[must_use]
     pub fn checkpoint(&self) -> QvmGameDataState {
+        let tables = self.tables.borrow();
         let word = |offset: Option<usize>| match offset {
             None => 0,
             Some(0) => self.memory.len(),
             Some(offset) => offset,
         };
         QvmGameDataState {
-            entities_word: word(self.entities),
-            num_entities: self.count,
-            entity_stride: self.entity_stride,
-            clients_word: word(self.clients),
-            client_stride: self.client_stride,
+            entities_word: word(tables.entities),
+            num_entities: tables.count,
+            entity_stride: tables.entity_stride,
+            clients_word: word(tables.clients),
+            client_stride: tables.client_stride,
         }
     }
 
     /// Restore table descriptors.
-    pub fn restore(&mut self, state: &QvmGameDataState) -> Result<(), GuestError> {
+    pub fn restore(&self, state: &QvmGameDataState) -> Result<(), GuestError> {
         if state.entities_word == 0
             && state.clients_word == 0
             && state.num_entities == 0
@@ -2599,7 +2561,7 @@ impl QvmGameData {
 
     /// Locate entity/client tables (port of `SV_LocateGameData`).
     pub fn locate(
-        &mut self,
+        &self,
         entities_word: i32,
         num_entities: usize,
         entity_stride: usize,
@@ -2634,11 +2596,12 @@ impl QvmGameData {
             num_entities.saturating_mul(entity_stride),
         )?;
         QvmMemoryWindow::new(self.memory.clone(), clients, client_stride)?;
-        self.entities = Some(entities);
-        self.entity_stride = entity_stride;
-        self.count = num_entities;
-        self.clients = Some(clients);
-        self.client_stride = client_stride;
+        let mut tables = self.tables.borrow_mut();
+        tables.entities = Some(entities);
+        tables.entity_stride = entity_stride;
+        tables.count = num_entities;
+        tables.clients = Some(clients);
+        tables.client_stride = client_stride;
         Ok(())
     }
 
@@ -2660,27 +2623,25 @@ impl QvmGameData {
     }
 
     fn entity_offset(&self, number: usize) -> Result<usize, GuestError> {
-        if number >= self.count {
+        let tables = self.tables.borrow();
+        if number >= tables.count {
             return Err(GuestError::invalid("Entity slot is outside located game data"));
         }
-        self.indexed(self.entities, self.entity_stride, number)
+        self.indexed(tables.entities, tables.entity_stride, number)
     }
 
     fn client_offset(&self, number: usize) -> Result<usize, GuestError> {
-        if number >= self.client_count {
+        let tables = self.tables.borrow();
+        if number >= tables.client_count {
             return Err(GuestError::invalid("Client slot is outside configured game data"));
         }
-        let offset = self.indexed(self.clients, self.client_stride, number)?;
-        QvmMemoryWindow::new(self.memory.clone(), offset, self.client_stride)?;
+        let stride = tables.client_stride;
+        let offset = self.indexed(tables.clients, stride, number)?;
+        QvmMemoryWindow::new(self.memory.clone(), offset, stride)?;
         Ok(offset)
     }
 
-    fn indexed(
-        &self,
-        base: Option<usize>,
-        stride: usize,
-        number: usize,
-    ) -> Result<usize, GuestError> {
+    fn indexed(&self, base: Option<usize>, stride: usize, number: usize) -> Result<usize, GuestError> {
         let Some(base) = base else {
             return Err(GuestError::invalid("Game-data table has a null source pointer"));
         };
@@ -2712,16 +2673,18 @@ impl QvmGameData {
 
     /// Resolve a guest word to an entity slot (port of `SV_NumForGentity`).
     pub fn number_from_pointer(&self, word: i32) -> Result<usize, GuestError> {
-        let (Some(offset), Some(base)) = (self.offset(word)?, self.entities) else {
+        let tables = self.tables.borrow();
+        let (Some(offset), Some(base)) = (self.offset(word)?, tables.entities) else {
             return Err(GuestError::invalid("Entity numbering requires nonnull source pointers"));
         };
-        if self.entity_stride == 0 {
+        if tables.entity_stride == 0 {
             return Err(GuestError::invalid("Entity numbering requires a nonzero source stride"));
         }
-        if offset < base || (offset - base) % self.entity_stride != 0 {
+        if offset < base || (offset - base) % tables.entity_stride != 0 {
             return Err(GuestError::invalid("Entity pointer is not a record boundary"));
         }
-        let number = (offset - base) / self.entity_stride;
+        let number = (offset - base) / tables.entity_stride;
+        drop(tables);
         self.entity_offset(number)?;
         Ok(number)
     }
@@ -2734,11 +2697,7 @@ impl QvmGameData {
     }
 
     /// Write the player state of client `number`, preserving private slots.
-    pub fn write_player_state(
-        &self,
-        number: usize,
-        state: &QvmPlayerState,
-    ) -> Result<(), GuestError> {
+    pub fn write_player_state(&self, number: usize, state: &QvmPlayerState) -> Result<(), GuestError> {
         let window = self.public_player_bytes(number)?;
         let mut bytes = window.copy_bytes(0, window.len)?;
         super::player_record::write_qvm_player_state_preserve(&mut bytes, state, self.abi_profile)?;
@@ -2766,7 +2725,7 @@ mod tests {
 
     fn located() -> QvmGameData {
         let memory = QvmSharedMemory::new(4096).unwrap();
-        let mut data = QvmGameData::new(memory, AbiProfile::Modern);
+        let data = QvmGameData::new(memory, AbiProfile::Modern);
         data.locate(64, 4, 560, 2304, 480).unwrap();
         data
     }
@@ -2774,7 +2733,7 @@ mod tests {
     #[test]
     fn locate_validates_strides_and_alignment() {
         let memory = QvmSharedMemory::new(4096).unwrap();
-        let mut data = QvmGameData::new(memory, AbiProfile::Modern);
+        let data = QvmGameData::new(memory, AbiProfile::Modern);
         assert!(data.locate(64, 4, 500, 2304, 480).is_err());
         assert!(data.locate(64, 4, 560, 2304, 400).is_err());
         assert!(data.locate(65, 4, 560, 2304, 480).is_err());
@@ -2793,7 +2752,7 @@ mod tests {
 
     #[test]
     fn checkpoint_restore_round_trips() {
-        let mut data = located();
+        let data = located();
         let saved = data.checkpoint();
         assert_eq!(saved.entities_word, 64);
         assert_eq!(saved.num_entities, 4);

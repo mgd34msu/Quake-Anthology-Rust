@@ -23,8 +23,8 @@ use qa_world::combat::{ArmorState, RegularArmor};
 
 use super::game_combat::{QvmDamageCause, QvmReactionCall};
 use super::game_data::{
-    QvmCommittedWrite, QvmFunctionCall, QvmFunctionObservation, QvmGameData, QvmModule,
-    QvmObserveFn, QvmWatchCallback, QvmWriteRange,
+    QvmCommittedWrite, QvmFunctionCall, QvmFunctionObservation, QvmGameData, QvmModule, QvmObserveFn, QvmWatchCallback,
+    QvmWriteRange,
 };
 use crate::error::GuestError;
 
@@ -350,9 +350,7 @@ impl QvmDamageScopes {
                 let frames = frames.borrow();
                 for entry in frames.iter().rev() {
                     if entry.actor() == actor {
-                        return Rc::ptr_eq(&entry.inner, &frame.inner)
-                            && !frame.is_reacting()
-                            && live(&actor);
+                        return Rc::ptr_eq(&entry.inner, &frame.inner) && !frame.is_reacting() && live(&actor);
                     }
                 }
                 false
@@ -384,10 +382,7 @@ impl QvmDamageScopes {
                             let before = *health_cell.borrow();
                             *health_cell.borrow_mut() = next;
                             if report && before != next {
-                                changes.push((
-                                    health_range.byte_offset,
-                                    StoredChange::Health { before, after: next },
-                                ));
+                                changes.push((health_range.byte_offset, StoredChange::Health { before, after: next }));
                             }
                         }
                     }
@@ -419,15 +414,11 @@ impl QvmDamageScopes {
                     for (_, change) in changes {
                         match change {
                             StoredChange::Health { before, after } => {
-                                observer
-                                    .borrow_mut()
-                                    .stored(QvmStoredDamage::Health { before, after });
+                                observer.borrow_mut().stored(QvmStoredDamage::Health { before, after });
                                 result_cell.borrow_mut().applied_damage += before - after;
                             }
                             StoredChange::Armor { before, after } => {
-                                observer
-                                    .borrow_mut()
-                                    .stored(QvmStoredDamage::Armor { before, after });
+                                observer.borrow_mut().stored(QvmStoredDamage::Armor { before, after });
                             }
                             StoredChange::Velocity { before, after } => {
                                 observer.borrow_mut().stored(QvmStoredDamage::SourceVelocity {
@@ -446,9 +437,7 @@ impl QvmDamageScopes {
 
             for reaction in [QvmDamageReaction::Pain, QvmDamageReaction::Death] {
                 let (offset, roles) = match reaction {
-                    QvmDamageReaction::Pain => {
-                        (options.reactions.pain, options.reactions.pain_call.clone())
-                    }
+                    QvmDamageReaction::Pain => (options.reactions.pain, options.reactions.pain_call.clone()),
                     _ => (options.reactions.die, options.reactions.die_call.clone()),
                 };
                 let state = Rc::new(RefCell::new(ReactionState { entry: 0, hook: None }));
@@ -477,9 +466,8 @@ impl QvmDamageScopes {
                         if next == 0 {
                             return Ok(());
                         }
-                        let entry = usize::try_from(next).map_err(|_| {
-                            GuestError::invalid("QVM reaction entry is not a function index")
-                        })?;
+                        let entry = usize::try_from(next)
+                            .map_err(|_| GuestError::invalid("QVM reaction entry is not a function index"))?;
                         let entity = entity.clone();
                         let frame = frame.clone();
                         let is_current = Rc::clone(&is_current);
@@ -552,11 +540,11 @@ impl QvmDamageScopes {
 
 #[cfg(test)]
 mod tests {
+    use super::super::game_data::{AbiProfile, QvmArtifact, QvmImage, QvmRole, QvmSharedMemory};
     use super::*;
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
     use qa_world::combat::PoweredProtection;
-    use super::super::game_data::{AbiProfile, QvmArtifact, QvmImage, QvmRole, QvmSharedMemory};
 
     struct FixtureObserver {
         stored: Vec<QvmStoredDamage>,
@@ -594,7 +582,7 @@ mod tests {
         };
         let module = QvmModule::new(artifact, None, None).unwrap();
         let memory = module.memory();
-        let mut data = QvmGameData::new(memory.clone(), AbiProfile::Modern);
+        let data = QvmGameData::new(memory.clone(), AbiProfile::Modern);
         data.locate(64, 2, 560, 4096, 480).unwrap();
         let owner = IdentityOwner::create("test").unwrap();
         let actor = owner.actor(0, 1);
@@ -663,10 +651,7 @@ mod tests {
         let stored = &observer.borrow().stored;
         assert_eq!(stored.len(), 2);
         assert!(matches!(stored[0], QvmStoredDamage::SourceVelocity { .. }));
-        assert!(matches!(
-            stored[1],
-            QvmStoredDamage::Health { before: 100, after: 75 }
-        ));
+        assert!(matches!(stored[1], QvmStoredDamage::Health { before: 100, after: 75 }));
         assert!(scopes.current(64).is_none());
     }
 

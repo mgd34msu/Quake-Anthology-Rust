@@ -18,7 +18,7 @@ use qa_core::time::SourceTime;
 
 use super::mod_provider::{
     GrantAccepts, ItemId, ModCallbackDeclaration, ModCallbackInput, ModPickupRule, ModRuntimeValue, ModSourceCall,
-    PickupFields, PickupOperation, PickupWrite, ProtectionChannel, QcModInputs,
+    PickupOperation, PickupWrite, ProtectionChannel, QcModInputs,
 };
 use crate::error::GuestError;
 
@@ -413,6 +413,8 @@ mod tests {
     use super::*;
     use qa_core::identity::IdentityOwner;
     use qa_core::time::SourceTime;
+
+    use super::super::mod_provider::PickupFields;
 
     struct FakeServices {
         owner: IdentityOwner,

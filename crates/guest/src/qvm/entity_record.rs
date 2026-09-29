@@ -33,9 +33,9 @@ pub fn qvm_entity_state_bytes(profile: AbiProfile) -> usize {
 
 /// Legacy event translation table (donor `legacy-presentation.ts`).
 const LEGACY_EVENTS: &[i32] = &[
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-    25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
-    48, 49, 50, 51, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 66, 68,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 48, 49, 50, 51, 53, 54, 55, 56, 57, 58, 59, 60, 61,
+    62, 63, 64, 66, 68,
 ];
 
 /// Translate an event number between the legacy and modern ABIs.
@@ -46,7 +46,10 @@ pub fn qvm_event(value: i32, profile: AbiProfile, reverse: bool) -> Result<i32, 
     let event = value & 255;
     let flags = value & !255;
     let mapped = if reverse {
-        LEGACY_EVENTS.iter().position(|known| *known == event).map(|index| index as i32)
+        LEGACY_EVENTS
+            .iter()
+            .position(|known| *known == event)
+            .map(|index| index as i32)
     } else {
         LEGACY_EVENTS.get(event as usize).copied()
     };
@@ -59,11 +62,7 @@ pub fn qvm_event(value: i32, profile: AbiProfile, reverse: bool) -> Result<i32, 
 }
 
 /// Translate an entity type between the legacy and modern ABIs.
-pub fn qvm_entity_type(
-    value: i32,
-    profile: AbiProfile,
-    reverse: bool,
-) -> Result<i32, GuestError> {
+pub fn qvm_entity_type(value: i32, profile: AbiProfile, reverse: bool) -> Result<i32, GuestError> {
     if profile.is_modern() {
         return Ok(value);
     }
@@ -330,10 +329,7 @@ pub fn read_qvm_entity_state(bytes: &[u8], profile: AbiProfile) -> Result<QvmEnt
 }
 
 /// Read source entity state without presentation translation.
-pub fn read_source_qvm_entity_state(
-    bytes: &[u8],
-    profile: AbiProfile,
-) -> Result<QvmEntityState, GuestError> {
+pub fn read_source_qvm_entity_state(bytes: &[u8], profile: AbiProfile) -> Result<QvmEntityState, GuestError> {
     check_record(bytes, profile)?;
     Ok(QvmEntityState {
         number: read_i32(bytes, 0),
@@ -363,20 +359,12 @@ pub fn read_source_qvm_entity_state(
         weapon: read_i32(bytes, 192),
         legs_anim: read_i32(bytes, 196),
         torso_anim: read_i32(bytes, 200),
-        generic1: if profile.is_modern() {
-            read_i32(bytes, 204)
-        } else {
-            0
-        },
+        generic1: if profile.is_modern() { read_i32(bytes, 204) } else { 0 },
     })
 }
 
 /// Write a translated entity state: modern tags convert to source values.
-pub fn write_qvm_entity_state(
-    bytes: &mut [u8],
-    state: &QvmEntityState,
-    profile: AbiProfile,
-) -> Result<(), GuestError> {
+pub fn write_qvm_entity_state(bytes: &mut [u8], state: &QvmEntityState, profile: AbiProfile) -> Result<(), GuestError> {
     let translated = QvmEntityState {
         e_type: qvm_entity_type(state.e_type, profile, true)?,
         event: qvm_event(state.event, profile, true)?,

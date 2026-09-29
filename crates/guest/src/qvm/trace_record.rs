@@ -128,17 +128,9 @@ pub fn read_qvm_trace(bytes: &[u8]) -> Result<QvmTraceRecord, GuestError> {
         all_solid: read_i32(bytes, 0) != 0,
         start_solid: read_i32(bytes, 4) != 0,
         fraction: read_f32(bytes, 8),
-        end: vec3(
-            read_f32(bytes, 12),
-            read_f32(bytes, 16),
-            read_f32(bytes, 20),
-        ),
+        end: vec3(read_f32(bytes, 12), read_f32(bytes, 16), read_f32(bytes, 20)),
         plane: QvmTracePlane {
-            normal: vec3(
-                read_f32(bytes, 24),
-                read_f32(bytes, 28),
-                read_f32(bytes, 32),
-            ),
+            normal: vec3(read_f32(bytes, 24), read_f32(bytes, 28), read_f32(bytes, 32)),
             distance: read_f32(bytes, 36),
             plane_type: bytes[40],
             signbits: bytes[41],

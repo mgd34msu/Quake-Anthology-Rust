@@ -65,13 +65,11 @@ pub struct GuestAddress {
 /// Public `sharedEntity_t` layout of a 32-bit QVM entity record.
 #[must_use]
 pub fn qvm_shared_entity_layout() -> GuestLayout {
-    let field = |name: &str, byte_offset: usize, storage: GuestFieldStorage, count: usize| {
-        GuestFieldLayout {
-            name: name.to_string(),
-            byte_offset,
-            storage,
-            count,
-        }
+    let field = |name: &str, byte_offset: usize, storage: GuestFieldStorage, count: usize| GuestFieldLayout {
+        name: name.to_string(),
+        byte_offset,
+        storage,
+        count,
     };
     GuestLayout {
         id: "q3:shared-entity-qvm32".to_string(),
@@ -249,7 +247,7 @@ mod tests {
 
     fn located() -> (ModuleIdentity, QvmGameData, QvmSharedMemory) {
         let memory = QvmSharedMemory::new(8192).unwrap();
-        let mut data = QvmGameData::new(memory.clone(), super::super::game_data::AbiProfile::Modern);
+        let data = QvmGameData::new(memory.clone(), super::super::game_data::AbiProfile::Modern);
         data.locate(64, 2, 560, 4096, 480).unwrap();
         let module = ModuleIdentity {
             id: "q3:qagame".to_string(),
@@ -287,13 +285,8 @@ mod tests {
     #[test]
     fn pointers_require_record_boundaries() {
         let (module, data, memory) = located();
-        let table =
-            qvm_raw_entity_table(&module, &data, &memory, 4, Rc::new(|_, _| None)).unwrap();
-        let view = table
-            .from_pointer(GuestAddress {
-                byte_offset: 64 + 560,
-            })
-            .unwrap();
+        let table = qvm_raw_entity_table(&module, &data, &memory, 4, Rc::new(|_, _| None)).unwrap();
+        let view = table.from_pointer(GuestAddress { byte_offset: 64 + 560 }).unwrap();
         assert_eq!(view.slot, 1);
         assert!(table.from_pointer(GuestAddress { byte_offset: 65 }).is_err());
         assert!(table.from_pointer(GuestAddress { byte_offset: 8 }).is_err());

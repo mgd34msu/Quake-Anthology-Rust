@@ -17,8 +17,7 @@ use qa_core::math::Vec3;
 use qa_world::body::BodyState;
 
 use super::game_data::{
-    AbiProfile, ModuleIdentity, QvmArtifact, QvmGameData, QvmModule, QvmOpcode,
-    QVM_MAX_PRIVATE_ARGUMENT_WORDS,
+    AbiProfile, ModuleIdentity, QvmArtifact, QvmGameData, QvmModule, QvmOpcode, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
 use super::shared_entity_record::qvm_shared_entity_bytes;
 use crate::error::GuestError;
@@ -315,14 +314,9 @@ pub fn qvm_canonical_damage_flags(masks: &QvmDamageFlags, flags: i32) -> i32 {
 
 /// Lower a damage request to source flags, preserving undeclared bits.
 #[must_use]
-pub fn qvm_source_damage_flags(
-    masks: &QvmDamageFlags,
-    request: &QvmDamageRequest,
-    original: i32,
-) -> i32 {
+pub fn qvm_source_damage_flags(masks: &QvmDamageFlags, request: &QvmDamageRequest, original: i32) -> i32 {
     let flags = qvm_attack_damage_flags(request);
-    let declared =
-        masks.radius | masks.no_armor | masks.no_knockback | masks.no_protection | masks.no_team_protection;
+    let declared = masks.radius | masks.no_armor | masks.no_knockback | masks.no_protection | masks.no_team_protection;
     (original & !declared)
         | if request.radius_delivery { masks.radius } else { 0 }
         | if flags.no_armor { masks.no_armor } else { 0 }
@@ -370,17 +364,14 @@ pub fn validate_qvm_combat_call(call: &QvmCombatCall, data_bytes: usize) -> Resu
                 }
             }
             QvmCombatExtraKind::Address => {
-                if extra.value.fract() != 0.0 || extra.value < 0.0 || extra.value >= data_bytes as f64
-                {
+                if extra.value.fract() != 0.0 || extra.value < 0.0 || extra.value >= data_bytes as f64 {
                     return Err(GuestError::invalid(
                         "Source combat extra address is outside its artifact data",
                     ));
                 }
             }
             QvmCombatExtraKind::Int32 => {
-                if extra.value.fract() != 0.0
-                    || extra.value < f64::from(i32::MIN)
-                    || extra.value > f64::from(i32::MAX)
+                if extra.value.fract() != 0.0 || extra.value < f64::from(i32::MIN) || extra.value > f64::from(i32::MAX)
                 {
                     return Err(GuestError::invalid(
                         "Source combat extra requires a signed integer word",
@@ -489,7 +480,7 @@ pub enum QvmGameInflictor {
     /// Located entity slot.
     Entity {
         /// Entity slot.
-    pub slot: usize,
+        slot: usize,
     },
     /// Foreign body materialized as a temp entity.
     Foreign {
@@ -553,7 +544,9 @@ impl QvmGameCombat {
             || artifact.module.id != actual.id
             || definition.abi_profile != module.abi_profile()
         {
-            return Err(GuestError::invalid("Source combat declaration differs from its executable"));
+            return Err(GuestError::invalid(
+                "Source combat declaration differs from its executable",
+            ));
         }
         for offset in [
             definition.fields.inuse,
@@ -575,9 +568,11 @@ impl QvmGameCombat {
             definition.callbacks.free,
             definition.callbacks.damage,
         ] {
-            if artifact.image.instruction(entry).map_or(true, |instruction| {
-                instruction.opcode != QvmOpcode::OpEnter
-            }) {
+            if artifact
+                .image
+                .instruction(entry)
+                .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+            {
                 return Err(GuestError::invalid("Source combat callback is not a function entry"));
             }
         }
@@ -619,10 +614,7 @@ impl QvmGameCombat {
         &self.definition
     }
 
-    fn entity_window(
-        &self,
-        slot: usize,
-    ) -> Result<super::game_data::QvmMemoryWindow, GuestError> {
+    fn entity_window(&self, slot: usize) -> Result<super::game_data::QvmMemoryWindow, GuestError> {
         if self.data.entity_stride_bytes() != self.definition.entity_stride
             || self.data.client_stride_bytes() != self.definition.client_stride
         {
@@ -637,9 +629,7 @@ impl QvmGameCombat {
         self.entity_window(slot)?;
         let base = self.data.checkpoint().entities_word;
         let offset = base + slot.saturating_mul(self.definition.entity_stride);
-        i32::try_from(offset).map_err(|_| {
-            GuestError::invalid("Source combat pointer exceeds signed words")
-        })
+        i32::try_from(offset).map_err(|_| GuestError::invalid("Source combat pointer exceeds signed words"))
     }
 
     /// Read located entity health (`None` when not in use).
@@ -670,9 +660,8 @@ impl QvmGameCombat {
         }
         let memory = self.module.memory();
         let saved = memory.read_bytes(self.scratch, 24)?;
-        let write_vector = |offset: usize, value: &Vec3| -> Result<(), GuestError> {
-            memory.write_vec3(self.scratch + offset, value)
-        };
+        let write_vector =
+            |offset: usize, value: &Vec3| -> Result<(), GuestError> { memory.write_vec3(self.scratch + offset, value) };
         write_vector(0, &hit.direction)?;
         write_vector(12, &hit.point)?;
         let mut temporary: Option<i32> = None;
@@ -690,7 +679,8 @@ impl QvmGameCombat {
                     QvmGameInflictor::Foreign { body } => {
                         let pointer = self.module.call(&[], self.definition.callbacks.allocate)?;
                         let slot = self.data.number_from_pointer(pointer)?;
-                        self.entity_window(slot)?.set_i32(self.definition.fields.parent, attacker)?;
+                        self.entity_window(slot)?
+                            .set_i32(self.definition.fields.parent, attacker)?;
                         let entity = self.data.entity_bytes(slot)?;
                         let shift = if self.definition.abi_profile.is_modern() { 0 } else { 12 };
                         entity.set_vec3(436 - shift, &body.bounds.min)?;
@@ -706,9 +696,8 @@ impl QvmGameCombat {
             }
             let roles = &self.definition.damage_call;
             let mut words = self.arguments.clone();
-            let scratch = i32::try_from(self.scratch).map_err(|_| {
-                GuestError::invalid("Source combat scratch exceeds signed words")
-            })?;
+            let scratch = i32::try_from(self.scratch)
+                .map_err(|_| GuestError::invalid("Source combat scratch exceeds signed words"))?;
             words[roles.role("target")?] = self.pointer(hit.target)?;
             words[roles.role("inflictor")?] = inflictor;
             words[roles.role("attacker")?] = attacker;
@@ -732,17 +721,26 @@ impl QvmGameCombat {
 
 #[cfg(test)]
 mod tests {
+    use super::super::game_data::{QvmArtifact, QvmImage, QvmInstruction, QvmRole};
     use super::*;
     use qa_core::math::vec3;
-    use super::super::game_data::{QvmArtifact, QvmImage, QvmInstruction, QvmRole};
 
     fn damage_call() -> QvmCombatCall {
         QvmCombatCall {
-            roles: ["target", "inflictor", "attacker", "direction", "point", "amount", "flags", "method"]
-                .iter()
-                .enumerate()
-                .map(|(index, role)| ((*role).to_string(), index))
-                .collect(),
+            roles: [
+                "target",
+                "inflictor",
+                "attacker",
+                "direction",
+                "point",
+                "amount",
+                "flags",
+                "method",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(index, role)| ((*role).to_string(), index))
+            .collect(),
             extras: Vec::new(),
         }
     }
@@ -768,7 +766,7 @@ mod tests {
             image,
         };
         let module = QvmModule::new(artifact.clone(), None, None).unwrap();
-        let mut data = QvmGameData::new(module.memory(), AbiProfile::Modern);
+        let data = QvmGameData::new(module.memory(), AbiProfile::Modern);
         data.locate(64, 2, 560, 4096, 480).unwrap();
         (module, data, artifact)
     }
@@ -804,10 +802,7 @@ mod tests {
                 value: 1.5,
             }],
         };
-        assert_eq!(
-            qvm_combat_words(&call, &[("amount", 7)]).unwrap(),
-            vec![0x3FC0_0000, 7]
-        );
+        assert_eq!(qvm_combat_words(&call, &[("amount", 7)]).unwrap(), vec![0x3FC0_0000, 7]);
         assert!(validate_qvm_combat_call(&call, 1024).is_ok());
         let bad = QvmCombatCall {
             roles: vec![("amount".to_string(), 0)],
@@ -843,7 +838,9 @@ mod tests {
         };
         assert!(qvm_attack_damage_flags(&q1).no_armor);
         let q2 = QvmDamageRequest {
-            cause: QvmDamageCause::Q2 { damage_flags: 0x180 | 4 | 8 | 0x20 | 0x40 },
+            cause: QvmDamageCause::Q2 {
+                damage_flags: 0x180 | 4 | 8 | 0x20 | 0x40,
+            },
             radius_delivery: false,
         };
         let flags = qvm_attack_damage_flags(&q2);

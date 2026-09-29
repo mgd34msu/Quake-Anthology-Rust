@@ -595,10 +595,11 @@ fn sha256(message: &[u8]) -> [u8; 32] {
         padded.push(0);
     }
     padded.extend_from_slice(&bit_len.to_be_bytes());
-    for block in padded.chunks_exact(64) {
+    let (blocks, _) = padded.as_chunks::<64>();
+    for block in blocks {
         let mut schedule = [0u32; 64];
-        for (slot, chunk) in schedule.iter_mut().zip(block.chunks_exact(4)).take(16) {
-            *slot = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (slot, chunk) in schedule.iter_mut().zip(block.as_chunks::<4>().0).take(16) {
+            *slot = u32::from_be_bytes(*chunk);
         }
         for index in 16..64 {
             let s0 = schedule[index - 15].rotate_right(7)
@@ -638,8 +639,9 @@ fn sha256(message: &[u8]) -> [u8; 32] {
         }
     }
     let mut digest = [0u8; 32];
-    for (slot, word) in digest.chunks_exact_mut(4).zip(state) {
-        slot.copy_from_slice(&word.to_be_bytes());
+    let (slots, _) = digest.as_chunks_mut::<4>();
+    for (slot, word) in slots.iter_mut().zip(state) {
+        *slot = word.to_be_bytes();
     }
     digest
 }
@@ -729,7 +731,7 @@ pub fn load_qc_program(bytes: &[u8], expected_api: Option<QuakeCApi>, source: &s
     if initial_globals.len() < 28 * 4 {
         return Err(image_error(source, "missing reserved global words"));
     }
-    let mut definitions = |input: &mut BinaryReader<'_>, field: bool| -> Result<Vec<QcDefinition>, GuestError> {
+    let definitions = |input: &mut BinaryReader<'_>, field: bool| -> Result<Vec<QcDefinition>, GuestError> {
         let mut result = Vec::new();
         while input.remaining() > 0 {
             let raw = input.u16().map_err(|error| map_reader(source, error))?;
@@ -785,8 +787,7 @@ pub fn load_qc_program(bytes: &[u8], expected_api: Option<QuakeCApi>, source: &s
             .map_err(|_| image_error(source, "invalid function file"))?;
         let count = functions_reader.i32().map_err(|error| map_reader(source, error))?;
         let sizes = functions_reader.bytes(8).map_err(|error| map_reader(source, error))?;
-        if count < 0
-            || count > 8
+        if !(0..=8).contains(&count)
             || local_words < 0
             || parameter_start < 0
             || parameter_start as usize + local_words as usize > initial_globals.len() / 4
@@ -863,7 +864,7 @@ mod tests {
         // 2 functions, small string table, 28 reserved words.
         let mut bytes = Vec::new();
         let push_i32 = |bytes: &mut Vec<u8>, value: i32| bytes.extend_from_slice(&value.to_le_bytes());
-        let header_len = 4 + 6 * 8 + 4;
+        let header_len = 8 + 6 * 8 + 4;
         let statements = vec![
             (QcOpcode::Done as u16, 0u16, 0u16, 0u16),
             (QcOpcode::Return as u16, 1u16, 0u16, 0u16),
@@ -873,11 +874,11 @@ mod tests {
         let globals = vec![(2u16, 28u16, 14i32)];
         let fields = vec![(2u16, 0u16, 14i32)];
         let functions = vec![
-            (0i32, 0i32, 0i32, 0i32, 1i32, 6i32, 0i32, [0u8; 8]),
+            (0i32, 0i32, 0i32, 0i32, 14i32, 6i32, 0i32, [0u8; 8]),
             (1i32, 28i32, 1i32, 0i32, 1i32, 6i32, 0i32, [0u8; 8]),
         ];
         let values = vec![0u8; 30 * 4];
-        let mut offset = header_len as i32;
+        let mut offset = header_len;
         let mut sections = Vec::new();
         let blobs: Vec<Vec<u8>> = vec![
             {
@@ -971,9 +972,9 @@ mod tests {
     #[test]
     fn rejects_bad_opcode_and_truncation() {
         let mut bytes = test_image();
-        // First statement opcode lives right after the 56-byte header.
-        bytes[56] = 0xff;
-        bytes[57] = 0xff;
+        // First statement opcode lives right after the 60-byte header.
+        bytes[60] = 0xff;
+        bytes[61] = 0xff;
         assert!(load_qc_program(&bytes, None, "progs.dat").is_err());
         assert!(load_qc_program(&bytes[..10], None, "progs.dat").is_err());
     }

@@ -420,7 +420,7 @@ pub fn read_primary_weapon_stage(value: &SourceJson, path: &str) -> Result<QcPri
         continuations: as_list(
             field(value, path, "continuations")?,
             &format!("{path}.continuations"),
-            |entry, entry_path| as_string(entry, entry_path),
+            as_string,
         )?,
         repeats: read_weapon_repeats(field(value, path, "repeats")?, &format!("{path}.repeats"))?,
         client: QcWeaponClient {

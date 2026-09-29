@@ -768,7 +768,7 @@ pub enum PoweredKind {
 }
 
 /// Powered-protection selection value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModPoweredSelectionValue {
     /// Original scalar.
     pub value: f64,
@@ -777,7 +777,7 @@ pub struct ModPoweredSelectionValue {
 }
 
 /// Powered-protection selection storage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModPoweredSelection {
     /// Selection field.
     pub field: String,
@@ -788,7 +788,7 @@ pub struct ModPoweredSelection {
 }
 
 /// Powered-protection storage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModPoweredStorage {
     /// Cells field.
     pub cells: String,
@@ -1042,7 +1042,7 @@ pub struct ModMovementModeValue {
 }
 
 /// Stance mapping value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModStanceValue {
     /// Original scalar.
     pub value: f64,
@@ -1357,7 +1357,7 @@ pub struct QcObjectiveState {
 }
 
 /// Objective declaration role.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QcObjectiveRole {
     /// Owned objective.
     Owned {
@@ -1520,7 +1520,7 @@ pub fn split_command_tokens(text: &str) -> Vec<String> {
     let mut current = String::new();
     let mut in_token = false;
     let mut in_quotes = false;
-    let mut chars = text.chars().peekable();
+    let mut chars = text.chars();
     while let Some(char) = chars.next() {
         if in_quotes {
             if char == '"' {
@@ -1691,279 +1691,15 @@ fn validate_protection_storage(
 ) -> Result<(), GuestError> {
     super::mod_protection::qc_protection_regions(program, declaration).map(|_| ())}
 
-#[allow(dead_code)]
-fn replaced_validate_protection_storage_body(
-    program: &dyn QcProgramView,
-    declaration: &ModCallbackDeclaration,
-) -> Result<(), GuestError> {
-    use std::collections::HashSet;
-    let mut channels = HashSet::new();
-    for definition in &declaration.protection {
-        if declaration.clients.is_none() || !channels.insert(definition.channel) {
-            return Err(GuestError::invalid(
-                "QC protection requires clients and one declaration per channel",
-            ));
-        }
-        let (count, selection) = match (&definition.channel, &definition.regular, &definition.powered) {
-            (ProtectionChannel::Regular, Some(storage), _) => (
-                storage.points.clone(),
-                storage.selection.as_ref().map(|selection| {
-                    (
-                        selection.field.clone(),
-                        selection.mask,
-                        selection.values.iter().map(|value| value.value).collect::<Vec<_>>(),
-                    )
-                }),
-            ),
-            (ProtectionChannel::Powered, _, Some(storage)) => (
-                storage.cells.clone(),
-                storage.selection.as_ref().map(|selection| {
-                    (
-                        selection.field.clone(),
-                        selection.mask,
-                        selection.values.iter().map(|value| value.value).collect::<Vec<_>>(),
-                    )
-                }),
-            ),
-            _ => return Err(GuestError::invalid("QC protection requires storage for its channel")),
-        };
-        let mut names = vec![count];
-        if let Some((field, _, _)) = &selection {
-            names.push(field.clone());
-        }
-        for name in &names {
-            let bound = declaration
-                .actor_fields
-                .iter()
-                .any(|field| field.field == *name && matches!(field.binding, ModActorBinding::Private));
-            if program.field_type(name) != Some(QcValueType::Float) || !bound {
-                return Err(GuestError::invalid(format!(
-                    "QC protection requires private float storage {name}"
-                )));
-            }
-        }
-        if let Some((field, mask, values)) = &selection {
-            if field == &names[0]
-                || values.is_empty()
-                || values
-                    .iter()
-                    .any(|value| !value.is_finite() || f64::from(*value as f32) != *value)
-            {
-                return Err(GuestError::invalid("QC protection selection is not representable"));
-            }
-            let mut seen = Vec::with_capacity(values.len());
-            for value in values {
-                if seen.contains(value) {
-                    return Err(GuestError::invalid("QC protection selection is not representable"));
-                }
-                seen.push(*value);
-            }
-            if let Some(mask) = mask {
-                if *mask <= 0
-                    || *mask > 0x7f_ffff
-                    || values
-                        .iter()
-                        .any(|value| value.fract() != 0.0 || (*value as i32 & *mask) != *value as i32)
-                {
-                    return Err(GuestError::invalid("QC protection selection mask is invalid"));
-                }
-            }
-        }
-        let flags = [
-            definition.flags.no_armor,
-            definition.flags.no_power_armor,
-            definition.flags.no_regular_armor,
-            definition.flags.energy,
-            definition.flags.radius,
-        ];
-        if flags.iter().any(|mask| *mask < 0 || *mask > 0x7f_ffff) {
-            return Err(GuestError::invalid(
-                "QC protection flags exceed source integer precision",
-            ));
-        }
-    }
-    Ok(())
+/// Validate item declarations via the shared item check.
+fn validate_item_storage(program: &dyn QcProgramView, declaration: &ModCallbackDeclaration) -> Result<(), GuestError> {
+    super::mod_items::validate_qc_items(program, declaration)
 }
 
-/// Validate item storage declarations (structural half of `validateQcItems`).
-fn validate_item_storage(program: &dyn QcProgramView, declaration: &ModCallbackDeclaration) -> Result<(), GuestError> {
-    use std::collections::{HashMap, HashSet};
-    let items = match declaration.items.as_ref() {
-        Some(items) => items,
-        None => return Ok(()),
-    };
-    if declaration.clients.is_none() || items.definitions.is_empty() {
-        return Err(GuestError::invalid(
-            "QC source items require canonical clients and definitions",
-        ));
-    }
-    let mut definitions = HashMap::new();
-    for definition in &items.definitions {
-        if definition.label.is_empty() || definitions.insert(definition.item.clone(), definition).is_some() {
-            return Err(GuestError::invalid("QC item definitions are empty or duplicated"));
-        }
-    }
-    let field = |name: &str, expected: QcValueType, input: bool| -> Result<(), GuestError> {
-        let bound = declaration.actor_fields.iter().any(|field| {
-            field.field == name
-                && (matches!(field.binding, ModActorBinding::Private)
-                    || (input && matches!(field.binding, ModActorBinding::ClientInput { .. })))
-        });
-        if program.field_type(name) != Some(expected) || !bound {
-            return Err(GuestError::invalid(format!(
-                "QC item storage {name} requires declared original storage"
-            )));
-        }
-        Ok(())
-    };
-    let offset_of = |name: &str| -> usize {
-        declaration
-            .actor_fields
-            .iter()
-            .position(|field| field.field == name)
-            .unwrap_or(usize::MAX)
-    };
-    let mut bound = HashSet::new();
-    let mut words: HashMap<usize, &str> = HashMap::new();
-    for storage in &items.storage {
-        match storage {
-            ModItemStorage::Counter {
-                field: name,
-                item,
-                capacity,
-            } => {
-                field(name, QcValueType::Float, false)?;
-                if words.insert(offset_of(name), "count").is_some() {
-                    return Err(GuestError::invalid("QC item storage fields overlap"));
-                }
-                if !definitions.contains_key(item) || !bound.insert(item.clone()) {
-                    return Err(GuestError::invalid(format!(
-                        "QC item {item} lacks distinct declared storage"
-                    )));
-                }
-                match capacity {
-                    ModItemCapacity::Field { field: capacity } => {
-                        field(capacity, QcValueType::Float, false)?;
-                        if words.get(&offset_of(capacity)) == Some(&"count") {
-                            return Err(GuestError::invalid("QC item capacity overlaps source storage"));
-                        }
-                        words.insert(offset_of(capacity), "capacity");
-                    }
-                    ModItemCapacity::Constant { value } => {
-                        if !value.is_finite() || *value < 0.0 || f64::from(*value as f32) != *value {
-                            return Err(GuestError::invalid("QC item capacity exceeds its source ABI"));
-                        }
-                    }
-                }
-            }
-            ModItemStorage::Bits {
-                field: name,
-                private_mask,
-                items: packed,
-            } => {
-                field(name, QcValueType::Float, false)?;
-                if words.insert(offset_of(name), "count").is_some() {
-                    return Err(GuestError::invalid("QC item storage fields overlap"));
-                }
-                if *private_mask < 0 || *private_mask > 0xff_ffff || packed.is_empty() {
-                    return Err(GuestError::invalid(
-                        "QC packed inventory requires an exact binary32 mask",
-                    ));
-                }
-                let mut mask = *private_mask;
-                for entry in packed {
-                    if !definitions.contains_key(&entry.item) || !bound.insert(entry.item.clone()) {
-                        return Err(GuestError::invalid(format!(
-                            "QC item {} lacks distinct declared storage",
-                            entry.item
-                        )));
-                    }
-                    if entry.mask < 1
-                        || entry.mask > 0x80_0000
-                        || (entry.mask & (entry.mask - 1)) != 0
-                        || (mask & entry.mask) != 0
-                    {
-                        return Err(GuestError::invalid(
-                            "QC packed inventory masks overlap or exceed source precision",
-                        ));
-                    }
-                    mask |= entry.mask;
-                }
-            }
-        }
-    }
-    if bound.len() != definitions.len() {
-        return Err(GuestError::invalid("QC item definition has no source storage"));
-    }
-    let weapons: Vec<_> = items
-        .definitions
-        .iter()
-        .filter(|definition| matches!(definition.kind, ModItemKind::Weapon { .. }))
-        .collect();
-    if (weapons.is_empty()) != (items.weapons.is_none()) {
-        return Err(GuestError::invalid(
-            "QC weapon definitions require their original source consumer",
-        ));
-    }
-    if let Some(consumer) = items.weapons.as_ref() {
-        for name in ["think", "nextthink"] {
-            let bound = declaration.actor_fields.iter().any(|field| {
-                field.field == name && matches!(&field.binding, ModActorBinding::Think | ModActorBinding::Nextthink)
-            });
-            if !bound {
-                return Err(GuestError::invalid(
-                    "QC weapons require continuing source think ownership",
-                ));
-            }
-        }
-        let mappings = [
-            (&consumer.selected.field, &consumer.selected.values, false),
-            (&consumer.select.field, &consumer.select.values, true),
-        ];
-        for (name, values, is_select) in mappings {
-            field(name, QcValueType::Float, is_select)?;
-            let mut seen_items = HashSet::new();
-            let mut seen_values = Vec::new();
-            for value in values {
-                if !value.value.is_finite() || f64::from(value.value as f32) != value.value || value.value == 0.0 {
-                    return Err(GuestError::invalid("QC weapon selectors differ from their definitions"));
-                }
-                seen_items.insert(value.item.clone());
-                if seen_values.contains(&value.value) {
-                    return Err(GuestError::invalid("QC weapon selectors differ from their definitions"));
-                }
-                seen_values.push(value.value);
-            }
-            if values.len() != weapons.len() || seen_items.len() != weapons.len() {
-                return Err(GuestError::invalid("QC weapon selectors differ from their definitions"));
-            }
-            for weapon in &weapons {
-                if !values.iter().any(|value| value.item == weapon.item) {
-                    return Err(GuestError::invalid("QC weapon selectors differ from their definitions"));
-                }
-            }
-        }
-        field(&consumer.model.field, QcValueType::String, false)?;
-        field(&consumer.model.frame, QcValueType::Float, false)?;
-        for weapon in &weapons {
-            if let ModItemKind::Weapon { ammo: Some(ammo) } = &weapon.kind {
-                let declared = definitions.contains_key(ammo)
-                    || declaration
-                        .actor_fields
-                        .iter()
-                        .any(|field| matches!(&field.binding, ModActorBinding::Inventory { item } if item == ammo));
-                if !declared {
-                    return Err(GuestError::invalid("QC weapon has no declared ammo source"));
-                }
-            }
-        }
-    }
-    Ok(())
-}
 
 /// Validate pickup rules and their declared storage.
 fn validate_pickups(
-    program: &dyn QcProgramView,
+    _program: &dyn QcProgramView,
     declaration: &ModCallbackDeclaration,
     validate_call: &SourceCallValidator<'_>,
 ) -> Result<(), GuestError> {
@@ -2510,7 +2246,7 @@ fn validate_callbacks(
     Ok(())
 }
 
-/// Validate the combat declaration (structural half of `validateQcModCombat`).
+/// Validate the combat declaration via the shared combat check.
 fn validate_combat_declaration(
     program: &dyn QcProgramView,
     declaration: &ModCallbackDeclaration,
@@ -2519,54 +2255,7 @@ fn validate_combat_declaration(
         .combat
         .as_ref()
         .ok_or_else(|| GuestError::invalid("Missing combat declaration"))?;
-    if let Some(empty) = combat.empty_armor.as_ref() {
-        if !["q1:item_armor1", "q1:item_armor2", "q1:item_armorInv"].contains(&empty.item.as_str())
-            || !empty.absorption.is_finite()
-            || f64::from(empty.absorption as f32) != empty.absorption
-            || empty.absorption < 0.0
-        {
-            return Err(GuestError::invalid(
-                "QC points-only armor requires an authored item and finite nonnegative absorption",
-            ));
-        }
-    }
-    if let Some(stage) = combat.armor_stage.as_ref() {
-        validate_armor_stage_shape(stage)?;
-    }
-    if let Some(scale) = combat.damage_scale.as_ref() {
-        if program.function_named(&scale.function).is_none() || scale.entry >= scale.exit {
-            return Err(GuestError::invalid("QC damage scale requires a valid source region"));
-        }
-    }
-    for name in [
-        "health",
-        "takedamage",
-        "flags",
-        "invincible_finished",
-        "armorvalue",
-        "armortype",
-    ] {
-        if program.field_type(name) != Some(QcValueType::Float) {
-            return Err(GuestError::invalid(format!("QC combat requires float field {name}")));
-        }
-    }
-    if program.function_named(&combat.damage.function).is_none() {
-        return Err(GuestError::invalid("QC combat requires its declared damage function"));
-    }
-    Ok(())
-}
-
-/// Validate armor-stage region shape.
-fn validate_armor_stage_shape(stage: &ModQcArmorStage) -> Result<(), GuestError> {
-    if stage.entry >= stage.exit || stage.target < 0 || stage.damage < 0 || stage.saved < 0 {
-        return Err(GuestError::invalid("QC armor stage requires a valid source region"));
-    }
-    if let ModQcArmorStageFlags::Bits { word, .. } = stage.flags {
-        if word < 0 {
-            return Err(GuestError::invalid("QC armor stage requires a valid source region"));
-        }
-    }
-    Ok(())
+    super::mod_combat::validate_qc_mod_combat(program, combat)
 }
 
 /// Declaration format version.

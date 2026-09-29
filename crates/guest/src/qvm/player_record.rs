@@ -244,10 +244,7 @@ pub fn read_qvm_player_state(bytes: &[u8], profile: AbiProfile) -> Result<QvmPla
 }
 
 /// Read source player state without presentation translation.
-pub fn read_source_qvm_player_state(
-    bytes: &[u8],
-    profile: AbiProfile,
-) -> Result<QvmPlayerState, GuestError> {
+pub fn read_source_qvm_player_state(bytes: &[u8], profile: AbiProfile) -> Result<QvmPlayerState, GuestError> {
     check_record(bytes, profile)?;
     let modern = profile.is_modern();
     Ok(QvmPlayerState {
@@ -315,11 +312,7 @@ fn legacy_persistent(state: &QvmPlayerState, bytes: &[u8], preserve_private: boo
 }
 
 /// Write a translated player state, initializing legacy private slots.
-pub fn write_qvm_player_state(
-    bytes: &mut [u8],
-    state: &QvmPlayerState,
-    profile: AbiProfile,
-) -> Result<(), GuestError> {
+pub fn write_qvm_player_state(bytes: &mut [u8], state: &QvmPlayerState, profile: AbiProfile) -> Result<(), GuestError> {
     write_qvm_player_state_inner(bytes, state, profile, false)
 }
 
