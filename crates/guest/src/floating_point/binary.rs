@@ -313,8 +313,9 @@ impl BigInt {
         let mut limbs = Vec::with_capacity(self.limbs.len() - limb_shift);
         let mut carry = 0u32;
         for limb in self.limbs.iter().skip(limb_shift).rev() {
-            let wide = (u64::from(carry) << 32) | u64::from(*limb);
-            limbs.push((wide >> bit_shift) as u32);
+            // The carry already holds the low bits of the more significant
+            // limb positioned at the top; OR in this limb's surviving top.
+            limbs.push(carry | (*limb >> bit_shift));
             carry = if bit_shift == 0 {
                 0
             } else {
@@ -707,11 +708,15 @@ pub fn quiet(value: &BinaryValue) -> BinaryValue {
             negative,
             payload,
             ..
-        } => BinaryValue::Nan {
-            negative: *negative,
-            payload: payload.add(&BigInt::one().shl_bits(62)),
-            signaling: false,
-        },
+        } => {
+            let mut payload = payload.clone();
+            payload.set_bit(62);
+            BinaryValue::Nan {
+                negative: *negative,
+                payload,
+                signaling: false,
+            }
+        }
         _ => value.clone(),
     }
 }

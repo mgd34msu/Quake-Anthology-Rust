@@ -83,12 +83,12 @@ pub fn x87_trigonometric(
             rounded_up: false,
         }));
     }
-    let exponent = coefficient.bit_len() as i32 - 1 + exponent;
-    if exponent >= 63 {
+    let magnitude = coefficient.bit_len() as i32 - 1 + exponent;
+    if magnitude >= 63 {
         return Ok(X87TrigonometricResult::OutOfRange);
     }
     let flags = FLAG_PRECISION | if *denormal { FLAG_DENORMAL_OPERAND } else { 0 };
-    if exponent <= -128 {
+    if magnitude <= -128 {
         let approximation = if cosine {
             BinaryValue::Finite {
                 negative: false,
