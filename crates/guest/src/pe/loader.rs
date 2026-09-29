@@ -310,7 +310,7 @@ pub fn bind_pe_imports(
                 let address = *address;
             if address.space != memory.address_space()
                 || address.offset == 0
-                || address.offset >= (1u128 << (memory.pointer_bytes() * 8)) as u64
+                || u128::from(address.offset) >= 1u128 << (memory.pointer_bytes() * 8)
                 || !memory.mappings().iter().any(|mapping| {
                     address.offset >= mapping.base
                         && address.offset < mapping.base + mapping.byte_length as u64
