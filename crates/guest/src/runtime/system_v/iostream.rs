@@ -142,6 +142,12 @@ pub struct SystemVIostreams {
 }
 
 impl SystemVIostreams {
+    /// Installed classic locale.
+    #[must_use]
+    pub fn locale(&self) -> &super::locale::SystemVClassicLocale {
+        &self.locale
+    }
+
     /// Resolve the `ios` subobject through the stream vtable.
     fn ios(
         &self,
