@@ -113,8 +113,9 @@ pub fn plan_for_profile(profile: &ClockProfile) -> Result<TickPlan, WorldError> 
     }
 }
 
-/// Game-logic hooks driven by the server tick. The default engine ships
-/// [`NullLogic`]; game modules (guest gamecode) implement this trait.
+/// Game-logic hooks driven by the server tick. The engine runs guest gamecode
+/// ([`GuestServerLogic`](qa_guest::server::GuestServerLogic)) here; game
+/// modules implement this trait, and [`NullLogic`] remains only as a test seed.
 pub trait ServerLogic {
     /// Apply one queued client command to its actor.
     fn client_think(&mut self, _simulation: &mut Simulation, _slot: u32, _command: &ClientCommand) {}
