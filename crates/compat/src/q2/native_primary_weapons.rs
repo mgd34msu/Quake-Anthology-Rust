@@ -24,6 +24,9 @@ pub enum NativeHostError {
     /// Memory fault or contract violation with detail.
     #[error("native host fault: {0}")]
     Fault(String),
+    /// Controlled exit: the input actor retired mid-dispatch.
+    #[error("native input actor was removed")]
+    Retired,
 }
 
 impl From<GuestError> for NativeHostError {

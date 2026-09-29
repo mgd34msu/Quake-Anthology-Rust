@@ -354,6 +354,12 @@ impl NativeModArmorState {
         })
     }
 
+    /// Declared engine entity record id.
+    #[must_use]
+    pub fn entity_record(&self) -> &str {
+        &self.entity_record
+    }
+
     /// Resolve a slot base address for a record.
     pub fn location(
         &self,
@@ -988,6 +994,7 @@ impl NativeModArmorState {
             let address = memory.offset(*base, start as i64)?;
             let watched = fields.clone();
             let flag = dirty.clone();
+            let width_bytes = pointer_bytes;
             let id = memory.observe_writes(
                 address,
                 end.saturating_sub(start),
@@ -995,7 +1002,7 @@ impl NativeModArmorState {
                     for range in ranges {
                         let absolute = start + range.byte_offset;
                         if watched.iter().any(|field| {
-                            let width = field.width(4);
+                            let width = field.width(width_bytes);
                             absolute < field.offset + width
                                 && field.offset < absolute + range.byte_length
                         }) {
@@ -1296,10 +1303,9 @@ mod tests {
             stride: STRIDE,
             is_client: true,
         }];
-        assert_eq!(
+        assert!(matches!(
             NativeModArmorState::new(overlapping, "entity", &records, 4),
-            Err(ArmorError::OverlappingFields).map(|_: NativeModArmorState| ())
-                .map_err(|error| error)
-        );
+            Err(ArmorError::OverlappingFields)
+        ));
     }
 }

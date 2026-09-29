@@ -403,6 +403,16 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Match one of the allowed integers and return it.
+    pub fn choice_int(&self, options: &[i64]) -> i64 {
+        let value = self.integer(i64::MIN);
+        if options.contains(&value) {
+            value
+        } else {
+            self.fail("unexpected integer choice")
+        }
+    }
+
     /// Require an exact string literal.
     pub fn literal_str(&self, expected: &str) {
         if self.string() != expected {

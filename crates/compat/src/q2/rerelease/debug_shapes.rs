@@ -228,9 +228,7 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
                 }
             }
         }
-        DebugShape::Circle { origin, radius } | DebugShape::Sphere { origin, radius }
-            if matches!(shape, DebugShape::Circle { .. }) =>
-        {
+        DebugShape::Circle { origin, radius } => {
             circle_lines(*origin, *radius, &mut line, color);
         }
         DebugShape::Cylinder {
@@ -261,7 +259,6 @@ pub fn debug_shape_lines(shape: &DebugShape, color: Vec4, depth_test: bool) -> V
             color,
             color,
         ),
-        DebugShape::Circle { .. } => {}
     }
     lines
 }
@@ -273,10 +270,13 @@ fn circle_lines(
     color: Vec4,
 ) {
     let count = (5.0 + radius / 8.0).min(16.0).trunc() as usize;
-    let point = |i: usize| Vec3 {
-        x: origin.x + (f32::from(i as u16) * std::f32::consts::PI * 2.0 / count as f32).cos() * radius,
-        y: origin.y + (f32::from(i as u16) * std::f32::consts::PI * 2.0 / count as f32).sin() * radius,
-        z: origin.z,
+    let point = |i: usize| {
+        let angle = i as f32 * std::f32::consts::PI * 2.0 / count as f32;
+        Vec3 {
+            x: origin.x + angle.cos() * radius,
+            y: origin.y + angle.sin() * radius,
+            z: origin.z,
+        }
     };
     for i in 0..count {
         line(point(i), point((i + 1) % count), color);
