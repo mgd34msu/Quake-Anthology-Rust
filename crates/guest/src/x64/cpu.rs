@@ -171,7 +171,7 @@ impl X64Cpu {
         let unhooked = self
             .hooks
             .as_ref()
-            .map_or(true, |hooks| hooks.callbacks.borrow().instruction_unhooked(start));
+            .is_none_or(|hooks| hooks.callbacks.borrow().instruction_unhooked(start));
         if !unhooked {
             return false;
         }
@@ -229,20 +229,15 @@ impl X64Cpu {
     }
 
     fn form_managed_block(&mut self, first: u64, revision: u64) -> Option<ManagedBlock> {
-        if let Some(cached) = self.instructions.get(&first) {
-            if let Some(key) = cached.managed_key {
-                if let Some(block) = self.managed_blocks.get(&key) {
-                    if block.revision == revision {
-                        return Some(block.clone());
-                    }
+        let cached = self.instructions.get(&first)?;
+        if let Some(key) = cached.managed_key {
+            if let Some(block) = self.managed_blocks.get(&key) {
+                if block.revision == revision {
+                    return Some(block.clone());
                 }
             }
-            if cached.integer.is_none() {
-                return None;
-            }
-        } else {
-            return None;
         }
+        cached.integer.as_ref()?;
         let mut steps = Vec::new();
         let mut bytes = Vec::new();
         let mut current = Some(first);
@@ -365,7 +360,7 @@ impl GuestCpu for X64Cpu {
         let mut block_index = 0;
         while instructions < instruction_budget {
             let start = self.state.instruction_pointer;
-            if return_address.map_or(false, |target| target.offset == start) {
+            if return_address.is_some_and(|target| target.offset == start) {
                 return GuestExecutionStop::Return {
                     instructions,
                     address: self.evidence_address(start),
@@ -401,7 +396,7 @@ impl GuestCpu for X64Cpu {
                         .filter(|block| block.revision == revision)
                         .or_else(|| self.form_managed_block(first, revision));
                     if let Some(mut prepared) = prepared {
-                        if !prepared.guard.unchanged(&mut self.memory) {
+                        if !prepared.guard.unchanged(&self.memory) {
                             if let Some(cached) = self.instructions.get_mut(&first) {
                                 cached.managed_key = None;
                             }
@@ -497,7 +492,7 @@ impl GuestCpu for X64Cpu {
                     if let Some(owner) = block.as_ref().and_then(|block| block.starts.first()) {
                         let key = *owner;
                         let invalidate = self.instructions.get(&key).and_then(|cached| cached.block_key)
-                            == block.as_ref().and_then(|_| Some(key));
+                            == block.as_ref().map(|_| key);
                         if invalidate {
                             if let Some(cached) = self.instructions.get_mut(&key) {
                                 cached.block_key = None;
@@ -514,8 +509,8 @@ impl GuestCpu for X64Cpu {
                         let next_ip = plan.next_ip;
                         let ends_block = plan.ends_block;
                         let flow = match integer {
-                            Some(integer) => kernel.execute(&integer, &mut self.state, &mut self.memory)?,
-                            None => execute_x64_plan(&plan, &mut self.memory, &mut self.state)?,
+                            Some(integer) => kernel.execute(integer, &mut self.state, &mut self.memory)?,
+                            None => execute_x64_plan(plan, &mut self.memory, &mut self.state)?,
                         };
                         return Ok(Step::Executed {
                             flow,
@@ -621,7 +616,7 @@ impl GuestCpu for X64Cpu {
             instructions += 1;
         }
         let address = self.evidence_address(self.state.instruction_pointer);
-        if return_address.map_or(false, |target| target.offset == address.offset) {
+        if return_address.is_some_and(|target| target.offset == address.offset) {
             return GuestExecutionStop::Return { instructions, address };
         }
         GuestExecutionStop::Budget { instructions }

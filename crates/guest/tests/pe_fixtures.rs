@@ -290,7 +290,8 @@ fn patch(bytes: &mut [u8], offset: usize, value: &[u8]) {
 
 #[test]
 fn pe_truncated_overlapping_and_unsupported_input_fails_before_mapping() {
-    let cases: &[(&str, fn(&mut Vec<u8>))] = &[
+    type Case = (&'static str, fn(&mut Vec<u8>));
+    let cases: &[Case] = &[
         ("truncated", |bytes| bytes.truncate(96)),
         ("section overlap", |bytes| patch(bytes, 0x1ac, &0x1000u32.to_le_bytes())),
         ("unsupported relocation", |bytes| {

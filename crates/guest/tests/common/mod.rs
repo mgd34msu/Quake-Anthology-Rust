@@ -1,6 +1,8 @@
 //! Shared fixtures for guest integration tests: synthetic code, stack,
 //! and return-address setup mirroring the donor `tests/guest` harnesses.
 
+#![allow(dead_code)]
+
 use qa_core::identity::ProviderId;
 use qa_guest::abi::GuestCpu;
 use qa_guest::core::contracts::{

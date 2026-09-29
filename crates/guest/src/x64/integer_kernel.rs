@@ -641,8 +641,7 @@ impl X64IntegerKernel {
         let mut instructions = 0;
         let mut current = state.instruction_pointer;
         let mut next = current;
-        let after_store =
-            |memory: &SparseGuestMemory| -> bool { guard.map_or(true, |guard| guard.after_store(memory)) };
+        let after_store = |memory: &SparseGuestMemory| -> bool { guard.is_none_or(|guard| guard.after_store(memory)) };
         for step in steps {
             if instructions == budget {
                 break;

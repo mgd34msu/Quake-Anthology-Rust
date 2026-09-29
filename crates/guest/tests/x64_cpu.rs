@@ -1054,9 +1054,9 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
         for operation in operations {
             for (left, right) in edges {
                 let flag_sets: &[u64] = if matches!(operation, AluOperation::Adc | AluOperation::Sbb) {
-                    &[0x9876_5432_abcdefd6, 0x9876_5432_abcdefd7]
+                    &[0x9876_5432_abcd_efd6, 0x9876_5432_abcd_efd7]
                 } else {
-                    &[0x9876_5432_abcdefd7]
+                    &[0x9876_5432_abcd_efd7]
                 };
                 for initial in flag_sets {
                     let plan = make_x64_plan(
@@ -1163,14 +1163,9 @@ fn integer_kernels_match_source_alu_flags_and_halves() {
                     .unwrap();
                 state
                     .registers
-                    .write(
-                        GuestRegister::Rbx,
-                        GuestIntegerWidth::B64,
-                        0xffff_ffff_fffedcba,
-                        false,
-                    )
+                    .write(GuestRegister::Rbx, GuestIntegerWidth::B64, 0xffff_ffff_fffe_dcba, false)
                     .unwrap();
-                state.segments[qa_guest::core::registers::GuestProcessorState::FS].base = 0x1234_5678_90;
+                state.segments[qa_guest::core::registers::GuestProcessorState::FS].base = 0x0012_3456_7890;
             });
         }
         let (source_state, source_memory) = source.cpu.parts();

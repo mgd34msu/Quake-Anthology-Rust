@@ -54,7 +54,11 @@ pub fn relocate_pe(image: &mut ImageReader) -> Result<(), GuestError> {
     while block < table.byte_length as usize {
         let page = source.u32(block)?;
         let size = source.u32(block + 4)? as usize;
-        if !page.is_multiple_of(4096) || size < 8 || !size.is_multiple_of(2) || size > table.byte_length as usize - block {
+        if !page.is_multiple_of(4096)
+            || size < 8
+            || !size.is_multiple_of(2)
+            || size > table.byte_length as usize - block
+        {
             return Err(pe_error(PeStage::Relocation, "invalid relocation block size/page"));
         }
         let mut at = block + 8;

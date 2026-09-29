@@ -4,6 +4,8 @@
 //! Donor: `tests/guest/abi/calls.test.ts`. The native-combat case belongs
 //! to the compat lane and is not ported here.
 
+// `drop` on cpu_parts reborrows intentionally ends the borrow.
+#![allow(dropping_references)]
 mod common;
 
 use std::rc::Rc;

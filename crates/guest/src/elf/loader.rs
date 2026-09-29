@@ -221,7 +221,7 @@ pub fn load_elf(options: ElfLoadOptions) -> Result<ElfGuestImage, GuestError> {
     match result {
         Ok(image) => Ok(image),
         Err(error) => {
-            if let Some(registry) = unique_symbols.as_deref_mut() {
+            if let Some(registry) = unique_symbols.as_mut() {
                 let added: Vec<String> = registry
                     .keys()
                     .filter(|name| !prior_unique.contains(*name))

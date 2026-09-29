@@ -15,7 +15,8 @@ use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::{GuestHostCallback, HookState};
 use qa_guest::core::contracts::{
     CallbackId, GuestAddress, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature,
-    GuestCallbackReference, GuestFlag, GuestIntegerWidth, GuestMapOptions, GuestPermissions, GuestRegister, GuestWrittenRange, NativeCallAbi,
+    GuestCallbackReference, GuestFlag, GuestIntegerWidth, GuestMapOptions, GuestPermissions, GuestRegister,
+    GuestWrittenRange, NativeCallAbi,
 };
 use qa_guest::core::memory::{
     add_guest_pointer, signed_guest_pointer, wrap_guest_pointer, FetchCursor, SparseGuestMemory,
@@ -95,13 +96,13 @@ fn sparse_high_64_bit_addresses_preserve_pointer_bytes_and_aliases() {
         memory.mappings().iter().map(|entry| entry.byte_length).sum::<usize>(),
         64
     );
-    let boundary = map(&mut memory, 0x1fff_ffff_ffff_fe, 4, GuestPermissions::ReadWrite, None);
+    let boundary = map(&mut memory, 0x001f_ffff_ffff_fffe, 4, GuestPermissions::ReadWrite, None);
     memory.write_u32(boundary, 0x1234_5678).unwrap();
     assert_eq!(memory.read_u8(memory.offset(boundary, 3).unwrap()).unwrap(), 0x12);
     assert!(format!("{:?}", memory.read_u8(memory.offset(boundary, 4).unwrap())).contains("unmapped"));
     let beyond = map(
         &mut memory,
-        0x2000_0000_0000_10,
+        0x0020_0000_0000_0010,
         1,
         GuestPermissions::Read,
         Some(vec![41]),

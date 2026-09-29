@@ -15,8 +15,8 @@ use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::{GuestHostCallback, HookState};
 use qa_guest::core::contracts::{
     CallbackId, GuestAddress, GuestAllocationOptions, GuestArchitecture, GuestCallContext, GuestCallResult,
-    GuestCallValue, GuestCallbackReference, GuestImport, GuestImportResolution, GuestPermissions,
-    GuestStorage, GuestSymbolName, ModuleIdentity, NativeCallAbi,
+    GuestCallValue, GuestCallbackReference, GuestImport, GuestImportResolution, GuestPermissions, GuestStorage,
+    GuestSymbolName, ModuleIdentity, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::core::registers::GuestProcessorInitialState;
@@ -36,7 +36,6 @@ struct Setup {
     runtime: SystemVGuestRuntime,
     context: GuestCallContext,
     module: ModuleIdentity,
-    width: usize,
 }
 
 fn allocate(memory: &mut SparseGuestMemory, byte_length: usize) -> GuestAddress {
@@ -124,7 +123,6 @@ fn setup(width: usize, capabilities: SystemVCapabilities) -> Setup {
         runtime,
         context,
         module,
-        width,
     }
 }
 
@@ -528,6 +526,7 @@ fn ele32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eseg(
     bytes: &mut [u8],
     wide: bool,

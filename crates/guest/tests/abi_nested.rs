@@ -5,6 +5,8 @@
 //! register checkpoint plus XMM bytes; reentry-while-suspended is enforced
 //! by the borrow checker instead of a runtime trap.
 
+// `drop` on cpu_parts reborrows intentionally ends the borrow.
+#![allow(dropping_references)]
 mod common;
 
 use std::cell::{Cell, RefCell};
@@ -15,8 +17,8 @@ use qa_guest::abi::GuestCpu;
 use qa_guest::core::callbacks::{GuestHostCallback, HookState};
 use qa_guest::core::contracts::{
     CallbackId, GuestArchitecture, GuestCallContext, GuestCallResult, GuestCallSignature, GuestCallValue,
-    GuestCallbackReference, GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage,
-    GuestValueLayout, ModuleIdentity, NativeCallAbi,
+    GuestCallbackReference, GuestIntegerWidth, GuestPermissions, GuestRegister, GuestStorage, GuestValueLayout,
+    ModuleIdentity, NativeCallAbi,
 };
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::core::registers::{GuestProcessorInitialState, GuestProcessorState};

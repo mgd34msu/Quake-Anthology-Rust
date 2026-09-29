@@ -86,10 +86,8 @@ impl IntegerRegisterFile {
             ));
         }
         let count = self.slot_count();
-        for (index, chunk) in bytes.chunks_exact(8).enumerate().take(count) {
-            let mut word = [0u8; 8];
-            word.copy_from_slice(chunk);
-            let value = u64::from_le_bytes(word);
+        for (index, chunk) in bytes.as_chunks::<8>().0.iter().enumerate().take(count) {
+            let value = u64::from_le_bytes(*chunk);
             if self.architecture == GuestArchitecture::I386 && value > 0xffff_ffff {
                 return Err(GuestError::cpu("i386 snapshot has nonzero upper register bits"));
             }

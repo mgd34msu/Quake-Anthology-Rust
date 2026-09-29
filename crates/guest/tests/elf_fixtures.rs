@@ -29,14 +29,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn width(&self) -> usize {
-        if self.wide {
-            8
-        } else {
-            4
-        }
-    }
-
     fn word(&mut self, offset: usize, value: u64) {
         if self.wide {
             self.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());

@@ -82,7 +82,12 @@ impl FormatArguments {
             args.fp = memory.read_u32(memory.offset(descriptor, 4)?)?;
             args.cursor = memory.read_pointer(memory.offset(descriptor, 8)?)?;
             args.registers = memory.read_pointer(memory.offset(descriptor, 16)?)?;
-            if args.gp > 48 || !args.gp.is_multiple_of(8) || args.fp < 48 || args.fp > 176 || !(args.fp - 48).is_multiple_of(16) {
+            if args.gp > 48
+                || !args.gp.is_multiple_of(8)
+                || args.fp < 48
+                || args.fp > 176
+                || !(args.fp - 48).is_multiple_of(16)
+            {
                 return Err(GuestError::invalid("Invalid System V x64 va_list register offsets"));
             }
         } else {

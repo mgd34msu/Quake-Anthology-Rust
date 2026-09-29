@@ -350,7 +350,10 @@ pub fn inspect_elf(bytes: &[u8]) -> Result<ElfInspection, GuestError> {
             let alignment = segment.alignment;
             if alignment > 1
                 && (alignment & (alignment - 1) != 0
-                    || !segment.address.wrapping_sub(segment.offset as u64).is_multiple_of(alignment))
+                    || !segment
+                        .address
+                        .wrapping_sub(segment.offset as u64)
+                        .is_multiple_of(alignment))
             {
                 return Err(elf_error("invalid segment alignment or file/address congruence"));
             }
@@ -594,7 +597,10 @@ fn read_relocations(
     if let Some(relr) = dynamic_value(dynamic, 36) {
         let width = if wide { 8 } else { 4 };
         let size = dynamic_value(dynamic, 35);
-        if size.is_none() || !size.unwrap_or(1).is_multiple_of(width as u64) || dynamic_value(dynamic, 37) != Some(width as u64) {
+        if size.is_none()
+            || !size.unwrap_or(1).is_multiple_of(width as u64)
+            || dynamic_value(dynamic, 37) != Some(width as u64)
+        {
             return Err(elf_error("invalid RELR table"));
         }
         let length = checked_number(size.unwrap_or(0), "RELR table size")?;

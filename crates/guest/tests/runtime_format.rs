@@ -36,7 +36,6 @@ struct Fixture {
     runner: GuestCallRunner<'static>,
     hooks: Rc<HookState>,
     context: GuestCallContext,
-    width: usize,
 }
 
 fn allocate(
@@ -93,12 +92,7 @@ fn fixture(width: usize) -> Fixture {
         itself: None,
         other: None,
     };
-    Fixture {
-        runner,
-        hooks,
-        context,
-        width,
-    }
+    Fixture { runner, hooks, context }
 }
 
 fn text(fixture: &mut Fixture, value: &str) -> GuestAddress {

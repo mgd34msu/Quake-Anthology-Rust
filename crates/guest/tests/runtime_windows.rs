@@ -38,7 +38,6 @@ struct Setup {
     runtime: WindowsGuestRuntime,
     context: GuestCallContext,
     module: ModuleIdentity,
-    width: usize,
 }
 
 fn allocate(memory: &mut SparseGuestMemory, byte_length: usize, alignment: u64) -> GuestAddress {
@@ -114,7 +113,6 @@ fn setup(width: usize, capabilities: WindowsCapabilities) -> Setup {
         runtime,
         context,
         module,
-        width,
     }
 }
 
