@@ -599,6 +599,9 @@ pub fn run_q1_oracle(value: &Json) -> Result<Q1Output, ToolsError> {
 
 #[cfg(test)]
 mod tests {
+    // Covers the oracle cases of tools/reference/q1/oracle.test.ts (pinned cases,
+    // mg1/mg3 sweeps, signed zero, int truncation, malformed boundary); the
+    // capture-backed cases live in q1/capture.rs tests.
     use crate::json::{deep_strict_equal, parse_json};
     use crate::reference::q1::cases::q1_cases;
 

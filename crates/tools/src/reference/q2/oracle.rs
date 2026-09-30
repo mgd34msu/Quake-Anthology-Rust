@@ -661,6 +661,8 @@ pub fn evaluate(input: &Json, sources: &HashMap<String, String>) -> Result<Json,
 mod tests {
     use std::collections::HashMap;
 
+    // Covers tools/reference/q2/oracle.test.ts: all 6 donor cases (reference cases,
+    // classic-time crosscheck, epsilon deadlines, armor equation, button bytes, save fields).
     use crate::json::{deep_strict_equal, parse_json};
     use crate::reference::environment::quake_typescript_root;
     use crate::reference::q2::cases::q2_cases;

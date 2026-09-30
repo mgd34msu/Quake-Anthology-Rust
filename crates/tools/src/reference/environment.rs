@@ -26,7 +26,7 @@ use crate::inventory::source_census::{self, RepositoryRole, RepositorySpec};
 use crate::process::{self, EnvSpec};
 use crate::reference::schema::{
     BinaryFormat, BinaryObservation, BinaryProvenance, BinaryPurpose, CensusReference, CommandObservation,
-    CommandOutcome, Discovery, FileIdentity, PathObservation, QuakeFamily, ReadObservation,
+    CommandOutcome, Discovery, FileIdentity, PathObservation, ReadObservation,
     ReferenceEnvironment, SourceIdentity, SourceRole, SourceState, SteamEdition, SteamObservation, TitleAvailability,
     ToolObservation,
 };
@@ -679,6 +679,10 @@ pub fn run(args: &[String]) -> Result<(), ToolsError> {
 
 #[cfg(test)]
 mod tests {
+    // Covers tools/reference/environment.test.ts: all 5 donor cases (corpus
+    // discovery, Steam titles, file identity, command capture, command timeout).
+    use crate::reference::schema::QuakeFamily;
+
     use super::*;
 
     #[test]

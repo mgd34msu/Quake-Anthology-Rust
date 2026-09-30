@@ -695,6 +695,8 @@ pub fn evaluate_scenarios() -> Vec<SourceScenario> {
 
 #[cfg(test)]
 mod tests {
+    // Covers tools/reference/q3/scenarios.test.ts: both donor cases (scenario
+    // assertions pass, invalid fixed subdivision is rejected).
     use crate::reference::q3::semantics::MoveInput;
 
     use super::*;

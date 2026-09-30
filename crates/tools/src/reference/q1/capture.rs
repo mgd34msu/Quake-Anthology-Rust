@@ -258,6 +258,8 @@ pub fn run(args: &[String]) -> Result<(), ToolsError> {
 
 #[cfg(test)]
 mod tests {
+    // Covers the capture-backed cases of tools/reference/q1/oracle.test.ts (source
+    // identities, engine-independence, stored captures); oracle cases live in q1/oracle.rs tests.
     use crate::reference::q1::sources::SourceExcerpt;
     use crate::verify::hash::hash_str;
 
