@@ -56,8 +56,8 @@ impl Hasher {
             Self::compress(&mut self.state, &block);
             bytes = &bytes[64..];
         }
-        self.buffer[..bytes.len()].copy_from_slice(bytes);
-        self.buffered = bytes.len();
+        self.buffer[self.buffered..self.buffered + bytes.len()].copy_from_slice(bytes);
+        self.buffered += bytes.len();
     }
 
     /// Finish and return the 32-byte digest.

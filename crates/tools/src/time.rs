@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn epoch_renders_canonically() {
         assert_eq!(render_iso(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(render_iso(1_714_000_000_123), "2024-03-09T10:26:40.123Z");
+        assert_eq!(render_iso(1_714_000_000_123), "2024-04-24T23:06:40.123Z");
         assert_eq!(render_iso(-1), "1969-12-31T23:59:59.999Z");
     }
 

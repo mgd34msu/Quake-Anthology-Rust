@@ -221,7 +221,6 @@ pub fn render_number(value: f64) -> String {
     if value == 0.0 {
         return "0".to_owned();
     }
-    debug_assert!(value.is_finite(), "non-finite numbers have no JSON form");
     if !value.is_finite() {
         return "null".to_owned();
     }
@@ -237,37 +236,48 @@ pub fn render_number(value: f64) -> String {
 }
 
 fn render_exponential(value: f64) -> String {
-    let mut digits = format!("{value:.17e}");
-    let exp_pos = digits.find('e').unwrap_or(digits.len());
-    let mut exponent: i32 = digits[exp_pos + 1..].parse().unwrap_or(0);
-    digits.truncate(exp_pos);
-    let negative = digits.starts_with('-');
-    if negative {
-        digits.remove(0);
-    }
-    let mut mantissa: Vec<char> = digits.chars().filter(|ch| *ch != '.').collect();
-    while mantissa.len() > 1 && mantissa.last() == Some(&'0') {
-        mantissa.pop();
-    }
-    loop {
+    let raw = format!("{value:.17e}");
+    let exp_pos = raw.find('e').unwrap_or(raw.len());
+    let base_exponent: i32 = raw[exp_pos + 1..].parse().unwrap_or(0);
+    let negative = raw.starts_with('-');
+    let digits: Vec<u8> = raw[..exp_pos].bytes().filter(|byte| byte.is_ascii_digit()).collect();
+    for precision in 1..=digits.len().max(17) {
+        let mut kept: Vec<u8> = digits.iter().copied().take(precision).collect();
+        while kept.len() < precision {
+            kept.push(b'0');
+        }
+        let mut exponent = base_exponent;
+        let next = digits.get(precision).copied().unwrap_or(b'0');
+        if next >= b'5' {
+            let mut index = kept.len();
+            loop {
+                if index == 0 {
+                    kept = vec![b'1'];
+                    for _ in 1..precision {
+                        kept.push(b'0');
+                    }
+                    exponent += 1;
+                    break;
+                }
+                index -= 1;
+                if kept[index] < b'9' {
+                    kept[index] += 1;
+                    break;
+                }
+                kept[index] = b'0';
+            }
+        }
+        while kept.len() > 1 && kept.last() == Some(&b'0') {
+            kept.pop();
+        }
+        let mantissa: Vec<char> = kept.iter().map(|byte| *byte as char).collect();
         let candidate = render_exp_candidate(negative, &mantissa, exponent);
         if candidate.parse::<f64>().unwrap_or(f64::NAN).to_bits() == value.to_bits() {
             return candidate;
         }
-        if mantissa.len() >= 17 {
-            return render_exp_candidate(negative, &mantissa, exponent);
-        }
-        let full = format!("{value:.17e}");
-        let full_digits: Vec<char> = full[..full.find('e').unwrap_or(full.len())]
-            .chars()
-            .filter(|ch| *ch != '.' && *ch != '-')
-            .collect();
-        if mantissa.len() >= full_digits.len() {
-            return candidate;
-        }
-        mantissa.push(full_digits[mantissa.len()]);
-        exponent = full[full.find('e').unwrap_or(0) + 1..].parse().unwrap_or(exponent);
     }
+    let mantissa: Vec<char> = digits.iter().map(|byte| *byte as char).collect();
+    render_exp_candidate(negative, &mantissa, base_exponent)
 }
 
 fn render_exp_candidate(negative: bool, mantissa: &[char], exponent: i32) -> String {
