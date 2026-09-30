@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::shared::definitions::*;
-use crate::q3::base::shared::items_mirror::*;
+use qa_core::cmd::ascii_fold;
 
 // ---------------------------------------------------------------------------
 // settings.ts

@@ -5,7 +5,6 @@ pub mod direction_byte;
 pub mod entity_shared;
 pub mod entity_state;
 pub mod items;
-pub mod items_mirror;
 pub mod jump_pad;
 pub mod player_state;
 pub mod slide_move;

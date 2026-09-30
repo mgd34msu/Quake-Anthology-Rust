@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::q3::base::mirrors::*;
 use crate::q3::base::records::*;
 use crate::q3::base::shared::definitions::*;
-use crate::q3::base::shared::items_mirror::*;
+use crate::q3::base::shared::items::*;
 use crate::q3::base::world::*;
 
 // ---------------------------------------------------------------------------
@@ -434,7 +434,14 @@ impl Q3CombatBridge {
         let guard = owner_client.as_ref().is_some_and(|client| {
             powerup_slot.is_some_and(|slot| {
                 item_at(Product::Missionpack, client.borrow().ps.stats.get(slot))
-                    .map(|item| item.powerup_tag() == Some(Powerup::PwGuard))
+                    .map(|item| {
+                        matches!(
+                            item.kind,
+                            ItemKind::Powerup(Powerup::PwGuard)
+                                | ItemKind::PersistantPowerup(Powerup::PwGuard)
+                                | ItemKind::Team(Powerup::PwGuard)
+                        )
+                    })
                     .unwrap_or(false)
             })
         });

@@ -1915,7 +1915,11 @@ mod tests {
     use crate::q3::base::combat_bridge::*;
     use crate::q3::base::map_spawns::*;
     use crate::q3::base::records::*;
-    use crate::q3::base::shared::items_mirror::*;
+    use crate::q3::base::shared::items::{
+        can_item_be_grabbed, can_q3_armor_be_grabbed, find_item, find_item_for_holdable, find_item_for_powerup,
+        find_item_for_weapon, item_at, item_list, player_touches_item, PickupEntity, PlayerInventory,
+        Trajectory as ItemsTrajectory, TrajectoryType as ItemsTrajectoryType,
+    };
     use crate::value::arr;
     use qa_core::cvar::CvarRegistry;
     use qa_core::identity::ActorId;
@@ -2247,7 +2251,7 @@ mod tests {
 
     #[test]
     fn item_lists_split_at_the_missionpack_tail() {
-        assert_eq!(item_list(Product::Baseq3).len(), BASE_ITEM_COUNT);
+        assert_eq!(item_list(Product::Baseq3).len(), 36);
         assert_eq!(item_list(Product::Missionpack).len(), 52);
         assert_eq!(item_at(Product::Baseq3, 0).unwrap().item_type(), ItemType::ItBad);
         assert_eq!(item_at(Product::Baseq3, 8).unwrap().pickup_name, Some("Gauntlet"));
@@ -2362,16 +2366,16 @@ mod tests {
 
     #[test]
     fn player_touch_uses_source_bounds() {
-        let item = Trajectory {
-            trajectory_type: TrajectoryType::TrStationary,
+        let item = ItemsTrajectory {
+            trajectory_type: ItemsTrajectoryType::TrStationary as i32,
             time: 0,
             duration: 0,
             base: vec3(0.0, 0.0, 0.0),
             delta: vec3(0.0, 0.0, 0.0),
         };
-        assert!(player_touches_item(vec3(0.0, 0.0, 0.0), &item, 0));
-        assert!(!player_touches_item(vec3(45.0, 0.0, 0.0), &item, 0));
-        assert!(!player_touches_item(vec3(0.0, 37.0, 0.0), &item, 0));
+        assert!(player_touches_item(vec3(0.0, 0.0, 0.0), &item, 0).unwrap());
+        assert!(!player_touches_item(vec3(45.0, 0.0, 0.0), &item, 0).unwrap());
+        assert!(!player_touches_item(vec3(0.0, 37.0, 0.0), &item, 0).unwrap());
     }
 
     // -- jump pad / snapshot ----------------------------------------------
