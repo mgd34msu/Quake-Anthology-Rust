@@ -89,6 +89,41 @@ pub fn tail_utf16(text: &str, max_units: usize) -> &str {
     &text[start..]
 }
 
+/// Maps byte offsets to UTF-16 code-unit offsets for one document.
+///
+/// TypeScript positions (`getStart`/`getEnd`, line/character) count UTF-16
+/// code units, while this crate scans bytes. Inventory emitters convert
+/// through this map so recorded offsets match the donor exactly.
+#[derive(Debug, Clone)]
+pub struct Utf16Map {
+    /// `(byte_end, cumulative_extra_bytes)` after each non-ASCII character.
+    breaks: Vec<(usize, usize)>,
+}
+
+impl Utf16Map {
+    /// Build the map for a document.
+    #[must_use]
+    pub fn new(source: &str) -> Self {
+        let mut breaks = Vec::new();
+        let mut extra = 0;
+        for (index, ch) in source.char_indices() {
+            if !ch.is_ascii() {
+                extra += ch.len_utf8() - ch.len_utf16();
+                breaks.push((index + ch.len_utf8(), extra));
+            }
+        }
+        Self { breaks }
+    }
+
+    /// Convert a byte offset to a UTF-16 code-unit offset.
+    #[must_use]
+    pub fn to_utf16(&self, byte_offset: usize) -> usize {
+        let breaks = self.breaks.partition_point(|(end, _)| *end <= byte_offset);
+        let shift = self.breaks[..breaks].last().map_or(0, |(_, shift)| *shift);
+        byte_offset.saturating_sub(shift)
+    }
+}
+
 /// Binary32 store: `Math.fround` round-to-nearest ties-to-even.
 #[must_use]
 pub fn fround(value: f64) -> f64 {
@@ -177,6 +212,18 @@ mod tests {
         assert_eq!(tail_utf16("abcdef", 3), "def");
         assert_eq!(tail_utf16("a\u{1f600}b", 2), "b");
         assert_eq!(tail_utf16("a\u{1f600}b", 3), "\u{1f600}b");
+    }
+
+    #[test]
+    fn maps_bytes_to_utf16() {
+        let map = Utf16Map::new("aé😀b");
+        assert_eq!(map.to_utf16(0), 0);
+        assert_eq!(map.to_utf16(1), 1);
+        assert_eq!(map.to_utf16(3), 2);
+        assert_eq!(map.to_utf16(7), 4);
+        assert_eq!(map.to_utf16(8), 5);
+        let ascii = Utf16Map::new("hello");
+        assert_eq!(ascii.to_utf16(4), 4);
     }
 
     #[test]

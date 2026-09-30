@@ -878,6 +878,12 @@ impl<'a> Walker<'a> {
         own
     }
 
+    fn chain_continues(&self, index: usize) -> bool {
+        self.tokens.get(index + 1).is_some_and(|next| {
+            next.kind == TokKind::Punct && matches!(self.text(*next), "." | "?." | "(" | "[" | "!" | "<")
+        })
+    }
+
     fn callee_text(&self, paren: usize) -> String {
         let mut start = paren;
         let mut end = paren.saturating_sub(1);
@@ -887,15 +893,29 @@ impl<'a> Walker<'a> {
             let token = self.tokens[index];
             let text = &self.source[token.start..token.end.min(self.source.len())];
             if token.kind == TokKind::Ident {
-                if matches!(
-                    text,
-                    "new" | "typeof" | "return" | "case" | "do" | "else" | "in" | "of" | "delete" | "void" | "instanceof" | "yield" | "await" | "throw" | "if" | "for" | "while" | "switch" | "catch" | "with"
-                ) {
+                let member_name = index > 0
+                    && self.tokens[index - 1].kind == TokKind::Punct
+                    && matches!(self.text(self.tokens[index - 1]), "." | "?.");
+                if !member_name
+                    && matches!(
+                        text,
+                        "new" | "typeof" | "return" | "case" | "do" | "else" | "in" | "of" | "delete" | "void" | "instanceof" | "yield" | "await" | "throw" | "if" | "for" | "while" | "switch" | "catch" | "with"
+                    )
+                {
                     break;
                 }
                 start = index;
             } else if token.kind == TokKind::Punct && (text == "." || text == "?." || text == "!" || text == ")" || text == "]") {
-                if text == ")" || text == "]" {
+                if text == "!" {
+                    if self.chain_continues(index) {
+                        start = index;
+                    } else {
+                        break;
+                    }
+                } else if text == ")" || text == "]" {
+                    if !self.chain_continues(index) {
+                        break;
+                    }
                     let mut depth = 1;
                     let mut back = index;
                     while back > 0 && depth > 0 {
@@ -1574,50 +1594,33 @@ impl<'a> Walker<'a> {
         });
     }
 
-    fn arrow_start(&self, arrow: usize) -> usize {
-        let mut begin = arrow;
-        if arrow == 0 {
-            return 0;
+    fn match_angle_before(&self, index: usize) -> Option<usize> {
+        if index == 0 || !matches!(self.text(self.tokens[index - 1]), ">" | ">>" | ">>>") {
+            return None;
         }
-        let prev = arrow - 1;
-        let token = self.tokens[prev];
-        if self.text(token) == ")" {
-            let mut depth = 0;
-            let mut index = prev + 1;
-            while index > 0 {
-                index -= 1;
-                let text = self.text(self.tokens[index]);
-                if text == ")" || text == "]" || text == "}" {
-                    depth += 1;
-                } else if text == "(" || text == "[" || text == "{" {
-                    depth -= 1;
-                    if depth == 0 {
-                        begin = index;
-                        break;
-                    }
+        let mut balance = 0i32;
+        let mut scan = index;
+        while scan > 0 {
+            scan -= 1;
+            let text = self.text(self.tokens[scan]);
+            if text == ">" || text == ">>" || text == ">>>" {
+                balance += 1;
+            } else if text == "<" {
+                balance -= 1;
+                if balance == 0 {
+                    return Some(scan);
                 }
+            } else if matches!(text, ";" | "{" | "}" | "(" | ")") {
+                return None;
             }
-            if begin > 0 && self.text(self.tokens[begin - 1]) == ">" {
-                let mut balance = 0i32;
-                let mut scan = begin;
-                while scan > 0 {
-                    scan -= 1;
-                    let text = self.text(self.tokens[scan]);
-                    if text == ">" || text == ">>" || text == ">>>" {
-                        balance += 1;
-                    } else if text == "<" {
-                        balance -= 1;
-                        if balance == 0 {
-                            begin = scan;
-                            break;
-                        }
-                    } else if matches!(text, ";" | "{" | "}" | "(" | ")") {
-                        break;
-                    }
-                }
-            }
-        } else if token.kind == TokKind::Ident {
-            begin = prev;
+        }
+        None
+    }
+
+    fn arrow_start_from(&self, known: usize) -> usize {
+        let mut begin = known.min(self.tokens.len().saturating_sub(1));
+        if let Some(open) = self.match_angle_before(begin) {
+            begin = open;
         }
         if begin > 0 {
             let before = self.tokens[begin - 1];
@@ -1628,9 +1631,22 @@ impl<'a> Walker<'a> {
         self.tokens[begin].start
     }
 
-    fn parse_arrow_at(&mut self, arrow: usize, context: Option<String>) {
+    fn arrow_equals_name_at(&self, head: usize) -> Option<String> {
+        let mut index = head;
+        if let Some(open) = self.match_angle_before(index) {
+            index = open;
+        }
+        if index > 0 {
+            let before = self.tokens[index - 1];
+            if before.kind == TokKind::Ident && self.text(before) == "async" {
+                index -= 1;
+            }
+        }
+        self.equals_name_before(index)
+    }
+
+    fn parse_arrow_at(&mut self, arrow: usize, context: Option<String>, start: usize) {
         self.guarded((), |walker| {
-            let start = walker.arrow_start(arrow);
             walker.pos = arrow + 1;
             let body_start_token = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
             let name = context.unwrap_or_else(|| "anonymous".to_owned());
@@ -2926,6 +2942,9 @@ impl<'a> Walker<'a> {
 
     fn parse_for(&mut self) {
         self.bump();
+        if self.at_ident(0, "await") {
+            self.bump();
+        }
         if !self.at_punct(0, "(") {
             self.error_here("Expected a for header");
             return;
@@ -2980,8 +2999,14 @@ impl<'a> Walker<'a> {
                 }
                 start = index;
             } else if token.kind == TokKind::Punct && (text == "." || text == "?." || text == "!") {
+                if text == "!" && index + 1 != equals && !self.chain_continues(index) {
+                    break;
+                }
                 start = index;
             } else if token.kind == TokKind::Punct && (text == ")" || text == "]") {
+                if index + 1 != equals && !self.chain_continues(index) {
+                    break;
+                }
                 let mut depth = 1;
                 let mut back = index;
                 while back > 0 && depth > 0 {
@@ -3118,27 +3143,34 @@ impl<'a> Walker<'a> {
     fn scan_expression_direct(&mut self, context: &mut Option<String>) -> bool {
         if self.at_ident(0, "async") && self.at_ident(1, "function") {
             let start = self.peek().map(|token| token.start).unwrap_or(self.source.len());
+            let name = context.take().or_else(|| self.equals_name());
             self.bump();
-            self.parse_function(false, context.take(), &[], Some(start));
+            self.parse_function(false, name, &[], Some(start));
             true
         } else if self.at_ident(0, "function") {
-            self.parse_function(false, context.take(), &[], None);
+            let name = context.take().or_else(|| self.equals_name());
+            self.parse_function(false, name, &[], None);
             true
         } else if self.at_ident(0, "class") {
-            self.parse_class(false, context.take(), &[], None);
+            let name = context.take().or_else(|| self.equals_name());
+            self.parse_class(false, name, &[], None);
             true
         } else if self.at_ident(0, "async") && self.arrow_ahead_at(1).is_some() {
             let arrow = self.arrow_ahead_at(1).expect("async arrow");
+            let name = context.take().or_else(|| self.equals_name());
+            let start = self.arrow_start_from(self.pos);
             self.bump();
             self.parse_arrow_params(arrow);
-            self.parse_arrow_at(arrow, context.take());
+            self.parse_arrow_at(arrow, name, start);
             true
         } else if self.arrow_ahead().is_some() {
             let arrow = self.arrow_ahead().expect("leading arrow");
+            let name = context.take().or_else(|| self.equals_name());
+            let start = self.arrow_start_from(self.pos);
             if self.at_punct(0, "(") || self.peek().is_some_and(|token| token.kind == TokKind::Ident) || self.at_punct(0, "<") {
                 self.parse_arrow_params(arrow);
             }
-            self.parse_arrow_at(arrow, context.take());
+            self.parse_arrow_at(arrow, name, start);
             true
         } else {
             false
@@ -3227,9 +3259,10 @@ impl<'a> Walker<'a> {
                     }
                     "(" => {
                         if let Some(arrow) = self.arrow_ahead() {
+                            let name = if first { context.take() } else { None }.or_else(|| self.arrow_equals_name_at(self.pos));
+                            let start = self.arrow_start_from(self.pos);
                             self.parse_arrow_params(arrow);
-                            let name = if first { context.take() } else { None }.or_else(|| self.equals_name());
-                            self.parse_arrow_at(arrow, name);
+                            self.parse_arrow_at(arrow, name, start);
                         } else {
                             let open = self.pos;
                             let callee = self.callee_text(open);
@@ -3310,8 +3343,11 @@ impl<'a> Walker<'a> {
                         }
                     }
                     "=>" => {
-                        let name = if first { context.take() } else { None }.or_else(|| self.equals_name());
-                        self.parse_arrow_at(self.pos, name);
+                        let name = if first { context.take() } else { None }
+                            .or_else(|| self.pos.checked_sub(1).and_then(|param| self.arrow_equals_name_at(param)));
+                        let start = self.arrow_start_from(self.pos.saturating_sub(1));
+                        let arrow = self.pos;
+                        self.parse_arrow_at(arrow, name, start);
                     }
                     _ => {
                         self.bump();
@@ -3332,8 +3368,8 @@ impl<'a> Walker<'a> {
                     self.parse_class(false, name, &[], None);
                 } else if text == "async" && self.at_ident(1, "function") {
                     let start = token.start;
-                    self.bump();
                     let name = if first { context.take() } else { None }.or_else(|| self.equals_name());
+                    self.bump();
                     self.parse_function(false, name, &[], Some(start));
                 } else if text == "new" {
                     self.bump();
@@ -3376,12 +3412,14 @@ impl<'a> Walker<'a> {
                         self.parse_type();
                     }
                 } else if self.at_punct(1, "=>") {
+                    let name = if first { context.take() } else { None }.or_else(|| self.arrow_equals_name_at(self.pos));
+                    let param_index = self.pos;
                     let param = self.bump().expect("arrow param");
-                    let name = self.text(param).to_owned();
-                    self.record("Parameter", name, param.start, param.end, None, None, None, &[]);
+                    let param_name = self.text(param).to_owned();
+                    self.record("Parameter", param_name, param.start, param.end, None, None, None, &[]);
                     let arrow = self.pos;
-                    let name = if first { context.take() } else { None }.or_else(|| self.equals_name());
-                    self.parse_arrow_at(arrow, name);
+                    let start = self.arrow_start_from(param_index);
+                    self.parse_arrow_at(arrow, name, start);
                 } else {
                     self.bump();
                 }
@@ -3406,9 +3444,16 @@ impl<'a> Walker<'a> {
         if self.pos == 0 {
             return None;
         }
-        let prev = self.tokens[self.pos - 1];
+        self.equals_name_before(self.pos)
+    }
+
+    fn equals_name_before(&self, index: usize) -> Option<String> {
+        if index == 0 {
+            return None;
+        }
+        let prev = self.tokens[index - 1];
         if prev.kind == TokKind::Punct && self.text(prev) == "=" {
-            let name = self.lhs_text(self.pos - 1);
+            let name = self.lhs_text(index - 1);
             if name.is_empty() {
                 None
             } else {
@@ -3739,6 +3784,40 @@ mod tests {
         );
         assert!(kinds.contains(&("MethodSignature".to_owned(), "withProtection".to_owned())), "{kinds:?}");
         assert!(kinds.contains(&("MethodDeclaration".to_owned(), "withP".to_owned())), "{kinds:?}");
+    }
+
+    #[test]
+    fn names_arrows_like_inferred_name() {
+        let decls = scan_declarations(
+            "svMainHooks.spawnServer = (mapname: string): void => {};\n\
+             x.y = async (a) => {};\n\
+             x = async y => {};\n\
+             x = <T>(a: T): T => a;\n\
+             promise.catch(() => {});\n\
+             describe.if(flag)(\"name\", () => {});\n\
+             if (!real) Cmd_AddCommand(\"x\", () => {});\n\
+             void (async () => {\n  for await (const c of s) {\n    g();\n  }\n})();\n",
+        );
+        assert!(decls.diagnostics.is_empty(), "{:?}", decls.diagnostics);
+        let arrows: Vec<(String, usize)> = decls
+            .declarations
+            .iter()
+            .filter(|decl| decl.kind == "ArrowFunction")
+            .map(|decl| (decl.name.clone(), decl.start))
+            .collect();
+        assert_eq!(
+            arrows,
+            [
+                ("svMainHooks.spawnServer".to_owned(), 26),
+                ("x.y".to_owned(), 63),
+                ("x".to_owned(), 84),
+                ("x".to_owned(), 103),
+                ("promise.catch callback".to_owned(), 136),
+                ("describe.if(flag) callback".to_owned(), 173),
+                ("Cmd_AddCommand callback".to_owned(), 215),
+                ("anonymous".to_owned(), 232),
+            ]
+        );
     }
 }
 

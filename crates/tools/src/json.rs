@@ -615,11 +615,25 @@ impl<'a> Parser<'a> {
                 }
                 0x00..=0x1F => return Err(self.error("unescaped control character")),
                 _ => {
-                    let rest = &self.bytes[self.offset..];
-                    let text = std::str::from_utf8(rest).map_err(|_| self.error("invalid UTF-8"))?;
-                    let ch = text.chars().next().ok_or_else(|| self.error("invalid UTF-8"))?;
-                    out.push(ch);
-                    self.offset += ch.len_utf8();
+                    if byte < 0x80 {
+                        out.push(byte as char);
+                        self.offset += 1;
+                    } else {
+                        let width = match byte {
+                            0xC2..=0xDF => 2,
+                            0xE0..=0xEF => 3,
+                            0xF0..=0xF4 => 4,
+                            _ => return Err(self.error("invalid UTF-8")),
+                        };
+                        let end = self.offset + width;
+                        if end > self.bytes.len() {
+                            return Err(self.error("invalid UTF-8"));
+                        }
+                        let text = std::str::from_utf8(&self.bytes[self.offset..end]).map_err(|_| self.error("invalid UTF-8"))?;
+                        let ch = text.chars().next().ok_or_else(|| self.error("invalid UTF-8"))?;
+                        out.push(ch);
+                        self.offset += width;
+                    }
                 }
             }
         }
@@ -702,6 +716,15 @@ pub fn parse_jsonc(text: &str) -> Result<Json, ToolsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_multibyte_strings() {
+        let value = parse_json("{\"a\":\"héllo→\\u00e9\",\"b\":\"a😀\",\"c\":\"😀\"}").unwrap();
+        assert_eq!(value.get("a").unwrap().as_str(), Some("héllo→é"));
+        assert_eq!(value.get("b").unwrap().as_str(), Some("a😀"));
+        assert_eq!(value.get("c").unwrap().as_str(), Some("😀"));
+        assert!(parse_json("{\"a\":\"\u{0}escaped\"}").is_err());
+    }
 
     #[test]
     fn round_trip_preserves_number_text() {
