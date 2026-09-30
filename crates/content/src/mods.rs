@@ -3692,7 +3692,12 @@ pub fn discover_gameplay_mods(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::{ProductAvailability, ProductExpectation};
     use crate::contract::ProviderReference;
+    use crate::contract::{
+        ContentIdentity, GameFamily, create_content_id, create_mount_id, create_mount_identity,
+    };
+    use crate::mounts::{digest_bytes, open_mount_plan, OpenMountOptions};
     use crate::value::{arr, boolean, num, obj, str};
 
     fn reader(value: &SaveJson) -> SaveReader<'_> {
@@ -4261,5 +4266,597 @@ mod tests {
         );
         let error = read_native_mod_callbacks(clients.as_bytes()).unwrap_err();
         assert!(error.to_string().contains("input fields require scalar"));
+    }
+
+    // Compat seam tests (`qvm-callbacks.ts`, `qvm-presentation.ts`,
+    // `declaration.ts`, `catalog.ts`).
+
+    const QVM_CALL: &str = r#"{"entry": 1, "arguments": [], "globals": [], "returns": "void"}"#;
+
+    fn qvm_doc(extra: &str) -> String {
+        format!(
+            r#"{{"version": 1, "runtime": "qvm",
+            "program": {{"path": "qvm/game.qvm", "digest": "sha256:{digest}"}},
+            "abiProfile": "q3-modern", "entityRecord": null,
+            "actorRecords": [], "initialize": [], "callbacks": []{extra}}}"#,
+            digest = "ab".repeat(32),
+            extra = extra
+        )
+    }
+
+    fn quakec_must_not_run(_: SaveReader) -> Result<ModCallbackDeclaration, ModsError> {
+        Err(ModsError::Invalid("quakec reader must not run".to_string()))
+    }
+
+    #[test]
+    fn reads_minimal_qvm_declarations_with_defaults() {
+        let declaration = read_qvm_mod_callbacks(qvm_doc("").as_bytes()).unwrap();
+        assert_eq!(declaration.version, 1);
+        assert_eq!(declaration.program.path, "qvm/game.qvm");
+        assert!(matches!(declaration.abi_profile, QvmAbiProfile::Modern));
+        assert!(declaration.presentation.is_none());
+        assert!(declaration.spawn_entities.is_none());
+        assert!(declaration.clients.is_none());
+        assert!(declaration.entity_record.is_none());
+        assert!(declaration.source_actors.is_none());
+        assert!(declaration.combat.is_none());
+        assert!(declaration.protection.is_empty());
+        assert!(declaration.pickups.is_empty());
+        assert!(declaration.items.is_none());
+        assert!(declaration.objectives.is_empty());
+        assert!(declaration.actor_records.is_empty());
+        assert!(declaration.initialize.is_empty());
+        assert!(declaration.callbacks.is_empty());
+        let legacy = qvm_doc(r#", "abiProfile": "q3-1.16n-base""#);
+        assert!(matches!(
+            read_qvm_mod_callbacks(legacy.as_bytes()).unwrap().abi_profile,
+            QvmAbiProfile::Legacy116n
+        ));
+        let damage = qvm_doc(
+            r#", "combat": {"entry": 1, "health": 0, "takedamage": 0, "flags": 0,
+              "godmode": 1, "noKnockback": 1, "globals": [], "client": null, "abi": "q3-g-damage"}"#,
+        );
+        assert!(matches!(
+            read_qvm_mod_callbacks(damage.as_bytes()).unwrap().combat,
+            Some(QvmModCombat { abi: QvmModCombatAbi::GDamage, .. })
+        ));
+    }
+
+    #[test]
+    fn reads_full_qvm_declarations() {
+        let call = QVM_CALL;
+        let document = format!(
+            r#"{{
+            "version": 1, "runtime": "qvm",
+            "program": {{"path": "qvm/game.qvm", "digest": "sha256:{digest}"}},
+            "abiProfile": "q3-modern", "spawnEntities": "spawn", "entityRecord": "entity",
+            "actorRecords": [{{"id": "entity", "address": 100, "stride": 64, "capacity": 1024,
+              "fields": [
+                {{"offset": 0, "binding": "health", "encoding": "int32", "access": "read-write"}},
+                {{"offset": 4, "binding": "team", "encoding": "float32",
+                  "values": [{{"value": 1, "team": "red"}}, {{"value": 2, "team": "blue"}}]}},
+                {{"offset": 8, "binding": "constant-vector",
+                  "value": {{"x": 1, "y": 2, "z": 3}}}},
+                {{"offset": 20, "binding": "private", "byteLength": 16}}]}}],
+            "sourceActors": {{"allocate": 10, "release": {{"entry": 11, "argument": 0}},
+              "initialStores": [1], "inuse": 0, "eventEntityType": 5, "update": null,
+              "frame": {{"call": {call}, "clock": {{"address": 1, "store": 2, "argument": 0}},
+                "owned": [{{"instruction": 3, "localInstruction": 4}}],
+                "end": {{"instruction": 9, "completedTaken": true}}}},
+              "callbacks": {{"touch": 20, "use": null, "pain": 21, "die": 22}}}},
+            "combat": {{"entry": 30, "health": 0, "takedamage": 4, "flags": 8, "godmode": 12,
+              "noKnockback": 16,
+              "globals": [{{"address": 1, "value": {{"kind": "address", "value": 7}}}}],
+              "client": {{"pointer": 0, "record": "client", "health": 0, "armor": 4,
+                "protection": 8, "team": 12}},
+              "abi": "declared",
+              "calls": {{
+                "damage": {{"roles": {{"target": 0, "inflictor": 1, "attacker": 2, "direction": 3,
+                    "point": 4, "amount": 5, "flags": 6, "method": 7}},
+                  "extras": [{{"index": 8, "kind": "float32", "value": 1.5}}]}},
+                "touch": {{"roles": {{"target": 0, "other": 1, "trace": 2}}, "extras": []}},
+                "use": {{"roles": {{"target": 0, "other": 1, "activator": 2}}, "extras": []}},
+                "pain": {{"roles": {{"target": 0, "attacker": 1, "amount": 2}}, "extras": []}},
+                "die": {{"roles": {{"target": 0, "inflictor": 1, "attacker": 2, "amount": 3,
+                    "method": 4}}, "extras": []}}}},
+              "damageFlags": {{"radius": 1, "noArmor": 2, "noKnockback": 4,
+                "noProtection": 8, "noTeamProtection": 16}},
+              "mass": {{"kind": "entity", "offset": 20, "storage": "float32"}},
+              "teams": [{{"value": 1, "team": "red:alpha"}}]}},
+            "protection": [
+              {{"id": "mod:armor", "channel": "regular", "admission": {{"kind": "claim"}},
+                "absorb": {call},
+                "flags": {{"noArmor": 0, "noPowerArmor": 0, "noRegularArmor": 0, "energy": 0}},
+                "storage": {{"points": {{"record": "client", "offset": 0, "encoding": "int32"}},
+                  "item": "q3:armor",
+                  "selection": {{"field": {{"record": "client", "offset": 4, "encoding": "int32"}},
+                    "mask": 3,
+                    "values": [{{"value": 1, "selected": "q3:shard"}},
+                      {{"value": 2, "selected": null}}]}}}}}},
+              {{"id": "mod:cells", "channel": "powered",
+                "admission": {{"kind": "replace-primary", "owner": "q3:official"}},
+                "absorb": {call},
+                "flags": {{"noArmor": 0, "noPowerArmor": 0, "noRegularArmor": 0,
+                  "energy": 1, "radius": 2}},
+                "storage": {{"cells": {{"record": "client", "offset": 8, "encoding": "float32"}},
+                  "selection": {{"field": {{"record": "client", "offset": 12, "encoding": "int32"}},
+                    "mask": null,
+                    "values": [{{"value": 0, "selected": "none"}},
+                      {{"value": 1, "selected": "shield"}}]}}}}}}],
+            "clients": {{"maximum": 16,
+              "outputs": [{{"kind": "movement-mode",
+                "field": {{"record": "client", "offset": 0, "encoding": "int32"}},
+                "values": [{{"value": 0, "mode": "normal"}}]}}],
+              "records": ["client"], "playerStateRecord": "player",
+              "admit": [], "userinfo": [], "disconnect": [], "frame": [{call}],
+              "input": [
+                {{"scope": "client-command", "phase": "before", "calls": [],
+                  "outputs": [{{"kind": "field", "record": "move", "offset": 0,
+                    "value": {{"input": "attack", "encoding": "int32", "scale": 2}}}}]}},
+                {{"scope": "movement-slice", "phase": "after", "calls": [{call}]}}]}},
+            "items": {{"definitions": [], "storage": []}},
+            "pickups": [{{"id": "rule", "offered": ["q3:shells"],
+              "writes": [{{"kind": "inventory", "item": "q3:shells", "fields": "count"}}],
+              "operation": {{"kind": "boolean-grant", "grant": {call}}},
+              "context": [{{"record": "entity", "offset": 0,
+                "value": {{"kind": "int32", "value": {{"kind": "float", "value": 1}}}}}}]}}],
+            "objectives": [{{"id": "mod:flag",
+              "state": {{"storage": {{"address": 40, "encoding": "int32"}},
+                "values": [{{"value": 1, "stage": "home", "complete": false}}]}},
+              "carrier": null, "target": null,
+              "role": "owned", "campaignGate": true, "botGoal": false, "change": null}}],
+            "initialize": [{call}],
+            "callbacks": [
+              {{"id": "mod:watch", "operation": "damage", "stage": "observe",
+                "entry": 50, "arguments": [], "globals": [], "returns": "void"}},
+              {{"id": "mod:give", "operation": "inventory.give", "stage": "transform",
+                "result": "amount", "entry": 51, "arguments": [], "globals": [],
+                "returns": "int32"}},
+              {{"id": "mod:use", "operation": "actor.use", "stage": "replace",
+                "result": "boolean", "entry": 52, "arguments": [], "globals": [],
+                "returns": "void"}}]}}"#,
+            digest = "ab".repeat(32),
+        );
+        let declaration = read_qvm_mod_callbacks(document.as_bytes()).unwrap();
+        assert_eq!(declaration.spawn_entities.as_deref(), Some("spawn"));
+        assert_eq!(declaration.entity_record.as_deref(), Some("entity"));
+        assert_eq!(declaration.actor_records.len(), 1);
+        assert_eq!(declaration.actor_records[0].fields.len(), 4);
+        assert!(matches!(
+            declaration.actor_records[0].fields[1].binding,
+            QvmModActorFieldBinding::Match { .. }
+        ));
+        let actors = declaration.source_actors.unwrap();
+        assert!(actors.frame.is_some());
+        assert_eq!(actors.callbacks.unwrap().touch, Some(20));
+        let combat = declaration.combat.unwrap();
+        match combat.abi {
+            QvmModCombatAbi::Declared { ref calls, ref teams, .. } => {
+                assert_eq!(calls.damage.roles.len(), 8);
+                assert_eq!(calls.damage.extras.len(), 1);
+                assert_eq!(teams.len(), 1);
+            }
+            abi => panic!("expected declared combat, got {abi:?}"),
+        }
+        assert_eq!(declaration.protection.len(), 2);
+        assert!(matches!(
+            declaration.protection[0].channel,
+            QvmModProtectionChannel::Regular { .. }
+        ));
+        assert!(matches!(
+            declaration.protection[1].channel,
+            QvmModProtectionChannel::Powered { .. }
+        ));
+        assert!(matches!(
+            declaration.protection[1].admission,
+            ModProtectionAdmission::ReplacePrimary { .. }
+        ));
+        let clients = declaration.clients.unwrap();
+        assert_eq!(clients.maximum, 16);
+        assert_eq!(clients.outputs.len(), 1);
+        assert_eq!(clients.frame.len(), 1);
+        assert_eq!(clients.input.len(), 2);
+        assert!(declaration.items.is_some());
+        assert_eq!(declaration.pickups.len(), 1);
+        assert_eq!(declaration.pickups[0].context.len(), 1);
+        assert_eq!(declaration.objectives.len(), 1);
+        assert_eq!(declaration.initialize.len(), 1);
+        assert_eq!(declaration.callbacks.len(), 3);
+        assert!(matches!(
+            declaration.callbacks[0].binding.binding,
+            ModCallbackBindingKind::Observe { .. }
+        ));
+        assert!(matches!(
+            declaration.callbacks[1].binding.binding,
+            ModCallbackBindingKind::InventoryTransform { .. }
+        ));
+        assert!(matches!(
+            declaration.callbacks[2].binding.binding,
+            ModCallbackBindingKind::ActorReplace { .. }
+        ));
+    }
+
+    #[test]
+    fn qvm_callback_readers_reject_invalid_shapes() {
+        let pointer = |kind: &str, index: &str| {
+            format!(r#"{{"kind": "{kind}", "index": {index}, "indirections": [], "offset": 0}}"#)
+        };
+        let cases = [
+            (
+                "pointer ABI",
+                format!(
+                    r#", "clients": {{"maximum": 1, "records": [], "playerStateRecord": "p",
+                      "admit": [], "userinfo": [], "disconnect": [],
+                      "input": [{{"scope": "client-command", "phase": "before", "calls": [],
+                        "outputs": [{{"kind": "handler", "entry": 1,
+                          "actor": {{"record": "e", "pointer": {}}},
+                          "inputs": ["attack"]}}]}}]}}"#,
+                    pointer("argument", "62")
+                ),
+                "exceeds source call ABI",
+            ),
+            (
+                "objective global",
+                format!(
+                    r#", "objectives": [{{"id": "mod:flag",
+                      "state": {{"storage": {{"address": {}, "encoding": "int32"}},
+                        "values": [{{"value": 1, "stage": "home", "complete": false}}]}},
+                      "carrier": null, "target": null,
+                      "role": "borrowed", "writable": true}}]"#,
+                    pointer("argument", "0")
+                ),
+                "requires a source global pointer",
+            ),
+            (
+                "transform actor",
+                format!(
+                    r#", "callbacks": [{{"id": "m:m", "operation": "actor.touch",
+                      "stage": "transform", "entry": 1, "arguments": [],
+                      "globals": [], "returns": "void"}}]"#
+                ),
+                "observation or replacement",
+            ),
+            (
+                "replace damage",
+                format!(
+                    r#", "callbacks": [{{"id": "m:m", "operation": "damage", "stage": "replace",
+                      "result": "boolean", "entry": 1, "arguments": [], "globals": [],
+                      "returns": "void"}}]"#
+                ),
+                "only actor callbacks support replacement",
+            ),
+            (
+                "projection access",
+                r#", "actorRecords": [{"id": "e", "address": 1, "stride": 4, "capacity": 1,
+                  "fields": [{"offset": 0, "binding": "record", "record": "e",
+                    "access": "read-only"}]}]"#
+                    .to_string(),
+                "Projection access",
+            ),
+            (
+                "input scale",
+                format!(
+                    r#", "clients": {{"maximum": 1, "records": [], "playerStateRecord": "p",
+                      "admit": [], "userinfo": [], "disconnect": [],
+                      "input": [{{"scope": "client-command", "phase": "before", "calls": [],
+                        "outputs": [{{"kind": "field", "record": "m", "offset": 0,
+                          "value": {{"input": "jump", "encoding": "int32",
+                            "scale": 0}}}}]}}]}}"#
+                ),
+                "scale must be positive",
+            ),
+        ];
+        for (name, extra, message) in cases {
+            let error = read_qvm_mod_callbacks(qvm_doc(&extra).as_bytes()).unwrap_err();
+            assert!(error.to_string().contains(message), "{name}: {error}");
+        }
+        // Rich argument spellings parse through the shared value reader.
+        let rich = format!(
+            r#", "initialize": [{{"entry": 1,
+              "arguments": [
+                {{"kind": "actor", "record": "e", "input": "inflictor"}},
+                {{"kind": "client", "input": "other"}},
+                {{"kind": "time", "input": "time", "units": "seconds",
+                  "encoding": "int32"}},
+                {{"kind": "vector", "value": {{"kind": "vector",
+                  "value": {{"x": 0, "y": 0, "z": 1}}}}}},
+                {{"kind": "string", "value": {{"kind": "string", "value": "hi"}}}}],
+              "globals": [{{"address": 2,
+                "value": {{"kind": "float32",
+                  "value": {{"kind": "float", "value": 0.5}}}}}}],
+              "returns": "float32"}}]"#,
+        );
+        let declaration = read_qvm_mod_callbacks(qvm_doc(&rich).as_bytes()).unwrap();
+        assert_eq!(declaration.initialize[0].arguments.len(), 5);
+    }
+
+    fn presentation_program(path: &str) -> String {
+        format!(
+            r#"{{"path": "{path}", "digest": "sha256:{digest}", "abiProfile": "q3-modern"}}"#,
+            digest = "ab".repeat(32)
+        )
+    }
+
+    #[test]
+    fn qvm_presentations_read_both_runtimes() {
+        let gameplay = presentation_program("qvm/game.qvm");
+        let cgame = presentation_program("qvm/cgame.qvm");
+        let events = format!(
+            r#"{{
+            "version": 1, "runtime": "qvm-player-events",
+            "gameplay": {gameplay}, "cgame": {cgame},
+            "hud": {{"mode": "overlay", "frame": [{{"entry": 1, "arguments": []}}]}},
+            "initialize": [], "refresh": [],
+            "frame": [{{"entry": 2,
+              "arguments": [{{"kind": "source", "value": "time"}},
+                {{"kind": "int32", "value": -5}},
+                {{"kind": "address", "value": 9}},
+                {{"kind": "float32", "value": 0.5}}],
+              "when": "weapon-presented"}}],
+            "storage": {{"gameState": 0, "playerState": 4,
+              "snapshot": {{"kind": "synthetic-player-event", "address": 8,
+                "pointers": [1, 2]}},
+              "centities": {{"address": 16, "stride": 32, "capacity": 64,
+                "state": 0, "origin": 12}},
+              "time": [1], "frameTime": [2], "viewOrigin": [3]}},
+            "project": [], "event": {{"entry": 3, "arguments": []}}}}"#,
+        );
+        match read_qvm_mod_presentation(events.as_bytes()).unwrap() {
+            QvmModPresentationDeclaration::PlayerEvents(presentation) => {
+                assert!(presentation.base.hud.is_some());
+                assert_eq!(presentation.base.frame[0].arguments.len(), 4);
+                assert!(matches!(
+                    presentation.base.frame[0].when,
+                    Some(QvmPresentationTiming::WeaponPresented)
+                ));
+                assert_eq!(presentation.storage.snapshot.pointers, vec![1, 2]);
+                assert_eq!(presentation.event.entry, 3);
+            }
+            declaration => panic!("expected player events, got {declaration:?}"),
+        }
+        let scene = format!(
+            r#"{{
+            "version": 1, "runtime": "qvm-scene",
+            "gameplay": {gameplay}, "cgame": {cgame},
+            "initialize": [], "refresh": [], "frame": [],
+            "cvars": [{{"name": "cg_test", "value": "1"}}],
+            "storage": {{"gameState": 0, "serverCommandSequence": 5,
+              "time": [], "frameTime": [], "viewOrigin": [],
+              "viewAngles": [7], "viewAxis": [8],
+              "centities": {{"address": 16, "stride": 32, "capacity": 64, "state": 0,
+                "previousEvent": 4, "snapshotTime": 8}}}},
+            "snapshots": [], "eventEntityType": 9,
+            "eventCheck": {{"entry": 10, "centityArgument": 0}},
+            "body": {{"player": {{"entry": 11, "centityArgument": 0}},
+              "mesh": {{"entry": 12, "entityArgument": 0, "stateArgument": 1,
+                "shaderOffset": 4, "parts": [{{"call": 13, "part": "head"}}]}}}}}}"#,
+        );
+        match read_qvm_mod_presentation(scene.as_bytes()).unwrap() {
+            QvmModPresentationDeclaration::Scene(presentation) => {
+                assert_eq!(presentation.cvars.len(), 1);
+                assert_eq!(presentation.storage.view_angles, vec![7]);
+                assert_eq!(presentation.body.mesh.parts.len(), 1);
+                assert_eq!(presentation.event_check.entry, 10);
+            }
+            declaration => panic!("expected scene, got {declaration:?}"),
+        }
+    }
+
+    #[test]
+    fn qvm_presentations_reject_bad_scalars() {
+        let gameplay = presentation_program("qvm/game.qvm");
+        let cgame = presentation_program("qvm/cgame.qvm");
+        let document = |frame: &str| {
+            format!(
+                r#"{{
+                "version": 1, "runtime": "qvm-player-events",
+                "gameplay": {gameplay}, "cgame": {cgame},
+                "initialize": [], "refresh": [], "frame": [{frame}],
+                "storage": {{"gameState": 0, "playerState": 4,
+                  "snapshot": {{"kind": "synthetic-player-event", "address": 8,
+                    "pointers": []}},
+                  "centities": {{"address": 16, "stride": 32, "capacity": 64,
+                    "state": 0, "origin": 12}},
+                  "time": [], "frameTime": [], "viewOrigin": []}},
+                "project": [], "event": {{"entry": 3, "arguments": []}}}}"#,
+            )
+        };
+        let cases = [
+            (
+                "int32",
+                r#"{"entry": 2, "arguments": [{"kind": "int32", "value": 2147483648}]}"#,
+                "exceeds int32",
+            ),
+            (
+                "float32",
+                r#"{"entry": 2, "arguments": [{"kind": "float32", "value": 1e300}]}"#,
+                "exceeds float32",
+            ),
+            (
+                "when",
+                r#"{"entry": 2, "arguments": [], "when": "other"}"#,
+                "expected",
+            ),
+        ];
+        for (name, frame, message) in cases {
+            let error = read_qvm_mod_presentation(document(frame).as_bytes()).unwrap_err();
+            assert!(error.to_string().contains(message), "{name}: {error}");
+        }
+        let many = vec![r#"{"kind": "address", "value": 0}"#.to_string(); 63].join(", ");
+        let error =
+            read_qvm_mod_presentation(document(&format!(r#"{{"entry": 2, "arguments": [{many}]}}"#)).as_bytes())
+                .unwrap_err();
+        assert!(error.to_string().contains("exceeds QVM argument ABI"), "{error}");
+    }
+
+    #[test]
+    fn gameplay_declarations_dispatch_by_runtime() {
+        let value = parse_save_json(&qvm_doc("")).unwrap();
+        assert!(matches!(
+            read_gameplay_mod_declaration(reader(&value), quakec_must_not_run).unwrap(),
+            ModDeclaration::Qvm(_)
+        ));
+        let native = parse_save_json(&minimal_native_declaration("")).unwrap();
+        assert!(matches!(
+            read_gameplay_mod_declaration(reader(&native), quakec_must_not_run).unwrap(),
+            ModDeclaration::Native(_)
+        ));
+        let bytes = qvm_doc("").into_bytes();
+        assert!(matches!(
+            parse_gameplay_mod_declaration(&bytes, quakec_must_not_run).unwrap(),
+            ModDeclaration::Qvm(_)
+        ));
+        let quakec = parse_save_json(r#"{"runtime": "quakec"}"#).unwrap();
+        let error = read_gameplay_mod_declaration(reader(&quakec), |_| {
+            Err(ModsError::Invalid("quakec reached".to_string()))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("quakec reached"), "{error}");
+        let bogus = parse_save_json(r#"{"runtime": "bogus"}"#).unwrap();
+        assert!(read_gameplay_mod_declaration(reader(&bogus), quakec_must_not_run).is_err());
+    }
+
+    fn seam_product(content: &crate::contract::ContentId) -> CatalogProduct {
+        CatalogProduct {
+            id: content.clone(),
+            expectation: ProductExpectation {
+                id: "seam-game".to_string(),
+                family: GameFamily::Q1,
+                edition: "classic".to_string(),
+                campaign: "id1".to_string(),
+                title: "Quake".to_string(),
+                content_directory: "q1/id1".to_string(),
+                base_product: None,
+                required_content_archives: Vec::new(),
+                required_programs: Vec::new(),
+                map_witness: None,
+                unresolved_reason: None,
+            },
+            availability: ProductAvailability::Installed,
+            archives: Vec::new(),
+            loose_root: None,
+            user_content: None,
+            maps: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn mount_loose_dir(root: &std::path::Path, content: &crate::contract::ContentId) -> MountedContent {
+        use crate::contract::{ContentMount, LooseMount, MountPlanId, ResolvedMountPlan};
+        let mount = LooseMount {
+            identity: create_mount_identity(
+                create_mount_id("seam", "mods").unwrap(),
+                content.clone(),
+                0,
+            )
+            .unwrap(),
+            root_path: root.to_string_lossy().into_owned(),
+        };
+        open_mount_plan(
+            &ResolvedMountPlan {
+                id: MountPlanId("mount-plan:seam:mods".to_string()),
+                mounts: vec![ContentMount::Loose(mount.clone())],
+                default_order: vec![mount.identity.id.clone()],
+                prefix_orders: Vec::new(),
+            },
+            OpenMountOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn gameplay_mods_discover_available_and_unavailable() {
+        let root = std::env::temp_dir().join(format!("qa-mods-seam-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("mods")).unwrap();
+        std::fs::create_dir_all(root.join("qvm")).unwrap();
+        let program = b"qvm-program-bytes";
+        std::fs::write(root.join("qvm").join("game.qvm"), program).unwrap();
+        let digest = digest_bytes(program);
+        let declaration = format!(
+            r#"{{"version": 1, "runtime": "qvm",
+              "program": {{"path": "qvm/game.qvm", "digest": "{digest}"}},
+              "abiProfile": "q3-modern", "entityRecord": null,
+              "actorRecords": [], "initialize": [], "callbacks": []}}"#,
+        );
+        std::fs::write(root.join("mods").join("good.json"), &declaration).unwrap();
+        std::fs::write(
+            root.join("gameplay-mods.json"),
+            r#"{"version": 1, "components": [
+              {"id": "good", "title": "Good", "purpose": "addition",
+               "callbacks": "mods/good.json",
+               "requires": ["other-prod/other-mod"], "conflicts": []},
+              {"id": "broken", "title": "Broken", "purpose": "addition",
+               "callbacks": "mods/missing.json", "requires": [], "conflicts": []},
+              {"id": "gametype", "title": "GT", "purpose": "game-type",
+               "callbacks": "mods/gt.json", "requires": [], "conflicts": []}]}"#,
+        )
+        .unwrap();
+        let content = create_content_id(&ContentIdentity {
+            family: GameFamily::Q1,
+            edition: "classic".to_string(),
+            package: "id1".to_string(),
+            revision: "v1".to_string(),
+        })
+        .unwrap();
+        let product = seam_product(&content);
+        let mounted = mount_loose_dir(&root, &content);
+        let discovered = discover_gameplay_mods(&product, &mounted, quakec_must_not_run).unwrap();
+        assert_eq!(discovered.len(), 2);
+        match &discovered[0] {
+            DiscoveredGameplayMod::Available(found) => {
+                assert_eq!(found.selection.id, "good");
+                assert_eq!(found.source_title, "Quake (Q1)");
+                assert_eq!(found.source.provider, ProviderId::new("q1", "official"));
+                assert_eq!(found.requires.len(), 1);
+                assert_eq!(found.requires[0].product, "other-prod");
+                assert!(matches!(found.declaration, ModDeclaration::Qvm(_)));
+                assert_eq!(found.declaration_digest, digest_bytes(declaration.as_bytes()));
+            }
+            found => panic!("expected available, got {found:?}"),
+        }
+        match &discovered[1] {
+            DiscoveredGameplayMod::Unavailable(description) => {
+                assert_eq!(description.selection.id, "broken");
+                assert!(matches!(
+                    description.availability,
+                    crate::contract::ModAvailability::Unavailable { ref reason }
+                    if reason.contains("Missing callback declaration")
+                ));
+            }
+            found => panic!("expected unavailable, got {found:?}"),
+        }
+        // Digest mismatches report as unavailable rather than failing discovery.
+        std::fs::write(root.join("qvm").join("game.qvm"), b"tampered").unwrap();
+        let discovered = discover_gameplay_mods(&product, &mounted, quakec_must_not_run).unwrap();
+        assert!(matches!(discovered[0], DiscoveredGameplayMod::Unavailable(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gameplay_mods_require_documents_and_unique_components() {
+        let root = std::env::temp_dir().join(format!("qa-mods-seam-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let content = create_content_id(&ContentIdentity {
+            family: GameFamily::Q1,
+            edition: "classic".to_string(),
+            package: "id1".to_string(),
+            revision: "v1".to_string(),
+        })
+        .unwrap();
+        let product = seam_product(&content);
+        let mounted = mount_loose_dir(&root, &content);
+        assert!(discover_gameplay_mods(&product, &mounted, quakec_must_not_run).unwrap().is_empty());
+        std::fs::write(
+            root.join("gameplay-mods.json"),
+            r#"{"version": 1, "components": [
+              {"id": "dup", "title": "A", "purpose": "addition"},
+              {"id": "dup", "title": "B", "purpose": "addition"}]}"#,
+        )
+        .unwrap();
+        let error = discover_gameplay_mods(&product, &mounted, quakec_must_not_run).unwrap_err();
+        assert!(error.to_string().contains("Duplicate mod component"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
