@@ -4,6 +4,7 @@
 
 pub mod boss2;
 pub mod brain;
+pub mod chick;
 pub mod flipper;
 pub mod floater;
 pub mod flyer;
