@@ -12,7 +12,9 @@ use crate::monsters::MonsterMission;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2Entity, Q2GameServices};
 use crate::q2::foundation::weapons::types::Q2GrenadeAdjustment;
-use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
+use crate::q2::support::contracts::{
+    DeathReaction, PainReaction, PowerArmorCells, TraceResult,
+};
 
 /// Monster frame AI selector (`MonsterFrame["ai"]`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -876,7 +878,7 @@ pub struct MonsterWeapons {
 /// Rogue source-combat hooks (`Q2MonsterSourceCombatHooks`).
 pub trait Q2MonsterSourceCombatHooks {
     /// Whether an entity counts as a good guy.
-    fn is_good_guy(&mut self, entity: &Q2Entity) -> bool;
+    fn is_good_guy(&mut self, game: &mut Q2GameServices, entity: &Q2Entity) -> bool;
     /// Intercept a damage reaction, reporting whether handled.
     fn before_react(&mut self, context: &mut MonsterContext, attacker: &ActorId) -> bool;
     /// Observe a kill before death processing.
@@ -1177,6 +1179,49 @@ impl<'a> MonsterContext<'a> {
     pub fn mission(&self, actor: &ActorId) -> Option<Box<dyn MonsterMission>> {
         self.game.monsters.hooks.mission.as_ref().and_then(|hook| hook(actor))
     }
+}
+
+/// Shared power-armor cell store (`bindPowerArmorCells` binding).
+///
+/// Combat drains land in the shared count; species sync it back to the
+/// `q2:monster-power` inventory entry like the donor binding.
+#[derive(Debug, Clone, Default)]
+pub struct SharedPowerCells(pub std::rc::Rc<std::cell::RefCell<f64>>);
+
+impl PowerArmorCells for SharedPowerCells {
+    fn read(&self) -> f64 {
+        *self.0.borrow()
+    }
+
+    fn write(&mut self, count: f64) {
+        *self.0.borrow_mut() = count;
+    }
+}
+
+/// Bind shared power-armor cells once per actor (`bindPowerArmor` dedup).
+pub fn bind_shared_power_cells(context: &mut MonsterContext) {
+    let actor = context.actor().clone();
+    if context.game.monsters.power_cells.contains_key(&actor) {
+        return;
+    }
+    let cells = std::rc::Rc::new(std::cell::RefCell::new(
+        context
+            .game
+            .host
+            .inventory()
+            .count(&actor, &"q2:monster-power".to_string()),
+    ));
+    context
+        .game
+        .monsters
+        .power_cells
+        .insert(actor.clone(), cells.clone());
+    let owned = context.game.owned_of(actor);
+    context
+        .game
+        .host
+        .combat()
+        .bind_power_armor_cells(&owned, Box::new(SharedPowerCells(cells)));
 }
 
 /// Index a source table with a range error (`recordAt`).

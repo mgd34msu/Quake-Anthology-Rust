@@ -2,4 +2,5 @@
 //!
 //! Gameplay logic adapted from the ZeniMax rerelease game DLL (GPL-2.0-or-later).
 
+pub mod common;
 pub mod tables;

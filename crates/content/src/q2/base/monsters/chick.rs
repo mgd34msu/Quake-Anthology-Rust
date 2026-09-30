@@ -17,7 +17,7 @@ use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2M
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 
 /// Run (`run`).
-fn chick_run(context: &mut MonsterContext) {
+pub(crate) fn chick_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
         context.set_move("chick_move_stand", false);
         return;

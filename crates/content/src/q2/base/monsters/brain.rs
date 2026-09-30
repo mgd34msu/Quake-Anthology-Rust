@@ -14,38 +14,14 @@ use super::common::{
 use super::tables::brain::brain_moves;
 use crate::contract::{InventoryEntry, PoweredProtectionState};
 use crate::q2::foundation::monsters::ai::set_duck;
-use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2MonsterDefinition};
-use crate::q2::support::contracts::{DeathReaction, PainReaction, PowerArmorCells, TraceResult};
-
-/// Brain power-armor cell store (`bindPowerArmor` binding).
-struct BrainCells(std::rc::Rc<std::cell::RefCell<f64>>);
-
-impl PowerArmorCells for BrainCells {
-    fn read(&self) -> f64 {
-        *self.0.borrow()
-    }
-
-    fn write(&mut self, count: f64) {
-        *self.0.borrow_mut() = count;
-    }
-}
+use crate::q2::foundation::monsters::types::{
+    MonsterContext, MonsterHandler, Q2MonsterDefinition, bind_shared_power_cells,
+};
+use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 
 /// Bind power-armor cells (`bindPowerArmor`).
 fn bind_power_armor(context: &mut MonsterContext) {
-    let actor = context.actor().clone();
-    if context.game.monsters.power_cells.contains_key(&actor) {
-        return;
-    }
-    let cells = std::rc::Rc::new(std::cell::RefCell::new(
-        context.game.host.inventory().count(&actor, &"q2:monster-power".to_string()),
-    ));
-    context.game.monsters.power_cells.insert(actor.clone(), cells.clone());
-    let owned = context.game.owned_of(actor.clone());
-    context
-        .game
-        .host
-        .combat()
-        .bind_power_armor_cells(&owned, Box::new(BrainCells(cells)));
+    bind_shared_power_cells(context);
 }
 
 /// Toggle the power screen (`screen`).

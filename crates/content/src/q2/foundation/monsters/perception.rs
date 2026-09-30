@@ -1014,7 +1014,10 @@ pub fn react_to_damage(context: &mut MonsterContext, attacker: Option<&ActorId>)
             || other.as_ref().is_some_and(|_| {
                 let mut hooks = context.game.monsters.source_combat_hooks.take();
                 let good = other.as_ref().is_some_and(|entity| {
-                    hooks.as_mut().map(|hooks| hooks.is_good_guy(entity)).unwrap_or(false)
+                    hooks
+                        .as_mut()
+                        .map(|hooks| hooks.is_good_guy(&mut *context.game, entity))
+                        .unwrap_or(false)
                 });
                 context.game.monsters.source_combat_hooks = hooks;
                 good

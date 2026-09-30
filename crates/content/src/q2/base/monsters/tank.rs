@@ -39,7 +39,7 @@ fn tank_run(context: &mut MonsterContext) {
 }
 
 /// Attack (`attack`).
-fn tank_attack(context: &mut MonsterContext) {
+pub(crate) fn tank_attack(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
     if health(&mut *context.game, enemy.as_ref()) < 0.0 {
         context.state_mut().brutal = false;
@@ -289,7 +289,7 @@ fn tank_rocket(context: &mut MonsterContext) {
 }
 
 /// Machine gun (`TankMachineGun`).
-fn tank_machine_gun(context: &mut MonsterContext) {
+pub(crate) fn tank_machine_gun(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let frame = context.entity().frame;
     let flash = 4 + frame - tank_frame::ATTAK406;
