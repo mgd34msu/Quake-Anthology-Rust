@@ -35,6 +35,8 @@ pub mod monsters;
 pub mod mounts;
 pub mod normals;
 pub mod paths;
+pub mod q3_base;
+pub mod q3_present_scene;
 pub mod q3_supply;
 pub mod q3anim;
 pub mod q3scene;
