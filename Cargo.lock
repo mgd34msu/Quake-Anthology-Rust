@@ -111,7 +111,9 @@ dependencies = [
 name = "qa-content"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "qa-core",
+ "qa-platform",
  "thiserror",
 ]
 
