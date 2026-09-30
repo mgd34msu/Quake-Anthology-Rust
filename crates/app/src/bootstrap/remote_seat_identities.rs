@@ -96,16 +96,9 @@ pub trait SeatSession {
     /// Prepare a client in a free slot.
     fn prepare_client(&mut self, slot: u32) -> Result<Self::Client, Self::Error>;
     /// Prepare a seat at a free index bound to `client`.
-    fn prepare_seat(
-        &mut self,
-        index: u32,
-        client: &Self::Client,
-    ) -> Result<Self::Seat, Self::Error>;
+    fn prepare_seat(&mut self, index: u32, client: &Self::Client) -> Result<Self::Seat, Self::Error>;
     /// Validate publishing `added` seats.
-    fn validate_local_seats(
-        &self,
-        added: &[RemoteSeatIdentity<Self::Client, Self::Seat>],
-    ) -> Result<(), Self::Error>;
+    fn validate_local_seats(&self, added: &[RemoteSeatIdentity<Self::Client, Self::Seat>]) -> Result<(), Self::Error>;
     /// Publish `added` seats, returning retired seats to close.
     fn publish_local_seats(
         &mut self,
@@ -205,8 +198,7 @@ impl<S: SeatSession + ?Sized> RemoteSeatPreparation<'_, S> {
             return Ok(());
         }
         self.phase = SeatPhase::Discarded;
-        close_added(&mut self.selected, self.added_start)
-            .map_err(|errors| RemoteSeatError::CleanupFailed { errors })
+        close_added(&mut self.selected, self.added_start).map_err(|errors| RemoteSeatError::CleanupFailed { errors })
     }
 }
 
@@ -217,19 +209,16 @@ pub fn prepare_remote_seat_identities<S: SeatSession>(
     retained: Vec<RemoteSeatIdentity<S::Client, S::Seat>>,
     count: i32,
 ) -> Result<RemoteSeatPreparation<'_, S>, RemoteSeatError> {
-    if count < 1 || count > 4 {
+    if !(1..=4).contains(&count) {
         return Err(RemoteSeatError::InvalidCount);
     }
     let count = count as usize;
-    let mut selected: Vec<RemoteSeatIdentity<S::Client, S::Seat>> =
-        retained.into_iter().take(count).collect();
+    let mut selected: Vec<RemoteSeatIdentity<S::Client, S::Seat>> = retained.into_iter().take(count).collect();
     let added_start = selected.len();
     while selected.len() < count {
         let mut slot = 0u32;
         while session.client_at(slot).is_some()
-            || selected[added_start..]
-                .iter()
-                .any(|entry| entry.client.slot() == slot)
+            || selected[added_start..].iter().any(|entry| entry.client.slot() == slot)
         {
             slot += 1;
         }
@@ -372,10 +361,7 @@ mod tests {
             Ok(FakeSeat { index })
         }
 
-        fn validate_local_seats(
-            &self,
-            _added: &[RemoteSeatIdentity<FakeClient, FakeSeat>],
-        ) -> Result<(), String> {
+        fn validate_local_seats(&self, _added: &[RemoteSeatIdentity<FakeClient, FakeSeat>]) -> Result<(), String> {
             if self.fail_validate {
                 return Err("bad seats".to_string());
             }
@@ -420,16 +406,23 @@ mod tests {
 
     #[test]
     fn reuses_retained_and_skips_occupied() {
+        // Retained clients stay session-owned, so the owned set covers them.
         let mut session = FakeSession {
-            owned: vec![FakeClient {
-                slot: 0,
-                closed: false,
-                fail_close: false,
-            }],
+            owned: vec![
+                FakeClient {
+                    slot: 0,
+                    closed: false,
+                    fail_close: false,
+                },
+                FakeClient {
+                    slot: 1,
+                    closed: false,
+                    fail_close: false,
+                },
+            ],
             ..FakeSession::default()
         };
-        let mut prepared =
-            prepare_remote_seat_identities(&mut session, vec![retained(1, 0)], 2).unwrap();
+        let mut prepared = prepare_remote_seat_identities(&mut session, vec![retained(1, 0)], 2).unwrap();
         assert_eq!(prepared.selected().len(), 2);
         assert_eq!(prepared.added().len(), 1);
         assert_eq!(prepared.added()[0].client.slot, 2);
@@ -481,10 +474,7 @@ mod tests {
         let mut prepared = prepare_remote_seat_identities(&mut session, Vec::new(), 1).unwrap();
         prepared.selected[0].client.fail_close = true;
         let error = prepared.discard().unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Remote seat identity cleanup failed"
-        );
+        assert_eq!(error.to_string(), "Remote seat identity cleanup failed");
         assert!(matches!(
             error,
             RemoteSeatError::CleanupFailed { errors } if errors.len() == 1

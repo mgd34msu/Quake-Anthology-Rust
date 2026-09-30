@@ -168,11 +168,7 @@ impl PlayerProgressEvent {
             return Err(PlayerProgressError::BadIdentity);
         }
         match self {
-            Self::Achievement {
-                source,
-                award,
-                ..
-            } => {
+            Self::Achievement { source, award, .. } => {
                 if *source != ProgressSource::Q3 && !award.is_empty() {
                     return Ok(());
                 }
@@ -274,22 +270,10 @@ fn decode_json(value: &Json) -> Result<PlayerProgressEvent, PlayerProgressError>
 
 fn encode(event: &PlayerProgressEvent) -> Json {
     let mut members = vec![
-        (
-            "kind".to_string(),
-            Json::String(event.kind().to_string()),
-        ),
-        (
-            "source".to_string(),
-            Json::String(event.source().as_str().to_string()),
-        ),
-        (
-            "participant".to_string(),
-            Json::String(event.participant().to_string()),
-        ),
-        (
-            "event".to_string(),
-            Json::String(event.event().to_string()),
-        ),
+        ("kind".to_string(), Json::String(event.kind().to_string())),
+        ("source".to_string(), Json::String(event.source().as_str().to_string())),
+        ("participant".to_string(), Json::String(event.participant().to_string())),
+        ("event".to_string(), Json::String(event.event().to_string())),
     ];
     match event {
         PlayerProgressEvent::Achievement { award, .. } => {
@@ -379,19 +363,13 @@ impl PlayerProgressStore {
         temporary.push(".pending");
         let payload = stringify(&Json::Object(vec![
             ("version".to_string(), Json::Number(1.0)),
-            (
-                "events".to_string(),
-                Json::Array(pending.iter().map(encode).collect()),
-            ),
+            ("events".to_string(), Json::Array(pending.iter().map(encode).collect())),
         ])) + "\n";
         std::fs::write(&temporary, payload)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &temporary,
-                std::fs::Permissions::from_mode(0o600),
-            )?;
+            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
         }
         std::fs::rename(&temporary, &self.file)?;
         self.index.insert(key, self.events.len());
@@ -412,10 +390,7 @@ mod tests {
 
     fn temp_file(name: &str) -> PathBuf {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "qa-player-progress-{name}-{}-{id}.json",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("qa-player-progress-{name}-{}-{id}.json", std::process::id()))
     }
 
     fn achievement() -> PlayerProgressEvent {
@@ -473,10 +448,7 @@ mod tests {
             event: "x".to_string(),
             award: "X".to_string(),
         };
-        assert_eq!(
-            store.record(q3_achievement).unwrap_err(),
-            PlayerProgressError::BadMap
-        );
+        assert_eq!(store.record(q3_achievement).unwrap_err(), PlayerProgressError::BadMap);
         let nan_score = PlayerProgressEvent::MatchCompleted {
             source: ProgressSource::Q3,
             participant: "player".to_string(),
@@ -484,10 +456,7 @@ mod tests {
             map: "q3dm1".to_string(),
             score: f64::NAN,
         };
-        assert_eq!(
-            store.record(nan_score).unwrap_err(),
-            PlayerProgressError::BadEvent
-        );
+        assert_eq!(store.record(nan_score).unwrap_err(), PlayerProgressError::BadEvent);
         assert!(!file.exists());
     }
 
@@ -495,16 +464,8 @@ mod tests {
     fn open_rejects_bad_files() {
         for (name, text, expected) in [
             ("scalar", "42", PlayerProgressError::BadFile),
-            (
-                "version",
-                r#"{"version":2,"events":[]}"#,
-                PlayerProgressError::BadFile,
-            ),
-            (
-                "events",
-                r#"{"version":1,"events":{}}"#,
-                PlayerProgressError::BadFile,
-            ),
+            ("version", r#"{"version":2,"events":[]}"#, PlayerProgressError::BadFile),
+            ("events", r#"{"version":1,"events":{}}"#, PlayerProgressError::BadFile),
             (
                 "entry",
                 r#"{"version":1,"events":[{"kind":"achievement"}]}"#,

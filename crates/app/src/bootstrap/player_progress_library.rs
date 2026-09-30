@@ -120,11 +120,7 @@ where
     /// Show one row's label and detail in the status line.
     pub fn activate(&mut self, id: &str) {
         if let Some(row) = self.rows.iter().find(|entry| entry.id == id) {
-            self.message = format!(
-                "{}: {}",
-                row.label,
-                row.detail.as_deref().unwrap_or("")
-            );
+            self.message = format!("{}: {}", row.label, row.detail.as_deref().unwrap_or(""));
         }
     }
 }
@@ -153,18 +149,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::player_progress::{PlayerProgressStore, ProgressSource};
     use super::*;
-    use super::super::player_progress::{ProgressSource, PlayerProgressStore};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
     fn seed_store() -> std::path::PathBuf {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let file = std::env::temp_dir().join(format!(
-            "qa-progress-library-{}-{id}.json",
-            std::process::id()
-        ));
+        let file = std::env::temp_dir().join(format!("qa-progress-library-{}-{id}.json", std::process::id()));
         let _ = std::fs::remove_file(&file);
         let mut store = PlayerProgressStore::open(&file).unwrap();
         store
@@ -191,20 +184,14 @@ mod tests {
     fn loads_rows_and_status() {
         let file = seed_store();
         let mut view = PlayerProgressLibrary::new(
-            || {
-                PlayerProgressStore::open(&file)
-                    .map_err(|error| PlayerProgressLibraryError::Store(error.to_string()))
-            },
+            || PlayerProgressStore::open(&file).map_err(|error| PlayerProgressLibraryError::Store(error.to_string())),
             || "player".to_string(),
         );
         view.refresh();
         assert_eq!(view.entries().len(), 2);
         assert_eq!(view.status(), "2 progress records");
         assert_eq!(view.entries()[0].label, "First Blood");
-        assert_eq!(
-            view.entries()[0].detail.as_deref(),
-            Some("Q1 · Achievement earned")
-        );
+        assert_eq!(view.entries()[0].detail.as_deref(), Some("Q1 · Achievement earned"));
         assert_eq!(
             view.entries()[1].detail.as_deref(),
             Some("Q3 · Match completed · Score 25")
@@ -219,10 +206,7 @@ mod tests {
     fn empty_and_error_states() {
         let file = seed_store();
         let mut view = PlayerProgressLibrary::new(
-            || {
-                PlayerProgressStore::open(&file)
-                    .map_err(|error| PlayerProgressLibraryError::Store(error.to_string()))
-            },
+            || PlayerProgressStore::open(&file).map_err(|error| PlayerProgressLibraryError::Store(error.to_string())),
             || "nobody".to_string(),
         );
         view.load();
@@ -236,11 +220,7 @@ mod tests {
         assert_eq!(view.status(), before);
 
         let mut failing = PlayerProgressLibrary::new(
-            || {
-                Err::<PlayerProgressStore, _>(PlayerProgressLibraryError::Store(
-                    "locked".to_string(),
-                ))
-            },
+            || Err::<PlayerProgressStore, _>(PlayerProgressLibraryError::Store("locked".to_string())),
             || "player".to_string(),
         );
         failing.load();
@@ -253,10 +233,7 @@ mod tests {
     fn serves_library_menu_contract() {
         let file = seed_store();
         let mut view = PlayerProgressLibrary::new(
-            || {
-                PlayerProgressStore::open(&file)
-                    .map_err(|error| PlayerProgressLibraryError::Store(error.to_string()))
-            },
+            || PlayerProgressStore::open(&file).map_err(|error| PlayerProgressLibraryError::Store(error.to_string())),
             || "player".to_string(),
         );
         let service: &mut dyn LibraryMenuService = &mut view;

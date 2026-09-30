@@ -37,11 +37,7 @@ pub trait Q2LocalizationCatalog {
 /// Resolve presentation text, preserving unknown `$keys` and trailing
 /// newlines exactly like the donor.
 #[must_use]
-pub fn q2_localized_text(
-    catalog: &(impl Q2LocalizationCatalog + ?Sized),
-    text: &str,
-    args: &[String],
-) -> String {
+pub fn q2_localized_text(catalog: &(impl Q2LocalizationCatalog + ?Sized), text: &str, args: &[String]) -> String {
     let key = if text.starts_with('$') {
         text.trim_end_matches(['\r', '\n'])
     } else {
@@ -168,15 +164,9 @@ mod tests {
     #[test]
     fn unknown_keys_and_missing_args_fall_back_to_text() {
         let catalog = catalog();
-        assert_eq!(
-            q2_localized_text(&catalog, "$unknown\r\n", &[]),
-            "$unknown\r\n"
-        );
+        assert_eq!(q2_localized_text(&catalog, "$unknown\r\n", &[]), "$unknown\r\n");
         assert_eq!(q2_localized_text(&catalog, "$greeting", &[]), "$greeting");
-        assert_eq!(
-            q2_localized_text(&catalog, "plain {0}", &["x".to_string()]),
-            "plain x"
-        );
+        assert_eq!(q2_localized_text(&catalog, "plain {0}", &["x".to_string()]), "plain x");
         assert_eq!(q2_localized_text(&catalog, "plain", &[]), "plain");
     }
 }

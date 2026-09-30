@@ -71,15 +71,13 @@ pub fn parse_save_request(args: &[String]) -> Result<SaveRequest, SaveRequestErr
     let name = args.first();
     let format = args.get(1).map(String::as_str).unwrap_or("shared");
     match name {
-        Some(name) if !name.is_empty() && args.len() <= 2 => {
-            match ApplicationSaveFormat::parse(format) {
-                Some(format) => Ok(SaveRequest {
-                    name: name.clone(),
-                    format,
-                }),
-                None => Err(SaveRequestError::BadSaveUsage),
-            }
-        }
+        Some(name) if !name.is_empty() && args.len() <= 2 => match ApplicationSaveFormat::parse(format) {
+            Some(format) => Ok(SaveRequest {
+                name: name.clone(),
+                format,
+            }),
+            None => Err(SaveRequestError::BadSaveUsage),
+        },
         _ => Err(SaveRequestError::BadSaveUsage),
     }
 }
@@ -181,7 +179,9 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_load_request(&args(&["original", "q1-classic-id1"])).unwrap().source_product,
+            parse_load_request(&args(&["original", "q1-classic-id1"]))
+                .unwrap()
+                .source_product,
             Some("q1-classic-id1".to_string())
         );
         for words in [&[][..], &[""][..], &["a", "b", "c"][..], &["a", ""][..]] {

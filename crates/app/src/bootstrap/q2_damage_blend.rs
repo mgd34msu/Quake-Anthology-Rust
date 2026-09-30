@@ -5,22 +5,18 @@
 //! `GL_DrawVignette`). All arithmetic is `f32`, preserving the donor's
 //! `Math.fround` behavior; the `& 255` byte wrap replicates JS `ToInt32`.
 
-use qa_core::math::{Vec2, Vec4};
 use qa_client::render::types::{
-    AlphaTest, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DrawBatch,
-    Rect, RenderState, RenderVertex, RendererImage, TextureBinding,
+    AlphaTest, BatchLighting, BatchPrimitive, BatchVertices, BlendFactor, CullFace, DrawBatch, Rect, RenderState,
+    RenderVertex, RendererImage, TextureBinding,
 };
+use qa_core::math::{Vec2, Vec4};
 
 /// Donor default vignette border fraction (`fraction = 0.2`).
 pub const DAMAGE_BLEND_BORDER: f32 = 0.2;
 
 /// Interpolate a damage blend; a newly visible blend never fades in late.
 #[must_use]
-pub fn interpolate_q2_damage_blend(
-    previous: Option<&Vec4>,
-    current: &Vec4,
-    fraction: f32,
-) -> Vec4 {
+pub fn interpolate_q2_damage_blend(previous: Option<&Vec4>, current: &Vec4, fraction: f32) -> Vec4 {
     match previous {
         None => *current,
         Some(before) if before.w == 0.0 => *current,
@@ -55,12 +51,7 @@ fn blend_byte(value: f32) -> f32 {
 /// Build the vignette batch for a damage blend over `viewport`. Returns no
 /// batch for a zero-alpha blend or an empty viewport.
 #[must_use]
-pub fn prepare_q2_damage_blend(
-    blend: &Vec4,
-    viewport: &Rect,
-    white: RendererImage,
-    fraction: f32,
-) -> Vec<DrawBatch> {
+pub fn prepare_q2_damage_blend(blend: &Vec4, viewport: &Rect, white: RendererImage, fraction: f32) -> Vec<DrawBatch> {
     if blend.w == 0.0 || viewport.width <= 0.0 || viewport.height <= 0.0 {
         return Vec::new();
     }
@@ -101,9 +92,7 @@ pub fn prepare_q2_damage_blend(
         vertices.push(vertex(width - distance, distance, inner));
         vertices.push(vertex(width - distance, height - distance, inner));
         vertices.push(vertex(distance, height - distance, inner));
-        indices = vec![
-            0, 5, 4, 0, 1, 5, 1, 6, 5, 1, 2, 6, 6, 2, 3, 6, 3, 7, 0, 7, 3, 0, 4, 7,
-        ];
+        indices = vec![0, 5, 4, 0, 1, 5, 1, 6, 5, 1, 2, 6, 6, 2, 3, 6, 3, 7, 0, 7, 3, 0, 4, 7];
     }
     vec![DrawBatch {
         fog: None,
@@ -168,10 +157,7 @@ mod tests {
             z: 0.0,
             w: 0.0,
         };
-        assert_eq!(
-            interpolate_q2_damage_blend(Some(&invisible), &current, 0.5),
-            current
-        );
+        assert_eq!(interpolate_q2_damage_blend(Some(&invisible), &current, 0.5), current);
         let previous = Vec4 {
             x: 0.0,
             y: 0.0,

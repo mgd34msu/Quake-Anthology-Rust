@@ -28,10 +28,7 @@ pub enum Q3EquipmentError {}
 
 /// Keep the original predicted held weapon while the selected arsenal owns
 /// attack input (donor `q3EquipmentCommand`).
-pub fn q3_equipment_command(
-    command: &WireUserCommand,
-    equipment: Option<&Q3EquipmentPresentation>,
-) -> WireUserCommand {
+pub fn q3_equipment_command(command: &WireUserCommand, equipment: Option<&Q3EquipmentPresentation>) -> WireUserCommand {
     let Some(equipment) = equipment else {
         return command.clone();
     };
@@ -88,15 +85,9 @@ mod tests {
         };
         let mut cleared = command();
         cleared.buttons = 0;
-        assert_eq!(
-            q3_equipment_command(&cleared, Some(&equipment)).buttons,
-            0
-        );
+        assert_eq!(q3_equipment_command(&cleared, Some(&equipment)).buttons, 0);
         let mut all = command();
         all.buttons = 0xFFFF;
-        assert_eq!(
-            q3_equipment_command(&all, Some(&equipment)).buttons,
-            0xFFFE
-        );
+        assert_eq!(q3_equipment_command(&all, Some(&equipment)).buttons, 0xFFFE);
     }
 }

@@ -8,9 +8,7 @@ use qa_core::time::SourceTime;
 use qa_net::common::commands::UserCommand;
 use qa_world::save::records::{read_saved_actor, write_saved_actor};
 use qa_world::save::shared::{read_time, read_vector, write_time};
-use qa_world::save::value::{
-    SaveJson, SaveReader, arr, boolean, int, namespaced, num, obj, str as json_str,
-};
+use qa_world::save::value::{arr, boolean, int, namespaced, num, obj, str as json_str, SaveJson, SaveReader};
 
 /// Mod client arsenal selection.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,13 +72,12 @@ pub enum ModClientCheckpointError {
 #[must_use]
 pub fn capture_mod_client_command(value: &ModClientCommand, client: &ClientId) -> SaveJson {
     let source = match &value.input.source {
-        CommandSource::LocalSeat { seat, .. } => {
-            obj(vec![("kind", json_str("local-seat")), ("seat", int(i64::from(seat.index())))])
-        }
+        CommandSource::LocalSeat { seat, .. } => obj(vec![
+            ("kind", json_str("local-seat")),
+            ("seat", int(i64::from(seat.index()))),
+        ]),
         CommandSource::RemoteClient { .. } => obj(vec![("kind", json_str("remote-client"))]),
-        CommandSource::Bot { provider } => {
-            obj(vec![("kind", json_str("bot")), ("provider", json_str(provider))])
-        }
+        CommandSource::Bot { provider } => obj(vec![("kind", json_str("bot")), ("provider", json_str(provider))]),
     };
     obj(vec![
         ("actor", write_saved_actor(SavedActorId::from(&value.input.actor))),
@@ -102,7 +99,10 @@ pub fn capture_mod_client_command(value: &ModClientCommand, client: &ClientId) -
                     ("provider", json_str(&arsenal.provider)),
                     (
                         "weapon",
-                        arsenal.weapon.as_ref().map_or(SaveJson::Null, |weapon| json_str(weapon)),
+                        arsenal
+                            .weapon
+                            .as_ref()
+                            .map_or(SaveJson::Null, |weapon| json_str(weapon)),
                     ),
                     ("useHoldable", boolean(arsenal.use_holdable)),
                 ];
@@ -242,7 +242,9 @@ fn read_angles(reader: SaveReader) -> Result<[f64; 3], ModClientCheckpointError>
 /// Read one movement command.
 pub fn read_user_command(reader: SaveReader) -> Result<UserCommand, ModClientCheckpointError> {
     let kind =
-        reader.field("kind").choice_str(&["q1-netquake", "q1-quakeworld", "q2-classic", "q2-rerelease", "q3"])?;
+        reader
+            .field("kind")
+            .choice_str(&["q1-netquake", "q1-quakeworld", "q2-classic", "q2-rerelease", "q3"])?;
     let buttons = reader.field("buttons").integer(0)? as f64;
     let forward_move = reader.field("forwardMove").finite()?;
     if kind == "q3" {
@@ -327,30 +329,39 @@ pub fn read_mod_client_commands(
         }
         seen.insert(actor.clone());
         let owner = entry.field("source");
-        let kind = owner.field("kind").choice_str(&["local-seat", "remote-client", "bot"])?;
+        let kind = owner
+            .field("kind")
+            .choice_str(&["local-seat", "remote-client", "bot"])?;
         let source = if kind == "local-seat" {
             let seat = owner.field("seat").integer(0)?;
-            let seat = u32::try_from(seat)
-                .map_err(|_| owner.field("seat").fail("expected an integer in range"))?;
-            CommandSource::LocalSeat { client: client.clone(), seat: host.identity().seat(seat) }
+            let seat = u32::try_from(seat).map_err(|_| owner.field("seat").fail("expected an integer in range"))?;
+            CommandSource::LocalSeat {
+                client: client.clone(),
+                seat: host.identity().seat(seat),
+            }
         } else if kind == "remote-client" {
             CommandSource::RemoteClient { client: client.clone() }
         } else {
-            CommandSource::Bot { provider: namespaced(owner.field("provider"))? }
+            CommandSource::Bot {
+                provider: namespaced(owner.field("provider"))?,
+            }
         };
-        let arsenal = entry.field("arsenal").nullable(|value| -> Result<ModClientArsenal, ModClientCheckpointError> {
-            let impulse = if value.field("impulse").is_missing() {
-                None
-            } else {
-                Some(value.field("impulse").integer(0)?)
-            };
-            Ok(ModClientArsenal {
-                provider: namespaced(value.field("provider"))?,
-                weapon: value.field("weapon").nullable(namespaced)?,
-                use_holdable: value.field("useHoldable").boolean()?,
-                impulse,
-            })
-        })?;
+        let arsenal =
+            entry
+                .field("arsenal")
+                .nullable(|value| -> Result<ModClientArsenal, ModClientCheckpointError> {
+                    let impulse = if value.field("impulse").is_missing() {
+                        None
+                    } else {
+                        Some(value.field("impulse").integer(0)?)
+                    };
+                    Ok(ModClientArsenal {
+                        provider: namespaced(value.field("provider"))?,
+                        weapon: value.field("weapon").nullable(namespaced)?,
+                        use_holdable: value.field("useHoldable").boolean()?,
+                        impulse,
+                    })
+                })?;
         Ok(ModClientCommand {
             time: read_time(entry.field("time"))?,
             input: ModClientInput {
@@ -376,7 +387,9 @@ mod tests {
 
     impl MockHost {
         fn new() -> Self {
-            Self { identity: IdentityOwner::create("test").unwrap() }
+            Self {
+                identity: IdentityOwner::create("test").unwrap(),
+            }
         }
     }
 
@@ -398,7 +411,9 @@ mod tests {
             time: SourceTime::Seconds(4.0),
             input: ModClientInput {
                 actor: owner.actor(1, 1),
-                source: CommandSource::Bot { provider: "q2:bot".to_string() },
+                source: CommandSource::Bot {
+                    provider: "q2:bot".to_string(),
+                },
                 sequence: 9,
                 angle_space: AngleSpace::Absolute,
                 command: UserCommand::Q2Rerelease {
@@ -453,7 +468,10 @@ mod tests {
         let error = read_mod_client_commands(SaveReader::at(&value, "commands"), &host)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("Saved command requires one live restored client"), "{error}");
+        assert!(
+            error.contains("Saved command requires one live restored client"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -471,7 +489,11 @@ mod tests {
         let command = read_user_command(SaveReader::at(&value, "command")).unwrap();
         assert!(matches!(
             command,
-            UserCommand::Q3 { server_time_milliseconds: 5000.0, weapon: 3.0, .. }
+            UserCommand::Q3 {
+                server_time_milliseconds: 5000.0,
+                weapon: 3.0,
+                ..
+            }
         ));
     }
 
@@ -487,7 +509,9 @@ mod tests {
             ("rightMove", num(0.0)),
             ("upMove", num(0.0)),
         ]);
-        let error = read_user_command(SaveReader::at(&value, "command")).unwrap_err().to_string();
+        let error = read_user_command(SaveReader::at(&value, "command"))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Expected three command angle words"), "{error}");
     }
 }

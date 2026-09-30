@@ -1,9 +1,7 @@
 //! Rerelease bot usercmd to per-dialect [`UserCommand`] translation.
 //! Port of `src/app/bootstrap/simulation/bot-commands.ts`.
 
-use qa_bots::behavior::rerelease::world::{
-    BotUsercmdT, BOT_BUTTON_ATTACK, BOT_BUTTON_JUMP, BOT_BUTTON_USE,
-};
+use qa_bots::behavior::rerelease::world::{BotUsercmdT, BOT_BUTTON_ATTACK, BOT_BUTTON_JUMP, BOT_BUTTON_USE};
 use qa_bots::movement_contract::MovementKind;
 use qa_net::common::commands::UserCommand;
 
@@ -70,7 +68,15 @@ pub fn rerelease_bot_command(
             angles,
             forward_move,
             side_move,
-            buttons: (attack | if uses { 2 } else { 0 } | if up_move > 0.0 { 8 } else if up_move < 0.0 { 16 } else { 0 }) as f64,
+            buttons: (attack
+                | if uses { 2 } else { 0 }
+                | if up_move > 0.0 {
+                    8
+                } else if up_move < 0.0 {
+                    16
+                } else {
+                    0
+                }) as f64,
             server_frame: 0.0,
         },
         MovementKind::Q3 => UserCommand::Q3 {
@@ -114,8 +120,7 @@ mod tests {
     fn jump_forces_minimum_up_move() {
         let mut cmd = source();
         cmd.buttons = BOT_BUTTON_JUMP;
-        let UserCommand::Q2Classic { up_move, .. } =
-            rerelease_bot_command(&cmd, MovementKind::Q2Classic, 16.0, 1000.0)
+        let UserCommand::Q2Classic { up_move, .. } = rerelease_bot_command(&cmd, MovementKind::Q2Classic, 16.0, 1000.0)
         else {
             panic!("expected q2-classic command");
         };
@@ -125,8 +130,12 @@ mod tests {
     #[test]
     fn q3_scales_moves_to_signed_bytes() {
         let cmd = source();
-        let UserCommand::Q3 { forward_move, right_move, up_move, .. } =
-            rerelease_bot_command(&cmd, MovementKind::Q3, 16.0, 1000.0)
+        let UserCommand::Q3 {
+            forward_move,
+            right_move,
+            up_move,
+            ..
+        } = rerelease_bot_command(&cmd, MovementKind::Q3, 16.0, 1000.0)
         else {
             panic!("expected q3 command");
         };
@@ -137,8 +146,11 @@ mod tests {
     fn netquake_reports_server_seconds_and_jump_bit() {
         let mut cmd = source();
         cmd.buttons = BOT_BUTTON_JUMP;
-        let UserCommand::Q1Netquake { acknowledged_server_time_seconds, buttons, .. } =
-            rerelease_bot_command(&cmd, MovementKind::Q1Netquake, 16.0, 2500.0)
+        let UserCommand::Q1Netquake {
+            acknowledged_server_time_seconds,
+            buttons,
+            ..
+        } = rerelease_bot_command(&cmd, MovementKind::Q1Netquake, 16.0, 2500.0)
         else {
             panic!("expected q1-netquake command");
         };

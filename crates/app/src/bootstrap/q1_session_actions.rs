@@ -79,22 +79,11 @@ pub struct LocalSeatBinding {
 
 /// Map a source event to the family that completed a level, if any.
 #[must_use]
-pub fn source_level_completion(
-    source: &SessionPresentationEvent,
-) -> Option<LevelCompletionSource> {
+pub fn source_level_completion(source: &SessionPresentationEvent) -> Option<LevelCompletionSource> {
     match (&source.family, &source.event) {
-        (
-            SessionSourceFamily::Q1,
-            SessionSourceEvent::Intermission,
-        )
-        | (
-            SessionSourceFamily::Q1Session,
-            SessionSourceEvent::LevelCompleted,
-        ) => Some(LevelCompletionSource::Q1),
-        (
-            SessionSourceFamily::Q2Rerelease,
-            SessionSourceEvent::EndOfUnit,
-        ) => Some(LevelCompletionSource::Q2),
+        (SessionSourceFamily::Q1, SessionSourceEvent::Intermission)
+        | (SessionSourceFamily::Q1Session, SessionSourceEvent::LevelCompleted) => Some(LevelCompletionSource::Q1),
+        (SessionSourceFamily::Q2Rerelease, SessionSourceEvent::EndOfUnit) => Some(LevelCompletionSource::Q2),
         _ => None,
     }
 }
@@ -103,10 +92,7 @@ pub fn source_level_completion(
 /// `back-to-lobby` event exists that either broadcasts or names the seat's
 /// actor.
 #[must_use]
-pub fn q1_session_departures(
-    events: &[SessionPresentationEvent],
-    seats: &[LocalSeatBinding],
-) -> Vec<SeatId> {
+pub fn q1_session_departures(events: &[SessionPresentationEvent], seats: &[LocalSeatBinding]) -> Vec<SeatId> {
     seats
         .iter()
         .filter(|local| {
@@ -143,11 +129,7 @@ mod tests {
     #[test]
     fn completion_sources() {
         assert_eq!(
-            source_level_completion(&event(
-                SessionSourceFamily::Q1,
-                SessionSourceEvent::Intermission,
-                None
-            )),
+            source_level_completion(&event(SessionSourceFamily::Q1, SessionSourceEvent::Intermission, None)),
             Some(LevelCompletionSource::Q1)
         );
         assert_eq!(
@@ -189,11 +171,7 @@ mod tests {
             None
         );
         assert_eq!(
-            source_level_completion(&event(
-                SessionSourceFamily::Other,
-                SessionSourceEvent::EndOfUnit,
-                None
-            )),
+            source_level_completion(&event(SessionSourceFamily::Other, SessionSourceEvent::EndOfUnit, None)),
             None
         );
         assert_eq!(
@@ -255,11 +233,7 @@ mod tests {
             None,
         )];
         assert!(q1_session_departures(&wrong_kind, &seats).is_empty());
-        let wrong_family = vec![event(
-            SessionSourceFamily::Q1,
-            SessionSourceEvent::BackToLobby,
-            None,
-        )];
+        let wrong_family = vec![event(SessionSourceFamily::Q1, SessionSourceEvent::BackToLobby, None)];
         assert!(q1_session_departures(&wrong_family, &seats).is_empty());
         assert!(q1_session_departures(&[], &seats).is_empty());
     }

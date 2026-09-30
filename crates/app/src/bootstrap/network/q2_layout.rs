@@ -53,28 +53,26 @@ pub enum Q2LayoutError {
 
 /// Configstring layout follows game API/limits; protocol 4038 intentionally
 /// uses the classic game layout.
-pub fn q2_application_layout(
-    protocol: ProtocolIdentity,
-) -> Result<Q2ApplicationLayout, Q2LayoutError> {
+pub fn q2_application_layout(protocol: ProtocolIdentity) -> Result<Q2ApplicationLayout, Q2LayoutError> {
     match protocol {
-        ProtocolIdentity::Q2Rerelease
-        | ProtocolIdentity::Q2Kex
-        | ProtocolIdentity::Q2KexDemo => Ok(Q2ApplicationLayout {
-            models: 62,
-            sounds: 8254,
-            images: 10302,
-            lights: 10814,
-            items: 11326,
-            player_skins: 11582,
-            max_models: 8192,
-            max_sounds: 2048,
-            max_images: 512,
-            max_config_strings: 12448,
-            map_checksum: 61,
-            max_clients: 60,
-            air_accelerate: 59,
-            n64_physics: Some(12103),
-        }),
+        ProtocolIdentity::Q2Rerelease | ProtocolIdentity::Q2Kex | ProtocolIdentity::Q2KexDemo => {
+            Ok(Q2ApplicationLayout {
+                models: 62,
+                sounds: 8254,
+                images: 10302,
+                lights: 10814,
+                items: 11326,
+                player_skins: 11582,
+                max_models: 8192,
+                max_sounds: 2048,
+                max_images: 512,
+                max_config_strings: 12448,
+                map_checksum: 61,
+                max_clients: 60,
+                air_accelerate: 59,
+                n64_physics: Some(12103),
+            })
+        }
         ProtocolIdentity::Q2Classic
         | ProtocolIdentity::Q2R1q2 { .. }
         | ProtocolIdentity::Q2Q2pro { .. }
@@ -180,10 +178,7 @@ mod tests {
             ProtocolIdentity::Q1QuakeworldWide { flags: 0 },
             ProtocolIdentity::Q3,
         ] {
-            assert_eq!(
-                q2_application_layout(protocol),
-                Err(Q2LayoutError::NotQuake2)
-            );
+            assert_eq!(q2_application_layout(protocol), Err(Q2LayoutError::NotQuake2));
         }
         assert_eq!(
             Q2LayoutError::NotQuake2.to_string(),

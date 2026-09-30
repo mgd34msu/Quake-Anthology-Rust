@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::{ActorId, ProviderId, SavedActorId};
 use qa_world::save::records::{read_saved_actor, write_saved_actor};
-use qa_world::save::value::{SaveJson, SaveReader, arr, int, namespaced, obj, str as json_str};
+use qa_world::save::value::{arr, int, namespaced, obj, str as json_str, SaveJson, SaveReader};
 
 /// Item identity belongs to the actual source allocation, not its reusable pickup alias.
 pub trait PickupActorHost {
@@ -58,7 +58,12 @@ pub struct SourcePickupCargo<H> {
 impl<H: PickupActorHost> SourcePickupCargo<H> {
     #[must_use]
     pub fn new(host: H, provider: ProviderId) -> Self {
-        Self { host, provider, current: HashMap::new(), levels: HashMap::new() }
+        Self {
+            host,
+            provider,
+            current: HashMap::new(),
+            levels: HashMap::new(),
+        }
     }
 
     /// Mirror of the donor `onRelease` subscription: the session calls this when
@@ -95,7 +100,11 @@ impl<H: PickupActorHost> SourcePickupCargo<H> {
             let Some((_, slot)) = source else {
                 return Err(DroppedPickupError::MissingAllocation);
             };
-            items.push(DroppedPickupSlot { item: cargo.item.clone(), count: cargo.count, slot });
+            items.push(DroppedPickupSlot {
+                item: cargo.item.clone(),
+                count: cargo.count,
+                slot,
+            });
         }
         items.sort_by_key(|item| item.slot);
         levels.insert(map.to_string(), items);
@@ -109,7 +118,13 @@ impl<H: PickupActorHost> SourcePickupCargo<H> {
             let Some(actor) = actor else {
                 return Err(DroppedPickupError::MissingRestoredAllocation);
             };
-            self.set(&actor, &DroppedPickupCargo { item: entry.item, count: entry.count })?;
+            self.set(
+                &actor,
+                &DroppedPickupCargo {
+                    item: entry.item,
+                    count: entry.count,
+                },
+            )?;
         }
         Ok(())
     }
@@ -167,24 +182,32 @@ impl<H: PickupActorHost> SourcePickupCargo<H> {
         if reader.is_missing() {
             return Ok(());
         }
-        reader.field("current").list(|value| -> Result<(), DroppedPickupError> {
-            let actor = match self.host.resolve_saved(read_saved_actor(value.field("actor"))?) {
-                Some(actor) if !self.current.contains_key(&actor) => actor,
-                _ => return Err(value.fail("Missing or duplicate dropped pickup actor").into()),
-            };
-            let cargo = Self::read_cargo(value)?;
-            self.set(&actor, &cargo)?;
-            Ok(())
-        })?;
+        reader
+            .field("current")
+            .list(|value| -> Result<(), DroppedPickupError> {
+                let actor = match self.host.resolve_saved(read_saved_actor(value.field("actor"))?) {
+                    Some(actor) if !self.current.contains_key(&actor) => actor,
+                    _ => return Err(value.fail("Missing or duplicate dropped pickup actor").into()),
+                };
+                let cargo = Self::read_cargo(value)?;
+                self.set(&actor, &cargo)?;
+                Ok(())
+            })?;
         reader.field("levels").list(|value| -> Result<(), DroppedPickupError> {
             let map = value.field("map").string()?;
-            let items = value.field("items").list(|item| -> Result<DroppedPickupSlot, DroppedPickupError> {
-                let slot = item.field("slot").integer(0)?;
-                let slot = u32::try_from(slot)
-                    .map_err(|_| item.field("slot").fail("expected an integer in range"))?;
-                let cargo = Self::read_cargo(item)?;
-                Ok(DroppedPickupSlot { item: cargo.item, count: cargo.count, slot })
-            })?;
+            let items = value
+                .field("items")
+                .list(|item| -> Result<DroppedPickupSlot, DroppedPickupError> {
+                    let slot = item.field("slot").integer(0)?;
+                    let slot =
+                        u32::try_from(slot).map_err(|_| item.field("slot").fail("expected an integer in range"))?;
+                    let cargo = Self::read_cargo(item)?;
+                    Ok(DroppedPickupSlot {
+                        item: cargo.item,
+                        count: cargo.count,
+                        slot,
+                    })
+                })?;
             let mut slots = HashSet::new();
             if self.levels.contains_key(&map) || items.iter().any(|item| !slots.insert(item.slot)) {
                 return Err(value.fail("Duplicate dropped pickup level or source slot").into());
@@ -207,17 +230,22 @@ impl<H: PickupActorHost> SourcePickupCargo<H> {
 mod tests {
     use super::*;
     use qa_core::identity::IdentityOwner;
+    use std::rc::Rc;
 
     struct MockHost {
-        owner: IdentityOwner,
+        owner: Rc<IdentityOwner>,
         live: HashSet<(u32, u32)>,
         provider: ProviderId,
     }
 
     impl MockHost {
         fn new() -> Self {
+            Self::with_owner(Rc::new(IdentityOwner::create("test").unwrap()))
+        }
+
+        fn with_owner(owner: Rc<IdentityOwner>) -> Self {
             Self {
-                owner: IdentityOwner::create("test").unwrap(),
+                owner,
                 live: HashSet::from([(1u32, 1u32), (2, 1)]),
                 provider: ProviderId::new("q2", "game"),
             }
@@ -251,10 +279,24 @@ mod tests {
     fn set_rejects_bad_cargo() {
         let mut cargo = test_cargo();
         let actor = cargo.host.owner.actor(9, 1);
-        assert!(cargo.set(&actor, &DroppedPickupCargo { item: "q2:shells".to_string(), count: 1 }).is_err());
+        assert!(cargo
+            .set(
+                &actor,
+                &DroppedPickupCargo {
+                    item: "q2:shells".to_string(),
+                    count: 1
+                }
+            )
+            .is_err());
         let live = cargo.host.owner.actor(1, 1);
         let error = cargo
-            .set(&live, &DroppedPickupCargo { item: "q2:shells".to_string(), count: 0 })
+            .set(
+                &live,
+                &DroppedPickupCargo {
+                    item: "q2:shells".to_string(),
+                    count: 0,
+                },
+            )
             .unwrap_err()
             .to_string();
         assert_eq!(error, "Invalid original dropped pickup cargo");
@@ -262,13 +304,31 @@ mod tests {
 
     #[test]
     fn travel_and_revisit_round_trip() {
-        let mut cargo = test_cargo();
-        let actor = cargo.host.owner.actor(1, 1);
-        cargo.set(&actor, &DroppedPickupCargo { item: "q2:shells".to_string(), count: 5 }).unwrap();
+        // Both cargos share one session so revisited actors resolve.
+        let owner = Rc::new(IdentityOwner::create("test").unwrap());
+        let provider = ProviderId::new("q2", "game");
+        let mut cargo = SourcePickupCargo::new(MockHost::with_owner(Rc::clone(&owner)), provider.clone());
+        let actor = owner.actor(1, 1);
+        cargo
+            .set(
+                &actor,
+                &DroppedPickupCargo {
+                    item: "q2:shells".to_string(),
+                    count: 5,
+                },
+            )
+            .unwrap();
         let levels = cargo.travel("maps/base1.bsp", false).unwrap();
-        assert_eq!(levels["maps/base1.bsp"], vec![DroppedPickupSlot { item: "q2:shells".to_string(), count: 5, slot: 101 }]);
+        assert_eq!(
+            levels["maps/base1.bsp"],
+            vec![DroppedPickupSlot {
+                item: "q2:shells".to_string(),
+                count: 5,
+                slot: 101
+            }]
+        );
         assert!(cargo.travel("maps/base1.bsp", true).unwrap().is_empty());
-        let mut fresh = test_cargo();
+        let mut fresh = SourcePickupCargo::new(MockHost::with_owner(owner), provider);
         fresh.revisit(&levels, "maps/base1.bsp").unwrap();
         assert_eq!(fresh.get(&actor).unwrap().count, 5);
     }
@@ -276,11 +336,14 @@ mod tests {
     #[test]
     fn revisit_without_source_allocation_fails() {
         let mut cargo = test_cargo();
-        let levels = HashMap::from([("maps/base1.bsp".to_string(), vec![DroppedPickupSlot {
-            item: "q2:shells".to_string(),
-            count: 1,
-            slot: 999,
-        }])]);
+        let levels = HashMap::from([(
+            "maps/base1.bsp".to_string(),
+            vec![DroppedPickupSlot {
+                item: "q2:shells".to_string(),
+                count: 1,
+                slot: 999,
+            }],
+        )]);
         let error = cargo.revisit(&levels, "maps/base1.bsp").unwrap_err().to_string();
         assert_eq!(error, "Retained dropped pickup has no restored source allocation");
     }
@@ -289,7 +352,15 @@ mod tests {
     fn capture_restore_round_trip() {
         let mut cargo = test_cargo();
         let actor = cargo.host.owner.actor(2, 1);
-        cargo.set(&actor, &DroppedPickupCargo { item: "q2:cells".to_string(), count: 3 }).unwrap();
+        cargo
+            .set(
+                &actor,
+                &DroppedPickupCargo {
+                    item: "q2:cells".to_string(),
+                    count: 3,
+                },
+            )
+            .unwrap();
         let levels = cargo.travel("maps/base1.bsp", false).unwrap();
         let mut staged = test_cargo();
         staged.revisit(&levels, "maps/base1.bsp").unwrap();
@@ -306,9 +377,15 @@ mod tests {
             ("item", json_str("q2:shells")),
             ("count", int(1)),
         ]);
-        let value = obj(vec![("current", arr(vec![entry.clone(), entry])), ("levels", arr(vec![]))]);
+        let value = obj(vec![
+            ("current", arr(vec![entry.clone(), entry])),
+            ("levels", arr(vec![])),
+        ]);
         let mut cargo = test_cargo();
-        let error = cargo.restore(SaveReader::at(&value, "pickups")).unwrap_err().to_string();
+        let error = cargo
+            .restore(SaveReader::at(&value, "pickups"))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Missing or duplicate dropped pickup actor"), "{error}");
     }
 }

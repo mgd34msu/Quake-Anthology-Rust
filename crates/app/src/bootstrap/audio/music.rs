@@ -19,15 +19,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qa_client::audio::SoundFamily;
 use qa_client::audio::bank::{SoundBank, SoundContent};
 use qa_client::audio::engine::UnifiedAudio;
 use qa_client::audio::error::AudioError;
 use qa_client::audio::music::{
-    remap_q2_music_track, CdMusic, LoopSource, MusicControls, MusicPlayer, MusicVolumeMode,
-    OpenMusicTrack, Q2SoundtrackProfile,
+    remap_q2_music_track, CdMusic, LoopSource, MusicControls, MusicPlayer, MusicVolumeMode, OpenMusicTrack,
+    Q2SoundtrackProfile,
 };
 use qa_client::audio::streams::PcmStream;
+use qa_client::audio::SoundFamily;
 use qa_content::catalog::{CatalogError, InstalledCatalog, ProductAvailability};
 use qa_content::contract::{ContentId, GameFamily};
 
@@ -116,10 +116,7 @@ fn default_random() -> Box<dyn FnMut() -> f64> {
 
 /// Worldspawn music key for a source.
 #[must_use]
-pub fn world_music_track(
-    world: Option<&HashMap<String, String>>,
-    source: &MusicSource,
-) -> String {
+pub fn world_music_track(world: Option<&HashMap<String, String>>, source: &MusicSource) -> String {
     if source.family == GameFamily::Q3 {
         return world.and_then(|world| world.get("music")).cloned().unwrap_or_default();
     }
@@ -135,20 +132,14 @@ pub fn world_music_track(
 }
 
 /// Alternate Q1 content sharing the selected numbered soundtrack, if installed.
-pub fn q1_music_fallback(
-    content: &ContentId,
-    catalog: &InstalledCatalog,
-) -> Result<Option<ContentId>, CatalogError> {
+pub fn q1_music_fallback(content: &ContentId, catalog: &InstalledCatalog) -> Result<Option<ContentId>, CatalogError> {
     const PAIRS: [[&str; 2]; 3] = [
         ["q1-classic-id1", "q1-rerelease-id1"],
         ["q1-classic-hipnotic", "q1-rerelease-hipnotic"],
         ["q1-classic-rogue", "q1-rerelease-rogue"],
     ];
     let selected = catalog.product(content.as_str())?;
-    let Some(pair) = PAIRS
-        .iter()
-        .find(|ids| ids.contains(&selected.expectation.id.as_str()))
-    else {
+    let Some(pair) = PAIRS.iter().find(|ids| ids.contains(&selected.expectation.id.as_str())) else {
         return Ok(None);
     };
     let Some(alternate) = pair.iter().find(|id| **id != selected.expectation.id) else {
@@ -158,8 +149,7 @@ pub fn q1_music_fallback(
         .products
         .iter()
         .find(|candidate| {
-            candidate.expectation.id == **alternate
-                && candidate.availability == ProductAvailability::Installed
+            candidate.expectation.id == **alternate && candidate.availability == ProductAvailability::Installed
         })
         .map(|product| product.id.clone()))
 }
@@ -295,9 +285,11 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
         bank: Rc<RefCell<SoundBank<Content>>>,
         fallback: Option<SharedOpener>,
     ) {
-        if self.current.as_ref().is_some_and(|current| {
-            current.source.content == source.content && Rc::ptr_eq(&current.bank, &bank)
-        }) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.source.content == source.content && Rc::ptr_eq(&current.bank, &bank))
+        {
             return;
         }
         self.stop();
@@ -313,9 +305,8 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
         let opener_bank = Rc::clone(&bank);
         let opener_fallback = fallback.clone();
         let opener_flag = Rc::clone(&fallback_active);
-        let open: OpenMusicTrack = Box::new(move |path| {
-            Self::dispatch_open(&opener_bank, &opener_fallback, &opener_flag, path)
-        });
+        let open: OpenMusicTrack =
+            Box::new(move |path| Self::dispatch_open(&opener_bank, &opener_fallback, &opener_flag, path));
         let cd = CdMusic::new(player, open);
         self.current = Some(Current {
             source: source.clone(),
@@ -346,10 +337,7 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
 
     /// Run the `music` command.
     pub fn music_command(&mut self, args: &[String]) -> Result<(), AudioError> {
-        if args.is_empty()
-            || args.len() > 2
-            || args.iter().any(|value| value.trim_matches(is_js_trim).is_empty())
-        {
+        if args.is_empty() || args.len() > 2 || args.iter().any(|value| value.trim_matches(is_js_trim).is_empty()) {
             self.emit("music <intro> [loop]\n");
             return Ok(());
         }
@@ -392,7 +380,11 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
                             };
                             format!(
                                 "{} {} track {track}\n",
-                                if current.cd.player().paused { "Paused" } else { "Currently" },
+                                if current.cd.player().paused {
+                                    "Paused"
+                                } else {
+                                    "Currently"
+                                },
                                 if current.looping { "looping" } else { "playing" },
                             )
                         } else {
@@ -553,7 +545,10 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
         self.select(source, bank, fallback);
         let selected = track.trim_matches(is_js_trim).to_string();
         if playlist.is_some()
-            && self.current.as_ref().is_some_and(|current| current.authored_cue == selected)
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.authored_cue == selected)
             && self.automatic.is_none()
         {
             return Ok(());
@@ -575,11 +570,17 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
             .automatic
             .as_ref()
             .is_some_and(|automatic| automatic.cue == selected && automatic.shuffle == shuffle)
-            && self.current.as_ref().is_some_and(|current| current.cd.player().playing());
+            && self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.cd.player().playing());
         if resume {
             return Ok(());
         }
-        let completed = self.current.as_ref().map_or(0, |current| current.cd.player().completed_plays());
+        let completed = self
+            .current
+            .as_ref()
+            .map_or(0, |current| current.cd.player().completed_plays());
         self.automatic = Some(Automatic {
             cue: selected.clone(),
             tracks: playlist.map_or_else(Vec::new, |playlist| playlist.tracks.clone()),
@@ -636,11 +637,17 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
             .as_ref()
             .is_some_and(|current| current.source.family == GameFamily::Q2)
             && shuffle
-            && self.automatic.as_ref().is_some_and(|automatic| !automatic.tracks.is_empty());
+            && self
+                .automatic
+                .as_ref()
+                .is_some_and(|automatic| !automatic.tracks.is_empty());
         let automatic = self.automatic.as_ref().expect("automatic playback selected");
         if enabled != automatic.shuffle {
             let cue = automatic.cue.clone();
-            let completed = self.current.as_ref().map_or(0, |current| current.cd.player().completed_plays());
+            let completed = self
+                .current
+                .as_ref()
+                .map_or(0, |current| current.cd.player().completed_plays());
             if let Some(automatic) = self.automatic.as_mut() {
                 automatic.shuffle = enabled;
                 automatic.completed = completed;
@@ -650,7 +657,10 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
             }
             return self.start_track(&cue, true, false, &|| true);
         }
-        let completed = self.current.as_ref().map_or(0, |current| current.cd.player().completed_plays());
+        let completed = self
+            .current
+            .as_ref()
+            .map_or(0, |current| current.cd.player().completed_plays());
         let advance = self
             .automatic
             .as_ref()
@@ -665,9 +675,19 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
     }
 
     fn next_automatic_track(&mut self) -> Result<(), AudioError> {
-        if self.automatic.as_ref().is_some_and(|automatic| automatic.bag.is_empty()) {
-            let tracks = self.automatic.as_ref().map_or_else(Vec::new, |automatic| automatic.tracks.clone());
-            let previous = self.current.as_ref().map_or_else(String::new, |current| current.track.clone());
+        if self
+            .automatic
+            .as_ref()
+            .is_some_and(|automatic| automatic.bag.is_empty())
+        {
+            let tracks = self
+                .automatic
+                .as_ref()
+                .map_or_else(Vec::new, |automatic| automatic.tracks.clone());
+            let previous = self
+                .current
+                .as_ref()
+                .map_or_else(String::new, |current| current.track.clone());
             // The synchronous port has no suspension points, so the automatic
             // selection cannot be replaced while a track starts.
             let bag = shuffled_tracks(&tracks, &previous, &mut *self.random);
@@ -677,9 +697,7 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
         }
         loop {
             let next = {
-                let (Some(automatic), Some(_)) =
-                    (self.automatic.as_mut(), self.current.as_ref())
-                else {
+                let (Some(automatic), Some(_)) = (self.automatic.as_mut(), self.current.as_ref()) else {
                     return Ok(());
                 };
                 if automatic.bag.is_empty() || !self.controls.enabled {
@@ -688,7 +706,11 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
                 automatic.bag.remove(0)
             };
             self.start_track(&music_file_cue(&next), false, false, &|| true)?;
-            if self.current.as_ref().is_some_and(|current| current.cd.player().playing()) {
+            if self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.cd.player().playing())
+            {
                 return Ok(());
             }
         }
@@ -746,7 +768,12 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
                     let remapped = current
                         .cd
                         .remapped_tracks()
-                        .get(mapped.checked_sub(1).and_then(|index| usize::try_from(index).ok()).unwrap_or(usize::MAX))
+                        .get(
+                            mapped
+                                .checked_sub(1)
+                                .and_then(|index| usize::try_from(index).ok())
+                                .unwrap_or(usize::MAX),
+                        )
                         .copied()
                         .unwrap_or(mapped);
                     current.cd.playing_track() == Some(remapped)
@@ -763,7 +790,12 @@ impl<'engine, Content: SoundContent + 'static> ApplicationMusic<'engine, Content
             current.fallback_active.set(false);
         }
         if let Some(mapped) = mapped {
-            let played = self.current.as_mut().expect("current selection checked").cd.play(mapped, looping)?;
+            let played = self
+                .current
+                .as_mut()
+                .expect("current selection checked")
+                .cd
+                .play(mapped, looping)?;
             let retry = !played
                 && family == GameFamily::Q1
                 && self.current.as_ref().is_some_and(|current| current.fallback.is_some())
@@ -953,7 +985,10 @@ mod tests {
     }
 
     fn bank_with(files: &[(&str, Vec<u8>)]) -> Rc<RefCell<SoundBank<FakeContent>>> {
-        let files = files.iter().map(|(path, bytes)| (path.to_string(), bytes.clone())).collect();
+        let files = files
+            .iter()
+            .map(|(path, bytes)| (path.to_string(), bytes.clone()))
+            .collect();
         Rc::new(RefCell::new(SoundBank::new(FakeContent { files })))
     }
 
@@ -993,7 +1028,9 @@ mod tests {
             availability: if installed {
                 ProductAvailability::Installed
             } else {
-                ProductAvailability::Missing { requirements: vec!["pak0.pak".to_string()] }
+                ProductAvailability::Missing {
+                    requirements: vec!["pak0.pak".to_string()],
+                }
             },
             archives: Vec::new(),
             loose_root: None,
@@ -1012,13 +1049,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let alternate =
-            q1_music_fallback(&ContentId("q1-classic-id1".to_string()), &catalog).unwrap();
+        let alternate = q1_music_fallback(&ContentId("q1-classic-id1".to_string()), &catalog).unwrap();
         assert_eq!(alternate, Some(ContentId("q1-rerelease-id1".to_string())));
         let back = q1_music_fallback(&ContentId("q1-rerelease-id1".to_string()), &catalog).unwrap();
         assert_eq!(back, Some(ContentId("q1-classic-id1".to_string())));
-        let missing =
-            q1_music_fallback(&ContentId("q2-classic-baseq2".to_string()), &catalog);
+        let missing = q1_music_fallback(&ContentId("q2-classic-baseq2".to_string()), &catalog);
         assert!(missing.is_err());
     }
 
@@ -1070,11 +1105,17 @@ mod tests {
         let printed = Rc::new(RefCell::new(Vec::new()));
         let mut music = music(&mut audio, Rc::clone(&printed));
         music.music_command(&[]).unwrap();
-        music.music_command(&["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
+        music
+            .music_command(&["a".to_string(), "b".to_string(), "c".to_string()])
+            .unwrap();
         music.music_command(&["  ".to_string()]).unwrap();
         assert_eq!(
             printed.borrow().as_slice(),
-            ["music <intro> [loop]\n", "music <intro> [loop]\n", "music <intro> [loop]\n"]
+            [
+                "music <intro> [loop]\n",
+                "music <intro> [loop]\n",
+                "music <intro> [loop]\n"
+            ]
         );
         printed.borrow_mut().clear();
         music.music_command(&["music/win".to_string()]).unwrap();
@@ -1087,7 +1128,10 @@ mod tests {
         let printed = Rc::new(RefCell::new(Vec::new()));
         let mut music = music(&mut audio, Rc::clone(&printed));
         assert_eq!(music.volume(), 0.25);
-        assert_eq!(music.set_volume(f64::NAN).unwrap_err().to_string(), "Invalid music volume");
+        assert_eq!(
+            music.set_volume(f64::NAN).unwrap_err().to_string(),
+            "Invalid music volume"
+        );
         assert_eq!(music.set_volume(-1.0).unwrap_err().to_string(), "Invalid music volume");
         music.set_volume(0.5).unwrap();
         assert_eq!(music.volume(), 0.5);
@@ -1100,7 +1144,9 @@ mod tests {
         let mut music = music(&mut audio, Rc::clone(&printed));
         music.cd_command(&["remap".to_string()]).unwrap();
         assert!(printed.borrow().is_empty());
-        music.cd_command(&["remap".to_string(), "3".to_string(), "1".to_string()]).unwrap();
+        music
+            .cd_command(&["remap".to_string(), "3".to_string(), "1".to_string()])
+            .unwrap();
         assert!(printed.borrow().is_empty());
         music.cd_command(&["remap".to_string()]).unwrap();
         assert_eq!(printed.borrow().as_slice(), ["  1 -> 3\n  2 -> 1\n"]);
@@ -1181,7 +1227,9 @@ mod tests {
         music.play(&source, bank, "music/a", None, Some(&playlist)).unwrap();
         assert!(printed.borrow().is_empty());
         // Replaying the authored cue while automatic playback runs is a no-op.
-        music.play(&source, replay_bank, "music/a", None, Some(&playlist)).unwrap();
+        music
+            .play(&source, replay_bank, "music/a", None, Some(&playlist))
+            .unwrap();
         assert!(printed.borrow().is_empty());
     }
 }

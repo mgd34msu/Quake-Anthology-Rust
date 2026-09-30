@@ -95,12 +95,20 @@ mod tests {
 
     fn supplier(status: u16, body: &[u8]) -> impl FnMut(&str) -> Result<MasterHttpResponse, MasterListError> {
         let body = body.to_vec();
-        move |_| Ok(MasterHttpResponse { status, body: body.clone() })
+        move |_| {
+            Ok(MasterHttpResponse {
+                status,
+                body: body.clone(),
+            })
+        }
     }
 
     #[test]
     fn parses_plain_list() {
-        let mut fetch = supplier(200, b"# comment\r\nexample.com:27960\n\n  example.com:27960  \n# again\n10.0.0.1\n");
+        let mut fetch = supplier(
+            200,
+            b"# comment\r\nexample.com:27960\n\n  example.com:27960  \n# again\n10.0.0.1\n",
+        );
         let servers = fetch_server_master_list("https://master.example/list", &mut fetch).unwrap();
         assert_eq!(servers, vec!["example.com:27960".to_owned(), "10.0.0.1".to_owned()]);
     }
@@ -112,8 +120,14 @@ mod tests {
             fetch_server_master_list("ftp://x/list", &mut fetch),
             Err(MasterListError::BadScheme)
         );
-        assert_eq!(fetch_server_master_list("notaurl", &mut fetch), Err(MasterListError::BadUrl));
-        assert_eq!(fetch_server_master_list("http://", &mut fetch), Err(MasterListError::BadUrl));
+        assert_eq!(
+            fetch_server_master_list("notaurl", &mut fetch),
+            Err(MasterListError::BadUrl)
+        );
+        assert_eq!(
+            fetch_server_master_list("http://", &mut fetch),
+            Err(MasterListError::BadUrl)
+        );
         let mut fetch = supplier(404, b"nope");
         assert_eq!(
             fetch_server_master_list("http://x/list", &mut fetch),

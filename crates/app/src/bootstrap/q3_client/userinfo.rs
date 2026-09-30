@@ -35,11 +35,7 @@ pub fn initialize_q3_client_cvars(
     cvars.register("cl_maxpackets", "30", flags::ARCHIVE)?;
     cvars.register("cl_packetdup", "1", flags::ARCHIVE)?;
     cvars.register("snaps", "20", flags::ARCHIVE | flags::USER_INFO)?;
-    cvars.register(
-        "name",
-        &identity.name,
-        flags::ARCHIVE | flags::USER_INFO,
-    )?;
+    cvars.register("name", &identity.name, flags::ARCHIVE | flags::USER_INFO)?;
     for name in ["model", "headmodel", "team_model", "team_headmodel"] {
         cvars.register(
             name,
@@ -99,15 +95,19 @@ mod tests {
     #[test]
     fn registers_network_and_identity_flags() {
         let cvars = registry();
-        let archived = ["rate", "snaps", "color1", "color2", "sex", "cl_anonymous",
-            "cg_predictItems", "handicap"];
+        let archived = [
+            "rate",
+            "snaps",
+            "color1",
+            "color2",
+            "sex",
+            "cl_anonymous",
+            "cg_predictItems",
+            "handicap",
+        ];
         for name in archived {
             let snapshot = cvars.get(name).expect("cvar is registered");
-            assert_eq!(
-                snapshot.flags,
-                flags::ARCHIVE | flags::USER_INFO,
-                "{name} flags"
-            );
+            assert_eq!(snapshot.flags, flags::ARCHIVE | flags::USER_INFO, "{name} flags");
         }
         for name in ["cl_maxpackets", "cl_packetdup", "cl_maxPing"] {
             let snapshot = cvars.get(name).expect("cvar is registered");
@@ -127,9 +127,7 @@ mod tests {
     #[test]
     fn registers_unflagged_locals() {
         let cvars = registry();
-        let resend = cvars
-            .get("cl_serverStatusResendTime")
-            .expect("resend is registered");
+        let resend = cvars.get("cl_serverStatusResendTime").expect("resend is registered");
         assert_eq!(resend.value, "750");
         assert_eq!(resend.flags, flags::NONE);
         let master = cvars.get("sv_master1").expect("master is registered");

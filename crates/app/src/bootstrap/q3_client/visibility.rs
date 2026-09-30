@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use qa_core::math::{Bounds, Vec3};
 use qa_net::q3_net::{Q3EntityState, Q3NetError, Q3PlayerState};
 use qa_net::q3_visibility::{
-    select_q3_snapshot_entities, Q3VisibilityBindings, Q3VisibilityEntity, Q3VisibilityLink,
-    Q3VisibilityWorld, Q3VisibleEntities,
+    select_q3_snapshot_entities, Q3VisibilityBindings, Q3VisibilityEntity, Q3VisibilityLink, Q3VisibilityWorld,
+    Q3VisibleEntities,
 };
 use thiserror::Error;
 
@@ -136,8 +136,10 @@ impl Q3VisibilityBindings for ApplicationQ3Bindings<'_, '_> {
         if let Some(value) = self.entities.get(&number) {
             return value.clone();
         }
-        let mut state = Q3EntityState::default();
-        state.number = number;
+        let state = Q3EntityState {
+            number,
+            ..Q3EntityState::default()
+        };
         Q3VisibilityEntity {
             state,
             linked: false,
@@ -293,8 +295,10 @@ mod tests {
     }
 
     fn entity(number: i32, linked: bool, flags: i32, single_client: i32) -> ApplicationQ3SourceEntity {
-        let mut state = Q3EntityState::default();
-        state.number = number;
+        let state = Q3EntityState {
+            number,
+            ..Q3EntityState::default()
+        };
         ApplicationQ3SourceEntity {
             state,
             linked,
@@ -319,22 +323,12 @@ mod tests {
         let source = vec![
             entity(5, true, 0, 0),
             entity(6, false, 0, 0),
-            entity(
-                8,
-                true,
-                Q3ServerEntityFlags::SINGLE_CLIENT,
-                1,
-            ),
+            entity(8, true, Q3ServerEntityFlags::SINGLE_CLIENT, 1),
         ];
         let mut printed = Vec::new();
-        let selected = select_application_q3_snapshot(
-            &player(0),
-            &source,
-            &queries,
-            &unit_bounds,
-            64,
-            &mut |text| printed.push(text.to_string()),
-        )
+        let selected = select_application_q3_snapshot(&player(0), &source, &queries, &unit_bounds, 64, &mut |text| {
+            printed.push(text.to_string())
+        })
         .unwrap();
         assert_eq!(selected.entities.len(), 1);
         assert_eq!(selected.entities[0].number, 5);
@@ -347,19 +341,11 @@ mod tests {
         let queries = OpenQueries { area_bytes: 1 };
         let source = vec![entity(7, true, 0, 0)];
         let mut printed = Vec::new();
-        let error = select_application_q3_snapshot(
-            &player(0),
-            &source,
-            &queries,
-            &unit_bounds,
-            64,
-            &mut |text| printed.push(text.to_string()),
-        )
+        let error = select_application_q3_snapshot(&player(0), &source, &queries, &unit_bounds, 64, &mut |text| {
+            printed.push(text.to_string())
+        })
         .unwrap_err();
-        assert!(matches!(
-            error,
-            ApplicationQ3VisibilityError::MissingBounds(7)
-        ));
+        assert!(matches!(error, ApplicationQ3VisibilityError::MissingBounds(7)));
         assert_eq!(
             error.to_string(),
             "Linked Q3 source entity 7 lost its shared body bounds"
@@ -371,41 +357,22 @@ mod tests {
         let queries = OpenQueries { area_bytes: 33 };
         let source = vec![entity(5, true, 0, 0)];
         let mut printed = Vec::new();
-        let error = select_application_q3_snapshot(
-            &player(0),
-            &source,
-            &queries,
-            &unit_bounds,
-            64,
-            &mut |text| printed.push(text.to_string()),
-        )
+        let error = select_application_q3_snapshot(&player(0), &source, &queries, &unit_bounds, 64, &mut |text| {
+            printed.push(text.to_string())
+        })
         .unwrap_err();
-        assert!(matches!(
-            error,
-            ApplicationQ3VisibilityError::AreaMaskStorage
-        ));
-        assert_eq!(
-            error.to_string(),
-            "Selected world exceeds source Q3 area mask storage"
-        );
+        assert!(matches!(error, ApplicationQ3VisibilityError::AreaMaskStorage));
+        assert_eq!(error.to_string(), "Selected world exceeds source Q3 area mask storage");
     }
 
     #[test]
     fn bad_client_number_propagates_snapshot_error() {
         let queries = OpenQueries { area_bytes: 1 };
         let mut printed = Vec::new();
-        let error = select_application_q3_snapshot(
-            &player(-1),
-            &[],
-            &queries,
-            &unit_bounds,
-            64,
-            &mut |text| printed.push(text.to_string()),
-        )
+        let error = select_application_q3_snapshot(&player(-1), &[], &queries, &unit_bounds, 64, &mut |text| {
+            printed.push(text.to_string())
+        })
         .unwrap_err();
-        assert!(matches!(
-            error,
-            ApplicationQ3VisibilityError::Snapshot(_)
-        ));
+        assert!(matches!(error, ApplicationQ3VisibilityError::Snapshot(_)));
     }
 }

@@ -211,12 +211,10 @@ impl<R: ControllerRouter, D: Fn() -> Vec<ControllerDeviceInfo>> ControllerSettin
                 continue;
             };
             let identity = match (&device.guid, &device.serial) {
-                (Some(guid), Some(serial)) if !serial.is_empty() => {
-                    GyroProfileIdentity::Device {
-                        guid: guid.clone(),
-                        serial: serial.clone(),
-                    }
-                }
+                (Some(guid), Some(serial)) if !serial.is_empty() => GyroProfileIdentity::Device {
+                    guid: guid.clone(),
+                    serial: serial.clone(),
+                },
                 _ => GyroProfileIdentity::Seat,
             };
             let file = match &identity {
@@ -262,9 +260,10 @@ impl<R: ControllerRouter, D: Fn() -> Vec<ControllerDeviceInfo>> ControllerSettin
 
     fn current(&self, seat: &SeatId) -> bool {
         !self.closed
-            && self.profiles.get(seat).is_some_and(|profile| {
-                self.router.controller_for(seat) == Some(profile.instance)
-            })
+            && self
+                .profiles
+                .get(seat)
+                .is_some_and(|profile| self.router.controller_for(seat) == Some(profile.instance))
     }
 
     fn load(&mut self, seat: &SeatId) -> Result<(), ControllerSettingsError> {
@@ -291,14 +290,8 @@ impl<R: ControllerRouter, D: Fn() -> Vec<ControllerDeviceInfo>> ControllerSettin
                 .as_ref()
                 .map(|saved| client_from_stored(&saved.tuning))
                 .unwrap_or(fallback);
-            let mut tuning = self
-                .router
-                .seat_tuning(seat)
-                .expect("seat tuning checked above");
-            tuning.gyro = ClientGyroTuning {
-                enabled: false,
-                ..want
-            };
+            let mut tuning = self.router.seat_tuning(seat).expect("seat tuning checked above");
+            tuning.gyro = ClientGyroTuning { enabled: false, ..want };
             self.router.set_seat_tuning(seat, tuning);
             let result = self.router.set_gyro_enabled(seat, want.enabled);
             if let GyroEnableResult::Rejected { reason } = result {
@@ -379,10 +372,7 @@ impl<R: ControllerRouter, D: Fn() -> Vec<ControllerDeviceInfo>> ControllerSettin
 
     /// Borrow UI bindings for a seat (donor `ui()`).
     pub fn ui(&mut self, seat: SeatId) -> GyroSettingsUi<'_, R, D> {
-        GyroSettingsUi {
-            settings: self,
-            seat,
-        }
+        GyroSettingsUi { settings: self, seat }
     }
 
     /// Close settings, dropping all profiles.
@@ -480,9 +470,7 @@ fn client_from_stored(tuning: &StoredGyroTuning) -> ClientGyroTuning {
 /// Default writable settings root (`~/.local/share/quake-typescript/settings`).
 #[must_use]
 pub fn default_settings_root() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home).join(".local/share/quake-typescript/settings")
-    })
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/quake-typescript/settings"))
 }
 
 #[cfg(test)]
@@ -528,10 +516,7 @@ mod tests {
     }
 
     fn test_store(name: &str) -> (ConfigStore, PathBuf) {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "qa-controller-settings-{}-{name}",
-            std::process::id()
-        ));
+        let root: PathBuf = std::env::temp_dir().join(format!("qa-controller-settings-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         (ConfigStore::new(root.clone()), root)
     }
@@ -546,10 +531,7 @@ mod tests {
     }
 
     fn device_path() -> String {
-        format!(
-            "controllers/seat-1/{GUID}-{}.json",
-            sha256_hex("serial-1".as_bytes())
-        )
+        format!("controllers/seat-1/{GUID}-{}.json", sha256_hex("serial-1".as_bytes()))
     }
 
     #[test]
@@ -557,14 +539,10 @@ mod tests {
         let owner = owner();
         let seat = owner.seat(0);
         let (store, _root) = test_store("missing");
-        let mut settings =
-            ControllerSettings::new(FakeRouter::default(), vec![seat.clone()], Vec::new, store, |_| {});
+        let mut settings = ControllerSettings::new(FakeRouter::default(), vec![seat.clone()], Vec::new, store, |_| {});
         settings.update();
         assert!(!settings.busy(&seat));
-        assert_eq!(
-            settings.message(&seat),
-            "Connect a controller with a gyroscope."
-        );
+        assert_eq!(settings.message(&seat), "Connect a controller with a gyroscope.");
     }
 
     #[test]
@@ -578,13 +556,8 @@ mod tests {
         tuning.gyro.yaw_sensitivity = 3.0;
         router.tunings.insert(seat.clone(), tuning);
         let pad = device(7);
-        let mut settings = ControllerSettings::new(
-            router,
-            vec![seat.clone()],
-            move || vec![pad.clone()],
-            store,
-            |_| {},
-        );
+        let mut settings =
+            ControllerSettings::new(router, vec![seat.clone()], move || vec![pad.clone()], store, |_| {});
         settings.update();
         assert!(!settings.busy(&seat));
         assert_eq!(settings.message(&seat), "Saved for this controller and seat.");
@@ -597,22 +570,15 @@ mod tests {
         let (store, root) = test_store("seat");
         let mut router = FakeRouter::default();
         router.controllers.insert(seat.clone(), 7);
-        router
-            .tunings
-            .insert(seat.clone(), default_gamepad_tuning());
+        router.tunings.insert(seat.clone(), default_gamepad_tuning());
         let pad = ControllerDeviceInfo {
             instance: 7,
             name: "Pad".to_string(),
             guid: None,
             serial: None,
         };
-        let mut settings = ControllerSettings::new(
-            router,
-            vec![seat.clone()],
-            move || vec![pad.clone()],
-            store,
-            |_| {},
-        );
+        let mut settings =
+            ControllerSettings::new(router, vec![seat.clone()], move || vec![pad.clone()], store, |_| {});
         settings.update();
         assert_eq!(settings.message(&seat), "Saved for this seat.");
         settings.save(&seat);
@@ -623,20 +589,13 @@ mod tests {
     fn save_roundtrip_applies_stored_tuning() {
         let owner = owner();
         let seat = owner.seat(0);
-        let (store, _root) = test_store("roundtrip");
+        let (store, root) = test_store("roundtrip");
         let mut router = FakeRouter::default();
         router.controllers.insert(seat.clone(), 7);
-        router
-            .tunings
-            .insert(seat.clone(), default_gamepad_tuning());
+        router.tunings.insert(seat.clone(), default_gamepad_tuning());
         let pad = device(7);
-        let mut settings = ControllerSettings::new(
-            router,
-            vec![seat.clone()],
-            move || vec![pad.clone()],
-            store,
-            |_| {},
-        );
+        let mut settings =
+            ControllerSettings::new(router, vec![seat.clone()], move || vec![pad.clone()], store, |_| {});
         settings.update();
         let mut tuning = default_gamepad_tuning();
         tuning.gyro.yaw_sensitivity = 4.5;
@@ -645,20 +604,13 @@ mod tests {
         settings.save(&seat);
         assert_eq!(settings.message(&seat), "Saved for this controller and seat.");
 
-        let (store, _root) = test_store("roundtrip");
+        let store = ConfigStore::new(root);
         let mut router = FakeRouter::default();
         router.controllers.insert(seat.clone(), 7);
-        router
-            .tunings
-            .insert(seat.clone(), default_gamepad_tuning());
+        router.tunings.insert(seat.clone(), default_gamepad_tuning());
         let pad = device(7);
-        let mut settings = ControllerSettings::new(
-            router,
-            vec![seat.clone()],
-            move || vec![pad.clone()],
-            store,
-            |_| {},
-        );
+        let mut settings =
+            ControllerSettings::new(router, vec![seat.clone()], move || vec![pad.clone()], store, |_| {});
         settings.update();
         let applied = settings.router.tunings.get(&seat).unwrap();
         assert_eq!(applied.gyro.yaw_sensitivity, 4.5);
@@ -682,9 +634,7 @@ mod tests {
             .unwrap();
         let mut router = FakeRouter::default();
         router.controllers.insert(seat.clone(), 7);
-        router
-            .tunings
-            .insert(seat.clone(), default_gamepad_tuning());
+        router.tunings.insert(seat.clone(), default_gamepad_tuning());
         let pad = device(7);
         let reported = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&reported);
@@ -696,10 +646,7 @@ mod tests {
             move |message: &str| sink.borrow_mut().push(message.to_string()),
         );
         settings.update();
-        assert_eq!(
-            settings.message(&seat),
-            "Gyro settings belong to another controller"
-        );
+        assert_eq!(settings.message(&seat), "Gyro settings belong to another controller");
         assert_eq!(
             reported.borrow().as_slice(),
             ["Gyro settings belong to another controller\n"]
@@ -714,18 +661,11 @@ mod tests {
         let (store, _root) = test_store("reject");
         let mut router = FakeRouter::default();
         router.controllers.insert(seat.clone(), 7);
-        router
-            .tunings
-            .insert(seat.clone(), default_gamepad_tuning());
+        router.tunings.insert(seat.clone(), default_gamepad_tuning());
         router.reject_gyro = true;
         let pad = device(7);
-        let mut settings = ControllerSettings::new(
-            router,
-            vec![seat.clone()],
-            move || vec![pad.clone()],
-            store,
-            |_| {},
-        );
+        let mut settings =
+            ControllerSettings::new(router, vec![seat.clone()], move || vec![pad.clone()], store, |_| {});
         settings.update();
         assert_eq!(settings.message(&seat), "no gyro");
     }
@@ -738,37 +678,19 @@ mod tests {
         let (store, _root) = test_store("seats");
         let mut router = FakeRouter::default();
         router.controllers.insert(first.clone(), 7);
-        router
-            .tunings
-            .insert(first.clone(), default_gamepad_tuning());
+        router.tunings.insert(first.clone(), default_gamepad_tuning());
         let pad = device(7);
-        let mut settings = ControllerSettings::new(
-            router,
-            vec![first.clone()],
-            move || vec![pad.clone()],
-            store,
-            |_| {},
-        );
+        let mut settings =
+            ControllerSettings::new(router, vec![first.clone()], move || vec![pad.clone()], store, |_| {});
         settings.update();
         settings.publish_seats(vec![first.clone(), second.clone()]);
         settings.settle();
         let (store, _root) = test_store("seats-copy");
         let mut router = FakeRouter::default();
-        router
-            .tunings
-            .insert(first.clone(), default_gamepad_tuning());
-        let mut next = ControllerSettings::new(
-            router,
-            vec![first.clone()],
-            Vec::new,
-            store,
-            |_| {},
-        );
+        router.tunings.insert(first.clone(), default_gamepad_tuning());
+        let mut next = ControllerSettings::new(router, vec![first.clone()], Vec::new, store, |_| {});
         next.copy_settled_profiles_from(&settings);
-        assert_eq!(
-            next.message(&first),
-            "Saved for this controller and seat."
-        );
+        assert_eq!(next.message(&first), "Saved for this controller and seat.");
         let mut ui = settings.ui(first.clone());
         assert_eq!(ui.device().unwrap().instance, 7);
         assert!(!ui.busy());
@@ -776,9 +698,6 @@ mod tests {
         settings.close();
         let ui = settings.ui(first.clone());
         assert_eq!(ui.device(), None);
-        assert_eq!(
-            ui.message(),
-            "Connect a controller with a gyroscope."
-        );
+        assert_eq!(ui.message(), "Connect a controller with a gyroscope.");
     }
 }

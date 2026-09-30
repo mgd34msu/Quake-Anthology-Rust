@@ -17,9 +17,7 @@
 
 use qa_net::common::endpoint::NetworkAddress;
 use qa_net::common::session::{CompositionIdentity, WireSelection};
-use qa_net::services::online::{
-    Account, LocalLobbyService, Lobby, LobbyId, LobbyPhase, OnlineError,
-};
+use qa_net::services::online::{Account, Lobby, LobbyId, LobbyPhase, LocalLobbyService, OnlineError};
 use thiserror::Error;
 
 /// Failure of a local-lobby operation.
@@ -136,11 +134,7 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
 
     fn require(&self) -> Result<Lobby, LocalLobbyError> {
         let lobby = self.current().ok_or(LocalLobbyError::NoMembership)?;
-        if !lobby
-            .members
-            .iter()
-            .any(|member| member.account.id == self.account.id)
-        {
+        if !lobby.members.iter().any(|member| member.account.id == self.account.id) {
             return Err(LocalLobbyError::NoMembership);
         }
         Ok(lobby)
@@ -159,13 +153,9 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
             return Err(LocalLobbyError::AlreadyHosting);
         }
         let account = self.account.clone();
-        let lobby = self.service.create(
-            &account,
-            name,
-            capacity,
-            selection.composition.clone(),
-            seats,
-        )?;
+        let lobby = self
+            .service
+            .create(&account, name, capacity, selection.composition.clone(), seats)?;
         self.membership = Some(lobby.id.clone());
         self.last_lobby = Some(lobby);
         self.launched_generation = 0;
@@ -206,31 +196,22 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
         }
         let account_id = self.account.id.clone();
         let next = self.service.start(&lobby.id, &account_id)?;
-        let bound = match self
-            .transitions
-            .host(&next)
-            .map_err(LocalLobbyError::Transition)
-        {
+        let bound = match self.transitions.host(&next).map_err(LocalLobbyError::Transition) {
             Ok(bound) => bound,
             Err(original) => {
                 let mut extra = Vec::new();
                 if self.current().is_some() {
-                    if let Err(cleanup) =
-                        self.service.complete(&next.id, &account_id, next.match_generation)
-                    {
+                    if let Err(cleanup) = self.service.complete(&next.id, &account_id, next.match_generation) {
                         extra.push(cleanup.to_string());
                     }
                 }
                 return combine_start_failure(original, extra);
             }
         };
-        match self.service.publish(
-            &next.id,
-            &account_id,
-            next.match_generation,
-            bound.endpoint,
-            bound.wire,
-        ) {
+        match self
+            .service
+            .publish(&next.id, &account_id, next.match_generation, bound.endpoint, bound.wire)
+        {
             Ok(published) => {
                 self.last_lobby = Some(published);
                 self.launched_generation = next.match_generation;
@@ -239,9 +220,7 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
             Err(original) => {
                 let mut extra = Vec::new();
                 if self.current().is_some() {
-                    if let Err(cleanup) =
-                        self.service.complete(&next.id, &account_id, next.match_generation)
-                    {
+                    if let Err(cleanup) = self.service.complete(&next.id, &account_id, next.match_generation) {
                         extra.push(cleanup.to_string());
                     }
                 }
@@ -257,9 +236,7 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
         if lobby.match_generation <= self.launched_generation {
             return Ok(());
         }
-        self.transitions
-            .join(lobby)
-            .map_err(LocalLobbyError::Transition)?;
+        self.transitions.join(lobby).map_err(LocalLobbyError::Transition)?;
         self.launched_generation = lobby.match_generation;
         Ok(())
     }
@@ -274,18 +251,14 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
             let previous = self.last_lobby.take();
             self.membership = None;
             if let Some(previous) = previous {
-                self.transitions
-                    .leave(&previous)
-                    .map_err(LocalLobbyError::Transition)?;
+                self.transitions.leave(&previous).map_err(LocalLobbyError::Transition)?;
             }
             return Ok(());
         };
         self.last_lobby = Some(lobby.clone());
         match &lobby.phase {
             LobbyPhase::Playing { .. } => self.launch(&lobby),
-            LobbyPhase::Open
-                if self.launched_generation > self.completed_generation =>
-            {
+            LobbyPhase::Open if self.launched_generation > self.completed_generation => {
                 self.transitions
                     .completed(&lobby)
                     .map_err(LocalLobbyError::Transition)?;
@@ -323,18 +296,11 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
         let Some(lobby) = lobby else {
             return Ok(());
         };
-        if self
-            .service
-            .list()
-            .iter()
-            .any(|current| current.id == lobby.id)
-        {
+        if self.service.list().iter().any(|current| current.id == lobby.id) {
             let account_id = self.account.id.clone();
             self.service.leave(&lobby.id, &account_id)?;
         }
-        self.transitions
-            .leave(&lobby)
-            .map_err(LocalLobbyError::Transition)?;
+        self.transitions.leave(&lobby).map_err(LocalLobbyError::Transition)?;
         Ok(())
     }
 
@@ -354,10 +320,7 @@ impl<T: LocalLobbyTransitions> ApplicationLocalLobby<T> {
     }
 }
 
-fn combine_start_failure(
-    original: LocalLobbyError,
-    extra: Vec<String>,
-) -> Result<(), LocalLobbyError> {
+fn combine_start_failure(original: LocalLobbyError, extra: Vec<String>) -> Result<(), LocalLobbyError> {
     if extra.is_empty() {
         return Err(original);
     }
@@ -370,9 +333,7 @@ fn combine_start_failure(
 mod tests {
     use super::*;
     use qa_core::identity::ProviderId;
-    use qa_net::common::session::{
-        CompositionIdentity, ContentDigest, Json, SessionComposition, WireSelection,
-    };
+    use qa_net::common::session::{CompositionIdentity, ContentDigest, Json, SessionComposition, WireSelection};
 
     #[derive(Default)]
     struct FakeTransitions {
@@ -389,9 +350,11 @@ mod tests {
         fn check(&mut self, call: &str) -> Result<(), String> {
             self.calls.push(call.to_string());
             match &self.fail {
-                Some(fail) if fail.starts_with(call) => {
-                    Err(fail.split_once(':').map(|(_, reason)| reason).unwrap_or("fail").to_string())
-                }
+                Some(fail) if fail.starts_with(call) => Err(fail
+                    .split_once(':')
+                    .map(|(_, reason)| reason)
+                    .unwrap_or("fail")
+                    .to_string()),
                 _ => Ok(()),
             }
         }
@@ -435,9 +398,7 @@ mod tests {
 
     fn bound(composition: &CompositionIdentity) -> BoundLobby {
         BoundLobby {
-            endpoint: NetworkAddress::Loopback {
-                id: "test".to_string(),
-            },
+            endpoint: NetworkAddress::Loopback { id: "test".to_string() },
             wire: WireSelection::Unified {
                 version: 1,
                 composition: composition.digest.clone(),
@@ -448,8 +409,10 @@ mod tests {
 
     fn session() -> (ApplicationLocalLobby<FakeTransitions>, LocalLobbySelection) {
         let composition = composition();
-        let mut transitions = FakeTransitions::default();
-        transitions.bound = Some(bound(&composition));
+        let transitions = FakeTransitions {
+            bound: Some(bound(&composition)),
+            ..FakeTransitions::default()
+        };
         (
             ApplicationLocalLobby::new(LocalLobbyService::new(), account(), transitions),
             LocalLobbySelection { composition },
@@ -467,10 +430,7 @@ mod tests {
         ));
         lobby.ready(true).unwrap();
         lobby.start().unwrap();
-        assert!(matches!(
-            lobby.current().unwrap().phase,
-            LobbyPhase::Playing { .. }
-        ));
+        assert!(matches!(lobby.current().unwrap().phase, LobbyPhase::Playing { .. }));
         lobby.poll().unwrap();
         lobby.poll().unwrap();
         lobby.complete().unwrap();
@@ -481,10 +441,7 @@ mod tests {
     #[test]
     fn join_guards_and_missing_membership() {
         let (mut lobby, selection) = session();
-        assert!(matches!(
-            lobby.ready(true).unwrap_err(),
-            LocalLobbyError::NoMembership
-        ));
+        assert!(matches!(lobby.ready(true).unwrap_err(), LocalLobbyError::NoMembership));
         assert!(matches!(
             lobby.join("lobby:absent", 1).unwrap_err(),
             LocalLobbyError::Service(_)
@@ -494,10 +451,7 @@ mod tests {
             lobby.join("lobby:other", 1).unwrap_err(),
             LocalLobbyError::AlreadyJoined
         ));
-        assert!(matches!(
-            lobby.start().unwrap_err(),
-            LocalLobbyError::Service(_)
-        ));
+        assert!(matches!(lobby.start().unwrap_err(), LocalLobbyError::Service(_)));
     }
 
     #[test]
@@ -508,10 +462,7 @@ mod tests {
         lobby.transitions.fail_on("host", "bind failed");
         let error = lobby.start().unwrap_err();
         assert!(matches!(error, LocalLobbyError::Transition(_)));
-        assert!(matches!(
-            lobby.current().unwrap().phase,
-            LobbyPhase::Open
-        ));
+        assert!(matches!(lobby.current().unwrap().phase, LobbyPhase::Open));
     }
 
     #[test]
@@ -519,22 +470,26 @@ mod tests {
         let (mut lobby, selection) = session();
         lobby.host("game", 4, &selection, 1).unwrap();
         lobby.ready(true).unwrap();
-        lobby.start().unwrap();
+        // A generation the wrapper did not launch (a remote host's match)
+        // makes poll attempt a join: drive the service directly so
+        // `launched_generation` stays behind.
+        let membership = lobby.membership.clone().expect("host membership");
+        let account_id = lobby.account.id.clone();
+        let next = lobby
+            .service
+            .start(&membership, &account_id)
+            .expect("service starts generation 1");
+        let bound = lobby.transitions.host(&next).expect("bind generation 1");
+        lobby
+            .service
+            .publish(&next.id, &account_id, next.match_generation, bound.endpoint, bound.wire)
+            .expect("service publishes generation 1");
         lobby.transitions.fail_on("join", "join failed");
-        assert!(matches!(
-            lobby.poll().unwrap_err(),
-            LocalLobbyError::Transition(_)
-        ));
+        assert!(matches!(lobby.poll().unwrap_err(), LocalLobbyError::Transition(_)));
         lobby.transitions.fail = None;
         lobby.close().unwrap();
         lobby.close().unwrap();
-        assert!(matches!(
-            lobby.poll().unwrap_err(),
-            LocalLobbyError::Closed
-        ));
-        assert!(matches!(
-            lobby.leave().unwrap_err(),
-            LocalLobbyError::Closed
-        ));
+        assert!(matches!(lobby.poll().unwrap_err(), LocalLobbyError::Closed));
+        assert!(matches!(lobby.leave().unwrap_err(), LocalLobbyError::Closed));
     }
 }

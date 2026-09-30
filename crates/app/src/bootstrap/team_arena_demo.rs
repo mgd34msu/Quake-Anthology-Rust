@@ -30,7 +30,9 @@ pub fn team_arena_demo(
     exists: &mut dyn FnMut(&str) -> bool,
 ) -> Result<Option<TeamArenaDemo>, TeamArenaDemoError> {
     let valid_map = !map.is_empty()
-        && map.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-')
+        && map
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-')
         && !map.split('/').any(|part| part.is_empty() || part == "..");
     if !valid_map || game_type < 0 || protocol < 0 {
         return Err(TeamArenaDemoError::BadSelection);
@@ -66,16 +68,11 @@ mod tests {
     fn demo_rejects_bad_map() {
         let mut exists = |_: &str| true;
         for map in ["", "a b", "a..b/c", "../x", "a//b", "a/./b", "máp", "a\0b"] {
-            if map == "a..b/c" {
-                // `..` is only rejected as a whole segment.
-                assert!(team_arena_demo(map, 0, 0, &mut exists).is_ok());
-            } else {
-                assert_eq!(
-                    team_arena_demo(map, 0, 0, &mut exists),
-                    Err(TeamArenaDemoError::BadSelection),
-                    "map {map:?}"
-                );
-            }
+            assert_eq!(
+                team_arena_demo(map, 0, 0, &mut exists),
+                Err(TeamArenaDemoError::BadSelection),
+                "map {map:?}"
+            );
         }
     }
 

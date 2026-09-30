@@ -18,10 +18,13 @@ use qa_content::hash::sha256_hex;
 use qa_content::images::indexed::decode_pcx;
 use thiserror::Error;
 
+/// Content-file lookup for skin bytes.
+pub type SkinReader = Box<dyn FnMut(&str) -> Option<Vec<u8>>>;
+
 /// QuakeWorld skin options (`QwSkinOptions`).
 pub struct QwSkinOptions {
     /// Read a content file, returning `None` when missing.
-    pub read: Box<dyn FnMut(&str) -> Option<Vec<u8>>>,
+    pub read: SkinReader,
     /// `noskins` cvar value.
     pub noskins: Box<dyn Fn() -> i32>,
     /// `baseskin` cvar value.
@@ -160,10 +163,7 @@ impl QwPlayerSkins {
             dest.copy_from_slice(source);
         }
         Some(IndexedModelSkin {
-            name: format!(
-                "qw-skin:{}:crop:0,0,296,194:stride320",
-                sha256_hex(&bytes)
-            ),
+            name: format!("qw-skin:{}:crop:0,0,296,194:stride320", sha256_hex(&bytes)),
             width: SKIN_WIDTH as u32,
             height: SKIN_HEIGHT as u32,
             pixels,
@@ -235,22 +235,10 @@ mod tests {
     #[test]
     fn name_prefers_allskins_then_userinfo_then_base() {
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            HashMap::new(),
-            0,
-            "base",
-            "forced",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(HashMap::new(), 0, "base", "forced", Rc::clone(&reads)));
         assert_eq!(skins.name("duke"), "forced");
 
-        let mut skins = QwPlayerSkins::new(options(
-            HashMap::new(),
-            0,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(HashMap::new(), 0, "base", "", Rc::clone(&reads)));
         assert_eq!(skins.name("duke"), "duke");
         assert_eq!(skins.name(""), "base");
     }
@@ -258,13 +246,7 @@ mod tests {
     #[test]
     fn noskins_disables_selection_without_reading() {
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            HashMap::new(),
-            1,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(HashMap::new(), 1, "base", "", Rc::clone(&reads)));
         assert!(skins.select("duke").is_none());
         assert!(reads.borrow().is_empty());
     }
@@ -275,13 +257,7 @@ mod tests {
         let mut files = HashMap::new();
         files.insert("skins/duke.pcx".to_string(), bytes);
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            files,
-            0,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(files, 0, "base", "", Rc::clone(&reads)));
         let skin = skins.select("duke").expect("valid skin decodes");
         assert_eq!(skin.width, 296);
         assert_eq!(skin.height, 194);
@@ -299,13 +275,7 @@ mod tests {
         let mut files = HashMap::new();
         files.insert("skins/duke.pcx".to_string(), pcx_fixture());
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            files,
-            0,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(files, 0, "base", "", Rc::clone(&reads)));
         assert!(skins.select("duke").is_some());
         assert!(skins.select("duke").is_some());
         assert_eq!(reads.borrow().len(), 1);
@@ -316,33 +286,18 @@ mod tests {
         let mut files = HashMap::new();
         files.insert("skins/base.pcx".to_string(), pcx_fixture());
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            files,
-            0,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(files, 0, "base", "", Rc::clone(&reads)));
         assert!(skins.select("missing").is_some());
         assert_eq!(
             *reads.borrow(),
-            vec![
-                "skins/missing.pcx".to_string(),
-                "skins/base.pcx".to_string()
-            ]
+            vec!["skins/missing.pcx".to_string(), "skins/base.pcx".to_string()]
         );
     }
 
     #[test]
     fn select_returns_none_when_everything_is_missing() {
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            HashMap::new(),
-            0,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(HashMap::new(), 0, "base", "", Rc::clone(&reads)));
         assert!(skins.select("missing").is_none());
     }
 
@@ -356,13 +311,7 @@ mod tests {
         files.insert("skins/big.pcx".to_string(), oversized);
         files.insert("skins/junk.pcx".to_string(), vec![0u8; 256]);
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            files,
-            0,
-            "absent",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(files, 0, "absent", "", Rc::clone(&reads)));
         assert!(skins.select("short").is_none());
         assert!(skins.select("big").is_none());
         assert!(skins.select("junk").is_none());
@@ -373,13 +322,7 @@ mod tests {
         let mut files = HashMap::new();
         files.insert("skins/duke.pcx".to_string(), pcx_fixture());
         let reads = Rc::new(RefCell::new(Vec::new()));
-        let mut skins = QwPlayerSkins::new(options(
-            files,
-            0,
-            "base",
-            "",
-            Rc::clone(&reads),
-        ));
+        let mut skins = QwPlayerSkins::new(options(files, 0, "base", "", Rc::clone(&reads)));
         assert!(skins.select("duke").is_some());
         skins.clear();
         assert!(skins.select("duke").is_some());

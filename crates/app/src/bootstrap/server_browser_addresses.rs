@@ -7,9 +7,7 @@
 
 use thiserror::Error;
 
-use qa_net::common::endpoint::{
-    parse_network_address, AddressError, AddressRecord, NetworkAddress,
-};
+use qa_net::common::endpoint::{parse_network_address, AddressError, AddressRecord, NetworkAddress};
 
 use crate::settings::json::{parse_json, Json};
 use crate::settings::SettingsError;
@@ -179,8 +177,7 @@ fn json_network_address(value: &Json) -> Result<NetworkAddress, AddressError> {
             })
         }
         Some("ipx") => {
-            let (Some(Json::Array(node)), Some(Json::Number(network))) =
-                (value.get("node"), value.get("network"))
+            let (Some(Json::Array(node)), Some(Json::Number(network))) = (value.get("node"), value.get("network"))
             else {
                 return Err(AddressError::BadFields);
             };
@@ -229,9 +226,7 @@ pub fn read_direct_servers(text: &str) -> Result<Vec<DirectServerAddress>, Serve
             let Json::Object(_) = item else {
                 return Err(ServerBrowserAddressError::InvalidEntry);
             };
-            let (Some(remote_value), Some(address_value)) =
-                (item.get("remote"), item.get("address"))
-            else {
+            let (Some(remote_value), Some(address_value)) = (item.get("remote"), item.get("address")) else {
                 return Err(ServerBrowserAddressError::InvalidEntry);
             };
             let remote = match remote_value {
@@ -322,28 +317,26 @@ mod tests {
             read_direct_servers(&oversized).unwrap_err(),
             ServerBrowserAddressError::TooLarge
         );
-        let many: Vec<(String, Json)> = (0..17)
-            .map(|index| (format!("s{index}"), ipv4_record()))
+        let many: Vec<(String, Json)> = (0..17).map(|index| (format!("s{index}"), ipv4_record())).collect();
+        let many_ref: Vec<(&str, Json)> = many
+            .iter()
+            .map(|(name, record)| (name.as_str(), record.clone()))
             .collect();
-        let many_ref: Vec<(&str, Json)> =
-            many.iter().map(|(name, record)| (name.as_str(), record.clone())).collect();
         assert_eq!(
             read_direct_servers(&list_json(&many_ref)).unwrap_err(),
             ServerBrowserAddressError::InvalidList
         );
         assert_eq!(
-            read_direct_servers(
-                &stringify(&Json::Object(vec![
-                    ("version".to_string(), Json::Number(1.0)),
-                    (
-                        "servers".to_string(),
-                        Json::Array(vec![Json::Object(vec![(
-                            "remote".to_string(),
-                            Json::String("x".to_string())
-                        )])])
-                    )
-                ]))
-            )
+            read_direct_servers(&stringify(&Json::Object(vec![
+                ("version".to_string(), Json::Number(1.0)),
+                (
+                    "servers".to_string(),
+                    Json::Array(vec![Json::Object(vec![(
+                        "remote".to_string(),
+                        Json::String("x".to_string())
+                    )])])
+                )
+            ])))
             .unwrap_err(),
             ServerBrowserAddressError::InvalidEntry
         );
@@ -351,10 +344,7 @@ mod tests {
             direct_server_text("has space").unwrap_err(),
             ServerBrowserAddressError::BadText
         );
-        assert_eq!(
-            direct_server_text("").unwrap_err(),
-            ServerBrowserAddressError::BadText
-        );
+        assert_eq!(direct_server_text("").unwrap_err(), ServerBrowserAddressError::BadText);
         assert!(direct_server_text("arena:27910").is_ok());
     }
 
@@ -376,8 +366,8 @@ mod tests {
                     Json::Number(1.0),
                     Json::Number(2.0),
                     Json::Number(3.0),
-                    Json::Number(4.0)
-                ])
+                    Json::Number(4.0),
+                ]),
             ),
         ]);
         assert!(matches!(
@@ -392,8 +382,8 @@ mod tests {
                     Json::Number(300.0),
                     Json::Number(0.0),
                     Json::Number(0.0),
-                    Json::Number(1.0)
-                ])
+                    Json::Number(1.0),
+                ]),
             ),
             ("port".to_string(), Json::Number(27910.0)),
         ]);

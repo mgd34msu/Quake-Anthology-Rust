@@ -165,6 +165,7 @@ pub enum ModRegistrationTarget {
 }
 
 /// Boxed handler per registration target.
+#[allow(clippy::type_complexity)]
 pub enum ModCallbackHandler {
     DamageTransform(Box<dyn Fn(DamageRequest) -> DamageRequest>),
     DamageObserve(Box<dyn Fn(&DamageRequest, &DamageOutcome)>),
@@ -184,6 +185,9 @@ pub enum ModCallbackHandler {
     DieReplace(Box<dyn Fn(DieRequest, &dyn Fn(DieRequest) -> bool) -> bool>),
 }
 
+/// Execute a mod callback, returning the replacement value when it handles the call.
+pub type ModCallbackExecute = Rc<dyn Fn(&ModCallback, &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Option<f64>>;
+
 /// Registration sink.
 pub trait ModRegistrations {
     fn register(&mut self, id: &str, target: ModRegistrationTarget, handler: ModCallbackHandler);
@@ -193,9 +197,18 @@ type Inputs = Vec<(ModCallbackInput, ModRuntimeValue)>;
 
 fn damage_inputs(request: &DamageRequest) -> Inputs {
     vec![
-        (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(request.target.clone())),
-        (ModCallbackInput::Attacker, ModRuntimeValue::Actor(request.attacker.clone())),
-        (ModCallbackInput::Inflictor, ModRuntimeValue::Actor(request.inflictor.clone())),
+        (
+            ModCallbackInput::SelfActor,
+            ModRuntimeValue::Actor(request.target.clone()),
+        ),
+        (
+            ModCallbackInput::Attacker,
+            ModRuntimeValue::Actor(request.attacker.clone()),
+        ),
+        (
+            ModCallbackInput::Inflictor,
+            ModRuntimeValue::Actor(request.inflictor.clone()),
+        ),
         (ModCallbackInput::Amount, ModRuntimeValue::Float(request.amount)),
         (ModCallbackInput::Knockback, ModRuntimeValue::Float(request.knockback)),
         (ModCallbackInput::Direction, ModRuntimeValue::Vector(request.direction)),
@@ -206,7 +219,10 @@ fn damage_inputs(request: &DamageRequest) -> Inputs {
 
 fn inventory_inputs(request: &InventoryRequest) -> Inputs {
     vec![
-        (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.owner.clone()))),
+        (
+            ModCallbackInput::SelfActor,
+            ModRuntimeValue::Actor(Some(request.owner.clone())),
+        ),
         (ModCallbackInput::Item, ModRuntimeValue::Text(request.item.clone())),
         (ModCallbackInput::Amount, ModRuntimeValue::Float(request.amount)),
     ]
@@ -218,7 +234,7 @@ pub fn register_mod_callbacks(
     callbacks: &[ModCallback],
     registrations: &mut dyn ModRegistrations,
     time: Rc<dyn Fn() -> SourceTime>,
-    execute: Rc<dyn Fn(&ModCallback, &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Option<f64>>,
+    execute: ModCallbackExecute,
 ) {
     for callback in callbacks {
         let invoke = {
@@ -226,10 +242,8 @@ pub fn register_mod_callbacks(
             let time = Rc::clone(&time);
             let execute = Rc::clone(&execute);
             move |values: Inputs, result: Option<f64>| -> Option<f64> {
-                let mut inputs = BTreeMap::from([(
-                    ModCallbackInput::Time,
-                    ModRuntimeValue::Float(time().as_seconds_f64()),
-                )]);
+                let mut inputs =
+                    BTreeMap::from([(ModCallbackInput::Time, ModRuntimeValue::Float(time().as_seconds_f64()))]);
                 inputs.extend(values);
                 if let Some(result) = result {
                     inputs.insert(ModCallbackInput::Result, ModRuntimeValue::Float(result));
@@ -275,14 +289,12 @@ pub fn register_mod_callbacks(
                     registrations.register(
                         &callback.id,
                         ModRegistrationTarget::InventoryGiveTransform,
-                        ModCallbackHandler::InventoryGiveTransform(Box::new(
-                            move |mut request: InventoryRequest| {
-                                if let Some(amount) = invoke(inventory_inputs(&request), None) {
-                                    request.amount = amount;
-                                }
-                                request
-                            },
-                        )),
+                        ModCallbackHandler::InventoryGiveTransform(Box::new(move |mut request: InventoryRequest| {
+                            if let Some(amount) = invoke(inventory_inputs(&request), None) {
+                                request.amount = amount;
+                            }
+                            request
+                        })),
                     );
                 } else {
                     registrations.register(
@@ -330,9 +342,18 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::ThinkObserve(Box::new(move |request: &ThinkRequest, result: bool| {
                             invoke(
                                 vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.owner.clone()))),
-                                    (ModCallbackInput::Time, ModRuntimeValue::Float(request.time.as_seconds_f64())),
-                                    (ModCallbackInput::Elapsed, ModRuntimeValue::Float(request.elapsed.as_seconds_f64())),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.owner.clone())),
+                                    ),
+                                    (
+                                        ModCallbackInput::Time,
+                                        ModRuntimeValue::Float(request.time.as_seconds_f64()),
+                                    ),
+                                    (
+                                        ModCallbackInput::Elapsed,
+                                        ModRuntimeValue::Float(request.elapsed.as_seconds_f64()),
+                                    ),
                                 ],
                                 Some(if result { 1.0 } else { 0.0 }),
                             );
@@ -345,9 +366,18 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::ThinkReplace(Box::new(
                             move |request: ThinkRequest, next: &dyn Fn(ThinkRequest) -> bool| {
                                 let inputs = vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.owner.clone()))),
-                                    (ModCallbackInput::Time, ModRuntimeValue::Float(request.time.as_seconds_f64())),
-                                    (ModCallbackInput::Elapsed, ModRuntimeValue::Float(request.elapsed.as_seconds_f64())),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.owner.clone())),
+                                    ),
+                                    (
+                                        ModCallbackInput::Time,
+                                        ModRuntimeValue::Float(request.time.as_seconds_f64()),
+                                    ),
+                                    (
+                                        ModCallbackInput::Elapsed,
+                                        ModRuntimeValue::Float(request.elapsed.as_seconds_f64()),
+                                    ),
                                 ];
                                 match invoke(inputs, None) {
                                     None => next(request),
@@ -366,7 +396,10 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::TouchObserve(Box::new(move |request: &TouchRequest, result: bool| {
                             invoke(
                                 vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.self_id.clone()))),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.self_id.clone())),
+                                    ),
                                     (ModCallbackInput::Other, ModRuntimeValue::Actor(request.other.clone())),
                                 ],
                                 Some(if result { 1.0 } else { 0.0 }),
@@ -380,7 +413,10 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::TouchReplace(Box::new(
                             move |request: TouchRequest, next: &dyn Fn(TouchRequest) -> bool| {
                                 let inputs = vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.self_id.clone()))),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.self_id.clone())),
+                                    ),
                                     (ModCallbackInput::Other, ModRuntimeValue::Actor(request.other.clone())),
                                 ];
                                 match invoke(inputs, None) {
@@ -400,9 +436,15 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::UseObserve(Box::new(move |request: &UseRequest, result: bool| {
                             invoke(
                                 vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.owner.clone()))),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.owner.clone())),
+                                    ),
                                     (ModCallbackInput::Other, ModRuntimeValue::Actor(request.other.clone())),
-                                    (ModCallbackInput::Activator, ModRuntimeValue::Actor(request.activator.clone())),
+                                    (
+                                        ModCallbackInput::Activator,
+                                        ModRuntimeValue::Actor(request.activator.clone()),
+                                    ),
                                 ],
                                 Some(if result { 1.0 } else { 0.0 }),
                             );
@@ -415,9 +457,15 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::UseReplace(Box::new(
                             move |request: UseRequest, next: &dyn Fn(UseRequest) -> bool| {
                                 let inputs = vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.owner.clone()))),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.owner.clone())),
+                                    ),
                                     (ModCallbackInput::Other, ModRuntimeValue::Actor(request.other.clone())),
-                                    (ModCallbackInput::Activator, ModRuntimeValue::Actor(request.activator.clone())),
+                                    (
+                                        ModCallbackInput::Activator,
+                                        ModRuntimeValue::Actor(request.activator.clone()),
+                                    ),
                                 ];
                                 match invoke(inputs, None) {
                                     None => next(request),
@@ -436,8 +484,14 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::PainObserve(Box::new(move |request: &PainRequest, result: bool| {
                             invoke(
                                 vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.self_id.clone()))),
-                                    (ModCallbackInput::Attacker, ModRuntimeValue::Actor(request.attacker.clone())),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.self_id.clone())),
+                                    ),
+                                    (
+                                        ModCallbackInput::Attacker,
+                                        ModRuntimeValue::Actor(request.attacker.clone()),
+                                    ),
                                     (ModCallbackInput::Amount, ModRuntimeValue::Float(request.damage)),
                                     (ModCallbackInput::Knockback, ModRuntimeValue::Float(request.kick)),
                                 ],
@@ -452,8 +506,14 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::PainReplace(Box::new(
                             move |request: PainRequest, next: &dyn Fn(PainRequest) -> bool| {
                                 let inputs = vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.self_id.clone()))),
-                                    (ModCallbackInput::Attacker, ModRuntimeValue::Actor(request.attacker.clone())),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.self_id.clone())),
+                                    ),
+                                    (
+                                        ModCallbackInput::Attacker,
+                                        ModRuntimeValue::Actor(request.attacker.clone()),
+                                    ),
                                     (ModCallbackInput::Amount, ModRuntimeValue::Float(request.damage)),
                                     (ModCallbackInput::Knockback, ModRuntimeValue::Float(request.kick)),
                                 ];
@@ -474,9 +534,18 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::DieObserve(Box::new(move |request: &DieRequest, result: bool| {
                             invoke(
                                 vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.self_id.clone()))),
-                                    (ModCallbackInput::Attacker, ModRuntimeValue::Actor(request.attacker.clone())),
-                                    (ModCallbackInput::Inflictor, ModRuntimeValue::Actor(request.inflictor.clone())),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.self_id.clone())),
+                                    ),
+                                    (
+                                        ModCallbackInput::Attacker,
+                                        ModRuntimeValue::Actor(request.attacker.clone()),
+                                    ),
+                                    (
+                                        ModCallbackInput::Inflictor,
+                                        ModRuntimeValue::Actor(request.inflictor.clone()),
+                                    ),
                                     (ModCallbackInput::Amount, ModRuntimeValue::Float(request.damage)),
                                     (ModCallbackInput::Knockback, ModRuntimeValue::Float(request.kick)),
                                     (ModCallbackInput::Point, ModRuntimeValue::Vector(request.point)),
@@ -492,9 +561,18 @@ pub fn register_mod_callbacks(
                         ModCallbackHandler::DieReplace(Box::new(
                             move |request: DieRequest, next: &dyn Fn(DieRequest) -> bool| {
                                 let inputs = vec![
-                                    (ModCallbackInput::SelfActor, ModRuntimeValue::Actor(Some(request.self_id.clone()))),
-                                    (ModCallbackInput::Attacker, ModRuntimeValue::Actor(request.attacker.clone())),
-                                    (ModCallbackInput::Inflictor, ModRuntimeValue::Actor(request.inflictor.clone())),
+                                    (
+                                        ModCallbackInput::SelfActor,
+                                        ModRuntimeValue::Actor(Some(request.self_id.clone())),
+                                    ),
+                                    (
+                                        ModCallbackInput::Attacker,
+                                        ModRuntimeValue::Actor(request.attacker.clone()),
+                                    ),
+                                    (
+                                        ModCallbackInput::Inflictor,
+                                        ModRuntimeValue::Actor(request.inflictor.clone()),
+                                    ),
                                     (ModCallbackInput::Amount, ModRuntimeValue::Float(request.damage)),
                                     (ModCallbackInput::Knockback, ModRuntimeValue::Float(request.kick)),
                                     (ModCallbackInput::Point, ModRuntimeValue::Vector(request.point)),
@@ -515,8 +593,8 @@ pub fn register_mod_callbacks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use qa_core::identity::IdentityOwner;
+    use std::cell::RefCell;
 
     struct Collector {
         targets: Vec<(String, ModRegistrationTarget)>,
@@ -551,17 +629,27 @@ mod tests {
     #[test]
     fn damage_transform_rewrites_selected_field() {
         let owner = IdentityOwner::create("test").unwrap();
-        let mut collector = Collector { targets: vec![], handlers: vec![] };
+        let mut collector = Collector {
+            targets: vec![],
+            handlers: vec![],
+        };
         let time: Rc<dyn Fn() -> SourceTime> = Rc::new(|| seconds(1.0));
-        let execute: Rc<dyn Fn(&ModCallback, &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Option<f64>> =
-            Rc::new(|_, _| Some(7.0));
+        let execute: ModCallbackExecute = Rc::new(|_, _| Some(7.0));
         register_mod_callbacks(
-            &[ModCallback { id: "dmg".to_string(), operation: ModCallbackOperation::Damage, stage: ModCallbackStage::Transform, result: DamageField::Amount }],
+            &[ModCallback {
+                id: "dmg".to_string(),
+                operation: ModCallbackOperation::Damage,
+                stage: ModCallbackStage::Transform,
+                result: DamageField::Amount,
+            }],
             &mut collector,
             time,
             execute,
         );
-        assert_eq!(collector.targets, vec![("dmg".to_string(), ModRegistrationTarget::DamageTransform)]);
+        assert_eq!(
+            collector.targets,
+            vec![("dmg".to_string(), ModRegistrationTarget::DamageTransform)]
+        );
         let ModCallbackHandler::DamageTransform(handler) = collector.handlers.pop().unwrap() else {
             panic!("expected damage transform");
         };
@@ -572,16 +660,23 @@ mod tests {
     #[test]
     fn damage_observe_reports_applied_damage() {
         let owner = IdentityOwner::create("test").unwrap();
-        let mut collector = Collector { targets: vec![], handlers: vec![] };
+        let mut collector = Collector {
+            targets: vec![],
+            handlers: vec![],
+        };
         let seen: Rc<RefCell<BTreeMap<ModCallbackInput, ModRuntimeValue>>> = Rc::new(RefCell::new(BTreeMap::new()));
         let time: Rc<dyn Fn() -> SourceTime> = Rc::new(|| seconds(1.0));
-        let execute: Rc<dyn Fn(&ModCallback, &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Option<f64>> =
-            Rc::new(move |_, inputs| {
-                *seen.borrow_mut() = inputs.clone();
-                None
-            });
+        let execute: ModCallbackExecute = Rc::new(move |_, inputs| {
+            *seen.borrow_mut() = inputs.clone();
+            None
+        });
         register_mod_callbacks(
-            &[ModCallback { id: "dmg".to_string(), operation: ModCallbackOperation::Damage, stage: ModCallbackStage::Observe, result: DamageField::Amount }],
+            &[ModCallback {
+                id: "dmg".to_string(),
+                operation: ModCallbackOperation::Damage,
+                stage: ModCallbackStage::Observe,
+                result: DamageField::Amount,
+            }],
             &mut collector,
             time,
             execute,
@@ -589,7 +684,10 @@ mod tests {
         let ModCallbackHandler::DamageObserve(handler) = collector.handlers.pop().unwrap() else {
             panic!("expected damage observe");
         };
-        handler(&damage_request(&owner), &DamageOutcome::Committed { applied_damage: 5.0 });
+        handler(
+            &damage_request(&owner),
+            &DamageOutcome::Committed { applied_damage: 5.0 },
+        );
         drop(collector);
         let _ = &owner;
     }
@@ -597,17 +695,24 @@ mod tests {
     #[test]
     fn think_observe_prefers_frame_time_over_clock() {
         let owner = IdentityOwner::create("test").unwrap();
-        let mut collector = Collector { targets: vec![], handlers: vec![] };
+        let mut collector = Collector {
+            targets: vec![],
+            handlers: vec![],
+        };
         let seen: Rc<RefCell<BTreeMap<ModCallbackInput, ModRuntimeValue>>> = Rc::new(RefCell::new(BTreeMap::new()));
         let seen_in = Rc::clone(&seen);
         let time: Rc<dyn Fn() -> SourceTime> = Rc::new(|| seconds(100.0));
-        let execute: Rc<dyn Fn(&ModCallback, &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Option<f64>> =
-            Rc::new(move |_, inputs| {
-                *seen_in.borrow_mut() = inputs.clone();
-                None
-            });
+        let execute: ModCallbackExecute = Rc::new(move |_, inputs| {
+            *seen_in.borrow_mut() = inputs.clone();
+            None
+        });
         register_mod_callbacks(
-            &[ModCallback { id: "think".to_string(), operation: ModCallbackOperation::ActorThink, stage: ModCallbackStage::Observe, result: DamageField::Amount }],
+            &[ModCallback {
+                id: "think".to_string(),
+                operation: ModCallbackOperation::ActorThink,
+                stage: ModCallbackStage::Observe,
+                result: DamageField::Amount,
+            }],
             &mut collector,
             time,
             execute,
@@ -616,22 +721,39 @@ mod tests {
             panic!("expected think observe");
         };
         handler(
-            &ThinkRequest { owner: owner.actor(1, 1), time: seconds(3.0), elapsed: seconds(0.1) },
+            &ThinkRequest {
+                owner: owner.actor(1, 1),
+                time: seconds(3.0),
+                elapsed: seconds(0.1),
+            },
             true,
         );
-        assert_eq!(seen.borrow().get(&ModCallbackInput::Time), Some(&ModRuntimeValue::Float(3.0)));
-        assert_eq!(seen.borrow().get(&ModCallbackInput::Result), Some(&ModRuntimeValue::Float(1.0)));
+        assert_eq!(
+            seen.borrow().get(&ModCallbackInput::Time),
+            Some(&ModRuntimeValue::Float(3.0))
+        );
+        assert_eq!(
+            seen.borrow().get(&ModCallbackInput::Result),
+            Some(&ModRuntimeValue::Float(1.0))
+        );
     }
 
     #[test]
     fn replace_falls_through_to_next_on_decline() {
         let owner = IdentityOwner::create("test").unwrap();
-        let mut collector = Collector { targets: vec![], handlers: vec![] };
+        let mut collector = Collector {
+            targets: vec![],
+            handlers: vec![],
+        };
         let time: Rc<dyn Fn() -> SourceTime> = Rc::new(|| seconds(1.0));
-        let execute: Rc<dyn Fn(&ModCallback, &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Option<f64>> =
-            Rc::new(|_, _| None);
+        let execute: ModCallbackExecute = Rc::new(|_, _| None);
         register_mod_callbacks(
-            &[ModCallback { id: "use".to_string(), operation: ModCallbackOperation::ActorUse, stage: ModCallbackStage::Replace, result: DamageField::Amount }],
+            &[ModCallback {
+                id: "use".to_string(),
+                operation: ModCallbackOperation::ActorUse,
+                stage: ModCallbackStage::Replace,
+                result: DamageField::Amount,
+            }],
             &mut collector,
             time,
             execute,
@@ -639,7 +761,11 @@ mod tests {
         let ModCallbackHandler::UseReplace(handler) = collector.handlers.pop().unwrap() else {
             panic!("expected use replace");
         };
-        let request = UseRequest { owner: owner.actor(1, 1), other: None, activator: None };
+        let request = UseRequest {
+            owner: owner.actor(1, 1),
+            other: None,
+            activator: None,
+        };
         assert!(handler(request, &|_| true));
     }
 }

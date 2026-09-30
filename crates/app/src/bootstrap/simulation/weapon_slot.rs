@@ -304,20 +304,13 @@ impl WeaponSlot {
                 return Err(WeaponSlotError::OwnerOverlap);
             }
             slot.equipment_provider = Some(provider);
-            slot.insert_binding(
-                Box::new(EquipmentHandoff { equipment }),
-                Rc::new(Cell::new(true)),
-                None,
-            );
+            slot.insert_binding(Box::new(EquipmentHandoff { equipment }), Rc::new(Cell::new(true)), None);
         }
-        let restored = restored.map_or_else(
-            || {
-                WeaponSlotRestoreState::State(WeaponSlotState::Active {
-                    provider: primary_provider.clone(),
-                })
-            },
-            |state| state,
-        );
+        let restored = restored.unwrap_or_else(|| {
+            WeaponSlotRestoreState::State(WeaponSlotState::Active {
+                provider: primary_provider.clone(),
+            })
+        });
         slot.current = slot.restore_state(&restored)?;
         Ok(slot)
     }
@@ -348,12 +341,23 @@ impl WeaponSlot {
             WeaponSlotRestoreState::Primary => Ok(WeaponSlotState::Active {
                 provider: self.primary_provider.clone(),
             }),
-            WeaponSlotRestoreState::Equipment => self.equipment_provider.clone().map(|provider| WeaponSlotState::Active { provider }).ok_or(WeaponSlotError::EquipmentWithoutOwner),
+            WeaponSlotRestoreState::Equipment => self
+                .equipment_provider
+                .clone()
+                .map(|provider| WeaponSlotState::Active { provider })
+                .ok_or(WeaponSlotError::EquipmentWithoutOwner),
             WeaponSlotRestoreState::HolsteringPrimary { next } => Ok(WeaponSlotState::Switching {
                 from: self.primary_provider.clone(),
                 next: next.clone(),
             }),
-            WeaponSlotRestoreState::HolsteringEquipment { next } => self.equipment_provider.clone().map(|from| WeaponSlotState::Switching { from, next: next.clone() }).ok_or(WeaponSlotError::EquipmentTransitionWithoutOwner),
+            WeaponSlotRestoreState::HolsteringEquipment { next } => self
+                .equipment_provider
+                .clone()
+                .map(|from| WeaponSlotState::Switching {
+                    from,
+                    next: next.clone(),
+                })
+                .ok_or(WeaponSlotError::EquipmentTransitionWithoutOwner),
         }
     }
 
@@ -378,9 +382,10 @@ impl WeaponSlot {
             .ok_or(WeaponSlotError::RestoreUnbound)?;
         if let Some(read) = self.bindings.get(&outgoing).and_then(|binding| binding.read.as_ref()) {
             let presentation = read();
-            let declared = presentation.active.as_ref().is_none_or(|active| {
-                presentation.items.iter().any(|item| item.item == *active)
-            });
+            let declared = presentation
+                .active
+                .as_ref()
+                .is_none_or(|active| presentation.items.iter().any(|item| item.item == *active));
             if presentation.source_provider != outgoing
                 || !declared
                 || self.binding_generation(&outgoing) != Some(outgoing_generation)
@@ -506,9 +511,7 @@ impl WeaponSlot {
                 self.cancel_activation(&state);
                 self.fallback()?;
             }
-            WeaponSlotState::Switching { from, .. } | WeaponSlotState::Activating { from, .. }
-                if *from == provider =>
-            {
+            WeaponSlotState::Switching { from, .. } | WeaponSlotState::Activating { from, .. } if *from == provider => {
                 self.cancel_activation(&state);
                 self.fallback()?;
             }
@@ -632,7 +635,8 @@ impl WeaponSlot {
     }
 
     fn cancel_activation(&mut self, state: &WeaponSlotState) {
-        let matches = matches!(&self.activation, Some(activation) if activation.state == *state && !activation.cancelling);
+        let matches =
+            matches!(&self.activation, Some(activation) if activation.state == *state && !activation.cancelling);
         if !matches {
             return;
         }
@@ -649,9 +653,7 @@ impl WeaponSlot {
         item: Option<ItemId>,
         outgoing: Option<(ProviderId, u64)>,
     ) -> Result<(), WeaponSlotError> {
-        let generation = self
-            .binding_generation(provider)
-            .ok_or(WeaponSlotError::NoLiveOwner)?;
+        let generation = self.binding_generation(provider).ok_or(WeaponSlotError::NoLiveOwner)?;
         let activated = WeaponSlotState::Active {
             provider: provider.clone(),
         };

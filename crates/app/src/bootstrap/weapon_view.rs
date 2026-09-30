@@ -39,7 +39,11 @@ pub struct WeaponViewSource {
 #[must_use]
 pub fn weapon_view_origin(source: &WeaponViewSource) -> Vec3 {
     if source.view_weapon && source.family == GameFamily::Q1 {
-        Vec3 { x: source.origin.x, y: source.origin.y, z: source.origin.z + 2.0 }
+        Vec3 {
+            x: source.origin.x,
+            y: source.origin.y,
+            z: source.origin.z + 2.0,
+        }
     } else {
         source.origin
     }
@@ -50,7 +54,12 @@ pub fn weapon_view_origin(source: &WeaponViewSource) -> Vec3 {
 #[must_use]
 pub fn weapon_view_camera(camera: &SceneCamera, occupied: &[Rect]) -> SceneCamera {
     let area = camera.viewport;
-    let (ax, ay, aw, ah) = (f64::from(area.x), f64::from(area.y), f64::from(area.width), f64::from(area.height));
+    let (ax, ay, aw, ah) = (
+        f64::from(area.x),
+        f64::from(area.y),
+        f64::from(area.width),
+        f64::from(area.height),
+    );
     let mut bottom = ay + ah;
     for rect in occupied {
         let (rx, ry, rw, rh) = (
@@ -59,8 +68,7 @@ pub fn weapon_view_camera(camera: &SceneCamera, occupied: &[Rect]) -> SceneCamer
             f64::from(rect.width),
             f64::from(rect.height),
         );
-        if rect.width > 0 && rect.height > 0 && rx < ax + aw && rx + rw > ax && ry + rh > ay + ah / 2.0
-        {
+        if rect.width > 0 && rect.height > 0 && rx < ax + aw && rx + rw > ax && ry + rh > ay + ah / 2.0 {
             bottom = bottom.min(ay.max(ry));
         }
     }
@@ -89,22 +97,37 @@ mod tests {
         SceneCamera {
             origin: vec3(0.0, 0.0, 0.0),
             axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
-            projection: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
-            viewport: Rect { x: 0, y: 0, width: 640, height: 480 },
+            projection: [
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            ],
+            viewport: Rect {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            },
             clip: CameraClip::None,
         }
     }
 
     #[test]
     fn q1_view_weapon_lifts_two_units() {
-        let source = WeaponViewSource { view_weapon: true, family: GameFamily::Q1, origin: vec3(1.0, 2.0, 3.0) };
+        let source = WeaponViewSource {
+            view_weapon: true,
+            family: GameFamily::Q1,
+            origin: vec3(1.0, 2.0, 3.0),
+        };
         assert_eq!(weapon_view_origin(&source), vec3(1.0, 2.0, 5.0));
     }
 
     #[test]
     fn other_presentations_pass_through() {
         for (view_weapon, family) in [(false, GameFamily::Q1), (true, GameFamily::Q2), (true, GameFamily::Q3)] {
-            let source = WeaponViewSource { view_weapon, family, origin: vec3(1.0, 2.0, 3.0) };
+            let source = WeaponViewSource {
+                view_weapon,
+                family,
+                origin: vec3(1.0, 2.0, 3.0),
+            };
             assert_eq!(weapon_view_origin(&source), vec3(1.0, 2.0, 3.0));
         }
     }
@@ -114,17 +137,32 @@ mod tests {
         let camera = camera();
         assert_eq!(weapon_view_camera(&camera, &[]), camera);
         // Upper-half HUD does not count.
-        let hud = Rect { x: 0, y: 0, width: 640, height: 100 };
+        let hud = Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 100,
+        };
         assert_eq!(weapon_view_camera(&camera, &[hud]), camera);
         // Degenerate rects are ignored.
-        let flat = Rect { x: 0, y: 400, width: 0, height: 80 };
+        let flat = Rect {
+            x: 0,
+            y: 400,
+            width: 0,
+            height: 80,
+        };
         assert_eq!(weapon_view_camera(&camera, &[flat]), camera);
     }
 
     #[test]
     fn camera_shifts_above_lower_hud() {
         let camera = camera();
-        let hud = Rect { x: 0, y: 400, width: 640, height: 80 };
+        let hud = Rect {
+            x: 0,
+            y: 400,
+            width: 640,
+            height: 80,
+        };
         let shifted = weapon_view_camera(&camera, &[hud]);
         let offset = 80.0 / 480.0;
         assert!((shifted.projection[1] - (2.0 + offset as f32 * 4.0)).abs() < 1e-6);

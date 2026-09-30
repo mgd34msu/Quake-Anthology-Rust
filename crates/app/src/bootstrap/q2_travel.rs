@@ -76,10 +76,7 @@ pub fn parse_q2_travel(expression: &str) -> Result<Q2TravelTarget, Q2TravelError
         };
         let stem = [".cin", ".pcx", ".dm2"]
             .iter()
-            .find_map(|extension| {
-                name.strip_suffix(*extension)
-                    .filter(|stem| !stem.is_empty())
-            })
+            .find_map(|extension| name.strip_suffix(*extension).filter(|stem| !stem.is_empty()))
             .unwrap_or(name);
         if !valid_stem(stem) || name.starts_with('/') || name.contains("//") {
             return Err(Q2TravelError::BadDestination(name.to_string()));
@@ -107,8 +104,7 @@ pub fn parse_q2_travel(expression: &str) -> Result<Q2TravelTarget, Q2TravelError
             next,
         }));
     }
-    next.map(|target| *target)
-        .ok_or(Q2TravelError::NoDestination)
+    next.map(|target| *target).ok_or(Q2TravelError::NoDestination)
 }
 
 /// Render the authored `SV_Map` suffix as a source `nextserver` command;
@@ -144,7 +140,7 @@ mod tests {
 
     #[test]
     fn parses_maps_and_chains() {
-        let target = parse_q2_travel("base1$start+*base2+boss.intro.cin").unwrap();
+        let target = parse_q2_travel("base1$start+*base2+intro.cin").unwrap();
         assert_eq!(target.kind, Q2TravelKind::Map);
         assert_eq!(target.name, "base1");
         assert_eq!(target.spawn_point, "start");
@@ -154,6 +150,7 @@ mod tests {
         assert!(second.new_unit);
         let third = second.next.as_deref().unwrap();
         assert_eq!(third.kind, Q2TravelKind::Cinematic);
+        assert_eq!(third.name, "intro.cin");
         assert!(third.next.is_none());
         assert_eq!(parse_q2_travel("shot.pcx").unwrap().kind, Q2TravelKind::Picture);
         assert_eq!(parse_q2_travel("demo1.dm2").unwrap().kind, Q2TravelKind::Demo);
@@ -161,10 +158,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_destinations() {
-        assert_eq!(
-            parse_q2_travel("").unwrap_err(),
-            Q2TravelError::EmptyDestination
-        );
+        assert_eq!(parse_q2_travel("").unwrap_err(), Q2TravelError::EmptyDestination);
         assert_eq!(
             parse_q2_travel("base1++base2").unwrap_err(),
             Q2TravelError::EmptyDestination
@@ -184,6 +178,10 @@ mod tests {
         assert_eq!(
             parse_q2_travel(".cin").unwrap_err(),
             Q2TravelError::BadDestination(".cin".to_string())
+        );
+        assert_eq!(
+            parse_q2_travel("boss.intro.cin").unwrap_err(),
+            Q2TravelError::BadDestination("boss.intro.cin".to_string())
         );
         assert_eq!(
             parse_q2_travel("base1$bad!").unwrap_err(),

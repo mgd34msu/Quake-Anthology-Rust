@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::{ActorId, SavedActorId};
 use qa_world::save::records::{read_saved_actor, write_saved_actor};
-use qa_world::save::value::{SaveJson, SaveReader, arr, int, obj, str as json_str};
+use qa_world::save::value::{arr, int, obj, str as json_str, SaveJson, SaveReader};
 
 /// Checkpoint source dialect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,8 +53,7 @@ impl BotKnowledgeStore {
 
     #[must_use]
     pub fn checkpoint(&self) -> SaveJson {
-        let mut entries: Vec<(u32, &ActorId)> =
-            self.actors.iter().map(|(handle, actor)| (*handle, actor)).collect();
+        let mut entries: Vec<(u32, &ActorId)> = self.actors.iter().map(|(handle, actor)| (*handle, actor)).collect();
         entries.sort_by_key(|(handle, _)| *handle);
         obj(vec![
             ("version", int(1)),
@@ -88,11 +87,9 @@ impl BotKnowledgeStore {
         let mut seen: HashSet<u32> = HashSet::new();
         reader.field("actors").list(|entry| -> Result<(), BotKnowledgeError> {
             let raw = entry.field("handle").integer(0)?;
-            let saved = u32::try_from(raw)
-                .map_err(|_| entry.fail("invalid or duplicate weapon handle mapping"))?;
+            let saved = u32::try_from(raw).map_err(|_| entry.fail("invalid or duplicate weapon handle mapping"))?;
             let handle = weapon_handle(saved);
-            let mapped = u32::try_from(handle)
-                .map_err(|_| entry.fail("invalid or duplicate weapon handle mapping"))?;
+            let mapped = u32::try_from(handle).map_err(|_| entry.fail("invalid or duplicate weapon handle mapping"))?;
             if seen.contains(&saved) || restored.contains_key(&mapped) {
                 return Err(entry.fail("invalid or duplicate weapon handle mapping").into());
             }
@@ -108,8 +105,8 @@ impl BotKnowledgeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qa_world::save::value::SaveReader;
     use qa_core::identity::IdentityOwner;
+    use qa_world::save::value::SaveReader;
 
     fn owner() -> IdentityOwner {
         IdentityOwner::create("test").unwrap()
@@ -127,10 +124,7 @@ mod tests {
     #[test]
     fn checkpoint_round_trips() {
         let owner = owner();
-        let store = BotKnowledgeStore::new(
-            BotKnowledgeSource::Q2,
-            HashMap::from([(7u32, owner.actor(3, 1))]),
-        );
+        let store = BotKnowledgeStore::new(BotKnowledgeSource::Q2, HashMap::from([(7u32, owner.actor(3, 1))]));
         let value = store.checkpoint();
         let mut fresh = BotKnowledgeStore::new(BotKnowledgeSource::Q2, HashMap::new());
         restore(&value, &mut fresh).unwrap();

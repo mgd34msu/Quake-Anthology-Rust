@@ -7,9 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use qa_net::common::endpoint::{
-    address_key, ip_address, ipv4_address, ipx_address, AddressError, NetworkAddress,
-};
+use qa_net::common::endpoint::{address_key, ip_address, ipv4_address, ipx_address, AddressError, NetworkAddress};
 use qa_net::common::session::WireSelection;
 use qa_net::protocol::ProtocolIdentity;
 use qa_net::q3_browser_view::{Q3BrowserCacheList, Q3BrowserCacheRow, Q3BrowserCacheView};
@@ -139,9 +137,7 @@ fn integer(value: Option<&Json>, minimum: f64, maximum: f64) -> Result<i64, Serv
 /// Donor `text`: UTF-16 length budget, no NUL.
 fn text(value: Option<&Json>, maximum: usize) -> Result<String, ServerBrowserCacheError> {
     match value {
-        Some(Json::String(text)) if text.encode_utf16().count() <= maximum && !text.contains('\0') => {
-            Ok(text.clone())
-        }
+        Some(Json::String(text)) if text.encode_utf16().count() <= maximum && !text.contains('\0') => Ok(text.clone()),
         _ => Err(ServerBrowserCacheError::BadText),
     }
 }
@@ -298,7 +294,9 @@ fn status(value: Option<&Json>) -> Result<Option<ServerStatus>, ServerBrowserCac
         max_players: integer(member(source, "maxPlayers"), 0.0, 1024.0)?,
         rules,
         player_details,
-        wire: WireSelection::Source { protocol: ProtocolIdentity::Q3 },
+        wire: WireSelection::Source {
+            protocol: ProtocolIdentity::Q3,
+        },
     }))
 }
 
@@ -379,8 +377,7 @@ pub fn read_q3_browser_cache(serialized: &str) -> Result<Q3BrowserCache, ServerB
                 _ => return Err(ServerBrowserCacheError::BadSource),
             }
         }
-        if sources.is_empty() || HashSet::<DiscoverySource>::from_iter(sources.iter().copied()).len() != sources.len()
-        {
+        if sources.is_empty() || HashSet::<DiscoverySource>::from_iter(sources.iter().copied()).len() != sources.len() {
             return Err(ServerBrowserCacheError::BadMemberships);
         }
         let ping_milliseconds = match member(entry, "pingMilliseconds") {
@@ -398,7 +395,11 @@ pub fn read_q3_browser_cache(serialized: &str) -> Result<Q3BrowserCache, ServerB
         by_address.insert(key, parsed.clone());
         entries.push(parsed);
     }
-    if entries.iter().filter(|entry| entry.sources.contains(&DiscoverySource::Master)).count() > 8192
+    if entries
+        .iter()
+        .filter(|entry| entry.sources.contains(&DiscoverySource::Master))
+        .count()
+        > 8192
         || entries
             .iter()
             .filter(|entry| entry.sources.contains(&DiscoverySource::SecondaryMaster))
@@ -423,9 +424,7 @@ pub fn read_q3_browser_cache(serialized: &str) -> Result<Q3BrowserCache, ServerB
     for value in lists {
         let list = record(Some(value))?;
         let source = match member(list, "source") {
-            Some(Json::Number(source)) if *source == 1.0 || *source == 2.0 || *source == 3.0 => {
-                *source as u8
-            }
+            Some(Json::Number(source)) if *source == 1.0 || *source == 2.0 || *source == 3.0 => *source as u8,
             _ => return Err(ServerBrowserCacheError::BadListSource),
         };
         if !seen.insert(source) {
@@ -452,7 +451,9 @@ pub fn read_q3_browser_cache(serialized: &str) -> Result<Q3BrowserCache, ServerB
             }
             let endpoint = address(member(row, "address"))?;
             let key = address_key(&endpoint, true);
-            let listed = by_address.get(&key).is_some_and(|entry: &BrowserEntry| entry.sources.contains(&membership));
+            let listed = by_address
+                .get(&key)
+                .is_some_and(|entry: &BrowserEntry| entry.sources.contains(&membership));
             if !row_keys.insert(key) || !listed {
                 return Err(ServerBrowserCacheError::BadRowMembership);
             }
@@ -463,9 +464,15 @@ pub fn read_q3_browser_cache(serialized: &str) -> Result<Q3BrowserCache, ServerB
                 ping: integer(member(row, "ping"), -2_147_483_648.0, 2_147_483_647.0)? as i32,
             });
         }
-        view_lists.push(Q3BrowserCacheList { source, rows: view_rows });
+        view_lists.push(Q3BrowserCacheList {
+            source,
+            rows: view_rows,
+        });
     }
-    Ok(Q3BrowserCache { entries, view: Some(Q3BrowserCacheView { lists: view_lists }) })
+    Ok(Q3BrowserCache {
+        entries,
+        view: Some(Q3BrowserCacheView { lists: view_lists }),
+    })
 }
 
 /// Write a Q3 browser cache, validating the output by re-reading it.
@@ -592,8 +599,14 @@ mod tests {
                 players: 2,
                 max_players: 8,
                 rules: BTreeMap::from([("gamedir".to_owned(), "baseq3".to_owned())]),
-                player_details: vec![PlayerDetail { name: "p".to_owned(), score: 3, ping: 20 }],
-                wire: WireSelection::Source { protocol: ProtocolIdentity::Q3 },
+                player_details: vec![PlayerDetail {
+                    name: "p".to_owned(),
+                    score: 3,
+                    ping: 20,
+                }],
+                wire: WireSelection::Source {
+                    protocol: ProtocolIdentity::Q3,
+                },
             }),
             ping_milliseconds: Some(20.0),
             updated_at: 1000.0,
@@ -603,14 +616,27 @@ mod tests {
     fn view() -> Q3BrowserCacheView {
         Q3BrowserCacheView {
             lists: vec![
-                Q3BrowserCacheList { source: 1, rows: vec![] },
+                Q3BrowserCacheList {
+                    source: 1,
+                    rows: vec![],
+                },
                 Q3BrowserCacheList {
                     source: 2,
-                    rows: vec![Q3BrowserCacheRow { address: endpoint(), name: "server".to_owned(), visible: 1, ping: 20 }],
+                    rows: vec![Q3BrowserCacheRow {
+                        address: endpoint(),
+                        name: "server".to_owned(),
+                        visible: 1,
+                        ping: 20,
+                    }],
                 },
                 Q3BrowserCacheList {
                     source: 3,
-                    rows: vec![Q3BrowserCacheRow { address: endpoint(), name: "server".to_owned(), visible: 1, ping: 20 }],
+                    rows: vec![Q3BrowserCacheRow {
+                        address: endpoint(),
+                        name: "server".to_owned(),
+                        visible: 1,
+                        ping: 20,
+                    }],
                 },
             ],
         }
@@ -645,9 +671,7 @@ mod tests {
         let mut bad = entry();
         bad.sources = vec![DiscoverySource::Master, DiscoverySource::Master];
         // Bypasses the writer (which filters but keeps order); read path rejects.
-        let serialized = format!(
-            r#"{{"version":1,"protocol":"q3","entries":[{{"address":{{"kind":"ipv4","host":[192,168,1,10],"port":27960}},"sources":["master","master"],"status":null,"pingMilliseconds":null,"updatedAt":1}}],"view":null}}"#
-        );
+        let serialized = r#"{"version":1,"protocol":"q3","entries":[{"address":{"kind":"ipv4","host":[192,168,1,10],"port":27960},"sources":["master","master"],"status":null,"pingMilliseconds":null,"updatedAt":1}],"view":null}"#.to_string();
         let _ = bad;
         assert_eq!(
             read_q3_browser_cache(&serialized),
@@ -665,8 +689,14 @@ mod tests {
     #[test]
     fn rejects_non_ipv4_and_bad_status() {
         let serialized = r#"{"version":1,"protocol":"q3","entries":[{"address":{"kind":"ipv6","host":"::1","port":27960},"sources":["master"],"status":null,"pingMilliseconds":null,"updatedAt":1}],"view":null}"#;
-        assert_eq!(read_q3_browser_cache(serialized), Err(ServerBrowserCacheError::NeedsIpv4));
+        assert_eq!(
+            read_q3_browser_cache(serialized),
+            Err(ServerBrowserCacheError::NeedsIpv4)
+        );
         let serialized = r#"{"version":1,"protocol":"q3","entries":[{"address":{"kind":"ipv4","host":[1,2,3,4],"port":27960},"sources":["master"],"status":{"name":"n","map":"m","players":0,"maxPlayers":0,"rules":[],"playerDetails":[],"protocol":66},"pingMilliseconds":null,"updatedAt":1}],"view":null}"#;
-        assert_eq!(read_q3_browser_cache(serialized), Err(ServerBrowserCacheError::BadProtocol));
+        assert_eq!(
+            read_q3_browser_cache(serialized),
+            Err(ServerBrowserCacheError::BadProtocol)
+        );
     }
 }

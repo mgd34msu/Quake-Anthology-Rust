@@ -62,8 +62,7 @@ mod tests {
     fn errors_pass_through_and_idle_operation_pumps_once() {
         let mut pumps = 0;
         let mut service = || pumps += 1;
-        let value: Result<i32, String> =
-            service_loading(|_| Err("failed".to_string()), &mut service);
+        let value: Result<i32, String> = service_loading(|_| Err("failed".to_string()), &mut service);
         assert_eq!(value, Err("failed".to_string()));
         assert_eq!(pumps, 1);
     }

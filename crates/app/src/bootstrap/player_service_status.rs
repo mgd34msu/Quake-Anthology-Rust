@@ -56,10 +56,7 @@ pub enum PlayerServiceStatus {
 
 /// Report the status of one service for an optional configured endpoint.
 #[must_use]
-pub fn player_service_status(
-    service: PlayerService,
-    endpoint: Option<NetworkAddress>,
-) -> PlayerServiceStatus {
+pub fn player_service_status(service: PlayerService, endpoint: Option<NetworkAddress>) -> PlayerServiceStatus {
     match endpoint {
         None => PlayerServiceStatus::Unconfigured {
             service,

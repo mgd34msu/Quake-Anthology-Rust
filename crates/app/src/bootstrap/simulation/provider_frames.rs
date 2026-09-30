@@ -12,27 +12,16 @@ fn starts_interval(profile: &ClockProfile) -> bool {
 fn same_kind(world: &ClockProfile, provider: &ClockProfile) -> bool {
     matches!(
         (world, provider),
-        (
-            ClockProfile::Q1Netquake { .. },
-            ClockProfile::Q1Netquake { .. }
-        ) | (
-            ClockProfile::Q1Quakeworld { .. },
-            ClockProfile::Q1Quakeworld { .. }
-        ) | (
-            ClockProfile::Q2Classic { .. },
-            ClockProfile::Q2Classic { .. }
-        ) | (
-            ClockProfile::Q2Rerelease { .. },
-            ClockProfile::Q2Rerelease { .. }
-        ) | (ClockProfile::Q3 { .. }, ClockProfile::Q3 { .. })
+        (ClockProfile::Q1Netquake { .. }, ClockProfile::Q1Netquake { .. })
+            | (ClockProfile::Q1Quakeworld { .. }, ClockProfile::Q1Quakeworld { .. })
+            | (ClockProfile::Q2Classic, ClockProfile::Q2Classic)
+            | (ClockProfile::Q2Rerelease { .. }, ClockProfile::Q2Rerelease { .. })
+            | (ClockProfile::Q3 { .. }, ClockProfile::Q3 { .. })
     )
 }
 
 fn uses_milliseconds(profile: &ClockProfile) -> bool {
-    matches!(
-        profile,
-        ClockProfile::Q2Rerelease { .. } | ClockProfile::Q3 { .. }
-    )
+    matches!(profile, ClockProfile::Q2Rerelease { .. } | ClockProfile::Q3 { .. })
 }
 
 fn as_milliseconds(time: &SourceTime) -> f64 {
@@ -44,11 +33,7 @@ fn as_milliseconds(time: &SourceTime) -> f64 {
 
 /// Project the active shared-world interval into a source callback's clock.
 #[must_use]
-pub fn provider_frame(
-    frame: FrameContext,
-    world: &ClockProfile,
-    provider: &ClockProfile,
-) -> FrameContext {
+pub fn provider_frame(frame: FrameContext, world: &ClockProfile, provider: &ClockProfile) -> FrameContext {
     if same_kind(world, provider) {
         return frame;
     }

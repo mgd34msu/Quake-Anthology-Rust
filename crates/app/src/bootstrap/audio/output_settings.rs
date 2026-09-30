@@ -16,12 +16,10 @@ use qa_core::cvar::{flags, CvarError, CvarRegistry};
 pub const AUDIO_OUTPUT_CVAR_NAMES: [&str; 3] = ["s_outputRate", "s_outputBits", "s_outputChannels"];
 
 /// Shared output-format documentation summary.
-pub const AUDIO_OUTPUT_DOC_SUMMARY: &str =
-    "Shared output format; apply with snd_restart or the audio menu.";
+pub const AUDIO_OUTPUT_DOC_SUMMARY: &str = "Shared output format; apply with snd_restart or the audio menu.";
 
 /// `s_khz` documentation.
-pub const S_KHZ_DOC_SUMMARY: &str =
-    "Source sample-rate convention for the shared output; apply with snd_restart.";
+pub const S_KHZ_DOC_SUMMARY: &str = "Source sample-rate convention for the shared output; apply with snd_restart.";
 /// `s_khz` usage line.
 pub const S_KHZ_DOC_USAGE: &str = "s_khz <11|22|44|48>";
 /// `s_khz` examples.
@@ -42,10 +40,31 @@ pub enum AudioOutputField {
 pub(crate) fn is_js_trim(char: char) -> bool {
     matches!(
         char,
-        '\u{9}' | '\u{a}' | '\u{b}' | '\u{c}' | '\u{d}' | '\u{20}' | '\u{a0}' | '\u{1680}'
-            | '\u{2000}' | '\u{2001}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
-            | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200a}' | '\u{2028}'
-            | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+        '\u{9}'
+            | '\u{a}'
+            | '\u{b}'
+            | '\u{c}'
+            | '\u{d}'
+            | '\u{20}'
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            | '\u{2001}'
+            | '\u{2002}'
+            | '\u{2003}'
+            | '\u{2004}'
+            | '\u{2005}'
+            | '\u{2006}'
+            | '\u{2007}'
+            | '\u{2008}'
+            | '\u{2009}'
+            | '\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
     )
 }
 
@@ -89,7 +108,9 @@ fn prefixed_value(digits: &str, radix: f64, valid: fn(u8) -> bool, digit: fn(u8)
     if digits.is_empty() || !digits.bytes().all(valid) {
         return f64::NAN;
     }
-    digits.bytes().fold(0.0, |accumulated, byte| accumulated * radix + digit(byte))
+    digits
+        .bytes()
+        .fold(0.0, |accumulated, byte| accumulated * radix + digit(byte))
 }
 
 /// JavaScript `Number(text)` conversion.
@@ -108,42 +129,44 @@ fn js_number(text: &str) -> f64 {
     if rest == "Infinity" {
         return sign * f64::INFINITY;
     }
-    if let Some(hex) = rest
-        .strip_prefix("0x")
-        .or_else(|| rest.strip_prefix("0X"))
-    {
+    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
         if sign < 0.0 {
             return f64::NAN;
         }
-        return prefixed_value(hex, 16.0, |byte| byte.is_ascii_hexdigit(), |byte| {
-            f64::from(match byte {
-                b'0'..=b'9' => byte - b'0',
-                b'a'..=b'f' => byte - b'a' + 10,
-                _ => byte - b'A' + 10,
-            })
-        });
+        return prefixed_value(
+            hex,
+            16.0,
+            |byte| byte.is_ascii_hexdigit(),
+            |byte| {
+                f64::from(match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    _ => byte - b'A' + 10,
+                })
+            },
+        );
     }
-    if let Some(binary) = rest
-        .strip_prefix("0b")
-        .or_else(|| rest.strip_prefix("0B"))
-    {
+    if let Some(binary) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
         if sign < 0.0 {
             return f64::NAN;
         }
-        return prefixed_value(binary, 2.0, |byte| byte == b'0' || byte == b'1', |byte| {
-            f64::from(byte - b'0')
-        });
+        return prefixed_value(
+            binary,
+            2.0,
+            |byte| byte == b'0' || byte == b'1',
+            |byte| f64::from(byte - b'0'),
+        );
     }
-    if let Some(octal) = rest
-        .strip_prefix("0o")
-        .or_else(|| rest.strip_prefix("0O"))
-    {
+    if let Some(octal) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
         if sign < 0.0 {
             return f64::NAN;
         }
-        return prefixed_value(octal, 8.0, |byte| matches!(byte, b'0'..=b'7'), |byte| {
-            f64::from(byte - b'0')
-        });
+        return prefixed_value(
+            octal,
+            8.0,
+            |byte| matches!(byte, b'0'..=b'7'),
+            |byte| f64::from(byte - b'0'),
+        );
     }
     if !is_decimal_shape(rest) {
         return f64::NAN;
@@ -208,11 +231,7 @@ pub(crate) fn js_number_string(value: f64) -> String {
 /// Validate one output-format cvar value (`None` accepts).
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
-pub fn validate_audio_output_value(
-    defaults: AudioOutputFormat,
-    field: AudioOutputField,
-    text: &str,
-) -> Option<String> {
+pub fn validate_audio_output_value(defaults: AudioOutputFormat, field: AudioOutputField, text: &str) -> Option<String> {
     if text.trim_matches(is_js_trim).is_empty() {
         return Some("Expected an integer audio format value".to_string());
     }
@@ -253,10 +272,7 @@ pub fn validate_audio_output_value(
 }
 
 /// Register the shared output-format cvars.
-pub fn register_audio_output_cvars(
-    cvars: &mut CvarRegistry,
-    defaults: AudioOutputFormat,
-) -> Result<(), CvarError> {
+pub fn register_audio_output_cvars(cvars: &mut CvarRegistry, defaults: AudioOutputFormat) -> Result<(), CvarError> {
     for (name, field) in [
         ("s_outputRate", AudioOutputField::SampleRate),
         ("s_outputBits", AudioOutputField::SampleBits),
@@ -273,9 +289,7 @@ pub fn register_audio_output_cvars(
 }
 
 /// Read the shared output format, rejecting non-integral or out-of-range values.
-pub fn read_audio_output_cvars(
-    cvars: &CvarRegistry,
-) -> Result<AudioOutputFormat, AudioError> {
+pub fn read_audio_output_cvars(cvars: &CvarRegistry) -> Result<AudioOutputFormat, AudioError> {
     let mut values = [0i64; 3];
     for (index, name) in AUDIO_OUTPUT_CVAR_NAMES.iter().enumerate() {
         let value = cvars.variable_value(name);
@@ -291,10 +305,7 @@ pub fn read_audio_output_cvars(
 }
 
 /// Write the shared output format.
-pub fn write_audio_output_cvars(
-    cvars: &mut CvarRegistry,
-    format: AudioOutputFormat,
-) -> Result<(), CvarError> {
+pub fn write_audio_output_cvars(cvars: &mut CvarRegistry, format: AudioOutputFormat) -> Result<(), CvarError> {
     for (name, value) in [
         ("s_outputRate", i64::from(format.sample_rate)),
         ("s_outputBits", i64::from(format.sample_bits)),
@@ -335,15 +346,27 @@ mod tests {
         assert_eq!(cvars.get("s_outputRate").unwrap().value, "44100");
         assert_eq!(cvars.get("s_outputBits").unwrap().value, "16");
         assert_eq!(cvars.get("s_outputChannels").unwrap().value, "2");
-        assert_eq!(AUDIO_OUTPUT_CVAR_NAMES, ["s_outputRate", "s_outputBits", "s_outputChannels"]);
+        assert_eq!(
+            AUDIO_OUTPUT_CVAR_NAMES,
+            ["s_outputRate", "s_outputBits", "s_outputChannels"]
+        );
     }
 
     #[test]
     fn validates_values() {
         let defaults = DEFAULT_AUDIO_OUTPUT_FORMAT;
-        assert_eq!(validate_audio_output_value(defaults, AudioOutputField::SampleRate, "48000"), None);
-        assert_eq!(validate_audio_output_value(defaults, AudioOutputField::SampleRate, "1e4"), None);
-        assert_eq!(validate_audio_output_value(defaults, AudioOutputField::SampleRate, "0xAC44"), None);
+        assert_eq!(
+            validate_audio_output_value(defaults, AudioOutputField::SampleRate, "48000"),
+            None
+        );
+        assert_eq!(
+            validate_audio_output_value(defaults, AudioOutputField::SampleRate, "1e4"),
+            None
+        );
+        assert_eq!(
+            validate_audio_output_value(defaults, AudioOutputField::SampleRate, "0xAC44"),
+            None
+        );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, ""),
             Some("Expected an integer audio format value".to_string())
@@ -356,12 +379,18 @@ mod tests {
             validate_audio_output_value(defaults, AudioOutputField::SampleRate, "7000"),
             Some("Audio output requires 8000–192000 Hz, 1 or 2 channels, and 8 or 16 bits".to_string())
         );
-        assert_eq!(validate_audio_output_value(defaults, AudioOutputField::Channels, "1"), None);
+        assert_eq!(
+            validate_audio_output_value(defaults, AudioOutputField::Channels, "1"),
+            None
+        );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::Channels, "3"),
             Some("Audio output requires 8000–192000 Hz, 1 or 2 channels, and 8 or 16 bits".to_string())
         );
-        assert_eq!(validate_audio_output_value(defaults, AudioOutputField::SampleBits, "8"), None);
+        assert_eq!(
+            validate_audio_output_value(defaults, AudioOutputField::SampleBits, "8"),
+            None
+        );
         assert_eq!(
             validate_audio_output_value(defaults, AudioOutputField::SampleBits, "24"),
             Some("Audio output requires 8000–192000 Hz, 1 or 2 channels, and 8 or 16 bits".to_string())
@@ -373,10 +402,22 @@ mod tests {
         let mut cvars = CvarRegistry::new(Dialect::Q2Classic);
         register_audio_output_cvars(&mut cvars, DEFAULT_AUDIO_OUTPUT_FORMAT).unwrap();
         assert_eq!(read_audio_output_cvars(&cvars).unwrap(), DEFAULT_AUDIO_OUTPUT_FORMAT);
-        write_audio_output_cvars(&mut cvars, AudioOutputFormat { sample_rate: 22050, channels: 1, sample_bits: 8 }).unwrap();
+        write_audio_output_cvars(
+            &mut cvars,
+            AudioOutputFormat {
+                sample_rate: 22050,
+                channels: 1,
+                sample_bits: 8,
+            },
+        )
+        .unwrap();
         assert_eq!(
             read_audio_output_cvars(&cvars).unwrap(),
-            AudioOutputFormat { sample_rate: 22050, channels: 1, sample_bits: 8 }
+            AudioOutputFormat {
+                sample_rate: 22050,
+                channels: 1,
+                sample_bits: 8
+            }
         );
         cvars.set("s_outputRate", "12.5", false).unwrap();
         assert!(read_audio_output_cvars(&cvars).is_err());

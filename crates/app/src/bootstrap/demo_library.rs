@@ -37,11 +37,7 @@ pub trait DemoLibraryMounts {
     type Error: std::fmt::Display;
 
     /// List mounted files with an extension under a directory.
-    fn list_files(
-        &self,
-        directory: &str,
-        extension: &str,
-    ) -> Result<Vec<String>, Self::Error>;
+    fn list_files(&self, directory: &str, extension: &str) -> Result<Vec<String>, Self::Error>;
 
     /// Read a mounted file, or [`None`] when absent.
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>, Self::Error>;
@@ -122,14 +118,10 @@ impl<M: DemoLibraryMounts> DemoLibrary<M> {
         let normalized = normalize_resource_path(path)?;
         match std::fs::read(self.root.join(&normalized)) {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(error)
-                if error.kind() == ErrorKind::NotFound
-                    || error.kind() == ErrorKind::NotADirectory =>
-            {
-                self.mounts
-                    .read(&normalized)
-                    .map_err(|error| DemoLibraryError::Mount(error.to_string()))
-            }
+            Err(error) if error.kind() == ErrorKind::NotFound || error.kind() == ErrorKind::NotADirectory => self
+                .mounts
+                .read(&normalized)
+                .map_err(|error| DemoLibraryError::Mount(error.to_string())),
             Err(error) => Err(error.into()),
         }
     }
@@ -146,10 +138,7 @@ impl<M: DemoLibraryMounts> DemoLibrary<M> {
         };
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(error)
-                if error.kind() == ErrorKind::NotFound
-                    || error.kind() == ErrorKind::NotADirectory =>
-            {
+            Err(error) if error.kind() == ErrorKind::NotFound || error.kind() == ErrorKind::NotADirectory => {
                 return Ok(());
             }
             Err(error) => return Err(error.into()),
@@ -201,11 +190,7 @@ mod tests {
     impl DemoLibraryMounts for FakeMounts {
         type Error = String;
 
-        fn list_files(
-            &self,
-            directory: &str,
-            extension: &str,
-        ) -> Result<Vec<String>, Self::Error> {
+        fn list_files(&self, directory: &str, extension: &str) -> Result<Vec<String>, Self::Error> {
             Ok(self
                 .files
                 .get(&(directory.to_string(), extension.to_string()))
@@ -219,10 +204,7 @@ mod tests {
     }
 
     fn root(name: &str) -> PathBuf {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "qa-demo-library-{}-{name}",
-            std::process::id()
-        ));
+        let root: PathBuf = std::env::temp_dir().join(format!("qa-demo-library-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         root
@@ -261,10 +243,7 @@ mod tests {
 
     #[test]
     fn list_skips_missing_root() {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "qa-demo-library-{}-absent",
-            std::process::id()
-        ));
+        let root: PathBuf = std::env::temp_dir().join(format!("qa-demo-library-{}-absent", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let library = DemoLibrary::new(
             root,

@@ -5,8 +5,7 @@
 //! `qa_core::cmd`.
 
 use qa_core::cmd::{
-    ascii_fold, command_separator_offset, source_command_text, tokenize_command, CmdError, Dialect,
-    TextMode,
+    ascii_fold, command_separator_offset, source_command_text, tokenize_command, CmdError, Dialect, TextMode,
 };
 use thiserror::Error;
 
@@ -51,10 +50,7 @@ fn operand(value: &str) -> Result<String, StartupCommandsError> {
 }
 
 /// Read one `+command` batch starting at `index`.
-pub fn read_startup_command(
-    argv: &[String],
-    index: usize,
-) -> Result<StartupCommand, StartupCommandsError> {
+pub fn read_startup_command(argv: &[String], index: usize) -> Result<StartupCommand, StartupCommandsError> {
     let Some(first) = argv.get(index) else {
         return Err(StartupCommandsError::ExpectedCommand);
     };
@@ -90,8 +86,16 @@ pub fn read_startup_command(
         return Err(StartupCommandsError::OrderedConnect);
     }
     if ascii_fold(tokens.first().map_or("", String::as_str)) == "set"
-        && ["game", "fs_game", "basedir", "cddir", "fs_basepath", "fs_homepath", "fs_cdpath"]
-            .contains(&ascii_fold(tokens.get(1).map_or("", String::as_str)).as_str())
+        && [
+            "game",
+            "fs_game",
+            "basedir",
+            "cddir",
+            "fs_basepath",
+            "fs_homepath",
+            "fs_cdpath",
+        ]
+        .contains(&ascii_fold(tokens.get(1).map_or("", String::as_str)).as_str())
     {
         return Err(StartupCommandsError::FilesystemSet);
     }
@@ -261,7 +265,10 @@ mod tests {
         assert_eq!(q3.stuffed, "set name x\nsafe\nmap q3tourney6\n");
         assert_eq!(
             q3.variables,
-            vec![StartupCommandVariable { name: "name".to_owned(), value: "x".to_owned() }]
+            vec![StartupCommandVariable {
+                name: "name".to_owned(),
+                value: "x".to_owned()
+            }]
         );
         let q2 = startup_command_phases(&lines, Dialect::Q2Classic).unwrap();
         assert!(!q2.safe);

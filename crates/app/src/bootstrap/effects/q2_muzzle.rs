@@ -40,8 +40,22 @@ pub fn q2_monster_muzzle(flash: u16, rerelease: bool) -> Option<MonsterMuzzle> {
         flash
     };
     let (color, particles, smoke, radius, mask) = match flash {
-        4..=22 | 26..=38 | 43..=52 | 63..=69 | 73..=77 | 85 | 88 | 91 | 94 | 97 | 100
-        | 120..=131 | 133..=139 | 141 | 152 | 153 => ([1.0, 1.0, 0.0], true, true, 200.0, 31),
+        4..=22
+        | 26..=38
+        | 43..=52
+        | 63..=69
+        | 73..=77
+        | 85
+        | 88
+        | 91
+        | 94
+        | 97
+        | 100
+        | 120..=131
+        | 133..=139
+        | 141
+        | 152
+        | 153 => ([1.0, 1.0, 0.0], true, true, 200.0, 31),
         1..=3 | 39 | 40 | 58..=60 | 62 | 82 | 83 | 86 | 89 | 92 | 95 | 98 | 102..=118 | 143 => {
             ([1.0, 1.0, 0.0], false, false, 200.0, 31)
         }
@@ -55,7 +69,13 @@ pub fn q2_monster_muzzle(flash: u16, rerelease: bool) -> Option<MonsterMuzzle> {
         151 | 195..=210 => ([1.0, 1.0, 0.0], false, false, 300.0, 100),
         _ => return None,
     };
-    Some(MonsterMuzzle { color: vec3(color[0], color[1], color[2]), particles, smoke, radius, mask })
+    Some(MonsterMuzzle {
+        color: vec3(color[0], color[1], color[2]),
+        particles,
+        smoke,
+        radius,
+        mask,
+    })
 }
 
 #[cfg(test)]

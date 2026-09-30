@@ -72,7 +72,12 @@ mod tests {
     use super::*;
 
     fn bounds() -> SummaryBounds {
-        SummaryBounds { x: 4.0, y: 8.0, width: 320.0, height: 120.0 }
+        SummaryBounds {
+            x: 4.0,
+            y: 8.0,
+            width: 320.0,
+            height: 120.0,
+        }
     }
 
     #[test]
@@ -96,7 +101,10 @@ mod tests {
 
     #[test]
     fn layout_zero_height_collapses_density() {
-        let flat = SummaryBounds { height: 0.0, ..bounds() };
+        let flat = SummaryBounds {
+            height: 0.0,
+            ..bounds()
+        };
         let layout = startup_summary_layout(4.0, &flat);
         assert_eq!(layout.row_height, 0.0);
         assert!(layout.label_scale < 0.0);

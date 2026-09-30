@@ -12,9 +12,7 @@
 //! output-format fallback — matches the donor exactly.
 
 use qa_client::audio::error::AudioError;
-use qa_client::audio::output::{
-    audio_output_format, AudioOutputFormat, DEFAULT_AUDIO_OUTPUT_FORMAT,
-};
+use qa_client::audio::output::{audio_output_format, AudioOutputFormat, DEFAULT_AUDIO_OUTPUT_FORMAT};
 use thiserror::Error;
 
 use crate::bootstrap::audio::playlist_settings::{valid_menu_track, MusicPreferences};
@@ -76,11 +74,7 @@ pub struct AudioSaveRequest {
 
 fn json_int(value: &Json) -> Option<i64> {
     match value {
-        Json::Number(n)
-            if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 =>
-        {
-            Some(*n as i64)
-        }
+        Json::Number(n) if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 => Some(*n as i64),
         _ => None,
     }
 }
@@ -114,9 +108,7 @@ fn preferences(value: &Json) -> Result<AudioPreferences, AudioSettingsError> {
     }
     let device_name = match value.get("deviceName") {
         Some(Json::Null) => None,
-        Some(Json::String(name)) if !name.is_empty() && !name.contains('\0') => {
-            Some(name.clone())
-        }
+        Some(Json::String(name)) if !name.is_empty() && !name.contains('\0') => Some(name.clone()),
         _ => return Err(AudioSettingsError::BadAudio),
     };
     let Some(effects_volume) = value.get("effectsVolume").and_then(json_volume) else {
@@ -151,25 +143,14 @@ fn preferences(value: &Json) -> Result<AudioPreferences, AudioSettingsError> {
 
 fn output_format_json(format: &AudioOutputFormat) -> Json {
     Json::Object(vec![
-        (
-            "sampleRate".to_string(),
-            Json::Number(f64::from(format.sample_rate)),
-        ),
-        (
-            "channels".to_string(),
-            Json::Number(f64::from(format.channels)),
-        ),
-        (
-            "sampleBits".to_string(),
-            Json::Number(f64::from(format.sample_bits)),
-        ),
+        ("sampleRate".to_string(), Json::Number(f64::from(format.sample_rate))),
+        ("channels".to_string(), Json::Number(f64::from(format.channels))),
+        ("sampleBits".to_string(), Json::Number(f64::from(format.sample_bits))),
     ])
 }
 
 /// Load stored preferences, or [`None`] when `audio.json` is absent.
-pub fn load_audio_settings(
-    store: &ConfigStore,
-) -> Result<Option<AudioPreferences>, AudioSettingsError> {
+pub fn load_audio_settings(store: &ConfigStore) -> Result<Option<AudioPreferences>, AudioSettingsError> {
     let Some(text) = store.load_text("audio.json")? else {
         return Ok(None);
     };
@@ -177,10 +158,7 @@ pub fn load_audio_settings(
 }
 
 /// Save preferences, filling music fields from the store when omitted.
-pub fn save_audio_settings(
-    store: &ConfigStore,
-    request: &AudioSaveRequest,
-) -> Result<(), AudioSettingsError> {
+pub fn save_audio_settings(store: &ConfigStore, request: &AudioSaveRequest) -> Result<(), AudioSettingsError> {
     let (shuffle, track) = match &request.music_preferences {
         Some(music) => (music.music_shuffle, music.menu_track.clone()),
         None => match load_audio_settings(store)? {
@@ -206,10 +184,7 @@ pub fn save_audio_settings(
                 None => Json::Null,
             },
         ),
-        (
-            "effectsVolume".to_string(),
-            Json::Number(request.effects_volume),
-        ),
+        ("effectsVolume".to_string(), Json::Number(request.effects_volume)),
         ("musicVolume".to_string(), Json::Number(request.music_volume)),
     ]);
     let saved = preferences(&document)?;
@@ -220,10 +195,7 @@ pub fn save_audio_settings(
     if let Some(track) = saved.menu_track {
         members.push(("menuTrack".to_string(), Json::String(track)));
     }
-    members.push((
-        "outputFormat".to_string(),
-        output_format_json(&saved.output_format),
-    ));
+    members.push(("outputFormat".to_string(), output_format_json(&saved.output_format)));
     members.push((
         "deviceName".to_string(),
         match saved.device_name {
@@ -231,10 +203,7 @@ pub fn save_audio_settings(
             None => Json::Null,
         },
     ));
-    members.push((
-        "effectsVolume".to_string(),
-        Json::Number(saved.effects_volume),
-    ));
+    members.push(("effectsVolume".to_string(), Json::Number(saved.effects_volume)));
     members.push(("musicVolume".to_string(), Json::Number(saved.music_volume)));
     store.dump("audio.json", &format!("{}\n", stringify(&Json::Object(members))))?;
     Ok(())
@@ -246,10 +215,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn store(name: &str) -> ConfigStore {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "qa-audio-settings-{}-{name}",
-            std::process::id()
-        ));
+        let root: PathBuf = std::env::temp_dir().join(format!("qa-audio-settings-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         ConfigStore::new(root)
     }
@@ -317,16 +283,40 @@ mod tests {
     fn invalid_documents_fail() {
         let store = store("invalid");
         for (name, document) in [
-            ("version", r#"{"version":2,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5}"#),
-            ("device", r#"{"version":1,"deviceName":"","effectsVolume":0.5,"musicVolume":0.5}"#),
-            ("volume", r#"{"version":1,"deviceName":null,"effectsVolume":2,"musicVolume":0.5}"#),
-            ("shuffle", r#"{"version":1,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5,"musicShuffle":"yes"}"#),
-            ("track", r#"{"version":1,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5,"menuTrack":"  spaced  "}"#),
-            ("format", r#"{"version":1,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5,"outputFormat":{"sampleRate":44100,"channels":3,"sampleBits":16}}"#),
+            (
+                "version",
+                r#"{"version":2,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5}"#,
+            ),
+            (
+                "device",
+                r#"{"version":1,"deviceName":"","effectsVolume":0.5,"musicVolume":0.5}"#,
+            ),
+            (
+                "volume",
+                r#"{"version":1,"deviceName":null,"effectsVolume":2,"musicVolume":0.5}"#,
+            ),
+            (
+                "shuffle",
+                r#"{"version":1,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5,"musicShuffle":"yes"}"#,
+            ),
+            (
+                "track",
+                r#"{"version":1,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5,"menuTrack":"  spaced  "}"#,
+            ),
+            (
+                "format",
+                r#"{"version":1,"deviceName":null,"effectsVolume":0.5,"musicVolume":0.5,"outputFormat":{"sampleRate":44100,"channels":3,"sampleBits":16}}"#,
+            ),
         ] {
             store.dump("audio.json", document).unwrap();
             let error = load_audio_settings(&store).unwrap_err();
-            assert!(matches!(error, AudioSettingsError::BadAudio | AudioSettingsError::BadMusic | AudioSettingsError::Audio(_)), "{name}: {error}");
+            assert!(
+                matches!(
+                    error,
+                    AudioSettingsError::BadAudio | AudioSettingsError::BadMusic | AudioSettingsError::Audio(_)
+                ),
+                "{name}: {error}"
+            );
         }
         store.dump("audio.json", "not json").unwrap();
         assert!(matches!(

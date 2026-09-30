@@ -31,7 +31,11 @@ fn to_int32(value: f64) -> i32 {
     }
     let wrapped = value % TWO_32;
     let positive = if wrapped < 0.0 { wrapped + TWO_32 } else { wrapped };
-    let signed = if positive >= TWO_31 { positive - TWO_32 } else { positive };
+    let signed = if positive >= TWO_31 {
+        positive - TWO_32
+    } else {
+        positive
+    };
     signed.trunc() as i32
 }
 
@@ -53,7 +57,11 @@ pub fn q2_entity_sound(event: i32, random: &mut dyn FnMut() -> f64) -> Option<Q2
     };
     match event {
         1 => Some(sound("items/respawn1.wav".to_string(), 1, 2.0)),
-        2 => Some(sound(format!("player/step{}.wav", (to_int32(random()) & 3) + 1), 4, 1.0)),
+        2 => Some(sound(
+            format!("player/step{}.wav", (to_int32(random()) & 3) + 1),
+            4,
+            1.0,
+        )),
         3 => Some(sound("player/land1.wav".to_string(), 0, 1.0)),
         4 => Some(sound("*fall2.wav".to_string(), 0, 1.0)),
         5 => Some(sound("*fall1.wav".to_string(), 0, 1.0)),
@@ -116,7 +124,7 @@ pub fn q2_muzzle_sounds(
             sound("weapons/grenlf1a.wav", 1, 0.0, volume),
             sound("weapons/grenlr1b.wav", 0, 0.1, volume),
         ],
-        9 | 10 | 11 => vec![sound("weapons/grenlf1a.wav", 1, 0.0, 1.0)],
+        9..=11 => vec![sound("weapons/grenlf1a.wav", 1, 0.0, 1.0)],
         12 => vec![sound("weapons/bfg__f1y.wav", 1, 0.0, volume)],
         13 => vec![sound("weapons/sshotf1b.wav", 1, 0.0, volume)],
         14 | 17 => vec![sound("weapons/hyprbf1a.wav", 1, 0.0, volume)],
@@ -146,23 +154,19 @@ pub fn q2_monster_muzzle_sounds(
     };
     if rerelease {
         match flash {
-            232 | 233 | 234 | 235 | 236 | 237 | 238 | 239 | 260 => {
-                return Some(sound("infantry/infatck1.wav", 1.0))
-            }
+            232 | 233 | 234 | 235 | 236 | 237 | 238 | 239 | 260 => return Some(sound("infantry/infatck1.wav", 1.0)),
             251 => return Some(sound("soldier/solatck2.wav", 1.0)),
             252 => return Some(sound("soldier/solatck1.wav", 1.0)),
             253 => return Some(sound("soldier/solatck3.wav", 1.0)),
-            256 | 257 | 258 | 259 => return Some(sound("gunner/gunatck3.wav", 1.0)),
+            256..=259 => return Some(sound("gunner/gunatck3.wav", 1.0)),
             263 => return Some(sound("hover/hovatck1.wav", 1.0)),
             _ => {}
         }
     }
     match flash {
-        26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37 | 38 => {
-            Some(sound("infantry/infatck1.wav", 1.0))
-        }
+        26..=38 => Some(sound("infantry/infatck1.wav", 1.0)),
         43 | 44 | 85 | 88 | 91 | 94 | 97 | 100 => Some(sound("soldier/solatck3.wav", 1.0)),
-        45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 => Some(sound("gunner/gunatck2.wav", 1.0)),
+        45..=52 => Some(sound("gunner/gunatck2.wav", 1.0)),
         63 | 64 | 65 | 66 | 67 | 68 | 69 | 141 => Some(sound("infantry/infatck1.wav", 1.0)),
         73 | 74 | 75 | 76 | 77 | 138 | 152 => Some(sound(
             if rerelease && flash == 74 {
@@ -172,30 +176,25 @@ pub fn q2_monster_muzzle_sounds(
             },
             0.0,
         )),
-        39 | 40 | 83 | 86 | 89 | 92 | 95 | 98 | 143 => {
-            Some(sound("soldier/solatck2.wav", 1.0))
-        }
+        39 | 40 | 83 | 86 | 89 | 92 | 95 | 98 | 143 => Some(sound("soldier/solatck2.wav", 1.0)),
         58 | 59 => Some(sound("flyer/flyatck3.wav", 1.0)),
         60 => Some(sound("medic/medatck1.wav", 1.0)),
         62 => Some(sound("hover/hovatck1.wav", 1.0)),
         82 => Some(sound("floater/fltatck1.wav", 1.0)),
         41 | 42 | 84 | 87 | 90 | 93 | 96 | 99 => Some(sound("soldier/solatck1.wav", 1.0)),
-        1 | 2 | 3 => Some(sound("tank/tnkatck3.wav", 1.0)),
-        4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 => {
-            Some(sound(
-                &format!("tank/tnkatk2{}.wav", from_char_code(97.0 + random() % 5.0)),
-                1.0,
-            ))
-        }
+        1..=3 => Some(sound("tank/tnkatck3.wav", 1.0)),
+        4..=22 => Some(sound(
+            &format!("tank/tnkatk2{}.wav", from_char_code(97.0 + random() % 5.0)),
+            1.0,
+        )),
         57 | 142 => Some(sound("chick/chkatck2.wav", 1.0)),
-        23 | 24 | 25 => Some(sound("tank/tnkatck1.wav", 1.0)),
+        23..=25 => Some(sound("tank/tnkatck1.wav", 1.0)),
         70 | 71 | 72 | 78 | 79 | 80 | 81 | 191 => Some(sound("tank/rocket.wav", 1.0)),
-        53 | 54 | 55 | 56 => Some(sound("gunner/gunatck3.wav", 1.0)),
+        53..=56 => Some(sound("gunner/gunatck3.wav", 1.0)),
         61 | 147 | 150 | 101 => Some(vec![]),
-        102 | 103 | 104 | 105 | 106 | 107 | 108 | 109 | 110 | 111 | 112 | 113 | 114 | 115
-        | 116 | 117 | 118 => Some(sound("makron/blaster.wav", 1.0)),
-        120 | 121 | 122 | 123 | 124 | 125 => Some(sound("boss3/xfire.wav", 1.0)),
-        126 | 127 | 128 | 129 | 130 | 131 | 132 => Some(vec![]),
+        102..=118 => Some(sound("makron/blaster.wav", 1.0)),
+        120..=125 => Some(sound("boss3/xfire.wav", 1.0)),
+        126..=132 => Some(vec![]),
         133 | 134 | 135 | 136 | 137 | 139 | 153 => {
             if rerelease && flash == 134 {
                 Some(sound("flyer/flyatck3.wav", 0.0))
@@ -203,14 +202,13 @@ pub fn q2_monster_muzzle_sounds(
                 Some(vec![])
             }
         }
-        144 | 145 | 146 | 149 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166
-        | 167 | 168 | 169 | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180
-        | 181 | 182 | 183 | 184 | 185 | 186 | 187 | 188 | 189 | 190 => {
-            Some(sound("tank/tnkatck3.wav", 1.0))
-        }
+        144 | 145 | 146 | 149 | 156 | 157 | 158 | 159 | 160 | 161 | 162 | 163 | 164 | 165 | 166 | 167 | 168 | 169
+        | 170 | 171 | 172 | 173 | 174 | 175 | 176 | 177 | 178 | 179 | 180 | 181 | 182 | 183 | 184 | 185 | 186 | 187
+        | 188 | 189 | 190 => Some(sound("tank/tnkatck3.wav", 1.0)),
         148 => Some(sound("weapons/disint2.wav", 1.0)),
-        151 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208
-        | 209 | 210 => Some(vec![]),
+        151 | 195 | 196 | 197 | 198 | 199 | 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 209 | 210 => {
+            Some(vec![])
+        }
         _ => None,
     }
 }
@@ -221,10 +219,7 @@ mod tests {
 
     #[test]
     fn entity_events_cover_table() {
-        assert_eq!(
-            q2_entity_sound(1, &mut || 0.0).unwrap().path,
-            "items/respawn1.wav"
-        );
+        assert_eq!(q2_entity_sound(1, &mut || 0.0).unwrap().path, "items/respawn1.wav");
         assert_eq!(q2_entity_sound(2, &mut || 6.0).unwrap().path, "player/step3.wav");
         assert_eq!(q2_entity_sound(4, &mut || 0.0).unwrap().path, "*fall2.wav");
         assert_eq!(q2_entity_sound(6, &mut || 0.0).unwrap().attenuation, 2.0);

@@ -11,12 +11,8 @@
 //! [`ComponentClientImage`] view (provider rows plus the source provider id
 //! the donor reads from `image.recipe.map.entities.provider`).
 
-use qa_world::save::ownership::{
-    save_provider_contract, validate_save_provider_owner, ProviderCheckpoint,
-};
-use qa_world::save::value::{
-    decode_checkpoint_value, encode_checkpoint_value, SaveJson, SaveReader,
-};
+use qa_world::save::ownership::{save_provider_contract, validate_save_provider_owner, ProviderCheckpoint};
+use qa_world::save::value::{decode_checkpoint_value, encode_checkpoint_value, SaveJson, SaveReader};
 use qa_world::WorldError;
 use thiserror::Error;
 
@@ -50,9 +46,7 @@ pub struct ComponentClientImage {
 }
 
 /// Read the component-client checkpoint, or [`None`] when absent.
-pub fn read_component_clients(
-    image: &ComponentClientImage,
-) -> Result<Option<SaveJson>, ComponentClientSaveError> {
+pub fn read_component_clients(image: &ComponentClientImage) -> Result<Option<SaveJson>, ComponentClientSaveError> {
     let rows: Vec<&ProviderCheckpoint> = image
         .providers
         .iter()
@@ -78,11 +72,7 @@ pub fn save_component_clients(
     image: &ComponentClientImage,
     value: &SaveJson,
 ) -> Result<ComponentClientImage, ComponentClientSaveError> {
-    if image
-        .providers
-        .iter()
-        .any(|row| row.schema == COMPONENT_CLIENT_SCHEMA)
-    {
+    if image.providers.iter().any(|row| row.schema == COMPONENT_CLIENT_SCHEMA) {
         return Err(ComponentClientSaveError::AlreadyAttached);
     }
     let contract = save_provider_contract(COMPONENT_CLIENT_SCHEMA, &image.source_provider)?;
@@ -100,9 +90,7 @@ pub fn save_component_clients(
 }
 
 /// Reject restores whose saved seats need a graphical destination.
-pub fn require_component_client_presentation(
-    image: &ComponentClientImage,
-) -> Result<(), ComponentClientSaveError> {
+pub fn require_component_client_presentation(image: &ComponentClientImage) -> Result<(), ComponentClientSaveError> {
     let Some(value) = read_component_clients(image)? else {
         return Ok(());
     };
@@ -128,10 +116,7 @@ mod tests {
     }
 
     fn value() -> SaveJson {
-        obj(vec![
-            ("version", int(1)),
-            ("seats", arr(Vec::new())),
-        ])
+        obj(vec![("version", int(1)), ("seats", arr(Vec::new()))])
     }
 
     #[test]

@@ -76,7 +76,7 @@ pub enum RandomCheckpoint {
     /// Classic stream.
     Glibc(GlibcCheckpoint),
     /// Rerelease stream.
-    Mt19937(Mt19937Checkpoint),
+    Mt19937(Box<Mt19937Checkpoint>),
 }
 
 /// Q2 rerelease MT19937 with the MSVC 2022 17.6 STL distributions.
@@ -117,9 +117,8 @@ impl Q2RereleaseRandom {
         if self.index == MT_WORDS {
             for i in 0..MT_WORDS {
                 let joined = (self.words[i] & 0x8000_0000) | (self.words[(i + 1) % MT_WORDS] & 0x7fff_ffff);
-                self.words[i] = self.words[(i + 397) % MT_WORDS]
-                    ^ (joined >> 1)
-                    ^ if joined & 1 == 0 { 0 } else { 0x9908_b0df };
+                self.words[i] =
+                    self.words[(i + 397) % MT_WORDS] ^ (joined >> 1) ^ if joined & 1 == 0 { 0 } else { 0x9908_b0df };
             }
             self.index = 0;
         }
@@ -135,8 +134,7 @@ impl Q2RereleaseRandom {
 
     /// Unit float; the whole word converts before division, unclamped.
     pub fn float(&mut self) -> f32 {
-        let unit = (f64::from(self.next_u32() as f32) / UINT32_RANGE) as f32;
-        unit
+        (f64::from(self.next_u32() as f32) / UINT32_RANGE) as f32
     }
 
     /// Float in `[min, max]`.
@@ -304,7 +302,7 @@ impl SourceRandom {
     #[must_use]
     pub fn checkpoint(&self) -> RandomCheckpoint {
         if let Some(rerelease) = &self.rerelease {
-            return RandomCheckpoint::Mt19937(rerelease.checkpoint());
+            return RandomCheckpoint::Mt19937(Box::new(rerelease.checkpoint()));
         }
         RandomCheckpoint::Glibc(GlibcCheckpoint {
             words: self.words,

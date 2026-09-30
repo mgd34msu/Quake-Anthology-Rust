@@ -10,14 +10,16 @@ use qa_client::render::scene::particles::{
     Q1ParticleState, Q1ParticleType, Q2ParticleState, SceneParticle,
 };
 use qa_content::normals::ALIAS_NORMALS;
-use qa_core::math::{
-    add3, angles_to_axis, cross3, dot3, length3, normalize3_or_zero, scale3, sub3, vec3, Vec3,
-};
+use qa_core::math::{add3, angles_to_axis, cross3, dot3, length3, normalize3_or_zero, scale3, sub3, vec3, Vec3};
 
 use crate::bootstrap::simulation::random::SourceRandom;
 
 const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-const GRAVITY: Vec3 = Vec3 { x: 0.0, y: 0.0, z: -40.0 };
+const GRAVITY: Vec3 = Vec3 {
+    x: 0.0,
+    y: 0.0,
+    z: -40.0,
+};
 const Q1_FIRE_RAMP: [u8; 6] = [109, 107, 6, 5, 4, 3];
 const DEFAULT_CAPACITY: usize = 4096;
 
@@ -97,7 +99,14 @@ impl SourceParticles {
     /// Create pools with an explicit per-pool capacity.
     #[must_use]
     pub fn with_capacity(random: SourceRandom, capacity: usize) -> Self {
-        Self { random, capacity, q1: Vec::new(), q2: Vec::new(), tracer_count: 0, angular_velocities: Vec::new() }
+        Self {
+            random,
+            capacity,
+            q1: Vec::new(),
+            q2: Vec::new(),
+            tracer_count: 0,
+            angular_velocities: Vec::new(),
+        }
     }
 
     /// Per-pool capacity.
@@ -171,12 +180,17 @@ impl SourceParticles {
     /// Call once per client frame, never once per seat.
     pub fn sample(&mut self, seconds: f32, elapsed: f32) -> ParticleSample {
         self.q1.retain(|particle| particle.die >= seconds);
-        let q1: Vec<SceneParticle> = self.q1.iter().rev().map(|particle| SceneParticle::Indexed {
-            palette_index: particle.color,
-            alpha: 1.0,
-            size: 1.0,
-            origin: particle.origin,
-        }).collect();
+        let q1: Vec<SceneParticle> = self
+            .q1
+            .iter()
+            .rev()
+            .map(|particle| SceneParticle::Indexed {
+                palette_index: particle.color,
+                alpha: 1.0,
+                size: 1.0,
+                origin: particle.origin,
+            })
+            .collect();
         let advanced: Vec<Q1ParticleState> = std::mem::take(&mut self.q1)
             .into_iter()
             .map(|particle| advance_q1_particle(&particle, elapsed, 800.0))
@@ -225,7 +239,7 @@ impl SourceParticles {
 
     /// Q1 entity-explosion shell over the alias normal table.
     pub fn q1_entity(&mut self, origin: Vec3, seconds: f32) {
-        if self.angular_velocities.first().map_or(true, |velocity| velocity.x == 0.0) {
+        if self.angular_velocities.first().is_none_or(|velocity| velocity.x == 0.0) {
             let mut velocities = Vec::with_capacity(ALIAS_NORMALS.len());
             for _ in 0..ALIAS_NORMALS.len() {
                 let x = (self.rand() & 255) as f32 * 0.01;
@@ -333,7 +347,12 @@ impl SourceParticles {
     /// Q1 1024-particle explosion (`blob` selects the alternate palette).
     pub fn q1_explosion(&mut self, origin: Vec3, seconds: f32, blob: bool) {
         for i in 0..1024u32 {
-            let die = seconds + if blob { 1.0 + (self.rand() & 8) as f32 * 0.05 } else { 5.0 };
+            let die = seconds
+                + if blob {
+                    1.0 + (self.rand() & 8) as f32 * 0.05
+                } else {
+                    5.0
+                };
             let ramp = if blob { 0.0 } else { (self.rand() & 3) as f32 };
             let color = if blob {
                 (if i & 1 == 1 { 66 } else { 150 }) + self.rand() % 6
@@ -347,7 +366,11 @@ impl SourceParticles {
             let oz = origin.z + (self.rand() % 32) as f32 - 16.0;
             let vz = (self.rand() % 512) as f32 - 256.0;
             let particle_type = if blob {
-                if i & 1 == 1 { Q1ParticleType::Blob } else { Q1ParticleType::Blob2 }
+                if i & 1 == 1 {
+                    Q1ParticleType::Blob
+                } else {
+                    Q1ParticleType::Blob2
+                }
             } else if i & 1 == 1 {
                 Q1ParticleType::Explode
             } else {
@@ -425,7 +448,11 @@ impl SourceParticles {
                         vec3((j * 8) as f32, (i * 8) as f32, (k * 8) as f32)
                     };
                     let point = if lava {
-                        vec3(origin.x + direction.x, origin.y + direction.y, origin.z + (self.rand() & 63) as f32)
+                        vec3(
+                            origin.x + direction.x,
+                            origin.y + direction.y,
+                            origin.z + (self.rand() & 63) as f32,
+                        )
                     } else {
                         let jx = i as f32 + (self.rand() & 3) as f32;
                         let jy = j as f32 + (self.rand() & 3) as f32;
@@ -476,12 +503,28 @@ impl SourceParticles {
             let distance = (self.rand() & mask) as f32;
             let spawn_milliseconds = Self::spawn_ms(seconds);
             let ox = origin.x + (self.rand() & 7) as f32 - 4.0 + distance * direction.x;
-            let vx = if blaster { direction.x * 30.0 + self.signed() * 40.0 } else { self.signed() * 20.0 };
+            let vx = if blaster {
+                direction.x * 30.0 + self.signed() * 40.0
+            } else {
+                self.signed() * 20.0
+            };
             let oy = origin.y + (self.rand() & 7) as f32 - 4.0 + distance * direction.y;
-            let vy = if blaster { direction.y * 30.0 + self.signed() * 40.0 } else { self.signed() * 20.0 };
+            let vy = if blaster {
+                direction.y * 30.0 + self.signed() * 40.0
+            } else {
+                self.signed() * 20.0
+            };
             let oz = origin.z + (self.rand() & 7) as f32 - 4.0 + distance * direction.z;
-            let vz = if blaster { direction.z * 30.0 + self.signed() * 40.0 } else { self.signed() * 20.0 };
-            let acceleration = if variant == Q2ImpactVariant::Up { scale3(GRAVITY, -1.0) } else { GRAVITY };
+            let vz = if blaster {
+                direction.z * 30.0 + self.signed() * 40.0
+            } else {
+                self.signed() * 20.0
+            };
+            let acceleration = if variant == Q2ImpactVariant::Up {
+                scale3(GRAVITY, -1.0)
+            } else {
+                GRAVITY
+            };
             let alpha_velocity = -1.0 / (0.5 + self.unit() * 0.3);
             if !self.push_q2(Q2ParticleState {
                 spawn_milliseconds,
@@ -583,6 +626,7 @@ impl SourceParticles {
     }
 
     /// Q2 steam/smoke jet. Returns false when the pool filled mid-emission.
+    #[allow(clippy::too_many_arguments)]
     pub fn q2_steam(
         &mut self,
         origin: Vec3,
@@ -868,17 +912,22 @@ impl SourceParticles {
     }
 
     /// Q2 diminishing trail; returns the decayed count (floored at 100).
-    pub fn q2_diminishing_trail(
-        &mut self,
-        start: Vec3,
-        end: Vec3,
-        seconds: f32,
-        count: i32,
-        kind: Q2TrailKind,
-    ) -> i32 {
+    pub fn q2_diminishing_trail(&mut self, start: Vec3, end: Vec3, seconds: f32, count: i32, kind: Q2TrailKind) -> i32 {
         let mut count = count;
-        let origin_scale = if count > 900 { 4.0 } else if count > 800 { 2.0 } else { 1.0 };
-        let velocity_scale = if count > 900 { 15.0 } else if count > 800 { 10.0 } else { 5.0 };
+        let origin_scale = if count > 900 {
+            4.0
+        } else if count > 800 {
+            2.0
+        } else {
+            1.0
+        };
+        let velocity_scale = if count > 900 {
+            15.0
+        } else if count > 800 {
+            10.0
+        } else {
+            5.0
+        };
         let blood = matches!(kind, Q2TrailKind::Blood | Q2TrailKind::GreenBlood);
         let delta = sub3(end, start);
         let length = length3(delta);
@@ -891,7 +940,11 @@ impl SourceParticles {
             if ((self.rand() & 1023) as i32) < count {
                 let alpha_velocity = -1.0 / (1.0 + self.unit() * if blood { 0.4 } else { 0.2 });
                 let base = if blood {
-                    if kind == Q2TrailKind::GreenBlood { 0xdb } else { 0xe8 }
+                    if kind == Q2TrailKind::GreenBlood {
+                        0xdb
+                    } else {
+                        0xe8
+                    }
                 } else {
                     4
                 };
@@ -1077,10 +1130,10 @@ mod tests {
         particles.q1_explosion(origin(), 0.0, false);
         let sample = particles.sample(0.0, 0.0);
         assert_eq!(sample.q1.len(), 1024);
-        assert!(sample.q1.iter().all(|particle| matches!(
-            particle,
-            SceneParticle::Indexed { palette_index: 111, .. }
-        )));
+        assert!(sample
+            .q1
+            .iter()
+            .all(|particle| matches!(particle, SceneParticle::Indexed { palette_index: 111, .. })));
     }
 
     #[test]
@@ -1102,13 +1155,8 @@ mod tests {
     #[test]
     fn q2_diminishing_trail_floors_count_at_100() {
         let mut particles = particles();
-        let count = particles.q2_diminishing_trail(
-            vec3(0.0, 0.0, 0.0),
-            vec3(10.0, 0.0, 0.0),
-            0.0,
-            120,
-            Q2TrailKind::Rocket,
-        );
+        let count =
+            particles.q2_diminishing_trail(vec3(0.0, 0.0, 0.0), vec3(10.0, 0.0, 0.0), 0.0, 120, Q2TrailKind::Rocket);
         assert_eq!(count, 100);
     }
 }

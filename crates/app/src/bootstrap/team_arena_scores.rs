@@ -213,10 +213,7 @@ pub fn parse_team_arena_postgame(args: &[String]) -> Result<TeamArenaPostgameSta
 
 /// Calculate a postgame score against the previous record.
 #[must_use]
-pub fn calculate_team_arena_score(
-    input: &TeamArenaScoreInput,
-    previous: &TeamArenaScore,
-) -> TeamArenaScoreResult {
+pub fn calculate_team_arena_score(input: &TeamArenaScoreInput, previous: &TeamArenaScore) -> TeamArenaScoreResult {
     let stats = &input.stats;
     let elapsed = (stats.end_time as f32) - (input.match_start_time as f32);
     let time = qvm_float_to_int((f64::from(elapsed) / 1000.0) as f32);
@@ -391,16 +388,23 @@ mod tests {
 
     #[test]
     fn parse_postgame_reads_arg_slots() {
-        let args = ["cmd", "sub", "50", "1", "2", "3", "4", "5", "100", "6", "8", "0", "120000", "7"]
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        let args = [
+            "cmd", "sub", "50", "1", "2", "3", "4", "5", "100", "6", "8", "0", "120000", "7",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
         assert_eq!(parse_team_arena_postgame(&args).unwrap(), stats());
     }
 
     #[test]
     fn calculate_score_applies_bonuses() {
-        let input = TeamArenaScoreInput { stats: stats(), match_start_time: 0.0, skill: 2.0, time_to_beat: 200.0 };
+        let input = TeamArenaScoreInput {
+            stats: stats(),
+            match_start_time: 0.0,
+            skill: 2.0,
+            time_to_beat: 200.0,
+        };
         let result = calculate_team_arena_score(&input, &zero_score());
         assert_eq!(result.score.time, 120);
         assert_eq!(result.score.time_bonus, 800);
@@ -415,7 +419,12 @@ mod tests {
         let mut losing = stats();
         losing.red_score = 1;
         losing.blue_score = 9;
-        let input = TeamArenaScoreInput { stats: losing, match_start_time: 0.0, skill: 1.0, time_to_beat: 10.0 };
+        let input = TeamArenaScoreInput {
+            stats: losing,
+            match_start_time: 0.0,
+            skill: 1.0,
+            time_to_beat: 10.0,
+        };
         let result = calculate_team_arena_score(&input, &zero_score());
         assert!(!result.won && !result.new_high_score);
         assert_eq!(result.score.shutout_bonus, 0);
@@ -433,7 +442,12 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip_and_bad_header() {
-        let input = TeamArenaScoreInput { stats: stats(), match_start_time: 0.0, skill: 2.0, time_to_beat: 200.0 };
+        let input = TeamArenaScoreInput {
+            stats: stats(),
+            match_start_time: 0.0,
+            skill: 2.0,
+            time_to_beat: 200.0,
+        };
         let score = calculate_team_arena_score(&input, &zero_score()).score;
         assert_eq!(decode_team_arena_score(Some(&encode_team_arena_score(&score))), score);
         assert_eq!(decode_team_arena_score(None), zero_score());
@@ -457,7 +471,12 @@ mod tests {
             }
         }
         let mut files = Memory { files: HashMap::new() };
-        let input = TeamArenaScoreInput { stats: stats(), match_start_time: 0.0, skill: 2.0, time_to_beat: 200.0 };
+        let input = TeamArenaScoreInput {
+            stats: stats(),
+            match_start_time: 0.0,
+            skill: 2.0,
+            time_to_beat: 200.0,
+        };
         let first = record_team_arena_score("tourney", 4, &input, &mut files);
         assert!(first.new_high_score);
         assert!(files.files.contains_key("games/tourney_4.game"));

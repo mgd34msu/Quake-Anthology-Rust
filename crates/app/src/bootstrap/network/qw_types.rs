@@ -199,12 +199,7 @@ mod tests {
             self.log.push(format!("server:{}", data.level));
         }
 
-        fn game_state(
-            &mut self,
-            data: &QwServerData,
-            models: &[String],
-            sounds: &[String],
-        ) -> i32 {
+        fn game_state(&mut self, data: &QwServerData, models: &[String], sounds: &[String]) -> i32 {
             let checksum = data.server_count as i32 + models.len() as i32 + sounds.len() as i32;
             self.checksums.push(checksum);
             checksum
@@ -247,10 +242,7 @@ mod tests {
             level: 0,
             text: "hi".to_string(),
         };
-        assert_eq!(
-            qw_server_data(&message),
-            Err(QwTypesError::NotServerData)
-        );
+        assert_eq!(qw_server_data(&message), Err(QwTypesError::NotServerData));
         assert_eq!(
             QwTypesError::NotServerData.to_string(),
             "QuakeWorld message is not server data"
@@ -295,9 +287,7 @@ mod tests {
         let owner = IdentityOwner::create("qw-types-test").unwrap();
         let command = ActorCommand {
             actor: owner.actor(0, 1),
-            source: CommandSource::LocalSeat {
-                seat: owner.seat(0),
-            },
+            source: CommandSource::LocalSeat { seat: owner.seat(0) },
             sequence: 300,
             command: UserCommand::Q1Quakeworld {
                 milliseconds: 10.0,

@@ -14,41 +14,32 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use qa_net::common::endpoint::{
-    address_host, address_key, ip_address, ipv4_address, ipx_address, resolve_address, AddressError,
-    NetworkAddress, ResolveFamily,
+    address_host, address_key, ip_address, ipv4_address, ipx_address, resolve_address, AddressError, NetworkAddress,
+    ResolveFamily,
 };
 use qa_net::common::session::WireSelection;
 use qa_net::common::transport::{
-    monotonic_clock, Clock, DatagramTransport, ReceiveEvent, TransportError, UdpBindOptions,
-    UdpTransport,
+    monotonic_clock, Clock, DatagramTransport, ReceiveEvent, TransportError, UdpBindOptions, UdpTransport,
 };
 use qa_net::protocol::ProtocolIdentity;
 use qa_net::q1_net::{
-    read_net_quake_discovery, read_quake_world_discovery, NetQuakeDiscoveryWire,
-    QuakeWorldDiscoveryWire,
+    read_net_quake_discovery, read_quake_world_discovery, NetQuakeDiscoveryWire, QuakeWorldDiscoveryWire,
 };
 use qa_net::q2_kex_discovery::{kex_discovery_query, read_kex_discovery};
-use qa_net::q2_net::{
-    read_q2_master_reply, read_q2_out_of_band, read_q2_status, Q2DiscoveryWire, Q2Status,
-};
+use qa_net::q2_net::{read_q2_master_reply, read_q2_out_of_band, read_q2_status, Q2DiscoveryWire, Q2Status};
 use qa_net::q3_browser_view::{Q3BrowserCacheList, Q3BrowserCacheRow, Q3BrowserCacheView, Q3BrowserListState};
 use qa_net::q3_net::Q3NetError;
 use qa_net::services::discovery::{
-    decode_q3_master_packet, decode_q3_server_status, BrowserEntry, DiscoveryError,
-    DiscoveryRequestKind, DiscoverySource, DiscoveryWire, Q3DiscoveryWire, Q3_MASTER_PROTOCOL,
-    ServerStatus,
+    decode_q3_master_packet, decode_q3_server_status, BrowserEntry, DiscoveryError, DiscoveryRequestKind,
+    DiscoverySource, DiscoveryWire, Q3DiscoveryWire, ServerStatus, Q3_MASTER_PROTOCOL,
 };
 use thiserror::Error;
 
 use crate::bootstrap::server_browser_addresses::{
-    direct_server_text, MAXIMUM_DIRECT_SERVERS, read_direct_servers, DirectServerAddress,
+    direct_server_text, read_direct_servers, DirectServerAddress, MAXIMUM_DIRECT_SERVERS,
 };
-use crate::bootstrap::server_browser_cache::{
-    read_q3_browser_cache, write_q3_browser_cache, ServerBrowserCacheError,
-};
-use crate::bootstrap::server_master_list::{
-    fetch_server_master_list, MasterHttpResponse, MasterListError,
-};
+use crate::bootstrap::server_browser_cache::{read_q3_browser_cache, write_q3_browser_cache, ServerBrowserCacheError};
+use crate::bootstrap::server_master_list::{fetch_server_master_list, MasterHttpResponse, MasterListError};
 use crate::settings::config::ConfigStore;
 use crate::settings::json::{parse_json, stringify, Json};
 use crate::settings::SettingsError;
@@ -250,14 +241,38 @@ pub struct BrowserSortChoice {
 
 /// Available sort orders.
 pub const BROWSER_SORT_ORDERS: [BrowserSortChoice; 8] = [
-    BrowserSortChoice { id: BrowserSortOrder::PingLow, label: BrowserSortOrder::PingLow.label() },
-    BrowserSortChoice { id: BrowserSortOrder::PingHigh, label: BrowserSortOrder::PingHigh.label() },
-    BrowserSortChoice { id: BrowserSortOrder::NameAz, label: BrowserSortOrder::NameAz.label() },
-    BrowserSortChoice { id: BrowserSortOrder::NameZa, label: BrowserSortOrder::NameZa.label() },
-    BrowserSortChoice { id: BrowserSortOrder::MapAz, label: BrowserSortOrder::MapAz.label() },
-    BrowserSortChoice { id: BrowserSortOrder::MapZa, label: BrowserSortOrder::MapZa.label() },
-    BrowserSortChoice { id: BrowserSortOrder::PlayersMost, label: BrowserSortOrder::PlayersMost.label() },
-    BrowserSortChoice { id: BrowserSortOrder::PlayersFewest, label: BrowserSortOrder::PlayersFewest.label() },
+    BrowserSortChoice {
+        id: BrowserSortOrder::PingLow,
+        label: BrowserSortOrder::PingLow.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::PingHigh,
+        label: BrowserSortOrder::PingHigh.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::NameAz,
+        label: BrowserSortOrder::NameAz.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::NameZa,
+        label: BrowserSortOrder::NameZa.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::MapAz,
+        label: BrowserSortOrder::MapAz.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::MapZa,
+        label: BrowserSortOrder::MapZa.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::PlayersMost,
+        label: BrowserSortOrder::PlayersMost.label(),
+    },
+    BrowserSortChoice {
+        id: BrowserSortOrder::PlayersFewest,
+        label: BrowserSortOrder::PlayersFewest.label(),
+    },
 ];
 
 /// `host:port` text for an IP address.
@@ -316,7 +331,11 @@ impl BrowserTransport for UdpTransport {
                 }
                 Ok(Some(ReceiveEvent::Dropped { .. })) => continue,
                 Ok(None) => return None,
-                Err(error) => return Some(BrowserEvent::Error { message: error.to_string() }),
+                Err(error) => {
+                    return Some(BrowserEvent::Error {
+                        message: error.to_string(),
+                    })
+                }
             }
         }
     }
@@ -476,7 +495,13 @@ fn address_record_json(address: &NetworkAddress) -> Json {
 
 fn clean_text(text: &str) -> String {
     text.chars()
-        .map(|c| if (c as u32) < 0x20 || (c as u32) == 0x7f { ' ' } else { c })
+        .map(|c| {
+            if (c as u32) < 0x20 || (c as u32) == 0x7f {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -540,12 +565,22 @@ struct ProtocolBrowser {
 
 impl ProtocolBrowser {
     fn new(wire: Rc<dyn DiscoveryWire>, transport: Rc<dyn BrowserTransport>) -> Self {
-        Self { wire, transport, entries: Vec::new(), queries: HashMap::new(), broadcasts: HashMap::new(), query_sequence: 0, next_handle: 0 }
+        Self {
+            wire,
+            transport,
+            entries: Vec::new(),
+            queries: HashMap::new(),
+            broadcasts: HashMap::new(),
+            query_sequence: 0,
+            next_handle: 0,
+        }
     }
 
     fn position(&self, address: &NetworkAddress) -> Option<usize> {
         let key = address_key(address, true);
-        self.entries.iter().position(|entry| address_key(&entry.address, true) == key)
+        self.entries
+            .iter()
+            .position(|entry| address_key(&entry.address, true) == key)
     }
 
     fn add(&mut self, address: NetworkAddress, source: DiscoverySource, now: f64) -> BrowserEntry {
@@ -555,7 +590,13 @@ impl ProtocolBrowser {
             }
             return self.entries[index].clone();
         }
-        let entry = BrowserEntry { address, sources: vec![source], status: None, ping_milliseconds: None, updated_at: now };
+        let entry = BrowserEntry {
+            address,
+            sources: vec![source],
+            status: None,
+            ping_milliseconds: None,
+            updated_at: now,
+        };
         self.entries.push(entry.clone());
         entry
     }
@@ -574,7 +615,11 @@ impl ProtocolBrowser {
 
     fn restore_entry(&mut self, entry: BrowserEntry) {
         let key = address_key(&entry.address, true);
-        let Some(index) = self.entries.iter().position(|candidate| address_key(&candidate.address, true) == key) else {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|candidate| address_key(&candidate.address, true) == key)
+        else {
             self.entries.push(entry);
             return;
         };
@@ -584,7 +629,11 @@ impl ProtocolBrowser {
                 sources.push(*source);
             }
         }
-        let mut updated = if self.entries[index].status.is_none() { entry } else { self.entries[index].clone() };
+        let mut updated = if self.entries[index].status.is_none() {
+            entry
+        } else {
+            self.entries[index].clone()
+        };
         updated.sources = sources;
         self.entries[index] = updated;
     }
@@ -609,7 +658,12 @@ impl ProtocolBrowser {
         self.queries.len()
     }
 
-    fn query(&mut self, address: &NetworkAddress, now: f64, kind: DiscoveryRequestKind) -> Result<bool, ServerBrowserError> {
+    fn query(
+        &mut self,
+        address: &NetworkAddress,
+        now: f64,
+        kind: DiscoveryRequestKind,
+    ) -> Result<bool, ServerBrowserError> {
         let key = address_key(address, true);
         let replaced: Vec<u64> = self
             .queries
@@ -624,7 +678,16 @@ impl ProtocolBrowser {
         self.query_sequence += 1;
         let handle = self.next_handle;
         let challenge = self.query_sequence.to_string();
-        self.queries.insert(handle, PendingQuery { handle, challenge: challenge.clone(), address: address.clone(), request_kind: kind, sent_at: now });
+        self.queries.insert(
+            handle,
+            PendingQuery {
+                handle,
+                challenge: challenge.clone(),
+                address: address.clone(),
+                request_kind: kind,
+                sent_at: now,
+            },
+        );
         let bytes = match self.wire.query(kind, &challenge) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -644,7 +707,14 @@ impl ProtocolBrowser {
         Ok(self.transport.send(address, &self.wire.master_query()?))
     }
 
-    fn receive(&mut self, address: &NetworkAddress, status: ServerStatus, challenge: Option<&str>, now: f64, kind: Option<DiscoveryRequestKind>) -> bool {
+    fn receive(
+        &mut self,
+        address: &NetworkAddress,
+        status: ServerStatus,
+        challenge: Option<&str>,
+        now: f64,
+        kind: Option<DiscoveryRequestKind>,
+    ) -> bool {
         let key = address_key(address, true);
         let matches: Vec<PendingQuery> = self
             .queries
@@ -665,9 +735,15 @@ impl ProtocolBrowser {
         } else if let Some(expected) = challenge {
             self.broadcasts.get(expected).cloned()
         } else {
-            self.broadcasts.values().max_by_key(|broadcast| broadcast.sequence).cloned()
+            self.broadcasts
+                .values()
+                .max_by_key(|broadcast| broadcast.sequence)
+                .cloned()
         };
-        let pending = direct.as_ref().map(|query| query.sent_at).or_else(|| broadcast.as_ref().map(|broadcast| broadcast.sent_at));
+        let pending = direct
+            .as_ref()
+            .map(|query| query.sent_at)
+            .or_else(|| broadcast.as_ref().map(|broadcast| broadcast.sent_at));
         let Some(sent_at) = pending else { return false };
         let ping_milliseconds = 0f64.max(now - sent_at);
         if direct.is_none() {
@@ -690,7 +766,13 @@ impl ProtocolBrowser {
         let mut sent = 0;
         self.query_sequence += 1;
         let challenge = self.query_sequence.to_string();
-        self.broadcasts.insert(challenge.clone(), PendingBroadcast { sequence: self.query_sequence, sent_at: now });
+        self.broadcasts.insert(
+            challenge.clone(),
+            PendingBroadcast {
+                sequence: self.query_sequence,
+                sent_at: now,
+            },
+        );
         for address in addresses {
             let bytes = self.wire.query(DiscoveryRequestKind::Info, &challenge)?;
             if self.transport.send(address, &bytes) {
@@ -704,7 +786,8 @@ impl ProtocolBrowser {
     }
 
     fn expire_queries(&mut self, now: f64, timeout_milliseconds: f64) -> Vec<NetworkAddress> {
-        self.broadcasts.retain(|_, query| now - query.sent_at < timeout_milliseconds);
+        self.broadcasts
+            .retain(|_, query| now - query.sent_at < timeout_milliseconds);
         let handles: Vec<u64> = self
             .queries
             .values()
@@ -713,9 +796,14 @@ impl ProtocolBrowser {
             .collect();
         let mut expired = Vec::new();
         for handle in handles {
-            let Some(query) = self.queries.get(&handle).cloned() else { continue };
+            let Some(query) = self.queries.get(&handle).cloned() else {
+                continue;
+            };
             if let Some(entry) = self.entry(&query.address) {
-                if !expired.iter().any(|address: &NetworkAddress| address_key(address, true) == address_key(&entry.address, true)) {
+                if !expired
+                    .iter()
+                    .any(|address: &NetworkAddress| address_key(address, true) == address_key(&entry.address, true))
+                {
                     expired.push(entry.address.clone());
                 }
             }
@@ -725,11 +813,17 @@ impl ProtocolBrowser {
     }
 
     fn favorite_addresses(&self) -> Vec<NetworkAddress> {
-        self.entries.iter().filter(|entry| entry.sources.contains(&DiscoverySource::Favorite)).map(|entry| entry.address.clone()).collect()
+        self.entries
+            .iter()
+            .filter(|entry| entry.sources.contains(&DiscoverySource::Favorite))
+            .map(|entry| entry.address.clone())
+            .collect()
     }
 
     fn save_favorites(&self) -> String {
-        stringify(&Json::Array(self.favorite_addresses().iter().map(address_record_json).collect()))
+        stringify(&Json::Array(
+            self.favorite_addresses().iter().map(address_record_json).collect(),
+        ))
     }
 
     fn restore_favorites(&mut self, text: &str) -> Result<(), ServerBrowserError> {
@@ -777,6 +871,9 @@ struct ListSnapshot {
     addresses: Vec<NetworkAddress>,
 }
 
+/// Master-list HTTP supplier.
+pub type MasterFetch = Box<dyn FnMut(&str) -> Result<MasterHttpResponse, MasterListError>>;
+
 /// Startup server browser (donor `StartupServerBrowser`).
 pub struct StartupServerBrowser {
     transport: Rc<dyn BrowserTransport>,
@@ -797,7 +894,7 @@ pub struct StartupServerBrowser {
     kex_discovery: Option<Box<dyn KexMdnsPort>>,
     kex_queries: HashMap<String, f64>,
     pending_status: BTreeMap<String, PendingStatusQuery>,
-    master_fetch: Box<dyn FnMut(&str) -> Result<MasterHttpResponse, MasterListError>>,
+    master_fetch: MasterFetch,
     /// Active protocol.
     pub protocol: BrowserProtocol,
     /// Filter text.
@@ -822,9 +919,11 @@ impl StartupServerBrowser {
             ProtocolBrowser::new(Rc::new(NetQuakeDiscoveryWire), transport.clone()),
             ProtocolBrowser::new(Rc::new(QuakeWorldDiscoveryWire), transport.clone()),
             ProtocolBrowser::new(
-                Rc::new(Q2StatusWire(Q2DiscoveryWire::new(ProtocolIdentity::Q2Classic, || Q2Status {
-                    server_info: String::new(),
-                    players: Vec::new(),
+                Rc::new(Q2StatusWire(Q2DiscoveryWire::new(ProtocolIdentity::Q2Classic, || {
+                    Q2Status {
+                        server_info: String::new(),
+                        players: Vec::new(),
+                    }
                 }))),
                 transport.clone(),
             ),
@@ -853,7 +952,11 @@ impl StartupServerBrowser {
             kex_discovery: None,
             kex_queries: HashMap::new(),
             pending_status: BTreeMap::new(),
-            master_fetch: Box::new(|_| Err(MasterListError::Fetch("master list HTTP fetch is not configured".to_owned()))),
+            master_fetch: Box::new(|_| {
+                Err(MasterListError::Fetch(
+                    "master list HTTP fetch is not configured".to_owned(),
+                ))
+            }),
             protocol: BrowserProtocol::Q1,
             filter: String::new(),
             favorites_only: false,
@@ -890,7 +993,7 @@ impl StartupServerBrowser {
     }
 
     /// Inject the master-list HTTP supplier.
-    pub fn set_master_fetch(&mut self, fetch: Box<dyn FnMut(&str) -> Result<MasterHttpResponse, MasterListError>>) {
+    pub fn set_master_fetch(&mut self, fetch: MasterFetch) {
         self.master_fetch = fetch;
     }
 
@@ -922,9 +1025,11 @@ impl StartupServerBrowser {
                 }
             }
             let name = format!("servers-direct-{}", protocol.as_str());
-            let Some(saved) = self.config.load_text(&name)? else { continue };
-            let servers = read_direct_servers(&saved)
-                .map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
+            let Some(saved) = self.config.load_text(&name)? else {
+                continue;
+            };
+            let servers =
+                read_direct_servers(&saved).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
             for server in &servers {
                 self.cores[protocol.index()].add(server.address.clone(), DiscoverySource::Direct, 0.0);
             }
@@ -951,7 +1056,10 @@ impl StartupServerBrowser {
     /// Connect address for the active protocol.
     #[must_use]
     pub fn address(&self) -> String {
-        self.addresses.get(&self.protocol).cloned().unwrap_or_else(|| format!("localhost:{}", self.protocol.default_port()))
+        self.addresses
+            .get(&self.protocol)
+            .cloned()
+            .unwrap_or_else(|| format!("localhost:{}", self.protocol.default_port()))
     }
 
     /// Set the connect address for the active protocol.
@@ -972,7 +1080,10 @@ impl StartupServerBrowser {
         self.assert_open()?;
         let membership = q3_source(source)?;
         let generation = self.list_generations.get(&source).copied().unwrap_or(0);
-        let stale = self.list_snapshots.get(&source).is_none_or(|snapshot| snapshot.generation != generation);
+        let stale = self
+            .list_snapshots
+            .get(&source)
+            .is_none_or(|snapshot| snapshot.generation != generation);
         if stale {
             let addresses = self.cores[BrowserProtocol::Q3.index()]
                 .list()
@@ -980,12 +1091,20 @@ impl StartupServerBrowser {
                 .filter(|entry| entry.sources.contains(&membership))
                 .map(|entry| entry.address.clone())
                 .collect();
-            self.list_snapshots.insert(source, ListSnapshot { generation, addresses });
+            self.list_snapshots
+                .insert(source, ListSnapshot { generation, addresses });
         }
-        let addresses = self.list_snapshots.get(&source).map(|snapshot| snapshot.addresses.clone()).unwrap_or_default();
+        let addresses = self
+            .list_snapshots
+            .get(&source)
+            .map(|snapshot| snapshot.addresses.clone())
+            .unwrap_or_default();
         Ok(Q3BrowserListState {
             addresses,
-            pending: self.master.as_ref().is_some_and(|master| master.source == source && !master.received),
+            pending: self
+                .master
+                .as_ref()
+                .is_some_and(|master| master.source == source && !master.received),
             generation,
             reset_generation: self.list_resets.get(&source).copied().unwrap_or(0),
         })
@@ -997,14 +1116,23 @@ impl StartupServerBrowser {
         for entry in core.list_owned() {
             core.remove_source(&entry.address, membership);
         }
-        *self.list_generations.entry(source).or_insert(0) =
-            self.list_generations.get(&source).copied().unwrap_or(0).saturating_add(1);
+        *self.list_generations.entry(source).or_insert(0) = self
+            .list_generations
+            .get(&source)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
         *self.list_resets.entry(source).or_insert(0) =
             self.list_resets.get(&source).copied().unwrap_or(0).saturating_add(1);
     }
 
     fn bump_q3_generation(&mut self, source: u8) {
-        let next = self.list_generations.get(&source).copied().unwrap_or(0).saturating_add(1);
+        let next = self
+            .list_generations
+            .get(&source)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
         self.list_generations.insert(source, next);
     }
 
@@ -1090,7 +1218,12 @@ impl StartupServerBrowser {
         let bytes = Q3DiscoveryWire::new(keywords, protocol)?.master_query()?;
         self.clear_q3(source);
         let now = (self.now)();
-        self.master = Some(Q3MasterQuery { source, address: None, started_at: now, received: false });
+        self.master = Some(Q3MasterQuery {
+            source,
+            address: None,
+            started_at: now,
+            received: false,
+        });
         let cleaned = direct_server_text(remote).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
         let address = match resolve_address(&cleaned, 27950, ResolveFamily::V4) {
             Ok(address) => address,
@@ -1100,7 +1233,12 @@ impl StartupServerBrowser {
             }
         };
         let now = (self.now)();
-        self.master = Some(Q3MasterQuery { source, address: Some(address.clone()), started_at: now, received: false });
+        self.master = Some(Q3MasterQuery {
+            source,
+            address: Some(address.clone()),
+            started_at: now,
+            received: false,
+        });
         if !self.transport.send(&address, &bytes) {
             self.master = None;
             return Err(ServerBrowserError::MasterSend);
@@ -1154,12 +1292,21 @@ impl StartupServerBrowser {
         let core = &self.cores[BrowserProtocol::Q3.index()];
         let mut lists = Vec::with_capacity(cached.lists.len());
         for list in &cached.lists {
-            let Ok(membership) = q3_source(list.source) else { continue };
-            let entries: Vec<&BrowserEntry> =
-                core.list().into_iter().filter(|entry| entry.sources.contains(&membership)).collect();
+            let Ok(membership) = q3_source(list.source) else {
+                continue;
+            };
+            let entries: Vec<&BrowserEntry> = core
+                .list()
+                .into_iter()
+                .filter(|entry| entry.sources.contains(&membership))
+                .collect();
             let keys: HashSet<String> = entries.iter().map(|entry| address_key(&entry.address, true)).collect();
-            let mut rows: Vec<Q3BrowserCacheRow> =
-                list.rows.iter().filter(|row| keys.contains(&address_key(&row.address, true))).cloned().collect();
+            let mut rows: Vec<Q3BrowserCacheRow> = list
+                .rows
+                .iter()
+                .filter(|row| keys.contains(&address_key(&row.address, true)))
+                .cloned()
+                .collect();
             let mut retained: HashSet<String> = rows.iter().map(|row| address_key(&row.address, true)).collect();
             let capacity = if list.source == 2 { 4096 } else { 128 };
             for entry in entries {
@@ -1169,13 +1316,17 @@ impl StartupServerBrowser {
                 if retained.insert(address_key(&entry.address, true)) {
                     rows.push(Q3BrowserCacheRow {
                         address: entry.address.clone(),
-                        name: truncate_utf16(&entry.status.as_ref().map_or("", |status| status.name.as_str()), 31).to_owned(),
+                        name: truncate_utf16(entry.status.as_ref().map_or("", |status| status.name.as_str()), 31)
+                            .to_owned(),
                         visible: 1,
                         ping: -1,
                     });
                 }
             }
-            lists.push(Q3BrowserCacheList { source: list.source, rows });
+            lists.push(Q3BrowserCacheList {
+                source: list.source,
+                rows,
+            });
         }
         Some(Q3BrowserCacheView { lists })
     }
@@ -1219,18 +1370,31 @@ impl StartupServerBrowser {
             return Ok(vec!["Select a server first.".to_owned()]);
         };
         let Some(status) = &entry.status else {
-            return Ok(vec![browser_address(&entry.address)?, "No status response yet.".to_owned()]);
+            return Ok(vec![
+                browser_address(&entry.address)?,
+                "No status response yet.".to_owned(),
+            ]);
         };
         let mut lines = vec![
             clean_text(&status.name),
             browser_address(&entry.address)?,
-            format!("Map: {}  Players: {}/{}", clean_text(&status.map), status.players, status.max_players),
+            format!(
+                "Map: {}  Players: {}/{}",
+                clean_text(&status.map),
+                status.players,
+                status.max_players
+            ),
         ];
         for player in &status.player_details {
-            lines.push(format!("{}  score {}  ping {}", clean_text(&player.name), player.score, player.ping));
+            lines.push(format!(
+                "{}  score {}  ping {}",
+                clean_text(&player.name),
+                player.score,
+                player.ping
+            ));
         }
         let mut rules: Vec<(&String, &String)> = status.rules.iter().collect();
-        rules.sort_by(|(a, _), (b, _)| a.cmp(b));
+        rules.sort_by_key(|rule| rule.0);
         for (key, value) in rules {
             lines.push(format!("{}: {}", clean_text(key), clean_text(value)));
         }
@@ -1239,7 +1403,13 @@ impl StartupServerBrowser {
 
     fn queue_status(&mut self, protocol: BrowserProtocol, address: &NetworkAddress) {
         let key = format!("{}:{}", protocol.as_str(), address_key(address, true));
-        self.pending_status.insert(key, PendingStatusQuery { protocol, address: address.clone() });
+        self.pending_status.insert(
+            key,
+            PendingStatusQuery {
+                protocol,
+                address: address.clone(),
+            },
+        );
     }
 
     /// Discover servers via the master address or HTTP list URL.
@@ -1272,22 +1442,32 @@ impl StartupServerBrowser {
             self.status = format!("Found {} servers; querying status", addresses.len());
         } else if protocol == BrowserProtocol::Q2 {
             let stripped = remote.strip_prefix("udp://").unwrap_or(&remote);
-            let cleaned = direct_server_text(stripped).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
+            let cleaned =
+                direct_server_text(stripped).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
             let address = resolve_address(&cleaned, 27900, ResolveFamily::V4)?;
             let now = (self.now)();
-            self.q2_master = Some(Q2MasterQuery { address: address.clone(), started_at: now });
+            self.q2_master = Some(Q2MasterQuery {
+                address: address.clone(),
+                started_at: now,
+            });
             if !self.cores[protocol.index()].query_master(&address)? {
                 return Err(ServerBrowserError::Q2MasterSend);
             }
             self.status = "Querying master...".to_owned();
         } else if protocol == BrowserProtocol::Q3 {
             let stripped = remote.strip_prefix("udp://").unwrap_or(&remote).to_owned();
-            self.request_q3_master(2, &stripped, Q3_MASTER_PROTOCOL, &["empty".to_owned(), "full".to_owned()])?;
+            self.request_q3_master(
+                2,
+                &stripped,
+                Q3_MASTER_PROTOCOL,
+                &["empty".to_owned(), "full".to_owned()],
+            )?;
             self.status = "Querying master...".to_owned();
         } else {
             return Err(ServerBrowserError::NeedsHttpMaster);
         }
-        self.config.dump(&format!("servers-master-{}", protocol.as_str()), &remote)?;
+        self.config
+            .dump(&format!("servers-master-{}", protocol.as_str()), &remote)?;
         Ok(())
     }
 
@@ -1325,17 +1505,30 @@ impl StartupServerBrowser {
                 entry.status.as_ref().map_or("", |status| status.name.as_str()),
                 entry.status.as_ref().map_or("", |status| status.map.as_str()),
                 entry.status.as_ref().map_or("", |status| {
-                    status.rules.get("gamedir").or_else(|| status.rules.get("game")).map_or("", String::as_str)
+                    status
+                        .rules
+                        .get("gamedir")
+                        .or_else(|| status.rules.get("game"))
+                        .map_or("", String::as_str)
                 }),
                 entry.status.as_ref().map_or(String::new(), |status| {
-                    status.player_details.iter().map(|player| {
-                        let mut name = player.name.clone();
-                        while let Some(caret) = name.find('^') {
-                            let strip = if name.as_bytes().get(caret + 1).is_some_and(u8::is_ascii_digit) { 2 } else { 1 };
-                            name.replace_range(caret..caret + strip, "");
-                        }
-                        name
-                    }).collect::<Vec<_>>().join(" ")
+                    status
+                        .player_details
+                        .iter()
+                        .map(|player| {
+                            let mut name = player.name.clone();
+                            while let Some(caret) = name.find('^') {
+                                let strip = if name.as_bytes().get(caret + 1).is_some_and(u8::is_ascii_digit) {
+                                    2
+                                } else {
+                                    1
+                                };
+                                name.replace_range(caret..caret + strip, "");
+                            }
+                            name
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 }),
             );
             if !haystack.to_lowercase().contains(&search) {
@@ -1357,26 +1550,62 @@ impl StartupServerBrowser {
                         (false, true) => return std::cmp::Ordering::Less,
                         _ => {}
                     }
-                    let ordering = (a.ping_milliseconds.unwrap_or(0.0)).partial_cmp(&b.ping_milliseconds.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal);
-                    if sort == BrowserSortOrder::PingLow { ordering } else { ordering.reverse() }
+                    let ordering = (a.ping_milliseconds.unwrap_or(0.0))
+                        .partial_cmp(&b.ping_milliseconds.unwrap_or(0.0))
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if sort == BrowserSortOrder::PingLow {
+                        ordering
+                    } else {
+                        ordering.reverse()
+                    }
                 }
                 BrowserSortOrder::NameAz | BrowserSortOrder::NameZa => {
-                    let ordering = a.status.as_ref().map_or("", |status| status.name.as_str()).to_lowercase().cmp(
-                        &b.status.as_ref().map_or("", |status| status.name.as_str()).to_lowercase(),
-                    );
-                    if sort == BrowserSortOrder::NameAz { ordering } else { ordering.reverse() }
+                    let ordering = a
+                        .status
+                        .as_ref()
+                        .map_or("", |status| status.name.as_str())
+                        .to_lowercase()
+                        .cmp(
+                            &b.status
+                                .as_ref()
+                                .map_or("", |status| status.name.as_str())
+                                .to_lowercase(),
+                        );
+                    if sort == BrowserSortOrder::NameAz {
+                        ordering
+                    } else {
+                        ordering.reverse()
+                    }
                 }
                 BrowserSortOrder::MapAz | BrowserSortOrder::MapZa => {
-                    let ordering = a.status.as_ref().map_or("", |status| status.map.as_str()).to_lowercase().cmp(
-                        &b.status.as_ref().map_or("", |status| status.map.as_str()).to_lowercase(),
-                    );
-                    if sort == BrowserSortOrder::MapAz { ordering } else { ordering.reverse() }
+                    let ordering = a
+                        .status
+                        .as_ref()
+                        .map_or("", |status| status.map.as_str())
+                        .to_lowercase()
+                        .cmp(
+                            &b.status
+                                .as_ref()
+                                .map_or("", |status| status.map.as_str())
+                                .to_lowercase(),
+                        );
+                    if sort == BrowserSortOrder::MapAz {
+                        ordering
+                    } else {
+                        ordering.reverse()
+                    }
                 }
                 BrowserSortOrder::PlayersMost | BrowserSortOrder::PlayersFewest => {
-                    let ordering = a.status.as_ref().map_or(0, |status| status.players).cmp(
-                        &b.status.as_ref().map_or(0, |status| status.players),
-                    );
-                    if sort == BrowserSortOrder::PlayersFewest { ordering } else { ordering.reverse() }
+                    let ordering = a
+                        .status
+                        .as_ref()
+                        .map_or(0, |status| status.players)
+                        .cmp(&b.status.as_ref().map_or(0, |status| status.players));
+                    if sort == BrowserSortOrder::PlayersFewest {
+                        ordering
+                    } else {
+                        ordering.reverse()
+                    }
                 }
             };
             compared.then_with(|| a_remote.cmp(b_remote))
@@ -1386,13 +1615,17 @@ impl StartupServerBrowser {
 
     /// Select a row by address key.
     pub fn select(&mut self, key: &str) -> Result<(), ServerBrowserError> {
-        let Some(entry) = self.rows()?.into_iter().find(|entry| address_key(&entry.address, true) == key) else {
+        let Some(entry) = self
+            .rows()?
+            .into_iter()
+            .find(|entry| address_key(&entry.address, true) == key)
+        else {
             return Ok(());
         };
         let direct = if entry.sources.contains(&DiscoverySource::Direct) {
-            self.direct_servers.get(&self.protocol).and_then(|servers| {
-                servers.iter().find(|server| address_key(&server.address, true) == key)
-            })
+            self.direct_servers
+                .get(&self.protocol)
+                .and_then(|servers| servers.iter().find(|server| address_key(&server.address, true) == key))
         } else {
             None
         };
@@ -1405,7 +1638,8 @@ impl StartupServerBrowser {
     /// Query the connect address.
     pub fn query(&mut self) -> Result<(), ServerBrowserError> {
         let protocol = self.protocol;
-        let remote = direct_server_text(self.address().trim()).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
+        let remote = direct_server_text(self.address().trim())
+            .map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
         let address = resolve_address(&remote, protocol.default_port(), ResolveFamily::V4)?;
         self.remember_direct(protocol, remote, address.clone())?;
         let now = (self.now)();
@@ -1439,11 +1673,14 @@ impl StartupServerBrowser {
     /// Toggle a favorite for the connect address.
     pub fn favorite(&mut self) -> Result<(), ServerBrowserError> {
         let protocol = self.protocol;
-        let remote = direct_server_text(self.address().trim()).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
+        let remote = direct_server_text(self.address().trim())
+            .map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
         let address = resolve_address(&remote, protocol.default_port(), ResolveFamily::V4)?;
         let core = &mut self.cores[protocol.index()];
         let before = core.save_favorites();
-        let removing = core.entry(&address).is_some_and(|entry| entry.sources.contains(&DiscoverySource::Favorite));
+        let removing = core
+            .entry(&address)
+            .is_some_and(|entry| entry.sources.contains(&DiscoverySource::Favorite));
         if removing {
             core.remove_favorite(&address);
         } else {
@@ -1452,7 +1689,11 @@ impl StartupServerBrowser {
         if protocol == BrowserProtocol::Q3 {
             self.bump_q3_generation(3);
         }
-        let view = if protocol == BrowserProtocol::Q3 { self.current_cache_view() } else { None };
+        let view = if protocol == BrowserProtocol::Q3 {
+            self.current_cache_view()
+        } else {
+            None
+        };
         let dumped = if protocol == BrowserProtocol::Q3 {
             let serialized = write_q3_browser_cache(&self.cores[protocol.index()].list_owned(), view.as_ref())?;
             self.config.dump("servers-cache-q3", &serialized)
@@ -1470,32 +1711,54 @@ impl StartupServerBrowser {
         if protocol == BrowserProtocol::Q3 {
             self.cached_view = view;
         }
-        self.status = if removing { "Favorite removed".to_owned() } else { "Favorite added".to_owned() };
+        self.status = if removing {
+            "Favorite removed".to_owned()
+        } else {
+            "Favorite added".to_owned()
+        };
         Ok(())
     }
 
     /// Build a connection for the connect address.
     pub fn connection(&mut self) -> Result<BrowserConnection, ServerBrowserError> {
         let protocol = self.protocol;
-        let remote = direct_server_text(self.address().trim()).map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
+        let remote = direct_server_text(self.address().trim())
+            .map_err(|error| ServerBrowserError::Addresses(error.to_string()))?;
         let address = resolve_address(&remote, protocol.default_port(), ResolveFamily::V4)?;
         self.remember_direct(protocol, remote.clone(), address)?;
         let mut q2_protocol = None;
         for entry in self.cores[protocol.index()].list_owned() {
             if browser_address(&entry.address)? == remote {
                 if protocol == BrowserProtocol::Q2
-                    && matches!(entry.status.as_ref().map(|status| &status.wire), Some(WireSelection::Source { protocol: ProtocolIdentity::Q2Kex }))
+                    && matches!(
+                        entry.status.as_ref().map(|status| &status.wire),
+                        Some(WireSelection::Source {
+                            protocol: ProtocolIdentity::Q2Kex
+                        })
+                    )
                 {
                     q2_protocol = Some(ProtocolIdentity::Q2Kex);
                 }
                 break;
             }
         }
-        Ok(BrowserConnection { protocol, remote, q2_protocol })
+        Ok(BrowserConnection {
+            protocol,
+            remote,
+            q2_protocol,
+        })
     }
 
-    fn remember_direct(&mut self, protocol: BrowserProtocol, remote: String, address: NetworkAddress) -> Result<(), ServerBrowserError> {
-        let mut servers = vec![DirectServerAddress { remote, address: address.clone() }];
+    fn remember_direct(
+        &mut self,
+        protocol: BrowserProtocol,
+        remote: String,
+        address: NetworkAddress,
+    ) -> Result<(), ServerBrowserError> {
+        let mut servers = vec![DirectServerAddress {
+            remote,
+            address: address.clone(),
+        }];
         if let Some(existing) = self.direct_servers.get(&protocol) {
             servers.extend(existing.iter().cloned());
         }
@@ -1519,7 +1782,10 @@ impl StartupServerBrowser {
                 ),
             ),
         ]));
-        self.config.dump(&format!("servers-direct-{}", protocol.as_str()), &format!("{serialized}\n"))?;
+        self.config.dump(
+            &format!("servers-direct-{}", protocol.as_str()),
+            &format!("{serialized}\n"),
+        )?;
         self.direct_servers.insert(protocol, servers);
         self.cores[protocol.index()].add(address, DiscoverySource::Direct, 0.0);
         Ok(())
@@ -1564,7 +1830,9 @@ impl StartupServerBrowser {
             if sent == 4 {
                 break;
             }
-            let Some(query) = self.pending_status.get(&key).cloned() else { continue };
+            let Some(query) = self.pending_status.get(&key).cloned() else {
+                continue;
+            };
             if self.cores[query.protocol.index()].pending_requests() >= 16 {
                 continue;
             }
@@ -1574,10 +1842,18 @@ impl StartupServerBrowser {
             sent += 1;
         }
         let now = (self.now)();
-        if self.q2_master.as_ref().is_some_and(|master| now - master.started_at >= 3000.0) {
+        if self
+            .q2_master
+            .as_ref()
+            .is_some_and(|master| now - master.started_at >= 3000.0)
+        {
             self.q2_master = None;
         }
-        if self.master.as_ref().is_some_and(|master| now - master.started_at >= 3000.0) {
+        if self
+            .master
+            .as_ref()
+            .is_some_and(|master| now - master.started_at >= 3000.0)
+        {
             self.master = None;
         }
         Ok(())
@@ -1616,7 +1892,9 @@ impl StartupServerBrowser {
                                 .list()
                                 .iter()
                                 .filter(|entry| {
-                                    entry.sources.contains(&q3_source(master.source).unwrap_or(DiscoverySource::Master))
+                                    entry
+                                        .sources
+                                        .contains(&q3_source(master.source).unwrap_or(DiscoverySource::Master))
                                 })
                                 .count();
                             if listed >= if master.source == 2 { 8192 } else { 128 } {
@@ -1630,7 +1908,10 @@ impl StartupServerBrowser {
                         self.master = if packet.complete {
                             None
                         } else {
-                            Some(Q3MasterQuery { received: true, ..master })
+                            Some(Q3MasterQuery {
+                                received: true,
+                                ..master
+                            })
                         };
                         return;
                     }
@@ -1674,15 +1955,23 @@ impl StartupServerBrowser {
             {
                 continue;
             }
-            let status = ServerStatus { name: clean_text(&status.name), map: clean_text(&status.map), ..status };
+            let status = ServerStatus {
+                name: clean_text(&status.name),
+                map: clean_text(&status.map),
+                ..status
+            };
             let core = &mut self.cores[protocol.index()];
-            let was_lan = core.entry(from).is_some_and(|entry| entry.sources.contains(&DiscoverySource::Lan));
+            let was_lan = core
+                .entry(from)
+                .is_some_and(|entry| entry.sources.contains(&DiscoverySource::Lan));
             let now = (self.now)();
             if core.receive(from, status, challenge.as_deref(), now, None) {
                 self.status = "Server updated".to_owned();
                 if protocol == BrowserProtocol::Q3
                     && !was_lan
-                    && self.cores[protocol.index()].entry(from).is_some_and(|entry| entry.sources.contains(&DiscoverySource::Lan))
+                    && self.cores[protocol.index()]
+                        .entry(from)
+                        .is_some_and(|entry| entry.sources.contains(&DiscoverySource::Lan))
                 {
                     self.bump_q3_generation(0);
                 }
@@ -1725,7 +2014,10 @@ mod tests {
 
     impl FakeTransport {
         fn shared() -> Rc<Self> {
-            Rc::new(Self { sent: RefCell::new(Vec::new()), inbox: RefCell::new(VecDeque::new()) })
+            Rc::new(Self {
+                sent: RefCell::new(Vec::new()),
+                inbox: RefCell::new(VecDeque::new()),
+            })
         }
     }
 
@@ -1791,7 +2083,9 @@ mod tests {
     #[test]
     fn q3_lists_enforce_caps_and_generations() {
         let (mut browser, _, _) = open_fake();
-        assert!(browser.add_q3(9, &ipv4_address([1, 2, 3, 4], 27960, false).unwrap()).is_err());
+        assert!(browser
+            .add_q3(9, &ipv4_address([1, 2, 3, 4], 27960, false).unwrap())
+            .is_err());
         let first = browser.q3_list(2).unwrap();
         assert!(!first.pending && first.addresses.is_empty());
         for octet in 0..128u32 {
@@ -1838,7 +2132,10 @@ mod tests {
         browser.choose("q3").unwrap();
         browser.set_master_address("https://master.example/list".to_owned());
         browser.set_master_fetch(Box::new(|_| {
-            Ok(MasterHttpResponse { status: 200, body: b"# c\n127.0.0.1:27960\n127.0.0.1:27960\n".to_vec() })
+            Ok(MasterHttpResponse {
+                status: 200,
+                body: b"# c\n127.0.0.1:27960\n127.0.0.1:27960\n".to_vec(),
+            })
         }));
         browser.discover().unwrap();
         assert_eq!(browser.status, "Found 1 servers; querying status");
@@ -1861,12 +2158,23 @@ mod tests {
         browser.add_q3(2, &address).unwrap();
         let view = Q3BrowserCacheView {
             lists: vec![
-                Q3BrowserCacheList { source: 1, rows: vec![] },
+                Q3BrowserCacheList {
+                    source: 1,
+                    rows: vec![],
+                },
                 Q3BrowserCacheList {
                     source: 2,
-                    rows: vec![Q3BrowserCacheRow { address: address.clone(), name: String::new(), visible: 1, ping: -1 }],
+                    rows: vec![Q3BrowserCacheRow {
+                        address: address.clone(),
+                        name: String::new(),
+                        visible: 1,
+                        ping: -1,
+                    }],
                 },
-                Q3BrowserCacheList { source: 3, rows: vec![] },
+                Q3BrowserCacheList {
+                    source: 3,
+                    rows: vec![],
+                },
             ],
         };
         browser.save_q3_cache(&view).unwrap();

@@ -233,17 +233,14 @@ fn resolve_tool_path(explicit: Option<&str>, default: PathBuf) -> String {
 }
 
 /// Parse tool arguments.
-pub fn parse_weapon_behavior_tool(
-    argv: &[String],
-) -> Result<WeaponBehaviorToolCommand, WeaponBehaviorToolError> {
+pub fn parse_weapon_behavior_tool(argv: &[String]) -> Result<WeaponBehaviorToolCommand, WeaponBehaviorToolError> {
     if argv.iter().any(|arg| arg == "--help" || arg == "-h") {
         return Ok(WeaponBehaviorToolCommand::Help);
     }
     let (Some(action), Some(product)) = (argv.first(), argv.get(1)) else {
         return Err(WeaponBehaviorToolError::Usage(WEAPON_BEHAVIOR_TOOL_HELP));
     };
-    if !["inspect", "declare", "declare-qvm", "declare-native"].contains(&action.as_str())
-        || product.starts_with("--")
+    if !["inspect", "declare", "declare-qvm", "declare-native"].contains(&action.as_str()) || product.starts_with("--")
     {
         return Err(WeaponBehaviorToolError::Usage(WEAPON_BEHAVIOR_TOOL_HELP));
     }
@@ -279,8 +276,7 @@ pub fn parse_weapon_behavior_tool(
         index += 2;
     }
     let get = |key: &str| flags.get(key).map(String::as_str);
-    let corpus_root =
-        resolve_tool_path(get("--content"), home_dir().join("Projects/qfiles"));
+    let corpus_root = resolve_tool_path(get("--content"), home_dir().join("Projects/qfiles"));
     let user_content_root = resolve_tool_path(get("--user-content"), default_user_content_root());
     let artifact = get("--artifact").map(normalize_resource_path).transpose()?;
     if action == "declare-qvm" || action == "declare-native" {
@@ -329,8 +325,7 @@ pub fn parse_weapon_behavior_tool(
             artifact,
         });
     }
-    let (id, fire, role_name, activate) =
-        (get("--id"), get("--fire"), get("--role"), get("--activate"));
+    let (id, fire, role_name, activate) = (get("--id"), get("--fire"), get("--role"), get("--activate"));
     let (Some(id), Some(fire), Some(role_name)) = (id, fire, role_name) else {
         return Err(WeaponBehaviorToolError::DeclareMissing);
     };
@@ -360,8 +355,14 @@ mod tests {
 
     #[test]
     fn help_flag_wins_anywhere() {
-        assert_eq!(parse_weapon_behavior_tool(&argv(&["inspect", "q3", "--help"])), Ok(WeaponBehaviorToolCommand::Help));
-        assert_eq!(parse_weapon_behavior_tool(&argv(&["-h"])), Ok(WeaponBehaviorToolCommand::Help));
+        assert_eq!(
+            parse_weapon_behavior_tool(&argv(&["inspect", "q3", "--help"])),
+            Ok(WeaponBehaviorToolCommand::Help)
+        );
+        assert_eq!(
+            parse_weapon_behavior_tool(&argv(&["-h"])),
+            Ok(WeaponBehaviorToolCommand::Help)
+        );
     }
 
     #[test]
@@ -375,7 +376,12 @@ mod tests {
             "vm/qagame.qvm",
         ]))
         .unwrap();
-        let WeaponBehaviorToolCommand::Inspect { product, corpus_root, artifact, .. } = command
+        let WeaponBehaviorToolCommand::Inspect {
+            product,
+            corpus_root,
+            artifact,
+            ..
+        } = command
         else {
             panic!("expected inspect");
         };
@@ -387,23 +393,34 @@ mod tests {
     #[test]
     fn default_roots_follow_home_pattern() {
         let command = parse_weapon_behavior_tool(&argv(&["inspect", "q3"])).unwrap();
-        let WeaponBehaviorToolCommand::Inspect { corpus_root, user_content_root, .. } = command
+        let WeaponBehaviorToolCommand::Inspect {
+            corpus_root,
+            user_content_root,
+            ..
+        } = command
         else {
             panic!("expected inspect");
         };
         assert!(corpus_root.ends_with("Projects/qfiles"), "{corpus_root}");
-        assert!(user_content_root.ends_with(".local/share/quake-typescript/content"), "{user_content_root}");
+        assert!(
+            user_content_root.ends_with(".local/share/quake-typescript/content"),
+            "{user_content_root}"
+        );
     }
 
     #[test]
     fn declare_qvm_requires_profile() {
         assert_eq!(
             parse_weapon_behavior_tool(&argv(&["declare-qvm", "q3"])),
-            Err(WeaponBehaviorToolError::ProfileRequired { action: "declare-qvm".to_owned() })
+            Err(WeaponBehaviorToolError::ProfileRequired {
+                action: "declare-qvm".to_owned()
+            })
         );
         assert_eq!(
             parse_weapon_behavior_tool(&argv(&["declare-qvm", "q3", "--profile", "p.json", "--role", "rocket"])),
-            Err(WeaponBehaviorToolError::ProfileRequired { action: "declare-qvm".to_owned() })
+            Err(WeaponBehaviorToolError::ProfileRequired {
+                action: "declare-qvm".to_owned()
+            })
         );
         assert!(parse_weapon_behavior_tool(&argv(&["declare-qvm", "q3", "--profile", "prof.json"])).is_ok());
     }
@@ -411,21 +428,42 @@ mod tests {
     #[test]
     fn declare_happy_path_and_errors() {
         let command = parse_weapon_behavior_tool(&argv(&[
-            "declare", "q2", "--id", "ns:rl", "--role", "rocket", "--fire", "fire_rocket",
+            "declare",
+            "q2",
+            "--id",
+            "ns:rl",
+            "--role",
+            "rocket",
+            "--fire",
+            "fire_rocket",
         ]))
         .unwrap();
-        let WeaponBehaviorToolCommand::Declare { id, title, role, fire, activate, .. } = command
+        let WeaponBehaviorToolCommand::Declare {
+            id,
+            title,
+            role,
+            fire,
+            activate,
+            ..
+        } = command
         else {
             panic!("expected declare");
         };
         assert_eq!((id.as_str(), title.as_str()), ("ns:rl", "ns:rl"));
-        assert_eq!((role, fire.as_str(), activate), (ProjectileRole::Rocket, "fire_rocket", None));
         assert_eq!(
-            parse_weapon_behavior_tool(&argv(&["declare", "q2", "--id", "nope", "--role", "rocket", "--fire", "f"])),
+            (role, fire.as_str(), activate),
+            (ProjectileRole::Rocket, "fire_rocket", None)
+        );
+        assert_eq!(
+            parse_weapon_behavior_tool(&argv(&[
+                "declare", "q2", "--id", "nope", "--role", "rocket", "--fire", "f"
+            ])),
             Err(WeaponBehaviorToolError::DeclareMissing)
         );
         assert_eq!(
-            parse_weapon_behavior_tool(&argv(&["declare", "q2", "--id", "a:b", "--role", "nuke", "--fire", "f"])),
+            parse_weapon_behavior_tool(&argv(&[
+                "declare", "q2", "--id", "a:b", "--role", "nuke", "--fire", "f"
+            ])),
             Err(WeaponBehaviorToolError::BadRole("nuke".to_owned()))
         );
         assert_eq!(

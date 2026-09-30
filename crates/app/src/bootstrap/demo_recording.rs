@@ -19,9 +19,8 @@ use std::path::{Path, PathBuf};
 use qa_content::paths::{normalize_resource_path, PathError};
 use qa_core::math::Vec3;
 use qa_net::demo::{
-    encode_q3_demo_message, finish_q2_demo, finish_q3_demo, write_nq_demo_header,
-    write_nq_demo_record, write_q2_demo_record, write_qw_demo_record, DemoError, NqDemoRecord,
-    Q3DemoMessage, QwDemoRecord,
+    encode_q3_demo_message, finish_q2_demo, finish_q3_demo, write_nq_demo_header, write_nq_demo_record,
+    write_q2_demo_record, write_qw_demo_record, DemoError, NqDemoRecord, Q3DemoMessage, QwDemoRecord,
 };
 use qa_net::q2_svc::{frame_mvd_message, mvd_magic};
 use thiserror::Error;
@@ -399,27 +398,15 @@ pub struct DemoRecording {
 
 impl DemoRecording {
     /// Open an exclusive recording and write the seed.
-    pub fn open(
-        root: &Path,
-        name: &str,
-        seed: &DemoRecordingSeed,
-    ) -> Result<Self, DemoRecordingError> {
-        if seed.packets.is_empty()
-            || seed
-                .packets
-                .iter()
-                .any(|packet| packet.kind() != seed.identity.kind())
-        {
+    pub fn open(root: &Path, name: &str, seed: &DemoRecordingSeed) -> Result<Self, DemoRecordingError> {
+        if seed.packets.is_empty() || seed.packets.iter().any(|packet| packet.kind() != seed.identity.kind()) {
             return Err(DemoRecordingError::BadSeed);
         }
         let path = recording_path(root, name, &seed.identity)?;
         if let Some(parent) = path.parent() {
             create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
+        let file = OpenOptions::new().write(true).create_new(true).open(&path)?;
         let mut recording = Self {
             path,
             identity: seed.identity,
@@ -456,10 +443,7 @@ impl DemoRecording {
     }
 
     /// Append one packet of the recording family.
-    pub fn append(
-        &mut self,
-        packet: &DemoRecordingPacket,
-    ) -> Result<(), DemoRecordingError> {
+    pub fn append(&mut self, packet: &DemoRecordingPacket) -> Result<(), DemoRecordingError> {
         if !self.accepting {
             return Err(DemoRecordingError::Stopped);
         }
@@ -470,10 +454,7 @@ impl DemoRecording {
             DemoRecordingPacket::Mvd { message } => {
                 frame_mvd_message(message).map_err(|error| DemoRecordingError::Mvd(error.to_string()))?
             }
-            DemoRecordingPacket::Q1 {
-                message,
-                view_angles,
-            } => {
+            DemoRecordingPacket::Q1 { message, view_angles } => {
                 self.angles = *view_angles;
                 write_nq_demo_record(&NqDemoRecord {
                     view_angles: [view_angles.x, view_angles.y, view_angles.z],
@@ -590,10 +571,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn root(name: &str) -> PathBuf {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "qa-demo-recording-{}-{name}",
-            std::process::id()
-        ));
+        let root: PathBuf = std::env::temp_dir().join(format!("qa-demo-recording-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         root
     }
@@ -683,9 +661,7 @@ mod tests {
         recording.stop().unwrap();
         recording.stop().unwrap();
         assert!(matches!(
-            recording
-                .append(&q1_seed().packets[0])
-                .unwrap_err(),
+            recording.append(&q1_seed().packets[0]).unwrap_err(),
             DemoRecordingError::Stopped
         ));
         let bytes = std::fs::read(root.join("run.dem")).unwrap();

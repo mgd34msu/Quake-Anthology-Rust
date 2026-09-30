@@ -133,11 +133,7 @@ fn view_angles(v: Vec3) -> Vec3 {
         return vector(if v.z > 0.0 { -90.0 } else { -270.0 }, 0.0, 0.0);
     }
     let yaw = (f64::from(v.y).atan2(f64::from(v.x)) * 180.0 / PI).trunc();
-    let pitch = (f64::from(v.z)
-        .atan2((f64::from(v.x).powi(2) + f64::from(v.y).powi(2)).sqrt())
-        * 180.0
-        / PI)
-        .trunc();
+    let pitch = (f64::from(v.z).atan2((f64::from(v.x).powi(2) + f64::from(v.y).powi(2)).sqrt()) * 180.0 / PI).trunc();
     vector(
         -(if pitch < 0.0 { pitch + 360.0 } else { pitch }),
         if yaw < 0.0 { yaw + 360.0 } else { yaw },
@@ -247,9 +243,7 @@ impl QwSpectatorCamera {
         }
         if best < 0 {
             self.unlock();
-        } else if !self.locked
-            || frags > users.get(&self.slot).map(|user| user.frags).unwrap_or(-9999)
-        {
+        } else if !self.locked || frags > users.get(&self.slot).map(|user| user.frags).unwrap_or(-9999) {
             self.lock(best);
         }
     }
@@ -258,31 +252,16 @@ impl QwSpectatorCamera {
     fn is_visible(&mut self, target: &QwPlayerState) -> bool {
         let origin = origin_of(target);
         let result = (self.trace)(origin, self.desired);
-        result.fraction == 1.0
-            && !result.in_water
-            && length(subtract(origin, self.desired)) >= 16.0
+        result.fraction == 1.0 && !result.in_water && length(subtract(origin, self.desired)) >= 16.0
     }
 
     /// Pick a flyby camera position (donor `flyby`).
-    fn flyby(
-        &mut self,
-        viewer: &QwPlayerState,
-        target: &QwPlayerState,
-        check_visibility: bool,
-    ) -> bool {
+    fn flyby(&mut self, viewer: &QwPlayerState, target: &QwPlayerState, check_visibility: bool) -> bool {
         let yaw = target.command.angles[1] * PI / 180.0;
         let roll = target.command.angles[2] * PI / 180.0;
         let forward = vector(yaw.cos(), yaw.sin(), 0.0);
-        let right = vector(
-            roll.cos() * yaw.sin(),
-            -roll.cos() * yaw.cos(),
-            -roll.sin(),
-        );
-        let up = vector(
-            roll.sin() * yaw.sin(),
-            -roll.sin() * yaw.cos(),
-            roll.cos(),
-        );
+        let right = vector(roll.cos() * yaw.sin(), -roll.cos() * yaw.cos(), -roll.sin());
+        let up = vector(roll.sin() * yaw.sin(), -roll.sin() * yaw.cos(), roll.cos());
         let directions = [
             add(add(forward, up), right),
             subtract(add(forward, up), right),
@@ -292,17 +271,9 @@ impl QwSpectatorCamera {
             subtract(forward, up),
             subtract(add(up, right), forward),
             subtract(subtract(up, right), forward),
-            vector(
-                -f64::from(forward.x),
-                -f64::from(forward.y),
-                -f64::from(forward.z),
-            ),
+            vector(-f64::from(forward.x), -f64::from(forward.y), -f64::from(forward.z)),
             forward,
-            vector(
-                -f64::from(right.x),
-                -f64::from(right.y),
-                -f64::from(right.z),
-            ),
+            vector(-f64::from(right.x), -f64::from(right.y), -f64::from(right.z)),
             right,
         ];
         let target_origin = origin_of(target);
@@ -502,11 +473,7 @@ mod tests {
         printed: Rc<RefCell<Vec<String>>>,
     }
 
-    fn harness(
-        hightrack: i32,
-        chasecam: i32,
-        trace: impl FnMut(Vec3, Vec3) -> QwCameraTrace + 'static,
-    ) -> Harness {
+    fn harness(hightrack: i32, chasecam: i32, trace: impl FnMut(Vec3, Vec3) -> QwCameraTrace + 'static) -> Harness {
         let sent = Rc::new(RefCell::new(Vec::new()));
         let printed = Rc::new(RefCell::new(Vec::new()));
         let sent_out = Rc::clone(&sent);
@@ -520,11 +487,7 @@ mod tests {
             trace,
             move |text: &str| printed_out.borrow_mut().push(text.to_string()),
         );
-        Harness {
-            camera,
-            sent,
-            printed,
-        }
+        Harness { camera, sent, printed }
     }
 
     fn open_trace(_start: Vec3, _end: Vec3) -> QwCameraTrace {
@@ -539,9 +502,7 @@ mod tests {
     fn attack_press_starts_tracking_and_locks_first_player() {
         let mut test = harness(0, 0, open_trace);
         let mut frame = frame(player([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
-        frame
-            .players
-            .insert(1, player([100.0, 0.0, 50.0], [0.0, 90.0, 0.0]));
+        frame.players.insert(1, player([100.0, 0.0, 50.0], [0.0, 90.0, 0.0]));
         frame.users.insert(1, user("duke", false, 3));
         let pressed = QwUsercmd {
             buttons: 1,
@@ -560,10 +521,7 @@ mod tests {
         assert_eq!(filtered.forwardmove, 0);
         assert_eq!(filtered.sidemove, 0);
         assert_eq!(filtered.upmove, 0);
-        assert_eq!(
-            test.camera.take_teleport(),
-            Some(vec3(100.0, 0.0, 0.0))
-        );
+        assert_eq!(test.camera.take_teleport(), Some(vec3(100.0, 0.0, 0.0)));
         assert!(test.camera.take_teleport().is_none());
     }
 
@@ -582,10 +540,7 @@ mod tests {
         assert!(test.camera.view().is_some());
         test.camera.command(&pressed, &frame);
         assert!(test.camera.view().is_none());
-        assert_eq!(
-            *test.sent.borrow(),
-            vec!["ptrack 0".to_string(), "ptrack".to_string()]
-        );
+        assert_eq!(*test.sent.borrow(), vec!["ptrack 0".to_string(), "ptrack".to_string()]);
     }
 
     #[test]
@@ -630,7 +585,12 @@ mod tests {
             ..QwUsercmd::default()
         };
         test.camera.command(&pressed, &frame);
-        assert_eq!(*test.sent.borrow(), vec!["ptrack 3".to_string()]);
+        // The donor locks twice per press: `command` runs `highTarget` before
+        // tracking starts, and `finish` runs it again after arming tracking.
+        assert_eq!(
+            *test.sent.borrow(),
+            vec!["ptrack 3".to_string(), "ptrack 3".to_string()]
+        );
     }
 
     #[test]
@@ -649,9 +609,7 @@ mod tests {
     fn chasecam_follows_target_origin_and_angles() {
         let mut test = harness(0, 1, open_trace);
         let mut frame = frame(player([10.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
-        frame
-            .players
-            .insert(0, player([100.0, 20.0, 30.0], [5.0, 90.0, 0.0]));
+        frame.players.insert(0, player([100.0, 20.0, 30.0], [5.0, 90.0, 0.0]));
         frame.users.insert(0, user("duke", false, 0));
         let pressed = QwUsercmd {
             buttons: 1,
@@ -663,10 +621,7 @@ mod tests {
         assert!(view.chase);
         assert_eq!(view.origin, vec3(100.0, 20.0, 30.0));
         assert_eq!(filtered.angles, [5.0, 90.0, 0.0]);
-        assert_eq!(
-            test.camera.take_teleport(),
-            Some(vec3(100.0, 20.0, 30.0))
-        );
+        assert_eq!(test.camera.take_teleport(), Some(vec3(100.0, 20.0, 30.0)));
     }
 
     #[test]
@@ -677,9 +632,7 @@ mod tests {
             in_water: true,
         });
         let mut frame = frame(player([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
-        frame
-            .players
-            .insert(0, player([64.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+        frame.players.insert(0, player([64.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
         frame.users.insert(0, user("duke", false, 0));
         let pressed = QwUsercmd {
             buttons: 1,
@@ -695,9 +648,7 @@ mod tests {
     fn ineligible_locked_user_retargets_without_hightrack() {
         let mut test = harness(0, 0, open_trace);
         let mut frame = frame(player([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
-        frame
-            .players
-            .insert(0, player([64.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+        frame.players.insert(0, player([64.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
         frame.users.insert(0, user("duke", false, 0));
         let pressed = QwUsercmd {
             buttons: 1,
@@ -709,22 +660,13 @@ mod tests {
         frame.users.insert(0, user("duke", true, 0));
         test.camera.command(&QwUsercmd::default(), &frame);
         assert!(test.camera.view().is_none());
-        assert_eq!(
-            *test.sent.borrow(),
-            vec!["ptrack 0".to_string(), "ptrack".to_string()]
-        );
+        assert_eq!(*test.sent.borrow(), vec!["ptrack 0".to_string(), "ptrack".to_string()]);
     }
 
     #[test]
     fn view_angles_handles_vertical_deltas() {
-        assert_eq!(
-            view_angles(vec3(0.0, 0.0, 10.0)),
-            vec3(-90.0, 0.0, 0.0)
-        );
-        assert_eq!(
-            view_angles(vec3(0.0, 0.0, -10.0)),
-            vec3(-270.0, 0.0, 0.0)
-        );
+        assert_eq!(view_angles(vec3(0.0, 0.0, 10.0)), vec3(-90.0, 0.0, 0.0));
+        assert_eq!(view_angles(vec3(0.0, 0.0, -10.0)), vec3(-270.0, 0.0, 0.0));
         let angles = view_angles(vec3(100.0, 0.0, 0.0));
         assert_eq!(angles.x, 0.0);
         assert_eq!(angles.y, 0.0);
@@ -735,9 +677,7 @@ mod tests {
     fn reset_clears_tracking_and_view() {
         let mut test = harness(0, 0, open_trace);
         let mut frame = frame(player([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
-        frame
-            .players
-            .insert(0, player([64.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
+        frame.players.insert(0, player([64.0, 0.0, 0.0], [0.0, 0.0, 0.0]));
         frame.users.insert(0, user("duke", false, 0));
         let pressed = QwUsercmd {
             buttons: 1,

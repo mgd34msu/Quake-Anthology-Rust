@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use qa_content::mounts::{MountedContent, MountError};
+use qa_content::mounts::{MountError, MountedContent};
 
 use super::playlist_settings::valid_menu_track;
 
@@ -67,10 +67,31 @@ pub fn mounted_music_tracks(mounts: &impl MusicMounts) -> Result<Vec<String>, Mo
 pub(crate) fn is_js_space(char: char) -> bool {
     matches!(
         char,
-        '\u{9}' | '\u{a}' | '\u{b}' | '\u{c}' | '\u{d}' | '\u{20}' | '\u{a0}'
-            | '\u{1680}' | '\u{2000}' | '\u{2001}' | '\u{2002}' | '\u{2003}' | '\u{2004}'
-            | '\u{2005}' | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200a}'
-            | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+        '\u{9}'
+            | '\u{a}'
+            | '\u{b}'
+            | '\u{c}'
+            | '\u{d}'
+            | '\u{20}'
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            | '\u{2001}'
+            | '\u{2002}'
+            | '\u{2003}'
+            | '\u{2004}'
+            | '\u{2005}'
+            | '\u{2006}'
+            | '\u{2007}'
+            | '\u{2008}'
+            | '\u{2009}'
+            | '\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
     )
 }
 
@@ -85,13 +106,13 @@ pub fn music_file_cue(path: &str) -> String {
 }
 
 /// Shuffle tracks without repeating the previous cue first.
-pub fn shuffled_tracks(
-    tracks: &[String],
-    previous: &str,
-    random: &mut dyn FnMut() -> f64,
-) -> Vec<String> {
+pub fn shuffled_tracks(tracks: &[String], previous: &str, random: &mut dyn FnMut() -> f64) -> Vec<String> {
     let mut seen = HashSet::new();
-    let mut bag: Vec<String> = tracks.iter().filter(|track| seen.insert((*track).clone())).cloned().collect();
+    let mut bag: Vec<String> = tracks
+        .iter()
+        .filter(|track| seen.insert((*track).clone()))
+        .cloned()
+        .collect();
     let mut index = bag.len();
     while index > 1 {
         index -= 1;
@@ -131,7 +152,11 @@ mod tests {
         let mounts = FakeMounts {
             files: vec![
                 ("music".to_string(), ".ogg".to_string(), vec!["b.ogg".to_string()]),
-                ("music".to_string(), ".wav".to_string(), vec!["a.wav".to_string(), "skip.mp3".to_string()]),
+                (
+                    "music".to_string(),
+                    ".wav".to_string(),
+                    vec!["a.wav".to_string(), "skip.mp3".to_string()],
+                ),
                 ("music".to_string(), "/".to_string(), vec!["sub/".to_string()]),
                 ("music/sub".to_string(), ".ogg".to_string(), vec!["c.ogg".to_string()]),
                 ("music/sub".to_string(), ".wav".to_string(), vec![]),

@@ -7,8 +7,8 @@
 //! documentation, and alias targets are ported as explicit module items with
 //! the donor's exact texts; registration installs the two variables.
 
-use qa_core::cvar::{flags, CvarError, CvarRegistry};
 use qa_content::paths::normalize_resource_path;
+use qa_core::cvar::{flags, CvarError, CvarRegistry};
 
 use super::output_settings::is_js_trim;
 
@@ -47,10 +47,8 @@ pub const MUSIC_MENU_TRACK_DOC: MusicCvarDoc = MusicCvarDoc {
 };
 
 /// Identity aliases for the music cvars: `(alias, target)`.
-pub const MUSIC_SETTING_ALIASES: [(&str, &str); 2] = [
-    ("ogg_shuffle", "music_shuffle"),
-    ("ogg_menu_track", "music_menu_track"),
-];
+pub const MUSIC_SETTING_ALIASES: [(&str, &str); 2] =
+    [("ogg_shuffle", "music_shuffle"), ("ogg_menu_track", "music_menu_track")];
 
 /// Whether a menu-track selector is well-formed.
 #[must_use]
@@ -64,9 +62,9 @@ pub fn valid_menu_track(value: &str) -> bool {
     }
     if value.encode_utf16().count() > 255
         || value.trim_matches(is_js_trim) != value
-        || value.bytes().any(|byte| {
-            byte == b'"' || byte < 0x20 || byte == 0x7f || byte == b'\\'
-        })
+        || value
+            .bytes()
+            .any(|byte| byte == b'"' || byte < 0x20 || byte == 0x7f || byte == b'\\')
     {
         return false;
     }
@@ -112,11 +110,16 @@ pub fn register_music_settings(cvars: &mut CvarRegistry) -> Result<(), CvarError
 #[must_use]
 pub fn read_music_settings(cvars: Option<&CvarRegistry>) -> MusicPreferences {
     let Some(cvars) = cvars else {
-        return MusicPreferences { music_shuffle: false, menu_track: "auto".to_string() };
+        return MusicPreferences {
+            music_shuffle: false,
+            menu_track: "auto".to_string(),
+        };
     };
     MusicPreferences {
         music_shuffle: cvars.variable_value("music_shuffle") != 0.0,
-        menu_track: cvars.get("music_menu_track").map_or_else(|| "auto".to_string(), |found| found.value),
+        menu_track: cvars
+            .get("music_menu_track")
+            .map_or_else(|| "auto".to_string(), |found| found.value),
     }
 }
 
@@ -127,14 +130,38 @@ mod tests {
 
     #[test]
     fn accepts_selectors() {
-        for value in ["auto", "0", "1", "007", "255", "music/track01", "music/win.ogg", "MUSIC/WIN.WAV", "2", "01x"] {
+        for value in [
+            "auto",
+            "0",
+            "1",
+            "007",
+            "255",
+            "music/track01",
+            "music/win.ogg",
+            "MUSIC/WIN.WAV",
+            "2",
+            "01x",
+        ] {
             assert!(valid_menu_track(value), "{value}");
         }
     }
 
     #[test]
     fn rejects_bad_selectors() {
-        for value in ["", "256", "music/win.mp3", "music/win.", " music", "music ", "mus\"ic", "mus\\ic", "a/b/./c", "/abs", "music//x", "../x"] {
+        for value in [
+            "",
+            "256",
+            "music/win.mp3",
+            "music/win.",
+            " music",
+            "music ",
+            "mus\"ic",
+            "mus\\ic",
+            "a/b/./c",
+            "/abs",
+            "music//x",
+            "../x",
+        ] {
             assert!(!valid_menu_track(value), "{value:?}");
         }
         assert!(!valid_menu_track(&"a".repeat(256)));
@@ -163,19 +190,28 @@ mod tests {
         let defaults = read_music_settings(Some(&cvars));
         assert_eq!(
             defaults,
-            MusicPreferences { music_shuffle: false, menu_track: "auto".to_string() }
+            MusicPreferences {
+                music_shuffle: false,
+                menu_track: "auto".to_string()
+            }
         );
         cvars.set("music_shuffle", "1", false).unwrap();
         cvars.set("music_menu_track", "77", false).unwrap();
         let updated = read_music_settings(Some(&cvars));
         assert_eq!(
             updated,
-            MusicPreferences { music_shuffle: true, menu_track: "77".to_string() }
+            MusicPreferences {
+                music_shuffle: true,
+                menu_track: "77".to_string()
+            }
         );
         let missing = read_music_settings(None);
         assert_eq!(
             missing,
-            MusicPreferences { music_shuffle: false, menu_track: "auto".to_string() }
+            MusicPreferences {
+                music_shuffle: false,
+                menu_track: "auto".to_string()
+            }
         );
     }
 

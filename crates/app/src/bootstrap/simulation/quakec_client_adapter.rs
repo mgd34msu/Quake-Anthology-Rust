@@ -44,7 +44,14 @@ pub fn quake_c_client_command(command: &UserCommand) -> UserCommand {
             ..
         } => {
             let buttons = *buttons as i32;
-            netquake(*angles, *forward_move, *side_move, *up_move, buttons & 1 | (buttons & 2), *impulse)
+            netquake(
+                *angles,
+                *forward_move,
+                *side_move,
+                *up_move,
+                buttons & 1 | (buttons & 2),
+                *impulse,
+            )
         }
         UserCommand::Q2Rerelease {
             angles,
@@ -233,7 +240,10 @@ mod tests {
     fn quakeworld_keeps_impulse_and_jump_bit() {
         match quake_c_client_command(&quakeworld(3.0)) {
             UserCommand::Q1Netquake {
-                buttons, impulse, side_move, ..
+                buttons,
+                impulse,
+                side_move,
+                ..
             } => {
                 assert_eq!(buttons, 3.0);
                 assert_eq!(impulse, 3.0);
@@ -254,7 +264,12 @@ mod tests {
             server_frame: 1.0,
         };
         match quake_c_client_command(&command) {
-            UserCommand::Q1Netquake { buttons, up_move, impulse, .. } => {
+            UserCommand::Q1Netquake {
+                buttons,
+                up_move,
+                impulse,
+                ..
+            } => {
                 assert_eq!(buttons, 3.0);
                 assert_eq!(up_move, 1.0);
                 assert_eq!(impulse, 0.0);
@@ -275,7 +290,9 @@ mod tests {
             up_move: 0.0,
         };
         match quake_c_client_command(&command) {
-            UserCommand::Q1Netquake { view_angles, side_move, .. } => {
+            UserCommand::Q1Netquake {
+                view_angles, side_move, ..
+            } => {
                 assert_eq!(view_angles, [90.0, 180.0, 0.0]);
                 assert_eq!(side_move, 5.0);
             }
@@ -289,8 +306,14 @@ mod tests {
             UserCommand::Q1Quakeworld { buttons, .. } => assert_eq!(buttons, 1.0),
             other => panic!("unexpected command: {other:?}"),
         }
-        let before = QuakeCTransitionState { flags: 512 | 4096, velocity: [0.0, 0.0, 0.0] };
-        let after = QuakeCTransitionState { flags: 0, velocity: [0.0, 0.0, 100.0] };
+        let before = QuakeCTransitionState {
+            flags: 512 | 4096,
+            velocity: [0.0, 0.0, 0.0],
+        };
+        let after = QuakeCTransitionState {
+            flags: 0,
+            velocity: [0.0, 0.0, 100.0],
+        };
         assert!(quake_c_source_jump(&quakeworld(2.0), &before, &after));
         assert!(!quake_c_source_jump(&quakeworld(0.0), &before, &after));
     }

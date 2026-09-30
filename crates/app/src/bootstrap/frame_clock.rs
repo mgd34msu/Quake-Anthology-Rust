@@ -42,8 +42,7 @@ impl PresentationTime {
 
     /// Committed presentation time in milliseconds.
     pub fn milliseconds(&self) -> Result<f64, FrameClockError> {
-        self.committed_milliseconds
-            .ok_or(FrameClockError::NoFrame)
+        self.committed_milliseconds.ok_or(FrameClockError::NoFrame)
     }
 }
 
@@ -54,10 +53,7 @@ mod tests {
     #[test]
     fn uncommitted_clock_errors() {
         let clock = PresentationTime::new();
-        assert!(matches!(
-            clock.milliseconds().unwrap_err(),
-            FrameClockError::NoFrame
-        ));
+        assert!(matches!(clock.milliseconds().unwrap_err(), FrameClockError::NoFrame));
     }
 
     #[test]

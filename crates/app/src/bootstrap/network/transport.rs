@@ -16,16 +16,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use qa_net::common::endpoint::{
-    ipx_address, resolve_address, AddressError, NetworkAddress, ResolveFamily,
-};
+use qa_net::common::endpoint::{ipx_address, resolve_address, AddressError, NetworkAddress, ResolveFamily};
 use qa_net::common::ipx::{
     bind_ipx_transport, DosBoxIpxNetwork, IpxError, IpxGame, IpxHost, IpxSocket, NativeIpxCapability,
 };
 use qa_net::common::socks::{SocksError, SocksOptions};
 use qa_net::common::transport::{
-    monotonic_clock, DatagramLimits, DatagramTransport, DropReason, ReceiveEvent, TransportError,
-    UdpBindOptions, UdpTransport,
+    monotonic_clock, DatagramLimits, DatagramTransport, DropReason, ReceiveEvent, TransportError, UdpBindOptions,
+    UdpTransport,
 };
 use qa_platform::ipx as platform_ipx;
 use qa_platform::ipx::DatagramTransport as PlatformDatagramTransport;
@@ -67,13 +65,16 @@ pub enum ApplicationNetworkFamily {
 /// Application UDP socket (`ApplicationUdpSocket`).
 pub type ApplicationUdpSocket = Arc<UdpTransport>;
 
+/// UDP bind callback.
+pub type UdpBinder = Box<dyn Fn(&UdpBindOptions) -> Result<UdpTransport, TransportError> + Send + Sync>;
+
 /// Application transport capabilities
 /// (`ApplicationTransportCapabilities`).
 pub struct ApplicationTransportCapabilities {
     /// Native IPX capability.
     pub native_ipx: NativeIpxCapability,
     /// UDP bind callback.
-    pub bind_udp: Box<dyn Fn(&UdpBindOptions) -> Result<UdpTransport, TransportError> + Send + Sync>,
+    pub bind_udp: UdpBinder,
 }
 
 /// Error for application network transports.
@@ -126,9 +127,7 @@ pub fn host_application_transports() -> ApplicationTransportCapabilities {
 /// `bunNativeIpxCapability`), adapted onto the shared IPX capability.
 pub fn host_native_ipx_capability() -> NativeIpxCapability {
     match platform_ipx::native_ipx_capability() {
-        platform_ipx::NativeIpxCapability::Unavailable { reason } => {
-            NativeIpxCapability::Unavailable { reason }
-        }
+        platform_ipx::NativeIpxCapability::Unavailable { reason } => NativeIpxCapability::Unavailable { reason },
         platform_ipx::NativeIpxCapability::Available => {
             NativeIpxCapability::Available(Box::new(|port, packet_type| {
                 let capability = platform_ipx::native_ipx_capability();
@@ -166,10 +165,7 @@ fn ipx_game(family: ApplicationNetworkFamily) -> IpxGame {
 }
 
 /// Parse `NETWORK.NODE[:SOCKET]` IPX text (donor `parseIpxRemote`).
-pub fn parse_ipx_remote(
-    text: &str,
-    default_port: u32,
-) -> Result<NetworkAddress, ApplicationTransportError> {
+pub fn parse_ipx_remote(text: &str, default_port: u32) -> Result<NetworkAddress, ApplicationTransportError> {
     let body = text.strip_prefix("ipx:").unwrap_or(text);
     if body.len() < 8 + 1 + 12 {
         return Err(ApplicationTransportError::BadIpxText);
@@ -198,12 +194,9 @@ pub fn parse_ipx_remote(
         if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ApplicationTransportError::BadIpxText);
         }
-        digits
-            .parse::<u32>()
-            .map_err(|_| AddressError::BadPort)?
+        digits.parse::<u32>().map_err(|_| AddressError::BadPort)?
     };
-    let network = u32::from_str_radix(network_text, 16)
-        .map_err(|_| ApplicationTransportError::BadIpxText)?;
+    let network = u32::from_str_radix(network_text, 16).map_err(|_| ApplicationTransportError::BadIpxText)?;
     let mut node = [0u8; 6];
     for (index, slot) in node.iter_mut().enumerate() {
         *slot = u8::from_str_radix(&node_text[index * 2..index * 2 + 2], 16)
@@ -293,11 +286,7 @@ impl DatagramTransport for ApplicationTransport {
         Some(ceiling.unwrap_or(65507))
     }
 
-    fn send(
-        &self,
-        to: &ApplicationNetworkAddress,
-        payload: &[u8],
-    ) -> Result<bool, TransportError> {
+    fn send(&self, to: &ApplicationNetworkAddress, payload: &[u8]) -> Result<bool, TransportError> {
         match &self.owner {
             SocketOwner::Ipx { socket, .. } => {
                 if !matches!(to, NetworkAddress::Ipx { .. }) {
@@ -310,8 +299,7 @@ impl DatagramTransport for ApplicationTransport {
             SocketOwner::Udp(socket) => {
                 if matches!(to, NetworkAddress::Ipx { .. }) {
                     return Err(TransportError::Closed(
-                        "An IPX destination requires an explicitly selected IPX transport"
-                            .to_owned(),
+                        "An IPX destination requires an explicitly selected IPX transport".to_owned(),
                     ));
                 }
                 socket.send(to, payload)
@@ -326,10 +314,7 @@ impl DatagramTransport for ApplicationTransport {
         }
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         match &self.owner {
             SocketOwner::Udp(socket) => socket.subscribe_readable(listener),
             SocketOwner::Ipx { socket, .. } => socket.subscribe_readable(listener),
@@ -392,10 +377,7 @@ pub fn open_application_transport(
                 options.port,
             )?;
             Ok(ApplicationTransport {
-                owner: SocketOwner::Ipx {
-                    socket,
-                    network: None,
-                },
+                owner: SocketOwner::Ipx { socket, network: None },
             })
         }
         ApplicationNetworkTransport::IpxDosBox { relay } => {
@@ -409,12 +391,7 @@ pub fn open_application_transport(
                 queue_packets: options.limits.queue_packets,
             };
             let udp = Arc::new((capabilities.bind_udp)(&bind)?);
-            let network = DosBoxIpxNetwork::connect(
-                udp,
-                server,
-                Duration::from_millis(5000),
-                monotonic_clock(),
-            )?;
+            let network = DosBoxIpxNetwork::connect(udp, server, Duration::from_millis(5000), monotonic_clock())?;
             let socket = match bind_ipx_transport(
                 &IpxHost::DosBox(Arc::clone(&network)),
                 ipx_game(options.family),
@@ -470,9 +447,7 @@ impl NativeIpxAdapter {
     }
 
     /// Lock failure as a transport error.
-    fn locked(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, platform_ipx::NativeIpxTransport>, TransportError> {
+    fn locked(&self) -> Result<std::sync::MutexGuard<'_, platform_ipx::NativeIpxTransport>, TransportError> {
         self.inner
             .lock()
             .map_err(|_| TransportError::Closed("native IPX socket is unavailable".to_owned()))
@@ -537,10 +512,7 @@ impl DatagramTransport for NativeIpxAdapter {
         }))
     }
 
-    fn subscribe_readable(
-        &self,
-        listener: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<u64, TransportError> {
+    fn subscribe_readable(&self, listener: Arc<dyn Fn() + Send + Sync>) -> Result<u64, TransportError> {
         let subscription = self
             .locked()?
             .subscribe_readable(move || listener())
@@ -743,8 +715,7 @@ mod tests {
 
     #[test]
     fn open_udp_binds_and_closes() {
-        let transport =
-            open_application_transport(&udp_options(), host_application_transports()).unwrap();
+        let transport = open_application_transport(&udp_options(), host_application_transports()).unwrap();
         assert!(matches!(transport.address(), NetworkAddress::Ipv4 { .. }));
         assert!(!transport.closed());
         assert!(transport.max_datagram_bytes().is_some());

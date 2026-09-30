@@ -134,20 +134,20 @@ fn has_extension(path: &str) -> bool {
 fn dm_suffix(filename: &str) -> Option<(&str, &str)> {
     let dot = filename.rfind('.')?;
     let extension = &filename[dot + 1..];
-    if extension.len() > 3
-        && extension.starts_with("dm_")
-        && extension[3..].bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if extension.len() > 3 && extension.starts_with("dm_") && extension[3..].bytes().all(|byte| byte.is_ascii_digit()) {
         Some((&filename[..dot], &extension[3..]))
     } else {
         None
     }
 }
 
+/// Mounted-file lookup for demo bytes.
+pub type DemoReader<'a, E> = &'a mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, E>;
+
 /// Open a demo through a mounted-file lookup with mod precedence.
 pub fn open_demo_resource<E: std::fmt::Display>(
     request: &DemoRequest,
-    read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>, E>,
+    read: DemoReader<'_, E>,
     print: &mut dyn FnMut(&str),
 ) -> Result<DemoResource, DemoPlaybackError> {
     let name = normalize_resource_path(&request.name)?;
@@ -168,8 +168,7 @@ pub fn open_demo_resource<E: std::fmt::Display>(
         } else {
             filename
         };
-        let bytes =
-            read(&path).map_err(|error| DemoPlaybackError::Read(error.to_string()))?;
+        let bytes = read(&path).map_err(|error| DemoPlaybackError::Read(error.to_string()))?;
         return match bytes {
             Some(bytes) => Ok(DemoResource::Standard {
                 family: request.family,
@@ -186,30 +185,22 @@ pub fn open_demo_resource<E: std::fmt::Display>(
         None => (filename, None),
     };
     let requested = digits.and_then(|digits| digits.parse::<u64>().ok());
-    let supported = matches!(requested, Some(66 | 67 | 68));
+    let supported = matches!(requested, Some(66..=68));
     if digits.is_some() && !supported {
-        let shown = requested.map(|number| number.to_string()).unwrap_or_else(|| {
-            digits.expect("digits checked above").to_string()
-        });
+        let shown = requested
+            .map(|number| number.to_string())
+            .unwrap_or_else(|| digits.expect("digits checked above").to_string());
         print(&format!("Protocol {shown} not supported for demos\n"));
     }
     if supported {
         let number = requested.expect("supported implies a protocol");
         let path = format!("demos/{filename}");
-        let bytes =
-            read(&path).map_err(|error| DemoPlaybackError::Read(error.to_string()))?;
+        let bytes = read(&path).map_err(|error| DemoPlaybackError::Read(error.to_string()))?;
         return match bytes {
             Some(bytes) => {
-                let protocol = Q3DemoProtocol::from_number(number).ok_or_else(|| {
-                    DemoPlaybackError::Open(
-                        "Invalid Quake III demo protocol selection".to_string(),
-                    )
-                })?;
-                Ok(DemoResource::Q3 {
-                    path,
-                    bytes,
-                    protocol,
-                })
+                let protocol = Q3DemoProtocol::from_number(number)
+                    .ok_or_else(|| DemoPlaybackError::Open("Invalid Quake III demo protocol selection".to_string()))?;
+                Ok(DemoResource::Q3 { path, bytes, protocol })
             }
             None => Err(DemoPlaybackError::Open(format!("Couldn't open demo {name}"))),
         };
@@ -218,16 +209,9 @@ pub fn open_demo_resource<E: std::fmt::Display>(
         let path = format!("demos/{stem}.dm_{number}");
         match read(&path).map_err(|error| DemoPlaybackError::Read(error.to_string()))? {
             Some(bytes) => {
-                let protocol = Q3DemoProtocol::from_number(number).ok_or_else(|| {
-                    DemoPlaybackError::Open(
-                        "Invalid Quake III demo protocol selection".to_string(),
-                    )
-                })?;
-                return Ok(DemoResource::Q3 {
-                    path,
-                    bytes,
-                    protocol,
-                });
+                let protocol = Q3DemoProtocol::from_number(number)
+                    .ok_or_else(|| DemoPlaybackError::Open("Invalid Quake III demo protocol selection".to_string()))?;
+                return Ok(DemoResource::Q3 { path, bytes, protocol });
             }
             None => {
                 print(&format!("Not found: {path}\n"));
@@ -273,7 +257,13 @@ mod tests {
         let mut printed = Vec::new();
         let mut print = |text: &str| printed.push(text.to_string());
         let resource = open_demo_resource(&request(DemoFamily::Q1, "e1m1"), &mut read, &mut print).unwrap();
-        assert!(matches!(resource, DemoResource::Standard { family: DemoFamily::Q1, .. }));
+        assert!(matches!(
+            resource,
+            DemoResource::Standard {
+                family: DemoFamily::Q1,
+                ..
+            }
+        ));
         let resource = open_demo_resource(&request(DemoFamily::Q2, "q2"), &mut read, &mut print).unwrap();
         match resource {
             DemoResource::Standard { path, bytes, .. } => {
@@ -303,8 +293,7 @@ mod tests {
         let mut printed = Vec::new();
         {
             let mut print = |text: &str| printed.push(text.to_string());
-            let resource =
-                open_demo_resource(&request(DemoFamily::Q3, "a.dm_67"), &mut read, &mut print).unwrap();
+            let resource = open_demo_resource(&request(DemoFamily::Q3, "a.dm_67"), &mut read, &mut print).unwrap();
             match resource {
                 DemoResource::Q3 { protocol, bytes, .. } => {
                     assert_eq!(protocol, Q3DemoProtocol::P67);
@@ -312,23 +301,20 @@ mod tests {
                 }
                 _ => panic!("wrong kind"),
             }
-            drop(print);
-            assert!(printed.is_empty());
+        }
+        assert!(printed.is_empty());
+        {
             let mut print = |text: &str| printed.push(text.to_string());
-            let resource =
-                open_demo_resource(&request(DemoFamily::Q3, "b"), &mut read, &mut print).unwrap();
+            let resource = open_demo_resource(&request(DemoFamily::Q3, "b"), &mut read, &mut print).unwrap();
             assert!(matches!(
                 resource,
-                DemoResource::Q3 { protocol: Q3DemoProtocol::P68, .. }
+                DemoResource::Q3 {
+                    protocol: Q3DemoProtocol::P68,
+                    ..
+                }
             ));
         }
-        assert_eq!(
-            printed,
-            [
-                "Not found: demos/b.dm_66\n",
-                "Not found: demos/b.dm_67\n",
-            ]
-        );
+        assert_eq!(printed, ["Not found: demos/b.dm_66\n", "Not found: demos/b.dm_67\n",]);
     }
 
     #[test]
@@ -338,8 +324,7 @@ mod tests {
         let mut printed = Vec::new();
         {
             let mut print = |text: &str| printed.push(text.to_string());
-            let error = open_demo_resource(&request(DemoFamily::Q3, "x.dm_99"), &mut read, &mut print)
-                .unwrap_err();
+            let error = open_demo_resource(&request(DemoFamily::Q3, "x.dm_99"), &mut read, &mut print).unwrap_err();
             assert_eq!(error.to_string(), "Couldn't open demo x.dm_99");
         }
         assert_eq!(

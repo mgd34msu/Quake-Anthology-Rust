@@ -5,19 +5,17 @@ use std::collections::HashSet;
 
 use qa_content::contract::ProviderCheckpoint;
 use qa_core::identity::{ProviderId, SavedActorId};
-use qa_guest::checkpoint::{ModuleIdentity, read_module, write_module};
+use qa_guest::checkpoint::{read_module, write_module, ModuleIdentity};
 use qa_world::registry::provider_key;
-use qa_world::save::json::{SourceJson, parse_source_json};
+use qa_world::save::json::{parse_source_json, SourceJson};
 use qa_world::save::records::{read_saved_actor, write_saved_actor};
 use qa_world::save::shared::read_vector;
 use qa_world::save::value::{
-    SaveJson, SaveReader, arr, boolean, decode_checkpoint_value, encode_checkpoint_value, int,
-    num, obj, str as json_str,
+    arr, boolean, decode_checkpoint_value, encode_checkpoint_value, int, num, obj, str as json_str, SaveJson,
+    SaveReader,
 };
 
-use crate::persistence::q2::foundation::{
-    Q2AttackCheckpoint, read_q2_attack_checkpoint, write_q2_attack_checkpoint,
-};
+use crate::persistence::q2::foundation::{read_q2_attack_checkpoint, write_q2_attack_checkpoint, Q2AttackCheckpoint};
 
 pub const NATIVE_SCHEMA: &str = "q2:rerelease-native-original";
 pub const NATIVE_API_KIND: &str = "q2-rerelease-game";
@@ -55,7 +53,11 @@ pub enum DamageDelivery {
 
 impl DamageDelivery {
     fn parse(value: &str) -> Self {
-        if value == "direct" { Self::Direct } else { Self::Radius }
+        if value == "direct" {
+            Self::Direct
+        } else {
+            Self::Radius
+        }
     }
     fn as_str(self) -> &'static str {
         match self {
@@ -223,7 +225,9 @@ fn write_vector(value: [f64; 3]) -> SaveJson {
 fn read_reference(reader: SaveReader) -> Result<RereleaseSavedActor, NativeQ2RereleaseError> {
     let kind = reader.field("kind").choice_str(&["native", "shared"])?;
     if kind == "shared" {
-        return Ok(RereleaseSavedActor::Shared { actor: read_saved_actor(reader.field("actor"))? });
+        return Ok(RereleaseSavedActor::Shared {
+            actor: read_saved_actor(reader.field("actor"))?,
+        });
     }
     Ok(RereleaseSavedActor::Native {
         slot: read_u32(reader.field("slot"))?,
@@ -238,10 +242,9 @@ fn write_reference(value: &RereleaseSavedActor) -> SaveJson {
             ("slot", int(i64::from(*slot))),
             ("generation", int(i64::from(*generation))),
         ]),
-        RereleaseSavedActor::Shared { actor } => obj(vec![
-            ("kind", json_str("shared")),
-            ("actor", write_saved_actor(*actor)),
-        ]),
+        RereleaseSavedActor::Shared { actor } => {
+            obj(vec![("kind", json_str("shared")), ("actor", write_saved_actor(*actor))])
+        }
     }
 }
 
@@ -251,12 +254,14 @@ fn read_damage(reader: SaveReader) -> Result<RereleaseDeferredDamageSave, Native
     Ok(RereleaseDeferredDamageSave {
         target: read_reference(reader.field("target"))?,
         attack: read_q2_attack_checkpoint(reader.field("attack"))?,
-        references: reader.field("references").list(|value| -> Result<RereleaseDamageReference, NativeQ2RereleaseError> {
-            Ok(RereleaseDamageReference {
-                actor: read_saved_actor(value.field("actor"))?,
-                reference: read_reference(value.field("reference"))?,
-            })
-        })?,
+        references: reader.field("references").list(
+            |value| -> Result<RereleaseDamageReference, NativeQ2RereleaseError> {
+                Ok(RereleaseDamageReference {
+                    actor: read_saved_actor(value.field("actor"))?,
+                    reference: read_reference(value.field("reference"))?,
+                })
+            },
+        )?,
         request: RereleaseDamageRequest {
             amount: request.field("amount").finite()?,
             knockback: request.field("knockback").finite()?,
@@ -310,7 +315,10 @@ fn write_damage(value: &RereleaseDeferredDamageSave) -> SaveJson {
         ("blood", num(value.blood)),
         ("knockback", num(value.knockback)),
         ("point", write_vector(value.point)),
-        ("mod", arr(value.modifiers.iter().map(|byte| int(i64::from(*byte))).collect())),
+        (
+            "mod",
+            arr(value.modifiers.iter().map(|byte| int(i64::from(*byte))).collect()),
+        ),
         ("attackerSlot", int(i64::from(value.attacker_slot))),
         ("inflictorSlot", int(i64::from(value.inflictor_slot))),
     ])
@@ -320,12 +328,15 @@ fn write_damage(value: &RereleaseDeferredDamageSave) -> SaveJson {
 pub fn read_rerelease_source_save(reader: SaveReader) -> Result<RereleaseSourceSave, NativeQ2RereleaseError> {
     let native = reader.field("native").bytes()?;
     let deferred_damage = reader.field("deferredDamage").list(read_damage)?;
-    let projections = reader.field("projections").list(|value| -> Result<RereleaseProjection, NativeQ2RereleaseError> {
-        Ok(RereleaseProjection {
-            slot: read_u32(value.field("slot"))?,
-            actor: read_saved_actor(value.field("actor"))?,
-        })
-    })?;
+    let projections =
+        reader
+            .field("projections")
+            .list(|value| -> Result<RereleaseProjection, NativeQ2RereleaseError> {
+                Ok(RereleaseProjection {
+                    slot: read_u32(value.field("slot"))?,
+                    actor: read_saved_actor(value.field("actor"))?,
+                })
+            })?;
     if native.is_empty() || native.contains(&0) {
         return Err(NativeQ2RereleaseError::UnterminatedBytes);
     }
@@ -337,20 +348,29 @@ pub fn read_rerelease_source_save(reader: SaveReader) -> Result<RereleaseSourceS
     let mut slots = HashSet::new();
     let mut actors = HashSet::new();
     if projections.iter().any(|value| !slots.insert(value.slot))
-        || projections.iter().any(|value| !actors.insert((value.actor.slot, value.actor.generation)))
+        || projections
+            .iter()
+            .any(|value| !actors.insert((value.actor.slot, value.actor.generation)))
     {
         return Err(NativeQ2RereleaseError::DuplicateProjection);
     }
     if deferred_damage.iter().any(|damage| damage.modifiers.len() != 3) {
         return Err(NativeQ2RereleaseError::InvalidDamage);
     }
-    Ok(RereleaseSourceSave { native, deferred_damage, projections })
+    Ok(RereleaseSourceSave {
+        native,
+        deferred_damage,
+        projections,
+    })
 }
 
 fn write_rerelease_source_save(value: &RereleaseSourceSave) -> SaveJson {
     obj(vec![
         ("native", SaveJson::Bytes(value.native.clone())),
-        ("deferredDamage", arr(value.deferred_damage.iter().map(write_damage).collect())),
+        (
+            "deferredDamage",
+            arr(value.deferred_damage.iter().map(write_damage).collect()),
+        ),
         (
             "projections",
             arr(value
@@ -369,19 +389,23 @@ fn write_rerelease_source_save(value: &RereleaseSourceSave) -> SaveJson {
 
 fn read_level(reader: &SaveReader) -> Result<Q2RereleaseLevelState, NativeQ2RereleaseError> {
     let state = Q2RereleaseLevelState {
-        configstrings: reader.field("configstrings").list(|value| -> Result<ConfigStringEntry, NativeQ2RereleaseError> {
-            Ok(ConfigStringEntry {
-                index: u32::try_from(bounded_integer(value.field("index"), MAX_CONFIGSTRING)?)
-                    .map_err(|_| NativeQ2RereleaseError::ValueOutOfRange)?,
-                value: value.field("value").string()?,
-            })
-        })?,
-        portals: reader.field("portals").list(|value| -> Result<PortalEntry, NativeQ2RereleaseError> {
-            Ok(PortalEntry {
-                portal: read_u32(value.field("portal"))?,
-                open: value.field("open").boolean()?,
-            })
-        })?,
+        configstrings: reader.field("configstrings").list(
+            |value| -> Result<ConfigStringEntry, NativeQ2RereleaseError> {
+                Ok(ConfigStringEntry {
+                    index: u32::try_from(bounded_integer(value.field("index"), MAX_CONFIGSTRING)?)
+                        .map_err(|_| NativeQ2RereleaseError::ValueOutOfRange)?,
+                    value: value.field("value").string()?,
+                })
+            },
+        )?,
+        portals: reader
+            .field("portals")
+            .list(|value| -> Result<PortalEntry, NativeQ2RereleaseError> {
+                Ok(PortalEntry {
+                    portal: read_u32(value.field("portal"))?,
+                    open: value.field("open").boolean()?,
+                })
+            })?,
     };
     let mut indexes = HashSet::new();
     let mut portals = HashSet::new();
@@ -413,7 +437,12 @@ fn write_level_members(state: &Q2RereleaseLevelState) -> Vec<(&'static str, Save
             arr(state
                 .portals
                 .iter()
-                .map(|entry| obj(vec![("portal", int(i64::from(entry.portal))), ("open", boolean(entry.open))]))
+                .map(|entry| {
+                    obj(vec![
+                        ("portal", int(i64::from(entry.portal))),
+                        ("open", boolean(entry.open)),
+                    ])
+                })
                 .collect()),
         ),
     ]
@@ -424,8 +453,12 @@ fn map_path(reader: SaveReader) -> Result<String, NativeQ2RereleaseError> {
     let valid = path.starts_with("maps/")
         && path.ends_with(".bsp")
         && path.len() > 9
-        && !path.bytes().any(|byte| byte < 0x20 || byte == 0x7f || byte == b'\\' || byte == b':')
-        && !path.split('/').any(|part| part.is_empty() || part == "." || part == "..");
+        && !path
+            .bytes()
+            .any(|byte| byte < 0x20 || byte == 0x7f || byte == b'\\' || byte == b':')
+        && !path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..");
     if !valid {
         return Err(NativeQ2RereleaseError::InvalidMapPath);
     }
@@ -451,10 +484,7 @@ pub fn decode_q2_rerelease_native_save(
     record: &ProviderCheckpoint,
     expected: &Q2RereleaseNativeIdentity,
 ) -> Result<Q2RereleaseNativeSave, NativeQ2RereleaseError> {
-    if provider_key(&record.provider) != expected.module.id
-        || record.schema != NATIVE_SCHEMA
-        || record.version != 1.0
-    {
+    if provider_key(&record.provider) != expected.module.id || record.schema != NATIVE_SCHEMA || record.version != 1.0 {
         return Err(NativeQ2RereleaseError::UnsupportedProvider);
     }
     let value = decode_checkpoint_value(&record.bytes)?;
@@ -471,14 +501,17 @@ pub fn decode_q2_rerelease_native_save(
     let state = reader.field("server");
     let cvars = state.field("cvars").bytes()?;
     decode_checkpoint_value(&cvars)?;
-    let visited_levels = reader.field("visitedLevels").list(|value| -> Result<Q2RereleaseVisitedLevel, NativeQ2RereleaseError> {
-        value.field("version").literal_i64(1)?;
-        Ok(Q2RereleaseVisitedLevel {
-            state: read_level(&value)?,
-            map: map_path(value.field("map"))?,
-            level: read_rerelease_source_save(value.field("level"))?,
-        })
-    })?;
+    let visited_levels =
+        reader
+            .field("visitedLevels")
+            .list(|value| -> Result<Q2RereleaseVisitedLevel, NativeQ2RereleaseError> {
+                value.field("version").literal_i64(1)?;
+                Ok(Q2RereleaseVisitedLevel {
+                    state: read_level(&value)?,
+                    map: map_path(value.field("map"))?,
+                    level: read_rerelease_source_save(value.field("level"))?,
+                })
+            })?;
     let mut maps = HashSet::new();
     if visited_levels.iter().any(|value| !maps.insert(value.map.clone()))
         || visited_levels.iter().any(|value| value.map == map)
@@ -493,10 +526,16 @@ pub fn decode_q2_rerelease_native_save(
     Ok(Q2RereleaseNativeSave {
         module,
         map,
-        api: RereleaseNativeApi { kind: NATIVE_API_KIND.to_string(), version: NATIVE_API_VERSION },
+        api: RereleaseNativeApi {
+            kind: NATIVE_API_KIND.to_string(),
+            version: NATIVE_API_VERSION,
+        },
         abi: NATIVE_ABI.to_string(),
         autosave: reader.field("autosave").boolean()?,
-        server: Q2RereleaseServerState { state: read_level(&state)?, cvars },
+        server: Q2RereleaseServerState {
+            state: read_level(&state)?,
+            cvars,
+        },
         game,
         level,
         visited_levels,
@@ -547,7 +586,10 @@ pub fn encode_q2_rerelease_native_save(
     };
     decode_q2_rerelease_native_save(
         &record,
-        &Q2RereleaseNativeIdentity { module: save.module.clone(), map: save.map.clone() },
+        &Q2RereleaseNativeIdentity {
+            module: save.module.clone(),
+            map: save.map.clone(),
+        },
     )?;
     Ok(record)
 }
@@ -574,14 +616,20 @@ mod tests {
     #[test]
     fn bounded_integer_rejects_overflow() {
         let value = int(12448);
-        let error = bounded_integer(reader(&value), MAX_CONFIGSTRING).unwrap_err().to_string();
+        let error = bounded_integer(reader(&value), MAX_CONFIGSTRING)
+            .unwrap_err()
+            .to_string();
         assert_eq!(error, "Native API 2023 value exceeds its public range");
         assert_eq!(bounded_integer(reader(&int(12447)), MAX_CONFIGSTRING).unwrap(), 12447);
     }
 
     #[test]
     fn references_parse_both_kinds() {
-        let native = obj(vec![("kind", json_str("native")), ("slot", int(2)), ("generation", int(5))]);
+        let native = obj(vec![
+            ("kind", json_str("native")),
+            ("slot", int(2)),
+            ("generation", int(5)),
+        ]);
         assert_eq!(
             read_reference(reader(&native)).unwrap(),
             RereleaseSavedActor::Native { slot: 2, generation: 5 }
@@ -592,7 +640,9 @@ mod tests {
         ]);
         assert_eq!(
             read_reference(reader(&shared)).unwrap(),
-            RereleaseSavedActor::Shared { actor: SavedActorId { slot: 1, generation: 1 } }
+            RereleaseSavedActor::Shared {
+                actor: SavedActorId { slot: 1, generation: 1 }
+            }
         );
     }
 
