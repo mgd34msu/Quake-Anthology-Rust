@@ -13,3 +13,5 @@ qa-net = { workspace = true }
 qa-guest = { workspace = true }
 qa-compat = { workspace = true }
 qa-client = { workspace = true }
+qa-platform = { workspace = true }
+qa-bots = { workspace = true }
