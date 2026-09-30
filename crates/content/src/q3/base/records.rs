@@ -13,6 +13,7 @@ use crate::q3::base::mirrors::*;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::*;
 use crate::q3::base::shared::player_state::*;
+use crate::q3::foundation::arsenal::{q3_weapon_item, Q3_WEAPON_ITEMS};
 
 // ---------------------------------------------------------------------------
 // records.ts
@@ -597,7 +598,7 @@ impl RecordsCore {
             let Some(actor) = self.record_actor(slot) else {
                 return 0;
             };
-            return q3_weapon_items().iter().fold(0, |bits, weapon| {
+            return Q3_WEAPON_ITEMS.iter().fold(0, |bits, weapon| {
                 bits | i32::from(self.host.inventory().count(actor.id(), &weapon.item) > 0) << (weapon.weapon as i32)
             });
         }
@@ -637,7 +638,7 @@ impl RecordsCore {
         }
         if index == weapons {
             let actor = self.ensure_actor(slot);
-            for weapon in q3_weapon_items() {
+            for weapon in Q3_WEAPON_ITEMS.iter() {
                 self.host.inventory().configure(
                     &actor,
                     &weapon.item,

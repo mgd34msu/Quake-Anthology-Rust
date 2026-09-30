@@ -9,6 +9,8 @@ use qa_core::time::SourceTime;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::contract::ItemId;
+
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::combat::DamageDiagnostic;
 use crate::q3::base::game::state::GameFlags;
@@ -17,6 +19,7 @@ use crate::q3::base::records::*;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::items::*;
 use crate::q3::base::world::*;
+use crate::q3::foundation::arsenal::q3_weapon_item;
 
 // ---------------------------------------------------------------------------
 // combat-bridge.ts

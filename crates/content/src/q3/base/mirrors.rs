@@ -12,6 +12,9 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use thiserror::Error;
 
+use crate::contract::{ItemId, ProtectionChannel};
+use qa_world::combat::{Delivery, Reaction};
+
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::combat::DamageDiagnostic;
 use crate::q3::base::game::state::MAX_GENTITIES;
@@ -83,24 +86,6 @@ pub const ZERO_BODY: BodyState = BodyState {
 // ---------------------------------------------------------------------------
 // Gameplay mirrors (contracts/gameplay.ts, world/gameplay/*, minimal)
 // ---------------------------------------------------------------------------
-
-/// Namespaced item identifier (`ItemId`, `namespace:name`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ItemId(pub String);
-
-impl ItemId {
-    /// Build an item identifier.
-    #[must_use]
-    pub fn new(text: &str) -> Self {
-        Self(text.to_string())
-    }
-
-    /// Identifier text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 /// Q1 armor effect word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,15 +210,6 @@ pub struct AttackProvenance {
     pub cause: AttackCause,
 }
 
-/// Damage delivery word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DamageDelivery {
-    /// Direct damage.
-    Direct,
-    /// Radius damage.
-    Radius,
-}
-
 /// Damage request (`DamageRequest`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DamageRequest {
@@ -252,7 +228,7 @@ pub struct DamageRequest {
     /// Normal.
     pub normal: Vec3,
     /// Delivery.
-    pub delivery: DamageDelivery,
+    pub delivery: Delivery,
 }
 
 /// Regular armor state (`RegularArmorState`).
@@ -320,15 +296,6 @@ pub struct ArmorState {
     pub regular: RegularArmorState,
     /// Powered protection.
     pub powered: PoweredProtectionState,
-}
-
-/// Protection channel (`ProtectionChannel`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtectionChannel {
-    /// Regular channel.
-    Regular,
-    /// Powered channel.
-    Powered,
 }
 
 /// Armor stage word.
@@ -725,17 +692,6 @@ pub enum DamageMutation {
     },
 }
 
-/// Damage reaction word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DamageReaction {
-    /// No reaction.
-    None,
-    /// Pain.
-    Pain,
-    /// Death.
-    Death,
-}
-
 /// Damage feedback word (`DamageDecision` feedback).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DamageFeedback {
@@ -765,7 +721,7 @@ pub struct CombatResult {
     /// Applied damage.
     pub applied_damage: i32,
     /// Reaction.
-    pub reaction: DamageReaction,
+    pub reaction: Reaction,
     /// Feedback.
     pub feedback: Option<DamageFeedback>,
 }
@@ -780,7 +736,7 @@ pub struct DamageDecision {
     /// Applied damage.
     pub applied_damage: i32,
     /// Reaction.
-    pub reaction: DamageReaction,
+    pub reaction: Reaction,
     /// Feedback.
     pub feedback: Option<DamageFeedback>,
 }
@@ -972,7 +928,7 @@ pub(crate) fn combat_decision(
     request: &DamageRequest,
     mutations: Vec<DamageMutation>,
     applied_damage: i32,
-    reaction: DamageReaction,
+    reaction: Reaction,
     feedback: Option<DamageFeedback>,
 ) -> CombatProgress {
     CombatProgress::Complete {
@@ -1076,11 +1032,11 @@ pub fn create_q3_combat_policy(
         id,
         decide: Rc::new(move |request, target, attacker| {
             if !target.can_take_damage {
-                return combat_decision(request, Vec::new(), 0, DamageReaction::None, None);
+                return combat_decision(request, Vec::new(), 0, Reaction::None, None);
             }
             let context = context(request, target, attacker);
             if context.intermission || context.noclip || (context.missionpack_invulnerability && !context.juiced) {
-                return combat_decision(request, Vec::new(), 0, DamageReaction::None, None);
+                return combat_decision(request, Vec::new(), 0, Reaction::None, None);
             }
             let flags = attack_damage_flags(request);
             let mut damage = request.amount as i32;
@@ -1101,7 +1057,7 @@ pub fn create_q3_combat_policy(
             let battlesuit = Rc::new(RefCell::new(false));
             let finishing = |mutations: Vec<DamageMutation>,
                              applied: i32,
-                             reaction: DamageReaction,
+                             reaction: Reaction,
                              battlesuit: bool|
              -> CombatProgress {
                 combat_decision(
@@ -1129,13 +1085,13 @@ pub fn create_q3_combat_policy(
                     || context.proximity_protected
                     || target.invulnerable
                 {
-                    return finishing(mutations, 0, DamageReaction::None, false);
+                    return finishing(mutations, 0, Reaction::None, false);
                 }
             }
             if context.battlesuit {
                 *battlesuit.borrow_mut() = true;
-                if request.delivery == DamageDelivery::Radius || context.falling {
-                    return finishing(mutations, 0, DamageReaction::None, true);
+                if request.delivery == Delivery::Radius || context.falling {
+                    return finishing(mutations, 0, Reaction::None, true);
                 }
                 damage /= 2;
             }
@@ -1169,7 +1125,7 @@ pub fn create_q3_combat_policy(
                                 let owned = owned.clone();
                                 move |power_saved, current| {
                                     if current.target().is_none() {
-                                        return combat_decision(&owned, Vec::new(), 0, DamageReaction::None, None);
+                                        return combat_decision(&owned, Vec::new(), 0, Reaction::None, None);
                                     }
                                     let owned = owned.clone();
                                     let battlesuit = battlesuit.clone();
@@ -1188,7 +1144,7 @@ pub fn create_q3_combat_policy(
                                                         &owned,
                                                         Vec::new(),
                                                         0,
-                                                        DamageReaction::None,
+                                                        Reaction::None,
                                                         None,
                                                     );
                                                 };
@@ -1202,7 +1158,7 @@ pub fn create_q3_combat_policy(
                                                         &owned,
                                                         Vec::new(),
                                                         0,
-                                                        DamageReaction::None,
+                                                        Reaction::None,
                                                         Some(feedback),
                                                     );
                                                 }
@@ -1214,11 +1170,7 @@ pub fn create_q3_combat_policy(
                                                         after: health,
                                                     }],
                                                     take,
-                                                    if health <= 0 {
-                                                        DamageReaction::Death
-                                                    } else {
-                                                        DamageReaction::Pain
-                                                    },
+                                                    if health <= 0 { Reaction::Death } else { Reaction::Pain },
                                                     Some(feedback),
                                                 )
                                             }
@@ -1243,70 +1195,6 @@ pub fn create_q3_combat_policy(
 // defines the minimal shapes its own donors use so it stays
 // self-contained. The parent unifies these with the sibling definitions
 // at merge.
-
-/// Weapon inventory binding (`Q3WeaponItem`, foundation/arsenal.ts).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q3WeaponItem {
-    /// Weapon tag.
-    pub weapon: Weapon,
-    /// Weapon item.
-    pub item: ItemId,
-    /// Ammunition item.
-    pub ammo: Option<ItemId>,
-}
-
-pub(crate) const Q3_WEAPON_ITEM_DATA: [(i32, &str, Option<&str>); 13] = [
-    (1, "q3:weapon/gauntlet", None),
-    (2, "q3:weapon/machinegun", Some("q3:ammo/machinegun")),
-    (3, "q3:weapon/shotgun", Some("q3:ammo/shotgun")),
-    (4, "q3:weapon/grenadelauncher", Some("q3:ammo/grenadelauncher")),
-    (5, "q3:weapon/rocketlauncher", Some("q3:ammo/rocketlauncher")),
-    (6, "q3:weapon/lightning", Some("q3:ammo/lightning")),
-    (7, "q3:weapon/railgun", Some("q3:ammo/railgun")),
-    (8, "q3:weapon/plasmagun", Some("q3:ammo/plasmagun")),
-    (9, "q3:weapon/bfg", Some("q3:ammo/bfg")),
-    (10, "q3:weapon/grapple", None),
-    (11, "q3:weapon/nailgun", Some("q3:ammo/nailgun")),
-    (12, "q3:weapon/proxlauncher", Some("q3:ammo/proxlauncher")),
-    (13, "q3:weapon/chaingun", Some("q3:ammo/chaingun")),
-];
-
-/// Weapon inventory bindings (`Q3_WEAPON_ITEMS`, foundation/arsenal.ts).
-#[must_use]
-pub fn q3_weapon_items() -> Vec<Q3WeaponItem> {
-    Q3_WEAPON_ITEM_DATA
-        .iter()
-        .map(|(weapon, item, ammo)| Q3WeaponItem {
-            weapon: match *weapon {
-                1 => Weapon::WpGauntlet,
-                2 => Weapon::WpMachinegun,
-                3 => Weapon::WpShotgun,
-                4 => Weapon::WpGrenadeLauncher,
-                5 => Weapon::WpRocketLauncher,
-                6 => Weapon::WpLightning,
-                7 => Weapon::WpRailgun,
-                8 => Weapon::WpPlasmagun,
-                9 => Weapon::WpBfg,
-                10 => Weapon::WpGrapplingHook,
-                11 => Weapon::WpNailgun,
-                12 => Weapon::WpProxLauncher,
-                13 => Weapon::WpChaingun,
-                _ => Weapon::WpNone,
-            },
-            item: ItemId::new(item),
-            ammo: ammo.map(ItemId::new),
-        })
-        .collect()
-}
-
-/// Weapon inventory binding by tag (`q3WeaponItem`,
-/// foundation/arsenal.ts).
-#[must_use]
-pub fn q3_weapon_item(weapon: i32) -> Option<Q3WeaponItem> {
-    q3_weapon_items()
-        .into_iter()
-        .find(|entry| entry.weapon as i32 == weapon)
-}
 
 /// Shared game entity handle.
 pub type EntityRef = Rc<RefCell<GameEntity>>;
@@ -1872,6 +1760,7 @@ mod tests {
         find_item_for_weapon, item_at, item_list, player_touches_item, PickupEntity, PlayerInventory,
         Trajectory as ItemsTrajectory, TrajectoryType as ItemsTrajectoryType,
     };
+    use crate::q3::foundation::arsenal::q3_weapon_item;
     use crate::value::arr;
     use qa_core::cvar::CvarRegistry;
     use qa_core::identity::ActorId;
@@ -2766,7 +2655,7 @@ mod tests {
         assert_eq!(host.inventory.count(actor.id(), &bfg.item), 1);
         assert_eq!(host.inventory.count(actor.id(), &machinegun.item), 0);
         client.borrow_mut().ps.ammo.set(Weapon::WpShotgun as usize, 12);
-        assert_eq!(host.inventory.count(actor.id(), &shotgun.ammo.unwrap()), 12);
+        assert_eq!(host.inventory.count(actor.id(), shotgun.ammo.as_ref().unwrap()), 12);
     }
 
     #[test]
@@ -3040,7 +2929,7 @@ mod tests {
             direction: vec3(1.0, 0.0, 0.0),
             point: vec3(0.0, 0.0, 0.0),
             normal: vec3(0.0, 0.0, 0.0),
-            delivery: DamageDelivery::Direct,
+            delivery: Delivery::Direct,
         }
     }
 
@@ -3145,17 +3034,17 @@ mod tests {
             None,
         );
         assert_eq!(provenance.sequence, 0);
-        assert_eq!(provenance.weapon, Some(ItemId::new("q3:weapon/shotgun")));
+        assert_eq!(provenance.weapon, Some("q3:weapon/shotgun".to_string()));
         let second = (bridge.context().attack)(
             &DamageParticipant::Native(target.clone()),
             &DamageParticipant::Native(attacker.clone()),
-            Some(ItemId::new("q3:weapon/bfg")),
+            Some("q3:weapon/bfg".to_string()),
             7,
             0,
             None,
         );
         assert_eq!(second.sequence, 1);
-        assert_eq!(second.weapon, Some(ItemId::new("q3:weapon/bfg")));
+        assert_eq!(second.weapon, Some("q3:weapon/bfg".to_string()));
 
         let saved = bridge.capture_save_state();
         let bridge2 = Q3CombatBridge::new(host.clone());
@@ -3176,7 +3065,7 @@ mod tests {
             request: test_request(target_id.clone(), Some(attacker_id), 40.0),
             mutations: Vec::new(),
             applied_damage: 40,
-            reaction: DamageReaction::Pain,
+            reaction: Reaction::Pain,
             feedback: None,
         };
         let outcome = (bridge.context().dispatch)(
@@ -3230,7 +3119,7 @@ mod tests {
         let progress = (policy.decide)(&request, &state, Some(&state));
         let (result, mutations) = drive_progress(progress, &state, Some(&state));
         assert_eq!(result.applied_damage, 50);
-        assert_eq!(result.reaction, DamageReaction::Pain);
+        assert_eq!(result.reaction, Reaction::Pain);
         assert!(mutations
             .iter()
             .any(|mutation| matches!(mutation, DamageMutation::Health { before: 100, after: 50 })));
@@ -3242,7 +3131,7 @@ mod tests {
         let held = (policy.decide)(&request, &state, Some(&state));
         let (held_result, _) = drive_progress(held, &state, Some(&state));
         assert_eq!(held_result.applied_damage, 0);
-        assert_eq!(held_result.reaction, DamageReaction::None);
+        assert_eq!(held_result.reaction, Reaction::None);
     }
 
     #[test]
