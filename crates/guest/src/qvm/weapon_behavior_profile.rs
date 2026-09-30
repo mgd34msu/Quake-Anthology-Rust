@@ -14,7 +14,9 @@
 
 use std::collections::HashSet;
 
-use super::mod_provider::{ModuleId, ProfileReader, ProfileValue, QvmAbi, QvmArtifact, QvmOpcode, qvm_shared_entity_bytes};
+use super::mod_provider::{
+    qvm_shared_entity_bytes, ModuleId, ProfileReader, ProfileValue, QvmAbi, QvmArtifact, QvmOpcode,
+};
 use crate::error::GuestError;
 
 /// Projectile role.
@@ -132,26 +134,48 @@ fn same_callback(left: Option<&WeaponBehaviorCallback>, right: Option<&WeaponBeh
         (Some(_), None) | (None, Some(_)) => false,
         (Some(left), Some(right)) => {
             let left_module = match left {
-                WeaponBehaviorCallback::QuakeC { module, .. } | WeaponBehaviorCallback::Qvm { module, .. } | WeaponBehaviorCallback::NativeArtifact { module, .. } => module,
+                WeaponBehaviorCallback::QuakeC { module, .. }
+                | WeaponBehaviorCallback::Qvm { module, .. }
+                | WeaponBehaviorCallback::NativeArtifact { module, .. } => module,
             };
             let right_module = match right {
-                WeaponBehaviorCallback::QuakeC { module, .. } | WeaponBehaviorCallback::Qvm { module, .. } | WeaponBehaviorCallback::NativeArtifact { module, .. } => module,
+                WeaponBehaviorCallback::QuakeC { module, .. }
+                | WeaponBehaviorCallback::Qvm { module, .. }
+                | WeaponBehaviorCallback::NativeArtifact { module, .. } => module,
             };
             if !left_module.same_module(right_module) {
                 return false;
             }
             match (left, right) {
                 (
-                    WeaponBehaviorCallback::QuakeC { function_index: left, .. },
-                    WeaponBehaviorCallback::QuakeC { function_index: right, .. },
+                    WeaponBehaviorCallback::QuakeC {
+                        function_index: left, ..
+                    },
+                    WeaponBehaviorCallback::QuakeC {
+                        function_index: right, ..
+                    },
                 ) => left == right,
                 (
-                    WeaponBehaviorCallback::Qvm { instruction_index: left, .. },
-                    WeaponBehaviorCallback::Qvm { instruction_index: right, .. },
+                    WeaponBehaviorCallback::Qvm {
+                        instruction_index: left,
+                        ..
+                    },
+                    WeaponBehaviorCallback::Qvm {
+                        instruction_index: right,
+                        ..
+                    },
                 ) => left == right,
                 (
-                    WeaponBehaviorCallback::NativeArtifact { image_offset: left, abi: left_abi, .. },
-                    WeaponBehaviorCallback::NativeArtifact { image_offset: right, abi: right_abi, .. },
+                    WeaponBehaviorCallback::NativeArtifact {
+                        image_offset: left,
+                        abi: left_abi,
+                        ..
+                    },
+                    WeaponBehaviorCallback::NativeArtifact {
+                        image_offset: right,
+                        abi: right_abi,
+                        ..
+                    },
                 ) => left == right && left_abi == right_abi,
                 _ => false,
             }
@@ -231,7 +255,10 @@ pub struct QvmWeaponProfile {
 }
 
 /// Serialize a profile to its declaration value.
-pub fn qvm_weapon_profile_declaration(profile: &QvmWeaponProfile, abi_profile: QvmAbi) -> Result<ProfileValue, GuestError> {
+pub fn qvm_weapon_profile_declaration(
+    profile: &QvmWeaponProfile,
+    abi_profile: QvmAbi,
+) -> Result<ProfileValue, GuestError> {
     let definition = &profile.definition;
     let fire = match &definition.fire {
         WeaponBehaviorCallback::Qvm { instruction_index, .. } => *instruction_index,
@@ -248,14 +275,20 @@ pub fn qvm_weapon_profile_declaration(profile: &QvmWeaponProfile, abi_profile: Q
     Ok(ProfileValue::record(vec![
         ("version", ProfileValue::Int(1)),
         ("artifactDigest", ProfileValue::Str(definition.module.digest.clone())),
-        ("artifactPath", ProfileValue::Str(definition.module.artifact_path.clone())),
+        (
+            "artifactPath",
+            ProfileValue::Str(definition.module.artifact_path.clone()),
+        ),
         ("abiProfile", ProfileValue::Str(abi_profile.name().to_string())),
         ("id", ProfileValue::Str(definition.id[4..].to_string())),
         ("title", ProfileValue::Str(definition.title.clone())),
         ("role", ProfileValue::Str(definition.role.name().to_string())),
         ("aspect", ProfileValue::Str(definition.aspect.clone())),
         ("fireFunction", ProfileValue::Int(fire as i64)),
-        ("activationFunction", activation.map_or(ProfileValue::Null, |index| ProfileValue::Int(index as i64))),
+        (
+            "activationFunction",
+            activation.map_or(ProfileValue::Null, |index| ProfileValue::Int(index as i64)),
+        ),
         ("entityStride", ProfileValue::Int(profile.layout.entity_stride as i64)),
         ("levelTime", ProfileValue::Int(profile.layout.level_time as i64)),
         ("allocateFunction", ProfileValue::Int(profile.layout.allocate as i64)),
@@ -269,7 +302,10 @@ pub fn qvm_weapon_profile_declaration(profile: &QvmWeaponProfile, abi_profile: Q
                 ("health", ProfileValue::Int(profile.layout.fields.health as i64)),
             ]),
         ),
-        ("fireAbi", ProfileValue::Str("entity-pointer-start-direction".to_string())),
+        (
+            "fireAbi",
+            ProfileValue::Str("entity-pointer-start-direction".to_string()),
+        ),
     ]))
 }
 
@@ -288,14 +324,20 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
     let reader = ProfileReader::new(value);
     reader.field("version")?.literal_int(1)?;
     reader.field("artifactDigest")?.literal_str(&artifact.module.digest)?;
-    reader.field("artifactPath")?.literal_str(&artifact.module.artifact_path)?;
+    reader
+        .field("artifactPath")?
+        .literal_str(&artifact.module.artifact_path)?;
     reader.field("abiProfile")?.literal_str(artifact.abi().name())?;
     if artifact.role != QvmRole::Qagame {
         return reader.fail("weapon behavior requires a qagame artifact");
     }
     let read_entry = |at: &ProfileReader<'_>| -> Result<usize, GuestError> {
         let index = at.integer(1)? as usize;
-        if artifact.image.instruction(index).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+        if artifact
+            .image
+            .instruction(index)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        {
             return at.fail("callback is not a QVM function entry");
         }
         Ok(index)
@@ -304,7 +346,9 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
     if !stable_behavior_id(&id) {
         return reader.field("id")?.fail("expected a stable behavior identifier");
     }
-    let role = reader.field("role")?.choice(&["rocket", "grenade", "nail", "bolt", "plasma", "energy", "grapple"])?;
+    let role = reader
+        .field("role")?
+        .choice(&["rocket", "grenade", "nail", "bolt", "plasma", "energy", "grapple"])?;
     let activation = reader.field("activationFunction")?;
     let definition = WeaponBehaviorDefinition {
         id: format!("qvm:{id}"),
@@ -312,10 +356,16 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
         module: artifact.module.clone(),
         role: WeaponBehaviorRole::parse(&role).ok_or_else(|| GuestError::invalid("unknown weapon role"))?,
         aspect: reader.field("aspect")?.literal_str("trajectory")?,
-        fire: WeaponBehaviorCallback::Qvm { module: artifact.module.clone(), instruction_index: read_entry(&reader.field("fireFunction")?)? },
+        fire: WeaponBehaviorCallback::Qvm {
+            module: artifact.module.clone(),
+            instruction_index: read_entry(&reader.field("fireFunction")?)?,
+        },
         activate: match activation.value() {
             ProfileValue::Null | ProfileValue::Undefined => None,
-            _ => Some(WeaponBehaviorCallback::Qvm { module: artifact.module.clone(), instruction_index: read_entry(&activation)? }),
+            _ => Some(WeaponBehaviorCallback::Qvm {
+                module: artifact.module.clone(),
+                instruction_index: read_entry(&activation)?,
+            }),
         },
     };
     let minimum = qvm_shared_entity_bytes(artifact.abi());
@@ -334,8 +384,12 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
         Ok(offset)
     };
     let level_time = reader.field("levelTime")?.integer(4)? as usize;
-    if level_time % 4 != 0 || level_time > artifact.image.data_length + artifact.image.literal_length + artifact.image.bss_length - 4 {
-        return reader.field("levelTime")?.fail("level clock is outside declared guest data");
+    if level_time % 4 != 0
+        || level_time > artifact.image.data_length + artifact.image.literal_length + artifact.image.bss_length - 4
+    {
+        return reader
+            .field("levelTime")?
+            .fail("level clock is outside declared guest data");
     }
     Ok(QvmWeaponProfile {
         definition,
@@ -344,7 +398,12 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
             level_time,
             allocate: read_entry(&reader.field("allocateFunction")?)?,
             free: read_entry(&reader.field("freeFunction")?)?,
-            fields: WeaponLayoutFields { inuse: field("inuse")?, nextthink: field("nextthink")?, think: field("think")?, health: field("health")? },
+            fields: WeaponLayoutFields {
+                inuse: field("inuse")?,
+                nextthink: field("nextthink")?,
+                think: field("think")?,
+                health: field("health")?,
+            },
             fire_abi: {
                 reader.field("fireAbi")?.literal_str("entity-pointer-start-direction")?;
                 FireAbi::EntityPointerStartDirection
@@ -354,21 +413,33 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
 }
 
 /// Validate a profile against its artifact through a declaration round trip.
-pub fn validate_qvm_weapon_profile(profile: &QvmWeaponProfile, artifact: &QvmArtifact) -> Result<QvmWeaponProfile, GuestError> {
+pub fn validate_qvm_weapon_profile(
+    profile: &QvmWeaponProfile,
+    artifact: &QvmArtifact,
+) -> Result<QvmWeaponProfile, GuestError> {
     let validated = read_qvm_weapon_profile(&qvm_weapon_profile_declaration(profile, artifact.abi())?, artifact)?;
     if !same_weapon_behavior(&profile.definition, &validated.definition) {
-        return Err(GuestError::invalid("QVM weapon callback identity differs from the loaded artifact"));
+        return Err(GuestError::invalid(
+            "QVM weapon callback identity differs from the loaded artifact",
+        ));
     }
     Ok(validated)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::mod_provider::{ModuleId, ProfileValue, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole};
+    use super::super::mod_provider::{
+        ModuleId, ProfileValue, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole,
+    };
     use super::*;
 
     fn module() -> ModuleId {
-        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+        ModuleId {
+            id: "test:game".to_string(),
+            artifact_path: "vm/qagame.qvm".to_string(),
+            digest: "sha256:game".to_string(),
+            revision: "1".to_string(),
+        }
     }
 
     fn enters(count: usize) -> Vec<QvmInstruction> {
@@ -385,7 +456,14 @@ mod tests {
             module: module(),
             role: QvmRole::Qagame,
             abi_profile: None,
-            image: QvmImage { instructions: enters(8), data_length: 4096, literal_length: 0, bss_length: 0, initialized_length: 4096, allocated_data_length: 8192 },
+            image: QvmImage {
+                instructions: enters(8),
+                data_length: 4096,
+                literal_length: 0,
+                bss_length: 0,
+                initialized_length: 4096,
+                allocated_data_length: 8192,
+            },
         }
     }
 
@@ -397,7 +475,10 @@ mod tests {
                 role: WeaponBehaviorRole::Rocket,
                 aspect: "trajectory".to_string(),
                 module: module(),
-                fire: WeaponBehaviorCallback::Qvm { module: module(), instruction_index: 2 },
+                fire: WeaponBehaviorCallback::Qvm {
+                    module: module(),
+                    instruction_index: 2,
+                },
                 activate: None,
             },
             layout: QvmWeaponBehaviorLayout {
@@ -405,7 +486,12 @@ mod tests {
                 level_time: 100,
                 allocate: 2,
                 free: 2,
-                fields: WeaponLayoutFields { inuse: 600, nextthink: 604, think: 608, health: 612 },
+                fields: WeaponLayoutFields {
+                    inuse: 600,
+                    nextthink: 604,
+                    think: 608,
+                    health: 612,
+                },
                 fire_abi: FireAbi::EntityPointerStartDirection,
             },
         }
@@ -421,7 +507,13 @@ mod tests {
         assert_eq!(read.layout.fields.health, 612);
         assert!(same_weapon_behavior(&profile.definition, &read.definition));
         assert!(same_qvm_weapon_layout(&profile.layout, &read.layout));
-        assert_eq!(validate_qvm_weapon_profile(&profile, &artifact()).expect("validate").definition.id, "qvm:rocket");
+        assert_eq!(
+            validate_qvm_weapon_profile(&profile, &artifact())
+                .expect("validate")
+                .definition
+                .id,
+            "qvm:rocket"
+        );
     }
 
     #[test]
@@ -463,12 +555,20 @@ mod tests {
         let left = profile().definition;
         assert!(same_weapon_behavior(&left, &left));
         let mut activated = left.clone();
-        activated.activate = Some(WeaponBehaviorCallback::Qvm { module: module(), instruction_index: 4 });
+        activated.activate = Some(WeaponBehaviorCallback::Qvm {
+            module: module(),
+            instruction_index: 4,
+        });
         assert!(!same_weapon_behavior(&left, &activated));
         let native = |offset: usize| WeaponBehaviorCallback::NativeArtifact {
             module: module(),
             image_offset: offset,
-            abi: NativeArtifactAbi { kind: "windows-x86-64".to_string(), call: "system".to_string(), image: "pe".to_string(), pointer_bytes: 8 },
+            abi: NativeArtifactAbi {
+                kind: "windows-x86-64".to_string(),
+                call: "system".to_string(),
+                image: "pe".to_string(),
+                pointer_bytes: 8,
+            },
         };
         let mut left_native = left.clone();
         left_native.fire = native(16);

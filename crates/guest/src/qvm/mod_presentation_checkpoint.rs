@@ -14,9 +14,12 @@
 //! ports in this batch.
 
 use qa_core::identity::{ActorId, SavedActorId};
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
-use super::mod_provider::{ProfileReader, ProfileValue, QvmAbi, namespaced_id, qvm_entity_state_bytes, qvm_player_state_bytes, qvm_snapshot_bytes};
+use super::mod_provider::{
+    namespaced_id, qvm_entity_state_bytes, qvm_player_state_bytes, qvm_snapshot_bytes, ProfileReader, ProfileValue,
+    QvmAbi,
+};
 use crate::error::GuestError;
 
 /// Player-state record length.
@@ -39,22 +42,33 @@ pub fn snapshot_len(abi: QvmAbi) -> usize {
 
 /// Read a saved actor reference.
 pub fn read_saved_actor_id(reader: &ProfileReader<'_>) -> Result<SavedActorId, GuestError> {
-    Ok(SavedActorId { slot: reader.field("slot")?.integer(0)? as u32, generation: reader.field("generation")?.integer(0)? as u32 })
+    Ok(SavedActorId {
+        slot: reader.field("slot")?.integer(0)? as u32,
+        generation: reader.field("generation")?.integer(0)? as u32,
+    })
 }
 
 /// Capture a saved actor reference.
 #[must_use]
 pub fn capture_saved_actor_id(actor: &ActorId) -> ProfileValue {
     let saved = SavedActorId::from(actor);
-    ProfileValue::record(vec![("slot", ProfileValue::Int(i64::from(saved.slot))), ("generation", ProfileValue::Int(i64::from(saved.generation)))])
+    ProfileValue::record(vec![
+        ("slot", ProfileValue::Int(i64::from(saved.slot))),
+        ("generation", ProfileValue::Int(i64::from(saved.generation))),
+    ])
 }
 
 fn read_i32(bytes: &[u8], offset: usize) -> Result<i32, GuestError> {
-    bytes.get(offset..offset + 4).ok_or_else(|| GuestError::invalid("source record exceeds its bytes")).map(|word| i32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+    bytes
+        .get(offset..offset + 4)
+        .ok_or_else(|| GuestError::invalid("source record exceeds its bytes"))
+        .map(|word| i32::from_le_bytes([word[0], word[1], word[2], word[3]]))
 }
 
 fn write_i32(bytes: &mut [u8], offset: usize, value: i32) -> Result<(), GuestError> {
-    let slot = bytes.get_mut(offset..offset + 4).ok_or_else(|| GuestError::invalid("source record exceeds its bytes"))?;
+    let slot = bytes
+        .get_mut(offset..offset + 4)
+        .ok_or_else(|| GuestError::invalid("source record exceeds its bytes"))?;
     slot.copy_from_slice(&value.to_le_bytes());
     Ok(())
 }
@@ -74,7 +88,11 @@ impl SourceGameState {
     /// Empty record.
     #[must_use]
     pub fn empty() -> Self {
-        Self { offsets: vec![0; 1024], data: vec![0; 16000], count: 0 }
+        Self {
+            offsets: vec![0; 1024],
+            data: vec![0; 16000],
+            count: 0,
+        }
     }
 
     /// Build a record from configstring entries.
@@ -101,7 +119,16 @@ impl SourceGameState {
 #[must_use]
 pub fn capture_presentation_game_state(state: &SourceGameState) -> ProfileValue {
     ProfileValue::record(vec![
-        ("stringOffsets", ProfileValue::Array(state.offsets.iter().map(|offset| ProfileValue::Int(i64::from(*offset))).collect())),
+        (
+            "stringOffsets",
+            ProfileValue::Array(
+                state
+                    .offsets
+                    .iter()
+                    .map(|offset| ProfileValue::Int(i64::from(*offset)))
+                    .collect(),
+            ),
+        ),
         ("stringData", ProfileValue::Bytes(state.data.clone())),
         ("dataCount", ProfileValue::Int(state.count as i64)),
     ])
@@ -109,10 +136,16 @@ pub fn capture_presentation_game_state(state: &SourceGameState) -> ProfileValue 
 
 /// Read a game-state record.
 pub fn read_presentation_game_state(reader: &ProfileReader<'_>) -> Result<SourceGameState, GuestError> {
-    let offsets = reader.field("stringOffsets")?.list(|item| item.integer(0).map(|value| value as i32))?;
+    let offsets = reader
+        .field("stringOffsets")?
+        .list(|item| item.integer(0).map(|value| value as i32))?;
     let data = reader.field("stringData")?.bytes()?;
     let count = reader.field("dataCount")?.integer(0)? as usize;
-    if offsets.len() != 1024 || data.len() != 16000 || count > 16000 || offsets.iter().any(|offset| *offset >= count.max(1) as i32) {
+    if offsets.len() != 1024
+        || data.len() != 16000
+        || count > 16000
+        || offsets.iter().any(|offset| *offset >= count.max(1) as i32)
+    {
         return reader.fail("invalid source gameState extent");
     }
     Ok(SourceGameState { offsets, data, count })
@@ -131,13 +164,19 @@ impl SourcePlayerState {
         if bytes.len() != qvm_player_state_bytes(abi) {
             return Err(GuestError::invalid("invalid source player bytes"));
         }
-        Ok(Self { bytes: bytes.to_vec(), abi })
+        Ok(Self {
+            bytes: bytes.to_vec(),
+            abi,
+        })
     }
 
     /// Zeroed record.
     #[must_use]
     pub fn zeroed(abi: QvmAbi) -> Self {
-        Self { bytes: vec![0; qvm_player_state_bytes(abi)], abi }
+        Self {
+            bytes: vec![0; qvm_player_state_bytes(abi)],
+            abi,
+        }
     }
 
     /// Record bytes.
@@ -164,12 +203,18 @@ impl SourcePlayerState {
 
     /// Predictable event slots.
     pub fn events(&self) -> [i32; 2] {
-        [read_i32(&self.bytes, 112).unwrap_or(0), read_i32(&self.bytes, 116).unwrap_or(0)]
+        [
+            read_i32(&self.bytes, 112).unwrap_or(0),
+            read_i32(&self.bytes, 116).unwrap_or(0),
+        ]
     }
 
     /// Predictable event parameters.
     pub fn event_parameters(&self) -> [i32; 2] {
-        [read_i32(&self.bytes, 120).unwrap_or(0), read_i32(&self.bytes, 124).unwrap_or(0)]
+        [
+            read_i32(&self.bytes, 120).unwrap_or(0),
+            read_i32(&self.bytes, 124).unwrap_or(0),
+        ]
     }
 
     /// External event.
@@ -216,13 +261,19 @@ impl SourceEntityState {
         if bytes.len() != qvm_entity_state_bytes(abi) {
             return Err(GuestError::invalid("invalid source entity bytes"));
         }
-        Ok(Self { bytes: bytes.to_vec(), abi })
+        Ok(Self {
+            bytes: bytes.to_vec(),
+            abi,
+        })
     }
 
     /// Zeroed record.
     #[must_use]
     pub fn zeroed(abi: QvmAbi) -> Self {
-        Self { bytes: vec![0; qvm_entity_state_bytes(abi)], abi }
+        Self {
+            bytes: vec![0; qvm_entity_state_bytes(abi)],
+            abi,
+        }
     }
 
     /// Record bytes.
@@ -354,14 +405,24 @@ pub fn read_presentation_snapshot(reader: &ProfileReader<'_>, abi: QvmAbi) -> Re
 /// Capture one bounding box.
 #[must_use]
 pub fn capture_bounds(min: Vec3, max: Vec3) -> ProfileValue {
-    let vector = |value: Vec3| ProfileValue::record(vec![("x", ProfileValue::Float(f64::from(value.x))), ("y", ProfileValue::Float(f64::from(value.y))), ("z", ProfileValue::Float(f64::from(value.z)))]);
+    let vector = |value: Vec3| {
+        ProfileValue::record(vec![
+            ("x", ProfileValue::Float(f64::from(value.x))),
+            ("y", ProfileValue::Float(f64::from(value.y))),
+            ("z", ProfileValue::Float(f64::from(value.z))),
+        ])
+    };
     ProfileValue::record(vec![("min", vector(min)), ("max", vector(max))])
 }
 
 /// Read one bounding box.
 pub fn read_bounds(reader: &ProfileReader<'_>) -> Result<(Vec3, Vec3), GuestError> {
     let vector = |reader: &ProfileReader<'_>| -> Result<Vec3, GuestError> {
-        Ok(vec3(reader.field("x")?.finite()? as f32, reader.field("y")?.finite()? as f32, reader.field("z")?.finite()? as f32))
+        Ok(vec3(
+            reader.field("x")?.finite()? as f32,
+            reader.field("y")?.finite()? as f32,
+            reader.field("z")?.finite()? as f32,
+        ))
     };
     Ok((vector(&reader.field("min")?)?, vector(&reader.field("max")?)?))
 }
@@ -485,7 +546,10 @@ pub fn capture_mod_scene_publication(scene: &ModScenePublication, abi: QvmAbi) -
                             ("text", ProfileValue::Str(command.text.clone())),
                             (
                                 "recipient",
-                                command.recipient.as_ref().map_or(ProfileValue::Null, capture_saved_actor_id),
+                                command
+                                    .recipient
+                                    .as_ref()
+                                    .map_or(ProfileValue::Null, capture_saved_actor_id),
                             ),
                         ])
                     })
@@ -538,14 +602,19 @@ pub fn read_mod_scene_publication(
             Ok(SceneCommand {
                 sequence: row.field("sequence")?.integer(0)? as u64,
                 text: row.field("text")?.string()?,
-                recipient: row.field("recipient")?.nullable(|value| Ok(resolve(read_saved_actor_id(value)?)?))?,
+                recipient: row
+                    .field("recipient")?
+                    .nullable(|value| Ok(resolve(read_saved_actor_id(value)?)?))?,
             })
         })?,
     })
 }
 
 /// Capture a scene context.
-pub fn capture_scene_context(scene: &super::mod_presentation::QvmSceneContext, abi: QvmAbi) -> Result<ProfileValue, GuestError> {
+pub fn capture_scene_context(
+    scene: &super::mod_presentation::QvmSceneContext,
+    abi: QvmAbi,
+) -> Result<ProfileValue, GuestError> {
     let mut snapshot = scene.snapshot.clone();
     snapshot.number = 0;
     Ok(ProfileValue::record(vec![
@@ -578,7 +647,16 @@ pub fn capture_scene_context(scene: &super::mod_presentation::QvmSceneContext, a
                     .map(|command| {
                         ProfileValue::record(vec![
                             ("sequence", ProfileValue::Int(command.sequence as i64)),
-                            ("arguments", ProfileValue::Array(command.arguments.iter().map(|argument| ProfileValue::Str(argument.clone())).collect())),
+                            (
+                                "arguments",
+                                ProfileValue::Array(
+                                    command
+                                        .arguments
+                                        .iter()
+                                        .map(|argument| ProfileValue::Str(argument.clone()))
+                                        .collect(),
+                                ),
+                            ),
                         ])
                     })
                     .collect(),
@@ -605,7 +683,9 @@ pub fn read_scene_context(
     if depth > 1 {
         return reader.fail("nested scene baseline");
     }
-    let baseline = reader.field("baseline")?.nullable(|value| read_scene_context(value, abi, resolve, depth + 1))?;
+    let baseline = reader
+        .field("baseline")?
+        .nullable(|value| read_scene_context(value, abi, resolve, depth + 1))?;
     Ok(QvmSceneContext {
         revision: reader.field("revision")?.integer(0)? as u64,
         game_state: read_presentation_game_state(&reader.field("gameState")?)?,
@@ -713,8 +793,16 @@ mod tests {
                 bounds_max: vec3(1.0, 1.0, 1.0),
                 state: SourceEntityState::zeroed(QvmAbi::Modern),
             }],
-            clients: vec![SceneClient { actor: actor.clone(), slot: 0, state: SourcePlayerState::zeroed(QvmAbi::Modern) }],
-            commands: vec![SceneCommand { sequence: 1, recipient: None, text: "cs 0 x".to_string() }],
+            clients: vec![SceneClient {
+                actor: actor.clone(),
+                slot: 0,
+                state: SourcePlayerState::zeroed(QvmAbi::Modern),
+            }],
+            commands: vec![SceneCommand {
+                sequence: 1,
+                recipient: None,
+                text: "cs 0 x".to_string(),
+            }],
         };
         let captured = capture_mod_scene_publication(&scene, QvmAbi::Modern);
         let restored = read_mod_scene_publication(&ProfileReader::new(&captured), QvmAbi::Modern, &|saved| {
@@ -747,8 +835,20 @@ mod tests {
         let captured = capture_scene_context(&context, QvmAbi::Modern).unwrap();
         let owner = IdentityOwner::create("test").unwrap();
         let actor = owner.actor(0, 0);
-        let restored = read_scene_context(&ProfileReader::new(&captured), QvmAbi::Modern, &|_| Ok(actor.clone()), 0).unwrap();
+        let restored = read_scene_context(
+            &ProfileReader::new(&captured),
+            QvmAbi::Modern,
+            &|_| Ok(actor.clone()),
+            0,
+        )
+        .unwrap();
         assert_eq!(restored.revision, 1);
-        assert!(read_scene_context(&ProfileReader::new(&captured), QvmAbi::Modern, &|_| Ok(actor.clone()), 2).is_err());
+        assert!(read_scene_context(
+            &ProfileReader::new(&captured),
+            QvmAbi::Modern,
+            &|_| Ok(actor.clone()),
+            2
+        )
+        .is_err());
     }
 }

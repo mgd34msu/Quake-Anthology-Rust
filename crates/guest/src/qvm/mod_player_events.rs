@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use qa_core::identity::{ActorId, SavedActorId};
 use qa_core::math::Vec3;
 
-use super::mod_presentation_checkpoint::{SourcePlayerState, read_saved_actor_id};
+use super::mod_presentation_checkpoint::{read_saved_actor_id, SourcePlayerState};
 use super::mod_provider::{ModuleId, ProfileReader, QvmAbi};
 use crate::error::GuestError;
 
@@ -154,7 +154,10 @@ pub fn read_qvm_player_events(reader: &ProfileReader<'_>) -> Result<Option<QvmPl
         let sequence = read_int32(&value.field("sequence")?)?;
         let observed = read_int32(&value.field("observedSequence")?)?;
         let predictable = value.field("predictable")?.list(|entry| {
-            Ok((read_int32(&entry.field("sequence")?)?, read_order(&entry.field("order")?)?))
+            Ok((
+                read_int32(&entry.field("sequence")?)?,
+                read_order(&entry.field("order")?)?,
+            ))
         })?;
         let sequences: HashSet<i32> = predictable.iter().map(|(sequence, _)| *sequence).collect();
         if predictable.len() > 2
@@ -162,7 +165,8 @@ pub fn read_qvm_player_events(reader: &ProfileReader<'_>) -> Result<Option<QvmPl
             || predictable.iter().any(|(sequence, _)| {
                 let delta = observed.wrapping_sub(*sequence);
                 !(1..=2).contains(&delta)
-            }) {
+            })
+        {
             return value.fail("invalid predictable player event cursor");
         }
         Ok(SavedCursor {
@@ -191,7 +195,14 @@ pub struct QvmPlayerEvents<M: PlayerEventMemory, O: PlayerEventOps> {
 impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
     /// Create a tracker.
     pub fn new(memory: M, ops: O, module: ModuleId, abi: QvmAbi) -> Self {
-        Self { memory, ops, module, abi, entries: HashMap::new(), next_order: 0 }
+        Self {
+            memory,
+            ops,
+            module,
+            abi,
+            entries: HashMap::new(),
+            next_order: 0,
+        }
     }
 
     /// Borrow the memory.
@@ -210,7 +221,10 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
     }
 
     fn ordinal(&mut self) -> Result<u64, GuestError> {
-        let order = self.next_order.checked_add(1).ok_or_else(|| GuestError::invalid("Player event publication sequence exhausted"))?;
+        let order = self
+            .next_order
+            .checked_add(1)
+            .ok_or_else(|| GuestError::invalid("Player event publication sequence exhausted"))?;
         self.next_order = order;
         Ok(order - 1)
     }
@@ -222,7 +236,9 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
         }
         let sequence = self.memory.read_i32(address + 108)?;
         if saved.is_some_and(|saved| saved.observed_sequence != sequence) {
-            return Err(GuestError::invalid("Player event cursor differs from restored source sequence"));
+            return Err(GuestError::invalid(
+                "Player event cursor differs from restored source sequence",
+            ));
         }
         let cursor = match saved {
             None => Cursor {
@@ -248,7 +264,9 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
 
     /// Observe source writes touching `offsets` (player-record relative).
     pub fn notify_write(&mut self, actor: &ActorId, offsets: &[usize]) -> Result<(), GuestError> {
-        let Some(entry) = self.entries.get(actor) else { return Ok(()) };
+        let Some(entry) = self.entries.get(actor) else {
+            return Ok(());
+        };
         let address = entry.address;
         if offsets.contains(&108) {
             let next = self.memory.read_i32(address + 108)?;
@@ -258,17 +276,32 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
                 cursor.sequence = next;
                 cursor.predictable.clear();
             } else if delta > 0 {
-                cursor.predictable.retain(|sequence, _| next.wrapping_sub(*sequence) <= 2);
+                cursor
+                    .predictable
+                    .retain(|sequence, _| next.wrapping_sub(*sequence) <= 2);
                 for step in (1..=delta.min(2)).rev() {
                     let order = self.ordinal()?;
-                    self.entries.get_mut(actor).expect("checked entry").cursor.predictable.insert(next.wrapping_sub(step), order);
+                    self.entries
+                        .get_mut(actor)
+                        .expect("checked entry")
+                        .cursor
+                        .predictable
+                        .insert(next.wrapping_sub(step), order);
                 }
             }
-            self.entries.get_mut(actor).expect("checked entry").cursor.observed_sequence = next;
+            self.entries
+                .get_mut(actor)
+                .expect("checked entry")
+                .cursor
+                .observed_sequence = next;
         }
         if offsets.contains(&128) {
             let order = self.ordinal()?;
-            self.entries.get_mut(actor).expect("checked entry").cursor.external_order = Some(order);
+            self.entries
+                .get_mut(actor)
+                .expect("checked entry")
+                .cursor
+                .external_order = Some(order);
         }
         Ok(())
     }
@@ -285,7 +318,8 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
             let address = entry.address;
             let ps = self.memory.read_player_state(address)?;
             let cursor = &self.entries.get(actor).expect("tracked actor").cursor;
-            let external = ps.external_event() != 0 && (ps.external_event() != cursor.external || ps.external_event_time() != cursor.external_time);
+            let external = ps.external_event() != 0
+                && (ps.external_event() != cursor.external || ps.external_event_time() != cursor.external_time);
             let count = (ps.event_sequence().wrapping_sub(cursor.sequence)).clamp(0, 2);
             if external || count != 0 {
                 let origin = self.ops.origin(actor)?;
@@ -296,17 +330,22 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
                         Some(order) => order,
                         None => self.ordinal()?,
                     };
-                    pending.push((order, SourcePlayerEvent {
-                        actor: actor.clone(),
-                        module: self.module.clone(),
-                        abi: self.abi,
-                        player_state: ps.clone(),
-                        origin,
-                        time,
-                        event: ps.external_event(),
-                        parameter: ps.external_event_param(),
-                        sequence: PlayerEventSequence::External { time: ps.external_event_time() },
-                    }));
+                    pending.push((
+                        order,
+                        SourcePlayerEvent {
+                            actor: actor.clone(),
+                            module: self.module.clone(),
+                            abi: self.abi,
+                            player_state: ps.clone(),
+                            origin,
+                            time,
+                            event: ps.external_event(),
+                            parameter: ps.external_event_param(),
+                            sequence: PlayerEventSequence::External {
+                                time: ps.external_event_time(),
+                            },
+                        },
+                    ));
                 }
                 for step in (1..=count).rev() {
                     let sequence = ps.event_sequence().wrapping_sub(step);
@@ -319,17 +358,20 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
                             Some(order) => order,
                             None => self.ordinal()?,
                         };
-                        pending.push((order, SourcePlayerEvent {
-                            actor: actor.clone(),
-                            module: self.module.clone(),
-                            abi: self.abi,
-                            player_state: ps.clone(),
-                            origin,
-                            time,
-                            event,
-                            parameter: ps.event_parameters()[slot],
-                            sequence: PlayerEventSequence::Predictable { sequence },
-                        }));
+                        pending.push((
+                            order,
+                            SourcePlayerEvent {
+                                actor: actor.clone(),
+                                module: self.module.clone(),
+                                abi: self.abi,
+                                player_state: ps.clone(),
+                                origin,
+                                time,
+                                event,
+                                parameter: ps.event_parameters()[slot],
+                                sequence: PlayerEventSequence::Predictable { sequence },
+                            },
+                        ));
                     }
                 }
             }
@@ -384,7 +426,12 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
                     sequence: entry.cursor.sequence,
                     observed_sequence: entry.cursor.observed_sequence,
                     external_order: entry.cursor.external_order,
-                    predictable: entry.cursor.predictable.iter().map(|(sequence, order)| (*sequence, *order)).collect(),
+                    predictable: entry
+                        .cursor
+                        .predictable
+                        .iter()
+                        .map(|(sequence, order)| (*sequence, *order))
+                        .collect(),
                 })
                 .collect(),
         }
@@ -400,7 +447,12 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
         self.close();
         self.next_order = saved.map_or(0, |saved| saved.next_order);
         for (actor, address) in players {
-            let cursor = saved.and_then(|saved| saved.clients.iter().find(|entry| reference_saved(entry.actor).as_ref() == Some(actor)));
+            let cursor = saved.and_then(|saved| {
+                saved
+                    .clients
+                    .iter()
+                    .find(|entry| reference_saved(entry.actor).as_ref() == Some(actor))
+            });
             if saved.is_some() && cursor.is_none() {
                 return Err(GuestError::invalid("Missing restored player event cursor"));
             }
@@ -442,7 +494,10 @@ mod tests {
 
     impl PlayerEventMemory for FixtureMemory {
         fn read_player_state(&self, address: usize) -> Result<SourcePlayerState, GuestError> {
-            self.states.get(&address).cloned().ok_or_else(|| GuestError::invalid("missing player record"))
+            self.states
+                .get(&address)
+                .cloned()
+                .ok_or_else(|| GuestError::invalid("missing player record"))
         }
 
         fn read_i32(&self, address: usize) -> Result<i32, GuestError> {
@@ -466,7 +521,10 @@ mod tests {
         fn with_live(actor: &ActorId) -> Self {
             let mut live = HashSet::new();
             live.insert(actor.clone());
-            Self { live, emitted: Vec::new() }
+            Self {
+                live,
+                emitted: Vec::new(),
+            }
         }
     }
 
@@ -489,7 +547,12 @@ mod tests {
     }
 
     fn module() -> ModuleId {
-        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+        ModuleId {
+            id: "test:game".to_string(),
+            artifact_path: "vm/qagame.qvm".to_string(),
+            digest: "sha256:game".to_string(),
+            revision: "1".to_string(),
+        }
     }
 
     fn write_word(state: &mut SourcePlayerState, offset: usize, value: i32) {
@@ -504,8 +567,17 @@ mod tests {
         state
     }
 
-    fn tracker(actor: &ActorId, address: usize, state: SourcePlayerState) -> QvmPlayerEvents<FixtureMemory, FixtureOps> {
-        let mut tracker = QvmPlayerEvents::new(FixtureMemory::with_state(address, state), FixtureOps::with_live(actor), module(), QvmAbi::Modern);
+    fn tracker(
+        actor: &ActorId,
+        address: usize,
+        state: SourcePlayerState,
+    ) -> QvmPlayerEvents<FixtureMemory, FixtureOps> {
+        let mut tracker = QvmPlayerEvents::new(
+            FixtureMemory::with_state(address, state),
+            FixtureOps::with_live(actor),
+            module(),
+            QvmAbi::Modern,
+        );
         tracker.track(actor.clone(), address, None).expect("track");
         tracker
     }
@@ -577,9 +649,15 @@ mod tests {
             QvmAbi::Modern,
         );
         let reference = |saved: SavedActorId| {
-            if saved.slot == actor.slot() && saved.generation == actor.generation() { Some(actor.clone()) } else { None }
+            if saved.slot == actor.slot() && saved.generation == actor.generation() {
+                Some(actor.clone())
+            } else {
+                None
+            }
         };
-        restored.restore(Some(&saved), &[(actor.clone(), 0x1000)], &reference).expect("restore");
+        restored
+            .restore(Some(&saved), &[(actor.clone(), 0x1000)], &reference)
+            .expect("restore");
         restored.publish().expect("publish");
         assert!(restored.ops().emitted.is_empty());
         assert_eq!(restored.checkpoint(), saved);
@@ -592,11 +670,22 @@ mod tests {
         let other = owner.actor(4, 0);
         let tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
         let saved = tracker.checkpoint();
-        let mut restored = QvmPlayerEvents::new(FixtureMemory::with_state(0x2000, player_state(10, 0, 0)), FixtureOps::with_live(&other), module(), QvmAbi::Modern);
+        let mut restored = QvmPlayerEvents::new(
+            FixtureMemory::with_state(0x2000, player_state(10, 0, 0)),
+            FixtureOps::with_live(&other),
+            module(),
+            QvmAbi::Modern,
+        );
         let reference = |saved: SavedActorId| {
-            if saved.slot == other.slot() && saved.generation == other.generation() { Some(other.clone()) } else { None }
+            if saved.slot == other.slot() && saved.generation == other.generation() {
+                Some(other.clone())
+            } else {
+                None
+            }
         };
-        assert!(restored.restore(Some(&saved), &[(other.clone(), 0x2000)], &reference).is_err());
+        assert!(restored
+            .restore(Some(&saved), &[(other.clone(), 0x2000)], &reference)
+            .is_err());
     }
 
     #[test]
@@ -619,7 +708,14 @@ mod tests {
         assert_eq!(emitted[0].actor, other);
     }
 
-    fn checkpoint_value(next_order: i64, actor: &ActorId, sequence: i64, observed: i64, external_order: ProfileValue, predictable: ProfileValue) -> ProfileValue {
+    fn checkpoint_value(
+        next_order: i64,
+        actor: &ActorId,
+        sequence: i64,
+        observed: i64,
+        external_order: ProfileValue,
+        predictable: ProfileValue,
+    ) -> ProfileValue {
         ProfileValue::record(vec![
             ("nextOrder", ProfileValue::Int(next_order)),
             (
@@ -641,19 +737,38 @@ mod tests {
     fn read_checkpoint_validates_publication_orders() {
         let owner = IdentityOwner::create("test").expect("owner");
         let actor = owner.actor(3, 0);
-        let entry = ProfileValue::record(vec![("sequence", ProfileValue::Int(11)), ("order", ProfileValue::Int(0))]);
-        let value = checkpoint_value(2, &actor, 10, 12, ProfileValue::Int(1), ProfileValue::Array(vec![entry]));
-        let read = read_qvm_player_events(&ProfileReader::new(&value)).expect("read").expect("present");
+        let entry = ProfileValue::record(vec![
+            ("sequence", ProfileValue::Int(11)),
+            ("order", ProfileValue::Int(0)),
+        ]);
+        let value = checkpoint_value(
+            2,
+            &actor,
+            10,
+            12,
+            ProfileValue::Int(1),
+            ProfileValue::Array(vec![entry]),
+        );
+        let read = read_qvm_player_events(&ProfileReader::new(&value))
+            .expect("read")
+            .expect("present");
         assert_eq!(read.next_order, 2);
         assert_eq!(read.clients.len(), 1);
         assert_eq!(read.clients[0].external_order, Some(1));
         let duplicate = ProfileValue::Array(vec![
-            ProfileValue::record(vec![("sequence", ProfileValue::Int(11)), ("order", ProfileValue::Int(0))]),
-            ProfileValue::record(vec![("sequence", ProfileValue::Int(10)), ("order", ProfileValue::Int(0))]),
+            ProfileValue::record(vec![
+                ("sequence", ProfileValue::Int(11)),
+                ("order", ProfileValue::Int(0)),
+            ]),
+            ProfileValue::record(vec![
+                ("sequence", ProfileValue::Int(10)),
+                ("order", ProfileValue::Int(0)),
+            ]),
         ]);
         let bad = checkpoint_value(2, &actor, 10, 12, ProfileValue::Null, duplicate);
         assert!(read_qvm_player_events(&ProfileReader::new(&bad)).is_err());
-        assert!(read_qvm_player_events(&ProfileReader::new(&ProfileValue::Undefined)).expect("absent").is_none());
+        assert!(read_qvm_player_events(&ProfileReader::new(&ProfileValue::Undefined))
+            .expect("absent")
+            .is_none());
     }
 }
-   

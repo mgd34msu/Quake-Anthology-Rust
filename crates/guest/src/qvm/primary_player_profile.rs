@@ -19,10 +19,14 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::mod_provider::{
-    InputPointerKind, ModuleId, ProfileReader, ProfileValue, QVM_MAX_PRIVATE_ARGUMENT_WORDS, QvmAbi, QvmArtifact, QvmModInputPointer, QvmOpcode,
-    QvmRegionEvaluation, namespaced_id, qualify_qvm_region, qualify_qvm_region_evaluation, qvm_player_state_bytes, qvm_shared_entity_bytes,
+    namespaced_id, qualify_qvm_region, qualify_qvm_region_evaluation, qvm_player_state_bytes, qvm_shared_entity_bytes,
+    InputPointerKind, ModuleId, ProfileReader, ProfileValue, QvmAbi, QvmArtifact, QvmModInputPointer, QvmOpcode,
+    QvmRegionEvaluation, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
-use super::mod_weapon_stage::{QvmItemField, QvmItemTest, QvmWeaponDispatcherDefinition, StagePredicate, StageRequest, StageSelection, TestComparison, validate_qvm_weapon_dispatcher};
+use super::mod_weapon_stage::{
+    validate_qvm_weapon_dispatcher, QvmItemField, QvmItemTest, QvmWeaponDispatcherDefinition, StagePredicate,
+    StageRequest, StageSelection, TestComparison,
+};
 use crate::error::GuestError;
 
 // ---------------------------------------------------------------------------
@@ -30,7 +34,16 @@ use crate::error::GuestError;
 // ---------------------------------------------------------------------------
 
 /// Damage-call role names.
-pub const QVM_DAMAGE_ROLES: [&str; 8] = ["target", "inflictor", "attacker", "direction", "point", "amount", "flags", "method"];
+pub const QVM_DAMAGE_ROLES: [&str; 8] = [
+    "target",
+    "inflictor",
+    "attacker",
+    "direction",
+    "point",
+    "amount",
+    "flags",
+    "method",
+];
 /// Armor-call role names.
 pub const QVM_ARMOR_ROLES: [&str; 3] = ["target", "amount", "flags"];
 
@@ -69,7 +82,17 @@ impl QvmCombatCall {
     /// Build a damage call.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub fn damage(target: usize, inflictor: usize, attacker: usize, direction: usize, point: usize, amount: usize, flags: usize, method: usize, extras: Vec<QvmCombatExtra>) -> Self {
+    pub fn damage(
+        target: usize,
+        inflictor: usize,
+        attacker: usize,
+        direction: usize,
+        point: usize,
+        amount: usize,
+        flags: usize,
+        method: usize,
+        extras: Vec<QvmCombatExtra>,
+    ) -> Self {
         Self {
             roles: BTreeMap::from([
                 ("target".to_string(), target),
@@ -88,41 +111,66 @@ impl QvmCombatCall {
     /// Build an armor call.
     #[must_use]
     pub fn armor(target: usize, amount: usize, flags: usize, extras: Vec<QvmCombatExtra>) -> Self {
-        Self { roles: BTreeMap::from([("target".to_string(), target), ("amount".to_string(), amount), ("flags".to_string(), flags)]), extras }
+        Self {
+            roles: BTreeMap::from([
+                ("target".to_string(), target),
+                ("amount".to_string(), amount),
+                ("flags".to_string(), flags),
+            ]),
+            extras,
+        }
     }
 }
 
 /// Validate combat argument positions cover each word exactly once.
 pub fn validate_qvm_combat_positions(positions: &[usize], words: usize) -> Result<(), GuestError> {
     if words < positions.len() || words > QVM_MAX_PRIVATE_ARGUMENT_WORDS {
-        return Err(GuestError::invalid("Source combat call exceeds the QVM OP_ARG capacity or omits required arguments"));
+        return Err(GuestError::invalid(
+            "Source combat call exceeds the QVM OP_ARG capacity or omits required arguments",
+        ));
     }
-    if positions.iter().collect::<HashSet<_>>().len() != positions.len() || positions.iter().any(|index| *index >= words) {
-        return Err(GuestError::invalid("Source combat argument positions must cover each declared role exactly once within the original call"));
+    if positions.iter().collect::<HashSet<_>>().len() != positions.len()
+        || positions.iter().any(|index| *index >= words)
+    {
+        return Err(GuestError::invalid(
+            "Source combat argument positions must cover each declared role exactly once within the original call",
+        ));
     }
     Ok(())
 }
 
 /// Validate one combat call against its artifact data.
 pub fn validate_qvm_combat_call(call: &QvmCombatCall, data_bytes: usize) -> Result<(), GuestError> {
-    let positions: Vec<usize> = call.roles.values().copied().chain(call.extras.iter().map(|extra| extra.index)).collect();
+    let positions: Vec<usize> = call
+        .roles
+        .values()
+        .copied()
+        .chain(call.extras.iter().map(|extra| extra.index))
+        .collect();
     let words = positions.len();
     validate_qvm_combat_positions(&positions, words)?;
     for extra in &call.extras {
         match extra.kind {
             QvmCombatExtraKind::Float32 => {
                 if !extra.value.is_finite() || !(extra.value as f32).is_finite() {
-                    return Err(GuestError::invalid("Source combat extra requires a finite binary32 value"));
+                    return Err(GuestError::invalid(
+                        "Source combat extra requires a finite binary32 value",
+                    ));
                 }
             }
             QvmCombatExtraKind::Address => {
                 if extra.value.fract() != 0.0 || extra.value < 0.0 || extra.value >= data_bytes as f64 {
-                    return Err(GuestError::invalid("Source combat extra address is outside its artifact data"));
+                    return Err(GuestError::invalid(
+                        "Source combat extra address is outside its artifact data",
+                    ));
                 }
             }
             QvmCombatExtraKind::Int32 => {
-                if extra.value.fract() != 0.0 || extra.value < f64::from(i32::MIN) || extra.value > f64::from(i32::MAX) {
-                    return Err(GuestError::invalid("Source combat extra requires a signed integer word"));
+                if extra.value.fract() != 0.0 || extra.value < f64::from(i32::MIN) || extra.value > f64::from(i32::MAX)
+                {
+                    return Err(GuestError::invalid(
+                        "Source combat extra requires a signed integer word",
+                    ));
                 }
             }
         }
@@ -202,7 +250,11 @@ fn read_integer(reader: &ProfileReader<'_>, minimum: i64, maximum: i64) -> Resul
 
 fn read_entry(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<usize, GuestError> {
     let value = reader.integer(0)? as usize;
-    if artifact.image.instruction(value).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+    if artifact
+        .image
+        .instruction(value)
+        .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+    {
         return reader.fail("not an original function entry");
     }
     Ok(value)
@@ -233,35 +285,47 @@ fn read_fraction(reader: &ProfileReader<'_>) -> Result<f64, GuestError> {
 }
 
 fn read_region(reader: &ProfileReader<'_>) -> Result<RegionRef, GuestError> {
-    Ok(RegionRef { entry: reader.field("entry")?.integer(0)? as usize, join: reader.field("join")?.integer(0)? as usize })
+    Ok(RegionRef {
+        entry: reader.field("entry")?.integer(0)? as usize,
+        join: reader.field("join")?.integer(0)? as usize,
+    })
 }
 
 fn read_evaluation(reader: &ProfileReader<'_>) -> Result<QvmRegionEvaluation, GuestError> {
     Ok(QvmRegionEvaluation {
         entry: reader.field("entry")?.integer(0)? as usize,
         join: reader.field("join")?.integer(0)? as usize,
-        inputs: reader.field("inputs")?.list(|value| value.integer(0).map(|offset| offset as usize))?,
-        result: reader.field("result")?.nullable(|value| value.integer(0).map(|offset| offset as usize))?,
+        inputs: reader
+            .field("inputs")?
+            .list(|value| value.integer(0).map(|offset| offset as usize))?,
+        result: reader
+            .field("result")?
+            .nullable(|value| value.integer(0).map(|offset| offset as usize))?,
     })
 }
 
 fn read_source_pointer(reader: &ProfileReader<'_>, data_bytes: usize) -> Result<QvmModInputPointer, GuestError> {
     let kind = reader.field("kind")?.choice(&["argument", "global"])?;
     let offset = reader.field("offset")?.integer(0)? as usize;
-    let indirections =
-        reader.field("indirections")?.list(|value| value.integer(0).map(|step| step as usize))?;
+    let indirections = reader
+        .field("indirections")?
+        .list(|value| value.integer(0).map(|step| step as usize))?;
     if offset % 4 != 0 || indirections.iter().any(|step| step % 4 != 0) {
         return reader.fail("source pointer path must use aligned words");
     }
     if kind == "argument" {
         Ok(QvmModInputPointer {
-            kind: InputPointerKind::Argument { index: read_integer(&reader.field("index")?, 0, QVM_MAX_PRIVATE_ARGUMENT_WORDS as i64 - 1)? as usize },
+            kind: InputPointerKind::Argument {
+                index: read_integer(&reader.field("index")?, 0, QVM_MAX_PRIVATE_ARGUMENT_WORDS as i64 - 1)? as usize,
+            },
             indirections,
             offset,
         })
     } else {
         Ok(QvmModInputPointer {
-            kind: InputPointerKind::Global { address: read_aligned(&reader.field("address")?, data_bytes, 4)? },
+            kind: InputPointerKind::Global {
+                address: read_aligned(&reader.field("address")?, data_bytes, 4)?,
+            },
             indirections,
             offset,
         })
@@ -286,12 +350,25 @@ fn read_layout(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<Pri
         return reader.fail("primary player services require a qagame ABI");
     }
     let abi_profile = artifact.abi();
-    let entity_stride = read_integer(&reader.field("entityStride")?, qvm_shared_entity_bytes(abi_profile) as i64, artifact.image.allocated_data_length as i64)? as usize;
-    let client_stride = read_integer(&reader.field("clientStride")?, qvm_player_state_bytes(abi_profile) as i64, artifact.image.allocated_data_length as i64)? as usize;
+    let entity_stride = read_integer(
+        &reader.field("entityStride")?,
+        qvm_shared_entity_bytes(abi_profile) as i64,
+        artifact.image.allocated_data_length as i64,
+    )? as usize;
+    let client_stride = read_integer(
+        &reader.field("clientStride")?,
+        qvm_player_state_bytes(abi_profile) as i64,
+        artifact.image.allocated_data_length as i64,
+    )? as usize;
     if entity_stride % 4 != 0 || client_stride % 4 != 0 {
         return reader.fail("source record strides must be aligned");
     }
-    Ok(PrimaryLayout { module: artifact.module.clone(), abi_profile, entity_stride, client_stride })
+    Ok(PrimaryLayout {
+        module: artifact.module.clone(),
+        abi_profile,
+        entity_stride,
+        client_stride,
+    })
 }
 
 /// Entry/join reference.
@@ -353,7 +430,10 @@ pub struct QvmInputDefinition {
 }
 
 /// Read a primary input definition.
-pub fn read_qvm_primary_input(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<QvmInputDefinition, GuestError> {
+pub fn read_qvm_primary_input(
+    reader: &ProfileReader<'_>,
+    artifact: &QvmArtifact,
+) -> Result<QvmInputDefinition, GuestError> {
     let common = read_layout(reader, artifact)?;
     let entries = reader.field("entries")?;
     let modes = reader.field("movementModes")?;
@@ -458,7 +538,10 @@ pub struct SourcePrimaryMatch {
 }
 
 /// Read a primary match (mirror of `readSourcePrimaryMatch`).
-pub fn read_source_primary_match(reader: &ProfileReader<'_>, client_bytes: usize) -> Result<SourcePrimaryMatch, GuestError> {
+pub fn read_source_primary_match(
+    reader: &ProfileReader<'_>,
+    client_bytes: usize,
+) -> Result<SourcePrimaryMatch, GuestError> {
     let score = read_integer(&reader.field("score")?, 0, i64::MAX)? as usize;
     let teams = reader.field("teams")?.list(|value| {
         Ok(MatchTeam {
@@ -468,13 +551,33 @@ pub fn read_source_primary_match(reader: &ProfileReader<'_>, client_bytes: usize
         })
     })?;
     if score % 4 != 0 || score + 4 > client_bytes {
-        return reader.field("score")?.fail("score is outside the original client record");
+        return reader
+            .field("score")?
+            .fail("score is outside the original client record");
     }
-    if teams.iter().map(|value| value.source.clone()).collect::<HashSet<_>>().len() != teams.len()
-        || teams.iter().map(|value| value.team.clone()).collect::<HashSet<_>>().len() != teams.len()
-        || teams.iter().any(|value| value.arguments.is_empty() || value.arguments.iter().any(|argument| argument.is_empty() || argument.contains(['\0', '\r', '\n'])))
+    if teams
+        .iter()
+        .map(|value| value.source.clone())
+        .collect::<HashSet<_>>()
+        .len()
+        != teams.len()
+        || teams
+            .iter()
+            .map(|value| value.team.clone())
+            .collect::<HashSet<_>>()
+            .len()
+            != teams.len()
+        || teams.iter().any(|value| {
+            value.arguments.is_empty()
+                || value
+                    .arguments
+                    .iter()
+                    .any(|argument| argument.is_empty() || argument.contains(['\0', '\r', '\n']))
+        })
     {
-        return reader.field("teams")?.fail("team changes require distinct identities and complete original command arguments");
+        return reader
+            .field("teams")?
+            .fail("team changes require distinct identities and complete original command arguments");
     }
     Ok(SourcePrimaryMatch { score, teams })
 }
@@ -691,10 +794,21 @@ pub fn read_qvm_primary_weapons(
     let powers = reader.field("powerups")?;
     let torso = reader.field("torsoAnimation")?;
     let equipment_contexts = reader.field("equipmentContexts")?.list(|value| {
-        Ok(SourceEquipmentContext { provider: namespaced_id(&value.field("provider")?)?, item: value.field("item")?.nullable(namespaced_id)? })
+        Ok(SourceEquipmentContext {
+            provider: namespaced_id(&value.field("provider")?)?,
+            item: value.field("item")?.nullable(namespaced_id)?,
+        })
     })?;
-    if equipment_contexts.iter().map(|context| context.provider.clone()).collect::<HashSet<_>>().len() != equipment_contexts.len() {
-        return reader.field("equipmentContexts")?.fail("duplicate equipment source context");
+    if equipment_contexts
+        .iter()
+        .map(|context| context.provider.clone())
+        .collect::<HashSet<_>>()
+        .len()
+        != equipment_contexts.len()
+    {
+        return reader
+            .field("equipmentContexts")?
+            .fail("duplicate equipment source context");
     }
     let damage = reader.field("damageFactor")?;
     let delay_player = reader.field("delayPlayer")?;
@@ -710,7 +824,9 @@ pub fn read_qvm_primary_weapons(
                 record: field.field("record")?.literal_str("client")?,
                 offset: read_aligned(&field.field("offset")?, common.client_stride, 4)?,
             },
-            mask: value.field("mask")?.nullable(|mask| read_integer(mask, 0, 0xffff_ffff).map(|mask| mask as u32))?,
+            mask: value
+                .field("mask")?
+                .nullable(|mask| read_integer(mask, 0, 0xffff_ffff).map(|mask| mask as u32))?,
             comparison: match value.field("comparison")?.choice(&["equals", "at-most"])?.as_str() {
                 "equals" => TestComparison::Equals,
                 _ => TestComparison::AtMost,
@@ -724,7 +840,10 @@ pub fn read_qvm_primary_weapons(
         match_: if reader.field("match")?.is_undefined() {
             None
         } else {
-            Some(read_source_primary_match(&reader.field("match")?, common.client_stride)?)
+            Some(read_source_primary_match(
+                &reader.field("match")?,
+                common.client_stride,
+            )?)
         },
         abi_profile: common.abi_profile,
         entity_stride: common.entity_stride,
@@ -741,7 +860,10 @@ pub fn read_qvm_primary_weapons(
                 },
             },
             predicates: stage.field("predicates")?.list(|value| {
-                Ok(StagePredicate { instruction: value.field("instruction")?.integer(0)? as usize, unselected: value.field("unselected")?.boolean()? })
+                Ok(StagePredicate {
+                    instruction: value.field("instruction")?.integer(0)? as usize,
+                    unselected: value.field("unselected")?.boolean()?,
+                })
             })?,
             settled: stage.field("settled")?.list(&read_test)?,
             selection: StageSelection {
@@ -758,7 +880,11 @@ pub fn read_qvm_primary_weapons(
             },
             request: StageRequest {
                 entry: read_entry(&request.field("entry")?, artifact)?,
-                argument: read_integer(&request.field("argument")?, 0, QVM_MAX_PRIVATE_ARGUMENT_WORDS as i64 - 1)? as usize,
+                argument: read_integer(
+                    &request.field("argument")?,
+                    0,
+                    QVM_MAX_PRIVATE_ARGUMENT_WORDS as i64 - 1,
+                )? as usize,
                 accepted: request.field("accepted")?.list(&read_test)?,
             },
         },
@@ -846,32 +972,97 @@ pub fn read_qvm_primary_weapons(
             },
         },
     };
-    if profile.stage.selection.values.iter().map(|value| value.value).collect::<HashSet<_>>().len() != profile.stage.selection.values.len()
-        || profile.stage.selection.values.iter().map(|value| value.item.clone()).collect::<HashSet<_>>().len() != profile.stage.selection.values.len()
+    if profile
+        .stage
+        .selection
+        .values
+        .iter()
+        .map(|value| value.value)
+        .collect::<HashSet<_>>()
+        .len()
+        != profile.stage.selection.values.len()
+        || profile
+            .stage
+            .selection
+            .values
+            .iter()
+            .map(|value| value.item.clone())
+            .collect::<HashSet<_>>()
+            .len()
+            != profile.stage.selection.values.len()
     {
         return selection.fail("weapon selection repeats source values or identities");
     }
     if let Some(catalog) = catalog {
         if profile.stage.selection.values.len() != catalog.len()
-            || profile.stage.selection.values.iter().any(|value| !catalog.iter().any(|item| item.weapon == value.value && item.item == value.item))
+            || profile.stage.selection.values.iter().any(|value| {
+                !catalog
+                    .iter()
+                    .any(|item| item.weapon == value.value && item.item == value.item)
+            })
         {
             return selection.fail("weapon selection differs from the original item catalog");
         }
     }
     if let DropAmmo::Offset(ammo) = profile.drop.ammo {
-        if profile.stage.selection.values.iter().any(|value| ammo + value.value as usize * 4 + 4 > common.client_stride) {
+        if profile
+            .stage
+            .selection
+            .values
+            .iter()
+            .any(|value| ammo + value.value as usize * 4 + 4 > common.client_stride)
+        {
             return drop.fail("original drop ammo indexing exceeds its declared client record");
         }
     }
     validate_qvm_weapon_dispatcher(&profile.stage, &artifact.image)?;
-    qualify_qvm_region(&artifact.image.instructions, profile.equipment_movement.slice, profile.equipment_movement.locomotion.entry, profile.equipment_movement.locomotion.join)?;
-    qualify_qvm_region(&artifact.image.instructions, profile.damage_factor.entry, profile.damage_factor.stop.entry, profile.damage_factor.stop.join)?;
-    qualify_qvm_region_evaluation(&artifact.image.instructions, profile.stage.dispatcher.entry, &profile.delay, false)?;
-    qualify_qvm_region_evaluation(&artifact.image.instructions, profile.teleport.entry, &profile.teleport.region, false)?;
-    qualify_qvm_region_evaluation(&artifact.image.instructions, profile.teleport.entry, &profile.teleport.objectives, false)?;
-    qualify_qvm_region(&artifact.image.instructions, profile.give.entry, profile.give.named.entry, profile.give.named.join)?;
-    qualify_qvm_region(&artifact.image.instructions, profile.drop.entry, profile.drop.region.entry, profile.drop.region.join)?;
-    if profile.delay.inputs.len() != 1 || profile.delay.result.is_none() || !profile.teleport.region.inputs.is_empty() || !profile.teleport.objectives.inputs.is_empty() {
+    qualify_qvm_region(
+        &artifact.image.instructions,
+        profile.equipment_movement.slice,
+        profile.equipment_movement.locomotion.entry,
+        profile.equipment_movement.locomotion.join,
+    )?;
+    qualify_qvm_region(
+        &artifact.image.instructions,
+        profile.damage_factor.entry,
+        profile.damage_factor.stop.entry,
+        profile.damage_factor.stop.join,
+    )?;
+    qualify_qvm_region_evaluation(
+        &artifact.image.instructions,
+        profile.stage.dispatcher.entry,
+        &profile.delay,
+        false,
+    )?;
+    qualify_qvm_region_evaluation(
+        &artifact.image.instructions,
+        profile.teleport.entry,
+        &profile.teleport.region,
+        false,
+    )?;
+    qualify_qvm_region_evaluation(
+        &artifact.image.instructions,
+        profile.teleport.entry,
+        &profile.teleport.objectives,
+        false,
+    )?;
+    qualify_qvm_region(
+        &artifact.image.instructions,
+        profile.give.entry,
+        profile.give.named.entry,
+        profile.give.named.join,
+    )?;
+    qualify_qvm_region(
+        &artifact.image.instructions,
+        profile.drop.entry,
+        profile.drop.region.entry,
+        profile.drop.region.join,
+    )?;
+    if profile.delay.inputs.len() != 1
+        || profile.delay.result.is_none()
+        || !profile.teleport.region.inputs.is_empty()
+        || !profile.teleport.objectives.inputs.is_empty()
+    {
         return reader.fail("source effect region inputs differ from the primary player ABI");
     }
     let give_entry = artifact.image.instruction(profile.give.entry);
@@ -899,10 +1090,18 @@ pub fn read_qvm_primary_weapons(
     for pc in [profile.give.weapons, profile.give.ammo] {
         let opcode = artifact.image.instruction(pc).map(|instruction| instruction.opcode);
         let mut owner = pc as i64;
-        while owner >= 0 && artifact.image.instruction(owner as usize).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+        while owner >= 0
+            && artifact
+                .image
+                .instruction(owner as usize)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        {
             owner -= 1;
         }
-        if owner != profile.give.entry as i64 || opcode.is_none_or(|opcode| !opcode.is_branch()) || pc <= profile.give.entry {
+        if owner != profile.give.entry as i64
+            || opcode.is_none_or(|opcode| !opcode.is_branch())
+            || pc <= profile.give.entry
+        {
             return give.fail("give completion is not an original decision");
         }
     }
@@ -1100,7 +1299,10 @@ fn read_combat_extras(reader: &ProfileReader<'_>) -> Result<Vec<QvmCombatExtra>,
 }
 
 /// Read a primary combat profile.
-pub fn read_qvm_primary_combat(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<QvmPrimaryCombatProfile, GuestError> {
+pub fn read_qvm_primary_combat(
+    reader: &ProfileReader<'_>,
+    artifact: &QvmArtifact,
+) -> Result<QvmPrimaryCombatProfile, GuestError> {
     let common = read_layout(reader, artifact)?;
     let fields = reader.field("fields")?;
     let callbacks = reader.field("callbacks")?;
@@ -1177,7 +1379,8 @@ pub fn read_qvm_primary_combat(reader: &ProfileReader<'_>, artifact: &QvmArtifac
                                 "equal" => TierComparison::Equal,
                                 _ => TierComparison::NotEqual,
                             },
-                            value: read_integer(&value.field("value")?, i64::from(i32::MIN), i64::from(i32::MAX))? as i32,
+                            value: read_integer(&value.field("value")?, i64::from(i32::MIN), i64::from(i32::MAX))?
+                                as i32,
                         })
                     })?,
                     values: tiers.field("values")?.list(|value| {
@@ -1234,15 +1437,30 @@ pub fn read_qvm_primary_combat(reader: &ProfileReader<'_>, artifact: &QvmArtifac
             no_team_protection: read_mask(&damage_flags.field("noTeamProtection")?)?,
         },
     };
-    validate_qvm_combat_call(&result.damage_call, data_bytes).map_err(|error| GuestError::invalid(format!("combat: {error}")))?;
-    validate_qvm_combat_call(&result.armor.call, data_bytes).map_err(|error| GuestError::invalid(format!("armor: {error}")))?;
+    validate_qvm_combat_call(&result.damage_call, data_bytes)
+        .map_err(|error| GuestError::invalid(format!("combat: {error}")))?;
+    validate_qvm_combat_call(&result.armor.call, data_bytes)
+        .map_err(|error| GuestError::invalid(format!("armor: {error}")))?;
     if matches!(result.state.mass, QvmCombatMass::Constant(value) if value < 0.0) {
         return mass.fail("source mass must be nonnegative");
     }
-    if result.state.team.values.iter().map(|value| value.value).collect::<HashSet<_>>().len() != result.state.team.values.len() {
+    if result
+        .state
+        .team
+        .values
+        .iter()
+        .map(|value| value.value)
+        .collect::<HashSet<_>>()
+        .len()
+        != result.state.team.values.len()
+    {
         return team.fail("source team values must be unique");
     }
-    let state_masks = [result.state.flags.notarget, result.state.flags.invulnerable, result.state.flags.no_knockback];
+    let state_masks = [
+        result.state.flags.notarget,
+        result.state.flags.invulnerable,
+        result.state.flags.no_knockback,
+    ];
     let damage_masks = [
         result.damage_flags.radius,
         result.damage_flags.no_armor,
@@ -1250,7 +1468,9 @@ pub fn read_qvm_primary_combat(reader: &ProfileReader<'_>, artifact: &QvmArtifac
         result.damage_flags.no_protection,
         result.damage_flags.no_team_protection,
     ];
-    if state_masks.into_iter().collect::<HashSet<_>>().len() != state_masks.len() || damage_masks.into_iter().collect::<HashSet<_>>().len() != damage_masks.len() {
+    if state_masks.into_iter().collect::<HashSet<_>>().len() != state_masks.len()
+        || damage_masks.into_iter().collect::<HashSet<_>>().len() != damage_masks.len()
+    {
         return reader.fail("source combat flags overlap");
     }
     if let Some(tier) = result.armor.tiers.as_ref() {
@@ -1287,7 +1507,12 @@ mod tests {
     }
 
     fn fixture_module() -> ModuleId {
-        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+        ModuleId {
+            id: "test:game".to_string(),
+            artifact_path: "vm/qagame.qvm".to_string(),
+            digest: "sha256:game".to_string(),
+            revision: "1".to_string(),
+        }
     }
 
     fn enters(count: usize) -> Vec<QvmInstruction> {
@@ -1388,26 +1613,53 @@ mod tests {
             (
                 "stage",
                 rec(vec![
-                    ("dispatcher", rec(vec![
-                        ("entry", int(0)),
-                        (
-                            "actor",
-                            rec(vec![
-                                ("record", text("client")),
-                                ("pointer", rec(vec![("kind", text("argument")), ("index", int(0)), ("offset", int(0)), ("indirections", arr(vec![]))])),
-                            ]),
-                        ),
-                    ])),
-                    ("predicates", arr(vec![rec(vec![("instruction", int(1)), ("unselected", ProfileValue::Bool(false))])])),
+                    (
+                        "dispatcher",
+                        rec(vec![
+                            ("entry", int(0)),
+                            (
+                                "actor",
+                                rec(vec![
+                                    ("record", text("client")),
+                                    (
+                                        "pointer",
+                                        rec(vec![
+                                            ("kind", text("argument")),
+                                            ("index", int(0)),
+                                            ("offset", int(0)),
+                                            ("indirections", arr(vec![])),
+                                        ]),
+                                    ),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    (
+                        "predicates",
+                        arr(vec![rec(vec![
+                            ("instruction", int(1)),
+                            ("unselected", ProfileValue::Bool(false)),
+                        ])]),
+                    ),
                     ("settled", arr(vec![test_value(8)])),
                     (
                         "selection",
                         rec(vec![
                             ("field", rec(vec![("record", text("client")), ("offset", int(4))])),
-                            ("values", arr(vec![rec(vec![("value", int(1)), ("item", text("test:mg"))])])),
+                            (
+                                "values",
+                                arr(vec![rec(vec![("value", int(1)), ("item", text("test:mg"))])]),
+                            ),
                         ]),
                     ),
-                    ("request", rec(vec![("entry", int(6)), ("argument", int(0)), ("accepted", arr(vec![test_value(8)]))])),
+                    (
+                        "request",
+                        rec(vec![
+                            ("entry", int(6)),
+                            ("argument", int(0)),
+                            ("accepted", arr(vec![test_value(8)])),
+                        ]),
+                    ),
                 ]),
             ),
             (
@@ -1434,19 +1686,68 @@ mod tests {
                     ("respawnFlag", int(1)),
                 ]),
             ),
-            ("powerups", rec(vec![("quad", int(28)), ("haste", int(32)), ("flight", int(36))])),
-            ("torsoAnimation", rec(vec![("entry", int(34)), ("attack", int(1)), ("melee", int(2))])),
-            ("waterLevel", rec(vec![("entityOffset", int(40)), ("movementOffset", int(500))])),
-            ("damageFactor", rec(vec![("entry", int(16)), ("result", int(200)), ("stop", rec(vec![("entry", int(17)), ("join", int(19))]))])),
-            ("equipmentContexts", arr(vec![rec(vec![("provider", text("test:mod")), ("item", ProfileValue::Null)])])),
-            ("delay", rec(vec![("entry", int(2)), ("join", int(5)), ("inputs", arr(vec![int(8)])), ("result", int(12))])),
-            ("delayPlayer", rec(vec![("movementGlobal", int(120)), ("playerOffset", int(600))])),
+            (
+                "powerups",
+                rec(vec![("quad", int(28)), ("haste", int(32)), ("flight", int(36))]),
+            ),
+            (
+                "torsoAnimation",
+                rec(vec![("entry", int(34)), ("attack", int(1)), ("melee", int(2))]),
+            ),
+            (
+                "waterLevel",
+                rec(vec![("entityOffset", int(40)), ("movementOffset", int(500))]),
+            ),
+            (
+                "damageFactor",
+                rec(vec![
+                    ("entry", int(16)),
+                    ("result", int(200)),
+                    ("stop", rec(vec![("entry", int(17)), ("join", int(19))])),
+                ]),
+            ),
+            (
+                "equipmentContexts",
+                arr(vec![rec(vec![
+                    ("provider", text("test:mod")),
+                    ("item", ProfileValue::Null),
+                ])]),
+            ),
+            (
+                "delay",
+                rec(vec![
+                    ("entry", int(2)),
+                    ("join", int(5)),
+                    ("inputs", arr(vec![int(8)])),
+                    ("result", int(12)),
+                ]),
+            ),
+            (
+                "delayPlayer",
+                rec(vec![("movementGlobal", int(120)), ("playerOffset", int(600))]),
+            ),
             (
                 "teleport",
                 rec(vec![
                     ("entry", int(20)),
-                    ("region", rec(vec![("entry", int(21)), ("join", int(23)), ("inputs", arr(vec![])), ("result", ProfileValue::Null)])),
-                    ("objectives", rec(vec![("entry", int(21)), ("join", int(23)), ("inputs", arr(vec![])), ("result", ProfileValue::Null)])),
+                    (
+                        "region",
+                        rec(vec![
+                            ("entry", int(21)),
+                            ("join", int(23)),
+                            ("inputs", arr(vec![])),
+                            ("result", ProfileValue::Null),
+                        ]),
+                    ),
+                    (
+                        "objectives",
+                        rec(vec![
+                            ("entry", int(21)),
+                            ("join", int(23)),
+                            ("inputs", arr(vec![])),
+                            ("result", ProfileValue::Null),
+                        ]),
+                    ),
                     ("spawn", int(8)),
                     ("view", int(8)),
                 ]),
@@ -1468,7 +1769,15 @@ mod tests {
                     ("argument", int(0)),
                     ("weapons", int(28)),
                     ("ammo", int(29)),
-                    ("named", rec(vec![("entry", int(25)), ("join", int(27)), ("name", int(8)), ("item", int(12))])),
+                    (
+                        "named",
+                        rec(vec![
+                            ("entry", int(25)),
+                            ("join", int(27)),
+                            ("name", int(8)),
+                            ("item", int(12)),
+                        ]),
+                    ),
                 ]),
             ),
         ])
@@ -1483,7 +1792,13 @@ mod tests {
             ("intermission", arr(vec![int(0), int(1)])),
             (
                 "entries",
-                rec(vec![("clientThink", int(0)), ("runClient", int(2)), ("clientSpawn", int(4)), ("move", int(6)), ("slice", int(8))]),
+                rec(vec![
+                    ("clientThink", int(0)),
+                    ("runClient", int(2)),
+                    ("clientSpawn", int(4)),
+                    ("move", int(6)),
+                    ("slice", int(8)),
+                ]),
             ),
         ]);
         let artifact = simple_artifact();
@@ -1494,7 +1809,11 @@ mod tests {
         other.client_pointer = 68;
         assert!(!same_qvm_primary_input(&left, &other));
         other = left.clone();
-        other.movement_modes = Some(MovementModes { normal: 0, noclip: 1, freeze: 2 });
+        other.movement_modes = Some(MovementModes {
+            normal: 0,
+            noclip: 1,
+            freeze: 2,
+        });
         assert!(same_qvm_primary_input(&left, &other));
     }
 
@@ -1506,20 +1825,42 @@ mod tests {
         assert_eq!(profile.stage.dispatcher.entry, 0);
         assert_eq!(profile.teleport.spawn, 8);
         assert_eq!(profile.give.named.name, 8);
-        let catalog = [QvmWeaponCatalogRow { weapon: 1, item: "test:mg".to_string() }];
+        let catalog = [QvmWeaponCatalogRow {
+            weapon: 1,
+            item: "test:mg".to_string(),
+        }];
         read_qvm_primary_weapons(&ProfileReader::new(&declaration), &artifact, Some(&catalog)).unwrap();
-        let wrong = [QvmWeaponCatalogRow { weapon: 2, item: "test:mg".to_string() }];
+        let wrong = [QvmWeaponCatalogRow {
+            weapon: 2,
+            item: "test:mg".to_string(),
+        }];
         assert!(read_qvm_primary_weapons(&ProfileReader::new(&declaration), &artifact, Some(&wrong)).is_err());
     }
 
     #[test]
     fn combat_reads_calls_and_state() {
-        let roles = ["target", "inflictor", "attacker", "direction", "point", "amount", "flags", "method"];
-        let damage_roles = rec(roles.into_iter().enumerate().map(|(index, role)| (role, int(index as i64))).collect());
+        let roles = [
+            "target",
+            "inflictor",
+            "attacker",
+            "direction",
+            "point",
+            "amount",
+            "flags",
+            "method",
+        ];
+        let damage_roles = rec(roles
+            .into_iter()
+            .enumerate()
+            .map(|(index, role)| (role, int(index as i64)))
+            .collect());
         let declaration = rec(vec![
             ("entityStride", int(1024)),
             ("clientStride", int(468)),
-            ("damageCall", rec(vec![("roles", damage_roles), ("extras", arr(vec![]))])),
+            (
+                "damageCall",
+                rec(vec![("roles", damage_roles), ("extras", arr(vec![]))]),
+            ),
             (
                 "state",
                 rec(vec![
@@ -1537,27 +1878,64 @@ mod tests {
                             ),
                         ]),
                     ),
-                    ("flags", rec(vec![("notarget", int(1)), ("invulnerable", int(2)), ("noKnockback", int(4))])),
-                    ("mass", rec(vec![("kind", text("constant")), ("value", ProfileValue::Float(100.0))])),
+                    (
+                        "flags",
+                        rec(vec![
+                            ("notarget", int(1)),
+                            ("invulnerable", int(2)),
+                            ("noKnockback", int(4)),
+                        ]),
+                    ),
+                    (
+                        "mass",
+                        rec(vec![("kind", text("constant")), ("value", ProfileValue::Float(100.0))]),
+                    ),
                 ]),
             ),
             (
                 "damageFlags",
-                rec(vec![("radius", int(1)), ("noArmor", int(2)), ("noKnockback", int(4)), ("noProtection", int(8)), ("noTeamProtection", int(16))]),
+                rec(vec![
+                    ("radius", int(1)),
+                    ("noArmor", int(2)),
+                    ("noKnockback", int(4)),
+                    ("noProtection", int(8)),
+                    ("noTeamProtection", int(16)),
+                ]),
             ),
             (
                 "fields",
-                rec(vec![("inuse", int(516)), ("health", int(520)), ("takedamage", int(524)), ("parent", int(528)), ("client", int(532))]),
+                rec(vec![
+                    ("inuse", int(516)),
+                    ("health", int(520)),
+                    ("takedamage", int(524)),
+                    ("parent", int(528)),
+                    ("client", int(532)),
+                ]),
             ),
-            ("callbacks", rec(vec![("allocate", int(0)), ("free", int(2)), ("damage", int(4))])),
+            (
+                "callbacks",
+                rec(vec![("allocate", int(0)), ("free", int(2)), ("damage", int(4))]),
+            ),
             (
                 "reactions",
                 rec(vec![
                     ("flags", int(536)),
                     ("pain", int(540)),
                     ("die", int(544)),
-                    ("painCall", rec(vec![("arguments", int(2)), ("roles", rec(vec![("target", int(0)), ("amount", int(1))]))])),
-                    ("dieCall", rec(vec![("arguments", int(2)), ("roles", rec(vec![("target", int(0)), ("amount", int(1))]))])),
+                    (
+                        "painCall",
+                        rec(vec![
+                            ("arguments", int(2)),
+                            ("roles", rec(vec![("target", int(0)), ("amount", int(1))])),
+                        ]),
+                    ),
+                    (
+                        "dieCall",
+                        rec(vec![
+                            ("arguments", int(2)),
+                            ("roles", rec(vec![("target", int(0)), ("amount", int(1))])),
+                        ]),
+                    ),
                 ]),
             ),
             ("grappleDamageMethod", int(9)),
@@ -1568,7 +1946,10 @@ mod tests {
                     (
                         "call",
                         rec(vec![
-                            ("roles", rec(vec![("target", int(0)), ("amount", int(1)), ("flags", int(2))])),
+                            (
+                                "roles",
+                                rec(vec![("target", int(0)), ("amount", int(1)), ("flags", int(2))]),
+                            ),
                             ("extras", arr(vec![])),
                         ]),
                     ),
@@ -1590,13 +1971,20 @@ mod tests {
 
     #[test]
     fn match_reader_validates_teams() {
-        let declaration =
-            rec(vec![("score", int(100)), ("teams", arr(vec![rec(vec![("source", text("a")), ("team", text("test:red")), ("arguments", arr(vec![text("join")]))])]))]);
+        let declaration = rec(vec![
+            ("score", int(100)),
+            (
+                "teams",
+                arr(vec![rec(vec![
+                    ("source", text("a")),
+                    ("team", text("test:red")),
+                    ("arguments", arr(vec![text("join")])),
+                ])]),
+            ),
+        ]);
         let result = read_source_primary_match(&ProfileReader::new(&declaration), 468).unwrap();
         assert_eq!(result.teams.len(), 1);
         let bad = rec(vec![("score", int(101)), ("teams", arr(vec![]))]);
         assert!(read_source_primary_match(&ProfileReader::new(&bad), 468).is_err());
     }
 }
-
-

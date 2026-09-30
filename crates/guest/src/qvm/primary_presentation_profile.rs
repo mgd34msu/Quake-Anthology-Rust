@@ -11,9 +11,11 @@
 //! the content/compatibility owners: the caller supplies the loaded
 //! [`CompatibilityEquipment`] section (or `None`) plus a q3 fallback.
 
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
-use super::mod_provider::{ProfileReader, QvmArtifact, QvmOpcode, QVM_MAX_PRIVATE_ARGUMENT_WORDS, QVM_REF_ENTITY_BYTES, qualify_qvm_region};
+use super::mod_provider::{
+    qualify_qvm_region, ProfileReader, QvmArtifact, QvmOpcode, QVM_MAX_PRIVATE_ARGUMENT_WORDS, QVM_REF_ENTITY_BYTES,
+};
 use super::primary_player_profile::RegionRef;
 use crate::error::GuestError;
 
@@ -70,13 +72,22 @@ pub enum HeldWeaponDeclaration {
 fn is_content_digest(value: &str) -> bool {
     value.len() == 71
         && value.as_bytes()[..7] == *b"sha256:"
-        && value.as_bytes()[7..].iter().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && value.as_bytes()[7..]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn normalize_resource_path(reader: &ProfileReader<'_>, path: &str) -> Result<String, GuestError> {
     let normalized = path.replace('\\', "/");
-    let bad_drive = normalized.len() >= 2 && normalized.as_bytes()[0].is_ascii_alphabetic() && normalized.as_bytes()[1] == b':';
-    if normalized.is_empty() || normalized.contains('\0') || bad_drive || normalized.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+    let bad_drive =
+        normalized.len() >= 2 && normalized.as_bytes()[0].is_ascii_alphabetic() && normalized.as_bytes()[1] == b':';
+    if normalized.is_empty()
+        || normalized.contains('\0')
+        || bad_drive
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
         return reader.fail(&format!("Invalid relative resource path: {path}"));
     }
     Ok(normalized)
@@ -87,13 +98,21 @@ fn dot_f32(left: Vec3, right: Vec3) -> f32 {
 }
 
 fn cross_f32(left: Vec3, right: Vec3) -> Vec3 {
-    vec3(left.y * right.z - left.z * right.y, left.z * right.x - left.x * right.z, left.x * right.y - left.y * right.x)
+    vec3(
+        left.y * right.z - left.z * right.y,
+        left.z * right.x - left.x * right.z,
+        left.x * right.y - left.y * right.x,
+    )
 }
 
 /// Read a model grip (mirror of `readModelGrip`).
 pub fn read_model_grip(reader: &ProfileReader<'_>) -> Result<ModelGrip, GuestError> {
     let vector = |value: &ProfileReader<'_>| -> Result<Vec3, GuestError> {
-        Ok(vec3(value.field("x")?.finite()? as f32, value.field("y")?.finite()? as f32, value.field("z")?.finite()? as f32))
+        Ok(vec3(
+            value.field("x")?.finite()? as f32,
+            value.field("y")?.finite()? as f32,
+            value.field("z")?.finite()? as f32,
+        ))
     };
     let axis = reader.field("axis")?.list(vector)?;
     if axis.len() != 3 {
@@ -108,11 +127,19 @@ pub fn read_model_grip(reader: &ProfileReader<'_>) -> Result<ModelGrip, GuestErr
     {
         return reader.fail("Model grip axes must form a rotation");
     }
-    let scale = if reader.field("scale")?.is_undefined() { vec3(1.0, 1.0, 1.0) } else { vector(&reader.field("scale")?)? };
+    let scale = if reader.field("scale")?.is_undefined() {
+        vec3(1.0, 1.0, 1.0)
+    } else {
+        vector(&reader.field("scale")?)?
+    };
     if scale.x == 0.0 || scale.y == 0.0 || scale.z == 0.0 {
         return reader.fail("Model grip scale must be invertible");
     }
-    Ok(ModelGrip { origin: vector(&reader.field("origin")?)?, axis: [first, second, third], scale })
+    Ok(ModelGrip {
+        origin: vector(&reader.field("origin")?)?,
+        axis: [first, second, third],
+        scale,
+    })
 }
 
 /// Read a held-weapon declaration (mirror of `readHeldWeaponDeclaration`).
@@ -134,7 +161,9 @@ pub fn read_held_weapon_declaration(reader: &ProfileReader<'_>) -> Result<HeldWe
     } else {
         Some(HeldWeaponPart {
             digests: part.field("digests")?.list(&read_digest)?,
-            vertices: part.field("vertices")?.list(|value| value.integer(0).map(|vertex| vertex as usize))?,
+            vertices: part
+                .field("vertices")?
+                .list(|value| value.integer(0).map(|vertex| vertex as usize))?,
         })
     };
     if let Some(subset) = subset.as_ref() {
@@ -151,7 +180,11 @@ pub fn read_held_weapon_declaration(reader: &ProfileReader<'_>) -> Result<HeldWe
         path: normalize_resource_path(&path, &path_text)?,
         reference_frame: model.field("referenceFrame")?.integer(0)? as usize,
         grip: read_model_grip(&model.field("grip")?)?,
-        digest: if digest.is_undefined() { None } else { Some(read_digest(&digest)?) },
+        digest: if digest.is_undefined() {
+            None
+        } else {
+            Some(read_digest(&digest)?)
+        },
         fallback: if fallback.is_undefined() {
             None
         } else {
@@ -278,13 +311,18 @@ pub fn read_qvm_equipment_presentation(
         return Ok(q3_fallback(artifact));
     };
     if artifact.role != QvmRole::Cgame || section.profile != artifact.abi().name() {
-        return section.reader.fail("equipment presentation requires the declared cgame ABI");
+        return section
+            .reader
+            .fail("equipment presentation requires the declared cgame ABI");
     }
     let reader = &section.reader;
     let instructions = &artifact.image.instructions;
     let read_entry = |value: &ProfileReader<'_>| -> Result<usize, GuestError> {
         let pc = value.integer(0)? as usize;
-        if instructions.get(pc).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+        if instructions
+            .get(pc)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        {
             return value.fail("not an original function entry");
         }
         Ok(pc)
@@ -292,10 +330,18 @@ pub fn read_qvm_equipment_presentation(
     let read_decision = |value: &ProfileReader<'_>, owner: usize| -> Result<usize, GuestError> {
         let pc = value.integer(0)? as usize;
         let mut function_entry = pc as i64;
-        while function_entry >= 0 && instructions.get(function_entry as usize).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+        while function_entry >= 0
+            && instructions
+                .get(function_entry as usize)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        {
             function_entry -= 1;
         }
-        if function_entry != owner as i64 || instructions.get(pc).is_none_or(|instruction| !instruction.opcode.is_branch()) {
+        if function_entry != owner as i64
+            || instructions
+                .get(pc)
+                .is_none_or(|instruction| !instruction.opcode.is_branch())
+        {
             return value.fail("visibility decision is outside its original function");
         }
         Ok(pc)
@@ -341,7 +387,11 @@ pub fn read_qvm_equipment_presentation(
     let data_bytes = artifact.image.data_length + artifact.image.literal_length + artifact.image.bss_length;
     let profile = QvmEquipmentPresentationProfile {
         hud: read_entry(&reader.field("hud")?)?,
-        view: PresentationView { entry: view_entry, decision: read_decision(&view.field("decision")?, view_entry)?, taken: view.field("taken")?.boolean()? },
+        view: PresentationView {
+            entry: view_entry,
+            decision: read_decision(&view.field("decision")?, view_entry)?,
+            taken: view.field("taken")?.boolean()?,
+        },
         warning: PresentationWarning {
             entry: read_entry(&warning.field("entry")?)?,
             state: read_word(&warning.field("state")?, data_bytes)?,
@@ -360,7 +410,9 @@ pub fn read_qvm_equipment_presentation(
             entity_number_offset: read_word(&held.field("entityNumberOffset")?, artifact.image.allocated_data_length)?,
         },
         status: if kind == "functions" {
-            PresentationStatus::Functions { entries: status.field("entries")?.list(&read_entry)? }
+            PresentationStatus::Functions {
+                entries: status.field("entries")?.list(&read_entry)?,
+            }
         } else {
             PresentationStatus::Regions {
                 entries: status.field("entries")?.list(|value| {
@@ -380,7 +432,12 @@ pub fn read_qvm_equipment_presentation(
             }
         },
     };
-    let mut entries = vec![profile.hud, profile.warning.entry, profile.held.entry, profile.view.entry];
+    let mut entries = vec![
+        profile.hud,
+        profile.warning.entry,
+        profile.held.entry,
+        profile.view.entry,
+    ];
     match &profile.status {
         PresentationStatus::Functions { entries: status } => entries.extend(status.iter().copied()),
         PresentationStatus::Regions { entries: status } => entries.extend(status.iter().map(|value| value.entry)),
@@ -402,7 +459,12 @@ mod tests {
 
     fn fixture_artifact() -> QvmArtifact {
         QvmArtifact {
-            module: ModuleId { id: "test:cgame".to_string(), artifact_path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), revision: "1".to_string() },
+            module: ModuleId {
+                id: "test:cgame".to_string(),
+                artifact_path: "vm/cgame.qvm".to_string(),
+                digest: "sha256:cgame".to_string(),
+                revision: "1".to_string(),
+            },
             role: QvmRole::Cgame,
             abi_profile: None,
             image: QvmImage {
@@ -498,8 +560,13 @@ mod tests {
     fn equipment_presentation_reads_regions() {
         let declaration = declaration();
         let artifact = fixture_artifact();
-        let section = CompatibilityEquipment { profile: "q3-modern", reader: ProfileReader::new(&declaration) };
-        let profile = read_qvm_equipment_presentation(&artifact, Some(section), &|_| None).unwrap().unwrap();
+        let section = CompatibilityEquipment {
+            profile: "q3-modern",
+            reader: ProfileReader::new(&declaration),
+        };
+        let profile = read_qvm_equipment_presentation(&artifact, Some(section), &|_| None)
+            .unwrap()
+            .unwrap();
         assert_eq!(profile.hud, 0);
         assert_eq!(profile.held.gun, 8);
         assert!(matches!(profile.status, PresentationStatus::Regions { .. }));
@@ -517,35 +584,57 @@ mod tests {
                 }
             }
         }
-        let section = CompatibilityEquipment { profile: "q3-modern", reader: ProfileReader::new(&duplicated) };
+        let section = CompatibilityEquipment {
+            profile: "q3-modern",
+            reader: ProfileReader::new(&duplicated),
+        };
         assert!(read_qvm_equipment_presentation(&artifact, Some(section), &|_| None).is_err());
     }
 
     #[test]
     fn missing_section_uses_q3_fallback() {
         let artifact = fixture_artifact();
-        assert!(read_qvm_equipment_presentation(&artifact, None, &|_| None).unwrap().is_none());
+        assert!(read_qvm_equipment_presentation(&artifact, None, &|_| None)
+            .unwrap()
+            .is_none());
         let mut gameplay = fixture_artifact();
         gameplay.role = QvmRole::Qagame;
         let declaration = declaration();
-        let section = CompatibilityEquipment { profile: "q3-modern", reader: ProfileReader::new(&declaration) };
+        let section = CompatibilityEquipment {
+            profile: "q3-modern",
+            reader: ProfileReader::new(&declaration),
+        };
         assert!(read_qvm_equipment_presentation(&gameplay, Some(section), &|_| None).is_err());
     }
 
     fn grip_value() -> ProfileValue {
         let vector = |x: f64, y: f64, z: f64| {
-            ProfileValue::record(vec![("x", ProfileValue::Float(x)), ("y", ProfileValue::Float(y)), ("z", ProfileValue::Float(z))])
+            ProfileValue::record(vec![
+                ("x", ProfileValue::Float(x)),
+                ("y", ProfileValue::Float(y)),
+                ("z", ProfileValue::Float(z)),
+            ])
         };
         ProfileValue::record(vec![
             ("origin", vector(1.0, 2.0, 3.0)),
-            ("axis", ProfileValue::Array(vec![vector(1.0, 0.0, 0.0), vector(0.0, 1.0, 0.0), vector(0.0, 0.0, 1.0)])),
+            (
+                "axis",
+                ProfileValue::Array(vec![
+                    vector(1.0, 0.0, 0.0),
+                    vector(0.0, 1.0, 0.0),
+                    vector(0.0, 0.0, 1.0),
+                ]),
+            ),
         ])
     }
 
     #[test]
     fn held_weapons_read_models_and_digests() {
         let none = ProfileValue::record(vec![("kind", ProfileValue::Str("none".to_string()))]);
-        assert!(matches!(read_held_weapon_declaration(&ProfileReader::new(&none)).unwrap(), HeldWeaponDeclaration::None));
+        assert!(matches!(
+            read_held_weapon_declaration(&ProfileReader::new(&none)).unwrap(),
+            HeldWeaponDeclaration::None
+        ));
         let model = ProfileValue::record(vec![
             ("kind", ProfileValue::Str("model".to_string())),
             (

@@ -15,16 +15,17 @@
 use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, vec3};
+use qa_core::math::{vec3, Vec3};
 
 use super::mod_player_events::SourcePlayerEvent;
 use super::mod_presentation_checkpoint::{
-    QvmSourceSnapshot, SourceGameState, SourcePlayerState, capture_presentation_game_state, capture_presentation_snapshot, read_presentation_game_state,
-    read_presentation_snapshot, read_saved_actor_id, snapshot_to_bytes,
+    capture_presentation_game_state, capture_presentation_snapshot, read_presentation_game_state,
+    read_presentation_snapshot, read_saved_actor_id, snapshot_to_bytes, QvmSourceSnapshot, SourceGameState,
+    SourcePlayerState,
 };
 use super::mod_provider::{
-    ModuleId, ProfileReader, ProfileValue, QVM_MAX_PRIVATE_ARGUMENT_WORDS, QvmAbi, QvmArtifact, QvmImage, QvmOpcode, QVM_GAME_STATE_BYTES,
-    qvm_entity_state_bytes, qvm_player_state_bytes, qvm_snapshot_bytes,
+    qvm_entity_state_bytes, qvm_player_state_bytes, qvm_snapshot_bytes, ModuleId, ProfileReader, ProfileValue, QvmAbi,
+    QvmArtifact, QvmImage, QvmOpcode, QVM_GAME_STATE_BYTES, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
 use crate::error::GuestError;
 
@@ -603,23 +604,43 @@ fn check_int32(value: i32) -> Result<i32, GuestError> {
 }
 
 /// Qualify body call sites (mirror of `qualifyQvmBodyCalls`).
-pub fn qualify_qvm_body_calls(image: &QvmImage, body: &SceneBodyScope) -> Result<HashMap<usize, QvmBodyPart>, GuestError> {
+pub fn qualify_qvm_body_calls(
+    image: &QvmImage,
+    body: &SceneBodyScope,
+) -> Result<HashMap<usize, QvmBodyPart>, GuestError> {
     let player = &body.player;
     let mesh = &body.mesh;
-    if [player.centity_argument, mesh.entity_argument, mesh.state_argument].into_iter().any(|argument| argument >= QVM_MAX_PRIVATE_ARGUMENT_WORDS) || mesh.shader_offset != 112 {
-        return Err(GuestError::invalid("Source body arguments differ from the original refEntity ABI"));
-    }
-    if image.instruction(player.entry).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
-        || image.instruction(mesh.entry).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+    if [player.centity_argument, mesh.entity_argument, mesh.state_argument]
+        .into_iter()
+        .any(|argument| argument >= QVM_MAX_PRIVATE_ARGUMENT_WORDS)
+        || mesh.shader_offset != 112
     {
-        return Err(GuestError::invalid("Source body scope requires original function entries"));
+        return Err(GuestError::invalid(
+            "Source body arguments differ from the original refEntity ABI",
+        ));
+    }
+    if image
+        .instruction(player.entry)
+        .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        || image
+            .instruction(mesh.entry)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+    {
+        return Err(GuestError::invalid(
+            "Source body scope requires original function entries",
+        ));
     }
     let end = image.function_end(player.entry);
     let valid = |index: usize| {
         index > player.entry
             && index < end
-            && image.instruction(index).is_some_and(|instruction| instruction.opcode == QvmOpcode::OpCall)
-            && index.checked_sub(1).and_then(|at| image.instruction(at)).is_some_and(|target| target.opcode == QvmOpcode::OpConst && target.operand == mesh.entry as i32)
+            && image
+                .instruction(index)
+                .is_some_and(|instruction| instruction.opcode == QvmOpcode::OpCall)
+            && index
+                .checked_sub(1)
+                .and_then(|at| image.instruction(at))
+                .is_some_and(|target| target.opcode == QvmOpcode::OpConst && target.operand == mesh.entry as i32)
     };
     let mut calls = HashMap::new();
     match mesh.parts.as_ref() {
@@ -635,24 +656,40 @@ pub fn qualify_qvm_body_calls(image: &QvmImage, body: &SceneBodyScope) -> Result
         Some(parts) => {
             for row in parts {
                 if !valid(row.call) || calls.contains_key(&row.call) {
-                    return Err(GuestError::invalid("Source body part does not name a distinct original player-to-mesh call"));
+                    return Err(GuestError::invalid(
+                        "Source body part does not name a distinct original player-to-mesh call",
+                    ));
                 }
                 calls.insert(row.call, row.part);
             }
         }
     }
     if calls.is_empty() {
-        return Err(GuestError::invalid("Source body scope has no qualified original mesh calls"));
+        return Err(GuestError::invalid(
+            "Source body scope has no qualified original mesh calls",
+        ));
     }
     Ok(calls)
 }
 
 /// Validate a presentation declaration against its artifacts.
-pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, declaration: &QvmModPresentationDeclaration) -> Result<(), GuestError> {
+pub fn validate_qvm_mod_presentation(
+    artifact: &QvmArtifact,
+    source: &ModuleId,
+    declaration: &QvmModPresentationDeclaration,
+) -> Result<(), GuestError> {
     let cgame = declaration.cgame();
     let (gameplay_path, gameplay_digest, gameplay_abi) = match declaration {
-        QvmModPresentationDeclaration::PlayerEvents(declaration) => (declaration.gameplay.path.as_str(), declaration.gameplay.digest.as_str(), declaration.gameplay.abi),
-        QvmModPresentationDeclaration::Scene(declaration) => (declaration.gameplay.path.as_str(), declaration.gameplay.digest.as_str(), declaration.gameplay.abi),
+        QvmModPresentationDeclaration::PlayerEvents(declaration) => (
+            declaration.gameplay.path.as_str(),
+            declaration.gameplay.digest.as_str(),
+            declaration.gameplay.abi,
+        ),
+        QvmModPresentationDeclaration::Scene(declaration) => (
+            declaration.gameplay.path.as_str(),
+            declaration.gameplay.digest.as_str(),
+            declaration.gameplay.abi,
+        ),
     };
     if artifact.role != super::mod_provider::QvmRole::Cgame
         || artifact.module.artifact_path != cgame.path
@@ -661,15 +698,21 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
         || source.artifact_path != gameplay_path
         || source.digest != gameplay_digest
     {
-        return Err(GuestError::invalid("Source presentation differs from its declared gameplay/cgame artifacts"));
+        return Err(GuestError::invalid(
+            "Source presentation differs from its declared gameplay/cgame artifacts",
+        ));
     }
     if gameplay_abi != cgame.abi {
-        return Err(GuestError::invalid("Source presentation requires matching player-state ABI profiles"));
+        return Err(GuestError::invalid(
+            "Source presentation requires matching player-state ABI profiles",
+        ));
     }
     let end = artifact.image.data_end();
     let range = |address: usize, size: usize| -> Result<(), GuestError> {
         if size < 1 || address.saturating_add(size) > end {
-            return Err(GuestError::invalid("Source presentation storage exceeds the original data image"));
+            return Err(GuestError::invalid(
+                "Source presentation storage exceeds the original data image",
+            ));
         }
         Ok(())
     };
@@ -677,7 +720,11 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
     for address in declaration.time_words().iter().chain(declaration.frame_time_words()) {
         range(*address, 4)?;
     }
-    for address in declaration.view_origin_words().iter().chain(declaration.view_angles_words()) {
+    for address in declaration
+        .view_origin_words()
+        .iter()
+        .chain(declaration.view_angles_words())
+    {
         range(*address, 12)?;
     }
     for address in declaration.view_axis_words() {
@@ -704,7 +751,9 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
             if declaration.storage.player_state < declaration.storage.snapshot_address + snapshot_bytes
                 && declaration.storage.snapshot_address < declaration.storage.player_state + ps_bytes
             {
-                return Err(GuestError::invalid("Event projection state must be separate from the viewing player's snapshot"));
+                return Err(GuestError::invalid(
+                    "Event projection state must be separate from the viewing player's snapshot",
+                ));
             }
         }
         QvmModPresentationDeclaration::Scene(declaration) => {
@@ -718,8 +767,16 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
                     return Err(GuestError::invalid("Source centity event cursor exceeds its record"));
                 }
             }
-            for entry in [declaration.body.player.entry, declaration.body.mesh.entry, declaration.event_check.entry] {
-                if artifact.image.instruction(entry).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+            for entry in [
+                declaration.body.player.entry,
+                declaration.body.mesh.entry,
+                declaration.event_check.entry,
+            ] {
+                if artifact
+                    .image
+                    .instruction(entry)
+                    .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+                {
                     return Err(GuestError::invalid("Source mesh scope has no original function entry"));
                 }
             }
@@ -734,23 +791,36 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
                 }
             }
             if declaration.body.mesh.shader_offset != 112 {
-                return Err(GuestError::invalid("Source mesh shader field differs from the declared refEntity ABI"));
+                return Err(GuestError::invalid(
+                    "Source mesh shader field differs from the declared refEntity ABI",
+                ));
             }
             qualify_qvm_body_calls(&artifact.image, &declaration.body)?;
             if declaration.snapshots.is_empty() {
-                return Err(GuestError::invalid("Source scene requires original snapshot processing"));
+                return Err(GuestError::invalid(
+                    "Source scene requires original snapshot processing",
+                ));
             }
         }
     }
     let check_call = |call: &QvmPresentationCall, initializing: bool| -> Result<(), GuestError> {
-        if artifact.image.instruction(call.entry).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) || call.arguments.len() > QVM_MAX_PRIVATE_ARGUMENT_WORDS {
-            return Err(GuestError::invalid("Source presentation call has no original function entry"));
+        if artifact
+            .image
+            .instruction(call.entry)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+            || call.arguments.len() > QVM_MAX_PRIVATE_ARGUMENT_WORDS
+        {
+            return Err(GuestError::invalid(
+                "Source presentation call has no original function entry",
+            ));
         }
         for argument in &call.arguments {
             match argument {
                 QvmPresentationArgument::Address(value) => {
                     if *value < 0 {
-                        return Err(GuestError::invalid("Source presentation storage exceeds the original data image"));
+                        return Err(GuestError::invalid(
+                            "Source presentation storage exceeds the original data image",
+                        ));
                     }
                     range(*value as usize, 1)?;
                 }
@@ -762,13 +832,23 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
                         return Err(GuestError::invalid("Source presentation float exceeds its ABI"));
                     }
                 }
-                QvmPresentationArgument::Source(PresentationSource::PlayerState | PresentationSource::Snapshot) if declaration.is_scene() => {
-                    return Err(GuestError::invalid("Scene presentation receives its records through original snapshot traps"));
+                QvmPresentationArgument::Source(PresentationSource::PlayerState | PresentationSource::Snapshot)
+                    if declaration.is_scene() =>
+                {
+                    return Err(GuestError::invalid(
+                        "Scene presentation receives its records through original snapshot traps",
+                    ));
                 }
                 QvmPresentationArgument::Source(
-                    PresentationSource::EntityState | PresentationSource::Centity | PresentationSource::Origin | PresentationSource::Event | PresentationSource::Parameter,
+                    PresentationSource::EntityState
+                    | PresentationSource::Centity
+                    | PresentationSource::Origin
+                    | PresentationSource::Event
+                    | PresentationSource::Parameter,
                 ) if initializing => {
-                    return Err(GuestError::invalid("Source presentation initialization requires an event-independent context"));
+                    return Err(GuestError::invalid(
+                        "Source presentation initialization requires an event-independent context",
+                    ));
                 }
                 QvmPresentationArgument::Source(_) => {}
             }
@@ -776,7 +856,13 @@ pub fn validate_qvm_mod_presentation(artifact: &QvmArtifact, source: &ModuleId, 
         Ok(())
     };
     let hud_frames: &[QvmPresentationCall] = declaration.hud().map_or(&[], |hud| &hud.frame);
-    for call in declaration.initialize_calls().iter().chain(declaration.refresh_calls()).chain(declaration.frame_calls()).chain(hud_frames) {
+    for call in declaration
+        .initialize_calls()
+        .iter()
+        .chain(declaration.refresh_calls())
+        .chain(declaration.frame_calls())
+        .chain(hud_frames)
+    {
         check_call(call, true)?;
     }
     match declaration {
@@ -897,10 +983,17 @@ pub struct QvmModPresentation<H: PresentationHost> {
 
 impl<H: PresentationHost> QvmModPresentation<H> {
     /// Create a presentation over a validated declaration.
-    pub fn new(artifact: QvmArtifact, source: ModuleId, declaration: QvmModPresentationDeclaration, host: H) -> Result<Self, GuestError> {
+    pub fn new(
+        artifact: QvmArtifact,
+        source: ModuleId,
+        declaration: QvmModPresentationDeclaration,
+        host: H,
+    ) -> Result<Self, GuestError> {
         validate_qvm_mod_presentation(&artifact, &source, &declaration)?;
         let body_calls = match &declaration {
-            QvmModPresentationDeclaration::Scene(declaration) => qualify_qvm_body_calls(&artifact.image, &declaration.body)?,
+            QvmModPresentationDeclaration::Scene(declaration) => {
+                qualify_qvm_body_calls(&artifact.image, &declaration.body)?
+            }
             QvmModPresentationDeclaration::PlayerEvents(_) => HashMap::new(),
         };
         Ok(Self {
@@ -972,7 +1065,13 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             _ => {}
         }
         if let Some(event) = event {
-            if !self.host.live(&event.actor) || self.host.actor_for_slot(event.player_state.client_number().max(0) as usize).as_ref() != Some(&event.actor) {
+            if !self.host.live(&event.actor)
+                || self
+                    .host
+                    .actor_for_slot(event.player_state.client_number().max(0) as usize)
+                    .as_ref()
+                    != Some(&event.actor)
+            {
                 return Err(FlowError::Retired);
             }
         }
@@ -997,7 +1096,10 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         let QvmModPresentationDeclaration::Scene(declaration) = &self.declaration else {
             return Err(GuestError::invalid("Component scene has no initialized caller storage"));
         };
-        let defaults = self.defaults.clone().ok_or_else(|| GuestError::invalid("Component scene has no initialized caller storage"))?;
+        let defaults = self
+            .defaults
+            .clone()
+            .ok_or_else(|| GuestError::invalid("Component scene has no initialized caller storage"))?;
         let entities = &declaration.storage.centities;
         self.scene_actors.clear();
         for row in &scene.actors {
@@ -1007,7 +1109,8 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             if let Some(previous) = self.players.get(&row.slot) {
                 if *previous != row.actor {
                     let start = row.slot * entities.stride;
-                    self.host.write_bytes(entities.address + start, &defaults[start..start + entities.stride])?;
+                    self.host
+                        .write_bytes(entities.address + start, &defaults[start..start + entities.stride])?;
                 }
             }
             self.players.insert(row.slot, row.actor.clone());
@@ -1016,9 +1119,14 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         if baseline {
             for state in &scene.snapshot.entities {
                 let view = entities.address + (state.number().max(0) as usize) * entities.stride;
-                let previous = if state.etype() > declaration.event_entity_type { 1 } else { state.event() };
+                let previous = if state.etype() > declaration.event_entity_type {
+                    1
+                } else {
+                    state.event()
+                };
                 self.host.write_i32(view + entities.previous_event, previous)?;
-                self.host.write_i32(view + entities.snapshot_time, scene.snapshot.server_time)?;
+                self.host
+                    .write_i32(view + entities.snapshot_time, scene.snapshot.server_time)?;
             }
         }
         self.scene_revision = scene.revision as i64;
@@ -1056,7 +1164,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(());
         }
         let Some(axis) = context.view_axis else {
-            return Err(GuestError::invalid("Declared original view storage requires the actual viewing camera axis"));
+            return Err(GuestError::invalid(
+                "Declared original view storage requires the actual viewing camera axis",
+            ));
         };
         for address in self.declaration.view_axis_words().to_vec() {
             for (index, value) in axis.iter().enumerate() {
@@ -1079,7 +1189,12 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         Ok(())
     }
 
-    fn address_word(&mut self, argument: &QvmPresentationArgument, event: Option<&SourcePlayerEvent>, context: &QvmPresentationContext) -> Result<i32, FlowError> {
+    fn address_word(
+        &mut self,
+        argument: &QvmPresentationArgument,
+        event: Option<&SourcePlayerEvent>,
+        context: &QvmPresentationContext,
+    ) -> Result<i32, FlowError> {
         match argument {
             QvmPresentationArgument::Int32(value) => Ok(*value),
             QvmPresentationArgument::Float32(value) => Ok((*value as f32).to_bits() as i32),
@@ -1089,39 +1204,60 @@ impl<H: PresentationHost> QvmModPresentation<H> {
                 match source {
                     PresentationSource::PlayerState => {
                         let QvmModPresentationDeclaration::PlayerEvents(declaration) = &self.declaration else {
-                            return Err(GuestError::invalid("Scene presentation receives its records through original snapshot traps").into());
+                            return Err(GuestError::invalid(
+                                "Scene presentation receives its records through original snapshot traps",
+                            )
+                            .into());
                         };
                         Ok(declaration.storage.player_state as i32)
                     }
                     PresentationSource::EntityState => {
-                        let event = event.ok_or_else(|| GuestError::invalid("Presentation event storage requires the projected event"))?;
+                        let event = event.ok_or_else(|| {
+                            GuestError::invalid("Presentation event storage requires the projected event")
+                        })?;
                         let (address, stride, _) = self.declaration.centities();
                         let state = match &self.declaration {
-                            QvmModPresentationDeclaration::PlayerEvents(declaration) => declaration.storage.centities.state,
+                            QvmModPresentationDeclaration::PlayerEvents(declaration) => {
+                                declaration.storage.centities.state
+                            }
                             QvmModPresentationDeclaration::Scene(declaration) => declaration.storage.centities.state,
                         };
                         Ok((address + (event.player_state.client_number().max(0) as usize) * stride + state) as i32)
                     }
                     PresentationSource::Centity => {
-                        let event = event.ok_or_else(|| GuestError::invalid("Presentation event storage requires the projected event"))?;
+                        let event = event.ok_or_else(|| {
+                            GuestError::invalid("Presentation event storage requires the projected event")
+                        })?;
                         let (address, stride, _) = self.declaration.centities();
                         Ok((address + (event.player_state.client_number().max(0) as usize) * stride) as i32)
                     }
                     PresentationSource::Origin => {
-                        let event = event.ok_or_else(|| GuestError::invalid("Presentation event storage requires the projected event"))?;
+                        let event = event.ok_or_else(|| {
+                            GuestError::invalid("Presentation event storage requires the projected event")
+                        })?;
                         let QvmModPresentationDeclaration::PlayerEvents(declaration) = &self.declaration else {
-                            return Err(GuestError::invalid("Scene presentation receives its records through original snapshot traps").into());
+                            return Err(GuestError::invalid(
+                                "Scene presentation receives its records through original snapshot traps",
+                            )
+                            .into());
                         };
                         let entities = &declaration.storage.centities;
-                        Ok((entities.address + (event.player_state.client_number().max(0) as usize) * entities.stride + entities.origin) as i32)
+                        Ok((entities.address
+                            + (event.player_state.client_number().max(0) as usize) * entities.stride
+                            + entities.origin) as i32)
                     }
                     PresentationSource::Snapshot => {
                         let QvmModPresentationDeclaration::PlayerEvents(declaration) = &self.declaration else {
-                            return Err(GuestError::invalid("Scene presentation receives its records through original snapshot traps").into());
+                            return Err(GuestError::invalid(
+                                "Scene presentation receives its records through original snapshot traps",
+                            )
+                            .into());
                         };
                         Ok(declaration.storage.snapshot_address as i32)
                     }
-                    PresentationSource::ClientNumber => Ok(context.client_number.unwrap_or_else(|| context.snapshot.player_state.client_number())),
+                    PresentationSource::ClientNumber => Ok(context
+                        .client_number
+                        .unwrap_or_else(|| context.snapshot.player_state.client_number())),
                     PresentationSource::Time => Ok(context.time_ms.unwrap_or(context.snapshot.server_time)),
                     PresentationSource::Event => Ok(event.map_or(0, |event| event.event)),
                     PresentationSource::Parameter => Ok(event.map_or(0, |event| event.parameter)),
@@ -1143,7 +1279,11 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         let context = self.host.presentation_context()?;
         if call.when_weapon_presented {
             match context.weapon_presented {
-                None => return Err(GuestError::invalid("Component presentation requires its declared weapon presentation").into()),
+                None => {
+                    return Err(
+                        GuestError::invalid("Component presentation requires its declared weapon presentation").into(),
+                    )
+                }
                 Some(false) => return Ok(()),
                 Some(true) => {}
             }
@@ -1173,7 +1313,11 @@ impl<H: PresentationHost> QvmModPresentation<H> {
 
     fn apply_context(&mut self, event: Option<&SourcePlayerEvent>) -> Result<QvmPresentationContext, FlowError> {
         let context = self.host.presentation_context()?;
-        if context.frame_time_ms < 0 || ![context.view_origin.x, context.view_origin.y, context.view_origin.z].into_iter().all(f32::is_finite) {
+        if context.frame_time_ms < 0
+            || ![context.view_origin.x, context.view_origin.y, context.view_origin.z]
+                .into_iter()
+                .all(f32::is_finite)
+        {
             return Err(GuestError::invalid("Invalid source presentation context").into());
         }
         if context.game_state_revision as i64 != self.revision {
@@ -1260,7 +1404,10 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             let QvmModPresentationDeclaration::Scene(declaration) = self.declaration.clone() else {
                 return Err(GuestError::invalid("Scene presentation requires its published scene"));
             };
-            self.host.write_i32(declaration.storage.server_command_sequence, scene.snapshot.server_command_sequence)?;
+            self.host.write_i32(
+                declaration.storage.server_command_sequence,
+                scene.snapshot.server_command_sequence,
+            )?;
             if let Some(baseline) = scene.baseline.as_ref() {
                 self.restoring_scene = true;
                 self.accept_scene(baseline, true)?;
@@ -1301,10 +1448,14 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Err(GuestError::invalid("Source presentation event differs from its gameplay module").into());
         }
         if self.declaration.is_scene() {
-            return Err(GuestError::invalid("Scene presentation consumes authoritative snapshots through its context").into());
+            return Err(
+                GuestError::invalid("Scene presentation consumes authoritative snapshots through its context").into(),
+            );
         }
         let QvmModPresentationDeclaration::PlayerEvents(declaration) = self.declaration.clone() else {
-            return Err(GuestError::invalid("Scene presentation consumes authoritative snapshots through its context").into());
+            return Err(
+                GuestError::invalid("Scene presentation consumes authoritative snapshots through its context").into(),
+            );
         };
         let slot = event.player_state.client_number();
         if slot < 0 || slot as usize >= declaration.storage.centities.capacity {
@@ -1323,13 +1474,21 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         outcome
     }
 
-    fn consume_event(&mut self, event: &SourcePlayerEvent, sequence: i64, declaration: &QvmPlayerEventPresentation) -> Result<(), FlowError> {
+    fn consume_event(
+        &mut self,
+        event: &SourcePlayerEvent,
+        sequence: i64,
+        declaration: &QvmPlayerEventPresentation,
+    ) -> Result<(), FlowError> {
         let slot = event.player_state.client_number().max(0) as usize;
         let entities = &declaration.storage.centities;
         let view = entities.address + slot * entities.stride;
         if let Some(previous) = self.players.get(&slot) {
             if *previous != event.actor {
-                let defaults = self.defaults.clone().ok_or_else(|| GuestError::invalid("Source presentation has no initialized caller storage"))?;
+                let defaults = self
+                    .defaults
+                    .clone()
+                    .ok_or_else(|| GuestError::invalid("Source presentation has no initialized caller storage"))?;
                 let start = slot * entities.stride;
                 self.host.write_bytes(view, &defaults[start..start + entities.stride])?;
             }
@@ -1337,12 +1496,15 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         self.players.insert(slot, event.actor.clone());
         self.apply_context(Some(event))?;
         self.refresh()?;
-        self.host.write_bytes(declaration.storage.player_state, event.player_state.bytes())?;
+        self.host
+            .write_bytes(declaration.storage.player_state, event.player_state.bytes())?;
         for call in &declaration.project {
             self.call(call, Some(event))?;
         }
         let mut state = super::mod_presentation_checkpoint::SourceEntityState::from_bytes(
-            &self.host.read_bytes(view + entities.state, qvm_entity_state_bytes(declaration.cgame.abi))?,
+            &self
+                .host
+                .read_bytes(view + entities.state, qvm_entity_state_bytes(declaration.cgame.abi))?,
             declaration.cgame.abi,
         )?;
         state.set_event(event.event, event.parameter);
@@ -1387,14 +1549,19 @@ impl<H: PresentationHost> QvmModPresentation<H> {
                     let QvmModPresentationDeclaration::Scene(declaration) = self.declaration.clone() else {
                         return Err(GuestError::invalid("Scene presentation requires its published scene").into());
                     };
-                    self.host.write_i32(declaration.storage.server_command_sequence, scene.snapshot.server_command_sequence)?;
+                    self.host.write_i32(
+                        declaration.storage.server_command_sequence,
+                        scene.snapshot.server_command_sequence,
+                    )?;
                     for row in &scene.actors {
                         if let Some(actor) = self.scene_actors.get(&row.slot) {
                             if actor.actor == row.actor {
                                 continue;
                             }
                         }
-                        return Err(GuestError::invalid("Scene presentation callers changed without a scene revision").into());
+                        return Err(
+                            GuestError::invalid("Scene presentation callers changed without a scene revision").into(),
+                        );
                     }
                 }
             }
@@ -1451,7 +1618,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         if self.phase != PresentationPhase::Initialized || self.busy || frame != self.frame {
             return Err(self.fail(GuestError::invalid("Source presentation HUD frame is not current")));
         }
-        let Some(hud) = self.declaration.hud().cloned() else { return Ok(()) };
+        let Some(hud) = self.declaration.hud().cloned() else {
+            return Ok(());
+        };
         self.busy = true;
         let outcome = (|| -> Result<(), FlowError> {
             for call in &hud.frame {
@@ -1493,7 +1662,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
 
     /// Snapshot bytes for the original snapshot trap, if any.
     pub fn snapshot_for_trap(&self, number: i32) -> Result<Option<Vec<u8>>, GuestError> {
-        let Some(snapshot) = self.snapshots.get(&number) else { return Ok(None) };
+        let Some(snapshot) = self.snapshots.get(&number) else {
+            return Ok(None);
+        };
         let abi = self.declaration.cgame().abi;
         Ok(Some(snapshot_to_bytes(snapshot, abi)?))
     }
@@ -1501,14 +1672,19 @@ impl<H: PresentationHost> QvmModPresentation<H> {
     /// Current snapshot trap state.
     #[must_use]
     pub fn snapshot_trap_state(&self) -> (i32, i32) {
-        let time = self.snapshots.get(&self.snapshot_number).map_or(0, |snapshot| snapshot.server_time);
+        let time = self
+            .snapshots
+            .get(&self.snapshot_number)
+            .map_or(0, |snapshot| snapshot.server_time);
         (self.snapshot_number, time)
     }
 
     /// Load server-command arguments for a sequence, reporting nonempty.
     pub fn server_command_args(&mut self, sequence: u64) -> Result<bool, GuestError> {
         let Some(command) = self.commands.get(&sequence).cloned() else {
-            return Err(GuestError::invalid("Original snapshot requested unknown server command arguments"));
+            return Err(GuestError::invalid(
+                "Original snapshot requested unknown server command arguments",
+            ));
         };
         self.arguments = command;
         Ok(!self.arguments.is_empty())
@@ -1516,11 +1692,18 @@ impl<H: PresentationHost> QvmModPresentation<H> {
 
     /// Current game state for the trap.
     pub fn take_game_state(&self) -> Result<SourceGameState, GuestError> {
-        self.current_game_state.clone().ok_or_else(|| GuestError::invalid("Source presentation context has no game state"))
+        self.current_game_state
+            .clone()
+            .ok_or_else(|| GuestError::invalid("Source presentation context has no game state"))
     }
 
     /// Enter a player-mesh hook scope; returns its token.
-    pub fn enter_player_mesh(&mut self, centity: usize, state: usize, sites: &[(usize, QvmBodyPart)]) -> Result<Option<usize>, GuestError> {
+    pub fn enter_player_mesh(
+        &mut self,
+        centity: usize,
+        state: usize,
+        sites: &[(usize, QvmBodyPart)],
+    ) -> Result<Option<usize>, GuestError> {
         let QvmModPresentationDeclaration::Scene(declaration) = &self.declaration else {
             return Ok(None);
         };
@@ -1529,7 +1712,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(None);
         }
         let slot = (centity - entities.address) / entities.stride;
-        let Some(actor) = self.scene_actors.get(&slot) else { return Ok(None) };
+        let Some(actor) = self.scene_actors.get(&slot) else {
+            return Ok(None);
+        };
         if state != centity + entities.state {
             return Ok(None);
         }
@@ -1544,7 +1729,16 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             }
         }
         let token = self.player_scopes.len();
-        self.player_scopes.push(PlayerScope { actor: actor.actor.clone(), state, parts: vec![QvmBodyMesh { part: QvmBodyPart::Body, base: false, passes: Vec::new() }], pending });
+        self.player_scopes.push(PlayerScope {
+            actor: actor.actor.clone(),
+            state,
+            parts: vec![QvmBodyMesh {
+                part: QvmBodyPart::Body,
+                base: false,
+                passes: Vec::new(),
+            }],
+            pending,
+        });
         Ok(Some(token))
     }
 
@@ -1562,7 +1756,10 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         if self.host.live(&scope.actor) && scope.parts.iter().any(|part| part.base) {
             match self.body_frame.iter_mut().find(|body| body.actor == scope.actor) {
                 Some(body) => body.parts = scope.parts,
-                None => self.body_frame.push(QvmBodyPresentation { actor: scope.actor, parts: scope.parts }),
+                None => self.body_frame.push(QvmBodyPresentation {
+                    actor: scope.actor,
+                    parts: scope.parts,
+                }),
             }
         }
         for mesh in &mut self.mesh_scopes {
@@ -1573,12 +1770,20 @@ impl<H: PresentationHost> QvmModPresentation<H> {
     }
 
     /// Enter a mesh-call hook scope; returns its token.
-    pub fn enter_mesh_call(&mut self, player: usize, entity: usize, state: usize, caller: Option<usize>) -> Option<usize> {
+    pub fn enter_mesh_call(
+        &mut self,
+        player: usize,
+        entity: usize,
+        state: usize,
+        caller: Option<usize>,
+    ) -> Option<usize> {
         let scope = self.player_scopes.get(player)?;
         if state != scope.state || entity < scope.state {
             return None;
         }
-        let part = caller.and_then(|site| self.body_calls.get(&site).copied()).unwrap_or(QvmBodyPart::Body);
+        let part = caller
+            .and_then(|site| self.body_calls.get(&site).copied())
+            .unwrap_or(QvmBodyPart::Body);
         let output = match scope.pending.get(&caller.unwrap_or(usize::MAX)) {
             Some(index) => *index,
             None if caller.is_none() => 0,
@@ -1586,13 +1791,20 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         };
         let _ = part;
         let token = self.mesh_scopes.len();
-        self.mesh_scopes.push(MeshScope { player, pointer: entity, shader: 0, output });
+        self.mesh_scopes.push(MeshScope {
+            player,
+            pointer: entity,
+            shader: 0,
+            output,
+        });
         Some(token)
     }
 
     /// Note an add-ref-entity trap, capturing model passes; reports capture.
     pub fn note_add_ref_entity(&mut self, pointer: usize) -> Result<bool, GuestError> {
-        let Some(token) = self.mesh_scopes.iter().rposition(|scope| scope.pointer == pointer) else { return Ok(false) };
+        let Some(token) = self.mesh_scopes.iter().rposition(|scope| scope.pointer == pointer) else {
+            return Ok(false);
+        };
         let view = self.host.read_ref_entity(pointer)?;
         let Some(view) = view else { return Ok(false) };
         let output = self.mesh_scopes[token].output;
@@ -1601,14 +1813,23 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(false);
         }
         self.mesh_scopes[token].shader = view.custom_shader;
-        let Some(scope) = self.player_scopes.get_mut(player) else { return Ok(false) };
+        let Some(scope) = self.player_scopes.get_mut(player) else {
+            return Ok(false);
+        };
         while scope.parts.len() <= output {
-            scope.parts.push(QvmBodyMesh { part: QvmBodyPart::Body, base: false, passes: Vec::new() });
+            scope.parts.push(QvmBodyMesh {
+                part: QvmBodyPart::Body,
+                base: false,
+                passes: Vec::new(),
+            });
         }
         if !scope.parts[output].base {
             scope.parts[output].base = true;
         } else {
-            scope.parts[output].passes.push(BodyMeshPass { custom_shader: view.custom_shader, bytes: view.bytes });
+            scope.parts[output].passes.push(BodyMeshPass {
+                custom_shader: view.custom_shader,
+                bytes: view.bytes,
+            });
         }
         Ok(true)
     }
@@ -1625,16 +1846,24 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         if !self.restoring_scene {
             return Ok(());
         }
-        let QvmModPresentationDeclaration::Scene(declaration) = &self.declaration else { return Ok(()) };
+        let QvmModPresentationDeclaration::Scene(declaration) = &self.declaration else {
+            return Ok(());
+        };
         let entities = &declaration.storage.centities;
         if centity < entities.address || (centity - entities.address) % entities.stride != 0 {
             return Ok(());
         }
         let entity = super::mod_presentation_checkpoint::SourceEntityState::from_bytes(
-            &self.host.read_bytes(centity + entities.state, qvm_entity_state_bytes(declaration.cgame.abi))?,
+            &self
+                .host
+                .read_bytes(centity + entities.state, qvm_entity_state_bytes(declaration.cgame.abi))?,
             declaration.cgame.abi,
         )?;
-        let previous = if entity.etype() > declaration.event_entity_type { 1 } else { entity.event() };
+        let previous = if entity.etype() > declaration.event_entity_type {
+            1
+        } else {
+            entity.event()
+        };
         self.host.write_i32(centity + entities.previous_event, previous)?;
         Ok(())
     }
@@ -1657,7 +1886,10 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             .map(|(slot, actor)| {
                 ProfileValue::record(vec![
                     ("slot", ProfileValue::Int(*slot as i64)),
-                    ("actor", super::mod_presentation_checkpoint::capture_saved_actor_id(actor)),
+                    (
+                        "actor",
+                        super::mod_presentation_checkpoint::capture_saved_actor_id(actor),
+                    ),
                 ])
             })
             .collect();
@@ -1672,7 +1904,15 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             .map(|(sequence, arguments)| {
                 ProfileValue::record(vec![
                     ("sequence", ProfileValue::Int(*sequence as i64)),
-                    ("arguments", ProfileValue::Array(arguments.iter().map(|argument| ProfileValue::Str(argument.clone())).collect())),
+                    (
+                        "arguments",
+                        ProfileValue::Array(
+                            arguments
+                                .iter()
+                                .map(|argument| ProfileValue::Str(argument.clone()))
+                                .collect(),
+                        ),
+                    ),
                 ])
             })
             .collect();
@@ -1684,7 +1924,10 @@ impl<H: PresentationHost> QvmModPresentation<H> {
                 ProfileValue::record(vec![
                     ("slot", ProfileValue::Int(*slot as i64)),
                     ("owned", ProfileValue::Bool(row.owned)),
-                    ("actor", super::mod_presentation_checkpoint::capture_saved_actor_id(&row.actor)),
+                    (
+                        "actor",
+                        super::mod_presentation_checkpoint::capture_saved_actor_id(&row.actor),
+                    ),
                 ])
             })
             .collect();
@@ -1695,16 +1938,33 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             ("frame", ProfileValue::Int(self.frame)),
             ("hudFrame", ProfileValue::Int(self.hud_frame)),
             ("players", ProfileValue::Array(players)),
-            ("defaults", self.defaults.clone().map(ProfileValue::Bytes).unwrap_or(ProfileValue::Null)),
+            (
+                "defaults",
+                self.defaults
+                    .clone()
+                    .map(ProfileValue::Bytes)
+                    .unwrap_or(ProfileValue::Null),
+            ),
             ("snapshots", ProfileValue::Array(snapshots)),
             ("snapshotNumber", ProfileValue::Int(i64::from(self.snapshot_number))),
             ("sceneRevision", ProfileValue::Int(self.scene_revision)),
             ("commands", ProfileValue::Array(commands)),
-            ("arguments", ProfileValue::Array(self.arguments.iter().map(|argument| ProfileValue::Str(argument.clone())).collect())),
+            (
+                "arguments",
+                ProfileValue::Array(
+                    self.arguments
+                        .iter()
+                        .map(|argument| ProfileValue::Str(argument.clone()))
+                        .collect(),
+                ),
+            ),
             ("sceneActors", ProfileValue::Array(scene_actors)),
             (
                 "currentGameState",
-                self.current_game_state.as_ref().map(capture_presentation_game_state).unwrap_or(ProfileValue::Null),
+                self.current_game_state
+                    .as_ref()
+                    .map(capture_presentation_game_state)
+                    .unwrap_or(ProfileValue::Null),
             ),
         ]))
     }
@@ -1722,14 +1982,19 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             });
         }
         if self.phase != PresentationPhase::Created || self.busy {
-            return Err(self.fail(GuestError::invalid("Source presentation restore requires a created module")));
+            return Err(self.fail(GuestError::invalid(
+                "Source presentation restore requires a created module",
+            )));
         }
         let reader = ProfileReader::new(host);
         reader.field("version")?.literal_int(1)?;
         let sequence = reader.field("sequence")?.integer(-1)?;
         let abi = self.declaration.cgame().abi;
         let mut snapshots = HashMap::new();
-        for snapshot in reader.field("snapshots")?.list(|row| read_presentation_snapshot(row, abi))? {
+        for snapshot in reader
+            .field("snapshots")?
+            .list(|row| read_presentation_snapshot(row, abi))?
+        {
             if snapshots.insert(snapshot.number, snapshot).is_some() {
                 return Err(GuestError::invalid("Duplicate source snapshot"));
             }
@@ -1740,7 +2005,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         }
         let snapshot_number = snapshot_number as i32;
         if !snapshots.contains_key(&snapshot_number) {
-            return Err(GuestError::invalid("Source presentation restore has no current snapshot"));
+            return Err(GuestError::invalid(
+                "Source presentation restore has no current snapshot",
+            ));
         }
         let (_, _, capacity) = self.declaration.centities();
         let mut players = HashMap::new();
@@ -1769,7 +2036,14 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             if !self.host.live(&actor) {
                 return row.fail("Saved source presentation scene actor is unavailable");
             }
-            Ok((slot, QvmSceneActor { actor, slot, owned: row.field("owned")?.boolean()? }))
+            Ok((
+                slot,
+                QvmSceneActor {
+                    actor,
+                    slot,
+                    owned: row.field("owned")?.boolean()?,
+                },
+            ))
         })? {
             if scene_actors.insert(row.0, row.1).is_some() {
                 return Err(GuestError::invalid("Duplicate source presentation scene actor"));
@@ -1777,7 +2051,10 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         }
         let mut commands = HashMap::new();
         for (sequence, arguments) in reader.field("commands")?.list(|row| {
-            Ok((row.field("sequence")?.integer(0)? as u64, row.field("arguments")?.list(|value| value.string())?))
+            Ok((
+                row.field("sequence")?.integer(0)? as u64,
+                row.field("arguments")?.list(|value| value.string())?,
+            ))
         })? {
             if commands.insert(sequence, arguments).is_some() {
                 return Err(GuestError::invalid("Duplicate source presentation server command"));
@@ -1795,7 +2072,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         self.commands = commands;
         self.arguments = reader.field("arguments")?.list(|value| value.string())?;
         self.scene_actors = scene_actors;
-        self.current_game_state = reader.field("currentGameState")?.nullable(read_presentation_game_state)?;
+        self.current_game_state = reader
+            .field("currentGameState")?
+            .nullable(read_presentation_game_state)?;
         Ok(())
     }
 }
@@ -1822,7 +2101,15 @@ mod tests {
 
     impl FakeHost {
         fn new(context: QvmPresentationContext) -> Self {
-            Self { memory: vec![0; 200000], context, slots: HashMap::new(), live: HashSet::new(), calls: Vec::new(), ref_entities: HashMap::new(), closed: false }
+            Self {
+                memory: vec![0; 200000],
+                context,
+                slots: HashMap::new(),
+                live: HashSet::new(),
+                calls: Vec::new(),
+                ref_entities: HashMap::new(),
+                closed: false,
+            }
         }
     }
 
@@ -1840,7 +2127,11 @@ mod tests {
             Ok(())
         }
         fn read_i32(&self, address: usize) -> Result<i32, GuestError> {
-            Ok(i32::from_le_bytes(self.memory[address..address + 4].try_into().map_err(|_| GuestError::invalid("oob"))?))
+            Ok(i32::from_le_bytes(
+                self.memory[address..address + 4]
+                    .try_into()
+                    .map_err(|_| GuestError::invalid("oob"))?,
+            ))
         }
         fn write_i32(&mut self, address: usize, value: i32) -> Result<(), GuestError> {
             self.memory[address..address + 4].copy_from_slice(&value.to_le_bytes());
@@ -1878,11 +2169,21 @@ mod tests {
     }
 
     fn gameplay_module() -> ModuleId {
-        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+        ModuleId {
+            id: "test:game".to_string(),
+            artifact_path: "vm/qagame.qvm".to_string(),
+            digest: "sha256:game".to_string(),
+            revision: "1".to_string(),
+        }
     }
 
     fn cgame_module() -> ModuleId {
-        ModuleId { id: "test:cgame".to_string(), artifact_path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), revision: "1".to_string() }
+        ModuleId {
+            id: "test:cgame".to_string(),
+            artifact_path: "vm/cgame.qvm".to_string(),
+            digest: "sha256:cgame".to_string(),
+            revision: "1".to_string(),
+        }
     }
 
     fn fixture_artifact() -> QvmArtifact {
@@ -1891,7 +2192,10 @@ mod tests {
             role: QvmRole::Cgame,
             abi_profile: None,
             image: QvmImage {
-                instructions: vec![QvmInstruction::word(QvmOpcode::OpEnter, 32), QvmInstruction::word(QvmOpcode::OpLeave, 0)],
+                instructions: vec![
+                    QvmInstruction::word(QvmOpcode::OpEnter, 32),
+                    QvmInstruction::word(QvmOpcode::OpLeave, 0),
+                ],
                 data_length: 200000,
                 literal_length: 0,
                 bss_length: 0,
@@ -1902,13 +2206,25 @@ mod tests {
     }
 
     fn simple_call(entry: usize) -> QvmPresentationCall {
-        QvmPresentationCall { entry, when_weapon_presented: false, arguments: Vec::new() }
+        QvmPresentationCall {
+            entry,
+            when_weapon_presented: false,
+            arguments: Vec::new(),
+        }
     }
 
     fn player_events_declaration() -> QvmModPresentationDeclaration {
         QvmModPresentationDeclaration::PlayerEvents(QvmPlayerEventPresentation {
-            gameplay: QvmPresentationProgram { path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), abi: QvmAbi::Modern },
-            cgame: QvmPresentationProgram { path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), abi: QvmAbi::Modern },
+            gameplay: QvmPresentationProgram {
+                path: "vm/qagame.qvm".to_string(),
+                digest: "sha256:game".to_string(),
+                abi: QvmAbi::Modern,
+            },
+            cgame: QvmPresentationProgram {
+                path: "vm/cgame.qvm".to_string(),
+                digest: "sha256:cgame".to_string(),
+                abi: QvmAbi::Modern,
+            },
             initialize: vec![simple_call(0)],
             refresh: Vec::new(),
             frame: vec![simple_call(0)],
@@ -1918,7 +2234,13 @@ mod tests {
                 player_state: 22000,
                 snapshot_address: 23000,
                 snapshot_pointers: vec![90024],
-                centities: PlayerEventCentities { address: 80000, stride: 512, capacity: 4, state: 0, origin: 208 },
+                centities: PlayerEventCentities {
+                    address: 80000,
+                    stride: 512,
+                    capacity: 4,
+                    state: 0,
+                    origin: 208,
+                },
                 time: vec![90000],
                 frame_time: vec![90004],
                 view_origin: vec![90008],
@@ -1926,7 +2248,11 @@ mod tests {
                 view_axis: Vec::new(),
             },
             project: Vec::new(),
-            event: QvmPresentationCall { entry: 0, when_weapon_presented: false, arguments: vec![QvmPresentationArgument::Source(PresentationSource::Event)] },
+            event: QvmPresentationCall {
+                entry: 0,
+                when_weapon_presented: false,
+                arguments: vec![QvmPresentationArgument::Source(PresentationSource::Event)],
+            },
         })
     }
 
@@ -1940,7 +2266,10 @@ mod tests {
             view_origin: vec3(1.0, 2.0, 3.0),
             view_axis: None,
             weapon_presented: None,
-            snapshot: PresentationSnapshot { server_time: 100, player_state: SourcePlayerState::zeroed(QvmAbi::Modern) },
+            snapshot: PresentationSnapshot {
+                server_time: 100,
+                player_state: SourcePlayerState::zeroed(QvmAbi::Modern),
+            },
             scene: None,
         }
     }
@@ -1952,7 +2281,8 @@ mod tests {
         let mut host = FakeHost::new(fixture_context());
         host.live.insert(actor.clone());
         host.slots.insert(0, actor.clone());
-        let mut presentation = QvmModPresentation::new(fixture_artifact(), gameplay_module(), player_events_declaration(), host).unwrap();
+        let mut presentation =
+            QvmModPresentation::new(fixture_artifact(), gameplay_module(), player_events_declaration(), host).unwrap();
         presentation.initialize(-1).unwrap();
         assert_eq!(presentation.host().calls.len(), 1);
         let event = SourcePlayerEvent {
@@ -2015,8 +2345,16 @@ mod tests {
             },
         };
         let declaration = QvmModPresentationDeclaration::Scene(QvmScenePresentation {
-            gameplay: QvmPresentationProgram { path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), abi: QvmAbi::Modern },
-            cgame: QvmPresentationProgram { path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), abi: QvmAbi::Modern },
+            gameplay: QvmPresentationProgram {
+                path: "vm/qagame.qvm".to_string(),
+                digest: "sha256:game".to_string(),
+                abi: QvmAbi::Modern,
+            },
+            cgame: QvmPresentationProgram {
+                path: "vm/cgame.qvm".to_string(),
+                digest: "sha256:cgame".to_string(),
+                abi: QvmAbi::Modern,
+            },
             initialize: vec![simple_call(4)],
             refresh: Vec::new(),
             frame: vec![simple_call(4)],
@@ -2030,14 +2368,33 @@ mod tests {
                 view_origin: vec![90008],
                 view_angles: Vec::new(),
                 view_axis: Vec::new(),
-                centities: SceneCentities { address: 80000, stride: 512, capacity: 4, state: 0, previous_event: 256, snapshot_time: 260 },
+                centities: SceneCentities {
+                    address: 80000,
+                    stride: 512,
+                    capacity: 4,
+                    state: 0,
+                    previous_event: 256,
+                    snapshot_time: 260,
+                },
             },
             snapshots: vec![simple_call(4)],
             event_entity_type: 100,
-            event_check: SceneBodyEndpoint { entry: 7, centity_argument: 0 },
+            event_check: SceneBodyEndpoint {
+                entry: 7,
+                centity_argument: 0,
+            },
             body: SceneBodyScope {
-                player: SceneBodyEndpoint { entry: 0, centity_argument: 0 },
-                mesh: SceneMeshEndpoint { entry: 5, entity_argument: 0, state_argument: 1, shader_offset: 112, parts: None },
+                player: SceneBodyEndpoint {
+                    entry: 0,
+                    centity_argument: 0,
+                },
+                mesh: SceneMeshEndpoint {
+                    entry: 5,
+                    entity_argument: 0,
+                    state_argument: 1,
+                    shader_offset: 112,
+                    parts: None,
+                },
             },
         });
         (artifact, declaration)
@@ -2057,7 +2414,11 @@ mod tests {
                 entities: Vec::new(),
                 server_command_sequence: 5,
             },
-            actors: vec![QvmSceneActor { actor: actor.clone(), slot: 0, owned: true }],
+            actors: vec![QvmSceneActor {
+                actor: actor.clone(),
+                slot: 0,
+                owned: true,
+            }],
             commands: Vec::new(),
             baseline: None,
         }
@@ -2100,11 +2461,20 @@ mod tests {
         let mut host = FakeHost::new(context);
         host.live.insert(actor.clone());
         host.slots.insert(0, actor.clone());
-        host.ref_entities.insert(81000, RefEntityView { is_model: true, custom_shader: 7, bytes: vec![1, 2] });
+        host.ref_entities.insert(
+            81000,
+            RefEntityView {
+                is_model: true,
+                custom_shader: 7,
+                bytes: vec![1, 2],
+            },
+        );
         let (artifact, declaration) = scene_fixture();
         let mut presentation = QvmModPresentation::new(artifact, gameplay_module(), declaration, host).unwrap();
         presentation.initialize(-1).unwrap();
-        let player = presentation.enter_player_mesh(80000, 80000, &[(2, QvmBodyPart::Body)]).unwrap();
+        let player = presentation
+            .enter_player_mesh(80000, 80000, &[(2, QvmBodyPart::Body)])
+            .unwrap();
         assert_eq!(player, Some(0));
         let mesh = presentation.enter_mesh_call(0, 81000, 80000, Some(2));
         assert_eq!(mesh, Some(0));
@@ -2125,5 +2495,3 @@ mod tests {
         assert!((axis[0].x - 1.0).abs() < 1e-6);
     }
 }
-
-

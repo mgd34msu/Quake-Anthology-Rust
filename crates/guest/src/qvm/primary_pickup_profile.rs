@@ -12,8 +12,8 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use super::mod_provider::{
-    ProfileReader, ProfileValue, QvmAbi, QvmArtifact, QvmOpcode, QvmRegionEvaluation, QVM_MAX_PRIVATE_ARGUMENT_WORDS, qualify_qvm_region, qualify_qvm_region_evaluation,
-    qvm_player_state_bytes, qvm_shared_entity_bytes,
+    qualify_qvm_region, qualify_qvm_region_evaluation, qvm_player_state_bytes, qvm_shared_entity_bytes, ProfileReader,
+    ProfileValue, QvmAbi, QvmArtifact, QvmOpcode, QvmRegionEvaluation, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
 use crate::error::GuestError;
 
@@ -86,7 +86,9 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
     let offset = |name: &str| -> Result<usize, GuestError> {
         let value = fields.field(name)?.integer(0)? as usize;
         if value % 4 != 0 || value + 4 > stride {
-            return fields.field(name)?.fail("item field exceeds its record or is unaligned");
+            return fields
+                .field(name)?
+                .fail("item field exceeds its record or is unaligned");
         }
         Ok(value)
     };
@@ -94,11 +96,16 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
     let count = reader.field("count")?;
     let address = match pointer.value() {
         ProfileValue::Int(_) | ProfileValue::Float(_) => TableAddress::Direct(pointer.integer(4)? as usize),
-        _ => TableAddress::Global { global: pointer.field("global")?.integer(0)? as usize },
+        _ => TableAddress::Global {
+            global: pointer.field("global")?.integer(0)? as usize,
+        },
     };
     let count = match count.value() {
         ProfileValue::Int(_) | ProfileValue::Float(_) => TableCount::Direct(count.integer(1)? as usize),
-        _ => TableCount::Global { global: count.field("global")?.integer(0)? as usize, maximum: count.field("maximum")?.integer(1)? as usize },
+        _ => TableCount::Global {
+            global: count.field("global")?.integer(0)? as usize,
+            maximum: count.field("maximum")?.integer(1)? as usize,
+        },
     };
     let live = !reader.field("source")?.is_undefined();
     if live {
@@ -126,7 +133,11 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
         TableCount::Direct(_) => None,
         TableCount::Global { global, .. } => Some(global),
     };
-    if base % 4 != 0 || count_global.is_some_and(|global| global % 4 != 0) || stride % 4 != 0 || layout.weapon_type == layout.ammo_type {
+    if base % 4 != 0
+        || count_global.is_some_and(|global| global % 4 != 0)
+        || stride % 4 != 0
+        || layout.weapon_type == layout.ammo_type
+    {
         return reader.fail("invalid item table layout");
     }
     if !live && (!matches!(layout.address, TableAddress::Direct(_)) || !matches!(layout.count, TableCount::Direct(_))) {
@@ -286,7 +297,10 @@ pub struct QvmPickupProfile {
 }
 
 /// Read a primary pickup profile.
-pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<QvmPickupProfile, GuestError> {
+pub fn read_qvm_primary_pickup_profile(
+    reader: &ProfileReader<'_>,
+    artifact: &QvmArtifact,
+) -> Result<QvmPickupProfile, GuestError> {
     use super::mod_provider::QvmRole;
     let abi_profile = artifact.abi();
     if artifact.role != QvmRole::Qagame {
@@ -295,7 +309,11 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
     let instructions = &artifact.image.instructions;
     let read_entry = |at: &ProfileReader<'_>| -> Result<usize, GuestError> {
         let value = at.integer(0)? as usize;
-        if artifact.image.instruction(value).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+        if artifact
+            .image
+            .instruction(value)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        {
             return at.fail("pickup requires an original function entry");
         }
         Ok(value)
@@ -311,7 +329,9 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
         at.list(|value| {
             let index = value.integer(1)? as usize;
             let target = index.checked_sub(1).and_then(|at| instructions.get(at));
-            if instructions.get(index).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpCall)
+            if instructions
+                .get(index)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpCall)
                 || target.is_none_or(|target| target.opcode != QvmOpcode::OpConst || target.operand != owner as i32)
             {
                 return value.fail("pickup call differs from its declared original target");
@@ -321,7 +341,10 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
     };
     let read_function_calls = |at: &ProfileReader<'_>| -> Result<FunctionCalls, GuestError> {
         let target = read_entry(&at.field("entry")?)?;
-        Ok(FunctionCalls { entry: target, calls: read_calls(&at.field("calls")?, target)? })
+        Ok(FunctionCalls {
+            entry: target,
+            calls: read_calls(&at.field("calls")?, target)?,
+        })
     };
     let read_argument = |at: &ProfileReader<'_>| -> Result<usize, GuestError> {
         let index = at.integer(0)? as usize;
@@ -342,8 +365,12 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
         let result = QvmRegionEvaluation {
             entry: at.field("entry")?.integer(0)? as usize,
             join: at.field("join")?.integer(0)? as usize,
-            inputs: at.field("inputs")?.list(|value| value.integer(8).map(|offset| offset as usize))?,
-            result: at.field("result")?.nullable(|value| value.integer(8).map(|offset| offset as usize))?,
+            inputs: at
+                .field("inputs")?
+                .list(|value| value.integer(8).map(|offset| offset as usize))?,
+            result: at
+                .field("result")?
+                .nullable(|value| value.integer(8).map(|offset| offset as usize))?,
         };
         qualify_qvm_region_evaluation(instructions, owner, &result, false)?;
         Ok(result)
@@ -358,11 +385,15 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
             let value = instructions.get(accepted);
             if accepted + 1 >= owner_end(source.entry)
                 || value.is_none_or(|value| value.opcode != QvmOpcode::OpConst || value.operand == 0)
-                || instructions.get(accepted + 1).is_none_or(|next| next.opcode != QvmOpcode::OpLeave)
+                || instructions
+                    .get(accepted + 1)
+                    .is_none_or(|next| next.opcode != QvmOpcode::OpLeave)
             {
                 return op.fail("pickup accepted return must be original nonzero CONST/LEAVE in its owning function");
             }
-            PickupOperation::Return { accepted_return: accepted }
+            PickupOperation::Return {
+                accepted_return: accepted,
+            }
         } else {
             let region = (
                 op.field("entry")?.integer(0)? as usize,
@@ -382,7 +413,9 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
             } else {
                 let storage = weapon.field("storage")?;
                 Some(WeaponGrant {
-                    location: if !storage.is_undefined() && storage.value() == &super::mod_provider::ProfileValue::Str("inventory".to_string()) {
+                    location: if !storage.is_undefined()
+                        && storage.value() == &super::mod_provider::ProfileValue::Str("inventory".to_string())
+                    {
                         storage.literal_str("inventory")?;
                         WeaponGrantLocation::Inventory
                     } else {
@@ -394,23 +427,44 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
                     quantity: read_evaluation(&weapon.field("quantity")?, source.entry)?,
                 })
             };
-            PickupOperation::Region { entry: region.0, join: region.1, quantity: region.2, weapon: grant }
+            PickupOperation::Region {
+                entry: region.0,
+                join: region.1,
+                quantity: region.2,
+                weapon: grant,
+            }
         };
         let seen = RefCell::new(HashSet::new());
         let branches = at.field("eligibility")?.field("branches")?.list(|value| {
             let instruction_index = value.field("instructionIndex")?.integer(gate.entry as i64 + 1)? as usize;
             let instruction = instructions.get(instruction_index);
-            if instruction_index >= owner_end(gate.entry) || instruction.is_none_or(|instruction| !instruction.opcode.is_branch()) || !seen.borrow_mut().insert(instruction_index) {
+            if instruction_index >= owner_end(gate.entry)
+                || instruction.is_none_or(|instruction| !instruction.opcode.is_branch())
+                || !seen.borrow_mut().insert(instruction_index)
+            {
                 return value.fail("eligibility override must name a distinct original conditional inside the gate");
             }
-            Ok(EligibilityOverride { instruction_index, taken: value.field("taken")?.boolean()? })
+            Ok(EligibilityOverride {
+                instruction_index,
+                taken: value.field("taken")?.boolean()?,
+            })
         })?;
-        Ok(QvmPickupGrant { entry: source.entry, calls: source.calls, item_type: at.field("itemType")?.integer(0)?, operation, eligibility: branches })
+        Ok(QvmPickupGrant {
+            entry: source.entry,
+            calls: source.calls,
+            item_type: at.field("itemType")?.integer(0)?,
+            operation,
+            eligibility: branches,
+        })
     })? {
         grants.push(grant);
     }
-    let entity_stride = reader.field("entityStride")?.integer(qvm_shared_entity_bytes(abi_profile) as i64)? as usize;
-    let client_stride = reader.field("clientStride")?.integer(qvm_player_state_bytes(abi_profile) as i64)? as usize;
+    let entity_stride = reader
+        .field("entityStride")?
+        .integer(qvm_shared_entity_bytes(abi_profile) as i64)? as usize;
+    let client_stride = reader
+        .field("clientStride")?
+        .integer(qvm_player_state_bytes(abi_profile) as i64)? as usize;
     if entity_stride % 4 != 0 || client_stride % 4 != 0 {
         return reader.fail("source record strides must be aligned");
     }
@@ -418,7 +472,9 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
     let read_field = |name: &str| -> Result<usize, GuestError> {
         let value = fields.field(name)?.integer(0)? as usize;
         if value % 4 != 0 || value + 4 > entity_stride {
-            return fields.field(name)?.fail("pickup field is outside its aligned entity record");
+            return fields
+                .field(name)?
+                .fail("pickup field is outside its aligned entity record");
         }
         Ok(value)
     };
@@ -453,7 +509,12 @@ mod tests {
 
     fn fixture_artifact() -> QvmArtifact {
         QvmArtifact {
-            module: ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() },
+            module: ModuleId {
+                id: "test:game".to_string(),
+                artifact_path: "vm/qagame.qvm".to_string(),
+                digest: "sha256:game".to_string(),
+                revision: "1".to_string(),
+            },
             role: QvmRole::Qagame,
             abi_profile: None,
             image: QvmImage {
@@ -504,7 +565,15 @@ mod tests {
             ("address", int(64)),
             ("count", int(8)),
             ("stride", int(32)),
-            ("fields", rec(vec![("className", int(0)), ("pickupName", int(4)), ("type", int(8)), ("tag", int(12))])),
+            (
+                "fields",
+                rec(vec![
+                    ("className", int(0)),
+                    ("pickupName", int(4)),
+                    ("type", int(8)),
+                    ("tag", int(12)),
+                ]),
+            ),
             ("weaponType", int(2)),
             ("ammoType", int(3)),
         ])
@@ -546,8 +615,20 @@ mod tests {
                     ("entry", int(4)),
                     ("calls", arr(vec![int(6)])),
                     ("itemType", int(2)),
-                    ("operation", rec(vec![("kind", text("return")), ("acceptedReturn", int(7))])),
-                    ("eligibility", rec(vec![("branches", arr(vec![rec(vec![("instructionIndex", int(1)), ("taken", ProfileValue::Bool(true))])]))])),
+                    (
+                        "operation",
+                        rec(vec![("kind", text("return")), ("acceptedReturn", int(7))]),
+                    ),
+                    (
+                        "eligibility",
+                        rec(vec![(
+                            "branches",
+                            arr(vec![rec(vec![
+                                ("instructionIndex", int(1)),
+                                ("taken", ProfileValue::Bool(true)),
+                            ])]),
+                        )]),
+                    ),
                 ])]),
             ),
         ])
@@ -558,12 +639,23 @@ mod tests {
         let layout = parse_qvm_item_layout(&ProfileReader::new(&layout_value())).unwrap();
         assert_eq!(layout.stride, 32);
         assert!(!layout.live);
-        assert_eq!(layout, parse_qvm_item_layout(&ProfileReader::new(&layout_value())).unwrap());
+        assert_eq!(
+            layout,
+            parse_qvm_item_layout(&ProfileReader::new(&layout_value())).unwrap()
+        );
         let bad = rec(vec![
             ("address", int(64)),
             ("count", int(8)),
             ("stride", int(32)),
-            ("fields", rec(vec![("className", int(0)), ("pickupName", int(4)), ("type", int(8)), ("tag", int(30))])),
+            (
+                "fields",
+                rec(vec![
+                    ("className", int(0)),
+                    ("pickupName", int(4)),
+                    ("type", int(8)),
+                    ("tag", int(30)),
+                ]),
+            ),
             ("weaponType", int(2)),
             ("ammoType", int(3)),
         ]);
@@ -572,7 +664,15 @@ mod tests {
             ("address", int(64)),
             ("count", int(8)),
             ("stride", int(32)),
-            ("fields", rec(vec![("className", int(0)), ("pickupName", int(4)), ("type", int(8)), ("tag", int(12))])),
+            (
+                "fields",
+                rec(vec![
+                    ("className", int(0)),
+                    ("pickupName", int(4)),
+                    ("type", int(8)),
+                    ("tag", int(12)),
+                ]),
+            ),
             ("weaponType", int(2)),
             ("ammoType", int(2)),
         ]);
@@ -581,11 +681,15 @@ mod tests {
 
     #[test]
     fn profile_reads_gate_and_grants() {
-        let profile = read_qvm_primary_pickup_profile(&ProfileReader::new(&declaration()), &fixture_artifact()).unwrap();
+        let profile =
+            read_qvm_primary_pickup_profile(&ProfileReader::new(&declaration()), &fixture_artifact()).unwrap();
         assert_eq!(profile.gate.entry, 0);
         assert_eq!(profile.grants.len(), 1);
         assert_eq!(profile.grants[0].item_type, 2);
-        assert!(matches!(profile.grants[0].operation, PickupOperation::Return { accepted_return: 7 }));
+        assert!(matches!(
+            profile.grants[0].operation,
+            PickupOperation::Return { accepted_return: 7 }
+        ));
         assert_eq!(profile.grants[0].eligibility.len(), 1);
         assert!(QvmPickupGrant::decide(&profile.grants[0].eligibility[0]));
         assert_eq!(profile.fields.client, 64);
@@ -601,7 +705,10 @@ mod tests {
                         ("entry", int(4)),
                         ("calls", arr(vec![int(5)])),
                         ("itemType", int(2)),
-                        ("operation", rec(vec![("kind", text("return")), ("acceptedReturn", int(7))])),
+                        (
+                            "operation",
+                            rec(vec![("kind", text("return")), ("acceptedReturn", int(7))]),
+                        ),
                         ("eligibility", rec(vec![("branches", arr(vec![]))])),
                     ])]);
                 }
@@ -619,8 +726,14 @@ mod tests {
                                     *entry = rec(vec![(
                                         "branches",
                                         arr(vec![
-                                            rec(vec![("instructionIndex", int(1)), ("taken", ProfileValue::Bool(true))]),
-                                            rec(vec![("instructionIndex", int(1)), ("taken", ProfileValue::Bool(false))]),
+                                            rec(vec![
+                                                ("instructionIndex", int(1)),
+                                                ("taken", ProfileValue::Bool(true)),
+                                            ]),
+                                            rec(vec![
+                                                ("instructionIndex", int(1)),
+                                                ("taken", ProfileValue::Bool(false)),
+                                            ]),
                                         ]),
                                     )]);
                                 }
@@ -636,7 +749,12 @@ mod tests {
     #[test]
     fn region_grants_qualify_quantity_frames() {
         let artifact = QvmArtifact {
-            module: ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() },
+            module: ModuleId {
+                id: "test:game".to_string(),
+                artifact_path: "vm/qagame.qvm".to_string(),
+                digest: "sha256:game".to_string(),
+                revision: "1".to_string(),
+            },
             role: QvmRole::Qagame,
             abi_profile: None,
             image: QvmImage {
@@ -681,7 +799,15 @@ mod tests {
             ("droppedFlag", int(1)),
             ("items", layout_value()),
             ("touch", int(9)),
-            ("gate", rec(vec![("entry", int(0)), ("calls", arr(vec![])), ("itemArgument", int(0)), ("playerArgument", int(1))])),
+            (
+                "gate",
+                rec(vec![
+                    ("entry", int(0)),
+                    ("calls", arr(vec![])),
+                    ("itemArgument", int(0)),
+                    ("playerArgument", int(1)),
+                ]),
+            ),
             ("targets", rec(vec![("entry", int(11)), ("calls", arr(vec![]))])),
             ("free", int(13)),
             ("objectiveTypes", arr(vec![])),
@@ -722,7 +848,14 @@ mod tests {
         let profile = read_qvm_primary_pickup_profile(&ProfileReader::new(&declaration), &artifact).unwrap();
         assert!(matches!(
             profile.grants[0].operation,
-            PickupOperation::Region { quantity: 8, weapon: Some(WeaponGrant { location: WeaponGrantLocation::Inventory, .. }), .. }
+            PickupOperation::Region {
+                quantity: 8,
+                weapon: Some(WeaponGrant {
+                    location: WeaponGrantLocation::Inventory,
+                    ..
+                }),
+                ..
+            }
         ));
     }
 }

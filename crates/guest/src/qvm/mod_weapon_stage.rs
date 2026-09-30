@@ -11,10 +11,17 @@
 //! predicate decisions, request gating, continuation projection), which the
 //! interpreter integration calls at the donor's hook points.
 
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use super::mod_provider::{QVM_MAX_PRIVATE_ARGUMENT_WORDS, QvmImage, QvmModInputPointer, QvmModSourceCall, QvmOpcode, QvmRegionEvaluation, ModReturns};
+use super::game_data::{QvmCancellationScope, QvmFunctionCall, QvmModule};
+use super::mod_provider::{
+    InputPointerKind, ModReturns, QvmImage, QvmModInputPointer, QvmModSourceCall, QvmOpcode, QvmRegionEvaluation,
+    QVM_MAX_PRIVATE_ARGUMENT_WORDS,
+};
 use crate::error::GuestError;
 
 // ---------------------------------------------------------------------------
@@ -149,7 +156,11 @@ impl QvmItemStorage {
     /// Build packed-bits storage.
     #[must_use]
     pub fn bits(field: QvmItemField, private_mask: u32, items: Vec<PackedItem>) -> Self {
-        Self::Bits { field, private_mask, items }
+        Self::Bits {
+            field,
+            private_mask,
+            items,
+        }
     }
 }
 
@@ -355,7 +366,10 @@ impl QvmItemDefinition {
     /// Declared action calls (use, then drop).
     #[must_use]
     pub fn action_calls(&self) -> Vec<&QvmModSourceCall> {
-        self.actions.iter().flat_map(|actions| actions.use_.iter().chain(actions.drop_.iter())).collect()
+        self.actions
+            .iter()
+            .flat_map(|actions| actions.use_.iter().chain(actions.drop_.iter()))
+            .collect()
     }
 }
 
@@ -393,25 +407,43 @@ pub struct QvmModItems {
 // ---------------------------------------------------------------------------
 
 fn function_end(image: &QvmImage, entry: usize) -> Result<usize, GuestError> {
-    if image.instruction(entry).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
+    if image
+        .instruction(entry)
+        .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+    {
         return Err(GuestError::invalid("QVM weapon entry is not an original function"));
     }
     Ok(image.function_end(entry))
 }
 
 /// Validate a weapon dispatcher head.
-pub fn validate_qvm_weapon_dispatcher(stage: &QvmWeaponDispatcherDefinition, image: &QvmImage) -> Result<(), GuestError> {
+pub fn validate_qvm_weapon_dispatcher(
+    stage: &QvmWeaponDispatcherDefinition,
+    image: &QvmImage,
+) -> Result<(), GuestError> {
     let end = function_end(image, stage.dispatcher.entry)?;
     let mut seen = std::collections::HashSet::new();
     for predicate in &stage.predicates {
         let instruction = image.instruction(predicate.instruction);
-        if predicate.instruction <= stage.dispatcher.entry || predicate.instruction >= end || !seen.insert(predicate.instruction) || instruction.is_none_or(|value| !value.opcode.is_branch()) {
-            return Err(GuestError::invalid("QVM weapon predicate is not a distinct conditional in its original dispatcher"));
+        if predicate.instruction <= stage.dispatcher.entry
+            || predicate.instruction >= end
+            || !seen.insert(predicate.instruction)
+            || instruction.is_none_or(|value| !value.opcode.is_branch())
+        {
+            return Err(GuestError::invalid(
+                "QVM weapon predicate is not a distinct conditional in its original dispatcher",
+            ));
         }
     }
     function_end(image, stage.request.entry)?;
-    if stage.predicates.is_empty() || stage.settled.is_empty() || stage.request.accepted.is_empty() || stage.request.argument >= QVM_MAX_PRIVATE_ARGUMENT_WORDS {
-        return Err(GuestError::invalid("QVM weapon stage lacks its original decisions or settlement state"));
+    if stage.predicates.is_empty()
+        || stage.settled.is_empty()
+        || stage.request.accepted.is_empty()
+        || stage.request.argument >= QVM_MAX_PRIVATE_ARGUMENT_WORDS
+    {
+        return Err(GuestError::invalid(
+            "QVM weapon stage lacks its original decisions or settlement state",
+        ));
     }
     Ok(())
 }
@@ -423,7 +455,9 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
     let limit = function_end(image, continuation.entry)?;
     let branch = image.instruction(continuation.instruction);
     if continuation.when.is_empty() {
-        return Err(GuestError::invalid("QVM weapon continuation lacks its source mode conditions"));
+        return Err(GuestError::invalid(
+            "QVM weapon continuation lacks its source mode conditions",
+        ));
     }
     let mut decisions = std::collections::HashSet::from([continuation.instruction]);
     for predicate in &continuation.predicates {
@@ -433,20 +467,30 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
             || !decisions.insert(predicate.instruction)
             || instruction.is_none_or(|value| !value.opcode.is_branch())
         {
-            return Err(GuestError::invalid("QVM weapon continuation predicate is not a distinct original conditional"));
+            return Err(GuestError::invalid(
+                "QVM weapon continuation predicate is not a distinct original conditional",
+            ));
         }
     }
     if continuation.instruction <= continuation.entry
         || continuation.instruction >= limit
         || branch.is_none_or(|value| !value.opcode.is_branch() || value.operand_width != 4)
     {
-        return Err(GuestError::invalid("QVM weapon continuation lacks an original conditional boundary"));
+        return Err(GuestError::invalid(
+            "QVM weapon continuation lacks an original conditional boundary",
+        ));
     }
-    let mut pc = if continuation.original_taken { continuation.instruction + 1 } else { branch.expect("checked branch").operand.max(0) as usize };
+    let mut pc = if continuation.original_taken {
+        continuation.instruction + 1
+    } else {
+        branch.expect("checked branch").operand.max(0) as usize
+    };
     let mut visited = std::collections::HashSet::new();
     loop {
         if pc <= continuation.entry || pc >= limit || !visited.insert(pc) {
-            return Err(GuestError::invalid("QVM weapon continuation does not take an original return edge"));
+            return Err(GuestError::invalid(
+                "QVM weapon continuation does not take an original return edge",
+            ));
         }
         let instruction = image.instruction(pc);
         if instruction.is_some_and(|value| value.opcode == QvmOpcode::OpLeave) {
@@ -457,31 +501,46 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
             continue;
         }
         if instruction.is_some_and(|value| value.opcode == QvmOpcode::OpConst)
-            && image.instruction(pc + 1).is_some_and(|value| value.opcode == QvmOpcode::OpJump)
+            && image
+                .instruction(pc + 1)
+                .is_some_and(|value| value.opcode == QvmOpcode::OpJump)
         {
             pc = instruction.expect("checked const").operand.max(0) as usize;
             continue;
         }
-        return Err(GuestError::invalid("QVM weapon continuation return edge has source side effects"));
+        return Err(GuestError::invalid(
+            "QVM weapon continuation return edge has source side effects",
+        ));
     }
     let mut previous = continuation.instruction;
     for value in &continuation.calls {
         let target = value.instruction.checked_sub(1).and_then(|at| image.instruction(at));
         if value.instruction <= previous
             || value.instruction >= limit
-            || image.instruction(value.instruction).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpCall)
-            || target.is_none_or(|target| target.opcode != QvmOpcode::OpConst || target.operand != value.call.entry as i32)
+            || image
+                .instruction(value.instruction)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpCall)
+            || target
+                .is_none_or(|target| target.opcode != QvmOpcode::OpConst || target.operand != value.call.entry as i32)
             || !value.call.arguments.is_empty()
             || !value.call.globals.is_empty()
             || value.call.returns != ModReturns::Void
         {
-            return Err(GuestError::invalid("QVM weapon continuation differs from its ordered original no-argument calls"));
+            return Err(GuestError::invalid(
+                "QVM weapon continuation differs from its ordered original no-argument calls",
+            ));
         }
         function_end(image, value.call.entry)?;
         previous = value.instruction;
     }
-    if !continuation.calls.iter().any(|value| value.call.entry == stage.dispatcher.entry) {
-        return Err(GuestError::invalid("QVM continuation omits its original weapon dispatcher"));
+    if !continuation
+        .calls
+        .iter()
+        .any(|value| value.call.entry == stage.dispatcher.entry)
+    {
+        return Err(GuestError::invalid(
+            "QVM continuation omits its original weapon dispatcher",
+        ));
     }
     Ok(())
 }
@@ -548,8 +607,135 @@ pub trait WeaponStageHost {
     fn cancel_scope(&mut self, scope: u64);
 }
 
+/// Donor dispatcher operations (mirror of `QvmWeaponDispatcherOperations`).
+///
+/// Concrete over the interpreter-owning workers' types so game callers
+/// construct it literally. Actor resolution failures surface as
+/// [`GuestError`] where the donor returned null.
+pub struct QvmWeaponDispatcherOperations {
+    /// Source module.
+    pub module: QvmModule,
+    /// Resolve the source actor of a call.
+    pub actor:
+        Rc<dyn Fn(&super::item_storage::QvmWeaponActor, &mut QvmFunctionCall) -> Result<Option<ActorId>, GuestError>>,
+    /// Resolve a record pointer for an actor.
+    pub pointer: Rc<dyn Fn(&ActorId, &str) -> Result<usize, GuestError>>,
+    /// Whether an actor is live.
+    pub live: Rc<dyn Fn(&ActorId) -> bool>,
+    /// Whether an actor has this source selected.
+    pub selected: Rc<dyn Fn(&ActorId) -> bool>,
+    /// Cancellation scope of a call.
+    pub cancellation: Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> QvmCancellationScope>,
+    /// Note an attempted weapon request.
+    pub attempted: Rc<dyn Fn(&ActorId, i32)>,
+    /// Note an accepted weapon request.
+    pub accepted: Rc<dyn Fn(&ActorId, i32)>,
+    /// Note a completed dispatch.
+    pub completed: Rc<dyn Fn(&ActorId, bool)>,
+    /// Prepare hook, if any.
+    pub prepare: Option<Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> Option<Box<dyn FnOnce()>>>>,
+}
+
+/// Process-unique dispatcher scope tokens.
+static NEXT_DISPATCH_SCOPE: AtomicU64 = AtomicU64::new(1);
+
+impl WeaponStageHost for QvmWeaponDispatcherOperations {
+    fn pointer(&self, actor: &ActorId, record: &str) -> Result<usize, GuestError> {
+        (self.pointer)(actor, record)
+    }
+
+    fn live(&self, actor: &ActorId) -> bool {
+        (self.live)(actor)
+    }
+
+    fn selected(&self, actor: &ActorId) -> bool {
+        (self.selected)(actor)
+    }
+
+    fn read_i32(&self, address: usize) -> Result<i32, GuestError> {
+        self.module.memory().read_i32(address)
+    }
+
+    fn write_i32(&mut self, address: usize, value: i32) -> Result<(), GuestError> {
+        self.module.memory().write_i32(address, value)
+    }
+
+    fn write_f32(&mut self, address: usize, value: f32) -> Result<(), GuestError> {
+        self.module.memory().write_f32(address, value)
+    }
+
+    fn attempted(&mut self, actor: &ActorId, value: i32) {
+        (self.attempted)(actor, value);
+    }
+
+    fn accepted(&mut self, actor: &ActorId, value: i32) {
+        (self.accepted)(actor, value);
+    }
+
+    fn completed(&mut self, actor: &ActorId, reached_attack_decision: bool) {
+        (self.completed)(actor, reached_attack_decision);
+    }
+
+    fn evaluate_region(&mut self, region: &QvmRegionEvaluation, inputs: &[i32]) -> Result<i32, GuestError> {
+        let region = super::game_data::QvmRegionEvaluation {
+            entry: region.entry,
+            join: region.join,
+            inputs: region.inputs.clone(),
+            result: region.result,
+        };
+        Ok(self.module.evaluate_region(&[], 0, &region, inputs))
+    }
+
+    fn call_dispatcher(&mut self, entry: usize) -> Result<i32, GuestError> {
+        Ok(self.module.invoke_source_callback(entry, &[]))
+    }
+
+    fn resolve_input_pointer(&self, pointer: &QvmModInputPointer, words: &[i32]) -> Result<usize, GuestError> {
+        let memory = self.module.memory();
+        let mut found = match pointer.kind {
+            InputPointerKind::Argument { index } => words
+                .get(index)
+                .copied()
+                .ok_or_else(|| GuestError::invalid("QVM weapon input pointer names a missing call word"))?,
+            InputPointerKind::Global { address } => memory.read_i32(address)?,
+        };
+        for offset in &pointer.indirections {
+            let base = usize::try_from(found)
+                .map_err(|_| GuestError::invalid("QVM weapon input pointer left guest memory"))?;
+            found = memory.read_i32(
+                base.checked_add(*offset)
+                    .ok_or_else(|| GuestError::invalid("QVM weapon input pointer left guest memory"))?,
+            )?;
+        }
+        let base =
+            usize::try_from(found).map_err(|_| GuestError::invalid("QVM weapon input pointer left guest memory"))?;
+        base.checked_add(pointer.offset)
+            .ok_or_else(|| GuestError::invalid("QVM weapon input pointer left guest memory"))
+    }
+
+    fn posture(&self, _actor: &ActorId) -> Result<WeaponPosture, GuestError> {
+        Err(GuestError::invalid(
+            "QVM weapon posture requires the staging integration's movement record",
+        ))
+    }
+
+    fn invoke_source(&mut self, actor: &ActorId, call: &QvmModSourceCall) -> Result<i32, GuestError> {
+        let _ = actor;
+        if !call.arguments.is_empty() {
+            return Err(GuestError::invalid("QVM weapon continuation calls take no arguments"));
+        }
+        Ok(self.module.invoke_source_callback(call.entry, &[]))
+    }
+
+    fn fresh_scope(&mut self) -> u64 {
+        NEXT_DISPATCH_SCOPE.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn cancel_scope(&mut self, _scope: u64) {}
+}
+
 /// Invocation-owned weapon decisions.
-pub struct QvmWeaponDispatcher<H: WeaponStageHost> {
+pub struct QvmWeaponDispatcher<H: WeaponStageHost = QvmWeaponDispatcherOperations> {
     host: H,
     definition: QvmWeaponDispatcherDefinition,
     dispatchers: Vec<ActorId>,
@@ -567,7 +753,13 @@ struct WeaponEvaluation {
 impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
     /// Create a dispatcher.
     pub fn new(definition: QvmWeaponDispatcherDefinition, host: H) -> Self {
-        Self { host, definition, dispatchers: Vec::new(), evaluations: Vec::new(), reached_attack_decision: false }
+        Self {
+            host,
+            definition,
+            dispatchers: Vec::new(),
+            evaluations: Vec::new(),
+            reached_attack_decision: false,
+        }
     }
 
     /// Borrow the host.
@@ -581,13 +773,19 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
     }
 
     fn scalar(&self, actor: &ActorId, field: &QvmItemField) -> Result<i32, GuestError> {
-        Ok(self.host.read_i32(self.host.pointer(actor, &field.record)? + field.offset)?)
+        Ok(self
+            .host
+            .read_i32(self.host.pointer(actor, &field.record)? + field.offset)?)
     }
 
     fn test(&self, actor: &ActorId, test: &QvmItemTest) -> Result<bool, GuestError> {
         let scalar = self.scalar(actor, &test.field)?;
         let value = test.mask.map_or(scalar, |mask| scalar & (mask as i32));
-        Ok(if test.comparison == TestComparison::Equals { value == test.value } else { value <= test.value })
+        Ok(if test.comparison == TestComparison::Equals {
+            value == test.value
+        } else {
+            value <= test.value
+        })
     }
 
     /// Whether an actor's weapon state is settled.
@@ -609,7 +807,12 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
         if selected == 0 {
             return Ok(None);
         }
-        let value = self.definition.selection.values.iter().find(|value| value.value == selected);
+        let value = self
+            .definition
+            .selection
+            .values
+            .iter()
+            .find(|value| value.value == selected);
         match value {
             Some(value) => Ok(Some(value.item.clone())),
             None => Err(GuestError::invalid("Original QVM selected an undeclared source weapon")),
@@ -638,7 +841,11 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
             return BranchDecision::Cancel;
         }
         self.reached_attack_decision = true;
-        BranchDecision::Take(if self.host.selected(actor) { original } else { predicate.unselected })
+        BranchDecision::Take(if self.host.selected(actor) {
+            original
+        } else {
+            predicate.unselected
+        })
     }
 
     /// Finish a dispatcher invocation.
@@ -674,12 +881,24 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
     }
 
     /// Evaluate a region inside the dispatcher.
-    pub fn evaluate(&mut self, actor: &ActorId, region: &QvmRegionEvaluation, inputs: &[i32]) -> Result<i32, GuestError> {
+    pub fn evaluate(
+        &mut self,
+        actor: &ActorId,
+        region: &QvmRegionEvaluation,
+        inputs: &[i32],
+    ) -> Result<i32, GuestError> {
         if !self.host.live(actor) {
-            return Err(GuestError::invalid("QVM weapon evaluation requires its current source actor"));
+            return Err(GuestError::invalid(
+                "QVM weapon evaluation requires its current source actor",
+            ));
         }
         let entry = self.definition.dispatcher.entry;
-        self.evaluations.push(WeaponEvaluation { actor: actor.clone(), region: region.clone(), inputs: inputs.to_vec(), entered: false });
+        self.evaluations.push(WeaponEvaluation {
+            actor: actor.clone(),
+            region: region.clone(),
+            inputs: inputs.to_vec(),
+            entered: false,
+        });
         let outcome = self.host.call_dispatcher(entry);
         self.evaluations.pop();
         outcome
@@ -687,13 +906,17 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
 
     /// Enter a dispatcher invocation that may serve a queued evaluation.
     pub fn enter_evaluation(&mut self, actor: &ActorId) -> Result<Option<i32>, GuestError> {
-        let Some(evaluation) = self.evaluations.last_mut() else { return Ok(None) };
+        let Some(evaluation) = self.evaluations.last_mut() else {
+            return Ok(None);
+        };
         if evaluation.entered {
             return Ok(None);
         }
         evaluation.entered = true;
         if evaluation.actor != *actor || !self.host.live(actor) {
-            return Err(GuestError::invalid("QVM weapon evaluation lost its original source actor"));
+            return Err(GuestError::invalid(
+                "QVM weapon evaluation lost its original source actor",
+            ));
         }
         let region = evaluation.region.clone();
         let inputs = evaluation.inputs.clone();
@@ -719,7 +942,12 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
     /// Create a weapon stage.
     pub fn new(definition: QvmWeaponStage, host: H) -> Self {
         let dispatcher = QvmWeaponDispatcher::new(definition.dispatcher_definition(), host);
-        Self { dispatcher, definition, applications: Vec::new(), inputs: Vec::new() }
+        Self {
+            dispatcher,
+            definition,
+            applications: Vec::new(),
+            inputs: Vec::new(),
+        }
     }
 
     /// Borrow the dispatcher.
@@ -744,7 +972,9 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
 
     /// Resolve the live application actor selected by a pointer.
     pub fn actor_for(&self, source: &QvmWeaponActor, words: &[i32]) -> Result<Option<ActorId>, GuestError> {
-        let Some(actor) = self.applications.last().cloned() else { return Ok(None) };
+        let Some(actor) = self.applications.last().cloned() else {
+            return Ok(None);
+        };
         if !self.dispatcher.host.live(&actor) {
             return Ok(None);
         }
@@ -771,7 +1001,11 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
 
     /// Push an input scope.
     pub fn push_input(&mut self, actor: ActorId) {
-        self.inputs.push(StageInput { actor, scope: None, entered: false });
+        self.inputs.push(StageInput {
+            actor,
+            scope: None,
+            entered: false,
+        });
     }
 
     /// Pop an input scope.
@@ -789,14 +1023,20 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
 
     /// Enter the innermost input scope, minting its cancellation scope.
     pub fn enter_input(&mut self, actor: &ActorId) -> BranchDecision {
-        let Some(input) = self.inputs.last_mut() else { return BranchDecision::Take(true) };
+        let Some(input) = self.inputs.last_mut() else {
+            return BranchDecision::Take(true);
+        };
         if input.entered {
             return BranchDecision::Take(true);
         }
         input.entered = true;
         let scope = self.dispatcher.host.fresh_scope();
         input.scope = Some(scope);
-        if self.dispatcher.host.live(actor) { BranchDecision::Take(true) } else { BranchDecision::Cancel }
+        if self.dispatcher.host.live(actor) {
+            BranchDecision::Take(true)
+        } else {
+            BranchDecision::Cancel
+        }
     }
 
     /// Cancel retired scopes of a dead actor.
@@ -804,7 +1044,12 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
         if self.dispatcher.host.live(actor) {
             return;
         }
-        let scopes: Vec<u64> = self.inputs.iter().filter(|input| input.actor == *actor).filter_map(|input| input.scope).collect();
+        let scopes: Vec<u64> = self
+            .inputs
+            .iter()
+            .filter(|input| input.actor == *actor)
+            .filter_map(|input| input.scope)
+            .collect();
         for scope in scopes {
             self.dispatcher.host.cancel_scope(scope);
         }
@@ -823,11 +1068,20 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
     }
 
     /// Decide one continuation predicate.
-    pub fn decide_continuation_predicate(&self, actor: &ActorId, predicate: &StagePredicate, original: bool) -> BranchDecision {
+    pub fn decide_continuation_predicate(
+        &self,
+        actor: &ActorId,
+        predicate: &StagePredicate,
+        original: bool,
+    ) -> BranchDecision {
         if !self.dispatcher.host.live(actor) {
             return BranchDecision::Cancel;
         }
-        BranchDecision::Take(if self.dispatcher.host.selected(actor) { original } else { predicate.unselected })
+        BranchDecision::Take(if self.dispatcher.host.selected(actor) {
+            original
+        } else {
+            predicate.unselected
+        })
     }
 
     /// Decide the continuation boundary, reporting whether it continued.
@@ -835,7 +1089,9 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
         if !self.dispatcher.host.live(actor) {
             return Ok(BranchDecision::Cancel);
         }
-        if original != self.definition.continuation.original_taken || !self.dispatcher.matches(actor, &self.definition.continuation.when)? {
+        if original != self.definition.continuation.original_taken
+            || !self.dispatcher.matches(actor, &self.definition.continuation.when)?
+        {
             return Ok(BranchDecision::Take(original));
         }
         Ok(BranchDecision::Take(!original))
@@ -855,7 +1111,10 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
         let projection = self.definition.continuation.projection.clone();
         let posture = self.dispatcher.host.posture(actor)?;
         let host = &mut self.dispatcher.host;
-        for (offset, value) in [(projection.minimum, posture.bounds_min), (projection.maximum, posture.bounds_max)] {
+        for (offset, value) in [
+            (projection.minimum, posture.bounds_min),
+            (projection.maximum, posture.bounds_max),
+        ] {
             host.write_f32(movement + offset, value.x)?;
             host.write_f32(movement + offset + 4, value.y)?;
             host.write_f32(movement + offset + 8, value.z)?;
@@ -954,7 +1213,12 @@ mod tests {
             Ok(100)
         }
         fn posture(&self, _actor: &ActorId) -> Result<WeaponPosture, GuestError> {
-            Ok(WeaponPosture { bounds_min: vec3(-16.0, -16.0, -24.0), bounds_max: vec3(16.0, 16.0, 32.0), view_height: 26, ground: 1023 })
+            Ok(WeaponPosture {
+                bounds_min: vec3(-16.0, -16.0, -24.0),
+                bounds_max: vec3(16.0, 16.0, 32.0),
+                view_height: 26,
+                ground: 1023,
+            })
         }
         fn invoke_source(&mut self, _actor: &ActorId, call: &QvmModSourceCall) -> Result<i32, GuestError> {
             self.invoked.push(call.entry);
@@ -970,29 +1234,61 @@ mod tests {
     }
 
     fn test_field(offset: usize) -> QvmItemField {
-        QvmItemField { record: "client".to_string(), offset }
+        QvmItemField {
+            record: "client".to_string(),
+            offset,
+        }
     }
 
     fn test_pointer() -> QvmModInputPointer {
-        QvmModInputPointer { kind: InputPointerKind::Argument { index: 0 }, indirections: Vec::new(), offset: 0 }
+        QvmModInputPointer {
+            kind: InputPointerKind::Argument { index: 0 },
+            indirections: Vec::new(),
+            offset: 0,
+        }
     }
 
     fn fixture_definition() -> QvmWeaponDispatcherDefinition {
         QvmWeaponDispatcherDefinition {
-            dispatcher: DispatcherHead { entry: 10, actor: QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() } },
-            predicates: vec![StagePredicate { instruction: 11, unselected: true }],
-            settled: vec![QvmItemTest { field: test_field(0), mask: None, comparison: TestComparison::Equals, value: 3 }],
+            dispatcher: DispatcherHead {
+                entry: 10,
+                actor: QvmWeaponActor {
+                    record: "client".to_string(),
+                    pointer: test_pointer(),
+                },
+            },
+            predicates: vec![StagePredicate {
+                instruction: 11,
+                unselected: true,
+            }],
+            settled: vec![QvmItemTest {
+                field: test_field(0),
+                mask: None,
+                comparison: TestComparison::Equals,
+                value: 3,
+            }],
             selection: StageSelection {
                 field: test_field(4),
                 values: vec![
-                    SelectionValue { value: 1, item: "test:mg".to_string() },
-                    SelectionValue { value: 2, item: "test:sg".to_string() },
+                    SelectionValue {
+                        value: 1,
+                        item: "test:mg".to_string(),
+                    },
+                    SelectionValue {
+                        value: 2,
+                        item: "test:sg".to_string(),
+                    },
                 ],
             },
             request: StageRequest {
                 entry: 20,
                 argument: 0,
-                accepted: vec![QvmItemTest { field: test_field(0), mask: None, comparison: TestComparison::Equals, value: 3 }],
+                accepted: vec![QvmItemTest {
+                    field: test_field(0),
+                    mask: None,
+                    comparison: TestComparison::Equals,
+                    value: 3,
+                }],
             },
         }
     }
@@ -1009,10 +1305,37 @@ mod tests {
         let mut dispatcher = QvmWeaponDispatcher::new(fixture_definition(), host);
         assert!(dispatcher.settled(&actor).unwrap());
         assert_eq!(dispatcher.active(&actor).unwrap().as_deref(), Some("test:mg"));
-        assert_eq!(dispatcher.decide_predicate(&actor, &StagePredicate { instruction: 11, unselected: false }, true), BranchDecision::Take(true));
-        assert_eq!(dispatcher.decide_predicate(&dead, &StagePredicate { instruction: 11, unselected: false }, true), BranchDecision::Cancel);
+        assert_eq!(
+            dispatcher.decide_predicate(
+                &actor,
+                &StagePredicate {
+                    instruction: 11,
+                    unselected: false
+                },
+                true
+            ),
+            BranchDecision::Take(true)
+        );
+        assert_eq!(
+            dispatcher.decide_predicate(
+                &dead,
+                &StagePredicate {
+                    instruction: 11,
+                    unselected: false
+                },
+                true
+            ),
+            BranchDecision::Cancel
+        );
         dispatcher.begin_dispatch(actor.clone());
-        dispatcher.decide_predicate(&actor, &StagePredicate { instruction: 11, unselected: false }, false);
+        dispatcher.decide_predicate(
+            &actor,
+            &StagePredicate {
+                instruction: 11,
+                unselected: false,
+            },
+            false,
+        );
         dispatcher.end_dispatch(&actor);
         assert_eq!(dispatcher.host().completed, vec![(actor.clone(), true)]);
         assert!(dispatcher.request_gate(&actor, 2).unwrap());
@@ -1022,7 +1345,12 @@ mod tests {
         dispatcher.host_mut().words.insert(100, 3);
         dispatcher.request_finish(&actor, 5, false).unwrap();
         assert_eq!(dispatcher.host().accepted, vec![(actor.clone(), 5)]);
-        let region = QvmRegionEvaluation { entry: 11, join: 12, inputs: vec![8], result: None };
+        let region = QvmRegionEvaluation {
+            entry: 11,
+            join: 12,
+            inputs: vec![8],
+            result: None,
+        };
         assert_eq!(dispatcher.evaluate(&actor, &region, &[1, 2]).unwrap(), 11);
         assert!(dispatcher.evaluate(&dead, &region, &[1, 2]).is_err());
         assert_eq!(dispatcher.enter_evaluation(&actor).unwrap(), None);
@@ -1049,16 +1377,43 @@ mod tests {
             initialized_length: 4096,
             allocated_data_length: 8192,
         };
-        let settled = || QvmItemTest { field: test_field(0), mask: None, comparison: TestComparison::Equals, value: 1 };
+        let settled = || QvmItemTest {
+            field: test_field(0),
+            mask: None,
+            comparison: TestComparison::Equals,
+            value: 1,
+        };
         let stage = QvmWeaponStage {
-            dispatcher: DispatcherHead { entry: 0, actor: QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() } },
-            predicates: vec![StagePredicate { instruction: 1, unselected: false }],
+            dispatcher: DispatcherHead {
+                entry: 0,
+                actor: QvmWeaponActor {
+                    record: "client".to_string(),
+                    pointer: test_pointer(),
+                },
+            },
+            predicates: vec![StagePredicate {
+                instruction: 1,
+                unselected: false,
+            }],
             settled: vec![settled()],
-            selection: StageSelection { field: test_field(4), values: vec![SelectionValue { value: 1, item: "test:mg".to_string() }] },
-            request: StageRequest { entry: 3, argument: 0, accepted: vec![settled()] },
+            selection: StageSelection {
+                field: test_field(4),
+                values: vec![SelectionValue {
+                    value: 1,
+                    item: "test:mg".to_string(),
+                }],
+            },
+            request: StageRequest {
+                entry: 3,
+                argument: 0,
+                accepted: vec![settled()],
+            },
             continuation: StageContinuation {
                 entry: 4,
-                actor: QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() },
+                actor: QvmWeaponActor {
+                    record: "client".to_string(),
+                    pointer: test_pointer(),
+                },
                 instruction: 5,
                 original_taken: true,
                 when: vec![settled()],
@@ -1073,7 +1428,12 @@ mod tests {
                 },
                 calls: vec![ContinuationCall {
                     instruction: 8,
-                    call: QvmModSourceCall { entry: 0, arguments: Vec::new(), globals: Vec::new(), returns: ModReturns::Void },
+                    call: QvmModSourceCall {
+                        entry: 0,
+                        arguments: Vec::new(),
+                        globals: Vec::new(),
+                        returns: ModReturns::Void,
+                    },
                 }],
             },
         };
@@ -1083,7 +1443,10 @@ mod tests {
     #[test]
     fn stage_validation_rejects_broken_edges() {
         let image = QvmImage {
-            instructions: vec![QvmInstruction::word(QvmOpcode::OpEnter, 8), QvmInstruction::word(QvmOpcode::OpLeave, 0)],
+            instructions: vec![
+                QvmInstruction::word(QvmOpcode::OpEnter, 8),
+                QvmInstruction::word(QvmOpcode::OpLeave, 0),
+            ],
             data_length: 64,
             literal_length: 0,
             bss_length: 0,
@@ -1092,7 +1455,10 @@ mod tests {
         };
         let mut definition = fixture_definition();
         definition.dispatcher.entry = 0;
-        definition.predicates = vec![StagePredicate { instruction: 99, unselected: false }];
+        definition.predicates = vec![StagePredicate {
+            instruction: 99,
+            unselected: false,
+        }];
         assert!(validate_qvm_weapon_dispatcher(&definition, &image).is_err());
         let mut stage = QvmWeaponStage {
             dispatcher: definition.dispatcher.clone(),
@@ -1102,7 +1468,10 @@ mod tests {
             request: definition.request.clone(),
             continuation: StageContinuation {
                 entry: 0,
-                actor: QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() },
+                actor: QvmWeaponActor {
+                    record: "client".to_string(),
+                    pointer: test_pointer(),
+                },
                 instruction: 1,
                 original_taken: false,
                 when: Vec::new(),
@@ -1119,7 +1488,10 @@ mod tests {
             },
         };
         assert!(validate_qvm_weapon_stage(&stage, &image).is_err());
-        stage.predicates = vec![StagePredicate { instruction: 1, unselected: false }];
+        stage.predicates = vec![StagePredicate {
+            instruction: 1,
+            unselected: false,
+        }];
         assert!(validate_qvm_weapon_stage(&stage, &image).is_err());
     }
 
@@ -1138,14 +1510,26 @@ mod tests {
             selection: definition.selection.clone(),
             request: std::mem::replace(
                 &mut definition.request,
-                StageRequest { entry: 0, argument: 0, accepted: Vec::new() },
+                StageRequest {
+                    entry: 0,
+                    argument: 0,
+                    accepted: Vec::new(),
+                },
             ),
             continuation: StageContinuation {
                 entry: 30,
-                actor: QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() },
+                actor: QvmWeaponActor {
+                    record: "client".to_string(),
+                    pointer: test_pointer(),
+                },
                 instruction: 31,
                 original_taken: false,
-                when: vec![QvmItemTest { field: test_field(0), mask: None, comparison: TestComparison::Equals, value: 3 }],
+                when: vec![QvmItemTest {
+                    field: test_field(0),
+                    mask: None,
+                    comparison: TestComparison::Equals,
+                    value: 3,
+                }],
                 predicates: Vec::new(),
                 projection: StageProjection {
                     movement: test_pointer(),
@@ -1157,15 +1541,42 @@ mod tests {
                 },
                 calls: vec![ContinuationCall {
                     instruction: 40,
-                    call: QvmModSourceCall { entry: 10, arguments: Vec::new(), globals: Vec::new(), returns: ModReturns::Void },
+                    call: QvmModSourceCall {
+                        entry: 10,
+                        arguments: Vec::new(),
+                        globals: Vec::new(),
+                        returns: ModReturns::Void,
+                    },
                 }],
             },
         };
         let mut stage = QvmModWeaponStage::new(stage, host);
         let token = stage.open_application(actor.clone());
-        assert_eq!(stage.actor_for(&QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() }, &[100]).unwrap(), Some(actor.clone()));
+        assert_eq!(
+            stage
+                .actor_for(
+                    &QvmWeaponActor {
+                        record: "client".to_string(),
+                        pointer: test_pointer()
+                    },
+                    &[100]
+                )
+                .unwrap(),
+            Some(actor.clone())
+        );
         stage.close_application(token);
-        assert_eq!(stage.actor_for(&QvmWeaponActor { record: "client".to_string(), pointer: test_pointer() }, &[100]).unwrap(), None);
+        assert_eq!(
+            stage
+                .actor_for(
+                    &QvmWeaponActor {
+                        record: "client".to_string(),
+                        pointer: test_pointer()
+                    },
+                    &[100]
+                )
+                .unwrap(),
+            None
+        );
         let decided = stage.decide_continuation_boundary(&actor, true).unwrap();
         assert_eq!(decided, BranchDecision::Take(true));
         assert!(stage.continued_into(false, BranchDecision::Take(true)));

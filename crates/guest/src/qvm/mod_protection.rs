@@ -22,8 +22,8 @@ use qa_core::identity::{ActorId, ClientId, ProviderId};
 use qa_core::math::Vec3;
 
 use super::mod_provider::{
-    ModActorBinding, ModCallbackInput, ModCallbackValue, ModReturns, ModRuntimeValue, ModScalar, ProtectionChannel, QvmModCallbackDeclaration,
-    QvmModSourceCall, mod_field_size,
+    mod_field_size, ModActorBinding, ModCallbackInput, ModCallbackValue, ModReturns, ModRuntimeValue, ModScalar,
+    ProtectionChannel, QvmModCallbackDeclaration, QvmModSourceCall,
 };
 use crate::error::GuestError;
 
@@ -205,22 +205,39 @@ pub fn validate_qvm_mod_protection(declaration: &QvmModCallbackDeclaration) -> R
     let mut ids = HashSet::new();
     let mut occupied = HashSet::new();
     for definition in &declaration.protection {
-        if declaration.clients.is_none() || !channels.insert(definition.channel()) || !ids.insert(definition.id().to_string()) || definition.id().is_empty() {
-            return Err(GuestError::invalid("QVM protection requires unique channels and rules with source client admission"));
+        if declaration.clients.is_none()
+            || !channels.insert(definition.channel())
+            || !ids.insert(definition.id().to_string())
+            || definition.id().is_empty()
+        {
+            return Err(GuestError::invalid(
+                "QVM protection requires unique channels and rules with source client admission",
+            ));
         }
         if definition.absorb_call().returns == ModReturns::Void {
             return Err(GuestError::invalid("QVM protection requires original source savings"));
         }
         let flags = definition.flags();
-        for mask in [flags.no_armor, flags.no_power_armor, flags.no_regular_armor, flags.energy, flags.radius] {
+        for mask in [
+            flags.no_armor,
+            flags.no_power_armor,
+            flags.no_regular_armor,
+            flags.energy,
+            flags.radius,
+        ] {
             if mask > 0x7fff_ffff {
                 return Err(GuestError::invalid("Invalid QVM protection flag mask"));
             }
         }
         for field in definition.storage_fields() {
-            let record = declaration.actor_records.iter().find(|record| record.id == field.record);
+            let record = declaration
+                .actor_records
+                .iter()
+                .find(|record| record.id == field.record);
             let key = (field.record.clone(), field.offset);
-            if record.is_none_or(|record| field.offset % 4 != 0 || field.offset + 4 > record.stride) || !occupied.insert(key) {
+            if record.is_none_or(|record| field.offset % 4 != 0 || field.offset + 4 > record.stride)
+                || !occupied.insert(key)
+            {
                 return Err(GuestError::invalid("Invalid QVM protection source storage"));
             }
             let record = record.expect("checked record");
@@ -228,9 +245,14 @@ pub fn validate_qvm_mod_protection(declaration: &QvmModCallbackDeclaration) -> R
                 let width = mod_field_size(value);
                 if value.offset < field.offset + 4
                     && field.offset < value.offset + width
-                    && !matches!(value.binding, ModActorBinding::Private { .. } | ModActorBinding::Constant { .. })
+                    && !matches!(
+                        value.binding,
+                        ModActorBinding::Private { .. } | ModActorBinding::Constant { .. }
+                    )
                 {
-                    return Err(GuestError::invalid("QVM protection storage overlaps a shared or linked source field"));
+                    return Err(GuestError::invalid(
+                        "QVM protection storage overlaps a shared or linked source field",
+                    ));
                 }
             }
         }
@@ -238,11 +260,21 @@ pub fn validate_qvm_mod_protection(declaration: &QvmModCallbackDeclaration) -> R
             QvmModProtection::Regular { storage, .. } => storage
                 .selection
                 .as_ref()
-                .map(|selection| (&selection.field, selection.mask, selection.values.iter().map(|entry| entry.value).collect()))
+                .map(|selection| {
+                    (
+                        &selection.field,
+                        selection.mask,
+                        selection.values.iter().map(|entry| entry.value).collect(),
+                    )
+                })
                 .into_iter()
                 .collect(),
             QvmModProtection::Powered { storage, .. } => {
-                vec![(&storage.selection.field, storage.selection.mask, storage.selection.values.iter().map(|entry| entry.value).collect())]
+                vec![(
+                    &storage.selection.field,
+                    storage.selection.mask,
+                    storage.selection.values.iter().map(|entry| entry.value).collect(),
+                )]
             }
         };
         for (_, mask, values) in selections {
@@ -252,7 +284,10 @@ pub fn validate_qvm_mod_protection(declaration: &QvmModCallbackDeclaration) -> R
             let mut seen = HashSet::new();
             for value in &values {
                 let masked = mask.is_some_and(|mask| {
-                    value.fract() != 0.0 || *value < f64::from(i32::MIN) || *value > f64::from(i32::MAX) || ((*value as i32) & (mask as i32) != (*value as i32))
+                    value.fract() != 0.0
+                        || *value < f64::from(i32::MIN)
+                        || *value > f64::from(i32::MAX)
+                        || ((*value as i32) & (mask as i32) != (*value as i32))
                 });
                 if !value.is_finite() || !seen.insert(value.to_bits()) || masked {
                     return Err(GuestError::invalid("Invalid QVM protection selection"));
@@ -423,7 +458,12 @@ pub trait ProtectionHost {
     /// Write one scalar word.
     fn write_scalar(&mut self, address: usize, encoding: ModScalar, value: f64) -> Result<(), GuestError>;
     /// Reserve a protection channel, returning a token.
-    fn reserve_protection(&mut self, actor: &ActorId, channel: ProtectionChannel, claim: &ProtectionClaim) -> Result<u64, GuestError>;
+    fn reserve_protection(
+        &mut self,
+        actor: &ActorId,
+        channel: ProtectionChannel,
+        claim: &ProtectionClaim,
+    ) -> Result<u64, GuestError>;
     /// Bind a reserved channel.
     fn bind_protection(&mut self, actor: &ActorId, channel: ProtectionChannel) -> Result<(), GuestError>;
     /// Close a reservation token.
@@ -461,10 +501,19 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
             owner,
             rule: definition.id().to_string(),
             admission: match &definition {
-                QvmModProtection::Regular { admission, .. } | QvmModProtection::Powered { admission, .. } => admission.clone(),
+                QvmModProtection::Regular { admission, .. } | QvmModProtection::Powered { admission, .. } => {
+                    admission.clone()
+                }
             },
         };
-        Self { definition, claim, host, entries: HashMap::new(), stages: Vec::new(), active: false }
+        Self {
+            definition,
+            claim,
+            host,
+            entries: HashMap::new(),
+            stages: Vec::new(),
+            active: false,
+        }
     }
 
     /// Borrow the host.
@@ -507,11 +556,27 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         }
         let client = self.host.client_for_actor(actor);
         let owned = self.host.resolve_owned(actor);
-        if client.is_none() || !owned || self.host.actor_for_client(client.as_ref().expect("checked client")).as_ref() != Some(actor) {
+        if client.is_none()
+            || !owned
+            || self
+                .host
+                .actor_for_client(client.as_ref().expect("checked client"))
+                .as_ref()
+                != Some(actor)
+        {
             return Err(GuestError::invalid("QVM protection requires a live canonical client"));
         }
-        let reservation = self.host.reserve_protection(actor, self.definition.channel(), &self.claim)?;
-        self.entries.insert(actor.clone(), ProtectionEntry { client: client.expect("checked client"), reservation, bound: false });
+        let reservation = self
+            .host
+            .reserve_protection(actor, self.definition.channel(), &self.claim)?;
+        self.entries.insert(
+            actor.clone(),
+            ProtectionEntry {
+                client: client.expect("checked client"),
+                reservation,
+                bound: false,
+            },
+        );
         Ok(())
     }
 
@@ -531,7 +596,9 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         self.host.current()?;
         self.require(actor)?;
         if !self.host.is_eligible(actor) {
-            return Err(GuestError::invalid("QVM protection requires admitted source client storage"));
+            return Err(GuestError::invalid(
+                "QVM protection requires admitted source client storage",
+            ));
         }
         Ok(self.host.pointer(actor, &field.record)? + field.offset)
     }
@@ -549,7 +616,11 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         Ok(value)
     }
 
-    fn selected<V: Clone + PartialEq>(&self, actor: &ActorId, selection: &QvmModProtectionSelection<V>) -> Result<V, GuestError> {
+    fn selected<V: Clone + PartialEq>(
+        &self,
+        actor: &ActorId,
+        selection: &QvmModProtectionSelection<V>,
+    ) -> Result<V, GuestError> {
         let source = self.scalar(actor, &selection.field)?;
         let value = match selection.mask {
             None => source,
@@ -586,7 +657,10 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         if kind == PoweredKind::None {
             return Ok(PoweredProtectionState::None);
         }
-        Ok(PoweredProtectionState::Active { kind, cells: self.count(actor, &storage.cells)? })
+        Ok(PoweredProtectionState::Active {
+            kind,
+            cells: self.count(actor, &storage.cells)?,
+        })
     }
 
     fn validate_count(&self, field: &QvmModProtectionScalar, count: f64) -> Result<(), GuestError> {
@@ -595,7 +669,9 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
             || field.encoding == ModScalar::Int32 && (count.fract() != 0.0 || count > f64::from(i32::MAX))
             || field.encoding == ModScalar::Float32 && !(count as f32).is_finite()
         {
-            return Err(GuestError::invalid("Protection count is not representable by its QVM source storage"));
+            return Err(GuestError::invalid(
+                "Protection count is not representable by its QVM source storage",
+            ));
         }
         Ok(())
     }
@@ -604,10 +680,14 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
     pub fn validate_regular(&self, actor: &ActorId, next: &RegularArmorState) -> Result<(), GuestError> {
         let current = self.regular(actor)?;
         let QvmModProtection::Regular { storage, .. } = &self.definition else {
-            return Err(GuestError::invalid("QVM regular armor selection requires its original source operation"));
+            return Err(GuestError::invalid(
+                "QVM regular armor selection requires its original source operation",
+            ));
         };
         if current.item != next.item {
-            return Err(GuestError::invalid("QVM regular armor selection requires its original source operation"));
+            return Err(GuestError::invalid(
+                "QVM regular armor selection requires its original source operation",
+            ));
         }
         self.validate_count(&storage.points, next.points)
     }
@@ -624,11 +704,15 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
             PoweredProtectionState::Active { kind, .. } => *kind,
         };
         if current_kind != next_kind {
-            return Err(GuestError::invalid("QVM powered armor selection requires its original source operation"));
+            return Err(GuestError::invalid(
+                "QVM powered armor selection requires its original source operation",
+            ));
         }
         if let PoweredProtectionState::Active { cells, .. } = next {
             let QvmModProtection::Powered { storage, .. } = &self.definition else {
-                return Err(GuestError::invalid("QVM powered armor selection requires its original source operation"));
+                return Err(GuestError::invalid(
+                    "QVM powered armor selection requires its original source operation",
+                ));
             };
             self.validate_count(&storage.cells, *cells)?;
         }
@@ -705,10 +789,20 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
 
     fn has_scale_lowering(&self) -> bool {
         let absorb = self.definition.absorb_call();
-        absorb.arguments.iter().chain(absorb.globals.iter().map(|global| &global.value)).any(|value| {
-            matches!(value, super::mod_provider::QvmModValue::Int32(ModCallbackValue::Input(ModCallbackInput::RegularProtectionScale))
-                | super::mod_provider::QvmModValue::Float32(ModCallbackValue::Input(ModCallbackInput::RegularProtectionScale)))
-        })
+        absorb
+            .arguments
+            .iter()
+            .chain(absorb.globals.iter().map(|global| &global.value))
+            .any(|value| {
+                matches!(
+                    value,
+                    super::mod_provider::QvmModValue::Int32(ModCallbackValue::Input(
+                        ModCallbackInput::RegularProtectionScale
+                    )) | super::mod_provider::QvmModValue::Float32(ModCallbackValue::Input(
+                        ModCallbackInput::RegularProtectionScale
+                    ))
+                )
+            })
     }
 
     /// Absorb damage through the original source function.
@@ -720,33 +814,63 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         observer: &mut dyn ProtectionObserver,
     ) -> Result<ArmorStageResult, GuestError> {
         if input.request.target != *actor {
-            return Err(GuestError::invalid("QVM protection target differs from its source owner"));
+            return Err(GuestError::invalid(
+                "QVM protection target differs from its source owner",
+            ));
         }
         self.require(actor)?;
         let scale = input.flags.regular_protection_scale.unwrap_or(1.0);
         if self.definition.channel() == ProtectionChannel::Regular && scale != 1.0 && !self.has_scale_lowering() {
-            return Err(GuestError::invalid("QVM regular protection scale has no declared source lowering"));
+            return Err(GuestError::invalid(
+                "QVM regular protection scale has no declared source lowering",
+            ));
         }
         let masks = *self.definition.flags();
         let lowered = (if input.flags.no_armor { masks.no_armor } else { 0 })
-            | (if input.flags.no_power_armor { masks.no_power_armor } else { 0 })
-            | (if input.flags.no_regular_armor { masks.no_regular_armor } else { 0 })
+            | (if input.flags.no_power_armor {
+                masks.no_power_armor
+            } else {
+                0
+            })
+            | (if input.flags.no_regular_armor {
+                masks.no_regular_armor
+            } else {
+                0
+            })
             | (if input.flags.energy { masks.energy } else { 0 })
-            | (if input.request.delivery == DamageDelivery::Radius { masks.radius } else { 0 });
+            | (if input.request.delivery == DamageDelivery::Radius {
+                masks.radius
+            } else {
+                0
+            });
         let mut inputs = BTreeMap::new();
         inputs.insert(ModCallbackInput::Own, ModRuntimeValue::Actor(Some(actor.clone())));
-        inputs.insert(ModCallbackInput::Attacker, ModRuntimeValue::Actor(Some(input.request.attacker.clone())));
-        inputs.insert(ModCallbackInput::Inflictor, ModRuntimeValue::Actor(Some(input.request.inflictor.clone())));
+        inputs.insert(
+            ModCallbackInput::Attacker,
+            ModRuntimeValue::Actor(Some(input.request.attacker.clone())),
+        );
+        inputs.insert(
+            ModCallbackInput::Inflictor,
+            ModRuntimeValue::Actor(Some(input.request.inflictor.clone())),
+        );
         inputs.insert(ModCallbackInput::Amount, ModRuntimeValue::Float(input.amount));
-        inputs.insert(ModCallbackInput::Knockback, ModRuntimeValue::Float(input.request.knockback));
-        inputs.insert(ModCallbackInput::DamageFlags, ModRuntimeValue::Float(f64::from(lowered)));
+        inputs.insert(
+            ModCallbackInput::Knockback,
+            ModRuntimeValue::Float(input.request.knockback),
+        );
+        inputs.insert(
+            ModCallbackInput::DamageFlags,
+            ModRuntimeValue::Float(f64::from(lowered)),
+        );
         inputs.insert(ModCallbackInput::RegularProtectionScale, ModRuntimeValue::Float(scale));
         inputs.insert(ModCallbackInput::Point, ModRuntimeValue::Vec(input.point));
         inputs.insert(ModCallbackInput::Direction, ModRuntimeValue::Vec(input.direction));
         inputs.insert(ModCallbackInput::Normal, ModRuntimeValue::Vec(input.normal));
         inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(self.host.time_seconds()));
         let call = self.definition.absorb_call().clone();
-        let saved = self.observe(actor, siblings, observer, |runtime| runtime.host.invoke_protection(&call, &inputs))?;
+        let saved = self.observe(actor, siblings, observer, |runtime| {
+            runtime.host.invoke_protection(&call, &inputs)
+        })?;
         Ok(ArmorStageResult { saved })
     }
 
@@ -772,8 +896,12 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         observer: &mut dyn ProtectionObserver,
         execute: impl FnOnce(&mut Self) -> Result<R, GuestError>,
     ) -> Result<R, GuestError> {
-        let before_regular = std::iter::once(&*self).chain(siblings.iter()).find_map(|channel| channel.channel_regular(actor));
-        let before_powered = std::iter::once(&*self).chain(siblings.iter()).find_map(|channel| channel.channel_powered(actor));
+        let before_regular = std::iter::once(&*self)
+            .chain(siblings.iter())
+            .find_map(|channel| channel.channel_regular(actor));
+        let before_powered = std::iter::once(&*self)
+            .chain(siblings.iter())
+            .find_map(|channel| channel.channel_powered(actor));
         self.stages.push(actor.clone());
         let outcome = execute(self);
         let retained = self.stages.iter().rposition(|stage| stage == actor);
@@ -784,8 +912,12 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         if self.entries.contains_key(actor) && self.host.is_live_actor(actor) {
             self.require(actor)?;
         }
-        let after_regular = std::iter::once(&*self).chain(siblings.iter()).find_map(|channel| channel.channel_regular(actor));
-        let after_powered = std::iter::once(&*self).chain(siblings.iter()).find_map(|channel| channel.channel_powered(actor));
+        let after_regular = std::iter::once(&*self)
+            .chain(siblings.iter())
+            .find_map(|channel| channel.channel_regular(actor));
+        let after_powered = std::iter::once(&*self)
+            .chain(siblings.iter())
+            .find_map(|channel| channel.channel_powered(actor));
         let regular_change = match (before_regular, after_regular) {
             (Some(before), Some(after)) if before != after => Some(RegularChange { before, after }),
             _ => None,
@@ -795,9 +927,15 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
             _ => None,
         };
         if regular_change.is_some() {
-            observer.stored(ProtectionStore { regular: regular_change, powered: powered_change });
+            observer.stored(ProtectionStore {
+                regular: regular_change,
+                powered: powered_change,
+            });
         } else if powered_change.is_some() {
-            observer.stored(ProtectionStore { regular: None, powered: powered_change });
+            observer.stored(ProtectionStore {
+                regular: None,
+                powered: powered_change,
+            });
         }
         Ok(result)
     }
@@ -805,7 +943,9 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
     /// Assert no observed execution is running.
     pub fn assert_idle(&self, siblings: &[Self]) -> Result<(), GuestError> {
         if !self.stages.is_empty() || siblings.iter().any(|sibling| !sibling.stages.is_empty()) {
-            return Err(GuestError::invalid("Cannot save or restore during QVM protection execution"));
+            return Err(GuestError::invalid(
+                "Cannot save or restore during QVM protection execution",
+            ));
         }
         Ok(())
     }
@@ -814,7 +954,9 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
     pub fn release(&mut self, actor: &ActorId) {
         self.stages.retain(|stage| stage != actor);
         if let Some(entry) = self.entries.remove(actor) {
-            let _ = self.host.close_reservation(actor, self.definition.channel(), entry.reservation);
+            let _ = self
+                .host
+                .close_reservation(actor, self.definition.channel(), entry.reservation);
         }
     }
 
@@ -824,7 +966,10 @@ impl<H: ProtectionHost> QvmModProtectionRuntime<H> {
         let mut errors = Vec::new();
         for actor in self.entries.keys().cloned().collect::<Vec<_>>() {
             let entry = self.entries.remove(&actor).expect("tracked actor");
-            if let Err(error) = self.host.close_reservation(&actor, self.definition.channel(), entry.reservation) {
+            if let Err(error) = self
+                .host
+                .close_reservation(&actor, self.definition.channel(), entry.reservation)
+            {
                 errors.push(error);
             }
         }
@@ -846,7 +991,9 @@ mod tests {
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
 
-    use super::super::mod_provider::{ModActorBinding, QvmModActorField, QvmModActorRecord, QvmModClients, QvmModSourceCall};
+    use super::super::mod_provider::{
+        ModActorBinding, QvmModActorField, QvmModActorRecord, QvmModClients, QvmModSourceCall,
+    };
     use super::*;
 
     struct FakeHost {
@@ -861,7 +1008,15 @@ mod tests {
 
     impl FakeHost {
         fn new() -> Self {
-            Self { live: HashSet::new(), clients: HashMap::new(), words: HashMap::new(), tokens: 0, bound: Vec::new(), saved: 0.0, seen_inputs: Vec::new() }
+            Self {
+                live: HashSet::new(),
+                clients: HashMap::new(),
+                words: HashMap::new(),
+                tokens: 0,
+                bound: Vec::new(),
+                saved: 0.0,
+                seen_inputs: Vec::new(),
+            }
         }
     }
 
@@ -870,13 +1025,19 @@ mod tests {
             Ok(())
         }
         fn canonical_clients(&self) -> Vec<(ActorId, ClientId)> {
-            self.clients.iter().map(|(actor, client)| (actor.clone(), client.clone())).collect()
+            self.clients
+                .iter()
+                .map(|(actor, client)| (actor.clone(), client.clone()))
+                .collect()
         }
         fn client_for_actor(&self, actor: &ActorId) -> Option<ClientId> {
             self.clients.get(actor).cloned()
         }
         fn actor_for_client(&self, client: &ClientId) -> Option<ActorId> {
-            self.clients.iter().find(|(_, bound)| *bound == client).map(|(actor, _)| actor.clone())
+            self.clients
+                .iter()
+                .find(|(_, bound)| *bound == client)
+                .map(|(actor, _)| actor.clone())
         }
         fn is_live_actor(&self, actor: &ActorId) -> bool {
             self.live.contains(actor)
@@ -897,7 +1058,12 @@ mod tests {
             self.words.insert(address, value);
             Ok(())
         }
-        fn reserve_protection(&mut self, _actor: &ActorId, _channel: ProtectionChannel, _claim: &ProtectionClaim) -> Result<u64, GuestError> {
+        fn reserve_protection(
+            &mut self,
+            _actor: &ActorId,
+            _channel: ProtectionChannel,
+            _claim: &ProtectionClaim,
+        ) -> Result<u64, GuestError> {
             self.tokens += 1;
             Ok(self.tokens)
         }
@@ -905,7 +1071,12 @@ mod tests {
             self.bound.push((actor.clone(), channel));
             Ok(())
         }
-        fn close_reservation(&mut self, _actor: &ActorId, _channel: ProtectionChannel, _token: u64) -> Result<(), GuestError> {
+        fn close_reservation(
+            &mut self,
+            _actor: &ActorId,
+            _channel: ProtectionChannel,
+            _token: u64,
+        ) -> Result<(), GuestError> {
             Ok(())
         }
         fn invoke_protection(
@@ -932,7 +1103,12 @@ mod tests {
     }
 
     fn absorb_call() -> QvmModSourceCall {
-        QvmModSourceCall { entry: 3, arguments: Vec::new(), globals: Vec::new(), returns: ModReturns::Int32 }
+        QvmModSourceCall {
+            entry: 3,
+            arguments: Vec::new(),
+            globals: Vec::new(),
+            returns: ModReturns::Int32,
+        }
     }
 
     fn regular_definition() -> QvmModProtection {
@@ -940,9 +1116,19 @@ mod tests {
             id: "test:armor".to_string(),
             admission: ProtectionAdmission::Claim,
             absorb: absorb_call(),
-            flags: ProtectionFlags { no_armor: 1, no_power_armor: 2, no_regular_armor: 4, energy: 8, radius: 16 },
+            flags: ProtectionFlags {
+                no_armor: 1,
+                no_power_armor: 2,
+                no_regular_armor: 4,
+                energy: 8,
+                radius: 16,
+            },
             storage: RegularStorage {
-                points: QvmModProtectionScalar { record: "client".to_string(), offset: 8, encoding: ModScalar::Int32 },
+                points: QvmModProtectionScalar {
+                    record: "client".to_string(),
+                    offset: 8,
+                    encoding: ModScalar::Int32,
+                },
                 item: Some("test:armor".to_string()),
                 selection: None,
             },
@@ -954,15 +1140,35 @@ mod tests {
             id: "test:cells".to_string(),
             admission: ProtectionAdmission::Claim,
             absorb: absorb_call(),
-            flags: ProtectionFlags { no_armor: 1, no_power_armor: 2, no_regular_armor: 4, energy: 8, radius: 16 },
+            flags: ProtectionFlags {
+                no_armor: 1,
+                no_power_armor: 2,
+                no_regular_armor: 4,
+                energy: 8,
+                radius: 16,
+            },
             storage: PoweredStorage {
-                cells: QvmModProtectionScalar { record: "client".to_string(), offset: 12, encoding: ModScalar::Int32 },
+                cells: QvmModProtectionScalar {
+                    record: "client".to_string(),
+                    offset: 12,
+                    encoding: ModScalar::Int32,
+                },
                 selection: QvmModProtectionSelection {
-                    field: QvmModProtectionScalar { record: "client".to_string(), offset: 16, encoding: ModScalar::Int32 },
+                    field: QvmModProtectionScalar {
+                        record: "client".to_string(),
+                        offset: 16,
+                        encoding: ModScalar::Int32,
+                    },
                     mask: None,
                     values: vec![
-                        SelectionEntry { value: 0.0, selected: PoweredKind::None },
-                        SelectionEntry { value: 1.0, selected: PoweredKind::Shield },
+                        SelectionEntry {
+                            value: 0.0,
+                            selected: PoweredKind::None,
+                        },
+                        SelectionEntry {
+                            value: 1.0,
+                            selected: PoweredKind::Shield,
+                        },
                     ],
                 },
             },
@@ -993,7 +1199,11 @@ mod tests {
                 address: 64,
                 stride: 512,
                 capacity: 4,
-                fields: vec![QvmModActorField { offset: 0, access: None, binding: ModActorBinding::Private { byte_length: 512 } }],
+                fields: vec![QvmModActorField {
+                    offset: 0,
+                    access: None,
+                    binding: ModActorBinding::Private { byte_length: 512 },
+                }],
             }],
             entity_record: None,
             source_actors: None,
@@ -1014,7 +1224,10 @@ mod tests {
 
     #[test]
     fn validation_rejects_duplicate_channels() {
-        assert!(validate_qvm_mod_protection(&fixture_declaration(vec![regular_definition(), regular_definition()])).is_err());
+        assert!(
+            validate_qvm_mod_protection(&fixture_declaration(vec![regular_definition(), regular_definition()]))
+                .is_err()
+        );
         let mut void = regular_definition();
         if let QvmModProtection::Regular { absorb, .. } = &mut void {
             absorb.returns = ModReturns::Void;
@@ -1037,16 +1250,44 @@ mod tests {
         assert!(runtime.is_active());
         assert_eq!(runtime.host().bound, vec![(actor.clone(), ProtectionChannel::Regular)]);
         assert_eq!(runtime.regular(&actor).unwrap().points, 50.0);
-        runtime.write_regular(&actor, &RegularArmorState { points: 40.0, item: Some("test:armor".to_string()) }).unwrap();
+        runtime
+            .write_regular(
+                &actor,
+                &RegularArmorState {
+                    points: 40.0,
+                    item: Some("test:armor".to_string()),
+                },
+            )
+            .unwrap();
         assert_eq!(runtime.regular(&actor).unwrap().points, 40.0);
-        assert!(runtime.write_regular(&actor, &RegularArmorState { points: 5.0, item: Some("test:other".to_string()) }).is_err());
+        assert!(runtime
+            .write_regular(
+                &actor,
+                &RegularArmorState {
+                    points: 5.0,
+                    item: Some("test:other".to_string())
+                }
+            )
+            .is_err());
         let input = ArmorStageInput {
-            request: DamageRequest { target: actor.clone(), attacker: actor.clone(), inflictor: actor.clone(), knockback: 0.0, delivery: DamageDelivery::Direct },
+            request: DamageRequest {
+                target: actor.clone(),
+                attacker: actor.clone(),
+                inflictor: actor.clone(),
+                knockback: 0.0,
+                delivery: DamageDelivery::Direct,
+            },
             point: vec3(0.0, 0.0, 0.0),
             direction: vec3(0.0, 0.0, 1.0),
             normal: vec3(0.0, 0.0, 1.0),
             amount: 30.0,
-            flags: ArmorDamageFlags { no_armor: false, no_power_armor: false, no_regular_armor: false, energy: true, regular_protection_scale: None },
+            flags: ArmorDamageFlags {
+                no_armor: false,
+                no_power_armor: false,
+                no_regular_armor: false,
+                energy: true,
+                regular_protection_scale: None,
+            },
         };
         let mut observer = FakeObserver { stores: Vec::new() };
         let result = runtime.absorb(&actor, &[], &input, &mut observer).unwrap();
@@ -1069,17 +1310,35 @@ mod tests {
         let mut runtime = QvmModProtectionRuntime::new(regular_definition(), ProviderId::new("test", "mod"), host);
         runtime.activate().unwrap();
         let scaled = ArmorStageInput {
-            request: DamageRequest { target: actor.clone(), attacker: actor.clone(), inflictor: actor.clone(), knockback: 0.0, delivery: DamageDelivery::Direct },
+            request: DamageRequest {
+                target: actor.clone(),
+                attacker: actor.clone(),
+                inflictor: actor.clone(),
+                knockback: 0.0,
+                delivery: DamageDelivery::Direct,
+            },
             point: vec3(0.0, 0.0, 0.0),
             direction: vec3(0.0, 0.0, 1.0),
             normal: vec3(0.0, 0.0, 1.0),
             amount: 30.0,
-            flags: ArmorDamageFlags { no_armor: false, no_power_armor: false, no_regular_armor: false, energy: false, regular_protection_scale: Some(0.5) },
+            flags: ArmorDamageFlags {
+                no_armor: false,
+                no_power_armor: false,
+                no_regular_armor: false,
+                energy: false,
+                regular_protection_scale: Some(0.5),
+            },
         };
         let mut observer = FakeObserver { stores: Vec::new() };
         assert!(runtime.absorb(&actor, &[], &scaled, &mut observer).is_err());
         let foreign = ArmorStageInput {
-            request: DamageRequest { target: other.clone(), attacker: actor.clone(), inflictor: actor.clone(), knockback: 0.0, delivery: DamageDelivery::Direct },
+            request: DamageRequest {
+                target: other.clone(),
+                attacker: actor.clone(),
+                inflictor: actor.clone(),
+                knockback: 0.0,
+                delivery: DamageDelivery::Direct,
+            },
             ..scaled
         };
         assert!(runtime.absorb(&actor, &[], &foreign, &mut observer).is_err());
@@ -1121,7 +1380,10 @@ mod tests {
         runtime.activate().unwrap();
         assert_eq!(
             runtime.powered(&actor).unwrap(),
-            PoweredProtectionState::Active { kind: PoweredKind::Shield, cells: 9.0 }
+            PoweredProtectionState::Active {
+                kind: PoweredKind::Shield,
+                cells: 9.0
+            }
         );
         runtime.host_mut().words.insert(1016, 0.0);
         assert_eq!(runtime.powered(&actor).unwrap(), PoweredProtectionState::None);
