@@ -9,6 +9,18 @@
 //! `launch.ts` re-export lines in `index.ts` are out of scope and dropped;
 //! nothing else in these files touches `launch`.
 //!
+//! The compat seam extends this module with `src/content/catalog/launch.ts`,
+//! `src/content/catalog/weapon-behaviors.ts`,
+//! `src/content/catalog/qvm-weapon-behaviors.ts`, and
+//! `src/content/catalog/native-weapon-behaviors.ts`. Those donors reach into
+//! guest runtimes (`qa-guest`) and source adapters (`qa-compat`), which sit
+//! above `qa-content` in the dependency graph, so the seam defines its inputs
+//! as caller-provided traits and snapshots (`LaunchWeaponSources`,
+//! `LaunchQvmCompatibility`, `QcWeaponProgramSnapshot`,
+//! `QvmWeaponBehaviorService`, `NativeWeaponBehaviorService`) instead of
+//! calling up the stack. Selected-arsenal adapters (`catalog/weapons.ts`)
+//! stay sibling-owned and arrive through [`LaunchWeaponSources`].
+//!
 //! The donor is async over Node file handles; this port is synchronous over
 //! `std::fs`. [`MountedContent`] drops at scope end, matching the donor's
 //! `using` disposal. JSON documents (Quaddicted catalogs, `mapdb.json`,
@@ -32,17 +44,25 @@ use thiserror::Error;
 use crate::archive::open_archive;
 use crate::contract::{
     create_content_digest, create_content_id, create_mount_id, create_mount_identity, create_mount_plan_id,
-    ArchiveFormat, ArchiveMount, ContentDigest, ContentId, ContentIdentity, ContentMount, ContractError,
-    EnemySelection, EquipmentSelection, ExecutionModule, GameFamily, GrappleBinding, GrappleMechanicDetail,
-    GrappleSelection, HandGrenadeSelection, LooseMount, ModuleRole, MonsterDefinitionReference, MonsterSelectionTarget,
-    MountId, MountPlanId, PrefixMountOrder, ProviderReference, ProviderTiming, QvmGrappleCable, ResolvedMountPlan,
-    ResolvedResourceReference, ResourceRequest, SourceEdition, MAX_SAFE_INTEGER,
+    is_content_digest, ArchiveFormat, ArchiveMount, CampaignSelection, CharacterSelection, ContentDigest, ContentId,
+    ContentIdentity, ContentMount, ContractError, EnemySelection, EnvironmentSelection, EquipmentSelection,
+    ExecutableRecipe, ExecutionModule, ExecutionSelection, FrameOrdering, GameFamily, GrappleBinding,
+    GrappleMechanicDetail, GrappleSelection, HandGrenadeSelection, LaunchChoice, LaunchSelection, LooseMount,
+    MapSelection, ModuleIdentity, ModuleRole, MonsterDefinitionReference, MonsterSelectionTarget, MountId, MountPlanId,
+    NativeWeaponBehaviorDeclaration, PrefixMountOrder, PresentationSelection, ProjectileRole, ProviderReference,
+    ProviderTiming, Q3ApiIdentity, QvmAbiProfile, QvmGrappleCable, RecipeId, ResolvedExecutionModule,
+    ResolvedGameplayMod, ResolvedMap, ResolvedMountPlan, ResolvedResourceReference, ResolvedWeaponBehaviorSelection,
+    ResourceProvenance, ResourceRequest, SourceEdition, WeaponBehaviorCallback, WeaponBehaviorDefinition,
+    MAX_SAFE_INTEGER,
 };
 use crate::monsters::{monster_source, monster_timing, provider_text};
-use crate::mounts::{digest_file, open_mount_plan, MountError, MountedContent, OpenMountOptions, ResourceRef};
+use crate::mounts::{
+    digest_file, open_mount_plan, MountError, MountedContent, OpenMountOptions, OpenedResource, OrderedPlan,
+    OrderedReader, ResourceRef,
+};
 use crate::paths::{find_content_path, normalize_resource_path, PathComparison, PathError};
 use crate::user_data::user_product_directory;
-use crate::value::{parse_save_json, SaveReader};
+use crate::value::{parse_save_json, save_error, SaveReader, ValueError};
 
 /// Monster catalog re-exports (donor `catalog/monsters.ts` re-exports).
 pub use crate::monsters::{
@@ -3557,6 +3577,1446 @@ pub fn discover_installed_content(options: &DiscoverContentOptions) -> Result<In
         generation,
         user_content_root.map(|root| root.to_string_lossy().into_owned()),
     )
+}
+
+// `launch.ts`.
+
+/// Launch preset: an executable recipe minus its resolved outputs (`LaunchPreset`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaunchPreset {
+    /// Recipe identity.
+    pub id: RecipeId,
+    /// Weapon behaviors.
+    pub weapon_behaviors: Vec<ResolvedWeaponBehaviorSelection>,
+    /// Gameplay mods.
+    pub mods: Vec<ResolvedGameplayMod>,
+    /// Map selection.
+    pub map: MapSelection,
+    /// Campaign selection.
+    pub campaign: CampaignSelection,
+    /// Movement provider.
+    pub movement: ProviderReference,
+    /// Character selection.
+    pub character: CharacterSelection,
+    /// Weapon providers.
+    pub weapons: Vec<ProviderReference>,
+    /// Equipment selection.
+    pub equipment: EquipmentSelection,
+    /// Enemy selection.
+    pub enemies: EnemySelection,
+    /// Presentation selection.
+    pub presentation: PresentationSelection,
+    /// Engine behavior provider.
+    pub engine_behavior: ProviderReference,
+    /// Combat provider.
+    pub combat: ProviderReference,
+    /// Inventory provider.
+    pub inventory: ProviderReference,
+    /// Match provider.
+    pub r#match: ProviderReference,
+    /// Transition provider.
+    pub transition: ProviderReference,
+    /// Execution modules.
+    pub execution: Vec<ExecutionSelection>,
+    /// Provider timing.
+    pub timing: Vec<ProviderTiming>,
+    /// Frame ordering.
+    pub ordering: FrameOrdering,
+}
+
+/// Selected launch: a preset with the choice that produced it (`SelectedLaunch`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedLaunch {
+    /// Recipe identity.
+    pub id: RecipeId,
+    /// Chosen preset.
+    pub preset: RecipeId,
+    /// Weapon behaviors.
+    pub weapon_behaviors: Vec<ResolvedWeaponBehaviorSelection>,
+    /// Gameplay mods.
+    pub mods: Vec<ResolvedGameplayMod>,
+    /// Map selection.
+    pub map: MapSelection,
+    /// Campaign selection.
+    pub campaign: CampaignSelection,
+    /// Movement provider.
+    pub movement: ProviderReference,
+    /// Character selection.
+    pub character: CharacterSelection,
+    /// Weapon providers.
+    pub weapons: Vec<ProviderReference>,
+    /// Equipment selection.
+    pub equipment: EquipmentSelection,
+    /// Enemy selection.
+    pub enemies: EnemySelection,
+    /// Presentation selection.
+    pub presentation: PresentationSelection,
+    /// Engine behavior provider.
+    pub engine_behavior: ProviderReference,
+    /// Combat provider.
+    pub combat: ProviderReference,
+    /// Inventory provider.
+    pub inventory: ProviderReference,
+    /// Match provider.
+    pub r#match: ProviderReference,
+    /// Transition provider.
+    pub transition: ProviderReference,
+    /// Execution modules.
+    pub execution: Vec<ExecutionSelection>,
+    /// Provider timing.
+    pub timing: Vec<ProviderTiming>,
+    /// Frame ordering.
+    pub ordering: FrameOrdering,
+}
+
+/// Launch resolution inputs (`ResolveLaunchOptions`).
+#[derive(Debug, Clone)]
+pub struct ResolveLaunchOptions<'a> {
+    /// Launch choice.
+    pub choice: &'a LaunchChoice,
+    /// Launch preset.
+    pub preset: &'a LaunchPreset,
+    /// Installed catalog.
+    pub catalog: &'a InstalledCatalog,
+    /// Recipe identity override (defaults to the preset identity).
+    pub id: Option<RecipeId>,
+    /// Mount options override.
+    pub mounts: Option<OpenMountOptions>,
+}
+
+/// Prepared launch: selected decisions plus their mount plan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedLaunch {
+    /// Selected launch.
+    pub selected: SelectedLaunch,
+    /// Mount plan.
+    pub plan: ResolvedMountPlan,
+}
+
+/// Resource resolution kind (`"map" | "artifact"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LaunchResourceKind {
+    /// Map geometry: any mount in the plan may supply the bytes.
+    Map,
+    /// Execution artifact: only the content and its base may supply the bytes.
+    Artifact,
+}
+
+/// QVM role for a compatibility read (donor `QvmRole` at the launch boundary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QvmCompatRole {
+    /// Server game.
+    Qagame,
+    /// Client game.
+    Cgame,
+    /// UI.
+    Ui,
+}
+
+/// Selected-arsenal source adapters (donor `catalog/weapons.ts`).
+///
+/// The weapons catalog is sibling-owned; launch resolution receives it here so
+/// this module stays free of `q1`/`q2` mission-pack dependencies.
+pub trait LaunchWeaponSources {
+    /// Canonical weapon provider for a map (`canonicalWeaponSource`).
+    fn canonical_weapon_source(
+        &self,
+        map: &ProviderReference,
+        weapon: &ProviderReference,
+        catalog: &InstalledCatalog,
+    ) -> Result<ProviderReference, CatalogError>;
+    /// Weapon resources outside the map content (`selectedWeaponResources`).
+    fn selected_weapon_resources(
+        &self,
+        map: &ProviderReference,
+        weapons: &[ProviderReference],
+        catalog: &InstalledCatalog,
+    ) -> Result<Vec<ResourceRequest>, CatalogError>;
+    /// Weapon provider timing (`selectedWeaponTiming`).
+    fn selected_weapon_timing(
+        &self,
+        map: &ProviderReference,
+        weapons: &[ProviderReference],
+        catalog: &InstalledCatalog,
+    ) -> Result<Vec<ProviderTiming>, CatalogError>;
+    /// Admit one weapon timing row (`admitWeaponTiming`).
+    fn admit_weapon_timing(
+        &self,
+        timing: &mut Vec<ProviderTiming>,
+        weapon: &ProviderTiming,
+    ) -> Result<(), CatalogError>;
+    /// Stock weapon provider identities (`Q1_WEAPON_PROVIDERS`,
+    /// `Q1_HIPNOTIC_WEAPON_PROVIDERS`, `Q2_WEAPON_PROVIDERS`).
+    fn weapon_provider_ids(&self) -> Vec<ProviderId>;
+}
+
+/// QVM compatibility profile reads (donor `compat/qvm/compatibility.ts`).
+///
+/// The compat lane bridges this to `qa-guest`; launch resolution only needs
+/// the selected ABI profile, never the declaration itself.
+pub trait LaunchQvmCompatibility {
+    /// Read the ABI profile guarding a QVM artifact (`readQvmCompatibility`).
+    fn read_qvm_compatibility(
+        &self,
+        mounts: &dyn BehaviorMounts,
+        artifact_path: &str,
+        digest: &ContentDigest,
+        role: QvmCompatRole,
+    ) -> Result<QvmAbiProfile, CatalogError>;
+}
+
+/// Minimal mount surface for behavior discovery (`Pick<MountedContent, 'open'>`).
+pub trait BehaviorMounts {
+    /// Open a resource by path through the ambient order.
+    fn open_behavior(&self, path: &str) -> Result<Option<OpenedResource>, CatalogError>;
+}
+
+impl BehaviorMounts for MountedContent {
+    fn open_behavior(&self, path: &str) -> Result<Option<OpenedResource>, CatalogError> {
+        Ok(self.open(path, |_| true)?)
+    }
+}
+
+impl BehaviorMounts for OrderedReader<'_> {
+    fn open_behavior(&self, path: &str) -> Result<Option<OpenedResource>, CatalogError> {
+        Ok(self.open(path, |_| true)?)
+    }
+}
+
+/// Keep the preset decision or use the explicit selection (`selection`).
+fn selected<T: Clone>(choice: &LaunchSelection<T>, preset: &T) -> T {
+    match choice {
+        LaunchSelection::Selected(value) => value.clone(),
+        LaunchSelection::Preset => preset.clone(),
+    }
+}
+
+/// Launch choice that keeps every preset decision (`presetChoice`).
+#[must_use]
+pub fn preset_choice(preset: RecipeId) -> LaunchChoice {
+    LaunchChoice {
+        preset,
+        map: LaunchSelection::Preset,
+        campaign: LaunchSelection::Preset,
+        movement: LaunchSelection::Preset,
+        character: LaunchSelection::Preset,
+        weapons: LaunchSelection::Preset,
+        equipment: LaunchSelection::Preset,
+        enemies: LaunchSelection::Preset,
+        presentation: LaunchSelection::Preset,
+        engine_behavior: LaunchSelection::Preset,
+        combat: LaunchSelection::Preset,
+        inventory: LaunchSelection::Preset,
+        r#match: LaunchSelection::Preset,
+        transition: LaunchSelection::Preset,
+        execution: LaunchSelection::Preset,
+    }
+}
+
+/// Apply a launch choice to a preset (`selectLaunch`).
+///
+/// Selecting behavior cannot replace campaign gamecode, movement, character
+/// or assets; only explicit selections replace preset decisions.
+pub fn select_launch(
+    choice: &LaunchChoice,
+    preset: &LaunchPreset,
+    id: Option<&RecipeId>,
+) -> Result<SelectedLaunch, CatalogError> {
+    if choice.preset != preset.id {
+        return Err(invalid(format!(
+            "Requested preset {} does not match supplied preset {}",
+            choice.preset, preset.id
+        )));
+    }
+    Ok(SelectedLaunch {
+        id: id.cloned().unwrap_or_else(|| preset.id.clone()),
+        preset: preset.id.clone(),
+        weapon_behaviors: preset.weapon_behaviors.clone(),
+        mods: preset.mods.clone(),
+        map: selected(&choice.map, &preset.map),
+        campaign: selected(&choice.campaign, &preset.campaign),
+        movement: selected(&choice.movement, &preset.movement),
+        character: selected(&choice.character, &preset.character),
+        weapons: selected(&choice.weapons, &preset.weapons),
+        equipment: selected(&choice.equipment, &preset.equipment),
+        enemies: selected(&choice.enemies, &preset.enemies),
+        presentation: selected(&choice.presentation, &preset.presentation),
+        engine_behavior: selected(&choice.engine_behavior, &preset.engine_behavior),
+        combat: selected(&choice.combat, &preset.combat),
+        inventory: selected(&choice.inventory, &preset.inventory),
+        r#match: selected(&choice.r#match, &preset.r#match),
+        transition: selected(&choice.transition, &preset.transition),
+        execution: selected(&choice.execution, &preset.execution),
+        timing: preset.timing.clone(),
+        ordering: preset.ordering.clone(),
+    })
+}
+
+/// Mount identity path used for provenance comparisons (`mountPath`).
+fn launch_mount_path(mount: &ContentMount) -> &str {
+    match mount {
+        ContentMount::Archive(mount) => &mount.archive_path,
+        ContentMount::Loose(mount) => &mount.root_path,
+    }
+}
+
+/// Mount identity path behind resolved bytes.
+fn provenance_mount_path(provenance: &ResourceProvenance) -> &str {
+    match provenance {
+        ResourceProvenance::Archive { mount, .. } => &mount.archive_path,
+        ResourceProvenance::Loose { mount, .. } => &mount.root_path,
+    }
+}
+
+/// Content identities a launch requires (`requiredContent`), first-seen order.
+fn required_content(launch: &SelectedLaunch) -> Vec<ContentId> {
+    let mut references: Vec<&ProviderReference> = vec![
+        &launch.map.entities,
+        &launch.movement,
+        &launch.character.definition,
+        &launch.character.appearance,
+    ];
+    references.extend(launch.weapons.iter());
+    let equipment = equipment_provider_refs(&launch.equipment);
+    references.extend(equipment.iter());
+    references.extend(
+        [
+            &launch.engine_behavior,
+            &launch.combat,
+            &launch.inventory,
+            &launch.r#match,
+            &launch.transition,
+            &launch.presentation.hud,
+            &launch.presentation.effects,
+            &launch.presentation.audio,
+        ]
+        .into_iter(),
+    );
+    let owners: Vec<&ProviderReference> = launch
+        .execution
+        .iter()
+        .map(|module| match module {
+            ExecutionModule::Typescript { owner, .. }
+            | ExecutionModule::Quakec { owner, .. }
+            | ExecutionModule::Qvm { owner, .. }
+            | ExecutionModule::Native { owner, .. } => owner,
+        })
+        .collect();
+    references.extend(owners);
+    if let CampaignSelection::Campaign { mission, gamecode } = &launch.campaign {
+        references.push(mission);
+        references.push(gamecode);
+    }
+    let monsters = selected_monster_definitions(&launch.enemies);
+    references.extend(monsters.iter().map(|definition| &definition.source));
+    let mut contents: Vec<ContentId> = vec![
+        launch.map.geometry.content.clone(),
+        launch.presentation.assets.clone(),
+    ];
+    if let EnvironmentSelection::Selected { resource } = &launch.presentation.environment {
+        contents.push(resource.content.clone());
+    }
+    contents.extend(references.into_iter().map(|reference| reference.content.clone()));
+    contents.extend(launch.execution.iter().filter_map(|module| match module {
+        ExecutionModule::Typescript { .. } => None,
+        ExecutionModule::Quakec { artifact, .. }
+        | ExecutionModule::Qvm { artifact, .. }
+        | ExecutionModule::Native { artifact, .. } => Some(artifact.content.clone()),
+    }));
+    let mut seen: HashSet<ContentId> = HashSet::new();
+    contents.into_iter().filter(|id| seen.insert(id.clone())).collect()
+}
+
+/// Default order preferring a content and its base (`orderForContent`).
+fn order_for_content(
+    catalog: &InstalledCatalog,
+    plan: &ResolvedMountPlan,
+    content: &ContentId,
+) -> Result<Vec<MountId>, CatalogError> {
+    let first = catalog.mounts_for(content.as_str())?;
+    let by_path: HashMap<&str, &MountId> = plan
+        .mounts
+        .iter()
+        .map(|mount| (launch_mount_path(mount), &mount.identity().id))
+        .collect();
+    let mut seen: HashSet<MountId> = HashSet::new();
+    let mut order: Vec<MountId> = Vec::new();
+    for mount in &first {
+        if let Some(id) = by_path.get(launch_mount_path(mount)) {
+            if seen.insert((*id).clone()) {
+                order.push((*id).clone());
+            }
+        }
+    }
+    for id in &plan.default_order {
+        if seen.insert(id.clone()) {
+            order.push(id.clone());
+        }
+    }
+    Ok(order)
+}
+
+/// Resolve one launch resource through mounted content (`resolveLaunchResource`).
+pub fn resolve_launch_resource(
+    catalog: &InstalledCatalog,
+    mounted: &MountedContent,
+    request: &ResourceRequest,
+    kind: LaunchResourceKind,
+) -> Result<ResolvedResourceReference, CatalogError> {
+    let allowed = catalog.mounts_for(request.content.as_str())?;
+    let allowed_paths: Vec<&str> = allowed.iter().map(launch_mount_path).collect();
+    let opened = match kind {
+        LaunchResourceKind::Map => mounted.open(&request.path, |_| true)?,
+        LaunchResourceKind::Artifact => {
+            let reader = mounted.borrow_ordered_reader(&OrderedPlan {
+                id: create_mount_plan_id("artifact", &hex_lower(request.content.as_str().as_bytes()))?,
+                default_order: order_for_content(catalog, &mounted.plan, &request.content)?,
+                prefix_orders: Vec::new(),
+            })?;
+            reader.open(&request.path, |mount| {
+                allowed_paths.contains(&launch_mount_path(mount))
+            })?
+        }
+    };
+    let Some(opened) = opened else {
+        return Err(failed(format!(
+            "Required resource is missing: {}/{}",
+            request.content, request.path
+        )));
+    };
+    if !allowed_paths.contains(&provenance_mount_path(&opened.reference.provenance)) {
+        let kind_name = match kind {
+            LaunchResourceKind::Map => "map",
+            LaunchResourceKind::Artifact => "artifact",
+        };
+        return Err(failed(format!(
+            "Required {kind_name} is absent from its selected content and base: {}/{}",
+            request.content, request.path
+        )));
+    }
+    Ok(opened.reference)
+}
+
+/// Donor module-role text for execution conflict keys.
+fn module_role_name(role: ModuleRole) -> &'static str {
+    match role {
+        ModuleRole::ServerGame => "server-game",
+        ModuleRole::ClientGame => "client-game",
+        ModuleRole::Ui => "ui",
+    }
+}
+
+/// Validate execution roles and build the launch mount plan (`prepareLaunchMountPlan`).
+pub fn prepare_launch_mount_plan(
+    options: &ResolveLaunchOptions,
+    weapons: &dyn LaunchWeaponSources,
+) -> Result<PreparedLaunch, CatalogError> {
+    let choice = select_launch(options.choice, options.preset, options.id.as_ref())?;
+    let mut canonical_weapons = Vec::with_capacity(choice.weapons.len());
+    for weapon in &choice.weapons {
+        canonical_weapons.push(weapons.canonical_weapon_source(&choice.map.entities, weapon, options.catalog)?);
+    }
+    let selected = SelectedLaunch {
+        weapons: canonical_weapons,
+        ..choice
+    };
+    validate_equipment(&selected.equipment, options.catalog)?;
+    validate_monsters(&selected.enemies, options.catalog)?;
+    let required = required_content(&selected);
+    for content in &required {
+        options.catalog.require(content.as_str())?;
+    }
+    let mut execution_roles: HashSet<String> = HashSet::new();
+    for module in &selected.execution {
+        let (owner, role) = match module {
+            ExecutionModule::Typescript { owner, role, .. }
+            | ExecutionModule::Qvm { owner, role, .. }
+            | ExecutionModule::Native { owner, role, .. } => (owner, *role),
+            // The donor quakec module carries a constant `server-game` role.
+            ExecutionModule::Quakec { owner, .. } => (owner, ModuleRole::ServerGame),
+        };
+        let key = format!("{}:{}/{}", owner.provider.namespace, owner.provider.name, module_role_name(role));
+        if !execution_roles.insert(key.clone()) {
+            return Err(failed(format!("Conflicting execution modules for {key}")));
+        }
+    }
+    let base_plan = options.catalog.create_mount_plan(&MountPlanSelection {
+        id: create_mount_plan_id("launch", &hex_lower(selected.id.as_str().as_bytes()))?,
+        assets: selected.presentation.assets.clone(),
+        geometry: selected.map.geometry.content.clone(),
+        rules: Some(selected.combat.content.clone()),
+        explicit_presentation: matches!(options.choice.presentation, LaunchSelection::Selected(_)),
+        additional: required,
+    })?;
+    // Ordered map: insertion order keeps prefix orders deterministic.
+    let mut artifacts: Vec<(String, HashSet<ContentId>)> = Vec::new();
+    for module in &selected.execution {
+        let artifact = match module {
+            ExecutionModule::Typescript { .. } => continue,
+            ExecutionModule::Quakec { artifact, .. }
+            | ExecutionModule::Qvm { artifact, .. }
+            | ExecutionModule::Native { artifact, .. } => artifact,
+        };
+        let path = normalize_resource_path(&artifact.path)?;
+        match artifacts.iter_mut().find(|(prefix, _)| *prefix == path) {
+            Some((_, sources)) => {
+                sources.insert(artifact.content.clone());
+            }
+            None => {
+                artifacts.push((path, HashSet::from([artifact.content.clone()])));
+            }
+        }
+    }
+    let mut artifact_orders: Vec<PrefixMountOrder> = Vec::new();
+    for (prefix, sources) in &artifacts {
+        if sources.len() != 1 {
+            continue;
+        }
+        for content in sources {
+            artifact_orders.push(PrefixMountOrder {
+                prefix: prefix.clone(),
+                mounts: order_for_content(options.catalog, &base_plan, content)?,
+            });
+        }
+    }
+    let mut prefix_orders = artifact_orders;
+    prefix_orders.extend(base_plan.prefix_orders.clone());
+    Ok(PreparedLaunch {
+        selected,
+        plan: ResolvedMountPlan {
+            prefix_orders,
+            ..base_plan
+        },
+    })
+}
+
+/// Admit a resolved resource, replacing same-identity bytes in place.
+fn admit_resource(resources: &mut Vec<ResolvedResourceReference>, resource: ResolvedResourceReference) {
+    match resources.iter_mut().find(|existing| existing.id == resource.id) {
+        Some(existing) => *existing = resource,
+        None => resources.push(resource),
+    }
+}
+
+/// Resolve a launch choice into an executable recipe (`resolveLaunch`).
+pub fn resolve_launch(
+    options: &ResolveLaunchOptions,
+    weapons: &dyn LaunchWeaponSources,
+    compat: &dyn LaunchQvmCompatibility,
+) -> Result<ExecutableRecipe, CatalogError> {
+    let PreparedLaunch { selected, plan } = prepare_launch_mount_plan(options, weapons)?;
+    let mounted = open_mount_plan(&plan, options.mounts.clone().unwrap_or_default())?;
+    let mut resources: Vec<ResolvedResourceReference> = Vec::new();
+    let geometry = resolve_launch_resource(
+        options.catalog,
+        &mounted,
+        &selected.map.geometry,
+        LaunchResourceKind::Map,
+    )?;
+    admit_resource(&mut resources, geometry.clone());
+    let groups = [
+        (
+            "weapon",
+            weapons.selected_weapon_resources(&selected.map.entities, &selected.weapons, options.catalog)?,
+        ),
+        ("equipment", equipment_resources(&selected.equipment)),
+        ("monster", monster_resources(&selected.enemies)?),
+        (
+            "environment",
+            match &selected.presentation.environment {
+                EnvironmentSelection::Selected { resource } => vec![resource.clone()],
+                _ => Vec::new(),
+            },
+        ),
+    ];
+    for (kind, requests) in &groups {
+        let mut contents: Vec<&ContentId> = Vec::new();
+        for request in requests {
+            if !contents.contains(&&request.content) {
+                contents.push(&request.content);
+            }
+        }
+        for content in contents {
+            let order = order_for_content(options.catalog, &mounted.plan, content)?;
+            let allowed = options.catalog.mounts_for(content.as_str())?;
+            let allowed_paths: Vec<&str> = allowed.iter().map(launch_mount_path).collect();
+            let scoped = mounted.borrow_ordered_reader(&OrderedPlan {
+                id: create_mount_plan_id(kind, &hex_lower(content.as_str().as_bytes()))?,
+                default_order: order,
+                prefix_orders: Vec::new(),
+            })?;
+            for request in requests.iter().filter(|request| &request.content == content) {
+                match scoped.resolve(&request.path)? {
+                    Some(resource)
+                        if allowed_paths.contains(&provenance_mount_path(&resource.provenance)) =>
+                    {
+                        admit_resource(&mut resources, resource);
+                    }
+                    _ => {
+                        return Err(failed(format!(
+                            "Required {kind} resource is absent from its selected content and base: {}/{}",
+                            content, request.path
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    let mut execution: Vec<ResolvedExecutionModule> = Vec::new();
+    for module in &selected.execution {
+        match module {
+            ExecutionModule::Typescript {
+                owner,
+                implementation,
+                role,
+                api,
+            } => execution.push(ExecutionModule::Typescript {
+                owner: owner.clone(),
+                implementation: implementation.clone(),
+                role: *role,
+                api: *api,
+            }),
+            ExecutionModule::Quakec { owner, artifact, api } => {
+                let resolved =
+                    resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
+                execution.push(ExecutionModule::Quakec {
+                    owner: owner.clone(),
+                    artifact: resolved,
+                    api: *api,
+                });
+            }
+            ExecutionModule::Qvm { owner, artifact, role, api } => {
+                let resolved =
+                    resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
+                let order = order_for_content(options.catalog, &mounted.plan, &artifact.content)?;
+                let scoped = mounted.borrow_ordered_reader(&OrderedPlan {
+                    id: create_mount_plan_id("qvm-abi", &hex_lower(artifact.content.as_str().as_bytes()))?,
+                    default_order: order,
+                    prefix_orders: Vec::new(),
+                })?;
+                let compat_role = match api {
+                    Q3ApiIdentity::Qagame(_) => QvmCompatRole::Qagame,
+                    Q3ApiIdentity::Cgame(_) => QvmCompatRole::Cgame,
+                    Q3ApiIdentity::Ui(_) => QvmCompatRole::Ui,
+                };
+                let profile =
+                    compat.read_qvm_compatibility(&scoped, &resolved.requested_path, &resolved.digest, compat_role)?;
+                let modern = profile == QvmAbiProfile::Modern;
+                match role {
+                    ModuleRole::ServerGame => execution.push(ExecutionModule::Qvm {
+                        owner: owner.clone(),
+                        artifact: resolved,
+                        role: *role,
+                        api: Q3ApiIdentity::Qagame(if modern { 8 } else { 7 }),
+                    }),
+                    ModuleRole::ClientGame => execution.push(ExecutionModule::Qvm {
+                        owner: owner.clone(),
+                        artifact: resolved,
+                        role: *role,
+                        api: Q3ApiIdentity::Cgame(if modern { 4 } else { 3 }),
+                    }),
+                    ModuleRole::Ui => {
+                        let version = match api {
+                            Q3ApiIdentity::Qagame(version)
+                            | Q3ApiIdentity::Cgame(version)
+                            | Q3ApiIdentity::Ui(version) => *version,
+                        };
+                        execution.push(ExecutionModule::Qvm {
+                            owner: owner.clone(),
+                            artifact: resolved,
+                            role: *role,
+                            api: Q3ApiIdentity::Ui(if modern { version } else { 4 }),
+                        });
+                    }
+                }
+            }
+            ExecutionModule::Native {
+                owner,
+                artifact,
+                profile,
+                role,
+                api,
+            } => {
+                let resolved =
+                    resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
+                execution.push(ExecutionModule::Native {
+                    owner: owner.clone(),
+                    artifact: resolved,
+                    profile: *profile,
+                    role: *role,
+                    api: *api,
+                });
+            }
+        }
+    }
+    let equipment = equipment_providers();
+    let mut selected_source_ids: HashSet<ProviderId> = HashSet::new();
+    for id in [&equipment.threewave, &equipment.ctf, &equipment.lmctf, &equipment.hand_grenades] {
+        selected_source_ids.insert(id.clone());
+    }
+    for reference in equipment_provider_refs(&selected.equipment) {
+        selected_source_ids.insert(reference.provider.clone());
+    }
+    for id in weapons.weapon_provider_ids() {
+        selected_source_ids.insert(id);
+    }
+    for source in monster_sources() {
+        selected_source_ids.insert(source.provider.clone());
+    }
+    let monster_profiles = selected_monster_timing(&selected.enemies);
+    let weapon_profiles =
+        weapons.selected_weapon_timing(&selected.map.entities, &selected.weapons, options.catalog)?;
+    let mut timing: Vec<ProviderTiming> = selected
+        .timing
+        .iter()
+        .filter(|entry| !selected_source_ids.contains(&entry.provider))
+        .cloned()
+        .collect();
+    timing.extend(equipment_timing(&selected.equipment));
+    timing.extend(monster_profiles.iter().cloned());
+    for profile in &weapon_profiles {
+        weapons.admit_weapon_timing(&mut timing, profile)?;
+    }
+    let mut selected_source_order: Vec<ProviderId> = equipment_provider_refs(&selected.equipment)
+        .into_iter()
+        .map(|reference| reference.provider)
+        .collect();
+    selected_source_order.extend(monster_profiles.iter().map(|profile| profile.provider.clone()));
+    let ordering = match &selected.ordering {
+        FrameOrdering::Mixed { providers } => {
+            let mut existing: Vec<ProviderId> = providers
+                .iter()
+                .filter(|provider| !selected_source_ids.contains(*provider))
+                .cloned()
+                .collect();
+            existing.extend(selected_source_order.iter().cloned());
+            let mut merged = existing.clone();
+            for provider in weapon_profiles
+                .iter()
+                .map(|profile| &profile.provider)
+                .filter(|provider| !existing.contains(provider))
+            {
+                merged.push(provider.clone());
+            }
+            FrameOrdering::Mixed { providers: merged }
+        }
+        FrameOrdering::Native { .. } if weapon_profiles.is_empty() => selected.ordering.clone(),
+        FrameOrdering::Native { .. } => {
+            let mut seen: HashSet<ProviderId> = HashSet::new();
+            let mut providers: Vec<ProviderId> = Vec::new();
+            let candidates = [selected.map.entities.provider.clone()]
+                .into_iter()
+                .chain(selected.timing.iter().map(|entry| entry.provider.clone()))
+                .chain(selected_source_order)
+                .chain(weapon_profiles.iter().map(|profile| profile.provider.clone()));
+            for provider in candidates {
+                if seen.insert(provider.clone()) {
+                    providers.push(provider);
+                }
+            }
+            FrameOrdering::Mixed { providers }
+        }
+    };
+    Ok(ExecutableRecipe {
+        weapon_behaviors: selected.weapon_behaviors.clone(),
+        mods: selected.mods.clone(),
+        schema_version: 3,
+        id: selected.id.clone(),
+        preset: selected.preset.clone(),
+        map: ResolvedMap {
+            geometry_content: selected.map.geometry.content.clone(),
+            geometry,
+            entities: selected.map.entities.clone(),
+        },
+        campaign: selected.campaign.clone(),
+        movement: selected.movement.clone(),
+        character: selected.character.clone(),
+        weapons: selected.weapons.clone(),
+        equipment: selected.equipment.clone(),
+        enemies: selected.enemies.clone(),
+        presentation: selected.presentation.clone(),
+        engine_behavior: selected.engine_behavior.clone(),
+        combat: selected.combat.clone(),
+        inventory: selected.inventory.clone(),
+        r#match: selected.r#match.clone(),
+        transition: selected.transition.clone(),
+        execution,
+        mounts: mounted.plan.clone(),
+        resources,
+        timing,
+        ordering,
+    })
+}
+
+// `weapon-behaviors.ts`.
+
+/// Source weapon behavior metadata from a mounted declaration or observed
+/// source binding (`SourceWeaponBehaviorMetadata`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourceWeaponBehaviorMetadata {
+    /// Behavior identity (`namespace:name`).
+    pub id: String,
+    /// Title.
+    pub title: String,
+    /// Artifact digest the metadata belongs to.
+    pub artifact_digest: ContentDigest,
+    /// Projectile role.
+    pub role: ProjectileRole,
+    /// Fire entrypoint name.
+    pub fire_function: String,
+    /// Activation gate entrypoint name, when declared.
+    pub activation_function: Option<String>,
+}
+
+/// Weapon behavior compatibility (`WeaponBehaviorCompatibility`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WeaponBehaviorCompatibility {
+    /// Supported behavior with its definition.
+    Supported {
+        /// Behavior definition.
+        definition: WeaponBehaviorDefinition,
+    },
+    /// Unsupported behavior with its reason.
+    Unsupported {
+        /// Reason.
+        reason: String,
+    },
+}
+
+/// QuakeC function row needed for behavior resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QcWeaponFunction {
+    /// Function index.
+    pub index: u32,
+    /// Function name.
+    pub name: String,
+    /// First statement, or negative when the function has no body.
+    pub first_statement: i64,
+    /// Parameter word count.
+    pub parameter_words: usize,
+}
+
+/// QuakeC statement opcodes relevant to think-store inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QcWeaponOpcode {
+    /// Address-of-field.
+    Address,
+    /// Store function pointer field.
+    StorePFn,
+    /// Store function global.
+    StoreFn,
+    /// Any other opcode.
+    Other,
+}
+
+/// QuakeC statement row needed for think-store inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QcWeaponStatement {
+    /// Opcode.
+    pub opcode: QcWeaponOpcode,
+    /// First operand.
+    pub a: i32,
+    /// Second operand.
+    pub b: i32,
+    /// Third operand.
+    pub c: i32,
+}
+
+/// QuakeC `function` global needed for literal-callback checks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QcFunctionGlobal {
+    /// Global name.
+    pub name: String,
+    /// Global word offset.
+    pub offset: i32,
+}
+
+/// QuakeC program surface for weapon behavior resolution.
+///
+/// The guest lane builds this snapshot from its `QcProgram` (including the
+/// `qcWeaponBehaviorCapabilityError` verdict); behavior resolution itself is
+/// pure over the snapshot so this module never depends on `qa-guest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QcWeaponProgramSnapshot {
+    /// Program digest.
+    pub digest: ContentDigest,
+    /// Capability verdict, or `None` when the program can host behaviors.
+    pub capability_error: Option<String>,
+    /// Program functions in stored order.
+    pub functions: Vec<QcWeaponFunction>,
+    /// Program statements in stored order.
+    pub statements: Vec<QcWeaponStatement>,
+    /// Word offset of the `think` field, when the program declares one.
+    pub think_field_offset: Option<i32>,
+    /// Initial global words, word-addressable.
+    pub initial_global_words: Vec<i32>,
+    /// `function`-typed globals by name and offset.
+    pub function_globals: Vec<QcFunctionGlobal>,
+}
+
+impl QcWeaponProgramSnapshot {
+    /// Read one initial global word, or `None` when out of range.
+    fn word(&self, offset: i32) -> Option<i32> {
+        usize::try_from(offset).ok().and_then(|index| self.initial_global_words.get(index).copied())
+    }
+}
+
+/// Resolve one QuakeC weapon behavior against its source program
+/// (`resolveQcWeaponBehavior`).
+pub fn resolve_qc_weapon_behavior(
+    module: &ModuleIdentity,
+    program: &QcWeaponProgramSnapshot,
+    metadata: &SourceWeaponBehaviorMetadata,
+) -> WeaponBehaviorCompatibility {
+    if module.digest != program.digest || metadata.artifact_digest != program.digest {
+        return WeaponBehaviorCompatibility::Unsupported {
+            reason: "Behavior metadata belongs to a different source artifact".to_string(),
+        };
+    }
+    if let Some(reason) = &program.capability_error {
+        return WeaponBehaviorCompatibility::Unsupported {
+            reason: reason.clone(),
+        };
+    }
+    let callback = |name: &str| -> Option<WeaponBehaviorCallback> {
+        let function = program.functions.iter().find(|candidate| candidate.name == name)?;
+        if function.index == 0 || function.first_statement < 0 || function.parameter_words != 0 {
+            return None;
+        }
+        Some(WeaponBehaviorCallback::Quakec {
+            module: module.clone(),
+            function_index: function.index,
+        })
+    };
+    let fire = callback(&metadata.fire_function);
+    let activate = metadata.activation_function.as_deref().map(callback);
+    match (fire, &metadata.activation_function, activate) {
+        (Some(fire), None, None) => WeaponBehaviorCompatibility::Supported {
+            definition: WeaponBehaviorDefinition {
+                id: metadata.id.clone(),
+                title: metadata.title.clone(),
+                module: module.clone(),
+                role: metadata.role,
+                activate: None,
+                fire,
+            },
+        },
+        (Some(fire), Some(_), Some(Some(activate))) => WeaponBehaviorCompatibility::Supported {
+            definition: WeaponBehaviorDefinition {
+                id: metadata.id.clone(),
+                title: metadata.title.clone(),
+                module: module.clone(),
+                role: metadata.role,
+                activate: Some(activate),
+                fire,
+            },
+        },
+        _ => WeaponBehaviorCompatibility::Unsupported {
+            reason: "Declared behavior entrypoint is absent from the source program".to_string(),
+        },
+    }
+}
+
+/// Weapon behavior catalog (`WeaponBehaviorCatalog`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WeaponBehaviorCatalog {
+    entries: Vec<WeaponBehaviorDefinition>,
+}
+
+impl WeaponBehaviorCatalog {
+    /// Empty catalog.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a definition, rejecting duplicates.
+    pub fn add(&mut self, definition: WeaponBehaviorDefinition) -> Result<(), CatalogError> {
+        if self.entries.iter().any(|entry| entry.id == definition.id) {
+            return Err(failed(format!("Duplicate weapon behavior {}", definition.id)));
+        }
+        self.entries.push(definition);
+        Ok(())
+    }
+
+    /// Definitions for one projectile role.
+    #[must_use]
+    pub fn for_role(&self, role: ProjectileRole) -> Vec<WeaponBehaviorDefinition> {
+        self.entries.iter().filter(|entry| entry.role == role).cloned().collect()
+    }
+
+    /// Require one definition by identity.
+    pub fn require(&self, id: &str) -> Result<WeaponBehaviorDefinition, CatalogError> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| failed(format!("Unknown weapon behavior {id}")))
+    }
+}
+
+/// Explicit think-field store between two source functions
+/// (`QcTrajectoryBindingInspection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QcTrajectoryBindingInspection {
+    /// Producer function index.
+    pub producer_function: u32,
+    /// Think function index.
+    pub think_function: u32,
+    /// Store statement index.
+    pub statement: usize,
+}
+
+/// Report explicit bytecode stores to the source ABI think field
+/// (`inspectQcTrajectoryBindings`); this does not infer a weapon role.
+pub fn inspect_qc_trajectory_bindings(program: &QcWeaponProgramSnapshot) -> Vec<QcTrajectoryBindingInspection> {
+    let Some(think) = program.think_field_offset else {
+        return Vec::new();
+    };
+    let mut functions: Vec<&QcWeaponFunction> = program
+        .functions
+        .iter()
+        .filter(|function| function.index != 0 && function.first_statement >= 0)
+        .collect();
+    functions.sort_by_key(|function| function.first_statement);
+    let mut result: Vec<QcTrajectoryBindingInspection> = Vec::new();
+    for (index, function) in functions.iter().enumerate() {
+        let Ok(start) = usize::try_from(function.first_statement) else {
+            continue;
+        };
+        let end = functions
+            .get(index + 1)
+            .and_then(|next| usize::try_from(next.first_statement).ok())
+            .unwrap_or(program.statements.len());
+        let mut cursor = start;
+        while cursor.saturating_add(1) < end {
+            let (Some(address), Some(store)) =
+                (program.statements.get(cursor), program.statements.get(cursor + 1))
+            else {
+                cursor += 1;
+                continue;
+            };
+            cursor += 1;
+            if address.opcode != QcWeaponOpcode::Address
+                || store.opcode != QcWeaponOpcode::StorePFn
+                || address.c != store.b
+                || program.word(address.b) != Some(think)
+            {
+                continue;
+            }
+            let target = program.word(store.a);
+            let callback = target.and_then(|index| {
+                usize::try_from(index).ok().and_then(|at| program.functions.get(at)).filter(|candidate| {
+                    candidate.index != 0 && candidate.first_statement >= 0
+                })
+            });
+            let Some(callback) = callback else {
+                continue;
+            };
+            // Only the literal function global is an artifact identity;
+            // mutable function variables require runtime observation.
+            if !program.function_globals.iter().any(|global| {
+                global.offset == store.a && global.name == callback.name
+            }) {
+                continue;
+            }
+            if program
+                .statements
+                .iter()
+                .any(|statement| statement.opcode == QcWeaponOpcode::StoreFn && statement.b == store.a)
+            {
+                continue;
+            }
+            result.push(QcTrajectoryBindingInspection {
+                producer_function: function.index,
+                think_function: callback.index,
+                statement: cursor,
+            });
+        }
+    }
+    result
+}
+
+/// Mounted weapon behavior discovery (`MountedWeaponBehaviorDiscovery`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MountedWeaponBehaviorDiscovery {
+    /// Authored declaration with per-entry compatibility.
+    Declared {
+        /// Per-entry compatibility verdicts.
+        declarations: Vec<WeaponBehaviorCompatibility>,
+    },
+    /// No declaration; bytecode stores without established roles.
+    Undeclared {
+        /// Observed think stores.
+        bindings: Vec<QcTrajectoryBindingInspection>,
+        /// Reason no declaration applies.
+        reason: String,
+    },
+}
+
+/// Whether text is a `namespace:name` behavior identity.
+fn is_behavior_id(value: &str) -> bool {
+    match value.find(':') {
+        Some(colon) => {
+            let (namespace, rest) = value.split_at(colon);
+            let name = &rest[1..];
+            !namespace.is_empty()
+                && !namespace.chars().any(char::is_whitespace)
+                && !name.is_empty()
+                && !name.chars().any(char::is_whitespace)
+        }
+        None => false,
+    }
+}
+
+/// Parse a projectile role name.
+fn parse_projectile_role(value: &SaveJson) -> Option<ProjectileRole> {
+    match value {
+        SaveJson::String(role) => match role.as_str() {
+            "rocket" => Some(ProjectileRole::Rocket),
+            "grenade" => Some(ProjectileRole::Grenade),
+            "nail" => Some(ProjectileRole::Nail),
+            "bolt" => Some(ProjectileRole::Bolt),
+            "plasma" => Some(ProjectileRole::Plasma),
+            "energy" => Some(ProjectileRole::Energy),
+            "grapple" => Some(ProjectileRole::Grapple),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Parse a declaration digest: branded digests pass through, bare lowercase
+/// hex gains its brand.
+fn declaration_digest(value: &str) -> Option<ContentDigest> {
+    if is_content_digest(value) {
+        return Some(ContentDigest(value.to_string()));
+    }
+    let hex = value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+    if hex {
+        create_content_digest(value).ok()
+    } else {
+        None
+    }
+}
+
+/// Read a mounted provider declaration; artifact identity is checked before
+/// any source callback is exposed (`discoverQcWeaponBehaviors`).
+pub fn discover_qc_weapon_behaviors(
+    mounts: &dyn BehaviorMounts,
+    module: &ModuleIdentity,
+    program: &QcWeaponProgramSnapshot,
+) -> Result<MountedWeaponBehaviorDiscovery, CatalogError> {
+    let Some(opened) = mounts.open_behavior("weapon-behaviors.json")? else {
+        return Ok(MountedWeaponBehaviorDiscovery::Undeclared {
+            bindings: inspect_qc_trajectory_bindings(program),
+            reason: "No authored weapon behavior declaration; bytecode callback stores do not establish projectile role, activation gate or selected aspect".to_string(),
+        });
+    };
+    let text =
+        std::str::from_utf8(&opened.bytes).map_err(|_| invalid("Invalid weapon behavior declaration"))?;
+    let value = parse_save_json(text).map_err(|_| invalid("Invalid weapon behavior declaration"))?;
+    let version_ok = matches!(value.get("version"), Some(SaveJson::Number(version)) if *version == 1.0);
+    let SaveJson::Array(behaviors) = value.get("behaviors").cloned().unwrap_or(SaveJson::Null) else {
+        return Err(invalid("Invalid weapon behavior declaration"));
+    };
+    if !version_ok || !matches!(value, SaveJson::Object(_)) {
+        return Err(invalid("Invalid weapon behavior declaration"));
+    }
+    let mut declarations: Vec<WeaponBehaviorCompatibility> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for entry in &behaviors {
+        let valid = matches!(entry, SaveJson::Object(_))
+            && matches!(entry.get("id"), Some(SaveJson::String(id)) if is_behavior_id(id))
+            && matches!(entry.get("title"), Some(SaveJson::String(_)))
+            && matches!(entry.get("artifactDigest"), Some(SaveJson::String(_)))
+            && matches!(entry.get("fireFunction"), Some(SaveJson::String(_)))
+            && entry.get("activationFunction").is_none_or(|value| matches!(value, SaveJson::String(_)))
+            && entry.get("role").is_some_and(parse_projectile_role_is_valid)
+            && matches!(entry.get("aspect"), Some(SaveJson::String(aspect)) if aspect == "trajectory");
+        if !valid {
+            return Err(invalid("Invalid weapon behavior entry"));
+        }
+        let (Some(SaveJson::String(id)), Some(SaveJson::String(title)), Some(SaveJson::String(digest_text)), Some(SaveJson::String(fire))) =
+            (entry.get("id"), entry.get("title"), entry.get("artifactDigest"), entry.get("fireFunction"))
+        else {
+            return Err(invalid("Invalid weapon behavior entry"));
+        };
+        let Some(artifact_digest) = declaration_digest(digest_text) else {
+            return Err(invalid("Invalid weapon behavior artifact digest"));
+        };
+        if !seen.insert(id.clone()) {
+            return Err(invalid(format!("Duplicate declared weapon behavior {id}")));
+        }
+        let role = entry.get("role").and_then(parse_projectile_role).ok_or_else(|| invalid("Invalid weapon behavior entry"))?;
+        let activation = match entry.get("activationFunction") {
+            Some(SaveJson::String(name)) => Some(name.clone()),
+            _ => None,
+        };
+        declarations.push(resolve_qc_weapon_behavior(
+            module,
+            program,
+            &SourceWeaponBehaviorMetadata {
+                id: id.clone(),
+                title: title.clone(),
+                artifact_digest,
+                role,
+                fire_function: fire.clone(),
+                activation_function: activation,
+            },
+        ));
+    }
+    Ok(MountedWeaponBehaviorDiscovery::Declared { declarations })
+}
+
+/// Whether a JSON value names a projectile role.
+fn parse_projectile_role_is_valid(value: &SaveJson) -> bool {
+    parse_projectile_role(value).is_some()
+}
+
+// `qvm-weapon-behaviors.ts`.
+
+/// Mounted QVM weapon behavior (`MountedQvmWeaponBehavior`).
+///
+/// The artifact and profile types live in `qa-guest`, above this crate, so
+/// callers carry their own representations through the service trait.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MountedQvmWeaponBehavior<Artifact, Profile> {
+    /// Resolved bytecode artifact.
+    pub artifact: Artifact,
+    /// Artifact resource reference.
+    pub resource: ResolvedResourceReference,
+    /// Weapon profile.
+    pub profile: Profile,
+    /// Raw declaration value.
+    pub declaration: SaveJson,
+}
+
+/// QVM artifact resolution outcome at the behavior boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QvmWeaponArtifactResolution<Artifact> {
+    /// Actual bytecode.
+    Bytecode(Artifact),
+    /// Any other artifact kind.
+    Other,
+}
+
+/// QVM weapon artifact and profile reads (donor `compat/qvm/artifacts.ts` and
+/// `compat/qvm/weapon-behavior-profile.ts`, bridged by the guest lane).
+pub trait QvmWeaponBehaviorService<Artifact, Profile> {
+    /// Resolve a `qagame` artifact from mounted bytes (`resolveQvmArtifact`).
+    fn resolve_qvm_artifact(
+        &self,
+        abi_profile: QvmAbiProfile,
+        bytes: &[u8],
+        module: &ModuleIdentity,
+    ) -> Result<QvmWeaponArtifactResolution<Artifact>, CatalogError>;
+    /// Read the weapon profile guarding a bytecode artifact
+    /// (`readQvmWeaponProfile`).
+    fn read_qvm_weapon_profile(
+        &self,
+        declaration: &SaveJson,
+        artifact: &Artifact,
+    ) -> Result<Profile, CatalogError>;
+    /// Behavior identity carried by a profile.
+    fn qvm_weapon_profile_id(&self, profile: &Profile) -> String;
+}
+
+/// Read a QVM weapon behavior document (`readQvmWeaponBehaviorDocument`).
+pub fn read_qvm_weapon_behavior_document(bytes: &[u8]) -> Result<Vec<SaveJson>, CatalogError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| CatalogError::from(save_error("qvm-weapon-behaviors.json", "expected UTF-8")))?;
+    let value = parse_save_json(text)?;
+    let reader = SaveReader::at(&value, "qvm-weapon-behaviors.json");
+    reader.field("version").literal_i64(1)?;
+    Ok(reader.field("profiles").list(|entry| {
+        Ok::<SaveJson, ValueError>(entry.value.cloned().unwrap_or(SaveJson::Null))
+    })?)
+}
+
+/// Load one declared QVM weapon behavior (`loadQvmWeaponBehavior`).
+pub fn load_qvm_weapon_behavior<Artifact, Profile>(
+    mounts: &dyn BehaviorMounts,
+    provider: &ProviderId,
+    declaration: &SaveJson,
+    service: &dyn QvmWeaponBehaviorService<Artifact, Profile>,
+) -> Result<MountedQvmWeaponBehavior<Artifact, Profile>, CatalogError> {
+    let reader = SaveReader::new(declaration);
+    let path = normalize_resource_path(&reader.field("artifactPath").string()?)?;
+    let abi_profile = match reader.field("abiProfile").choice_str(&["q3-modern", "q3-1.16n-base"])?.as_str() {
+        "q3-modern" => QvmAbiProfile::Modern,
+        _ => QvmAbiProfile::Legacy116n,
+    };
+    let Some(opened) = mounts.open_behavior(&path)? else {
+        return Err(failed(format!("Declared QVM behavior artifact is missing: {path}")));
+    };
+    let module = ModuleIdentity {
+        id: provider.clone(),
+        artifact_path: path,
+        digest: opened.reference.digest.clone(),
+        revision: opened.reference.digest.as_str().to_string(),
+    };
+    let artifact = match service.resolve_qvm_artifact(abi_profile, &opened.bytes, &module)? {
+        QvmWeaponArtifactResolution::Bytecode(artifact) => artifact,
+        QvmWeaponArtifactResolution::Other => {
+            return Err(failed("QVM weapon behavior requires actual bytecode"));
+        }
+    };
+    let profile = service.read_qvm_weapon_profile(declaration, &artifact)?;
+    Ok(MountedQvmWeaponBehavior {
+        artifact,
+        resource: opened.reference,
+        profile,
+        declaration: declaration.clone(),
+    })
+}
+
+/// Discover mounted QVM weapon behaviors (`discoverQvmWeaponBehaviors`).
+pub fn discover_qvm_weapon_behaviors<Artifact, Profile>(
+    mounts: &dyn BehaviorMounts,
+    provider: &ProviderId,
+    service: &dyn QvmWeaponBehaviorService<Artifact, Profile>,
+) -> Result<Option<Vec<MountedQvmWeaponBehavior<Artifact, Profile>>>, CatalogError> {
+    let Some(opened) = mounts.open_behavior("qvm-weapon-behaviors.json")? else {
+        return Ok(None);
+    };
+    let mut result: Vec<MountedQvmWeaponBehavior<Artifact, Profile>> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for declaration in read_qvm_weapon_behavior_document(&opened.bytes)? {
+        let entry = load_qvm_weapon_behavior(mounts, provider, &declaration, service)?;
+        let id = service.qvm_weapon_profile_id(&entry.profile);
+        if !seen.insert(id.clone()) {
+            return Err(failed(format!("Duplicate QVM weapon behavior {id}")));
+        }
+        result.push(entry);
+    }
+    Ok(Some(result))
+}
+
+// `native-weapon-behaviors.ts`.
+
+/// Mounted native weapon behavior (`MountedNativeWeaponBehavior`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MountedNativeWeaponBehavior {
+    /// Artifact resource reference.
+    pub resource: ResolvedResourceReference,
+    /// Behavior definition.
+    pub definition: WeaponBehaviorDefinition,
+    /// Behavior declaration.
+    pub declaration: NativeWeaponBehaviorDeclaration,
+}
+
+/// Native weapon declaration and image reads (donor
+/// `compat/q2/rerelease/native-weapon-declaration.ts` and
+/// `compat/q2/rerelease/weapon-behavior-profile.ts`, bridged by the compat
+/// lane).
+pub trait NativeWeaponBehaviorService {
+    /// Read a native weapon declaration (`readNativeWeaponDeclaration`).
+    fn read_native_weapon_declaration(
+        &self,
+        value: &SaveJson,
+    ) -> Result<NativeWeaponBehaviorDeclaration, CatalogError>;
+    /// Revalidate a declaration against its module, validate the executable
+    /// image, and derive the executable definition (`readNativeWeaponDeclaration`
+    /// with module identity, `validateNativeWeaponImage`,
+    /// `rereleaseWeaponDefinition`).
+    fn native_weapon_definition(
+        &self,
+        declaration: &NativeWeaponBehaviorDeclaration,
+        module: &ModuleIdentity,
+        image_bytes: &[u8],
+    ) -> Result<Option<WeaponBehaviorDefinition>, CatalogError>;
+    /// Built-in rerelease declaration for a stock game image
+    /// (`builtInRereleaseWeaponDeclaration`).
+    fn builtin_rerelease_weapon_declaration(
+        &self,
+        module: &ModuleIdentity,
+    ) -> Result<Option<NativeWeaponBehaviorDeclaration>, CatalogError>;
+}
+
+/// Read a native weapon behavior document (`readNativeWeaponBehaviorDocument`).
+pub fn read_native_weapon_behavior_document(bytes: &[u8]) -> Result<Vec<SaveJson>, CatalogError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| CatalogError::from(save_error("native-weapon-behaviors.json", "expected UTF-8")))?;
+    let value = parse_save_json(text)?;
+    let reader = SaveReader::at(&value, "native-weapon-behaviors.json");
+    reader.field("version").literal_i64(1)?;
+    Ok(reader.field("profiles").list(|entry| {
+        Ok::<SaveJson, ValueError>(entry.value.cloned().unwrap_or(SaveJson::Null))
+    })?)
+}
+
+/// Load one declared native weapon behavior (`loadNativeWeaponBehavior`).
+pub fn load_native_weapon_behavior(
+    mounts: &dyn BehaviorMounts,
+    provider: &ProviderId,
+    value: &SaveJson,
+    service: &dyn NativeWeaponBehaviorService,
+) -> Result<MountedNativeWeaponBehavior, CatalogError> {
+    let declaration = service.read_native_weapon_declaration(value)?;
+    load_declared_native_weapon_behavior(mounts, provider, &declaration, service)
+}
+
+/// Load a native weapon behavior from its declaration.
+fn load_declared_native_weapon_behavior(
+    mounts: &dyn BehaviorMounts,
+    provider: &ProviderId,
+    declaration: &NativeWeaponBehaviorDeclaration,
+    service: &dyn NativeWeaponBehaviorService,
+) -> Result<MountedNativeWeaponBehavior, CatalogError> {
+    let Some(opened) = mounts.open_behavior(&declaration.artifact_path)? else {
+        return Err(failed(format!(
+            "Declared native behavior artifact is missing: {}",
+            declaration.artifact_path
+        )));
+    };
+    let module = ModuleIdentity {
+        id: provider.clone(),
+        artifact_path: opened.reference.requested_path.clone(),
+        digest: opened.reference.digest.clone(),
+        revision: opened.reference.digest.as_str().to_string(),
+    };
+    let Some(definition) = service.native_weapon_definition(declaration, &module, &opened.bytes)? else {
+        return Err(failed("Declared native behavior has no executable definition"));
+    };
+    Ok(MountedNativeWeaponBehavior {
+        resource: opened.reference,
+        definition,
+        declaration: declaration.clone(),
+    })
+}
+
+/// Discover mounted native weapon behaviors (`discoverNativeWeaponBehaviors`).
+pub fn discover_native_weapon_behaviors(
+    mounts: &dyn BehaviorMounts,
+    provider: &ProviderId,
+    service: &dyn NativeWeaponBehaviorService,
+) -> Result<Option<Vec<MountedNativeWeaponBehavior>>, CatalogError> {
+    let Some(document) = mounts.open_behavior("native-weapon-behaviors.json")? else {
+        let Some(opened) = mounts.open_behavior("game_x64.dll")? else {
+            return Ok(None);
+        };
+        let module = ModuleIdentity {
+            id: provider.clone(),
+            artifact_path: opened.reference.requested_path.clone(),
+            digest: opened.reference.digest.clone(),
+            revision: opened.reference.digest.as_str().to_string(),
+        };
+        let Some(declaration) = service.builtin_rerelease_weapon_declaration(&module)? else {
+            return Ok(None);
+        };
+        return Ok(Some(vec![load_declared_native_weapon_behavior(mounts, provider, &declaration, service)?]));
+    };
+    let mut result: Vec<MountedNativeWeaponBehavior> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for declaration in read_native_weapon_behavior_document(&document.bytes)? {
+        let entry = load_native_weapon_behavior(mounts, provider, &declaration, service)?;
+        if !seen.insert(entry.definition.id.clone()) {
+            return Err(failed(format!("Duplicate native weapon behavior {}", entry.definition.id)));
+        }
+        result.push(entry);
+    }
+    Ok(Some(result))
 }
 
 #[cfg(test)]
