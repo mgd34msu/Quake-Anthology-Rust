@@ -18,7 +18,7 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
 use super::game_data::{
-    QvmCancellationScope, QvmFunctionCall, QvmImage, QvmInstruction, QvmModule, QvmOpcode, QvmRegionEvaluation,
+    QvmCancellationScope, QvmFunctionCall, QvmImage, QvmModule, QvmOpcode, QvmRegionEvaluation,
 };
 use super::mod_provider::{
     InputPointerKind, ModReturns, QvmModInputPointer, QvmModSourceCall, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
@@ -340,7 +340,7 @@ pub enum QvmItemDefinitionKind {
     /// Weapon item.
     Weapon {
         /// Held-weapon declaration, if any.
-        held: Option<super::primary_presentation_profile::HeldWeaponDeclaration>,
+        held: Option<Box<super::primary_presentation_profile::HeldWeaponDeclaration>>,
         /// Ammo item, if any.
         ammo: Option<String>,
     },
@@ -1232,6 +1232,7 @@ mod tests {
     use qa_core::identity::IdentityOwner;
     use qa_core::math::vec3;
 
+    use super::super::game_data::QvmInstruction;
     use super::super::mod_provider::InputPointerKind;
     use super::*;
 

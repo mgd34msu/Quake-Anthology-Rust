@@ -119,29 +119,37 @@ pub struct QvmAcceptedClientCommand {
     pub time: QvmModTime,
 }
 
+/// Opens an input application; returns its closer.
+pub type QvmClientInputOpen = Rc<dyn Fn(&ModClientApplication) -> Result<Box<dyn FnOnce()>, GuestError>>;
+/// Invokes a bound input call.
+pub type QvmClientInputInvoke =
+    Rc<dyn Fn(&QvmModSourceCall, &ModClientApplication) -> Result<(), GuestError>>;
+/// Runs bound input outputs around a call sequence.
+pub type QvmClientInputOutputRunner = Rc<
+    dyn Fn(
+        &[QvmModInputOutput],
+        &ModClientApplication,
+        &dyn Fn(),
+    ) -> Result<Vec<QvmModClientInputOutput>, GuestError>,
+>;
+/// Client-event listener.
+pub type QvmClientEventListener = Rc<dyn Fn(&QvmModClientEvent) -> Result<(), GuestError>>;
+
 /// Input subscription handlers.
 #[derive(Clone)]
 pub struct QvmModClientInputHandlers {
     /// Open an application; returns its closer.
-    pub open: Rc<dyn Fn(&ModClientApplication) -> Result<Box<dyn FnOnce()>, GuestError>>,
+    pub open: QvmClientInputOpen,
     /// Invoke a bound call.
-    pub invoke: Rc<dyn Fn(&QvmModSourceCall, &ModClientApplication) -> Result<(), GuestError>>,
+    pub invoke: QvmClientInputInvoke,
     /// Run bound outputs around a call sequence.
-    pub output: Option<
-        Rc<
-            dyn Fn(
-                &[QvmModInputOutput],
-                &ModClientApplication,
-                &dyn Fn(),
-            ) -> Result<Vec<QvmModClientInputOutput>, GuestError>,
-        >,
-    >,
+    pub output: Option<QvmClientInputOutputRunner>,
 }
 
 /// Destination client services.
 pub trait QvmModClientServices {
     /// Subscribe to client events; returns the unsubscribe handle.
-    fn subscribe(&self, on_event: Rc<dyn Fn(&QvmModClientEvent) -> Result<(), GuestError>>) -> Box<dyn FnOnce()>;
+    fn subscribe(&self, on_event: QvmClientEventListener) -> Box<dyn FnOnce()>;
     /// Current destination clients.
     fn clients(&self) -> Vec<QvmModClientIdentity>;
     /// Destination client for an actor.
@@ -286,7 +294,7 @@ pub fn relative_qvm_source_command(
             ..*command
         }
     } else {
-        command.clone()
+        *command
     }
 }
 
@@ -766,7 +774,7 @@ mod tests {
         clients: RefCell<HashMap<ClientId, ActorId>>,
         userinfos: RefCell<HashMap<ClientId, String>>,
         commands: RefCell<HashMap<ClientId, QvmAcceptedClientCommand>>,
-        listener: RefCell<Option<Rc<dyn Fn(&QvmModClientEvent) -> Result<(), GuestError>>>>,
+        listener: RefCell<Option<QvmClientEventListener>>,
         handlers: RefCell<Option<QvmModClientInputHandlers>>,
         unsubscribed: Rc<Cell<bool>>,
         unsubscribed_input: Rc<Cell<bool>>,
@@ -774,7 +782,7 @@ mod tests {
     }
 
     impl QvmModClientServices for FixtureServices {
-        fn subscribe(&self, on_event: Rc<dyn Fn(&QvmModClientEvent) -> Result<(), GuestError>>) -> Box<dyn FnOnce()> {
+        fn subscribe(&self, on_event: QvmClientEventListener) -> Box<dyn FnOnce()> {
             *self.listener.borrow_mut() = Some(on_event);
             let flag = Rc::clone(&self.unsubscribed);
             Box::new(move || flag.set(true))
@@ -1014,7 +1022,7 @@ mod tests {
         assert_eq!(fixture.bindings.slot(&fixture.first).unwrap(), Some(0));
         assert_eq!(
             fixture.operations.projected.borrow().as_slice(),
-            &[fixture.first.clone()]
+            std::slice::from_ref(&fixture.first)
         );
         assert_eq!(
             fixture.operations.invoked.borrow().as_slice(),
