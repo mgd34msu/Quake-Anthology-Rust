@@ -390,6 +390,13 @@ pub fn mg3_monster_activator(game: &mut Q1EntityServices, activator: Option<&Act
         .find(|player| game.health(player) > 0.0)
 }
 
+/// Use an mg3 monster through the mapped player activator
+/// (`use` override shared by the heavy and ordinary families).
+pub fn mg3_use_mapped(monster: &mut Mg3Monster, activator: Option<&ActorId>) -> Result<(), Q1Error> {
+    let mapped = mg3_monster_activator(monster.monster.game, activator);
+    monster.monster.use_monster(mapped.as_ref())
+}
+
 fn mg3_start_use_handler(
     game: &mut Q1EntityServices,
     id: &ActorId,

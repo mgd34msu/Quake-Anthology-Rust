@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod bosses;
+pub mod demodog;
 pub mod demodog_frames;
 pub mod heavy;
 pub mod infected;

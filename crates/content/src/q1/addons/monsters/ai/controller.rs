@@ -24,8 +24,8 @@ use crate::q1::base::animation::{MonsterAi, MonsterFrame, MonsterOperation};
 use crate::q1::base::frames::monster_frame;
 use crate::q1::base::monster_actions::{monster_action, monster_jump_touch};
 use crate::q1::base::monsters::{
-    register_monster_source, BaseMonster, MonsterActionHandler, MonsterControllerLoad, MonsterControllerStore,
-    MonsterSource, MonsterSourceRegistration,
+    register_monster_source, BaseMonster, MonsterControllerLoad, MonsterControllerStore, MonsterSource,
+    MonsterSourceRegistration,
 };
 use crate::q1::base::projectiles::cast_lightning;
 use crate::q1::foundation::callbacks::{
@@ -76,6 +76,9 @@ pub type Mg3FindTargetHandler = fn(monster: &mut Mg3Monster) -> Result<bool, Q1E
 pub type Mg3FoundHandler = fn(monster: &mut Mg3Monster, target: &ActorId) -> Result<(), Q1Error>;
 /// Mg3 frame-play hook (`play` override).
 pub type Mg3PlayHandler = fn(monster: &mut Mg3Monster, name: &str) -> Result<(), Q1Error>;
+/// Mg3 frame-action handler. Actions run through the mg3 driver, so
+/// they receive the policy view rather than the shared owner.
+pub type Mg3ActionHandler = fn(monster: &mut Mg3Monster) -> Result<(), Q1Error>;
 
 /// Per-family lifecycle hooks for an mg3 monster source. `None`
 /// keeps the shared base behavior the donor inherits.
@@ -107,14 +110,15 @@ pub struct Mg3SourceHooks {
     pub play: Option<Mg3PlayHandler>,
 }
 
-/// Mg3 monster source registration. Frames and actions mirror the
-/// shared source entry so the mg3 play loop can dispatch them.
+/// Mg3 monster source registration. Frames mirror the shared
+/// source entry; actions stay mg3-typed so the mg3 play loop can
+/// dispatch them with the policy view.
 #[derive(Debug, Clone, Copy)]
 pub struct Mg3SourceRegistration {
     /// Alternate frames.
     pub frames: &'static HashMap<String, MonsterFrame>,
     /// Alternate actions.
-    pub actions: &'static HashMap<String, MonsterActionHandler>,
+    pub actions: &'static HashMap<String, Mg3ActionHandler>,
     /// Lifecycle hooks.
     pub hooks: Mg3SourceHooks,
 }
@@ -135,11 +139,14 @@ pub fn mg3_monster_source(prefix: &str) -> Result<Mg3SourceRegistration, Q1Error
 }
 
 /// Register an mg3 monster source for the mg3 frame driver.
-/// Re-registering a prefix keeps the first entry.
+/// Re-registering a prefix keeps the first entry. The shared source
+/// keeps no actions: mg3 action dispatch runs through the policy
+/// view, and base-driver reaches of mg3 monsters resolve frame
+/// actions through the shared fallback exactly like the donor.
 pub fn register_mg3_monster_source(
     prefix: &'static str,
     frames: &'static HashMap<String, MonsterFrame>,
-    actions: &'static HashMap<String, MonsterActionHandler>,
+    actions: &'static HashMap<String, Mg3ActionHandler>,
     hooks: Mg3SourceHooks,
     load: MonsterControllerLoad,
     store: MonsterControllerStore,
@@ -148,7 +155,7 @@ pub fn register_mg3_monster_source(
         source: MonsterSource {
             prefix,
             frames: Some(frames),
-            actions: Some(actions),
+            actions: None,
         },
         load,
         store,
@@ -265,6 +272,11 @@ impl<'g> Mg3Monster<'g> {
         if let Some(sight) = self.hooks()?.sight_sound {
             return sight(self);
         }
+        self.sight_sound_default()
+    }
+
+    /// Play the sight sound without consulting the sight hook.
+    pub fn sight_sound_default(&mut self) -> Result<(), Q1Error> {
         let entity = self
             .monster
             .game
@@ -846,7 +858,7 @@ impl<'g> Mg3Monster<'g> {
         let source = mg3_monster_source(&self.monster.prefix.clone())?;
         if !source.frames.contains_key(name) {
             if let Some(action) = source.actions.get(name) {
-                return action(&mut self.monster);
+                return action(self);
             }
         }
         let frame = source
@@ -951,7 +963,7 @@ impl<'g> Mg3Monster<'g> {
                     });
                 }
                 MonsterOperation::Action { name } => match source.actions.get(*name) {
-                    Some(action) => action(&mut self.monster)?,
+                    Some(action) => action(self)?,
                     None => monster_action(&mut self.monster, name)?,
                 },
                 MonsterOperation::Sound {
@@ -1639,6 +1651,29 @@ fn mg3_boss_awake_handler(
     let mut monster = Mg3Monster::load(game, id)?;
     monster.monster.awake(activator.as_ref())?;
     monster.finish()
+}
+
+/// Copy a monster controller to a cloned entity, when the source
+/// belongs to the given mg3 prefix and has one. Shared by the mg3
+/// state-extension clone hooks.
+pub fn clone_monster_controller(
+    game: &mut Q1EntityServices,
+    source: &ActorId,
+    target: &ActorId,
+    prefix: &str,
+) -> Result<(), Q1Error> {
+    let entity = game.entity_ref(source).cloned();
+    let Some(entity) = entity else {
+        return Ok(());
+    };
+    if entity.text("source.monsterCallbackPrefix") != prefix {
+        return Ok(());
+    }
+    let classname = entity.classname.clone();
+    let Ok(controller) = crate::q1::base::creatures::monster_controller(game, source, &classname) else {
+        return Ok(());
+    };
+    crate::q1::base::creatures::store_monster_controller(game, target, controller)
 }
 
 /// Register mg3 monster callbacks for a prefix. The source must be

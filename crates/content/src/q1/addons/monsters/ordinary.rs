@@ -16,15 +16,18 @@ use qa_core::math::{Bounds, Vec3};
 use crate::q1::addons::context::{set_addon_number, Q1AddonContext, Q1AddonProgram};
 use crate::q1::base::animation::{MonsterAi, MonsterFrame};
 use crate::q1::base::frames::monster_frame;
-use crate::q1::base::monsters::{BaseMonster, BaseMonsterState, MonsterActionHandler};
+use crate::q1::base::monsters::{BaseMonster, BaseMonsterState};
 use crate::q1::base::species::{species_by_classname, MonsterSpecies, BASE_SPECIES};
 use crate::q1::foundation::entity::Q1MonsterSpecies;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::types::{Q1MoveType, Q1Solid};
 use crate::q1::{q1_error, Q1Error};
 
-use super::ai::{register_mg3_monster_callbacks, register_mg3_monster_source, Mg3Monster, Mg3SourceHooks};
-use super::startup::{init_mg3_monster, mg3_monster_activator, register_mg3_monster_startup, start_mg3_monster};
+use super::ai::{
+    clone_monster_controller, register_mg3_monster_callbacks, register_mg3_monster_source, Mg3ActionHandler,
+    Mg3Monster, Mg3SourceHooks,
+};
+use super::startup::{init_mg3_monster, mg3_use_mapped, register_mg3_monster_startup, start_mg3_monster};
 use attack::mg3_ordinary_attack;
 use rocket_ogre::{register_rocket_ogre, rocket_ogre_frame, rocket_ogre_frames};
 
@@ -59,8 +62,8 @@ fn ordinary_frames() -> &'static HashMap<String, MonsterFrame> {
 
 /// Ordinary frame actions. The donor passes no actions map; frame
 /// actions resolve through the shared fallback.
-fn ordinary_actions() -> &'static HashMap<String, MonsterActionHandler> {
-    static ACTIONS: OnceLock<HashMap<String, MonsterActionHandler>> = OnceLock::new();
+fn ordinary_actions() -> &'static HashMap<String, Mg3ActionHandler> {
+    static ACTIONS: OnceLock<HashMap<String, Mg3ActionHandler>> = OnceLock::new();
     ACTIONS.get_or_init(HashMap::new)
 }
 
@@ -188,11 +191,6 @@ fn base_pain(monster: &mut Mg3Monster, attacker: Option<&ActorId>, damage: f64) 
 fn ordinary_start(monster: &mut Mg3Monster) -> Result<(), Q1Error> {
     let context = Q1AddonContext::new(ordinary_program(monster.monster.game, &monster.monster.id.clone())?);
     start_mg3_monster(monster, &context)
-}
-
-fn ordinary_use(monster: &mut Mg3Monster, activator: Option<&ActorId>) -> Result<(), Q1Error> {
-    let mapped = mg3_monster_activator(monster.monster.game, activator);
-    monster.monster.use_monster(mapped.as_ref())
 }
 
 fn ordinary_melee(monster: &mut Mg3Monster) -> Result<(), Q1Error> {
@@ -434,7 +432,7 @@ pub fn register_ordinary_addon_monsters(context: &Q1AddonContext, game: &mut Q1E
     let hooks = if context.program() == Q1AddonProgram::Mg3 {
         Mg3SourceHooks {
             start: Some(ordinary_start),
-            use_monster: Some(ordinary_use),
+            use_monster: Some(mg3_use_mapped),
             melee_attack: Some(ordinary_melee),
             try_attack: Some(mg3_ordinary_attack),
             play: Some(ordinary_mg3_play),
@@ -451,7 +449,7 @@ pub fn register_ordinary_addon_monsters(context: &Q1AddonContext, game: &mut Q1E
             try_attack: Some(base_try_attack),
             pain: Some(base_pain),
             start: Some(ordinary_start),
-            use_monster: Some(ordinary_use),
+            use_monster: Some(mg3_use_mapped),
             melee_attack: Some(ordinary_melee),
             ..Default::default()
         }
@@ -466,6 +464,36 @@ pub fn register_ordinary_addon_monsters(context: &Q1AddonContext, game: &mut Q1E
     );
     register_mg3_monster_callbacks(game, prefix)?;
     register_mg3_monster_startup(game, prefix)?;
+    // Controllers persist through the base creature store; the
+    // extension only carries the clone hook.
+    struct Extension {
+        prefix: &'static str,
+    }
+    impl crate::q1::foundation::callbacks::Q1StateExtension for Extension {
+        fn id(&self) -> &str {
+            self.prefix
+        }
+
+        fn capture(&self, _game: &Q1EntityServices) -> Vec<u8> {
+            crate::q1::foundation::checkpoint::encode_checkpoint_value(&crate::value::arr(Vec::new()))
+        }
+
+        fn restore(&mut self, _game: &mut Q1EntityServices, bytes: &[u8]) -> Result<(), Q1Error> {
+            let saved = crate::q1::foundation::checkpoint::decode_checkpoint_value(bytes)?;
+            crate::value::SaveReader::new(&saved).list(|_entry| Ok::<(), Q1Error>(()))?;
+            Ok(())
+        }
+
+        fn clone_state(
+            &mut self,
+            game: &mut Q1EntityServices,
+            source: &ActorId,
+            target: &ActorId,
+        ) -> Result<(), Q1Error> {
+            clone_monster_controller(game, source, target, self.prefix)
+        }
+    }
+    game.register_state_extension(Box::new(Extension { prefix }))?;
     for spec in BASE_SPECIES {
         if spec.species == Q1MonsterSpecies::Boss || spec.species == Q1MonsterSpecies::Oldone {
             continue;

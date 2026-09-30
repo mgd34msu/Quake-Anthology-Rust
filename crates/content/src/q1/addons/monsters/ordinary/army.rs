@@ -9,15 +9,13 @@ use std::sync::OnceLock;
 use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::{Bounds, Vec3};
 
-use crate::q1::base::monsters::{BaseMonster, MonsterActionHandler};
+use crate::q1::addons::monsters::ai::{Mg3ActionHandler, Mg3Monster};
 use crate::q1::base::species::MonsterMovement;
 use crate::q1::base::species::MonsterSpecies;
 use crate::q1::foundation::entity::Q1MonsterSpecies;
 use crate::q1::foundation::types::{normalize, vscale, vsub, Q1SoundChannel, POINT};
 use crate::q1::foundation::weapons::fire_bullets;
 use crate::q1::{q1_error, Q1Error};
-
-use crate::q1::addons::monsters::ai::Mg3Monster;
 
 /// Grunt spawn defaults (`armySpecies`).
 pub const ARMY_SPEC: MonsterSpecies = MonsterSpecies {
@@ -50,7 +48,8 @@ pub const ARMY_SPEC: MonsterSpecies = MonsterSpecies {
     movement: MonsterMovement::Walk,
 };
 
-fn army_fire(monster: &mut BaseMonster) -> Result<(), Q1Error> {
+fn army_fire(monster: &mut Mg3Monster) -> Result<(), Q1Error> {
+    let monster = &mut monster.monster;
     let enemy = monster.monster.enemy.clone();
     let Some(enemy) = enemy else {
         return Ok(());
@@ -86,7 +85,8 @@ fn army_fire(monster: &mut BaseMonster) -> Result<(), Q1Error> {
     })
 }
 
-fn army_refire(monster: &mut BaseMonster) -> Result<(), Q1Error> {
+fn army_refire(monster: &mut Mg3Monster) -> Result<(), Q1Error> {
+    let monster = &mut monster.monster;
     if monster.game.options().skill == 3 && !monster.monster.refired && monster.visible(None)? {
         monster.monster.refired = true;
         monster.controller.next_frame = String::from("army_atk1");
@@ -95,12 +95,12 @@ fn army_refire(monster: &mut BaseMonster) -> Result<(), Q1Error> {
 }
 
 /// Grunt frame actions (`armyActions`).
-pub fn army_actions() -> &'static HashMap<String, MonsterActionHandler> {
-    static ACTIONS: OnceLock<HashMap<String, MonsterActionHandler>> = OnceLock::new();
+pub fn army_actions() -> &'static HashMap<String, Mg3ActionHandler> {
+    static ACTIONS: OnceLock<HashMap<String, Mg3ActionHandler>> = OnceLock::new();
     ACTIONS.get_or_init(|| {
         HashMap::from([
-            (String::from("army_fire"), army_fire as MonsterActionHandler),
-            (String::from("army_refire"), army_refire as MonsterActionHandler),
+            (String::from("army_fire"), army_fire as Mg3ActionHandler),
+            (String::from("army_refire"), army_refire as Mg3ActionHandler),
         ])
     })
 }
