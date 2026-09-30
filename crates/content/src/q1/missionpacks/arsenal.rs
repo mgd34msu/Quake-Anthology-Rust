@@ -5,16 +5,15 @@ use qa_core::identity::ActorId;
 use crate::contract::ItemId;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::extensions::Q1WeaponDefinition;
-use crate::q1::foundation::types::{Q1Event, Q1Weapon, weapon_item};
+use crate::q1::foundation::types::{weapon_item, Q1Event, Q1Weapon};
 use crate::q1::missionpacks::hipnotic_weapons::{
-    fire_hipnotic_laser, fire_hipnotic_mjolnir, fire_hipnotic_proximity,
-    register_hipnotic_weapon_callbacks,
+    fire_hipnotic_laser, fire_hipnotic_mjolnir, fire_hipnotic_proximity, register_hipnotic_weapon_callbacks,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::backpacks::{register_rogue_toss_callbacks, toss_rogue_backpack, toss_rogue_weapon};
 use super::grapple::RogueGrapple;
-use super::items::{MissionItemServices, register_mission_pack_items};
+use super::items::{register_mission_pack_items, MissionItemServices};
 use super::pickup_rules::register_mission_pack_pickup_rules;
 use super::player::MissionPackPlayers;
 use super::rogue_weapons::{
@@ -22,17 +21,13 @@ use super::rogue_weapons::{
     register_rogue_weapon_callbacks,
 };
 use super::selection::mission_weapon_impulse;
-use super::types::{
-    MISSION_WEAPONS, MissionWeapon, Q1MissionPack, mission_reference, set_mission_reference,
-};
+use super::types::{mission_reference, set_mission_reference, MissionWeapon, Q1MissionPack, MISSION_WEAPONS};
 
 /// World reference holding the horn charmer during `useTargets`.
 const HORN_CHARMER_KEY: &str = "missionpack:horn-charmer";
 
 /// Fire hook for a mission-pack weapon definition (`fire`).
-fn mission_fire_for(
-    weapon: MissionWeapon,
-) -> fn(&mut Q1EntityServices, &ActorId) -> Result<bool, Q1Error> {
+fn mission_fire_for(weapon: MissionWeapon) -> fn(&mut Q1EntityServices, &ActorId) -> Result<bool, Q1Error> {
     match weapon {
         MissionWeapon::HipnoticLaser => fire_hipnotic_laser,
         MissionWeapon::HipnoticMjolnir => fire_hipnotic_mjolnir,
@@ -48,10 +43,7 @@ fn mission_fire_for(
 /// The donor hook only checks ammunition because the donor engine checks
 /// ownership first; this engine returns hook results directly, so ownership
 /// is included here for the same net behavior.
-fn lava_supernailgun_best_available(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-) -> Result<bool, Q1Error> {
+fn lava_supernailgun_best_available(game: &mut Q1EntityServices, player: &ActorId) -> Result<bool, Q1Error> {
     let owned = game
         .host
         .inventory
@@ -65,11 +57,7 @@ fn lava_supernailgun_best_available(
 }
 
 /// Animate a mission-pack weapon (`animate`).
-fn mission_weapon_animate(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    seconds: f64,
-) -> Result<(), Q1Error> {
+fn mission_weapon_animate(game: &mut Q1EntityServices, player: &ActorId, seconds: f64) -> Result<(), Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -107,10 +95,7 @@ fn mission_weapon_animate(
 
 /// Register the weapon definitions and order for a pack
 /// (`registerWeaponDefinitions`).
-fn register_weapon_definitions(
-    game: &mut Q1EntityServices,
-    pack: Q1MissionPack,
-) -> Result<(), Q1Error> {
+fn register_weapon_definitions(game: &mut Q1EntityServices, pack: Q1MissionPack) -> Result<(), Q1Error> {
     let prefix = pack.as_str();
     for definition in MISSION_WEAPONS
         .iter()
@@ -202,11 +187,7 @@ impl MissionPackArsenal {
     }
 
     /// Fire the horn of conjuring for a player (`horn`).
-    pub fn use_horn(
-        game: &mut Q1EntityServices,
-        item: &ActorId,
-        player: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn use_horn(game: &mut Q1EntityServices, item: &ActorId, player: &ActorId) -> Result<(), Q1Error> {
         let Some(world) = game.world.clone() else {
             return game.use_targets(item, Some(player));
         };
@@ -218,12 +199,7 @@ impl MissionPackArsenal {
     }
 
     /// Handle a weapon impulse (`impulse`).
-    pub fn impulse(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        impulse: i32,
-    ) -> Result<bool, Q1Error> {
+    pub fn impulse(&self, game: &mut Q1EntityServices, actor: &ActorId, impulse: i32) -> Result<bool, Q1Error> {
         if game.player_ref(actor).is_none() {
             return Ok(false);
         }
@@ -260,46 +236,28 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
     #[test]
     fn hipnotic_arsenal_registers_weapons_and_order() {
         let mut game = test_game();
-        let arsenal =
-            register_mission_pack_arsenal(&mut game, Q1MissionPack::Hipnotic).expect("arsenal");
+        let arsenal = register_mission_pack_arsenal(&mut game, Q1MissionPack::Hipnotic).expect("arsenal");
         assert_eq!(arsenal.pack, Q1MissionPack::Hipnotic);
-        assert!(
-            game.registered_weapons
-                .contains_key(&Q1Weapon::HipnoticLaser)
-        );
-        assert!(
-            game.registered_weapons
-                .contains_key(&Q1Weapon::HipnoticMjolnir)
-        );
-        assert!(
-            game.registered_weapons
-                .contains_key(&Q1Weapon::HipnoticProximity)
-        );
-        assert_eq!(
-            game.weapon_order.as_ref().expect("order")[1],
-            Q1Weapon::HipnoticLaser
-        );
+        assert!(game.registered_weapons.contains_key(&Q1Weapon::HipnoticLaser));
+        assert!(game.registered_weapons.contains_key(&Q1Weapon::HipnoticMjolnir));
+        assert!(game.registered_weapons.contains_key(&Q1Weapon::HipnoticProximity));
+        assert_eq!(game.weapon_order.as_ref().expect("order")[1], Q1Weapon::HipnoticLaser);
         assert!(MissionPackArsenal::horn_charmer(&game).is_none());
     }
 
     #[test]
     fn rogue_arsenal_registers_grapple_and_toss_impulses() {
         let mut game = test_game();
-        let arsenal =
-            register_mission_pack_arsenal(&mut game, Q1MissionPack::Rogue).expect("arsenal");
+        let arsenal = register_mission_pack_arsenal(&mut game, Q1MissionPack::Rogue).expect("arsenal");
         assert!(game.registered_weapons.contains_key(&Q1Weapon::RoguePlasma));
-        assert!(
-            game.registered_weapons
-                .contains_key(&Q1Weapon::RogueGrapple)
-        );
+        assert!(game.registered_weapons.contains_key(&Q1Weapon::RogueGrapple));
         assert_eq!(
             game.weapon_order.as_ref().expect("order")[1],
             Q1Weapon::RogueLavaSupernailgun
@@ -312,8 +270,7 @@ mod tests {
     #[test]
     fn impulse_rejects_unknown_players() {
         let mut game = test_game();
-        let arsenal =
-            register_mission_pack_arsenal(&mut game, Q1MissionPack::Hipnotic).expect("arsenal");
+        let arsenal = register_mission_pack_arsenal(&mut game, Q1MissionPack::Hipnotic).expect("arsenal");
         let stranger = game.create("player", None, None).expect("stranger");
         assert!(!arsenal.impulse(&mut game, &stranger, 8).expect("impulse"));
     }

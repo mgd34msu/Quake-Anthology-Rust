@@ -171,6 +171,8 @@ pub trait Q1SharedBodyTable {
     fn attach(&mut self, actor: &OwnedActor, attachment: &BodyAttachment) -> Result<(), Q1Error>;
     /// Detach a body from its anchor.
     fn detach(&mut self, actor: &OwnedActor) -> Result<(), Q1Error>;
+    /// Drop a body on actor release.
+    fn remove(&mut self, _actor: &ActorId) {}
 }
 
 /// Shared combat authority used by Q1 content (donor
@@ -696,6 +698,10 @@ pub(crate) mod mock {
 
         fn read(&self, actor: &ActorId) -> Option<BodyState> {
             self.bodies.get(&(actor.slot(), actor.generation())).cloned()
+        }
+
+        fn remove(&mut self, actor: &ActorId) {
+            self.bodies.remove(&(actor.slot(), actor.generation()));
         }
 
         fn write(&mut self, actor: &OwnedActor, state: &BodyState) -> Result<(), Q1Error> {

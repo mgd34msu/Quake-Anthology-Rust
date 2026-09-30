@@ -542,7 +542,10 @@ impl<'g> BaseMonster<'g> {
     pub fn range_distance(&mut self, target: Option<&ActorId>) -> Result<f64, Q1Error> {
         let enemy = self.monster.enemy.clone();
         let start = self.eye(None)?;
-        let end = self.eye(target.or(enemy.as_ref()))?;
+        let end = match target.cloned().or(enemy) {
+            Some(target) => self.eye(Some(&target))?,
+            None => None,
+        };
         match (start, end) {
             (Some(start), Some(end)) => Ok(f64::from(length(vsub(end, start)))),
             _ => Ok(f64::INFINITY),

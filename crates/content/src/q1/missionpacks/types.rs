@@ -309,16 +309,14 @@ pub fn move_missile(game: &mut Q1EntityServices, id: &ActorId, velocity: Vec3) -
     )
 }
 
-/// Test game with a mock host, shared by mission-pack module tests.
+/// Test options shared by mission-pack module tests.
 #[cfg(test)]
-pub(crate) fn test_game() -> Q1EntityServices {
+pub(crate) fn test_options() -> crate::q1::foundation::types::Q1FoundationOptions {
     use qa_core::identity::ProviderId;
 
-    use crate::q1::foundation::host::mock::mock_host;
     use crate::q1::foundation::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram};
 
-    let (host, _) = mock_host();
-    let options = Q1FoundationOptions {
+    Q1FoundationOptions {
         provider: None,
         precache_program: Some(Q1PrecacheProgram::Id1),
         edition: Q1Edition::Classic,
@@ -335,8 +333,28 @@ pub(crate) fn test_game() -> Q1EntityServices {
         no_exit: None,
         teamplay: None,
         aim_threshold: None,
-    };
-    Q1EntityServices::new(host, options).expect("game")
+    }
+}
+
+/// Test game with a mock host, shared by mission-pack module tests.
+#[cfg(test)]
+pub(crate) fn test_game() -> Q1EntityServices {
+    use crate::q1::foundation::host::mock::mock_host;
+
+    let (host, _) = mock_host();
+    Q1EntityServices::new(host, test_options()).expect("game")
+}
+
+/// Test game that also returns the mock event log.
+#[cfg(test)]
+pub(crate) fn test_game_with_events() -> (
+    Q1EntityServices,
+    std::rc::Rc<std::cell::RefCell<crate::q1::foundation::host::mock::MockEvents>>,
+) {
+    use crate::q1::foundation::host::mock::mock_host;
+
+    let (host, events) = mock_host();
+    (Q1EntityServices::new(host, test_options()).expect("game"), events)
 }
 
 #[cfg(test)]

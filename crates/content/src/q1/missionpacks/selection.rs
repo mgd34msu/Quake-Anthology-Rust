@@ -4,8 +4,8 @@ use qa_core::identity::ActorId;
 
 use crate::contract::ItemId;
 use crate::q1::foundation::entity_services::Q1EntityServices;
-use crate::q1::foundation::types::{Q1Edition, Q1PlayerState, Q1Weapon, weapon_item};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{weapon_item, Q1Edition, Q1PlayerState, Q1Weapon};
+use crate::q1::{q1_error, Q1Error};
 
 use super::messages::mission_message;
 use super::types::Q1MissionPack;
@@ -90,8 +90,7 @@ fn cycle(
     let teamplay = game.options().teamplay.unwrap_or(0);
     for step in 1..=order.len() as i32 {
         let delta = if reverse { -step } else { step };
-        let next =
-            order[((current + delta + order.len() as i32 * 2) % order.len() as i32) as usize];
+        let next = order[((current + delta + order.len() as i32 * 2) % order.len() as i32) as usize];
         if next == Q1Weapon::RogueGrapple && !(deathmatch != 0 && teamplay >= 4) {
             continue;
         }
@@ -108,19 +107,14 @@ fn cycle(
 }
 
 /// Rogue impulse selection (`rogueSelected`).
-fn rogue_selected(
-    game: &mut Q1EntityServices,
-    state: &Q1PlayerState,
-    impulse: i32,
-) -> Option<Q1Weapon> {
+fn rogue_selected(game: &mut Q1EntityServices, state: &Q1PlayerState, impulse: i32) -> Option<Q1Weapon> {
     let player = state.actor.id();
     let deathmatch = game.options().deathmatch;
     let teamplay = game.options().teamplay.unwrap_or(0);
     let edition = game.options().edition;
     let ctf = deathmatch != 0 && teamplay >= 4;
     let paired = |base: Q1Weapon, powered: Q1Weapon| {
-        if owns(game, player, powered)
-            && (state.weapon == base || !has_ammo(game, player, base, count_required(base)))
+        if owns(game, player, powered) && (state.weapon == base || !has_ammo(game, player, base, count_required(base)))
         {
             powered
         } else {
@@ -136,14 +130,8 @@ fn rogue_selected(
         2 => Some(Q1Weapon::Shotgun),
         3 => Some(Q1Weapon::Supershotgun),
         4 => Some(paired(Q1Weapon::Nailgun, Q1Weapon::RogueLavaNailgun)),
-        5 => Some(paired(
-            Q1Weapon::Supernailgun,
-            Q1Weapon::RogueLavaSupernailgun,
-        )),
-        6 => Some(paired(
-            Q1Weapon::Grenadelauncher,
-            Q1Weapon::RogueMultiGrenade,
-        )),
+        5 => Some(paired(Q1Weapon::Supernailgun, Q1Weapon::RogueLavaSupernailgun)),
+        6 => Some(paired(Q1Weapon::Grenadelauncher, Q1Weapon::RogueMultiGrenade)),
         7 => Some(paired(Q1Weapon::Rocketlauncher, Q1Weapon::RogueMultiRocket)),
         8 => Some(paired(Q1Weapon::Lightning, Q1Weapon::RoguePlasma)),
         22 => {
@@ -191,11 +179,7 @@ fn rogue_selected(
 }
 
 /// Hipnotic impulse selection (`hipnoticSelected`).
-fn hipnotic_selected(
-    game: &Q1EntityServices,
-    state: &Q1PlayerState,
-    impulse: i32,
-) -> Option<Q1Weapon> {
+fn hipnotic_selected(game: &Q1EntityServices, state: &Q1PlayerState, impulse: i32) -> Option<Q1Weapon> {
     let edition = game.options().edition;
     match impulse {
         1 => Some(Q1Weapon::Axe),
@@ -254,10 +238,7 @@ pub fn mission_weapon_impulse(
         return Ok(false);
     }
     let mut selected = selected.expect("selected");
-    if pack == Q1MissionPack::Hipnotic
-        && selected == Q1Weapon::Grenadelauncher
-        && !owns(game, player, selected)
-    {
+    if pack == Q1MissionPack::Hipnotic && selected == Q1Weapon::Grenadelauncher && !owns(game, player, selected) {
         selected = Q1Weapon::HipnoticProximity;
     }
     if !owns(game, player, selected) {
@@ -319,9 +300,7 @@ pub fn mission_weapon_impulse(
             } else {
                 ""
             }
-        } else if selected == Q1Weapon::RogueLavaNailgun
-            || selected == Q1Weapon::RogueLavaSupernailgun
-        {
+        } else if selected == Q1Weapon::RogueLavaNailgun || selected == Q1Weapon::RogueLavaSupernailgun {
             "$qc_lava_nails"
         } else if selected == Q1Weapon::RogueMultiGrenade {
             "$qc_multi_gl"
@@ -352,8 +331,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -361,13 +339,8 @@ mod tests {
     fn unknown_impulses_reject() {
         let mut game = test_game();
         let player = attached_player(&mut game);
-        assert!(
-            !mission_weapon_impulse(&mut game, &player, Q1MissionPack::Hipnotic, 99)
-                .expect("impulse")
-        );
-        assert!(
-            mission_weapon_impulse(&mut game, &player, Q1MissionPack::Rogue, 10).expect("cycle")
-        );
+        assert!(!mission_weapon_impulse(&mut game, &player, Q1MissionPack::Hipnotic, 99).expect("impulse"));
+        assert!(mission_weapon_impulse(&mut game, &player, Q1MissionPack::Rogue, 10).expect("cycle"));
     }
 
     #[test]
@@ -378,36 +351,29 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.host
-            .inventory
-            .give(&owned, &weapon_item(Q1Weapon::Shotgun), 1.0);
-        assert!(
-            mission_weapon_impulse(&mut game, &player, Q1MissionPack::Hipnotic, 2)
-                .expect("impulse")
-        );
-        assert_eq!(
-            game.player_ref(&player).expect("state").weapon,
-            Q1Weapon::Shotgun
-        );
+        game.host.inventory.give(&owned, &weapon_item(Q1Weapon::Shotgun), 1.0);
+        game.host.inventory.give(&owned, &ItemId::from("q1:ammo/shells"), 10.0);
+        assert!(mission_weapon_impulse(&mut game, &player, Q1MissionPack::Hipnotic, 2).expect("impulse"));
+        assert_eq!(game.player_ref(&player).expect("state").weapon, Q1Weapon::Shotgun);
     }
 
     #[test]
     fn rogue_pairs_prefer_powered() {
         let mut game = test_game();
+        super::super::arsenal::register_mission_pack_arsenal(&mut game, Q1MissionPack::Rogue).expect("arsenal");
         let player = attached_player(&mut game);
         let owned = game
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.host
-            .inventory
-            .give(&owned, &weapon_item(Q1Weapon::Nailgun), 1.0);
+        game.host.inventory.give(&owned, &weapon_item(Q1Weapon::Nailgun), 1.0);
         game.host
             .inventory
             .give(&owned, &weapon_item(Q1Weapon::RogueLavaNailgun), 1.0);
-        assert!(
-            mission_weapon_impulse(&mut game, &player, Q1MissionPack::Rogue, 4).expect("impulse")
-        );
+        game.host
+            .inventory
+            .give(&owned, &ItemId::from("rogue:ammo/lava-nails"), 10.0);
+        assert!(mission_weapon_impulse(&mut game, &player, Q1MissionPack::Rogue, 4).expect("impulse"));
         assert_eq!(
             game.player_ref(&player).expect("state").weapon,
             Q1Weapon::RogueLavaNailgun

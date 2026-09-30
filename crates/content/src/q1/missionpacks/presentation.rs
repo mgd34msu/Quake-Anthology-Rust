@@ -2,18 +2,17 @@
 
 use std::rc::Rc;
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 
-use crate::q1::Q1Error;
 use crate::q1::base::player::{
-    Q1CharacterDefinition, Q1CharacterFrameRange, Q1CharacterPresentation, Q1CharacterSourcePose,
-    Q1PlayerLife,
+    Q1CharacterDefinition, Q1CharacterFrameRange, Q1CharacterPresentation, Q1CharacterSourcePose, Q1PlayerLife,
 };
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
-use crate::q1::foundation::types::{Q1Event, Q1SoundChannel, Q1Weapon, length, vsub};
+use crate::q1::foundation::types::{length, vsub, Q1Event, Q1SoundChannel, Q1Weapon};
+use crate::q1::Q1Error;
 
-use super::types::{Q1MissionPack, fround};
+use super::types::{fround, Q1MissionPack};
 
 /// Mjolnir character layout (`hammer`).
 fn hammer_definition() -> Q1CharacterDefinition {
@@ -23,10 +22,7 @@ fn hammer_definition() -> Q1CharacterDefinition {
             first: 6.0,
             count: 12.0,
         },
-        run: Q1CharacterFrameRange {
-            first: 0.0,
-            count: 6.0,
-        },
+        run: Q1CharacterFrameRange { first: 0.0, count: 6.0 },
         pain: Q1CharacterFrameRange {
             first: 18.0,
             count: 6.0,
@@ -68,11 +64,7 @@ pub fn mission_pack_character_pose(
     if player.continuous_firing {
         if player.weapon == Q1Weapon::HipnoticLaser {
             return Q1CharacterSourcePose {
-                frame: Some(if player.weapon_frame == 1 {
-                    103.0
-                } else {
-                    104.0
-                }),
+                frame: Some(if player.weapon_frame == 1 { 103.0 } else { 104.0 }),
                 ..Default::default()
             };
         }
@@ -81,11 +73,7 @@ pub fn mission_pack_character_pose(
             Q1Weapon::RogueLavaNailgun | Q1Weapon::RogueLavaSupernailgun
         ) {
             return Q1CharacterSourcePose {
-                frame: Some(if player.weapon_frame % 2 == 1 {
-                    103.0
-                } else {
-                    104.0
-                }),
+                frame: Some(if player.weapon_frame % 2 == 1 { 103.0 } else { 104.0 }),
                 ..Default::default()
             };
         }
@@ -165,10 +153,7 @@ impl MissionPackCharacterEffects {
             .values()
             .find(|entity| {
                 entity.classname == "missionpack_character_state"
-                    && entity
-                        .owner
-                        .as_ref()
-                        .is_some_and(|owner| same_actor(owner, actor))
+                    && entity.owner.as_ref().is_some_and(|owner| same_actor(owner, actor))
             })
             .map(|entity| entity.actor.id().clone())
         {
@@ -207,9 +192,7 @@ impl MissionPackCharacterEffects {
             game.schedule(&timer, 1.5, &flies)?;
         }
         game.update_entity(&state_entity, |entity| {
-            entity
-                .fields
-                .insert("model".to_string(), presentation.model.clone());
+            entity.fields.insert("model".to_string(), presentation.model.clone());
         })?;
         let player = game.player_ref(actor).cloned();
         let locomotion = if presentation.model == "progs/playham.mdl" {
@@ -231,16 +214,13 @@ impl MissionPackCharacterEffects {
                     .map(|entity| entity.number("next-step"))
                     .unwrap_or(0.0)
             || settled != -1.0
-            || player
-                .as_ref()
-                .is_some_and(|player| player.continuous_firing)
+            || player.as_ref().is_some_and(|player| player.continuous_firing)
         {
             return Ok(());
         }
+        let next_step = fround(game.time + 0.1).to_string();
         game.update_entity(&state_entity, |entity| {
-            entity
-                .fields
-                .insert("next-step".to_string(), fround(game.time + 0.1).to_string());
+            entity.fields.insert("next-step".to_string(), next_step);
         })?;
         let old_origin = game
             .entity_ref(&state_entity)
@@ -290,9 +270,7 @@ impl MissionPackCharacterEffects {
             });
         }
         game.update_entity(&state_entity, |entity| {
-            entity
-                .fields
-                .insert("distance".to_string(), distance.to_string());
+            entity.fields.insert("distance".to_string(), distance.to_string());
         })?;
         Ok(())
     }
@@ -311,8 +289,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -340,10 +317,11 @@ mod tests {
         .expect("laser");
         let pose = mission_pack_character_pose(&game, &player, Q1MissionPack::Hipnotic);
         assert_eq!(pose.frame, Some(103.0));
+        let time = game.time;
         game.update_player(&player, |state| {
             state.weapon = Q1Weapon::HipnoticProximity;
             state.continuous_firing = false;
-            state.weapon_animation_at = game.time;
+            state.weapon_animation_at = time;
         })
         .expect("proximity");
         let pose = mission_pack_character_pose(&game, &player, Q1MissionPack::Hipnotic);
@@ -359,17 +337,15 @@ mod tests {
     fn mjolnir_pose_uses_hammer_layout() {
         let mut game = test_game();
         let player = attached_player(&mut game);
+        let time = game.time;
         game.update_player(&player, |state| {
             state.weapon = Q1Weapon::HipnoticMjolnir;
-            state.weapon_animation_at = game.time;
+            state.weapon_animation_at = time;
             state.weapon_animation_base = 32;
         })
         .expect("mjolnir");
         let pose = mission_pack_character_pose(&game, &player, Q1MissionPack::Hipnotic);
-        assert_eq!(
-            pose.definition.expect("definition").model,
-            "progs/playham.mdl"
-        );
+        assert_eq!(pose.definition.expect("definition").model, "progs/playham.mdl");
         assert_eq!(pose.frame, Some(32.0));
     }
 
@@ -377,18 +353,11 @@ mod tests {
     fn effects_register_and_rest_without_footsteps() {
         let mut game = test_game();
         let effects =
-            MissionPackCharacterEffects::new(&mut game, Q1MissionPack::Hipnotic, Rc::new(|| false))
-                .expect("effects");
+            MissionPackCharacterEffects::new(&mut game, Q1MissionPack::Hipnotic, Rc::new(|| false)).expect("effects");
         assert!(game.named.action("hipnotic:head-flies").is_ok());
         let player = attached_player(&mut game);
-        effects
-            .frame(&mut game, &player, &presentation())
-            .expect("frame");
-        let rogue =
-            MissionPackCharacterEffects::new(&mut game, Q1MissionPack::Rogue, Rc::new(|| true))
-                .expect("rogue");
-        rogue
-            .frame(&mut game, &player, &presentation())
-            .expect("frame");
+        effects.frame(&mut game, &player, &presentation()).expect("frame");
+        let rogue = MissionPackCharacterEffects::new(&mut game, Q1MissionPack::Rogue, Rc::new(|| true)).expect("rogue");
+        rogue.frame(&mut game, &player, &presentation()).expect("frame");
     }
 }

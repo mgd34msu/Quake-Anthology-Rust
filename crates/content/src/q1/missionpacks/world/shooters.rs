@@ -2,23 +2,21 @@
 //!
 //! Hipnotic/Rogue misc.qc projectile traps.
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
-use crate::q1::Q1Error;
-use crate::q1::base::projectiles::{SpikeKind, create_missile, launch_laser, launch_spike};
+use crate::q1::base::projectiles::{create_missile, launch_laser, launch_spike, SpikeKind};
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
-use crate::q1::foundation::entity::Q1ProjectileKind;
 use crate::q1::foundation::entity::move_direction;
+use crate::q1::foundation::entity::Q1ProjectileKind;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
 use crate::q1::foundation::host::Q1Contents;
-use crate::q1::foundation::types::{
-    Q1Effect, Q1MoveType, Q1SoundChannel, ZERO, normalize, vadd, vscale, vsub,
-};
+use crate::q1::foundation::types::{normalize, vadd, vscale, vsub, Q1Effect, Q1MoveType, Q1SoundChannel, ZERO};
 use crate::q1::missionpacks::monsters::dragon::launch_dragon_fireball;
 use crate::q1::missionpacks::rogue_weapons::launch_rogue_lava_spike;
 use crate::q1::missionpacks::types::Q1MissionPack;
+use crate::q1::Q1Error;
 
 use super::common::{later, number, trigger};
 
@@ -84,7 +82,7 @@ fn rogue_fire(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
         game.sound_simple(id, "enforcer/enfire.wav")?;
         launch_laser(game, Some(id), origin, movedir)?;
     } else if spawnflags & 32 != 0 {
-        launch_dragon_fireball(game, id, origin, movedir)?;
+        launch_dragon_fireball(game, id, origin, movedir);
     } else {
         game.sound_simple(id, "weapons/spike2.wav")?;
         let powered = spawnflags & 8 != 0 || (spawnflags & 16 != 0 && game.options().skill > 1);
@@ -150,11 +148,7 @@ fn hipnotic_fire(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
                     y: -4.0,
                     z: -4.0,
                 },
-                max: Vec3 {
-                    x: 4.0,
-                    y: 4.0,
-                    z: 4.0,
-                },
+                max: Vec3 { x: 4.0, y: 4.0, z: 4.0 },
             },
         )?;
     } else if spawnflags & 8 != 0 {
@@ -279,9 +273,7 @@ fn spawn_shooter(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
     let state = if classname == "trap_shooter" {
         1.0
     } else {
-        game.entity(id)
-            .map(|entity| entity.number("state"))
-            .unwrap_or(0.0)
+        game.entity(id).map(|entity| entity.number("state")).unwrap_or(0.0)
     };
     game.update_entity(id, |entity| number(entity, "shooter_state", state))?;
     if classname == "trap_switched_shooter" {
@@ -290,20 +282,9 @@ fn spawn_shooter(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
     }
     let (nextthink, wait, ltime) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.number("nextthink"),
-                entity.wait,
-                entity.number("ltime"),
-            )
-        })
+        .map(|entity| (entity.number("nextthink"), entity.wait, entity.number("ltime")))
         .unwrap_or((0.0, 0.0, 0.0));
-    later(
-        game,
-        id,
-        nextthink + wait + ltime - game.time,
-        "mission:shooter_think",
-    )
+    later(game, id, nextthink + wait + ltime - game.time, "mission:shooter_think")
 }
 
 /// Toggle a Rogue push trigger.
@@ -327,8 +308,7 @@ fn rogue_push_touch(
     if game.entity(id).map(|entity| entity.spawnflags).unwrap_or(0) & 4 == 0 {
         return Ok(());
     }
-    let grenade =
-        ["grenade", "MiniGrenade", "MultiGrenade"].contains(&game.host.classname(other).as_str());
+    let grenade = ["grenade", "MiniGrenade", "MultiGrenade"].contains(&game.host.classname(other).as_str());
     if grenade || game.health(other) > 0.0 {
         let owned = game.host.actors.resolve_owned(other);
         let body = game.host.bodies.read(other);
@@ -344,10 +324,7 @@ fn rogue_push_touch(
                 let state = game.entity_ids().into_iter().find(|id| {
                     game.entity(id).is_some_and(|entity| {
                         entity.classname == "rogue_team_state"
-                            && entity
-                                .owner
-                                .as_ref()
-                                .is_some_and(|owner| same_actor(owner, other))
+                            && entity.owner.as_ref().is_some_and(|owner| same_actor(owner, other))
                     })
                 });
                 if let Some(state) = state {
@@ -357,9 +334,7 @@ fn rogue_push_touch(
                         .unwrap_or(0.0);
                     if fly_sound < game.time {
                         let time = game.time;
-                        game.update_entity(&state, |entity| {
-                            number(entity, "fly_sound", time + 1.5)
-                        })?;
+                        game.update_entity(&state, |entity| number(entity, "fly_sound", time + 1.5))?;
                         game.sound_simple(other, "ambience/windfly.wav")?;
                     }
                 }
@@ -391,10 +366,7 @@ fn spawn_trigger_push(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
 }
 
 /// Register mission-pack shooter traps (`registerMissionShooters`).
-pub fn register_mission_shooters(
-    game: &mut Q1EntityServices,
-    pack: Q1MissionPack,
-) -> Result<(), Q1Error> {
+pub fn register_mission_shooters(game: &mut Q1EntityServices, pack: Q1MissionPack) -> Result<(), Q1Error> {
     game.named.register(
         "hip:shooter_laser_touch",
         Q1CallbackHandlers {
@@ -456,28 +428,9 @@ mod tests {
     use crate::q1::base::provider::{Q1BaseGuard, Q1BaseOptions};
     use crate::q1::missionpacks::types::test_game;
 
-    fn null_touch(
-        _game: &mut Q1EntityServices,
-        _id: &ActorId,
-        _other: &ActorId,
-        _normal: Option<Vec3>,
-        _surface: Option<&TouchSurface>,
-    ) -> Result<(), Q1Error> {
-        Ok(())
-    }
-
     fn register_for_test(game: &mut Q1EntityServices, pack: Q1MissionPack) -> Q1BaseGuard {
         let guard = Q1BaseGuard::register(game, Q1BaseOptions::default()).expect("base");
         register_mission_shooters(game, pack).expect("register");
-        game.named
-            .register(
-                "projectile_touch",
-                Q1CallbackHandlers {
-                    touch: Some(null_touch),
-                    ..Default::default()
-                },
-            )
-            .expect("projectile touch");
         guard
     }
 
@@ -487,12 +440,11 @@ mod tests {
         let _guard = register_for_test(&mut game, Q1MissionPack::Hipnotic);
         let id = game.create("trap_shooter", None, None).expect("shooter");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_action(&id, "mission:shooter_think")
-            .expect("think");
-        let spikes = game.entity_ids().into_iter().filter(|id| {
-            game.entity(id)
-                .is_some_and(|entity| entity.classname == "spike")
-        });
+        game.invoke_action(&id, "mission:shooter_think").expect("think");
+        let spikes = game
+            .entity_ids()
+            .into_iter()
+            .filter(|id| game.entity(id).is_some_and(|entity| entity.classname == "spike"));
         assert_eq!(spikes.count(), 1);
     }
 
@@ -500,9 +452,7 @@ mod tests {
     fn switched_shooter_toggles_on_use() {
         let mut game = test_game();
         let _guard = register_for_test(&mut game, Q1MissionPack::Hipnotic);
-        let id = game
-            .create("trap_switched_shooter", None, None)
-            .expect("shooter");
+        let id = game.create("trap_switched_shooter", None, None).expect("shooter");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(
             game.entity(&id).expect("shooter").use_callback.as_deref(),
@@ -510,10 +460,7 @@ mod tests {
         );
         game.invoke_use(&id, "mission:shooter_switch", None, None)
             .expect("switch");
-        assert_eq!(
-            game.entity(&id).expect("shooter").number("shooter_state"),
-            1.0
-        );
+        assert_eq!(game.entity(&id).expect("shooter").number("shooter_state"), 1.0);
     }
 
     #[test]

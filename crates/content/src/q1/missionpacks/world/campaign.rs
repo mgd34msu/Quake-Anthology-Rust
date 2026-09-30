@@ -3,15 +3,12 @@
 //! Mission pack client.qc / hipmisc.qc finale control.
 
 use qa_core::identity::ActorId;
-use qa_core::math::Vec3;
 
 use crate::q1::base::provider::{
-    base_registered_flag, campaign_read_flags, has_finished_finale, level_advance_finale,
-    level_begin_cutscene, level_defer_exit, level_register_rule, official_campaign_flag,
+    base_registered_flag, campaign_read_flags, has_finished_finale, level_advance_finale, level_begin_cutscene,
+    level_defer_exit, level_register_rule, official_campaign_flag,
 };
-use crate::q1::base::rules::{
-    Q1FinaleDecision, Q1IntermissionResult, Q1IntermissionRule, Q1SourceFinale,
-};
+use crate::q1::base::rules::{Q1FinaleDecision, Q1IntermissionResult, Q1IntermissionRule, Q1SourceFinale};
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::BodyPatch;
@@ -19,7 +16,7 @@ use crate::q1::foundation::host::Q1CutsceneControl;
 use crate::q1::foundation::types::{Q1Edition, Q1Event, ZERO};
 use crate::q1::missionpacks::types::Q1MissionPack;
 use crate::q1::missionpacks::world::finale_text::mission_finale_text;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number};
 use super::with_missionpack_hooks;
@@ -74,11 +71,7 @@ fn rogue_campaign_finale(
     if stage == 2 && map == "r1m7" {
         return Ok(Q1FinaleDecision::Finale(finale(game, "$qc_finale_r1", 3)));
     }
-    if stage == 2
-        && map == "r2m8"
-        && game.options().coop
-        && game.options().edition == Q1Edition::Rerelease
-    {
+    if stage == 2 && map == "r2m8" && game.options().coop && game.options().edition == Q1Edition::Rerelease {
         game.host.emit(Q1Event::ServerCommand {
             text: "menu_credits\ndisconnect\n".to_string(),
         });
@@ -119,37 +112,21 @@ fn hipnotic_campaign_finale(
                     });
                 }
             }
-            return Ok(Q1FinaleDecision::Finale(finale(
-                game,
-                "$qc_finale_hipend",
-                2,
-            )));
+            return Ok(Q1FinaleDecision::Finale(finale(game, "$qc_finale_hipend", 2)));
         }
     }
     if stage == 3 && base_registered_flag(game)? && campaign_read_flags(game)? & 15 != 15 {
         if map == "hip1m4" {
-            return Ok(Q1FinaleDecision::Finale(finale(
-                game,
-                "$qc_finale_hip1m4",
-                6,
-            )));
+            return Ok(Q1FinaleDecision::Finale(finale(game, "$qc_finale_hip1m4", 6)));
         }
         if map == "hip2m5" {
-            return Ok(Q1FinaleDecision::Finale(finale(
-                game,
-                "$qc_finale_hip2m5",
-                6,
-            )));
+            return Ok(Q1FinaleDecision::Finale(finale(game, "$qc_finale_hip2m5", 6)));
         }
         if map == "hipend" {
             let until = game.time + 10_000_000.0;
             level_defer_exit(game, until)?;
             start_finale_timer(game)?;
-            return Ok(Q1FinaleDecision::Finale(finale(
-                game,
-                "$qc_finale_hipend2",
-                2,
-            )));
+            return Ok(Q1FinaleDecision::Finale(finale(game, "$qc_finale_hipend2", 2)));
         }
     }
     Ok(Q1FinaleDecision::Delegate)
@@ -164,9 +141,7 @@ fn end_text(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
     }
     let result = level_advance_finale(game, game.time)?;
     let result = match result {
-        Q1IntermissionResult::Finale { text, track } => {
-            Some(Q1SourceFinale::Finale { text, track })
-        }
+        Q1IntermissionResult::Finale { text, track } => Some(Q1SourceFinale::Finale { text, track }),
         Q1IntermissionResult::SellScreen => Some(Q1SourceFinale::SellScreen),
         _ => None,
     };
@@ -214,10 +189,7 @@ fn effect_finale_use(
         return Ok(());
     }
     game.update_entity(id, |entity| number(entity, "finale_state", 1.0))?;
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     let point = game
         .find(&target)
         .first()
@@ -229,10 +201,7 @@ fn effect_finale_use(
     });
     let spawnflags = game.entity(id).map(|entity| entity.spawnflags).unwrap_or(0);
     if spawnflags & 2 == 0 {
-        let mdl = game
-            .entity(id)
-            .map(|entity| entity.text("mdl"))
-            .unwrap_or_default();
+        let mdl = game.entity(id).map(|entity| entity.text("mdl")).unwrap_or_default();
         let target = game
             .find(&mdl)
             .first()
@@ -264,7 +233,7 @@ fn effect_finale_use(
     }
     let (point_origin, point_mangle) = game
         .entity(&point)
-        .map(|point| (game.body(&point).map(|body| body.origin), point.mangle))
+        .map(|entity| (game.body(entity.actor.id()).map(|body| body.origin), entity.mangle))
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
     let point_origin = point_origin?;
     for player in (game.host.players)() {
@@ -283,9 +252,7 @@ fn effect_finale_use(
         .unwrap_or_default();
     if !callback.is_empty() {
         game.update_entity(id, |entity| {
-            entity
-                .fields
-                .insert("hip:finale_callback".to_string(), callback);
+            entity.fields.insert("hip:finale_callback".to_string(), callback);
         })?;
         let wait = game.entity(id).map(|entity| entity.wait).unwrap_or(0.0);
         return later(game, id, wait, "hip:finale_callback");
@@ -349,10 +316,7 @@ fn spawn_startendtext(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
 }
 
 /// Register mission-pack campaign finales (`registerMissionCampaign`).
-pub fn register_mission_campaign(
-    game: &mut Q1EntityServices,
-    pack: Q1MissionPack,
-) -> Result<(), Q1Error> {
+pub fn register_mission_campaign(game: &mut Q1EntityServices, pack: Q1MissionPack) -> Result<(), Q1Error> {
     game.named.register(
         "mission:finale_transition",
         Q1CallbackHandlers {
@@ -414,11 +378,11 @@ pub fn register_mission_campaign(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::q1::base::provider::{Q1BaseGuard, Q1BaseOptions, dismiss_finale};
+    use crate::q1::base::provider::{dismiss_finale, Q1BaseGuard, Q1BaseOptions};
     use crate::q1::missionpacks::types::test_game;
 
-    fn game_with_base(pack: Q1MissionPack) -> (Q1EntityServices, Q1BaseGuard) {
-        let mut game = test_game();
+    fn game_with_base(pack: Q1MissionPack) -> (Box<Q1EntityServices>, Q1BaseGuard) {
+        let mut game = Box::new(test_game());
         let guard = Q1BaseGuard::register(&mut game, Q1BaseOptions::default()).expect("base");
         register_mission_campaign(&mut game, pack).expect("campaign");
         (game, guard)
@@ -427,18 +391,14 @@ mod tests {
     #[test]
     fn finale_check_waits_for_dismissal_then_transitions() {
         let (mut game, _guard) = game_with_base(Q1MissionPack::Hipnotic);
-        let id = game
-            .create("mission_finale_timer", None, None)
-            .expect("timer");
-        game.invoke_action(&id, "mission:finale_check")
-            .expect("check");
+        let id = game.create("mission_finale_timer", None, None).expect("timer");
+        game.invoke_action(&id, "mission:finale_check").expect("check");
         assert_eq!(
             game.entity(&id).expect("timer").think.as_deref(),
             Some("mission:finale_check")
         );
         dismiss_finale(&game).expect("dismiss");
-        game.invoke_action(&id, "mission:finale_check")
-            .expect("check");
+        game.invoke_action(&id, "mission:finale_check").expect("check");
         assert_eq!(
             game.entity(&id).expect("timer").think.as_deref(),
             Some("mission:finale_transition")

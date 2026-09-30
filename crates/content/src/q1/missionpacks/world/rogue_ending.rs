@@ -2,7 +2,7 @@
 //!
 //! ending.qc actor and camera sequence.
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::q1::base::projectiles::create_missile;
@@ -14,12 +14,12 @@ use crate::q1::foundation::gameplay::BodyPatch;
 use crate::q1::foundation::host::Q1CutsceneControl;
 use crate::q1::foundation::spawns::spawn_teleport_fog;
 use crate::q1::foundation::types::{
-    PLAYER_BOUNDS, Q1Edition, Q1Event, Q1MoveType, Q1Solid, ZERO, vadd, vscale, vsub, yaw_for,
+    vadd, vscale, vsub, yaw_for, Q1Edition, Q1Event, Q1MoveType, Q1Solid, PLAYER_BOUNDS, ZERO,
 };
 use crate::q1::foundation::weapons::aim;
 use crate::q1::missionpacks::types::velocity_angles;
 use crate::q1::missionpacks::world::finale_text::mission_finale_text;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::campaign::start_finale_timer;
 use super::common::{later, number, vector};
@@ -40,10 +40,7 @@ fn remove_stuff(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
     let trails: Vec<ActorId> = game
         .entity_ids()
         .into_iter()
-        .filter(|id| {
-            game.entity(id)
-                .is_some_and(|entity| entity.classname == "ltrail_start")
-        })
+        .filter(|id| game.entity(id).is_some_and(|entity| entity.classname == "ltrail_start"))
         .collect();
     for trail in trails {
         game.remove(&trail)?;
@@ -70,8 +67,7 @@ fn remove_stuff(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
 
 /// Pull the cinema actor out of lava (`escapeLava`).
 fn escape_lava(game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> {
-    if game.host.contents(game.body(actor)?.origin) != crate::q1::foundation::host::Q1Contents::Lava
-    {
+    if game.host.contents(game.body(actor)?.origin) != crate::q1::foundation::host::Q1Contents::Lava {
         return Ok(());
     }
     let point = game.find("point1").first().cloned();
@@ -93,12 +89,8 @@ fn goal(game: &mut Q1EntityServices, actor: &ActorId, target: &str) -> Result<()
     let goal = point.clone();
     let follower = point;
     game.update_entity(actor, |actor| {
-        actor
-            .references
-            .insert("goalentity".to_string(), Some(goal));
-        actor
-            .references
-            .insert("movetarget".to_string(), Some(follower));
+        actor.references.insert("goalentity".to_string(), Some(goal));
+        actor.references.insert("movetarget".to_string(), Some(follower));
     })
 }
 
@@ -129,9 +121,7 @@ fn control(game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> 
     }
     if stage == 3.0 {
         game.update_entity(actor, |actor| actor.target = "timepod".to_string())?;
-        let activator = game
-            .entity(actor)
-            .and_then(|entity| entity.activator.clone());
+        let activator = game.entity(actor).and_then(|entity| entity.activator.clone());
         game.use_targets(actor, activator.as_ref())?;
         goal(game, actor, "point2")?;
         game.update_entity(actor, |actor| actor.frame = 6)?;
@@ -207,10 +197,7 @@ pub fn start_rogue_ending(game: &mut Q1EntityServices, player: &ActorId) -> Resu
     let actor = game.create("actor", None, None)?;
     let player_id = player.clone();
     let frame = with_missionpack_hooks(game, |_, hooks| {
-        Ok(hooks
-            .player_frame
-            .as_ref()
-            .map(|player_frame| player_frame(player)))
+        Ok(hooks.player_frame.as_ref().map(|player_frame| player_frame(player)))
     })?;
     game.update_entity(&actor, |actor| {
         actor.owner = Some(player_id);
@@ -250,9 +237,7 @@ pub fn start_rogue_ending(game: &mut Q1EntityServices, player: &ActorId) -> Resu
     })?;
     let actor_id = actor.clone();
     game.update_entity(&world, |world| {
-        world
-            .references
-            .insert("rogue:theActor".to_string(), Some(actor_id));
+        world.references.insert("rogue:theActor".to_string(), Some(actor_id));
     })?;
     escape_lava(game, &actor)?;
     later(game, &actor, 0.1, "rogue:actor_control")?;
@@ -275,11 +260,7 @@ pub fn start_rogue_ending(game: &mut Q1EntityServices, player: &ActorId) -> Resu
 }
 
 /// Advance cinema followers along their path.
-fn world_followers(
-    game: &mut Q1EntityServices,
-    corner: &ActorId,
-    mover: &ActorId,
-) -> Result<bool, Q1Error> {
+fn world_followers(game: &mut Q1EntityServices, corner: &ActorId, mover: &ActorId) -> Result<bool, Q1Error> {
     let classname = game
         .entity(mover)
         .map(|entity| entity.classname.clone())
@@ -290,10 +271,7 @@ fn world_followers(
     let current = game
         .entity(mover)
         .and_then(|entity| entity.references.get("movetarget").cloned().flatten());
-    if current
-        .as_ref()
-        .is_none_or(|current| !same_actor(current, corner))
-    {
+    if current.as_ref().is_none_or(|current| !same_actor(current, corner)) {
         return Ok(false);
     }
     let target = game
@@ -302,12 +280,8 @@ fn world_followers(
         .unwrap_or_default();
     let next = game.find(&target).first().cloned();
     game.update_entity(mover, |mover| {
-        mover
-            .references
-            .insert("goalentity".to_string(), next.clone());
-        mover
-            .references
-            .insert("movetarget".to_string(), next.clone());
+        mover.references.insert("goalentity".to_string(), next.clone());
+        mover.references.insert("movetarget".to_string(), next.clone());
     })?;
     let destination = next
         .as_ref()
@@ -315,9 +289,7 @@ fn world_followers(
         .map(|body| body.origin)
         .unwrap_or(ZERO);
     let origin = game.body(mover)?.origin;
-    game.update_entity(mover, |mover| {
-        mover.ideal_yaw = yaw_for(vsub(destination, origin))
-    })?;
+    game.update_entity(mover, |mover| mover.ideal_yaw = yaw_for(vsub(destination, origin)))?;
     if next.is_none() {
         let time = game.time;
         game.update_entity(mover, |mover| number(mover, "pausetime", time + 999999.0))?;
@@ -337,9 +309,7 @@ fn track_camera(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
         .and_then(|world| world.references.get("rogue:theActor").cloned().flatten())
         .filter(|actor| game.entity(actor).is_some());
     let player = game.entity(id).and_then(|entity| entity.owner.clone());
-    let body = player
-        .as_ref()
-        .and_then(|player| game.host.bodies.read(player));
+    let body = player.as_ref().and_then(|player| game.host.bodies.read(player));
     let (Some(actor), Some(player), Some(body)) = (actor, player, body) else {
         return game.remove(id);
     };
@@ -353,7 +323,7 @@ fn track_camera(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
                 y: delta.y,
                 z: -delta.z,
             }),
-            viewOffset: ZERO,
+            view_offset: ZERO,
         },
     )?;
     later(game, id, 0.1, "rogue:track_camera")
@@ -413,18 +383,12 @@ fn actor_run(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
 /// Run one cinema fire stage.
 fn actor_fire(game: &mut Q1EntityServices, id: &ActorId, stage: i32) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| {
-        entity.frame = if stage <= 6 {
-            106 + stage
-        } else {
-            12 + (stage - 7) % 5
-        };
+        entity.frame = if stage <= 6 { 106 + stage } else { 12 + (stage - 7) % 5 };
     })?;
     if stage == 1 {
         let target = machine(game)?;
         game.update_entity(id, |entity| {
-            entity
-                .references
-                .insert("goalentity".to_string(), Some(target.clone()));
+            entity.references.insert("goalentity".to_string(), Some(target.clone()));
         })?;
         let pain_name = game.named.pain("rogue:time_crash")?;
         let die_name = game.named.die("rogue:time_crash")?;
@@ -454,11 +418,7 @@ fn actor_fire(game: &mut Q1EntityServices, id: &ActorId, stage: i32) -> Result<(
         let basis = game.make_vectors(flipped);
         game.update_entity(id, |entity| {
             vector(entity, "v_angle", flipped);
-            number(
-                entity,
-                "ammo_rockets1",
-                entity.number("ammo_rockets1") - 1.0,
-            );
+            number(entity, "ammo_rockets1", entity.number("ammo_rockets1") - 1.0);
             number(entity, "currentammo", entity.number("ammo_rockets1"));
         })?;
         game.sound(
@@ -473,6 +433,7 @@ fn actor_fire(game: &mut Q1EntityServices, id: &ActorId, stage: i32) -> Result<(
             .map(|entity| entity.actor.clone())
             .ok_or_else(|| q1_error("Missing Q1 entity"))?;
         let origin = game.body(id)?.origin;
+        let aimed = aim(game, &owned, basis.forward);
         let missile = create_missile(
             game,
             Some(id),
@@ -486,7 +447,7 @@ fn actor_fire(game: &mut Q1EntityServices, id: &ActorId, stage: i32) -> Result<(
                     z: 16.0,
                 },
             ),
-            vscale(aim(game, &owned, basis.forward), 1000.0),
+            vscale(aimed, 1000.0),
             5.0,
         )?;
         let touch_name = game.named.touch("projectile_touch")?;
@@ -498,10 +459,7 @@ fn actor_fire(game: &mut Q1EntityServices, id: &ActorId, stage: i32) -> Result<(
             text: mission_finale_text(game.options().edition, "$qc_finale_rogue_end"),
             stage: 4,
         });
-        if game.options().edition == Q1Edition::Rerelease
-            && official_campaign_flag(game)?
-            && game.map_name == "r2m8"
-        {
+        if game.options().edition == Q1Edition::Rerelease && official_campaign_flag(game)? && game.map_name == "r2m8" {
             game.host.emit(Q1Event::Achievement {
                 player: None,
                 id: "ACH_COMPLETE_R2M8".to_string(),
@@ -527,10 +485,7 @@ fn actor_fire(game: &mut Q1EntityServices, id: &ActorId, stage: i32) -> Result<(
                 ..Default::default()
             },
         )?;
-        let v_angle = game
-            .entity(id)
-            .map(|entity| entity.vector("v_angle"))
-            .unwrap_or(ZERO);
+        let v_angle = game.entity(id).map(|entity| entity.vector("v_angle")).unwrap_or(ZERO);
         game.update_entity(id, |entity| {
             vector(
                 entity,
@@ -729,33 +684,13 @@ pub fn register_rogue_ending(game: &mut Q1EntityServices) -> Result<(), Q1Error>
 mod tests {
     use super::*;
     use crate::q1::base::provider::{Q1BaseGuard, Q1BaseOptions};
-    use crate::q1::foundation::gameplay::TouchSurface;
     use crate::q1::missionpacks::types::test_game;
 
-    fn null_touch(
-        _game: &mut Q1EntityServices,
-        _id: &ActorId,
-        _other: &ActorId,
-        _normal: Option<Vec3>,
-        _surface: Option<&TouchSurface>,
-    ) -> Result<(), Q1Error> {
-        Ok(())
-    }
-
-    fn game_with_base() -> (Q1EntityServices, Q1BaseGuard) {
-        let mut game = test_game();
+    fn game_with_base() -> (Box<Q1EntityServices>, Q1BaseGuard) {
+        let mut game = Box::new(test_game());
         let guard = Q1BaseGuard::register(&mut game, Q1BaseOptions::default()).expect("base");
         register_rogue_ending(&mut game).expect("ending");
         crate::q1::missionpacks::world::rogue_time::register_rogue_time(&mut game).expect("time");
-        game.named
-            .register(
-                "projectile_touch",
-                Q1CallbackHandlers {
-                    touch: Some(null_touch),
-                    ..Default::default()
-                },
-            )
-            .expect("projectile touch");
         game.host.control_player = Some(Box::new(|_, _| {}));
         (game, guard)
     }
@@ -773,32 +708,20 @@ mod tests {
         start_rogue_ending(&mut game, &player).expect("no world");
         let world = with_world(&mut game);
         start_rogue_ending(&mut game, &player).expect("not running");
-        assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:ending_started"),
-            0.0
-        );
+        assert_eq!(game.entity(&world).expect("world").number("rogue:ending_started"), 0.0);
     }
 
     #[test]
     fn ending_crashes_machine_without_camera() {
         let (mut game, _guard) = game_with_base();
         let world = with_world(&mut game);
-        let machine = game
-            .create("item_time_machine", None, None)
-            .expect("machine");
+        let machine = game.create("item_time_machine", None, None).expect("machine");
         game.spawn_entity(&machine, None).expect("spawn");
         game.update_entity(&world, |world| number(world, "rogue:cutscene_running", 1.0))
             .expect("running");
         let player = game.create("player", None, None).expect("player");
         start_rogue_ending(&mut game, &player).expect("start");
-        assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:ending_started"),
-            1.0
-        );
+        assert_eq!(game.entity(&world).expect("world").number("rogue:ending_started"), 1.0);
         assert_eq!(
             game.entity(&machine).expect("machine").think.as_deref(),
             Some("rogue:time_crash")
@@ -812,38 +735,26 @@ mod tests {
         let point = game.create("path_corner", None, None).expect("point");
         game.update_entity(&point, |entity| entity.targetname = "point1".to_string())
             .expect("targetname");
-        let machine = game
-            .create("path_corner", None, None)
-            .expect("machine point");
+        let machine = game.create("path_corner", None, None).expect("machine point");
         game.update_entity(&machine, |entity| entity.targetname = "machine".to_string())
             .expect("targetname");
-        let time_machine = game
-            .create("item_time_machine", None, None)
-            .expect("time machine");
+        let time_machine = game.create("item_time_machine", None, None).expect("time machine");
         game.spawn_entity(&time_machine, None).expect("spawn");
         let actor = game.create("actor", None, None).expect("actor");
-        game.invoke_action(&actor, "rogue:actor_control")
-            .expect("control");
-        assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:actorStage"),
-            1.0
-        );
+        game.invoke_action(&actor, "rogue:actor_control").expect("control");
+        assert_eq!(game.entity(&world).expect("world").number("rogue:actorStage"), 1.0);
         assert_eq!(
             game.entity(&actor).expect("actor").think.as_deref(),
             Some("rogue:actor_run")
         );
         game.update_entity(&world, |world| number(world, "rogue:actorStage", 2.0))
             .expect("stage");
-        game.invoke_action(&actor, "rogue:actor_control")
-            .expect("control");
+        game.invoke_action(&actor, "rogue:actor_control").expect("control");
         assert_eq!(
             game.entity(&actor).expect("actor").think.as_deref(),
             Some("rogue:actor_fire1")
         );
-        game.invoke_action(&actor, "rogue:actor_fire1")
-            .expect("fire");
+        game.invoke_action(&actor, "rogue:actor_fire1").expect("fire");
         assert_eq!(game.entity(&actor).expect("actor").effects, 2);
         assert_eq!(
             game.entity(&actor).expect("actor").think.as_deref(),
@@ -866,9 +777,7 @@ mod tests {
         let mover = game.create("actor", None, None).expect("mover");
         let corner_id = corner.clone();
         game.update_entity(&mover, |entity| {
-            entity
-                .references
-                .insert("movetarget".to_string(), Some(corner_id));
+            entity.references.insert("movetarget".to_string(), Some(corner_id));
         })
         .expect("movetarget");
         assert!(world_followers(&mut game, &corner, &mover).expect("follow"));

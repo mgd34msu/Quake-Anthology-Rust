@@ -7,9 +7,7 @@ use crate::q1::base::monsters::BaseMonster;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::TouchSurface;
-use crate::q1::foundation::types::{
-    vsub, yaw_for, Q1MoveType, Q1Solid, Q1SoundChannel, Q1TraceRequest, POINT, ZERO,
-};
+use crate::q1::foundation::types::{vsub, yaw_for, Q1MoveType, Q1Solid, Q1SoundChannel, Q1TraceRequest, POINT, ZERO};
 use crate::q1::missionpacks::types::Q1MissionPack;
 use crate::q1::Q1Error;
 
@@ -39,14 +37,13 @@ fn follow_mission(monster: &mut MissionMonster, trigger_target: &str) {
             .world
             .clone()
             .and_then(|world| monster.game.body(&world).ok())
-            .map(|body| body.origin)
-            .unwrap_or(ZERO),
+            .map(|body| body.origin),
         Some(enemy) => monster.eye(Some(enemy)),
     };
     let (Some(start), Some(end)) = (start, end) else {
         return;
     };
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let trace = monster.game.host.trace(&Q1TraceRequest {
         start,
         end,
@@ -69,9 +66,7 @@ fn follow_mission(monster: &mut MissionMonster, trigger_target: &str) {
         monster.flush_entity();
     }
     let target = monster.game.find(trigger_target).first().cloned();
-    let target_entity = target
-        .as_ref()
-        .and_then(|target| monster.game.entity(target).cloned());
+    let target_entity = target.as_ref().and_then(|target| monster.game.entity(target).cloned());
     monster.state.path = target_entity
         .as_ref()
         .map(|entity| entity.targetname.clone())
@@ -125,8 +120,7 @@ fn follow_base(monster: &mut BaseMonster, trigger_target: &str) -> Result<(), Q1
             .world
             .clone()
             .and_then(|world| monster.game.body(&world).ok())
-            .map(|body| body.origin)
-            .unwrap_or(ZERO),
+            .map(|body| body.origin),
         Some(enemy) => monster.eye(Some(enemy)).unwrap_or(None),
     };
     let (Some(start), Some(end)) = (start, end) else {
@@ -150,26 +144,18 @@ fn follow_base(monster: &mut BaseMonster, trigger_target: &str) -> Result<(), Q1
         monster.controller.next_frame = monster.spec.walk.to_string();
         let think = format!("{}:monster_frame", monster.prefix);
         if let Ok(think) = monster.game.named.action(&think) {
-            monster
-                .game
-                .update_entity(&id, |entity| entity.think = Some(think))?;
+            monster.game.update_entity(&id, |entity| entity.think = Some(think))?;
         }
     }
     let target = monster.game.find(trigger_target).first().cloned();
-    let target_entity = target
-        .as_ref()
-        .and_then(|target| monster.game.entity(target).cloned());
+    let target_entity = target.as_ref().and_then(|target| monster.game.entity(target).cloned());
     monster.monster.path = target_entity
         .as_ref()
         .map(|entity| entity.targetname.clone())
         .unwrap_or_default();
     monster.game.update_entity(&id, |entity| {
-        entity
-            .references
-            .insert("goalentity".to_string(), target.clone());
-        entity
-            .references
-            .insert("movetarget".to_string(), target.clone());
+        entity.references.insert("goalentity".to_string(), target.clone());
+        entity.references.insert("movetarget".to_string(), target.clone());
     })?;
     let destination = target
         .as_ref()
@@ -192,13 +178,8 @@ fn follow_base(monster: &mut BaseMonster, trigger_target: &str) -> Result<(), Q1
         monster.found(&old_enemy)?;
         return Ok(());
     }
-    let owned = monster
-        .game
-        .entity_ref(&id)
-        .map(|entity| entity.actor.clone());
-    let client = owned
-        .as_ref()
-        .and_then(|owned| monster.game.host.check_client(owned));
+    let owned = monster.game.entity_ref(&id).map(|entity| entity.actor.clone());
+    let client = owned.as_ref().and_then(|owned| monster.game.host.check_client(owned));
     if client.is_none() {
         if let Some(world) = monster.game.world.clone() {
             monster.found(&world)?;
@@ -271,11 +252,7 @@ fn path_follow_spawn(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1
                     y: -8.0,
                     z: -8.0,
                 },
-                max: Vec3 {
-                    x: 8.0,
-                    y: 8.0,
-                    z: 8.0,
-                },
+                max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
             },
         )?;
         return Ok(());
@@ -295,16 +272,14 @@ fn movetarget_mission(monster: &mut MissionMonster, corner: &ActorId) -> bool {
         return true;
     }
     if monster.entity.classname == "monster_ogre" {
-        let id = monster.entity.actor.id.clone();
+        let id = monster.entity.actor.id().clone();
         let _ = monster
             .game
             .sound(&id, "ogre/ogdrag.wav", Q1SoundChannel::Voice, 1.0, 2.0);
     }
     if !corner_entity.target.is_empty() {
         let target = monster.game.find(&corner_entity.target).first().cloned();
-        let target_entity = target
-            .as_ref()
-            .and_then(|target| monster.game.entity(target).cloned());
+        let target_entity = target.as_ref().and_then(|target| monster.game.entity(target).cloned());
         monster.state.path = target_entity
             .as_ref()
             .map(|entity| entity.targetname.clone())
@@ -359,21 +334,15 @@ fn movetarget_base(monster: &mut BaseMonster, corner: &ActorId) -> Result<bool, 
     }
     if !corner_entity.target.is_empty() {
         let target = monster.game.find(&corner_entity.target).first().cloned();
-        let target_entity = target
-            .as_ref()
-            .and_then(|target| monster.game.entity(target).cloned());
+        let target_entity = target.as_ref().and_then(|target| monster.game.entity(target).cloned());
         monster.monster.path = target_entity
             .as_ref()
             .map(|entity| entity.targetname.clone())
             .unwrap_or_default();
         let id = monster.id.clone();
         monster.game.update_entity(&id, |entity| {
-            entity
-                .references
-                .insert("goalentity".to_string(), target.clone());
-            entity
-                .references
-                .insert("movetarget".to_string(), target.clone());
+            entity.references.insert("goalentity".to_string(), target.clone());
+            entity.references.insert("movetarget".to_string(), target.clone());
         })?;
         let destination = target
             .as_ref()
@@ -400,11 +369,7 @@ fn movetarget_base(monster: &mut BaseMonster, corner: &ActorId) -> Result<bool, 
     Ok(true)
 }
 
-fn movetarget_touch_handler(
-    game: &mut Q1EntityServices,
-    corner: &ActorId,
-    mover: &ActorId,
-) -> Result<bool, Q1Error> {
+fn movetarget_touch_handler(game: &mut Q1EntityServices, corner: &ActorId, mover: &ActorId) -> Result<bool, Q1Error> {
     let owned = match game.host.actors.resolve_owned(mover) {
         Some(owned) => owned,
         None => return Ok(false),

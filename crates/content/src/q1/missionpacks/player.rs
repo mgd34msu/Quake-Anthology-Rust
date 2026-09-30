@@ -1,25 +1,22 @@
 //! Mission-pack players (src/content/q1/missionpacks/player.ts).
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::contract::{InventoryEntry, ItemId};
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
 use crate::q1::foundation::extensions::Q1PlayerExtension;
-use crate::q1::foundation::gameplay::{
-    AttackCause, BodyPatch, DamagePreparation, DamageRequest, TouchSurface,
-};
+use crate::q1::foundation::gameplay::{AttackCause, BodyPatch, DamagePreparation, DamageRequest, TouchSurface};
 use crate::q1::foundation::types::{
-    POINT, Q1Effect, Q1MoveType, Q1Powerup, Q1Solid, Q1SoundChannel, Q1TraceRequest, Q1Weapon,
-    ZERO, length, normalize, vadd, vscale, vsub, weapon_item, yaw_for,
+    length, normalize, vadd, vscale, vsub, weapon_item, yaw_for, Q1Effect, Q1MoveType, Q1Powerup, Q1Solid,
+    Q1SoundChannel, Q1TraceRequest, Q1Weapon, POINT,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::messages::mission_message;
 use super::types::{
-    MISSION_WEAPONS, Q1MissionPack, fround, mission_reference, move_missile, set_mission_number,
-    set_mission_reference,
+    fround, mission_reference, move_missile, set_mission_number, set_mission_reference, Q1MissionPack, MISSION_WEAPONS,
 };
 
 /// Rogue combo weapon (`ComboWeapon`).
@@ -116,10 +113,7 @@ fn player_state_entity(game: &mut Q1EntityServices, player: &ActorId) -> Result<
         .values()
         .find(|entity| {
             entity.classname == "missionpack_player_state"
-                && entity
-                    .owner
-                    .as_ref()
-                    .is_some_and(|owner| same_actor(owner, player))
+                && entity.owner.as_ref().is_some_and(|owner| same_actor(owner, player))
         })
         .map(|entity| entity.actor.id().clone())
     {
@@ -132,11 +126,7 @@ fn player_state_entity(game: &mut Q1EntityServices, player: &ActorId) -> Result<
 }
 
 /// Admit mission-pack inventory (`attach`).
-fn attach_for_pack(
-    game: &mut Q1EntityServices,
-    pack: Q1MissionPack,
-    player: &ActorId,
-) -> Result<(), Q1Error> {
+fn attach_for_pack(game: &mut Q1EntityServices, pack: Q1MissionPack, player: &ActorId) -> Result<(), Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -237,13 +227,7 @@ fn frame_for_pack(
             }
         }
     }
-    if state
-        .powerups
-        .get(&Q1Powerup::HipnoticWetsuit)
-        .copied()
-        .unwrap_or(0.0)
-        > seconds
-    {
+    if state.powerups.get(&Q1Powerup::HipnoticWetsuit).copied().unwrap_or(0.0) > seconds {
         game.update_player(player, |state| state.air_finished = seconds + 12.0)?;
         if state.water_level >= 2 {
             let scuba = game
@@ -274,22 +258,12 @@ fn frame_for_pack(
                             .fields
                             .insert("hipnotic:scaled-time".to_string(), seconds.to_string());
                     })?;
-                    set_mission_number(
-                        game,
-                        &state_entity,
-                        "hipnotic:scaled-level",
-                        state.water_level as f64,
-                    )?;
+                    set_mission_number(game, &state_entity, "hipnotic:scaled-level", state.water_level as f64)?;
                 }
             }
         }
     }
-    let empathy = state
-        .powerups
-        .get(&Q1Powerup::HipnoticEmpathy)
-        .copied()
-        .unwrap_or(0.0)
-        > seconds;
+    let empathy = state.powerups.get(&Q1Powerup::HipnoticEmpathy).copied().unwrap_or(0.0) > seconds;
     if game.entity_ref(player).is_some() {
         game.update_entity(player, |entity| {
             entity.effects = if empathy {
@@ -303,11 +277,7 @@ fn frame_for_pack(
 }
 
 /// Hipnotic frame hook.
-fn frame_hipnotic(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    seconds: f64,
-) -> Result<(), Q1Error> {
+fn frame_hipnotic(game: &mut Q1EntityServices, player: &ActorId, seconds: f64) -> Result<(), Q1Error> {
     frame_for_pack(game, Q1MissionPack::Hipnotic, player, seconds)
 }
 
@@ -317,11 +287,7 @@ fn frame_rogue(game: &mut Q1EntityServices, player: &ActorId, seconds: f64) -> R
 }
 
 /// Undo wetsuit velocity scaling after physics (`afterPhysics`).
-fn after_physics_player(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    seconds: f64,
-) -> Result<(), Q1Error> {
+fn after_physics_player(game: &mut Q1EntityServices, player: &ActorId, seconds: f64) -> Result<(), Q1Error> {
     let state_entity = player_state_entity(game, player)?;
     let scaled_time = game
         .entity_ref(&state_entity)
@@ -404,10 +370,7 @@ fn shield_think(game: &mut Q1EntityServices, shield: &ActorId) -> Result<(), Q1E
         .entity_ref(shield)
         .cloned()
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
-    let body = record
-        .owner
-        .as_ref()
-        .and_then(|owner| game.host.bodies.read(owner));
+    let body = record.owner.as_ref().and_then(|owner| game.host.bodies.read(owner));
     let Some(body) = body else {
         return game.remove(shield);
     };
@@ -437,12 +400,8 @@ fn sphere_think(game: &mut Q1EntityServices, sphere: &ActorId) -> Result<(), Q1E
         .cloned()
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
     let owner = record.owner.clone();
-    let player = owner
-        .as_ref()
-        .and_then(|owner| game.player_ref(owner).cloned());
-    let body = owner
-        .as_ref()
-        .and_then(|owner| game.host.bodies.read(owner));
+    let player = owner.as_ref().and_then(|owner| game.player_ref(owner).cloned());
+    let body = owner.as_ref().and_then(|owner| game.host.bodies.read(owner));
     let (Some(player), Some(body)) = (player, body) else {
         return game.remove(sphere);
     };
@@ -453,21 +412,16 @@ fn sphere_think(game: &mut Q1EntityServices, sphere: &ActorId) -> Result<(), Q1E
         game.update_entity(sphere, |sphere| sphere.attack_finished = attack_finished)?;
     }
     if game.time > record.delay || game.health(&player_id) < 1.0 {
-        game.host.inventory.consume(
-            &player.actor,
-            &ItemId::from("rogue:artifact/vengeance"),
-            1.0,
-        );
+        game.host
+            .inventory
+            .consume(&player.actor, &ItemId::from("rogue:artifact/vengeance"), 1.0);
         if game.time > record.delay {
             mission_message(game, Some(&player_id), "$qc_vengeance_lost");
             return game.remove(sphere);
         }
         let state_entity = player_state_entity(game, &player_id)?;
         let mut killer = mission_reference(game, &state_entity, "rogue:killer");
-        if killer
-            .as_ref()
-            .is_some_and(|killer| !game.is_player(killer))
-        {
+        if killer.as_ref().is_some_and(|killer| !game.is_player(killer)) {
             killer = killer
                 .as_ref()
                 .and_then(|killer| game.entity_ref(killer))
@@ -492,10 +446,7 @@ fn sphere_think(game: &mut Q1EntityServices, sphere: &ActorId) -> Result<(), Q1E
     if record.count < 0.0 || record.count > 3.0 {
         game.update_entity(sphere, |sphere| sphere.count = 0.0)?;
     }
-    let count = game
-        .entity_ref(sphere)
-        .map(|sphere| sphere.count)
-        .unwrap_or(0.0);
+    let count = game.entity_ref(sphere).map(|sphere| sphere.count).unwrap_or(0.0);
     let trace = game.host.trace(&Q1TraceRequest {
         start: source,
         end: center,
@@ -541,10 +492,7 @@ fn sphere_think(game: &mut Q1EntityServices, sphere: &ActorId) -> Result<(), Q1E
             move_missile(
                 game,
                 sphere,
-                vscale(
-                    normalize(direction),
-                    if distance < 50.0 { 150.0 } else { 500.0 },
-                ),
+                vscale(normalize(direction), if distance < 50.0 { 150.0 } else { 500.0 }),
             )?;
         }
     }
@@ -559,9 +507,7 @@ fn sphere_attack(game: &mut Q1EntityServices, sphere: &ActorId) -> Result<(), Q1
     game.update_entity(sphere, |sphere| sphere.touch = Some(touch))?;
     game.link(sphere)?;
     let target = mission_reference(game, sphere, "rogue:enemy");
-    let body = target
-        .as_ref()
-        .and_then(|target| game.host.bodies.read(target));
+    let body = target.as_ref().and_then(|target| game.host.bodies.read(target));
     match (target, body) {
         (Some(target), Some(body)) if game.health(&target) >= 1.0 => {
             move_missile(
@@ -584,9 +530,7 @@ fn sphere_attack(game: &mut Q1EntityServices, sphere: &ActorId) -> Result<(), Q1
             )?;
         }
         _ => {
-            let owner = game
-                .entity_ref(sphere)
-                .and_then(|sphere| sphere.owner.clone());
+            let owner = game.entity_ref(sphere).and_then(|sphere| sphere.owner.clone());
             mission_message(game, owner.as_ref(), "$qc_you_are_denied_vengeance");
             return game.remove(sphere);
         }
@@ -610,14 +554,7 @@ fn sphere_impact(
         };
         let _ = game.damage(target, Some(sphere), Some(sphere), 1000.0, &params);
     }
-    game.radius_damage(
-        sphere,
-        Some(sphere),
-        300.0,
-        Some(target),
-        None,
-        "rogue:vengeance",
-    );
+    game.radius_damage(sphere, Some(sphere), 300.0, Some(target), None, "rogue:vengeance");
     let body = game.body(sphere)?;
     game.effect(
         Q1Effect::Explosion,
@@ -684,11 +621,7 @@ impl MissionPackPlayers {
     }
 
     /// Enable Rogue combo weapons (`enableCombos`).
-    pub fn enable_combos(
-        &self,
-        game: &mut Q1EntityServices,
-        player: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn enable_combos(&self, game: &mut Q1EntityServices, player: &ActorId) -> Result<(), Q1Error> {
         if self.pack != Q1MissionPack::Rogue {
             return Ok(());
         }
@@ -697,17 +630,11 @@ impl MissionPackPlayers {
             .cloned()
             .ok_or_else(|| q1_error("Player has no Q1 weapon state"))?;
         for combo in COMBOS.iter() {
-            if game
-                .host
-                .inventory
-                .count(player, &weapon_item(combo.powered))
-                == 0.0
+            if game.host.inventory.count(player, &weapon_item(combo.powered)) == 0.0
                 && game.host.inventory.count(player, &weapon_item(combo.base)) > 0.0
                 && game.host.inventory.count(player, &ItemId::from(combo.ammo)) > 0.0
             {
-                game.host
-                    .inventory
-                    .give(&state.actor, &weapon_item(combo.powered), 1.0);
+                game.host.inventory.give(&state.actor, &weapon_item(combo.powered), 1.0);
                 mission_message(game, Some(player), combo.message);
             }
         }
@@ -724,9 +651,7 @@ impl MissionPackPlayers {
     ) -> Result<(), Q1Error> {
         let state_entity = player_state_entity(game, player)?;
         game.update_entity(&state_entity, |entity| {
-            entity
-                .fields
-                .remove(&format!("{}:warned", powerup.as_str()));
+            entity.fields.remove(&format!("{}:warned", powerup.as_str()));
             entity.fields.remove(&format!("{}:lost", powerup.as_str()));
         })?;
         if powerup == Q1Powerup::RogueAntigrav {
@@ -742,49 +667,37 @@ impl MissionPackPlayers {
             .player_ref(player)
             .and_then(|player| player.powerups.get(&Q1Powerup::RogueAntigrav).copied())
             .unwrap_or(0.0);
-        if antigrav > game.time { 0.25 } else { 1.0 }
+        if antigrav > game.time {
+            0.25
+        } else {
+            1.0
+        }
     }
 
     /// Quad preparation stage (`beforeQuad`).
-    pub fn before_quad(
-        &self,
-        game: &mut Q1EntityServices,
-        request: &DamageRequest,
-        damage: f64,
-    ) -> DamagePreparation {
+    pub fn before_quad(&self, game: &mut Q1EntityServices, request: &DamageRequest, damage: f64) -> DamagePreparation {
         let player = match game.player_ref(&request.target) {
             Some(player) => player.clone(),
             None => return DamagePreparation::Continue { amount: damage },
         };
-        let discharge = matches!(&request.attack.cause, AttackCause::Q1 { death_type, .. } if death_type == "discharge");
+        let discharge =
+            matches!(&request.attack.cause, AttackCause::Q1 { death_type, .. } if death_type == "discharge");
         if self.pack == Q1MissionPack::Hipnotic
             && discharge
-            && player
-                .powerups
-                .get(&Q1Powerup::HipnoticWetsuit)
-                .copied()
-                .unwrap_or(0.0)
-                != 0.0
+            && player.powerups.get(&Q1Powerup::HipnoticWetsuit).copied().unwrap_or(0.0) != 0.0
         {
             return DamagePreparation::Cancel;
         }
         if self.pack == Q1MissionPack::Rogue
-            && player
-                .powerups
-                .get(&Q1Powerup::RogueShield)
-                .copied()
-                .unwrap_or(0.0)
-                != 0.0
+            && player.powerups.get(&Q1Powerup::RogueShield).copied().unwrap_or(0.0) != 0.0
         {
             if let Some(inflictor) = request.attack.inflictor.as_ref() {
                 let body = game.host.bodies.read(&request.target);
                 let incoming = game.host.bodies.read(inflictor);
                 if let (Some(body), Some(incoming)) = (body, incoming) {
-                    let hit_angle = yaw_for(vsub(incoming.origin, body.origin))
-                        - yaw_for(game.make_vectors(body.angles).forward);
-                    if !(hit_angle > 90.0 && hit_angle < 270.0
-                        || hit_angle < -90.0 && hit_angle > -270.0)
-                    {
+                    let hit_angle =
+                        yaw_for(vsub(incoming.origin, body.origin)) - yaw_for(game.make_vectors(body.angles).forward);
+                    if !(hit_angle > 90.0 && hit_angle < 270.0 || hit_angle < -90.0 && hit_angle > -270.0) {
                         let lava_spike = game.host.classname(inflictor) == "lava_spike";
                         let _ = shield_hit(game, &request.target);
                         return DamagePreparation::Continue {
@@ -798,12 +711,7 @@ impl MissionPackPlayers {
     }
 
     /// Post-quad preparation stage (`afterQuad`).
-    pub fn after_quad(
-        &self,
-        game: &mut Q1EntityServices,
-        request: &DamageRequest,
-        damage: f64,
-    ) -> DamagePreparation {
+    pub fn after_quad(&self, game: &mut Q1EntityServices, request: &DamageRequest, damage: f64) -> DamagePreparation {
         let player = match game.player_ref(&request.target) {
             Some(player) => player.clone(),
             None => return DamagePreparation::Continue { amount: damage },
@@ -811,28 +719,20 @@ impl MissionPackPlayers {
         let attacker = request.attack.attacker.clone();
         if attacker.is_some() {
             if let Ok(state_entity) = player_state_entity(game, &request.target) {
-                let _ =
-                    set_mission_reference(game, &state_entity, "rogue:killer", attacker.as_ref());
+                let _ = set_mission_reference(game, &state_entity, "rogue:killer", attacker.as_ref());
             }
         }
         let inflictor = request.attack.inflictor.clone();
         if self.pack == Q1MissionPack::Hipnotic {
             if let Some(attacker) = attacker.as_ref() {
-                let empathied = player
-                    .powerups
-                    .get(&Q1Powerup::HipnoticEmpathy)
-                    .copied()
-                    .unwrap_or(0.0)
-                    != 0.0;
+                let empathied = player.powerups.get(&Q1Powerup::HipnoticEmpathy).copied().unwrap_or(0.0) != 0.0;
                 let inflictor_empathied = inflictor
                     .as_ref()
                     .and_then(|inflictor| game.player_ref(inflictor))
                     .and_then(|player| player.powerups.get(&Q1Powerup::HipnoticEmpathy).copied())
                     .unwrap_or(0.0)
                     != 0.0;
-                if !same_actor(attacker, &request.target)
-                    && empathied
-                    && (inflictor.is_none() || !inflictor_empathied)
+                if !same_actor(attacker, &request.target) && empathied && (inflictor.is_none() || !inflictor_empathied)
                 {
                     let reflected = fround(damage / 2.0);
                     let params = Q1DamageParams {
@@ -854,12 +754,7 @@ impl MissionPackPlayers {
     }
 
     /// Grant a vengeance sphere (`sphere`).
-    pub fn sphere(
-        &self,
-        game: &mut Q1EntityServices,
-        item: &ActorId,
-        player: &ActorId,
-    ) -> Result<bool, Q1Error> {
+    pub fn sphere(&self, game: &mut Q1EntityServices, item: &ActorId, player: &ActorId) -> Result<bool, Q1Error> {
         let state = game
             .player_ref(player)
             .cloned()
@@ -903,6 +798,7 @@ mod tests {
     use super::*;
     use crate::q1::foundation::entity_services::Q1AttachOptions;
     use crate::q1::foundation::gameplay::{AttackProvenance, DamageDelivery};
+    use crate::q1::foundation::types::ZERO;
 
     fn attached_player(game: &mut Q1EntityServices) -> ActorId {
         let player = game.create("player", None, None).expect("player");
@@ -910,8 +806,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -939,11 +834,7 @@ mod tests {
             knockback: 10.0,
             direction: ZERO,
             point: ZERO,
-            normal: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
             delivery: DamageDelivery::Direct,
         }
     }
@@ -959,15 +850,13 @@ mod tests {
     #[test]
     fn combos_grant_powered_weapons() {
         let mut game = test_game();
-        let players = MissionPackPlayers::for_pack(Q1MissionPack::Rogue);
+        let players = MissionPackPlayers::new(&mut game, Q1MissionPack::Rogue).expect("players");
         let player = attached_player(&mut game);
         let owned = game
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.host
-            .inventory
-            .give(&owned, &weapon_item(Q1Weapon::Nailgun), 1.0);
+        game.host.inventory.give(&owned, &weapon_item(Q1Weapon::Nailgun), 1.0);
         game.host
             .inventory
             .give(&owned, &ItemId::from("rogue:ammo/lava-nails"), 10.0);

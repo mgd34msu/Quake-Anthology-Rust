@@ -3,26 +3,22 @@
 //!
 //! earthq.qc / buzzsaw.qc / lightnin.qc entity behavior.
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
 use crate::q1::foundation::types::{
-    POINT, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, Q1TraceRequest,
-    ZERO, normalize, vadd, vscale, vsub,
+    normalize, vadd, vscale, vsub, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, Q1TraceRequest,
+    POINT, ZERO,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number, trigger};
 
 /// Shake a grounded actor (`rogueEarthquake`).
-pub fn rogue_earthquake(
-    game: &mut Q1EntityServices,
-    actor: &ActorId,
-    intensity: f64,
-) -> Result<(), Q1Error> {
+pub fn rogue_earthquake(game: &mut Q1EntityServices, actor: &ActorId, intensity: f64) -> Result<(), Q1Error> {
     let owned = game.host.actors.resolve_owned(actor);
     let body = game.host.bodies.read(actor);
     let (Some(owned), Some(body)) = (owned, body) else {
@@ -47,34 +43,23 @@ pub fn rogue_earthquake(
 /// Stop an earthquake, scheduling the next one.
 fn quake_stop(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     if let Some(world) = game.world.clone() {
-        game.update_entity(&world, |world| {
-            number(world, "rogue:earthquake_active", 0.0)
-        })?;
+        game.update_entity(&world, |world| number(world, "rogue:earthquake_active", 0.0))?;
     }
     let (spawnflags, wait) = game
         .entity(id)
         .map(|entity| (entity.spawnflags, entity.wait))
         .unwrap_or((0, 0.0));
-    later(
-        game,
-        id,
-        if spawnflags & 1 != 0 {
-            game.host.random() * wait
-        } else {
-            wait
-        },
-        "rogue:quake_start",
-    )
+    let delay = if spawnflags & 1 != 0 {
+        game.host.random() * wait
+    } else {
+        wait
+    };
+    later(game, id, delay, "rogue:quake_start")
 }
 
 /// Rumble while an earthquake runs.
 fn quake_rumble(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    if game
-        .entity(id)
-        .map(|entity| entity.attack_finished)
-        .unwrap_or(0.0)
-        < game.time
-    {
+    if game.entity(id).map(|entity| entity.attack_finished).unwrap_or(0.0) < game.time {
         return quake_stop(game, id);
     }
     game.sound(id, "equake/rumble.wav", Q1SoundChannel::Voice, 0.0, 1.0)?;
@@ -93,15 +78,10 @@ fn saw_start(
         entity.touch = Some(touch_name);
         entity.use_callback = None;
     })?;
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     let goal = game.find(&target).first().cloned();
     game.update_entity(id, |entity| {
-        entity
-            .references
-            .insert("goalentity".to_string(), goal.clone());
+        entity.references.insert("goalentity".to_string(), goal.clone());
         entity.references.insert("movetarget".to_string(), goal);
     })?;
     later(
@@ -130,15 +110,8 @@ fn trail_fire(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
         != "ltrail_end"
     {
         game.sound_simple(id, "weapons/lhit.wav")?;
-        let target = game
-            .entity(id)
-            .map(|entity| entity.target.clone())
-            .unwrap_or_default();
-        let target = game
-            .find(&target)
-            .first()
-            .cloned()
-            .or_else(|| game.world.clone());
+        let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
+        let target = game.find(&target).first().cloned().or_else(|| game.world.clone());
         let Some(target) = target.filter(|target| game.entity(target).is_some()) else {
             return Err(q1_error("Lightning trail requires worldspawn"));
         };
@@ -216,22 +189,20 @@ fn trail_fire(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
 /// Start an earthquake.
 fn quake_start(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     if let Some(world) = game.world.clone() {
-        game.update_entity(&world, |world| {
-            number(world, "rogue:earthquake_active", 1.0)
-        })?;
+        game.update_entity(&world, |world| number(world, "rogue:earthquake_active", 1.0))?;
     }
     let (spawnflags, delay) = game
         .entity(id)
         .map(|entity| (entity.spawnflags, entity.delay))
         .unwrap_or((0, 0.0));
     let time = game.time;
+    let jitter = if spawnflags & 1 != 0 {
+        game.host.random() * delay
+    } else {
+        delay
+    };
     game.update_entity(id, |entity| {
-        entity.attack_finished = time
-            + if spawnflags & 1 != 0 {
-                game.host.random() * delay
-            } else {
-                delay
-            };
+        entity.attack_finished = time + jitter;
     })?;
     quake_rumble(game, id)
 }
@@ -250,10 +221,7 @@ fn spawn_earthquake(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
         }
     })?;
     if let Some(world) = game.world.clone() {
-        let weapon = game
-            .entity(id)
-            .map(|entity| entity.number("weapon"))
-            .unwrap_or(0.0);
+        let weapon = game.entity(id).map(|entity| entity.number("weapon")).unwrap_or(0.0);
         game.update_entity(&world, |world| {
             number(world, "rogue:earthquake_active", 0.0);
             number(world, "rogue:earthquake_intensity", weapon * 0.5);
@@ -270,9 +238,7 @@ fn earthquake_field_use(
     _other: Option<&ActorId>,
     _activator: Option<&ActorId>,
 ) -> Result<(), Q1Error> {
-    game.update_entity(id, |entity| {
-        entity.delay = if entity.delay == 0.0 { 1.0 } else { 0.0 }
-    })
+    game.update_entity(id, |entity| entity.delay = if entity.delay == 0.0 { 1.0 } else { 0.0 })
 }
 
 /// Shake players inside an earthquake field.
@@ -286,21 +252,13 @@ fn earthquake_field_touch(
     if game.entity(id).map(|entity| entity.delay).unwrap_or(0.0) == 0.0 {
         return Ok(());
     }
-    if game
-        .entity(id)
-        .map(|entity| entity.attack_finished)
-        .unwrap_or(0.0)
-        < game.time
-    {
+    if game.entity(id).map(|entity| entity.attack_finished).unwrap_or(0.0) < game.time {
         game.sound(id, "equake/rumble.wav", Q1SoundChannel::Voice, 1.0, 1.0)?;
         let time = game.time;
         game.update_entity(id, |entity| entity.attack_finished = time + 1.0)?;
     }
     if game.is_player(other) {
-        let weapon = game
-            .entity(id)
-            .map(|entity| entity.number("weapon"))
-            .unwrap_or(0.0);
+        let weapon = game.entity(id).map(|entity| entity.number("weapon")).unwrap_or(0.0);
         return rogue_earthquake(game, other, weapon);
     }
     Ok(())
@@ -310,16 +268,8 @@ fn earthquake_field_touch(
 fn spawn_earthquake_field(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| {
         let weapon = entity.number("weapon");
-        number(
-            entity,
-            "weapon",
-            (if weapon == 0.0 { 40.0 } else { weapon }) * 0.5,
-        );
-        entity.delay = if entity.targetname.is_empty() {
-            1.0
-        } else {
-            0.0
-        };
+        number(entity, "weapon", (if weapon == 0.0 { 40.0 } else { weapon }) * 0.5);
+        entity.delay = if entity.targetname.is_empty() { 1.0 } else { 0.0 };
     })?;
     let touch_name = game.named.touch("rogue:earthquake_field")?;
     game.update_entity(id, |entity| entity.touch = Some(touch_name))?;
@@ -346,15 +296,13 @@ fn earthquake_kill_touch(
     if !game.is_player(other) {
         return Ok(());
     }
-    let quake = game.entity_ids().into_iter().find(|id| {
-        game.entity(id)
-            .is_some_and(|entity| entity.classname == "earthquake")
-    });
+    let quake = game
+        .entity_ids()
+        .into_iter()
+        .find(|id| game.entity(id).is_some_and(|entity| entity.classname == "earthquake"));
     if let Some(quake) = quake {
         if let Some(world) = game.world.clone() {
-            game.update_entity(&world, |world| {
-                number(world, "rogue:earthquake_active", 0.0)
-            })?;
+            game.update_entity(&world, |world| number(world, "rogue:earthquake_active", 0.0))?;
         }
         game.remove(&quake)?;
     }
@@ -403,10 +351,7 @@ fn saw_step(game: &mut Q1EntityServices, id: &ActorId, flying: bool) -> Result<(
             id,
             vadd(
                 body.origin,
-                vscale(
-                    normalize(vsub(game.body(&goal)?.origin, body.origin)),
-                    speed,
-                ),
+                vscale(normalize(vsub(game.body(&goal)?.origin, body.origin)), speed),
             ),
         )?;
     }
@@ -428,16 +373,7 @@ fn saw_step(game: &mut Q1EntityServices, id: &ActorId, flying: bool) -> Result<(
             z: entity.angular_velocity.z,
         };
     })?;
-    later(
-        game,
-        id,
-        0.1,
-        if flying {
-            "rogue:saw_fly"
-        } else {
-            "rogue:saw_stand"
-        },
-    )
+    later(game, id, 0.1, if flying { "rogue:saw_fly" } else { "rogue:saw_stand" })
 }
 
 fn saw_fly(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
@@ -456,19 +392,11 @@ fn saw_touch(
     _normal: Option<Vec3>,
     _surface: Option<&TouchSurface>,
 ) -> Result<(), Q1Error> {
-    let flags = game
-        .entity(other)
-        .map(|entity| entity.movement_flags)
-        .unwrap_or(0);
+    let flags = game.entity(other).map(|entity| entity.movement_flags).unwrap_or(0);
     if !game.is_player(other) && flags & 32 == 0 {
         return Ok(());
     }
-    if game
-        .entity(id)
-        .map(|entity| entity.attack_finished)
-        .unwrap_or(0.0)
-        < game.time
-    {
+    if game.entity(id).map(|entity| entity.attack_finished).unwrap_or(0.0) < game.time {
         game.sound(id, "buzz/buzz.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
         let time = game.time;
         game.update_entity(id, |entity| entity.attack_finished = time + 2.0)?;
@@ -614,16 +542,10 @@ fn ltrail_use(
         }
     }
     if classname == "ltrail_end" {
-        let frags = game
-            .entity(id)
-            .map(|entity| entity.number("frags"))
-            .unwrap_or(0.0);
+        let frags = game.entity(id).map(|entity| entity.number("frags")).unwrap_or(0.0);
         return later(game, id, frags, "rogue:ltrail_chain");
     }
-    let weapon = game
-        .entity(id)
-        .map(|entity| entity.number("weapon"))
-        .unwrap_or(0.0);
+    let weapon = game.entity(id).map(|entity| entity.number("weapon")).unwrap_or(0.0);
     let time = game.time;
     game.update_entity(id, |entity| number(entity, "items", time + weapon))?;
     trail_fire(game, id)?;
@@ -635,9 +557,7 @@ fn ltrail_use(
 }
 
 /// Spawn a lightning-trail node.
-fn spawn_ltrail_variant(
-    classname: &'static str,
-) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
+fn spawn_ltrail_variant(classname: &'static str) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
     match classname {
         "ltrail_relay" => spawn_ltrail_relay,
         "ltrail_end" => spawn_ltrail_end,
@@ -645,11 +565,7 @@ fn spawn_ltrail_variant(
     }
 }
 
-fn ltrail_variant(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    classname: &str,
-) -> Result<(), Q1Error> {
+fn ltrail_variant(game: &mut Q1EntityServices, id: &ActorId, classname: &str) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| {
         entity.movement = Q1MoveType::None;
         entity.solid = Q1Solid::Bbox;
@@ -804,25 +720,18 @@ mod tests {
         let id = game.create("earthquake", None, None).expect("quake");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:earthquake_intensity"),
+            game.entity(&world).expect("world").number("rogue:earthquake_intensity"),
             20.0
         );
         game.invoke_action(&id, "rogue:quake_start").expect("start");
         assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:earthquake_active"),
+            game.entity(&world).expect("world").number("rogue:earthquake_active"),
             1.0
         );
         game.time = 100.0;
-        game.invoke_action(&id, "rogue:quake_rumble")
-            .expect("rumble");
+        game.invoke_action(&id, "rogue:quake_rumble").expect("rumble");
         assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:earthquake_active"),
+            game.entity(&world).expect("world").number("rogue:earthquake_active"),
             0.0
         );
         assert_eq!(
@@ -866,12 +775,8 @@ mod tests {
         })
         .expect("target");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "rogue:saw_start", None, None)
-            .expect("start");
-        assert_eq!(
-            game.entity(&id).expect("saw").think.as_deref(),
-            Some("rogue:saw_fly")
-        );
+        game.invoke_use(&id, "rogue:saw_start", None, None).expect("start");
+        assert_eq!(game.entity(&id).expect("saw").think.as_deref(), Some("rogue:saw_fly"));
         game.invoke_action(&id, "rogue:saw_fly").expect("fly");
         assert_eq!(f64::from(game.body(&id).expect("body").origin.x), 10.0);
     }
@@ -888,19 +793,14 @@ mod tests {
         game.update_entity(&id, |entity| entity.target = "e1".to_string())
             .expect("target");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "rogue:ltrail_use", None, None)
-            .expect("use");
+        game.invoke_use(&id, "rogue:ltrail_use", None, None).expect("use");
         game.time = 1.0;
         game.invoke_action(&id, "rogue:ltrail_fire").expect("fire");
         assert_eq!(
             game.entity(&id).expect("trail").think.as_deref(),
             Some("rogue:ltrail_chain")
         );
-        game.invoke_action(&id, "rogue:ltrail_chain")
-            .expect("chain");
-        assert_eq!(
-            game.entity(&id).expect("trail").think.as_deref(),
-            Some("SUB_Null")
-        );
+        game.invoke_action(&id, "rogue:ltrail_chain").expect("chain");
+        assert_eq!(game.entity(&id).expect("trail").think.as_deref(), Some("SUB_Null"));
     }
 }

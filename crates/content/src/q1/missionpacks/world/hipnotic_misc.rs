@@ -9,10 +9,8 @@ use qa_core::math::Vec3;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
-use crate::q1::foundation::types::{
-    POINT, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, ZERO, vadd,
-};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{vadd, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, POINT, ZERO};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number};
 
@@ -37,13 +35,7 @@ fn sound(game: &mut Q1EntityServices, id: &ActorId, path: &str, channel: Q1Sound
 fn play_sound(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     let (mut path, spawnflags, impulse) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.text("noise"),
-                entity.spawnflags,
-                entity.number("impulse"),
-            )
-        })
+        .map(|entity| (entity.text("noise"), entity.spawnflags, entity.number("impulse")))
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
     if spawnflags & 1 != 0 {
         let active = game
@@ -88,12 +80,8 @@ fn play_sound_action(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1
         .entity(id)
         .map(|entity| (entity.delay, entity.wait))
         .unwrap_or((0.0, 0.0));
-    later(
-        game,
-        id,
-        delay.max(wait * game.host.random()),
-        "hip:play_sound",
-    )?;
+    let first = delay.max(wait * game.host.random());
+    later(game, id, first, "hip:play_sound")?;
     play_sound(game, id)
 }
 
@@ -129,21 +117,14 @@ fn sound_spawn(game: &mut Q1EntityServices, id: &ActorId, periodic: bool) -> Res
             .entity(id)
             .map(|entity| (entity.delay, entity.wait))
             .unwrap_or((2.0, 20.0));
-        later(
-            game,
-            id,
-            delay.max(wait * game.host.random()),
-            "hip:play_sound",
-        )?;
+        let first = delay.max(wait * game.host.random());
+        later(game, id, first, "hip:play_sound")?;
     }
     Ok(())
 }
 
 /// Spawn a triggered or periodic sound entity.
-fn spawn_sound(
-    thunder: bool,
-    triggered: bool,
-) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
+fn spawn_sound(thunder: bool, triggered: bool) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
     if thunder && triggered {
         spawn_random_thunder_triggered
     } else if thunder {
@@ -173,10 +154,7 @@ fn spawn_random_thunder(game: &mut Q1EntityServices, id: &ActorId) -> Result<(),
     game.update_entity(id, |entity| number(entity, "impulse", 6.0))
 }
 
-fn spawn_random_thunder_triggered(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-) -> Result<(), Q1Error> {
+fn spawn_random_thunder_triggered(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| {
         entity
             .fields
@@ -265,10 +243,7 @@ fn multi_explode(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
         .map(|entity| entity.number("explosion_state"))
         .unwrap_or(0.0);
     if state == 0.0 {
-        let duration = game
-            .entity(id)
-            .map(|entity| entity.number("duration"))
-            .unwrap_or(0.0);
+        let duration = game.entity(id).map(|entity| entity.number("duration")).unwrap_or(0.0);
         let time = game.time;
         game.update_entity(id, |entity| {
             number(entity, "explosion_state", 1.0);
@@ -277,10 +252,7 @@ fn multi_explode(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
         let activator = game.entity(id).and_then(|entity| entity.activator.clone());
         game.use_targets(id, activator.as_ref())?;
     }
-    let duration = game
-        .entity(id)
-        .map(|entity| entity.number("duration"))
-        .unwrap_or(0.0);
+    let duration = game.entity(id).map(|entity| entity.number("duration")).unwrap_or(0.0);
     if game.time > duration {
         return game.remove(id);
     }
@@ -304,12 +276,17 @@ fn multi_explode(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
         entity.owner = owner.clone();
         entity.damage = damage;
     })?;
+    let jitter = Vec3 {
+        x: game.host.random() as f32,
+        y: game.host.random() as f32,
+        z: game.host.random() as f32,
+    };
     game.set_origin(
         &explosion,
         Vec3 {
-            x: (f64::from(min.x) + game.host.random() * f64::from(max.x - min.x)) as f32,
-            y: (f64::from(min.y) + game.host.random() * f64::from(max.y - min.y)) as f32,
-            z: (f64::from(min.z) + game.host.random() * f64::from(max.z - min.z)) as f32,
+            x: (f64::from(min.x) + f64::from(jitter.x) * f64::from(max.x - min.x)) as f32,
+            y: (f64::from(min.y) + f64::from(jitter.y) * f64::from(max.y - min.y)) as f32,
+            z: (f64::from(min.z) + f64::from(jitter.z) * f64::from(max.z - min.z)) as f32,
         },
     )?;
     let boom = explosion.clone();
@@ -364,11 +341,7 @@ fn spawn_multi_exploder(game: &mut Q1EntityServices, id: &ActorId) -> Result<(),
     spawn_exploder_inner(game, id, true)
 }
 
-fn spawn_exploder_inner(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    multi: bool,
-) -> Result<(), Q1Error> {
+fn spawn_exploder_inner(game: &mut Q1EntityServices, id: &ActorId, multi: bool) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| {
         entity.damage = if entity.damage == 0.0 {
             120.0
@@ -393,11 +366,9 @@ fn spawn_exploder_inner(
             number(entity, "explosion_state", 0.0);
         }
     })?;
-    let use_name = game.named.use_callback(if multi {
-        "hip:multi_explode"
-    } else {
-        "hip:explode"
-    })?;
+    let use_name = game
+        .named
+        .use_callback(if multi { "hip:multi_explode" } else { "hip:explode" })?;
     game.update_entity(id, |entity| entity.use_callback = Some(use_name))
 }
 
@@ -422,10 +393,7 @@ fn rubble_touch(
     {
         return Ok(());
     }
-    let (owner, id_copy) = (
-        game.entity(id).and_then(|entity| entity.owner.clone()),
-        id.clone(),
-    );
+    let (owner, id_copy) = (game.entity(id).and_then(|entity| entity.owner.clone()), id.clone());
     game.damage(
         other,
         Some(&id_copy),
@@ -451,10 +419,7 @@ fn rubble_use(
     let origin = origin?.origin;
     let pieces = 1.max(count as i32);
     for _ in 0..pieces {
-        let stored = game
-            .entity(id)
-            .map(|entity| entity.number("cnt"))
-            .unwrap_or(0.0);
+        let stored = game.entity(id).map(|entity| entity.number("cnt")).unwrap_or(0.0);
         let which = if stored == 0.0 {
             (1.0 + 3.0 * game.host.random()).floor()
         } else {
@@ -500,7 +465,8 @@ fn rubble_use(
             number(piece, "ltime", time);
         })?;
         game.update_entity(id, |entity| number(entity, "pausetime", time))?;
-        later(game, &piece, 13.0 + game.host.random() * 10.0, "SUB_Remove")?;
+        let lifetime = 13.0 + game.host.random() * 10.0;
+        later(game, &piece, lifetime, "SUB_Remove")?;
         game.link(&piece)?;
     }
     Ok(())
@@ -553,10 +519,7 @@ fn spawn_ambient(path: &'static str) -> fn(&mut Q1EntityServices, &ActorId) -> R
 
 fn ambient_emit(game: &mut Q1EntityServices, id: &ActorId, path: &str) -> Result<(), Q1Error> {
     let origin = game.body(id)?.origin;
-    let stored = game
-        .entity(id)
-        .map(|entity| entity.number("volume"))
-        .unwrap_or(0.0);
+    let stored = game.entity(id).map(|entity| entity.number("volume")).unwrap_or(0.0);
     game.host.emit(Q1Event::Ambient {
         origin,
         path: format!("ambient/{path}.wav"),
@@ -593,10 +556,7 @@ fn spawn_teleport_effect(game: &mut Q1EntityServices, id: &ActorId) -> Result<()
 
 /// Spawn an `info_command`.
 fn spawn_command(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    let message = game
-        .entity(id)
-        .map(|entity| entity.message.clone())
-        .unwrap_or_default();
+    let message = game.entity(id).map(|entity| entity.message.clone()).unwrap_or_default();
     if message.is_empty() {
         return Ok(());
     }
@@ -651,6 +611,7 @@ fn spawn_earthquake(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
 }
 
 /// Fan explosions out over a volume (`multiExplosion`).
+#[allow(clippy::too_many_arguments)]
 pub fn multi_explosion(
     game: &mut Q1EntityServices,
     _source: &ActorId,
@@ -695,10 +656,7 @@ pub fn multi_explosion(
 }
 
 /// Shake a grounded actor during a Hipnotic earthquake (`earthquakeAfterPhysics`).
-pub fn earthquake_after_physics(
-    game: &mut Q1EntityServices,
-    actor: &ActorId,
-) -> Result<(), Q1Error> {
+pub fn earthquake_after_physics(game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> {
     let world = game.world.clone();
     let Some(world) = world else {
         return Ok(());
@@ -710,12 +668,7 @@ pub fn earthquake_after_physics(
     };
     let (until, active) = game
         .entity(&world)
-        .map(|world| {
-            (
-                world.number("hip:earthquake"),
-                world.number("hip:quakeactive"),
-            )
-        })
+        .map(|world| (world.number("hip:earthquake"), world.number("hip:quakeactive")))
         .unwrap_or((0.0, 0.0));
     if until > game.time {
         if active == 0.0 {
@@ -857,8 +810,7 @@ mod tests {
         register_for_test(&mut game);
         let id = game.create("func_exploder", None, None).expect("exploder");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "hip:explode", None, None)
-            .expect("use");
+        game.invoke_use(&id, "hip:explode", None, None).expect("use");
         let entity = game.entity(&id).cloned().expect("entity");
         assert_eq!(entity.model, "progs/s_explod.spr");
         assert_eq!(entity.think.as_deref(), Some("base:explosion_frame"));
@@ -883,12 +835,7 @@ mod tests {
         )
         .expect("ground");
         earthquake_after_physics(&mut game, &player).expect("shake");
-        assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("hip:quakeactive"),
-            1.0
-        );
+        assert_eq!(game.entity(&world).expect("world").number("hip:quakeactive"), 1.0);
         assert!(f64::from(game.host.bodies.read(&player).expect("body").velocity.z) > 0.0);
     }
 
@@ -897,25 +844,17 @@ mod tests {
         let mut game = test_game();
         register_for_test(&mut game);
         let id = game.create("func_rubble1", None, None).expect("rubble");
-        game.update_entity(&id, |entity| entity.count = 2.0)
-            .expect("count");
+        game.update_entity(&id, |entity| entity.count = 2.0).expect("count");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "hip:rubble_use", None, None)
-            .expect("use");
+        game.invoke_use(&id, "hip:rubble_use", None, None).expect("use");
         let pieces: Vec<ActorId> = game
             .entity_ids()
             .into_iter()
-            .filter(|id| {
-                game.entity(id)
-                    .is_some_and(|entity| entity.classname == "hip_rubble")
-            })
+            .filter(|id| game.entity(id).is_some_and(|entity| entity.classname == "hip_rubble"))
             .collect();
         assert_eq!(pieces.len(), 2);
         for piece in pieces {
-            assert_eq!(
-                game.entity(&piece).expect("piece").model,
-                "progs/rubble1.mdl"
-            );
+            assert_eq!(game.entity(&piece).expect("piece").model, "progs/rubble1.mdl");
         }
     }
 }

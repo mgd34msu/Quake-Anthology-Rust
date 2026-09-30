@@ -6,7 +6,7 @@ use crate::contract::ItemId;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::extensions::Q1PickupRules;
 use crate::q1::foundation::types::{Q1AutoSwitch, Q1Edition, Q1Weapon};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::items::hipnotic_weapon_rank;
 use super::player::MissionPackPlayers;
@@ -39,17 +39,11 @@ fn mission_weapon_leave(game: &mut Q1EntityServices) -> Result<bool, Q1Error> {
     let edition = game.options().edition;
     let deathmatch = game.options().deathmatch;
     let coop = game.options().coop;
-    Ok(coop
-        || deathmatch == 2
-        || edition == Q1Edition::Rerelease && (deathmatch == 3 || deathmatch == 5))
+    Ok(coop || deathmatch == 2 || edition == Q1Edition::Rerelease && (deathmatch == 3 || deathmatch == 5))
 }
 
 /// Hipnotic automatic switch decision (`autoSwitch`).
-fn hipnotic_auto_switch(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    was_owned: bool,
-) -> Result<bool, Q1Error> {
+fn hipnotic_auto_switch(game: &mut Q1EntityServices, player: &ActorId, was_owned: bool) -> Result<bool, Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -61,11 +55,7 @@ fn hipnotic_auto_switch(
 }
 
 /// Rogue automatic switch decision (`autoSwitch`).
-fn rogue_auto_switch(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    was_owned: bool,
-) -> Result<bool, Q1Error> {
+fn rogue_auto_switch(game: &mut Q1EntityServices, player: &ActorId, was_owned: bool) -> Result<bool, Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -89,35 +79,21 @@ fn hipnotic_weapon_granted(
 }
 
 /// Rogue weapon grant with combo upgrades (`weaponGranted`).
-fn rogue_weapon_granted(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    weapon: Q1Weapon,
-) -> Result<Q1Weapon, Q1Error> {
+fn rogue_weapon_granted(game: &mut Q1EntityServices, player: &ActorId, weapon: Q1Weapon) -> Result<Q1Weapon, Q1Error> {
     MissionPackPlayers::for_pack(Q1MissionPack::Rogue).enable_combos(game, player)?;
     let count = |item: &str| game.host.inventory.count(player, &ItemId::from(item));
     Ok(match weapon {
         Q1Weapon::Lightning if count("rogue:ammo/plasma") > 0.0 => Q1Weapon::RoguePlasma,
-        Q1Weapon::Rocketlauncher if count("rogue:ammo/multi-rockets") > 0.0 => {
-            Q1Weapon::RogueMultiRocket
-        }
-        Q1Weapon::Grenadelauncher if count("rogue:ammo/multi-rockets") > 0.0 => {
-            Q1Weapon::RogueMultiGrenade
-        }
-        Q1Weapon::Supernailgun if count("rogue:ammo/lava-nails") > 1.0 => {
-            Q1Weapon::RogueLavaSupernailgun
-        }
+        Q1Weapon::Rocketlauncher if count("rogue:ammo/multi-rockets") > 0.0 => Q1Weapon::RogueMultiRocket,
+        Q1Weapon::Grenadelauncher if count("rogue:ammo/multi-rockets") > 0.0 => Q1Weapon::RogueMultiGrenade,
+        Q1Weapon::Supernailgun if count("rogue:ammo/lava-nails") > 1.0 => Q1Weapon::RogueLavaSupernailgun,
         Q1Weapon::Nailgun if count("rogue:ammo/lava-nails") > 0.0 => Q1Weapon::RogueLavaNailgun,
         other => other,
     })
 }
 
 /// Mission-pack respawn interval (`respawn`).
-fn mission_respawn(
-    game: &mut Q1EntityServices,
-    entity: &ActorId,
-    default_seconds: f64,
-) -> Result<f64, Q1Error> {
+fn mission_respawn(game: &mut Q1EntityServices, entity: &ActorId, default_seconds: f64) -> Result<f64, Q1Error> {
     let edition = game.options().edition;
     let deathmatch = game.options().deathmatch;
     let classname = game
@@ -141,10 +117,7 @@ fn mission_respawn(
 /// Register mission-pack pickup rules (`registerMissionPackPickupRules`).
 /// The donor takes the player services; this port calls the Rogue combo
 /// view directly since rules hooks are static function pointers.
-pub fn register_mission_pack_pickup_rules(
-    game: &mut Q1EntityServices,
-    pack: Q1MissionPack,
-) -> Result<(), Q1Error> {
+pub fn register_mission_pack_pickup_rules(game: &mut Q1EntityServices, pack: Q1MissionPack) -> Result<(), Q1Error> {
     game.register_pickup_rules(Q1PickupRules {
         id: format!("q1:{}:pickups", pack.as_str()),
         weapon_leave: Some(mission_weapon_leave),
@@ -180,8 +153,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -204,6 +176,7 @@ mod tests {
     fn rogue_grant_upgrades_with_combo_ammo() {
         let mut game = test_game();
         register_mission_pack_pickup_rules(&mut game, Q1MissionPack::Rogue).expect("register");
+        MissionPackPlayers::new(&mut game, Q1MissionPack::Rogue).expect("players");
         let player = attached_player(&mut game);
         let owned = game
             .entity_ref(&player)

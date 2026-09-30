@@ -697,9 +697,10 @@ impl Q1EntityServices {
     /// Resolve the ammunition item for a weapon.
     #[must_use]
     pub fn weapon_ammo(&self, weapon: Q1Weapon) -> Option<ItemId> {
-        self.registered_weapons
-            .get(&weapon)
-            .and_then(|definition| definition.ammo.clone())
+        match self.registered_weapons.get(&weapon) {
+            Some(definition) => definition.ammo.clone(),
+            None => ammo_item(weapon),
+        }
     }
 
     /// Whether a weapon is available to a player.
@@ -1242,6 +1243,7 @@ impl Q1EntityServices {
     /// Release a shared actor and run game-registered release hooks.
     pub fn release_actor(&mut self, actor: &OwnedActor) -> Result<(), Q1Error> {
         self.host.actors.release(actor)?;
+        self.host.bodies.remove(actor.id());
         self.entities.remove(actor.id());
         self.entity_order.retain(|id| id != actor.id());
         self.authored_targets.remove(actor.id());

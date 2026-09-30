@@ -1,6 +1,6 @@
 //! Player-model decoys (`src/content/q1/missionpacks/monsters/decoy.ts`).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
@@ -8,9 +8,7 @@ use qa_core::math::Vec3;
 use crate::q1::base::species::{MonsterMovement, MonsterSpecies};
 use crate::q1::foundation::entity::Q1MonsterSpecies;
 use crate::q1::foundation::entity_services::Q1EntityServices;
-use crate::q1::foundation::types::{
-    vsub, yaw_for, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, ZERO,
-};
+use crate::q1::foundation::types::{vsub, yaw_for, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, ZERO};
 use crate::q1::missionpacks::types::Q1MissionPack;
 use crate::q1::Q1Error;
 
@@ -21,7 +19,7 @@ use super::types::PackMonsterDefinition;
 
 fn setup(monster: &mut MissionMonster) {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     monster.entity.model = "progs/player.mdl".to_string();
     let _ = monster.game.set_bounds(&id, HULL_BOUNDS);
     monster
@@ -33,7 +31,7 @@ fn setup(monster: &mut MissionMonster) {
     monster.entity.max_health = 3000000.0;
     let owned = monster.entity.actor.clone();
     let _ = monster.game.host.combat.set_health(&owned, 3000000.0);
-    let player = monster.game.host.players().first().cloned();
+    let player = (monster.game.host.players)().first().cloned();
     let colormap = player
         .as_ref()
         .and_then(|player| monster.game.entity(player))
@@ -72,7 +70,7 @@ pub fn decoy_definition() -> PackMonsterDefinition {
         actions: vec![
             (
                 "hipdecoy:decoy_stand1",
-                Rc::new(|monster: &mut MissionMonster| {
+                Arc::new(|monster: &mut MissionMonster| {
                     monster.change_yaw();
                     let mut walk = monster.entity.number("walkframe");
                     if walk >= 5.0 {
@@ -88,19 +86,14 @@ pub fn decoy_definition() -> PackMonsterDefinition {
             ),
             (
                 "hipdecoy:decoy_walk1",
-                Rc::new(|monster: &mut MissionMonster| {
+                Arc::new(|monster: &mut MissionMonster| {
                     let goal = monster
                         .entity
                         .references
                         .get("goalentity")
                         .cloned()
                         .flatten()
-                        .and_then(|goal| {
-                            monster
-                                .game
-                                .entity(&goal)
-                                .map(|entity| entity.actor.id.clone())
-                        })
+                        .and_then(|goal| monster.game.entity(&goal).map(|entity| entity.actor.id().clone()))
                         .or_else(|| monster.game.find(&monster.state.path).first().cloned());
                     if let Some(goal) = goal {
                         let owned = monster.entity.actor.clone();
@@ -128,7 +121,7 @@ pub fn decoy_definition() -> PackMonsterDefinition {
                         } else {
                             7
                         };
-                        let id = monster.entity.actor.id.clone();
+                        let id = monster.entity.actor.id().clone();
                         monster.game.host.emit(Q1Event::Sound {
                             origin: None,
                             actor: id,
@@ -145,17 +138,17 @@ pub fn decoy_definition() -> PackMonsterDefinition {
             ),
         ],
         callbacks: Vec::new(),
-        spawn: Some(Rc::new(|monster: &mut MissionMonster| {
+        spawn: Some(Arc::new(|monster: &mut MissionMonster| {
             setup(monster);
             monster.spawn_default();
             monster.game.total_monsters -= 1;
             monster.refresh();
         })),
         start: None,
-        pain: Rc::new(|monster, _, _| {
+        pain: Arc::new(|monster, _, _| {
             monster.play("decoy_stand1");
         }),
-        die: Rc::new(|monster, _| {
+        die: Arc::new(|monster, _| {
             monster.play("decoy_stand1");
         }),
         melee: None,
@@ -167,11 +160,7 @@ pub fn decoy_definition() -> PackMonsterDefinition {
 }
 
 /// Spawn a decoy at an origin (`becomeDecoy`).
-pub fn become_decoy(
-    game: &mut Q1EntityServices,
-    target: &str,
-    origin: Vec3,
-) -> Result<ActorId, Q1Error> {
+pub fn become_decoy(game: &mut Q1EntityServices, target: &str, origin: Vec3) -> Result<ActorId, Q1Error> {
     let mut local: Q1MissionPackMonsters = mission_pack_monsters(&Q1MissionPack::Hipnotic)
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -179,11 +168,9 @@ pub fn become_decoy(
     let id = game.create("monster_decoy", None, None)?;
     let mut monster = local.adopt(game, &id)?;
     if let Some(world) = monster.game.world.clone() {
-        let decoy = monster.entity.actor.id.clone();
+        let decoy = monster.entity.actor.id().clone();
         let _ = monster.game.update_entity(&world, |entity| {
-            entity
-                .references
-                .insert("hipdecoy".to_string(), Some(decoy));
+            entity.references.insert("hipdecoy".to_string(), Some(decoy));
         });
     }
     setup(&mut monster);
@@ -234,7 +221,7 @@ pub fn become_decoy(
             .unwrap_or(ZERO);
         monster.entity.ideal_yaw = yaw_for(vsub(goal_origin, origin));
         monster.flush_entity();
-        if destination_entity.map(|entity| entity.classname.as_str()) == Some("path_corner") {
+        if destination_entity.as_ref().map(|entity| entity.classname.as_str()) == Some("path_corner") {
             monster.play("decoy_walk1");
         } else {
             monster.state.pause_until = 99999999.0;
@@ -272,15 +259,10 @@ mod tests {
     #[test]
     fn become_decoy_links() {
         let mut game = test_game();
-        let mut runtime = Q1MissionPackMonsters::new(
-            &mut game,
-            Q1MonsterPack::Hipnotic,
-            MissionMonsterHooks::default(),
-        )
-        .expect("new");
-        runtime
-            .register(&mut game, decoy_definition())
-            .expect("register");
+        let mut runtime =
+            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, MissionMonsterHooks::default())
+                .expect("new");
+        runtime.register(&mut game, decoy_definition()).expect("register");
         let id = become_decoy(&mut game, "", ZERO).expect("decoy");
         let entity = game.entity(&id).expect("entity").clone();
         assert_eq!(entity.classname, "monster_decoy");

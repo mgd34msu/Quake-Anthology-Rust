@@ -3,25 +3,24 @@
 //!
 //! hipitems.qc hazards.
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
 use crate::q1::foundation::gameplay::{BodyPatch, DamageDelivery, TouchSurface};
 use crate::q1::foundation::types::{
-    POINT, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Powerup, Q1Solid, Q1TraceRequest, ZERO,
-    dot, length, normalize, vadd, vscale, vsub,
+    dot, length, normalize, vadd, vscale, vsub, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Powerup, Q1Solid,
+    Q1TraceRequest, POINT, ZERO,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number, vector};
 
 /// Whether a mjolnir/tesla bolt currently tracks an actor (`isStruckByMjolnir`).
 pub fn is_struck_by_mjolnir(game: &Q1EntityServices, actor: &ActorId) -> bool {
     game.entities.values().any(|entity| {
-        (entity.classname == "hipnotic_mjolnir_lightning"
-            || entity.classname == "hipnotic_tesla_lightning")
+        (entity.classname == "hipnotic_mjolnir_lightning" || entity.classname == "hipnotic_tesla_lightning")
             && entity.count == 1.0
             && entity
                 .references
@@ -39,10 +38,7 @@ fn visible(game: &mut Q1EntityServices, id: &ActorId, actor: &ActorId) -> bool {
         return false;
     };
     let origin = game.body(id).map(|body| body.origin);
-    let view_ofs = game
-        .entity(id)
-        .map(|entity| entity.vector("view_ofs"))
-        .unwrap_or(ZERO);
+    let view_ofs = game.entity(id).map(|entity| entity.vector("view_ofs")).unwrap_or(ZERO);
     let Ok(origin) = origin else {
         return false;
     };
@@ -55,14 +51,7 @@ fn visible(game: &mut Q1EntityServices, id: &ActorId, actor: &ActorId) -> bool {
     };
     let trace = game.host.trace(&Q1TraceRequest {
         start: vadd(origin, view_ofs),
-        end: vadd(
-            body.origin,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: eye,
-            },
-        ),
+        end: vadd(body.origin, Vec3 { x: 0.0, y: 0.0, z: eye }),
         bounds: POINT,
         ignore: Some(id.clone()),
         monsters: false,
@@ -72,22 +61,14 @@ fn visible(game: &mut Q1EntityServices, id: &ActorId, actor: &ActorId) -> bool {
 }
 
 /// Scan for damageable actors in radius (`scan`).
-fn scan(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    radius: f64,
-    include_monsters: bool,
-) -> Vec<ActorId> {
+fn scan(game: &mut Q1EntityServices, id: &ActorId, radius: f64, include_monsters: bool) -> Vec<ActorId> {
     let Ok(origin) = game.body(id).map(|body| body.origin) else {
         return Vec::new();
     };
     let mut found = Vec::new();
     for observation in game.host.actors.observations().iter().rev() {
         let actor = observation.id.clone();
-        let flags = game
-            .entity(&actor)
-            .map(|target| target.movement_flags)
-            .unwrap_or(0);
+        let flags = game.entity(&actor).map(|target| target.movement_flags).unwrap_or(0);
         let body = game.host.bodies.read(&actor);
         let Some(body) = body else {
             continue;
@@ -98,14 +79,8 @@ fn scan(
         if !game.is_player(&actor) && (!include_monsters || flags & 32 == 0) {
             continue;
         }
-        let center = vadd(
-            body.origin,
-            vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-        );
-        if f64::from(length(vsub(center, origin))) <= radius
-            && game.health(&actor) > 0.0
-            && visible(game, id, &actor)
-        {
+        let center = vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5));
+        if f64::from(length(vsub(center, origin))) <= radius && game.health(&actor) > 0.0 && visible(game, id, &actor) {
             found.push(actor);
         }
     }
@@ -246,9 +221,7 @@ fn mine_home(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     let enemy = game
         .entity(id)
         .and_then(|entity| entity.references.get("enemy").cloned().flatten());
-    let target = enemy
-        .as_ref()
-        .and_then(|enemy| game.host.bodies.read(enemy));
+    let target = enemy.as_ref().and_then(|enemy| game.host.bodies.read(enemy));
     let Some(target) = target else {
         game.sound_simple(id, "misc/null.wav")?;
         return game.set_body(
@@ -279,10 +252,7 @@ fn mine_home(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     game.set_body(
         id,
         &BodyPatch {
-            velocity: Some(vscale(
-                direction,
-                skill * 50.0 + if in_front { 50.0 } else { 150.0 },
-            )),
+            velocity: Some(vscale(direction, skill * 50.0 + if in_front { 50.0 } else { 150.0 })),
             ..Default::default()
         },
     )
@@ -298,10 +268,7 @@ fn lightning_think(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
         return game.remove(id);
     }
     let start = game.body(id)?.origin;
-    let end = game
-        .entity(id)
-        .map(|entity| entity.vector("oldorigin"))
-        .unwrap_or(ZERO);
+    let end = game.entity(id).map(|entity| entity.vector("oldorigin")).unwrap_or(ZERO);
     let owned = game.entity(id).map(|entity| entity.actor.clone());
     if owned
         .as_ref()
@@ -399,8 +366,7 @@ fn lightning_use(
         let time = game.time;
         game.update_entity(&bolt, |bolt| {
             vector(bolt, "oldorigin", end);
-            bolt.references
-                .insert("lastvictim".to_string(), Some(owner));
+            bolt.references.insert("lastvictim".to_string(), Some(owner));
             bolt.damage = damage;
             bolt.delay = time + duration;
         })?;
@@ -458,9 +424,7 @@ fn tesla_bolt(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
             )
         })
         .unwrap_or((None, 0.0, 0.0, 0.0));
-    let target = enemy
-        .as_ref()
-        .and_then(|enemy| game.host.bodies.read(enemy));
+    let target = enemy.as_ref().and_then(|enemy| game.host.bodies.read(enemy));
     let Some(target) = target else {
         return game.remove(id);
     };
@@ -552,8 +516,7 @@ fn tesla_think(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error>
             game.update_entity(&bolt, |bolt| {
                 bolt.count = 1.0;
                 bolt.owner = Some(owner);
-                bolt.references
-                    .insert("hipnotic:enemy".to_string(), Some(actor));
+                bolt.references.insert("hipnotic:enemy".to_string(), Some(actor));
                 bolt.references.insert("lastvictim".to_string(), lastvictim);
                 bolt.delay = time + if duration > 0.0 { duration } else { 9999.0 };
                 bolt.damage = damage;
@@ -604,13 +567,9 @@ fn mine_use(
     let Some(activator) = activator.cloned() else {
         return Ok(());
     };
-    if game.is_player(&activator)
-        && game.powerup_expires(&activator, Q1Powerup::Invisibility) <= game.time
-    {
+    if game.is_player(&activator) && game.powerup_expires(&activator, Q1Powerup::Invisibility) <= game.time {
         game.update_entity(id, |entity| {
-            entity
-                .references
-                .insert("enemy".to_string(), Some(activator));
+            entity.references.insert("enemy".to_string(), Some(activator));
         })?;
         return later(game, id, 0.1, "hip:mine_home");
     }
@@ -618,11 +577,7 @@ fn mine_use(
 }
 
 /// Detonate a mine on death.
-fn mine_die(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    attacker: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn mine_die(game: &mut Q1EntityServices, id: &ActorId, attacker: Option<&ActorId>) -> Result<(), Q1Error> {
     game.set_damageable(id, false)?;
     game.killed_monsters += 1;
     let (total, found) = (game.total_monsters, game.killed_monsters);
@@ -646,15 +601,7 @@ fn mine_touch(
 ) -> Result<(), Q1Error> {
     if game.health(id) > 0.0 {
         let classname = game.host.classname(other);
-        if [
-            "trap_spike_mine",
-            "missile",
-            "grenade",
-            "hiplaser",
-            "proximity_grenade",
-        ]
-        .contains(&classname.as_str())
-        {
+        if ["trap_spike_mine", "missile", "grenade", "hiplaser", "proximity_grenade"].contains(&classname.as_str()) {
             return Ok(());
         }
         let id_copy = id.clone();
@@ -708,12 +655,7 @@ fn lightning_think_cycle(game: &mut Q1EntityServices, id: &ActorId) -> Result<()
     {
         lightning_use(game, id, None, None)?;
     }
-    if game
-        .entity(id)
-        .map(|entity| entity.number("cnt"))
-        .unwrap_or(0.0)
-        == 0.0
-    {
+    if game.entity(id).map(|entity| entity.number("cnt")).unwrap_or(0.0) == 0.0 {
         let (spawnflags, wait, duration) = game
             .entity(id)
             .map(|entity| (entity.spawnflags, entity.wait, entity.number("duration")))
@@ -746,10 +688,7 @@ fn lightning_think_cycle(game: &mut Q1EntityServices, id: &ActorId) -> Result<()
 
 /// Resolve a lightning trap's endpoint target.
 fn lightning_first(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     if !target.is_empty() {
         let enemy = game.find(&target).first().cloned();
         game.update_entity(id, |entity| {
@@ -767,13 +706,7 @@ fn lightning_first(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
     }
     let (huntingcharmer, wait, ltime) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.number("huntingcharmer"),
-                entity.wait,
-                entity.number("ltime"),
-            )
-        })
+        .map(|entity| (entity.number("huntingcharmer"), entity.wait, entity.number("ltime")))
         .unwrap_or((0.0, 0.0, 0.0));
     later(
         game,
@@ -784,9 +717,7 @@ fn lightning_first(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
 }
 
 /// Spawn a lightning trap variant.
-fn spawn_lightning_variant(
-    classname: &'static str,
-) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
+fn spawn_lightning_variant(classname: &'static str) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
     match classname {
         "trap_lightning_triggered" => spawn_lightning_triggered,
         "trap_lightning_switched" => spawn_lightning_switched,
@@ -794,11 +725,7 @@ fn spawn_lightning_variant(
     }
 }
 
-fn lightning_variant(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    classname: &str,
-) -> Result<(), Q1Error> {
+fn lightning_variant(game: &mut Q1EntityServices, id: &ActorId, classname: &str) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| {
         if entity.wait == 0.0 {
             entity.wait = 1.0;
@@ -818,13 +745,11 @@ fn lightning_variant(
         number(entity, "hazard_state", state);
         number(entity, "huntingcharmer", entity.number("nextthink"));
     })?;
-    let use_name = game
-        .named
-        .use_callback(if classname == "trap_lightning_switched" {
-            "hip:hazard_switch"
-        } else {
-            "hip:lightning_use"
-        })?;
+    let use_name = game.named.use_callback(if classname == "trap_lightning_switched" {
+        "hip:hazard_switch"
+    } else {
+        "hip:lightning_use"
+    })?;
     game.update_entity(id, |entity| entity.use_callback = Some(use_name))?;
     later(game, id, 0.25, "hip:lightning_first")
 }
@@ -859,17 +784,13 @@ fn wrath_use(
     let activator = activator.cloned();
     game.update_entity(id, |entity| {
         number(entity, "search_time", time + delay);
-        entity
-            .references
-            .insert("lastvictim".to_string(), activator);
+        entity.references.insert("lastvictim".to_string(), activator);
     })?;
     tesla_think(game, id)
 }
 
 /// Spawn a tesla coil or god's wrath trap.
-fn spawn_tesla_variant(
-    classname: &'static str,
-) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
+fn spawn_tesla_variant(classname: &'static str) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
     if classname == "trap_gods_wrath" {
         spawn_gods_wrath
     } else {
@@ -877,11 +798,7 @@ fn spawn_tesla_variant(
     }
 }
 
-fn tesla_variant(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    classname: &str,
-) -> Result<(), Q1Error> {
+fn tesla_variant(game: &mut Q1EntityServices, id: &ActorId, classname: &str) -> Result<(), Q1Error> {
     let skill = f64::from(game.options().skill);
     game.update_entity(id, |entity| {
         if entity.wait == 0.0 {
@@ -897,11 +814,7 @@ fn tesla_variant(
             number(entity, "distance", 600.0);
         }
         if entity.delay == 0.0 {
-            entity.delay = if classname == "trap_gods_wrath" {
-                5.0
-            } else {
-                -1.0
-            };
+            entity.delay = if classname == "trap_gods_wrath" { 5.0 } else { -1.0 };
         }
         number(entity, "hazard_state", entity.number("state"));
         number(entity, "attack_state", 0.0);
@@ -909,7 +822,8 @@ fn tesla_variant(
     })?;
     let use_name = game.named.use_callback("hip:hazard_switch")?;
     game.update_entity(id, |entity| entity.use_callback = Some(use_name))?;
-    later(game, id, game.host.random(), "hip:tesla_think")?;
+    let delay = game.host.random();
+    later(game, id, delay, "hip:tesla_think")?;
     if classname == "trap_gods_wrath" {
         let wrath_name = game.named.use_callback("hip:wrath_use")?;
         game.update_entity(id, |entity| {
@@ -941,18 +855,10 @@ fn gravity_well_action(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), 
         };
         let (origin, speed, spawnflags) = game
             .entity(id)
-            .map(|entity| {
-                (
-                    game.body(id).map(|body| body.origin),
-                    entity.speed,
-                    entity.spawnflags,
-                )
-            })
+            .map(|entity| (game.body(id).map(|body| body.origin), entity.speed, entity.spawnflags))
             .ok_or_else(|| q1_error("Missing Q1 entity"))?;
         let origin = origin?;
-        let factor = if spawnflags & 2 != 0
-            && game.powerup_expires(&actor, Q1Powerup::HipnoticWetsuit) > game.time
-        {
+        let factor = if spawnflags & 2 != 0 && game.powerup_expires(&actor, Q1Powerup::HipnoticWetsuit) > game.time {
             0.6
         } else {
             1.0
@@ -1055,10 +961,7 @@ fn spawn_spike_mine(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
         entity.frame = 0;
         entity.movement_flags |= 32;
     })?;
-    let max_health = game
-        .entity(id)
-        .map(|entity| entity.max_health)
-        .unwrap_or(0.0);
+    let max_health = game.entity(id).map(|entity| entity.max_health).unwrap_or(0.0);
     game.set_health(id, max_health)?;
     game.total_monsters += 1;
     let touch_name = game.named.touch("hip:mine_explode")?;
@@ -1137,11 +1040,7 @@ pub fn register_hipnotic_hazards(game: &mut Q1EntityServices) -> Result<(), Q1Er
             ..Default::default()
         },
     )?;
-    for classname in [
-        "trap_lightning",
-        "trap_lightning_triggered",
-        "trap_lightning_switched",
-    ] {
+    for classname in ["trap_lightning", "trap_lightning_triggered", "trap_lightning_switched"] {
         game.register_spawn(classname, spawn_lightning_variant(classname))?;
     }
     game.named.register(
@@ -1211,6 +1110,7 @@ mod tests {
                 z: 0.0,
             },
         );
+        game.time = 0.5;
         game.invoke_action(&mine, "hip:mine_home").expect("home");
         let enemy = game
             .entity(&mine)
@@ -1238,17 +1138,10 @@ mod tests {
                 z: 0.0,
             },
         );
-        game.invoke_action(&coil, "hip:tesla_think")
-            .expect("charge");
-        assert_eq!(
-            game.entity(&coil).expect("coil").number("attack_state"),
-            1.0
-        );
+        game.invoke_action(&coil, "hip:tesla_think").expect("charge");
+        assert_eq!(game.entity(&coil).expect("coil").number("attack_state"), 1.0);
         game.invoke_action(&coil, "hip:tesla_think").expect("fire");
-        assert_eq!(
-            game.entity(&coil).expect("coil").number("attack_state"),
-            2.0
-        );
+        assert_eq!(game.entity(&coil).expect("coil").number("attack_state"), 2.0);
         let bolts = game.entity_ids().into_iter().filter(|id| {
             game.entity(id)
                 .is_some_and(|entity| entity.classname == "hipnotic_tesla_lightning")
@@ -1281,9 +1174,7 @@ mod tests {
         register_hipnotic_hazards(&mut game).expect("register");
         let player = with_player(&mut game, ZERO);
         assert!(!is_struck_by_mjolnir(&game, &player));
-        let bolt = game
-            .create("hipnotic_tesla_lightning", None, None)
-            .expect("bolt");
+        let bolt = game.create("hipnotic_tesla_lightning", None, None).expect("bolt");
         game.update_entity(&bolt, |entity| {
             entity.count = 1.0;
             entity

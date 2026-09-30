@@ -1,10 +1,10 @@
 //! Mission-pack obituaries (src/content/q1/missionpacks/obituaries.ts).
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 
 use crate::q1::base::messages::{classic_monster_obituary, classic_obituary_text};
 use crate::q1::base::rules::{
-    Q1DeathWater, Q1Obituary, Q1ObituaryInput, Q1ObituaryMessage, Q1ObituaryScore, q1_obituary,
+    q1_obituary, Q1DeathWater, Q1Obituary, Q1ObituaryInput, Q1ObituaryMessage, Q1ObituaryScore,
 };
 use crate::q1::foundation::types::{Q1Edition, Q1Weapon};
 
@@ -55,10 +55,7 @@ const CLASSIC: &[(&str, &str)] = &[
     ("$qc_death_burned", "{0} was burned by {1}\n"),
     ("$qc_death_fused", "{0} was fused by {1}\n"),
     ("$qc_death_blasted", "{0} was blasted to bits by {1}\n"),
-    (
-        "$qc_death_vengeance",
-        "{0} was purged by the Vengeance Sphere\n",
-    ),
+    ("$qc_death_vengeance", "{0} was purged by the Vengeance Sphere\n"),
     ("$qc_death_smashed", "{0} was smashed by {1}\n"),
     ("$qc_changed_teams", "{0} changed teams\n"),
     ("$qc_tried_change_teams", "{0} tried to change teams\n"),
@@ -68,10 +65,7 @@ const CLASSIC: &[(&str, &str)] = &[
     ("$qc_ks_eel", "{0} was electrified by an Eel\n"),
     ("$qc_ks_wrath", "{0} was disintegrated by a Wrath\n"),
     ("$qc_ks_overlord", "{0} was obliterated by an Overlord\n"),
-    (
-        "$qc_ks_swordsman",
-        "{0} was slit open by a Phantom Swordsman\n",
-    ),
+    ("$qc_ks_swordsman", "{0} was slit open by a Phantom Swordsman\n"),
     ("$qc_ks_hephaestus", "{0} fries in Hephaestus' fury\n"),
     ("$qc_ks_guardian", "{0} was crushed by a Guardian\n"),
     ("$qc_ks_mummy", "{0} was Mummified\n"),
@@ -212,11 +206,7 @@ fn result(
 }
 
 /// Base fallback with first-roll replay (`fallback`).
-fn fallback(
-    input: &Q1MissionPackObituaryInput,
-    replay: &mut Replay<'_>,
-    clear_attacker: bool,
-) -> Q1Obituary {
+fn fallback(input: &Q1MissionPackObituaryInput, replay: &mut Replay<'_>, clear_attacker: bool) -> Q1Obituary {
     if clear_attacker {
         let mut owned = input.clone();
         owned.attacker = None;
@@ -240,18 +230,11 @@ pub fn mission_pack_obituary(
         random,
     };
     let victim_args = vec![input.victim.name.clone()];
-    let attacker_classname = input
-        .attacker
-        .as_ref()
-        .map(|attacker| attacker.classname.as_str());
+    let attacker_classname = input.attacker.as_ref().map(|attacker| attacker.classname.as_str());
     if !input.victim.is_player || matches!(attacker_classname, Some("teledeath" | "teledeath2")) {
         return fallback(input, &mut replay, false);
     }
-    if input
-        .attacker
-        .as_ref()
-        .is_some_and(|attacker| attacker.is_player)
-    {
+    if input.attacker.as_ref().is_some_and(|attacker| attacker.is_player) {
         let attacker = input.attacker.clone().expect("attacker");
         if same_actor(&input.victim.actor, &attacker.actor) {
             if input.victim.weapon == Some(Q1Weapon::Lightning) && input.victim.water_level > 1
@@ -271,14 +254,7 @@ pub fn mission_pack_obituary(
                 } else {
                     "$qc_suicide_loaded"
                 };
-                return result(
-                    input,
-                    key,
-                    Some(&input.victim.actor),
-                    -1,
-                    &victim_args,
-                    None,
-                );
+                return result(input, key, Some(&input.victim.actor), -1, &victim_args, None);
             }
             if input.edition == Q1Edition::Rerelease && first_roll < 0.5 {
                 return result(
@@ -296,28 +272,14 @@ pub fn mission_pack_obituary(
                 } else {
                     "$qc_tried_change_teams"
                 };
-                return result(
-                    input,
-                    key,
-                    Some(&input.victim.actor),
-                    -1,
-                    &victim_args,
-                    None,
-                );
+                return result(input, key, Some(&input.victim.actor), -1, &victim_args, None);
             }
             let key = if input.edition == Q1Edition::Classic {
                 "$qc_suicide_bored"
             } else {
                 "$qc_suicide_loaded"
             };
-            return result(
-                input,
-                key,
-                Some(&input.victim.actor),
-                -1,
-                &victim_args,
-                None,
-            );
+            return result(input, key, Some(&input.victim.actor), -1, &victim_args, None);
         }
         if input.teamplay == 2 && input.victim.team > 0 && input.victim.team == attacker.team {
             return fallback(input, &mut replay, false);
@@ -354,61 +316,26 @@ pub fn mission_pack_obituary(
                 return result(input, key, Some(&attacker.actor), points, &args, None);
             }
             if attacker.weapon == Some(Q1Weapon::HipnoticMjolnir) {
-                return result(
-                    input,
-                    "$qc_death_hammer",
-                    Some(&attacker.actor),
-                    points,
-                    &args,
-                    None,
-                );
+                return result(input, "$qc_death_hammer", Some(&attacker.actor), points, &args, None);
             }
         } else {
             if attacker.weapon == Some(Q1Weapon::RogueGrapple) {
-                return result(
-                    input,
-                    "$qc_death_grappled",
-                    Some(&attacker.actor),
-                    points,
-                    &args,
-                    None,
-                );
+                return result(input, "$qc_death_grappled", Some(&attacker.actor), points, &args, None);
             }
             if matches!(
                 attacker.weapon,
                 Some(Q1Weapon::RogueLavaNailgun | Q1Weapon::RogueLavaSupernailgun)
             ) {
-                return result(
-                    input,
-                    "$qc_death_burned",
-                    Some(&attacker.actor),
-                    points,
-                    &args,
-                    None,
-                );
+                return result(input, "$qc_death_burned", Some(&attacker.actor), points, &args, None);
             }
             if attacker.weapon == Some(Q1Weapon::RoguePlasma) {
-                return result(
-                    input,
-                    "$qc_death_fused",
-                    Some(&attacker.actor),
-                    points,
-                    &args,
-                    None,
-                );
+                return result(input, "$qc_death_fused", Some(&attacker.actor), points, &args, None);
             }
             if matches!(
                 attacker.weapon,
                 Some(Q1Weapon::RogueMultiGrenade | Q1Weapon::RogueMultiRocket)
             ) {
-                return result(
-                    input,
-                    "$qc_death_blasted",
-                    Some(&attacker.actor),
-                    points,
-                    &args,
-                    None,
-                );
+                return result(input, "$qc_death_blasted", Some(&attacker.actor), points, &args, None);
             }
         }
         let base = fallback(input, &mut replay, false);
@@ -436,14 +363,9 @@ pub fn mission_pack_obituary(
             return fallback(input, &mut replay, true);
         }
     }
-    if input
-        .attacker
-        .as_ref()
-        .is_some_and(|attacker| attacker.is_monster)
-    {
+    if input.attacker.as_ref().is_some_and(|attacker| attacker.is_monster) {
         let attacker = input.attacker.clone().expect("attacker");
-        let key = if context.pack == Q1MissionPack::Rogue && attacker.classname == "monster_dragon"
-        {
+        let key = if context.pack == Q1MissionPack::Rogue && attacker.classname == "monster_dragon" {
             "$qc_ks_dragon1"
         } else {
             MONSTERS
@@ -458,14 +380,7 @@ pub fn mission_pack_obituary(
         } else {
             old.map(|suffix| format!("{}{suffix}", input.victim.name))
         };
-        return result(
-            input,
-            key,
-            Some(&input.victim.actor),
-            -1,
-            &victim_args,
-            classic,
-        );
+        return result(input, key, Some(&input.victim.actor), -1, &victim_args, classic);
     }
     if attacker_classname == Some("explo_box") {
         return result(
@@ -477,12 +392,7 @@ pub fn mission_pack_obituary(
             None,
         );
     }
-    if input
-        .attacker
-        .as_ref()
-        .is_some_and(|attacker| attacker.brush)
-        && attacker_classname != Some("worldspawn")
-    {
+    if input.attacker.as_ref().is_some_and(|attacker| attacker.brush) && attacker_classname != Some("worldspawn") {
         return result(
             input,
             "$qc_death_squish",
@@ -552,14 +462,7 @@ pub fn mission_pack_obituary(
             } else {
                 "$qc_ks_plasma"
             };
-            return result(
-                input,
-                key,
-                Some(&input.victim.actor),
-                -1,
-                &victim_args,
-                None,
-            );
+            return result(input, key, Some(&input.victim.actor), -1, &victim_args, None);
         }
         if trap == Some("Vengeance") {
             return result(input, "$qc_death_vengeance", None, 0, &victim_args, None);
@@ -567,14 +470,7 @@ pub fn mission_pack_obituary(
         if trap == Some("power_shield") && input.telefrag_owner.is_some() {
             let owner = input.telefrag_owner.clone().expect("owner");
             let args = vec![input.victim.name.clone(), owner.name.clone()];
-            return result(
-                input,
-                "$qc_death_smashed",
-                Some(&owner.actor),
-                1,
-                &args,
-                None,
-            );
+            return result(input, "$qc_death_smashed", Some(&owner.actor), 1, &args, None);
         }
     }
     fallback(input, &mut replay, false)
@@ -586,11 +482,8 @@ mod tests {
     use super::*;
     use crate::q1::base::rules::Q1ObituaryActor;
 
-    fn actor(
-        game: &mut crate::q1::foundation::entity_services::Q1EntityServices,
-        name: &str,
-    ) -> ActorId {
-        game.create("player", None, None).expect(name.to_string())
+    fn actor(game: &mut crate::q1::foundation::entity_services::Q1EntityServices, name: &str) -> ActorId {
+        game.create("player", None, None).expect(name)
     }
 
     fn participant(actor: ActorId, name: &str) -> Q1ObituaryActor {
@@ -637,12 +530,8 @@ mod tests {
             death_type: String::new(),
         };
         let mut random = || 0.9;
-        let obituary =
-            mission_pack_obituary(&input, &context(Q1MissionPack::Hipnotic), &mut random);
-        assert_eq!(
-            obituary.message.expect("message").text,
-            "Vic becomes bored with life\n"
-        );
+        let obituary = mission_pack_obituary(&input, &context(Q1MissionPack::Hipnotic), &mut random);
+        assert_eq!(obituary.message.expect("message").text, "Vic becomes bored with life\n");
         assert_eq!(obituary.score.expect("score").delta, -1);
     }
 
@@ -664,10 +553,7 @@ mod tests {
         let obituary = mission_pack_obituary(&input, &context(Q1MissionPack::Rogue), &mut random);
         let message = obituary.message.expect("message");
         assert_eq!(message.text, "$qc_death_burned");
-        assert_eq!(
-            message.arguments,
-            vec!["Vic".to_string(), "Att".to_string()]
-        );
+        assert_eq!(message.arguments, vec!["Vic".to_string(), "Att".to_string()]);
         assert_eq!(obituary.score.expect("score").delta, 1);
     }
 

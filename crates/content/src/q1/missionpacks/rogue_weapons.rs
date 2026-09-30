@@ -1,6 +1,6 @@
 //! Rogue weapons (src/content/q1/missionpacks/rogue-weapons.ts).
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::contract::{ItemId, ProjectileRole};
@@ -9,16 +9,13 @@ use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
 use crate::q1::foundation::gameplay::{BodyPatch, Q1ArmorEffect, TouchSurface};
 use crate::q1::foundation::host::Q1Contents;
 use crate::q1::foundation::types::{
-    POINT, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, Q1TraceRequest,
-    Q1Weapon, ZERO, length, normalize, vadd, vscale, vsub,
+    length, normalize, vadd, vscale, vsub, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel,
+    Q1TraceRequest, Q1Weapon, POINT, ZERO,
 };
 use crate::q1::foundation::weapons::aim;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
-use super::types::{
-    fround, grenade_velocity, mission_reference, move_missile, set_mission_reference,
-    velocity_angles,
-};
+use super::types::{fround, grenade_velocity, mission_reference, move_missile, set_mission_reference, velocity_angles};
 
 /// Finish a Rogue weapon firing frame (`finish`).
 fn finish_rogue_fire(
@@ -185,10 +182,7 @@ pub fn fire_rogue_lava(game: &mut Q1EntityServices, player: &ActorId) -> Result<
                 z: 16.0,
             },
         ),
-        vscale(
-            basis.right,
-            if powered { 0.0 } else { state.nail_side * 4.0 },
-        ),
+        vscale(basis.right, if powered { 0.0 } else { state.nail_side * 4.0 }),
     );
     game.sound(
         player,
@@ -201,13 +195,8 @@ pub fn fire_rogue_lava(game: &mut Q1EntityServices, player: &ActorId) -> Result<
         1.0,
         1.0,
     )?;
-    launch_rogue_lava_spike(
-        game,
-        player,
-        origin,
-        aim(game, &state.actor, basis.forward),
-        powered,
-    )?;
+    let direction = aim(game, &state.actor, basis.forward);
+    launch_rogue_lava_spike(game, player, origin, direction, powered)?;
     game.update_player(player, |state| state.nail_side *= -1.0)?;
     finish_rogue_fire(
         game,
@@ -248,16 +237,15 @@ fn lava_touch(
         .read(other)
         .is_some_and(|combat| combat.can_take_damage)
     {
-        game.effect(
-            Q1Effect::Blood,
-            origin,
-            Some(other),
-            if powered { 18 } else { 9 },
-        );
+        game.effect(Q1Effect::Blood, origin, Some(other), if powered { 18 } else { 9 });
         if game.host.classname(other) != "monster_lava_man" {
             let player = game.is_player(other);
             let damage = if player {
-                if powered { 18.0 } else { 9.0 }
+                if powered {
+                    18.0
+                } else {
+                    9.0
+                }
             } else if powered {
                 30.0
             } else {
@@ -265,11 +253,7 @@ fn lava_touch(
             };
             let params = Q1DamageParams {
                 weapon: entity.projectile_weapon,
-                death_type: String::from(if powered {
-                    "rogue:super-lava"
-                } else {
-                    "rogue:lava"
-                }),
+                death_type: String::from(if powered { "rogue:super-lava" } else { "rogue:lava" }),
                 armor_effect: if player {
                     Some(if powered {
                         Q1ArmorEffect::HalfEffectiveness
@@ -285,11 +269,7 @@ fn lava_touch(
         }
     } else {
         game.effect(
-            if powered {
-                Q1Effect::Superspike
-            } else {
-                Q1Effect::Spike
-            },
+            if powered { Q1Effect::Superspike } else { Q1Effect::Spike },
             origin,
             None,
             1,
@@ -306,14 +286,7 @@ pub fn launch_rogue_multi_grenade(
     velocity: Vec3,
     angles: Vec3,
 ) -> Result<ActorId, Q1Error> {
-    let grenade = spawn_missile(
-        game,
-        "MultiGrenade",
-        owner,
-        origin,
-        velocity,
-        "progs/mervup.mdl",
-    )?;
+    let grenade = spawn_missile(game, "MultiGrenade", owner, origin, velocity, "progs/mervup.mdl")?;
     game.update_entity(&grenade, |grenade| {
         grenade.movement = Q1MoveType::Bounce;
         grenade.mangle = angles;
@@ -328,20 +301,12 @@ pub fn launch_rogue_multi_grenade(
     game.update_entity(&grenade, |grenade| grenade.touch = Some(touch))?;
     let split = game.named.action("rogue:multi-grenade-split")?;
     game.schedule(&grenade, 1.0, &split)?;
-    game.launch_projectile_behavior(
-        &grenade,
-        owner,
-        Q1Weapon::RogueMultiGrenade,
-        ProjectileRole::Grenade,
-    )?;
+    game.launch_projectile_behavior(&grenade, owner, Q1Weapon::RogueMultiGrenade, ProjectileRole::Grenade)?;
     Ok(grenade)
 }
 
 /// Fire Rogue multi grenades (`fireRogueMultiGrenade`).
-pub fn fire_rogue_multi_grenade(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-) -> Result<bool, Q1Error> {
+pub fn fire_rogue_multi_grenade(game: &mut Q1EntityServices, player: &ActorId) -> Result<bool, Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -358,33 +323,26 @@ pub fn fire_rogue_multi_grenade(
         None => return Ok(false),
     };
     let forward = game.make_vectors(state.view_angles).forward;
-    let velocity = grenade_velocity(game, state.view_angles, aim(game, &state.actor, forward));
+    let aimed = aim(game, &state.actor, forward);
+    let velocity = grenade_velocity(game, state.view_angles, aimed);
     launch_rogue_multi_grenade(game, player, body.origin, velocity, ZERO)?;
-    game.sound(
-        player,
-        "weapons/grenade.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(player, "weapons/grenade.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     finish_rogue_fire(game, player, 0.6, "progs/v_multi.mdl", false)
 }
 
 /// Detonate a multi grenade (`grenadeExplode`).
-fn grenade_explode(
-    game: &mut Q1EntityServices,
-    grenade: &ActorId,
-    mini: bool,
-) -> Result<(), Q1Error> {
-    let owner = game
-        .entity_ref(grenade)
-        .and_then(|grenade| grenade.owner.clone());
+fn grenade_explode(game: &mut Q1EntityServices, grenade: &ActorId, mini: bool) -> Result<(), Q1Error> {
+    let owner = game.entity_ref(grenade).and_then(|grenade| grenade.owner.clone());
     let player = owner.as_ref().is_some_and(|owner| game.is_player(owner));
     game.radius_damage(
         grenade,
         owner.as_ref(),
         if mini {
-            if player { 90.0 } else { 60.0 }
+            if player {
+                90.0
+            } else {
+                60.0
+            }
         } else {
             120.0
         },
@@ -417,10 +375,7 @@ fn split_grenade(game: &mut Q1EntityServices, grenade: &ActorId) -> Result<(), Q
         let mut velocity = vadd(vscale(basis.forward, 100.0), vscale(basis.up, 400.0));
         velocity = vadd(
             velocity,
-            vscale(
-                basis.forward,
-                (game.host.random() * 2.0 - 1.0) * 60.0 - 30.0,
-            ),
+            vscale(basis.forward, (game.host.random() * 2.0 - 1.0) * 60.0 - 30.0),
         );
         velocity = vadd(
             velocity,
@@ -450,18 +405,10 @@ fn split_grenade(game: &mut Q1EntityServices, grenade: &ActorId) -> Result<(), Q
         })?;
         let touch = game.named.touch("rogue:multi-grenade-touch")?;
         game.update_entity(&mini, |mini| mini.touch = Some(touch))?;
-        game.launch_projectile_behavior(
-            &mini,
-            &owner,
-            Q1Weapon::RogueMultiGrenade,
-            ProjectileRole::Grenade,
-        )?;
+        game.launch_projectile_behavior(&mini, &owner, Q1Weapon::RogueMultiGrenade, ProjectileRole::Grenade)?;
         let explode = game.named.action("rogue:mini-grenade-explode")?;
-        game.schedule(
-            &mini,
-            1.0 + (game.host.random() * 2.0 - 1.0) * 0.5,
-            &explode,
-        )?;
+        let fuse = 1.0 + (game.host.random() * 2.0 - 1.0) * 0.5;
+        game.schedule(&mini, fuse, &explode)?;
     }
     game.remove(grenade)
 }
@@ -478,33 +425,16 @@ fn multi_grenade_touch(
         .entity_ref(grenade)
         .cloned()
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
-    if record
-        .owner
-        .as_ref()
-        .is_some_and(|owner| same_actor(owner, other))
-    {
+    if record.owner.as_ref().is_some_and(|owner| same_actor(owner, other)) {
         return Ok(());
     }
-    if game
-        .entity_ref(other)
-        .is_some_and(|entity| entity.aimed_damage)
-        || game.is_player(other)
-    {
+    if game.entity_ref(other).is_some_and(|entity| entity.aimed_damage) || game.is_player(other) {
         let mini = record.classname == "MiniGrenade"
             || record.owner.is_none()
-            || record
-                .owner
-                .as_ref()
-                .is_some_and(|owner| !game.is_player(owner));
+            || record.owner.as_ref().is_some_and(|owner| !game.is_player(owner));
         return grenade_explode(game, grenade, mini);
     }
-    game.sound(
-        grenade,
-        "weapons/bounce.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(grenade, "weapons/bounce.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     if game.body(grenade)?.velocity == ZERO {
         game.update_entity(grenade, |grenade| grenade.angular_velocity = ZERO)?;
     }
@@ -512,32 +442,22 @@ fn multi_grenade_touch(
 }
 
 /// Detonate a multi rocket (`explodeRocket`).
-fn explode_rocket(
-    game: &mut Q1EntityServices,
-    rocket: &ActorId,
-    direct: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn explode_rocket(game: &mut Q1EntityServices, rocket: &ActorId, direct: Option<&ActorId>) -> Result<(), Q1Error> {
     if let Some(direct) = direct {
         if game.health(direct) != 0.0 {
             let mut damage = 60.0 + game.host.random() * 15.0;
-            if game.host.classname(direct) == "monster_shambler"
-                || game.host.classname(direct) == "monster_dragon"
-            {
+            if game.host.classname(direct) == "monster_shambler" || game.host.classname(direct) == "monster_dragon" {
                 damage *= 0.5;
             }
             let params = Q1DamageParams {
                 weapon: Some(Q1Weapon::RogueMultiRocket),
                 ..Default::default()
             };
-            let owner = game
-                .entity_ref(rocket)
-                .and_then(|rocket| rocket.owner.clone());
+            let owner = game.entity_ref(rocket).and_then(|rocket| rocket.owner.clone());
             let _ = game.damage(direct, Some(rocket), owner.as_ref(), damage, &params);
         }
     }
-    let owner = game
-        .entity_ref(rocket)
-        .and_then(|rocket| rocket.owner.clone());
+    let owner = game.entity_ref(rocket).and_then(|rocket| rocket.owner.clone());
     game.radius_damage(
         rocket,
         owner.as_ref(),
@@ -577,7 +497,10 @@ fn acquire_rocket(game: &mut Q1EntityServices, rocket: &ActorId) -> Result<(), Q
                 .entity_ref(rocket)
                 .map(|rocket| rocket.actor.clone())
                 .ok_or_else(|| q1_error("Missing Q1 entity"))?;
-            aim(game, &owned, game.make_vectors(record.mangle).forward)
+            {
+                let forward = game.make_vectors(record.mangle).forward;
+                aim(game, &owned, forward)
+            }
         }
     };
     let trace = game.host.trace(&Q1TraceRequest {
@@ -588,17 +511,16 @@ fn acquire_rocket(game: &mut Q1EntityServices, rocket: &ActorId) -> Result<(), Q
         monsters: true,
         missile: false,
     });
-    if trace.actor.as_ref().is_some_and(|actor| {
-        game.entity_ref(actor)
-            .is_some_and(|entity| entity.monster.is_some())
-    }) {
+    if trace
+        .actor
+        .as_ref()
+        .is_some_and(|actor| game.entity_ref(actor).is_some_and(|entity| entity.monster.is_some()))
+    {
         let target = trace.actor.clone().expect("target");
         set_mission_reference(game, rocket, "rogue:enemy", Some(&target))?;
         return home_rocket(game, rocket);
     }
-    game.update_entity(rocket, |rocket| {
-        rocket.mangle = velocity_angles(body.velocity)
-    })?;
+    game.update_entity(rocket, |rocket| rocket.mangle = velocity_angles(body.velocity))?;
     let acquire = game.named.action("rogue:rocket-acquire")?;
     game.schedule(rocket, 0.2, &acquire)
 }
@@ -606,9 +528,7 @@ fn acquire_rocket(game: &mut Q1EntityServices, rocket: &ActorId) -> Result<(), Q
 /// Home a multi rocket (`homeRocket`).
 fn home_rocket(game: &mut Q1EntityServices, rocket: &ActorId) -> Result<(), Q1Error> {
     let target = mission_reference(game, rocket, "rogue:enemy");
-    let body = target
-        .as_ref()
-        .and_then(|target| game.host.bodies.read(target));
+    let body = target.as_ref().and_then(|target| game.host.bodies.read(target));
     match (target, body) {
         (Some(target), Some(body)) if game.health(&target) >= 1.0 => {
             let controlled = game
@@ -620,10 +540,7 @@ fn home_rocket(game: &mut Q1EntityServices, rocket: &ActorId) -> Result<(), Q1Er
                 move_missile(
                     game,
                     rocket,
-                    vscale(
-                        normalize(vsub(body.origin, game.body(rocket)?.origin)),
-                        1000.0,
-                    ),
+                    vscale(normalize(vsub(body.origin, game.body(rocket)?.origin)), 1000.0),
                 )?;
             }
         }
@@ -665,10 +582,7 @@ fn rocket_touch(
 }
 
 /// Fire Rogue multi rockets (`fireRogueMultiRocket`).
-pub fn fire_rogue_multi_rocket(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-) -> Result<bool, Q1Error> {
+pub fn fire_rogue_multi_rocket(game: &mut Q1EntityServices, player: &ActorId) -> Result<bool, Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -703,17 +617,13 @@ pub fn fire_rogue_multi_rocket(
             y: state.view_angles.y + shot.0 * 0.66,
             z: state.view_angles.z,
         };
-        let basis = game.make_vectors(if multiplayer {
-            angles
-        } else {
-            state.view_angles
-        });
+        let basis = game.make_vectors(if multiplayer { angles } else { state.view_angles });
         let velocity = if multiplayer {
             vscale(aim(game, &state.actor, basis.forward), 1000.0)
         } else {
             vsub(
                 vscale(basis.forward, 1000.0),
-                vscale(basis.right, shot.0 * 8.0),
+                vscale(basis.right, f64::from(shot.0) * 8.0),
             )
         };
         let rocket = spawn_missile(
@@ -738,12 +648,7 @@ pub fn fire_rogue_multi_rocket(
         })?;
         let touch = game.named.touch("rogue:rocket-touch")?;
         game.update_entity(&rocket, |rocket| rocket.touch = Some(touch))?;
-        game.launch_projectile_behavior(
-            &rocket,
-            player,
-            Q1Weapon::RogueMultiRocket,
-            ProjectileRole::Rocket,
-        )?;
+        game.launch_projectile_behavior(&rocket, player, Q1Weapon::RogueMultiRocket, ProjectileRole::Rocket)?;
         if multiplayer {
             let explode = game.named.action("rogue:rocket-explode")?;
             game.schedule(&rocket, 4.0, &explode)?;
@@ -756,10 +661,11 @@ pub fn fire_rogue_multi_rocket(
                 monsters: true,
                 missile: false,
             });
-            if trace.actor.as_ref().is_some_and(|actor| {
-                game.entity_ref(actor)
-                    .is_some_and(|entity| entity.monster.is_some())
-            }) {
+            if trace
+                .actor
+                .as_ref()
+                .is_some_and(|actor| game.entity_ref(actor).is_some_and(|entity| entity.monster.is_some()))
+            {
                 // Both source editions return here without assigning nextthink.
                 let target = trace.actor.clone().expect("target");
                 set_mission_reference(game, &rocket, "rogue:enemy", Some(&target))?;
@@ -771,13 +677,7 @@ pub fn fire_rogue_multi_rocket(
             }
         }
     }
-    game.sound(
-        player,
-        "weapons/sgun1.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(player, "weapons/sgun1.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     finish_rogue_fire(game, player, 0.8, "progs/v_multi2.mdl", false)
 }
 
@@ -811,21 +711,10 @@ pub fn launch_rogue_plasma(
     })?;
     let touch = game.named.touch("rogue:plasma-touch")?;
     game.update_entity(&plasma, |plasma| plasma.touch = Some(touch))?;
-    game.sound(
-        &plasma,
-        "plasma/flight.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(&plasma, "plasma/flight.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     let launch = game.named.action("rogue:plasma-launch")?;
     game.schedule(&plasma, 0.1, &launch)?;
-    game.launch_projectile_behavior(
-        &plasma,
-        owner,
-        Q1Weapon::RoguePlasma,
-        ProjectileRole::Plasma,
-    )?;
+    game.launch_projectile_behavior(&plasma, owner, Q1Weapon::RoguePlasma, ProjectileRole::Plasma)?;
     Ok(plasma)
 }
 
@@ -835,10 +724,7 @@ pub fn fire_rogue_plasma(game: &mut Q1EntityServices, player: &ActorId) -> Resul
         .player_ref(player)
         .cloned()
         .ok_or_else(|| q1_error("Player has no Q1 weapon state"))?;
-    let ammo = game
-        .host
-        .inventory
-        .count(player, &ItemId::from("rogue:ammo/plasma"));
+    let ammo = game.host.inventory.count(player, &ItemId::from("rogue:ammo/plasma"));
     if ammo < 1.0 {
         return Ok(false);
     }
@@ -846,14 +732,7 @@ pub fn fire_rogue_plasma(game: &mut Q1EntityServices, player: &ActorId) -> Resul
         game.host
             .inventory
             .consume(&state.actor, &ItemId::from("rogue:ammo/plasma"), ammo);
-        game.radius_damage(
-            player,
-            Some(player),
-            35.0 * ammo,
-            None,
-            Some(Q1Weapon::RoguePlasma),
-            "",
-        );
+        game.radius_damage(player, Some(player), 35.0 * ammo, None, Some(Q1Weapon::RoguePlasma), "");
     } else {
         let body = match game.host.bodies.read(player) {
             Some(body) => body,
@@ -871,7 +750,8 @@ pub fn fire_rogue_plasma(game: &mut Q1EntityServices, player: &ActorId) -> Resul
                 z: 16.0,
             },
         );
-        launch_rogue_plasma(game, player, origin, aim(game, &state.actor, basis.forward))?;
+        let direction = aim(game, &state.actor, basis.forward);
+        launch_rogue_plasma(game, player, origin, direction)?;
         game.host.emit(Q1Event::Sound {
             origin: None,
             actor: player.clone(),
@@ -930,9 +810,7 @@ fn plasma_damage(game: &mut Q1EntityServices, plasma: &ActorId, end: Vec3) -> Re
                 weapon: Some(Q1Weapon::RoguePlasma),
                 ..Default::default()
             };
-            let owner = game
-                .entity_ref(plasma)
-                .and_then(|plasma| plasma.owner.clone());
+            let owner = game.entity_ref(plasma).and_then(|plasma| plasma.owner.clone());
             let _ = game.damage(&other, Some(plasma), owner.as_ref(), 50.0, &params);
         }
     }
@@ -959,13 +837,7 @@ fn plasma_touch(
         return game.remove(plasma);
     }
     let mut damage = 80.0 + game.host.random() * 20.0;
-    game.sound(
-        &plasma.clone(),
-        "plasma/explode.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(&plasma.clone(), "plasma/explode.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     if game.health(other) != 0.0 {
         if game.host.classname(other) == "monster_shambler" {
             damage *= 0.5;
@@ -974,14 +846,10 @@ fn plasma_touch(
             weapon: Some(Q1Weapon::RoguePlasma),
             ..Default::default()
         };
-        let owner = game
-            .entity_ref(plasma)
-            .and_then(|plasma| plasma.owner.clone());
+        let owner = game.entity_ref(plasma).and_then(|plasma| plasma.owner.clone());
         let _ = game.damage(other, Some(plasma), owner.as_ref(), damage, &params);
     }
-    let owner = game
-        .entity_ref(plasma)
-        .and_then(|plasma| plasma.owner.clone());
+    let owner = game.entity_ref(plasma).and_then(|plasma| plasma.owner.clone());
     game.radius_damage(
         plasma,
         owner.as_ref(),
@@ -999,23 +867,13 @@ fn plasma_touch(
         let Some(body) = body else {
             continue;
         };
-        if owner
-            .as_ref()
-            .is_some_and(|owner| same_actor(owner, &target))
-        {
+        if owner.as_ref().is_some_and(|owner| same_actor(owner, &target)) {
             continue;
         }
-        if !(game.is_player(&target)
-            || entity
-                .as_ref()
-                .is_some_and(|entity| entity.monster.is_some()))
-        {
+        if !(game.is_player(&target) || entity.as_ref().is_some_and(|entity| entity.monster.is_some())) {
             continue;
         }
-        let center = vadd(
-            body.origin,
-            vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-        );
+        let center = vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5));
         if f64::from(length(vsub(center, origin))) > 320.0 {
             continue;
         }
@@ -1036,13 +894,7 @@ fn plasma_touch(
             start: body.origin,
             end: origin,
         });
-        game.sound(
-            &plasma.clone(),
-            "weapons/lhit.wav",
-            Q1SoundChannel::Voice,
-            1.0,
-            1.0,
-        )?;
+        game.sound(&plasma.clone(), "weapons/lhit.wav", Q1SoundChannel::Voice, 1.0, 1.0)?;
         plasma_damage(game, plasma, body.origin)?;
         count += 1;
         if count == 5 {
@@ -1060,11 +912,7 @@ fn plasma_launch(game: &mut Q1EntityServices, plasma: &ActorId) -> Result<(), Q1
         .as_mut()
         .is_some_and(|behavior| behavior.controls_trajectory(plasma));
     if !controlled {
-        move_missile(
-            game,
-            plasma,
-            vscale(normalize(game.body(plasma)?.velocity), 1250.0),
-        )?;
+        move_missile(game, plasma, vscale(normalize(game.body(plasma)?.velocity), 1250.0))?;
     }
     game.schedule(plasma, 5.0, "SUB_Remove")
 }
@@ -1150,6 +998,8 @@ mod tests {
     use super::*;
     use crate::q1::foundation::entity_services::Q1AttachOptions;
     use crate::q1::foundation::types::{Q1MoveType, Q1Solid};
+    use crate::q1::missionpacks::player::MissionPackPlayers;
+    use crate::q1::missionpacks::types::Q1MissionPack;
 
     fn attached_player(game: &mut Q1EntityServices) -> ActorId {
         let player = game.create("player", None, None).expect("player");
@@ -1157,8 +1007,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -1179,27 +1028,14 @@ mod tests {
         let mut game = test_game();
         register_rogue_weapon_callbacks(&mut game).expect("register");
         let shooter = game.create("player", None, None).expect("shooter");
-        let id = launch_rogue_lava_spike(
-            &mut game,
-            &shooter,
-            ZERO,
-            Vec3 {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            true,
-        )
-        .expect("launch");
+        let id =
+            launch_rogue_lava_spike(&mut game, &shooter, ZERO, Vec3 { x: 1.0, y: 0.0, z: 0.0 }, true).expect("launch");
         let spike = game.entity_ref(&id).cloned().expect("spike");
         assert_eq!(spike.model, "progs/lspike.mdl");
         assert_eq!(spike.count, 1.0);
         assert_eq!(spike.movement, Q1MoveType::Flymissile);
         assert_eq!(spike.solid, Q1Solid::Bbox);
-        assert_eq!(
-            spike.projectile_weapon,
-            Some(Q1Weapon::RogueLavaSupernailgun)
-        );
+        assert_eq!(spike.projectile_weapon, Some(Q1Weapon::RogueLavaSupernailgun));
         assert_eq!(spike.touch.as_deref(), Some("rogue:lava-touch"));
     }
 
@@ -1218,6 +1054,7 @@ mod tests {
     fn plasma_fire_consumes_and_launches() {
         let mut game = test_game();
         register_rogue_weapon_callbacks(&mut game).expect("register");
+        MissionPackPlayers::new(&mut game, Q1MissionPack::Rogue).expect("players");
         let player = attached_player(&mut game);
         let owned = game
             .entity_ref(&player)
@@ -1228,15 +1065,9 @@ mod tests {
             .give(&owned, &ItemId::from("rogue:ammo/plasma"), 5.0);
         assert!(fire_rogue_plasma(&mut game, &player).expect("fire"));
         assert_eq!(
-            game.host
-                .inventory
-                .count(&player, &ItemId::from("rogue:ammo/plasma")),
+            game.host.inventory.count(&player, &ItemId::from("rogue:ammo/plasma")),
             4.0
         );
-        assert!(
-            game.entities
-                .values()
-                .any(|entity| entity.classname == "plasma")
-        );
+        assert!(game.entities.values().any(|entity| entity.classname == "plasma"));
     }
 }

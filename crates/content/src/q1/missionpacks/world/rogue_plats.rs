@@ -6,21 +6,18 @@
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use crate::q1::Q1Error;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
-use crate::q1::foundation::entity::{Q1MoverState, move_direction};
+use crate::q1::foundation::entity::{move_direction, Q1MoverState};
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
-use crate::q1::foundation::types::{Q1MoveType, Q1Solid, ZERO, dot, vadd, vscale, vsub};
+use crate::q1::foundation::types::{dot, vadd, vscale, vsub, Q1MoveType, Q1Solid, ZERO};
+use crate::q1::Q1Error;
 
-use super::common::{brush, later, number};
+use super::common::{brush, number};
 
 /// Move a plat up or down (`move`).
 fn plat_move(game: &mut Q1EntityServices, id: &ActorId, up: bool) -> Result<(), Q1Error> {
-    let noise = game
-        .entity(id)
-        .map(|entity| entity.text("noise"))
-        .unwrap_or_default();
+    let noise = game.entity(id).map(|entity| entity.text("noise")).unwrap_or_default();
     game.sound_simple(id, &noise)?;
     let destination = game
         .entity(id)
@@ -28,26 +25,17 @@ fn plat_move(game: &mut Q1EntityServices, id: &ActorId, up: bool) -> Result<(), 
         .unwrap_or(ZERO);
     let speed = game.entity(id).map(|entity| entity.speed).unwrap_or(0.0);
     game.update_entity(id, |entity| {
-        entity.state = if up {
-            Q1MoverState::Up
-        } else {
-            Q1MoverState::Down
-        };
+        entity.state = if up { Q1MoverState::Up } else { Q1MoverState::Down };
     })?;
-    let done = game.named.action(if up {
-        "rogue:plat_top"
-    } else {
-        "rogue:plat_bottom"
-    })?;
+    let done = game
+        .named
+        .action(if up { "rogue:plat_top" } else { "rogue:plat_bottom" })?;
     game.calc_move(id, destination, speed, &done)
 }
 
 /// Send an elevator to its target floor (`elevatorGo`).
 fn elevator_go(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    let noise = game
-        .entity(id)
-        .map(|entity| entity.text("noise"))
-        .unwrap_or_default();
+    let noise = game.entity(id).map(|entity| entity.text("noise")).unwrap_or_default();
     game.sound_simple(id, &noise)?;
     let time = game.time;
     game.update_entity(id, |entity| {
@@ -87,10 +75,7 @@ fn button_fire(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error>
     if state == Q1MoverState::Up || state == Q1MoverState::Top {
         return Ok(());
     }
-    let noise = game
-        .entity(id)
-        .map(|entity| entity.text("noise"))
-        .unwrap_or_default();
+    let noise = game.entity(id).map(|entity| entity.text("noise")).unwrap_or_default();
     game.sound_simple(id, &noise)?;
     let (pos2, speed) = game
         .entity(id)
@@ -103,17 +88,10 @@ fn button_fire(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error>
 
 /// Settle a plat at the top or bottom.
 fn plat_settle(game: &mut Q1EntityServices, id: &ActorId, up: bool) -> Result<(), Q1Error> {
-    let noise1 = game
-        .entity(id)
-        .map(|entity| entity.text("noise1"))
-        .unwrap_or_default();
+    let noise1 = game.entity(id).map(|entity| entity.text("noise1")).unwrap_or_default();
     game.sound_simple(id, &noise1)?;
     game.update_entity(id, |entity| {
-        entity.state = if up {
-            Q1MoverState::Top
-        } else {
-            Q1MoverState::Bottom
-        };
+        entity.state = if up { Q1MoverState::Top } else { Q1MoverState::Bottom };
     })?;
     let (spawnflags, ltime, health) = game
         .entity(id)
@@ -138,21 +116,17 @@ fn plat_settle(game: &mut Q1EntityServices, id: &ActorId, up: bool) -> Result<()
             number(entity, "plat2Called", 0.0);
             number(entity, "plat2LastMove", 0.0);
         })?;
-        let done = game.named.action(if up {
-            "rogue:plat_down"
-        } else {
-            "rogue:plat_up"
-        })?;
+        let done = game
+            .named
+            .action(if up { "rogue:plat_down" } else { "rogue:plat_up" })?;
         return game.schedule_at(id, ltime + 1.5, &done);
     }
     if up != (spawnflags & 8 != 0) {
         game.update_entity(id, |entity| number(entity, "plat2Called", 0.0))?;
         let delay = game.entity(id).map(|entity| entity.delay).unwrap_or(0.0);
-        let done = game.named.action(if up {
-            "rogue:plat_down"
-        } else {
-            "rogue:plat_up"
-        })?;
+        let done = game
+            .named
+            .action(if up { "rogue:plat_down" } else { "rogue:plat_up" })?;
         return game.schedule_at(id, ltime + delay, &done);
     }
     Ok(())
@@ -224,10 +198,7 @@ fn elevator_stop(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
         .entity(id)
         .map(|entity| entity.number("elevatorToFloor"))
         .unwrap_or(0.0);
-    let noise1 = game
-        .entity(id)
-        .map(|entity| entity.text("noise1"))
-        .unwrap_or_default();
+    let noise1 = game.entity(id).map(|entity| entity.text("noise1")).unwrap_or_default();
     game.update_entity(id, |entity| number(entity, "elevatorOnFloor", floor))?;
     game.sound_simple(id, &noise1)?;
     let time = game.time;
@@ -238,11 +209,7 @@ fn elevator_stop(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
 }
 
 /// Return an elevator to its floor after being blocked.
-fn elevator_blocked(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    _other: &ActorId,
-) -> Result<(), Q1Error> {
+fn elevator_blocked(game: &mut Q1EntityServices, id: &ActorId, _other: &ActorId) -> Result<(), Q1Error> {
     let floor = game
         .entity(id)
         .map(|entity| entity.number("elevatorOnFloor"))
@@ -286,10 +253,9 @@ fn elevator_use(
     };
     let body = game.body(id)?;
     let other_body = game.body(&button)?;
-    let position =
-        f64::from(body.origin.z) + f64::from(body.bounds.min.z + body.bounds.max.z) / 2.0;
-    let button_position = f64::from(other_body.origin.z)
-        + f64::from(other_body.bounds.min.z + other_body.bounds.max.z) / 2.0;
+    let position = f64::from(body.origin.z) + f64::from(body.bounds.min.z + body.bounds.max.z) / 2.0;
+    let button_position =
+        f64::from(other_body.origin.z) + f64::from(other_body.bounds.min.z + other_body.bounds.max.z) / 2.0;
     let (height, floor, count) = game
         .entity(id)
         .map(|entity| {
@@ -352,17 +318,9 @@ fn plat2_center(
     if last_move + 2.0 > game.time || disabled != 0.0 {
         return Ok(());
     }
-    let pending = game
-        .entity(&plat)
-        .map(|plat| plat.number("plat2GoTo"))
-        .unwrap_or(0.0);
+    let pending = game.entity(&plat).map(|plat| plat.number("plat2GoTo")).unwrap_or(0.0);
     if pending > 0.0 {
-        if game
-            .entity(&plat)
-            .map(|plat| plat.number("plat2GoTime"))
-            .unwrap_or(0.0)
-            < game.time
-        {
+        if game.entity(&plat).map(|plat| plat.number("plat2GoTime")).unwrap_or(0.0) < game.time {
             plat_move(game, &plat, pending == 1.0)?;
             game.update_entity(&plat, |plat| number(plat, "plat2GoTo", 0.0))?;
         }
@@ -376,12 +334,8 @@ fn plat2_center(
         return Ok(());
     }
     let platform = game.body(&plat)?;
-    let center = f64::from(platform.origin.z)
-        + f64::from(platform.bounds.min.z + platform.bounds.max.z) / 2.0;
-    let height = game
-        .entity(&plat)
-        .map(|plat| plat.number("height"))
-        .unwrap_or(0.0);
+    let center = f64::from(platform.origin.z) + f64::from(platform.bounds.min.z + platform.bounds.max.z) / 2.0;
+    let height = game.entity(&plat).map(|plat| plat.number("height")).unwrap_or(0.0);
     let same_level = if state == Q1MoverState::Top {
         center <= f64::from(body.origin.z)
     } else {
@@ -390,20 +344,8 @@ fn plat2_center(
     let time = game.time;
     game.update_entity(&plat, |plat| {
         number(plat, "plat2Called", if same_level { 0.0 } else { 1.0 });
-        number(
-            plat,
-            "plat2GoTime",
-            time + if same_level { 0.5 } else { 0.1 },
-        );
-        number(
-            plat,
-            "plat2GoTo",
-            if state == Q1MoverState::Bottom {
-                1.0
-            } else {
-                2.0
-            },
-        );
+        number(plat, "plat2GoTime", time + if same_level { 0.5 } else { 0.1 });
+        number(plat, "plat2GoTo", if state == Q1MoverState::Bottom { 1.0 } else { 2.0 });
     })
 }
 
@@ -442,10 +384,7 @@ fn spawn_new_plat(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Err
         })?;
     }
     let body = game.body(id)?;
-    let stored = game
-        .entity(id)
-        .map(|entity| entity.number("height"))
-        .unwrap_or(0.0);
+    let stored = game.entity(id).map(|entity| entity.number("height")).unwrap_or(0.0);
     let mut negative = stored < 0.0;
     let mut height = stored.abs();
     if height == 0.0 {
@@ -482,15 +421,8 @@ fn spawn_new_plat(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Err
             game.set_health(id, 5.0)?;
         }
     } else if spawnflags & 4 != 0 {
-        let count = game
-            .entity(id)
-            .map(|entity| entity.number("cnt"))
-            .unwrap_or(0.0);
-        let floor = if spawnflags & 8 != 0 {
-            count - 1.0
-        } else {
-            0.0
-        };
+        let count = game.entity(id).map(|entity| entity.number("cnt")).unwrap_or(0.0);
+        let floor = if spawnflags & 8 != 0 { count - 1.0 } else { 0.0 };
         game.update_entity(id, |entity| {
             number(entity, "elevatorOnFloor", floor);
             number(entity, "elevatorToFloor", 0.0);
@@ -668,17 +600,10 @@ fn elvbutton_fire_touch(
 }
 
 /// Fire a shootable elevator button on death.
-fn elvbutton_fire_die(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    attacker: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn elvbutton_fire_die(game: &mut Q1EntityServices, id: &ActorId, attacker: Option<&ActorId>) -> Result<(), Q1Error> {
     let attacker = attacker.cloned();
     game.update_entity(id, |entity| entity.activator = attacker)?;
-    let max_health = game
-        .entity(id)
-        .map(|entity| entity.max_health)
-        .unwrap_or(0.0);
+    let max_health = game.entity(id).map(|entity| entity.max_health).unwrap_or(0.0);
     game.set_health(id, max_health)?;
     game.set_damageable(id, false)?;
     button_fire(game, id)
@@ -742,11 +667,11 @@ fn spawn_elvtr_button(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
         .entity(id)
         .map(|entity| (entity.movedir, entity.number("lip")))
         .unwrap_or((ZERO, 0.0));
-    let travel = dot(movedir, vsub(body.bounds.max, body.bounds.min)).abs()
-        - if lip == 0.0 { 4.0 } else { lip };
+    let travel =
+        f64::from(dot(movedir, vsub(body.bounds.max, body.bounds.min)).abs()) - if lip == 0.0 { 4.0 } else { lip };
     game.update_entity(id, |entity| {
         entity.pos1 = body.origin;
-        entity.pos2 = vadd(entity.pos1, vscale(movedir, f64::from(travel)));
+        entity.pos2 = vadd(entity.pos1, vscale(movedir, travel));
     })
 }
 
@@ -869,21 +794,8 @@ mod tests {
     use super::*;
     use crate::q1::missionpacks::types::test_game;
 
-    fn null_action(_game: &mut Q1EntityServices, _id: &ActorId) -> Result<(), Q1Error> {
-        Ok(())
-    }
-
     fn register_for_test(game: &mut Q1EntityServices) {
         register_rogue_plats(game).expect("register");
-        game.named
-            .register(
-                "SUB_CalcMoveDone",
-                Q1CallbackHandlers {
-                    action: Some(null_action),
-                    ..Default::default()
-                },
-            )
-            .expect("calc move done");
     }
 
     fn tall_bounds() -> qa_core::math::Bounds {
@@ -914,12 +826,12 @@ mod tests {
             },
         )
         .expect("bounds");
-        game.update_entity(&id, |entity| entity.spawnflags = 2)
-            .expect("flags");
+        game.update_entity(&id, |entity| entity.spawnflags = 2).expect("flags");
+        game.update_entity(&id, |entity| number(entity, "height", 64.0))
+            .expect("height");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(game.entity(&id).expect("plat").state, Q1MoverState::Top);
-        game.invoke_use(&id, "rogue:plat_use", None, None)
-            .expect("use");
+        game.invoke_use(&id, "rogue:plat_use", None, None).expect("use");
         assert_eq!(game.entity(&id).expect("plat").state, Q1MoverState::Down);
         assert!(game.entity(&id).expect("plat").move_completion.is_some());
     }
@@ -947,9 +859,7 @@ mod tests {
         })
         .expect("flags");
         game.spawn_entity(&id, None).expect("spawn");
-        let button = game
-            .create("func_elvtr_button", None, None)
-            .expect("button");
+        let button = game.create("func_elvtr_button", None, None).expect("button");
         game.set_origin(
             &button,
             Vec3 {
@@ -962,21 +872,14 @@ mod tests {
         game.time = 3.0;
         game.invoke_use(&id, "rogue:elevator_use", Some(&button), None)
             .expect("use");
-        assert_eq!(
-            game.entity(&id)
-                .expect("elevator")
-                .number("elevatorToFloor"),
-            1.0
-        );
+        assert_eq!(game.entity(&id).expect("elevator").number("elevatorToFloor"), 1.0);
     }
 
     #[test]
     fn elvbutton_fire_moves_and_arms_return() {
         let mut game = test_game();
         register_for_test(&mut game);
-        let id = game
-            .create("func_elvtr_button", None, None)
-            .expect("button");
+        let id = game.create("func_elvtr_button", None, None).expect("button");
         game.set_body(
             &id,
             &BodyPatch {
@@ -986,8 +889,7 @@ mod tests {
         )
         .expect("bounds");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "rogue:elvbutton_fire", None, None)
-            .expect("fire");
+        game.invoke_use(&id, "rogue:elvbutton_fire", None, None).expect("fire");
         assert_eq!(game.entity(&id).expect("button").state, Q1MoverState::Up);
     }
 }

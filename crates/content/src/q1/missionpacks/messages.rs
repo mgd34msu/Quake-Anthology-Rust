@@ -80,7 +80,7 @@ pub fn mission_message(game: &mut Q1EntityServices, player: Option<&ActorId>, ke
 pub fn mission_pickup_message(game: &mut Q1EntityServices, player: &ActorId, key: &str) {
     if game.options().edition == Q1Edition::Classic {
         game.message(
-            player,
+            Some(player),
             &format!("You got the {}\n", classic(key)),
             false,
             Vec::new(),

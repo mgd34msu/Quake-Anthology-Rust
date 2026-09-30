@@ -7,9 +7,7 @@ use qa_core::math::{Bounds, Vec3};
 use crate::q1::base::projectiles::{throw_gib, throw_head};
 use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
 use crate::q1::foundation::gameplay::BodyPatch;
-use crate::q1::foundation::types::{
-    length, vadd, vscale, vsub, Q1MoveType, Q1Solid, Q1TraceRequest, POINT,
-};
+use crate::q1::foundation::types::{length, vadd, vscale, vsub, Q1MoveType, Q1Solid, Q1TraceRequest, POINT};
 
 use super::runtime::MissionMonster;
 
@@ -54,7 +52,7 @@ pub fn number(monster: &mut MissionMonster, key: &str, value: f64) {
 /// Drop the monster to the floor (`dropToFloor`).
 pub fn drop_to_floor(monster: &mut MissionMonster) -> bool {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let body = match monster.game.body(&id) {
         Ok(body) => body,
         Err(_) => return false,
@@ -96,7 +94,7 @@ pub fn drop_to_floor(monster: &mut MissionMonster) -> bool {
 /// donor; pass `Some("")` to skip the sound.
 pub fn gib(monster: &mut MissionMonster, head: &str, gibs: &[&str], sound: Option<&str>) {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let sound = sound.unwrap_or("player/udeath.wav");
     if !sound.is_empty() {
         let _ = monster.game.sound_simple(&id, sound);
@@ -149,10 +147,7 @@ pub fn radius_actors(game: &mut Q1EntityServices, origin: Vec3, radius: f64) -> 
         if matches!(solid, Some(Q1Solid::None)) {
             continue;
         }
-        let center = vadd(
-            body.origin,
-            vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-        );
+        let center = vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5));
         if f64::from(length(vsub(origin, center))) <= radius {
             actors.push(id);
         }
@@ -164,7 +159,7 @@ pub fn radius_actors(game: &mut Q1EntityServices, origin: Vec3, radius: f64) -> 
 /// Electric discharge around the monster (`eelZap`).
 pub fn eel_zap(monster: &mut MissionMonster) {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let origin = monster.origin;
     for target in radius_actors(monster.game, origin, 85.0) {
         let classname = monster.game.host.classname(&target);
@@ -190,22 +185,15 @@ pub fn eel_zap(monster: &mut MissionMonster) {
         if !damageable {
             continue;
         }
-        let center = vadd(
-            body.origin,
-            vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-        );
+        let center = vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5));
         let mut points = 45.0 - (0.5 * f64::from(length(vsub(origin, center)))).max(0.0);
         if target == id {
             points *= 0.5;
         }
         if points > 0.0 && monster.game.can_damage(&target, &id) {
-            monster.game.damage(
-                &target,
-                Some(&id),
-                Some(&id),
-                points,
-                &Q1DamageParams::default(),
-            );
+            monster
+                .game
+                .damage(&target, Some(&id), Some(&id), points, &Q1DamageParams::default());
         }
     }
     monster.refresh();
@@ -214,6 +202,7 @@ pub fn eel_zap(monster: &mut MissionMonster) {
 /// Spawn a missile (`missile`). Missing named callbacks leave the touch or
 /// removal unset instead of failing, so tests can run without base
 /// registration.
+#[allow(clippy::too_many_arguments)]
 pub fn missile(
     game: &mut Q1EntityServices,
     owner: &ActorId,
@@ -259,7 +248,7 @@ pub fn empty_pain(_monster: &mut MissionMonster, _attacker: Option<&ActorId>, _d
 /// Collapse the monster bounds to a point (`setPointBounds`).
 pub fn set_point_bounds(monster: &mut MissionMonster) {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let _ = monster.game.set_bounds(&id, POINT);
     monster.refresh();
 }
@@ -274,7 +263,7 @@ mod tests {
     use crate::q1::missionpacks::monsters::types::PackMonsterDefinition;
     use crate::q1::missionpacks::types::test_game;
     use crate::q1::missionpacks::types::Q1MissionPack;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn test_definition() -> PackMonsterDefinition {
         PackMonsterDefinition {
@@ -302,8 +291,8 @@ mod tests {
             callbacks: Vec::new(),
             spawn: None,
             start: None,
-            pain: Rc::new(|_, _, _| {}),
-            die: Rc::new(|_, _| {}),
+            pain: Arc::new(|_, _, _| {}),
+            die: Arc::new(|_, _| {}),
             melee: None,
             check_attack: None,
             found: None,
@@ -346,32 +335,19 @@ mod tests {
                 z: 32.0
             }
         );
-        assert_eq!(
-            ZERO,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0
-            }
-        );
+        assert_eq!(ZERO, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
     }
 
     #[test]
     fn helpers_smoke() {
         let mut game = test_game();
         let mut runtime =
-            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, Default::default())
-                .expect("new");
-        runtime
-            .register(&mut game, test_definition())
-            .expect("register");
+            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, Default::default()).expect("new");
+        runtime.register(&mut game, test_definition()).expect("register");
         let id = game.create("monster_gremlin", None, None).expect("create");
         let mut monster = runtime.require(&mut game, &id).expect("require");
         number(&mut monster, "stoleweapon", 1.0);
-        assert_eq!(
-            monster.entity.fields.get("stoleweapon").map(String::as_str),
-            Some("1")
-        );
+        assert_eq!(monster.entity.fields.get("stoleweapon").map(String::as_str), Some("1"));
         empty_pain(&mut monster, None, 0.0);
         let _ = drop_to_floor(&mut monster);
         gib(&mut monster, "h_grem", &["gib1"], None);
@@ -390,10 +366,7 @@ mod tests {
             5.0,
         );
         assert_eq!(
-            monster
-                .game
-                .entity(&shot)
-                .map(|entity| entity.classname.as_str()),
+            monster.game.entity(&shot).map(|entity| entity.classname.as_str()),
             Some("missile")
         );
     }

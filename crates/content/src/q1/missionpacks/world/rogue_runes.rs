@@ -16,7 +16,7 @@ use crate::q1::foundation::extensions::Q1WeaponRules;
 use crate::q1::foundation::gameplay::{BodyPatch, Q1DamageSourceEffects, TouchSurface};
 use crate::q1::foundation::types::{Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, Q1Weapon};
 use crate::q1::missionpacks::types::fround;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number};
 use super::with_missionpack_hooks;
@@ -65,17 +65,11 @@ fn spawn_point(game: &mut Q1EntityServices) -> Result<Vec3, Q1Error> {
         })
         .collect();
     if points.is_empty() {
-        return Err(q1_error(
-            "Rogue runes require an info_player_deathmatch spawn",
-        ));
+        return Err(q1_error("Rogue runes require an info_player_deathmatch spawn"));
     }
-    let previous = game.entity(&world).and_then(|world| {
-        world
-            .references
-            .get("rogue:rune_spawn_spot")
-            .cloned()
-            .flatten()
-    });
+    let previous = game
+        .entity(&world)
+        .and_then(|world| world.references.get("rogue:rune_spawn_spot").cloned().flatten());
     let index = previous
         .as_ref()
         .and_then(|previous| points.iter().position(|point| point == previous));
@@ -149,21 +143,11 @@ fn rune_noise(game: &mut Q1EntityServices, actor: &ActorId, rune: i32) -> Result
     if game.host.actors.resolve_owned(actor).is_none() {
         return Ok(());
     }
-    game.sound(
-        actor,
-        &format!("runes/end{rune}.wav"),
-        Q1SoundChannel::Item,
-        1.0,
-        1.0,
-    )
+    game.sound(actor, &format!("runes/end{rune}.wav"), Q1SoundChannel::Item, 1.0, 1.0)
 }
 
 /// Apply the strength rune to outgoing damage.
-fn rune_damage_amount(
-    game: &mut Q1EntityServices,
-    actor: &ActorId,
-    amount: f64,
-) -> Result<f64, Q1Error> {
+fn rune_damage_amount(game: &mut Q1EntityServices, actor: &ActorId, amount: f64) -> Result<f64, Q1Error> {
     require_live(game, actor)?;
     if rune_bits(game, actor) & 2 != 0 {
         return Ok(fround(amount * 2.0));
@@ -172,11 +156,7 @@ fn rune_damage_amount(
 }
 
 /// Apply the resistance rune to incoming damage.
-fn rune_resistance_amount(
-    game: &mut Q1EntityServices,
-    actor: &ActorId,
-    amount: f64,
-) -> Result<f64, Q1Error> {
+fn rune_resistance_amount(game: &mut Q1EntityServices, actor: &ActorId, amount: f64) -> Result<f64, Q1Error> {
     require_live(game, actor)?;
     if rune_bits(game, actor) & 1 == 0 {
         return Ok(amount);
@@ -212,11 +192,7 @@ fn rune_attack_sound_inner(game: &mut Q1EntityServices, actor: &ActorId) -> Resu
 }
 
 /// Apply the haste rune to an attack delay.
-fn rune_attack_delay_inner(
-    game: &mut Q1EntityServices,
-    actor: &ActorId,
-    delay: f64,
-) -> Result<f64, Q1Error> {
+fn rune_attack_delay_inner(game: &mut Q1EntityServices, actor: &ActorId, delay: f64) -> Result<f64, Q1Error> {
     require_live(game, actor)?;
     if rune_bits(game, actor) & 4 == 0 {
         return Ok(delay);
@@ -240,11 +216,7 @@ fn rune_before_fire(game: &mut Q1EntityServices, player: &ActorId) -> Result<(),
 }
 
 /// Weapon attack-delay hook: haste rune on applicable weapons.
-fn rune_weapon_attack_delay(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    delay: f64,
-) -> Result<f64, Q1Error> {
+fn rune_weapon_attack_delay(game: &mut Q1EntityServices, player: &ActorId, delay: f64) -> Result<f64, Q1Error> {
     let hasted = game.player_ref(player).is_some_and(|state| {
         matches!(
             state.weapon,
@@ -310,10 +282,7 @@ fn rune_touch(
         let time = game.time;
         return game.update_entity(other, |entity| number(entity, RUNE_NOTICE, time + 5.0));
     }
-    let rune = game
-        .entity(id)
-        .map(|entity| entity.number("rune"))
-        .unwrap_or(0.0);
+    let rune = game.entity(id).map(|entity| entity.number("rune")).unwrap_or(0.0);
     game.update_entity(other, |entity| {
         let bits = entity.number(RUNE_BITS) as i32 | rune as i32;
         number(entity, RUNE_BITS, f64::from(bits));
@@ -406,9 +375,7 @@ impl RogueRunes {
 
     /// Spawn opening runes and tick regeneration (`frame`).
     pub fn frame(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> {
-        let gamecfg = with_missionpack_hooks(game, |_, hooks| {
-            Ok(hooks.gamecfg.as_ref().map(|gamecfg| gamecfg()))
-        })?;
+        let gamecfg = with_missionpack_hooks(game, |_, hooks| Ok(hooks.gamecfg.as_ref().map(|gamecfg| gamecfg())))?;
         if game.options().deathmatch != 0 && gamecfg.unwrap_or(0) & 1 != 0 {
             let world = game.world.clone();
             if let Some(world) = world {
@@ -462,50 +429,27 @@ impl RogueRunes {
     }
 
     /// Apply the strength rune to outgoing damage (`damage`).
-    pub fn damage(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        amount: f64,
-    ) -> Result<f64, Q1Error> {
+    pub fn damage(&self, game: &mut Q1EntityServices, actor: &ActorId, amount: f64) -> Result<f64, Q1Error> {
         rune_damage_amount(game, actor, amount)
     }
 
     /// Apply the resistance rune to incoming damage (`resistance`).
-    pub fn resistance(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        amount: f64,
-    ) -> Result<f64, Q1Error> {
+    pub fn resistance(&self, game: &mut Q1EntityServices, actor: &ActorId, amount: f64) -> Result<f64, Q1Error> {
         rune_resistance_amount(game, actor, amount)
     }
 
     /// Play the strength rune attack sound (`attackSound`).
-    pub fn attack_sound(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn attack_sound(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> {
         rune_attack_sound_inner(game, actor)
     }
 
     /// Apply the haste rune to an attack delay (`attackDelay`).
-    pub fn attack_delay(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        delay: f64,
-    ) -> Result<f64, Q1Error> {
+    pub fn attack_delay(&self, game: &mut Q1EntityServices, actor: &ActorId, delay: f64) -> Result<f64, Q1Error> {
         rune_attack_delay_inner(game, actor, delay)
     }
 
     /// Whether an actor carries the regeneration rune (`hasRegeneration`).
-    pub fn has_regeneration(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-    ) -> Result<bool, Q1Error> {
+    pub fn has_regeneration(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<bool, Q1Error> {
         require_live(game, actor)?;
         Ok(rune_bits(game, actor) & 8 != 0)
     }
@@ -526,12 +470,7 @@ impl RogueRunes {
     }
 
     /// Gameful `afterArmor` stage for the session damage pipeline.
-    pub fn after_armor(
-        &self,
-        game: &mut Q1EntityServices,
-        target: &ActorId,
-        take: f64,
-    ) -> Result<f64, Q1Error> {
+    pub fn after_armor(&self, game: &mut Q1EntityServices, target: &ActorId, take: f64) -> Result<f64, Q1Error> {
         if game.options().deathmatch != 0 {
             return self.resistance(game, target, take);
         }
@@ -557,10 +496,7 @@ mod tests {
         let mut game = test_game();
         let runes = RogueRunes::new(&mut game).expect("runes");
         let strong = carrier(&mut game, 2);
-        assert_eq!(
-            runes.damage(&mut game, &strong, 10.0).expect("damage"),
-            20.0
-        );
+        assert_eq!(runes.damage(&mut game, &strong, 10.0).expect("damage"), 20.0);
         let hasted = carrier(&mut game, 4);
         assert_eq!(
             runes.attack_delay(&mut game, &hasted, 0.9).expect("delay"),
@@ -578,10 +514,8 @@ mod tests {
         let mut game = test_game();
         let runes = RogueRunes::new(&mut game).expect("runes");
         let tank = carrier(&mut game, 1);
-        assert_eq!(
-            runes.resistance(&mut game, &tank, 10.0).expect("resist"),
-            5.0
-        );
+        game.time = 0.5;
+        assert_eq!(runes.resistance(&mut game, &tank, 10.0).expect("resist"), 5.0);
         assert_eq!(
             game.entity(&tank).expect("tank").number(RUNE_EARTH_NOISE),
             game.time + 1.0
@@ -595,26 +529,16 @@ mod tests {
         let player = carrier(&mut game, 0);
         let watch = player.clone();
         game.host.players = Box::new(move || vec![watch.clone()]);
-        let item = spawn_rune(
-            &mut game,
-            2,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        )
-        .expect("item");
-        game.invoke_touch(&item, &player, None, None)
-            .expect("touch");
+        let item = spawn_rune(&mut game, 2, Vec3 { x: 0.0, y: 0.0, z: 0.0 }).expect("item");
+        game.invoke_touch(&item, &player, None, None).expect("touch");
         assert_eq!(rune_bits(&game, &player), 2);
         assert!(game.entity(&item).is_none());
         runes.drop(&mut game, &player).expect("drop");
         assert_eq!(rune_bits(&game, &player), 0);
-        let items = game.entity_ids().into_iter().filter(|id| {
-            game.entity(id)
-                .is_some_and(|entity| entity.classname == "rogue_rune")
-        });
+        let items = game
+            .entity_ids()
+            .into_iter()
+            .filter(|id| game.entity(id).is_some_and(|entity| entity.classname == "rogue_rune"));
         assert_eq!(items.count(), 1);
     }
 }

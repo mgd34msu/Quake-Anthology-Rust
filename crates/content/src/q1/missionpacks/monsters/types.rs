@@ -1,7 +1,7 @@
 //! Mission-pack monster definition types
 //! (`src/content/q1/missionpacks/monsters/types.ts`).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use qa_core::identity::ActorId;
 
@@ -22,20 +22,20 @@ pub struct MissionMonsterHooks {
 
 /// Frame/attack callback (`MissionAction`). Donor actions close over the
 /// runtime; here they receive the monster view, which borrows it.
-pub type MissionAction = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>)>;
+pub type MissionAction = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>) + Send + Sync>;
 
 /// Pain callback (`PackMonsterDefinition["pain"]`).
-pub type MissionPain = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>, Option<&ActorId>, f64)>;
+pub type MissionPain = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>, Option<&ActorId>, f64) + Send + Sync>;
 /// Death callback (`PackMonsterDefinition["die"]`).
-pub type MissionDie = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>, Option<&ActorId>)>;
+pub type MissionDie = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>, Option<&ActorId>) + Send + Sync>;
 /// Attack-check callback (`PackMonsterDefinition["checkAttack"]`).
-pub type MissionCheckAttack = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>) -> bool>;
+pub type MissionCheckAttack = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>) -> bool + Send + Sync>;
 /// Target-found callback (`PackMonsterDefinition["found"]`).
-pub type MissionFound = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>, &ActorId)>;
+pub type MissionFound = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>, &ActorId) + Send + Sync>;
 /// Steering callback (`PackMonsterDefinition["ai"]`).
-pub type MissionAi = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>, MonsterAi, f64)>;
+pub type MissionAi = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>, MonsterAi, f64) + Send + Sync>;
 /// Use callback (`PackMonsterDefinition["use"]`).
-pub type MissionUse = Rc<dyn for<'m> Fn(&mut MissionMonster<'m>, Option<&ActorId>)>;
+pub type MissionUse = Arc<dyn for<'m> Fn(&mut MissionMonster<'m>, Option<&ActorId>) + Send + Sync>;
 
 /// One mission-pack monster definition (`PackMonsterDefinition`).
 pub struct PackMonsterDefinition {
@@ -72,10 +72,10 @@ pub struct PackMonsterDefinition {
 
 /// Definition factory (`PackMonsterFactory`).
 pub type PackMonsterFactory =
-    Rc<dyn Fn(&Q1MissionPackMonsters, &Q1EntityServices) -> Vec<PackMonsterDefinition>>;
+    Arc<dyn Fn(&Q1MissionPackMonsters, &Q1EntityServices) -> Vec<PackMonsterDefinition> + Send + Sync>;
 
 /// Spawn function (`MissionSpawn`).
-pub type MissionSpawn = Rc<dyn Fn(&mut Q1EntityServices, &ActorId)>;
+pub type MissionSpawn = Arc<dyn Fn(&mut Q1EntityServices, &ActorId) + Send + Sync>;
 
 /// Leak a dynamically built action name (`ai_back(3)` and friends) as a
 /// `'static` key. Definitions are built once per registration, so the
@@ -102,10 +102,7 @@ mod tests {
             health: 100.0,
             gib_health: -35.0,
             gibs: &["gib1"],
-            bounds: crate::q1::foundation::types::Bounds {
-                min: ZERO,
-                max: ZERO,
-            },
+            bounds: qa_core::math::Bounds { min: ZERO, max: ZERO },
             stand: "gremlin_stand1",
             walk: "gremlin_walk1",
             run: "gremlin_run1",
@@ -122,14 +119,14 @@ mod tests {
             spec: test_spec(),
             base_behavior: false,
             frames: &[],
-            actions: vec![("ping", Rc::new(|_| {}))],
+            actions: vec![("ping", Arc::new(|_| {}))],
             callbacks: vec![("Ping", Q1CallbackHandlers::default())],
             spawn: None,
             start: None,
-            pain: Rc::new(|_, _, _| {}),
-            die: Rc::new(|_, _| {}),
+            pain: Arc::new(|_, _, _| {}),
+            die: Arc::new(|_, _| {}),
             melee: None,
-            check_attack: Some(Rc::new(|_| true)),
+            check_attack: Some(Arc::new(|_| true)),
             found: None,
             ai: None,
             use_: None,

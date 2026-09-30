@@ -1,10 +1,9 @@
 //! Rogue mummy, including delayed wake and blocked stand-up (`src/content/q1/missionpacks/monsters/mummy.ts`).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use qa_core::math::{Bounds, Vec3};
 
-use crate::q1::Q1Error;
 use crate::q1::base::animation::MonsterAi;
 use crate::q1::base::projectiles::{throw_gib, throw_head};
 use crate::q1::base::species::{MonsterMovement, MonsterSpecies};
@@ -12,32 +11,33 @@ use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity::Q1MonsterSpecies;
 use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
-use crate::q1::foundation::types::{
-    Q1MoveType, Q1Solid, Q1SoundChannel, POINT, ZERO, normalize, vadd, vscale, vsub,
-};
+use crate::q1::foundation::types::{normalize, vadd, vscale, vsub, Q1MoveType, Q1Solid, Q1SoundChannel, POINT, ZERO};
+use crate::q1::Q1Error;
 
-use super::helpers::{HULL_BOUNDS, number};
+use super::helpers::{number, HULL_BOUNDS};
 use super::runtime::MissionMonster;
 use super::tables::mummy::FRAMES;
 use super::types::{MissionAction, MissionDie, MissionFound, MissionPain, PackMonsterDefinition};
 
 /// Throw one bouncing flesh grenade (`fire`).
 fn fire(monster: &mut MissionMonster, offset: Vec3) {
-    let _ = monster.face();
+    monster.face();
     let target = match monster.target {
         Some(target) => target,
         None => return,
     };
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let origin = monster.origin;
-    let _ = monster.game.sound(&id, "zombie/z_shot1.wav", Q1SoundChannel::Weapon, 1.0, 1.0);
-    let basis = monster.game.basis.clone();
+    let _ = monster
+        .game
+        .sound(&id, "zombie/z_shot1.wav", Q1SoundChannel::Weapon, 1.0, 1.0);
+    let basis = monster.game.basis;
     let grenade_origin = vadd(
         vadd(
-            vadd(origin, vscale(basis.forward, offset.x)),
-            vscale(basis.right, offset.y),
+            vadd(origin, vscale(basis.forward, f64::from(offset.x))),
+            vscale(basis.right, f64::from(offset.y)),
         ),
-        vscale(basis.up, offset.z - 24.0),
+        vscale(basis.up, f64::from(offset.z) - 24.0),
     );
     let grenade = match monster.game.create("mummy_grenade", None, None) {
         Ok(grenade) => grenade,
@@ -46,7 +46,7 @@ fn fire(monster: &mut MissionMonster, offset: Vec3) {
     let _ = monster.game.update_entity(&grenade, |entity| {
         entity.owner = Some(id.clone());
         entity.movement = Q1MoveType::Bounce;
-        entity.solid = Q1Solid::BBox;
+        entity.solid = Q1Solid::Bbox;
         entity.model = "progs/zom_gib.mdl".to_string();
     });
     let angles = match monster.game.body(&id) {
@@ -86,7 +86,7 @@ fn fire(monster: &mut MissionMonster, offset: Vec3) {
 /// Wake a sleeping mummy (`wake`).
 fn wake(monster: &mut MissionMonster) {
     number(monster, "mummy:asleep", 0.0);
-    let _ = monster.play("mummy_paine12");
+    monster.play("mummy_paine12");
 }
 
 /// Detonate a mummy grenade on touch (`mummyGrenadeTouch`).
@@ -101,7 +101,11 @@ fn mummy_grenade_touch(
     if owner.as_ref() == Some(other) {
         return Ok(());
     }
-    let damageable = game.host.combat.read(other).is_some_and(|combat| combat.can_take_damage);
+    let damageable = game
+        .host
+        .combat
+        .read(other)
+        .is_some_and(|combat| combat.can_take_damage);
     if damageable {
         let amount = 15.0 + game.host.random() * 15.0;
         let _ = game.damage(other, Some(id), owner.as_ref(), amount, &Q1DamageParams::default());
@@ -139,11 +143,11 @@ fn mummy_grenade_remove(
 
 /// Rogue mummy definition (`mummyDefinition`).
 pub fn mummy_definition() -> PackMonsterDefinition {
-    let run_step: MissionAction = Rc::new(|monster| {
-        let _ = monster.ai(MonsterAi::Run, 2.0);
-        monster.state.in_pain = 0.0;
+    let run_step: MissionAction = Arc::new(|monster| {
+        monster.ai(MonsterAi::Run, 2.0);
+        monster.controller.in_pain = 0.0;
     });
-    let fire_a: MissionAction = Rc::new(|monster| {
+    let fire_a: MissionAction = Arc::new(|monster| {
         fire(
             monster,
             Vec3 {
@@ -153,7 +157,7 @@ pub fn mummy_definition() -> PackMonsterDefinition {
             },
         );
     });
-    let fire_b: MissionAction = Rc::new(|monster| {
+    let fire_b: MissionAction = Arc::new(|monster| {
         fire(
             monster,
             Vec3 {
@@ -163,7 +167,7 @@ pub fn mummy_definition() -> PackMonsterDefinition {
             },
         );
     });
-    let fire_c: MissionAction = Rc::new(|monster| {
+    let fire_c: MissionAction = Arc::new(|monster| {
         fire(
             monster,
             Vec3 {
@@ -173,13 +177,15 @@ pub fn mummy_definition() -> PackMonsterDefinition {
             },
         );
     });
-    let wake_delay: MissionAction = Rc::new(|monster| {
+    let wake_delay: MissionAction = Arc::new(|monster| {
         let wait = monster.entity.next_think - monster.game.time + 5.0;
-        let _ = monster.delay(wait);
+        monster.delay(wait);
     });
-    let stand_up: MissionAction = Rc::new(|monster| {
-        let id = monster.entity.actor.id.clone();
-        let _ = monster.game.sound(&id, "zombie/z_idle.wav", Q1SoundChannel::Voice, 2.0, 1.0);
+    let stand_up: MissionAction = Arc::new(|monster| {
+        let id = monster.entity.actor.id().clone();
+        let _ = monster
+            .game
+            .sound(&id, "zombie/z_idle.wav", Q1SoundChannel::Voice, 2.0, 1.0);
         let _ = monster.game.set_bounds(&id, HULL_BOUNDS);
         monster.entity.solid = Q1Solid::Slidebox;
         monster.flush_entity();
@@ -191,8 +197,8 @@ pub fn mummy_definition() -> PackMonsterDefinition {
         }
         let _ = monster.game.link(&id);
     });
-    let wake_up: MissionAction = Rc::new(|monster| wake(monster));
-    let missile: MissionAction = Rc::new(|monster| {
+    let wake_up: MissionAction = Arc::new(wake);
+    let missile: MissionAction = Arc::new(|monster| {
         if monster.entity.number("mummy:asleep") != 0.0 {
             wake(monster);
             return;
@@ -205,11 +211,11 @@ pub fn mummy_definition() -> PackMonsterDefinition {
         } else {
             "mummy_attc1"
         };
-        let _ = monster.play(frame);
+        monster.play(frame);
     });
-    let spawn: MissionAction = Rc::new(|monster| {
-        let _ = monster.spawn_default();
-        let id = monster.entity.actor.id.clone();
+    let spawn: MissionAction = Arc::new(|monster| {
+        monster.spawn_default();
+        let id = monster.entity.actor.id().clone();
         if monster.entity.spawnflags & 4 != 0 {
             monster.entity.max_health = 1000.0;
             monster.flush_entity();
@@ -233,8 +239,8 @@ pub fn mummy_definition() -> PackMonsterDefinition {
             monster.flush_entity();
         }
     });
-    let start: MissionAction = Rc::new(|monster| {
-        let _ = monster.start_default();
+    let start: MissionAction = Arc::new(|monster| {
+        monster.start_default();
         if monster.entity.number("mummy:asleep") != 0.0 {
             monster.next_frame = if monster.state.path.is_empty() {
                 "mummy_sleep".to_string()
@@ -243,13 +249,13 @@ pub fn mummy_definition() -> PackMonsterDefinition {
             };
         }
     });
-    let found: MissionFound = Rc::new(|monster, target| {
-        let _ = monster.found_default(target);
+    let found: MissionFound = Arc::new(|monster, target| {
+        monster.found_default(target);
         if monster.entity.number("mummy:asleep") != 0.0 {
             monster.next_frame = "mummy_wake".to_string();
         }
     });
-    let pain: MissionPain = Rc::new(|monster, _attacker, _damage| {
+    let pain: MissionPain = Arc::new(|monster, _attacker, _damage| {
         if monster.entity.number("mummy:asleep") != 0.0 {
             wake(monster);
             return;
@@ -272,14 +278,16 @@ pub fn mummy_definition() -> PackMonsterDefinition {
         } else {
             "mummy_paind1"
         };
-        let _ = monster.play(frame);
+        monster.play(frame);
     });
-    let die: MissionDie = Rc::new(|monster, _attacker| {
-        let id = monster.entity.actor.id.clone();
+    let die: MissionDie = Arc::new(|monster, _attacker| {
+        let id = monster.entity.actor.id().clone();
         let origin = monster.origin;
         let actor = monster.entity.actor.clone();
         let _ = monster.game.host.combat.set_health(&actor, -35.0);
-        let _ = monster.game.sound(&id, "zombie/z_gib.wav", Q1SoundChannel::Voice, 1.0, 1.0);
+        let _ = monster
+            .game
+            .sound(&id, "zombie/z_gib.wav", Q1SoundChannel::Voice, 1.0, 1.0);
         let _ = throw_head(monster.game, &id, "h_zombie", -35.0);
         for model in ["gib1", "gib2", "gib3"] {
             let _ = throw_gib(monster.game, origin, model, -35.0);
@@ -351,14 +359,13 @@ mod tests {
     use super::mummy_definition;
     use crate::q1::missionpacks::monsters::runtime::Q1MissionPackMonsters;
     use crate::q1::missionpacks::monsters::types::MissionMonsterHooks;
-    use crate::q1::missionpacks::types::{Q1MissionPack, test_game};
+    use crate::q1::missionpacks::types::{test_game, Q1MissionPack};
 
     #[test]
     fn mummy_registers_with_grenade_callbacks() {
         let mut game = test_game();
-        let mut runtime =
-            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Rogue, MissionMonsterHooks::default())
-                .expect("runtime");
+        let mut runtime = Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Rogue, MissionMonsterHooks::default())
+            .expect("runtime");
         let definition = mummy_definition();
         assert_eq!(definition.spec.classnames, &["monster_mummy"]);
         assert_eq!(definition.spec.model, "mummy");
@@ -367,8 +374,14 @@ mod tests {
         assert!(!definition.frames.is_empty());
         assert_eq!(definition.actions.len(), 8);
         assert_eq!(definition.callbacks.len(), 2);
-        assert!(definition.callbacks.iter().any(|(name, _)| *name == "mummyGrenadeTouch"));
-        assert!(definition.callbacks.iter().any(|(name, _)| *name == "mummyGrenadeRemove"));
+        assert!(definition
+            .callbacks
+            .iter()
+            .any(|(name, _)| *name == "mummyGrenadeTouch"));
+        assert!(definition
+            .callbacks
+            .iter()
+            .any(|(name, _)| *name == "mummyGrenadeRemove"));
         let wait = definition
             .actions
             .iter()

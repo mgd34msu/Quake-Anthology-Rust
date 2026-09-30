@@ -3,17 +3,15 @@
 //!
 //! dmatch.qc token lifecycle and source scoring.
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::q1::base::provider::spawn_select;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
-use crate::q1::foundation::types::{
-    Q1Event, Q1MessageArg, Q1MoveType, Q1Powerup, Q1Solid, Q1TraceRequest, ZERO, vadd,
-};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{vadd, Q1Event, Q1MessageArg, Q1MoveType, Q1Powerup, Q1Solid, Q1TraceRequest, ZERO};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number};
 use super::with_missionpack_hooks;
@@ -81,12 +79,7 @@ fn drop_floor(game: &mut Q1EntityServices, id: &ActorId) -> Result<bool, Q1Error
 }
 
 /// Give the token to a player (`take`).
-fn take(
-    game: &mut Q1EntityServices,
-    token: &ActorId,
-    actor: &ActorId,
-    announcement_delay: f64,
-) -> Result<(), Q1Error> {
+fn take(game: &mut Q1EntityServices, token: &ActorId, actor: &ActorId, announcement_delay: f64) -> Result<(), Q1Error> {
     if let Some(world) = game.world.clone() {
         let actor = actor.clone();
         game.update_entity(&world, |world| {
@@ -113,15 +106,12 @@ fn respawn(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
     let Some(token) = token else {
         return Ok(());
     };
-    let point =
-        spawn_select(game, true)?.ok_or_else(|| q1_error("Tag token has no respawn point"))?;
+    let point = spawn_select(game, true)?.ok_or_else(|| q1_error("Tag token has no respawn point"))?;
     let origin = game.body(&point)?.origin;
     game.set_origin(&token, origin)?;
     if let Some(world) = game.world.clone() {
         game.update_entity(&world, |world| {
-            world
-                .references
-                .insert("rogue:tag_token_owner".to_string(), None);
+            world.references.insert("rogue:tag_token_owner".to_string(), None);
         })?;
     }
     let touch_name = game.named.touch("rogue:tag_touch")?;
@@ -156,17 +146,7 @@ fn tag_place(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
         entity.solid = Q1Solid::Trigger;
     })?;
     let origin = game.body(id)?.origin;
-    game.set_origin(
-        id,
-        vadd(
-            origin,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            },
-        ),
-    )?;
+    game.set_origin(id, vadd(origin, Vec3 { x: 0.0, y: 0.0, z: 6.0 }))?;
     if drop_floor(game, id)? {
         return Ok(());
     }
@@ -188,12 +168,7 @@ fn tag_think(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
             let time = game.time;
             game.update_entity(id, |entity| number(entity, "tag_message_time", time + 30.0))?;
         }
-        let origin = game
-            .host
-            .bodies
-            .read(&owner)
-            .map(|body| body.origin)
-            .unwrap_or(ZERO);
+        let origin = game.host.bodies.read(&owner).map(|body| body.origin).unwrap_or(ZERO);
         game.set_origin(
             id,
             vadd(
@@ -313,12 +288,7 @@ impl RogueTag {
     }
 
     /// Score a tag kill (`score`).
-    pub fn score(
-        &self,
-        game: &mut Q1EntityServices,
-        victim: &ActorId,
-        attacker: &ActorId,
-    ) -> Result<i32, Q1Error> {
+    pub fn score(&self, game: &mut Q1EntityServices, victim: &ActorId, attacker: &ActorId) -> Result<i32, Q1Error> {
         let token = token(game);
         let Some(token) = token else {
             return Ok(1);
@@ -327,17 +297,8 @@ impl RogueTag {
             .world
             .as_ref()
             .and_then(|world| game.entity(world))
-            .and_then(|world| {
-                world
-                    .references
-                    .get("rogue:tag_token_owner")
-                    .cloned()
-                    .flatten()
-            });
-        if owner
-            .as_ref()
-            .is_some_and(|owner| same_actor(attacker, owner))
-        {
+            .and_then(|world| world.references.get("rogue:tag_token_owner").cloned().flatten());
+        if owner.as_ref().is_some_and(|owner| same_actor(attacker, owner)) {
             let frags = game
                 .entity(&token)
                 .map(|token| token.number("tag_frags"))
@@ -355,10 +316,7 @@ impl RogueTag {
             }
             return Ok(3);
         }
-        if owner
-            .as_ref()
-            .is_some_and(|owner| same_actor(victim, owner))
-        {
+        if owner.as_ref().is_some_and(|owner| same_actor(victim, owner)) {
             if game.host.actors.resolve_owned(victim).is_some() {
                 game.sound_simple(victim, "runes/end1.wav")?;
             }
@@ -375,24 +333,18 @@ impl RogueTag {
 mod tests {
     use super::*;
     use crate::q1::foundation::host::mock::mock_host;
-    use crate::q1::foundation::types::{
-        Q1Edition, Q1FoundationOptions, Q1PrecacheProgram, Q1Trace,
-    };
+    use crate::q1::foundation::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram, Q1Trace};
     use crate::q1::missionpacks::types::test_game;
     use qa_core::identity::ProviderId;
 
-    use super::super::{MissionpackWorldHooks, install_missionpack_hooks};
+    use super::super::{install_missionpack_hooks, MissionpackWorldHooks};
 
     fn tag_game() -> Q1EntityServices {
         let (mut host, _) = mock_host();
         host.trace = Box::new(|request: &Q1TraceRequest| Q1Trace {
             fraction: 0.5,
             end: request.start,
-            normal: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
+            normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
             actor: None,
             start_solid: false,
             all_solid: false,
@@ -466,10 +418,7 @@ mod tests {
         game.invoke_action(&id, "rogue:tag_place").expect("place");
         let player = with_player(&mut game);
         game.invoke_touch(&id, &player, None, None).expect("touch");
-        assert_eq!(
-            game.entity(&id).expect("token").owner.as_ref(),
-            Some(&player)
-        );
+        assert_eq!(game.entity(&id).expect("token").owner.as_ref(), Some(&player));
         let tag = RogueTag;
         let victim = game.create("player", None, None).expect("victim");
         assert_eq!(tag.score(&mut game, &victim, &player).expect("score"), 3);
@@ -493,10 +442,7 @@ mod tests {
         game.host.players = Box::new(move || vec![watch.clone()]);
         let tag = RogueTag;
         assert_eq!(tag.score(&mut game, &carrier, &killer).expect("score"), 5);
-        assert_eq!(
-            game.entity(&id).expect("token").owner.as_ref(),
-            Some(&killer)
-        );
+        assert_eq!(game.entity(&id).expect("token").owner.as_ref(), Some(&killer));
     }
 
     #[test]

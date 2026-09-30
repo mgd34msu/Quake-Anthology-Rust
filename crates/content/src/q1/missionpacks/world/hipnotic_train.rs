@@ -9,9 +9,9 @@ use qa_core::math::Vec3;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
 use crate::q1::foundation::gameplay::{BodyPatch, DamageDelivery, TouchSurface};
-use crate::q1::foundation::types::{Q1MoveType, Q1Solid, ZERO, vadd, vectors, vscale, vsub};
+use crate::q1::foundation::types::{vadd, vectors, vscale, vsub, Q1MoveType, Q1Solid, ZERO};
 use crate::q1::missionpacks::types::fround;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{brush, later, number, target_event, vector};
 
@@ -33,10 +33,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
     if next_target.is_empty() {
         return Err(q1_error("hip_train_next: no next target"));
     }
-    let noise1 = game
-        .entity(id)
-        .map(|entity| entity.text("noise1"))
-        .unwrap_or_default();
+    let noise1 = game.entity(id).map(|entity| entity.text("noise1")).unwrap_or_default();
     game.update_entity(id, |entity| {
         number(entity, "cnt", speed);
         entity.target.clone_from(&next_target);
@@ -57,9 +54,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
     }
     let corner_id = corner.clone();
     game.update_entity(id, |entity| {
-        entity
-            .references
-            .insert("goalentity".to_string(), Some(corner_id));
+        entity.references.insert("goalentity".to_string(), Some(corner_id));
     })?;
     let next = if wait != 0.0 {
         "hip:train_wait"
@@ -69,10 +64,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
     let destination = vsub(game.body(&corner)?.origin, game.body(id)?.bounds.min);
     if current == -1.0 {
         game.set_origin(id, destination)?;
-        let ltime = game
-            .entity(id)
-            .map(|entity| entity.number("ltime"))
-            .unwrap_or(0.0);
+        let ltime = game.entity(id).map(|entity| entity.number("ltime")).unwrap_or(0.0);
         let done = game.named.action(next)?;
         return game.schedule_at(id, fround(ltime + 0.01), &done);
     }
@@ -86,28 +78,20 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
 
 /// Place a train at its first corner (`hip:train_find`).
 fn train_find(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     let corner = game
         .find(&target)
         .first()
         .cloned()
         .ok_or_else(|| q1_error(format!("hip_func_train_find: missing {target}")))?;
-    let speed = game
-        .entity(&corner)
-        .map(|corner| corner.speed)
-        .unwrap_or(0.0);
+    let speed = game.entity(&corner).map(|corner| corner.speed).unwrap_or(0.0);
     let next_target = game
         .entity(&corner)
         .map(|corner| corner.target.clone())
         .unwrap_or_default();
     let corner_id = corner.clone();
     game.update_entity(id, |entity| {
-        entity
-            .references
-            .insert("goalentity".to_string(), Some(corner_id));
+        entity.references.insert("goalentity".to_string(), Some(corner_id));
         number(entity, "cnt", speed);
         entity.target = next_target;
     })?;
@@ -160,11 +144,7 @@ fn train_use(
 }
 
 /// Crush blocking entities (`hip:train_blocked`).
-fn train_blocked(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    other: &ActorId,
-) -> Result<(), Q1Error> {
+fn train_blocked(game: &mut Q1EntityServices, id: &ActorId, other: &ActorId) -> Result<(), Q1Error> {
     let (attack_finished, damage) = game
         .entity(id)
         .map(|entity| (entity.attack_finished, entity.damage))
@@ -236,10 +216,7 @@ fn spawn_train(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error>
         entity.use_callback = Some(use_name);
         entity.blocked = Some(blocked_name);
     })?;
-    let ltime = game
-        .entity(id)
-        .map(|entity| entity.number("ltime"))
-        .unwrap_or(0.0);
+    let ltime = game.entity(id).map(|entity| entity.number("ltime")).unwrap_or(0.0);
     let done = game.named.action("hip:train_find")?;
     game.schedule_at(id, fround(ltime + 0.1), &done)
 }
@@ -248,14 +225,7 @@ fn spawn_train(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error>
 fn bobbing_water(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     let (count, speed, ltime, travel) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.count,
-                entity.speed,
-                entity.number("ltime"),
-                entity.number("cnt"),
-            )
-        })
+        .map(|entity| (entity.count, entity.speed, entity.number("ltime"), entity.number("cnt")))
         .unwrap_or((0.0, 0.0, 0.0, 0.0));
     let mut count = fround(count + speed * (game.time - ltime));
     if count > 360.0 {
@@ -322,7 +292,11 @@ fn pushable_touch(
         return Ok(());
     };
     let yaw = if body.velocity.x.abs() > body.velocity.y.abs() {
-        if body.velocity.x > 0.0 { 0.0 } else { 180.0 }
+        if body.velocity.x > 0.0 {
+            0.0
+        } else {
+            180.0
+        }
     } else if body.velocity.y > 0.0 {
         90.0
     } else {
@@ -336,9 +310,7 @@ fn pushable_touch(
     game.host.walk_move(&owned, yaw, distance);
     let (proxy_origin, proxy_old) = (
         game.body(id)?.origin,
-        game.entity(id)
-            .map(|entity| entity.vector("oldorigin"))
-            .unwrap_or(ZERO),
+        game.entity(id).map(|entity| entity.vector("oldorigin")).unwrap_or(ZERO),
     );
     let owner_old = game
         .entity(&owner)
@@ -358,11 +330,7 @@ fn spawn_pushable(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Err
     let size = vscale(vsub(body.bounds.max, body.bounds.min), 0.5);
     let origin = vadd(
         vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-        Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        },
+        Vec3 { x: 0.0, y: 0.0, z: 1.0 },
     );
     game.update_entity(&proxy, |proxy| {
         proxy.owner = Some(owner);
@@ -506,8 +474,7 @@ mod tests {
         let water = game.create("func_bobbingwater", None, None).expect("water");
         game.spawn_entity(&water, None).expect("spawn");
         game.time = 0.5;
-        game.invoke_action(&water, "hip:bobbing_water")
-            .expect("bob");
+        game.invoke_action(&water, "hip:bobbing_water").expect("bob");
         assert_eq!(
             game.entity(&water).expect("water").think.as_deref(),
             Some("hip:bobbing_water")

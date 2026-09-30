@@ -10,10 +10,8 @@ use crate::q1::base::map_entities::make_static;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
-use crate::q1::foundation::types::{
-    Q1Event, Q1MoveType, Q1Solid, ZERO, vadd, vectors, vscale, vsub,
-};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{vadd, vectors, vscale, vsub, Q1Event, Q1MoveType, Q1Solid, ZERO};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::number;
 
@@ -45,10 +43,7 @@ fn field_use(
     }
     let time = game.time;
     game.update_entity(id, |entity| number(entity, "ltime", time + 0.25))?;
-    let noise = game
-        .entity(id)
-        .map(|entity| entity.text("noise"))
-        .unwrap_or_default();
+    let noise = game.entity(id).map(|entity| entity.text("noise")).unwrap_or_default();
     if !noise.is_empty() {
         game.sound_simple(id, &noise)?;
     }
@@ -135,13 +130,7 @@ fn field_touch(
 ) -> Result<(), Q1Error> {
     let (damage, ltime, attack_finished) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.damage,
-                entity.number("ltime"),
-                entity.attack_finished,
-            )
-        })
+        .map(|entity| (entity.damage, entity.number("ltime"), entity.attack_finished))
         .unwrap_or((0.0, 0.0, 0.0));
     if damage == 0.0 || game.time > ltime || game.time < attack_finished {
         return Ok(());
@@ -172,28 +161,8 @@ fn spawn_particlefield(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), 
             z: 16.0,
         },
     );
-    let mut dest1 = vsub(
-        vadd(
-            bounds.min,
-            Vec3 {
-                x: 8.0,
-                y: 8.0,
-                z: 8.0,
-            },
-        ),
-        origin,
-    );
-    let dest2 = vsub(
-        vadd(
-            bounds.max,
-            Vec3 {
-                x: 7.9,
-                y: 7.9,
-                z: 7.9,
-            },
-        ),
-        origin,
-    );
+    let mut dest1 = vsub(vadd(bounds.min, Vec3 { x: 8.0, y: 8.0, z: 8.0 }), origin);
+    let dest2 = vsub(vadd(bounds.max, Vec3 { x: 7.9, y: 7.9, z: 7.9 }), origin);
     let plane = if size.x > size.z && size.y > size.z {
         dest1.z = (dest1.z + dest2.z) / 2.0;
         2.0
@@ -300,14 +269,10 @@ fn spawn_togglewall(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
         entity.use_callback = Some(use_name);
         entity.touch = Some(touch_name);
         if entity.text("noise").is_empty() {
-            entity
-                .fields
-                .insert("noise".to_string(), "misc/null.wav".to_string());
+            entity.fields.insert("noise".to_string(), "misc/null.wav".to_string());
         }
         if entity.text("noise1").is_empty() {
-            entity
-                .fields
-                .insert("noise1".to_string(), "misc/null.wav".to_string());
+            entity.fields.insert("noise1".to_string(), "misc/null.wav".to_string());
         }
     })?;
     let spawnflags = game.entity(id).map(|entity| entity.spawnflags).unwrap_or(0);
@@ -327,10 +292,7 @@ fn spawn_togglewall(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
         );
     }
     game.update_entity(id, |entity| number(entity, "toggle_state", 1.0))?;
-    let noise1 = game
-        .entity(id)
-        .map(|entity| entity.text("noise1"))
-        .unwrap_or_default();
+    let noise1 = game.entity(id).map(|entity| entity.text("noise1")).unwrap_or_default();
     game.sound_simple(id, &noise1)
 }
 
@@ -341,10 +303,7 @@ fn spawn_wallsprite(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
             entity.model = "progs/s_blood1.spr".to_string();
         }
     })?;
-    let model = game
-        .entity(id)
-        .map(|entity| entity.model.clone())
-        .unwrap_or_default();
+    let model = game.entity(id).map(|entity| entity.model.clone()).unwrap_or_default();
     game.precache_model(&model)?;
     game.update_entity(id, |entity| {
         entity.solid = Q1Solid::None;
@@ -403,15 +362,13 @@ pub fn register_hipnotic_particles(game: &mut Q1EntityServices) -> Result<(), Q1
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::q1::missionpacks::types::test_game;
+    use crate::q1::missionpacks::types::{test_game, test_game_with_events};
 
     #[test]
     fn particlefield_gates_on_counter_then_arms() {
         let mut game = test_game();
         register_hipnotic_particles(&mut game).expect("register");
-        let id = game
-            .create("func_particlefield", None, None)
-            .expect("field");
+        let id = game.create("func_particlefield", None, None).expect("field");
         game.set_body(
             &id,
             &BodyPatch {
@@ -437,19 +394,14 @@ mod tests {
         })
         .expect("flags");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "hip:particlefield", None, None)
-            .expect("gated");
+        game.invoke_use(&id, "hip:particlefield", None, None).expect("gated");
         assert_eq!(game.entity(&id).expect("field").number("ltime"), 0.0);
         game.update_entity(&id, |entity| number(entity, "cnt", 0.0))
             .expect("cnt");
         let watch = id.clone();
         game.host.check_client = Box::new(move |_| Some(watch.clone()));
-        game.invoke_use(&id, "hip:particlefield", None, None)
-            .expect("fire");
-        assert_eq!(
-            game.entity(&id).expect("field").number("ltime"),
-            game.time + 0.25
-        );
+        game.invoke_use(&id, "hip:particlefield", None, None).expect("fire");
+        assert_eq!(game.entity(&id).expect("field").number("ltime"), game.time + 0.25);
     }
 
     #[test]
@@ -459,8 +411,7 @@ mod tests {
         let id = game.create("func_togglewall", None, None).expect("wall");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(game.entity(&id).expect("wall").number("toggle_state"), 1.0);
-        game.invoke_use(&id, "hip:togglewall", None, None)
-            .expect("use");
+        game.invoke_use(&id, "hip:togglewall", None, None).expect("use");
         assert_eq!(game.entity(&id).expect("wall").number("toggle_state"), 0.0);
         assert_eq!(
             game.body(&id).expect("body").origin,
@@ -474,7 +425,7 @@ mod tests {
 
     #[test]
     fn wallsprite_remaps_vertical_angles() {
-        let mut game = test_game();
+        let (mut game, events) = test_game_with_events();
         register_hipnotic_particles(&mut game).expect("register");
         let id = game.create("wallsprite", None, None).expect("sprite");
         game.set_body(
@@ -490,12 +441,19 @@ mod tests {
         )
         .expect("angles");
         game.spawn_entity(&id, None).expect("spawn");
+        assert!(game.entity(&id).is_none());
+        let emission = events
+            .borrow()
+            .events
+            .iter()
+            .find_map(|event| match event {
+                Q1Event::StaticModel { path, angles, .. } => Some((path.clone(), *angles)),
+                _ => None,
+            })
+            .expect("static model");
+        assert_eq!(emission.0, "progs/s_blood1.spr");
         assert_eq!(
-            game.entity(&id).expect("sprite").model,
-            "progs/s_blood1.spr"
-        );
-        assert_eq!(
-            game.body(&id).expect("body").angles,
+            emission.1,
             Vec3 {
                 x: -90.0,
                 y: 0.0,

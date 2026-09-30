@@ -2,21 +2,19 @@
 
 use std::collections::HashMap;
 
-use qa_core::identity::{ActorId, OwnedActor, same_actor};
+use qa_core::identity::{same_actor, ActorId, OwnedActor};
 use qa_core::math::{Bounds, Vec3};
 
 use crate::contract::ItemId;
-use crate::q1::Q1Error;
-use crate::q1::base::projectiles::{
-    BackpackDrop, BackpackExtra, BackpackLaunch, BackpackSelection, drop_backpack,
-};
+use crate::q1::base::projectiles::{drop_backpack, BackpackDrop, BackpackExtra, BackpackLaunch, BackpackSelection};
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::BodyPatch;
 use crate::q1::foundation::types::{
-    Q1Effect, Q1MoveType, Q1Solid, Q1SoundChannel, Q1Weapon, vadd, vscale, weapon_item,
+    vadd, vscale, weapon_item, Q1Effect, Q1MoveType, Q1Solid, Q1SoundChannel, Q1Weapon,
 };
 use crate::q1::foundation::weapons::aim;
+use crate::q1::Q1Error;
 
 use super::messages::{mission_message, mission_pickup_message};
 use super::player::MissionPackPlayers;
@@ -50,31 +48,17 @@ pub fn drop_mission_pack_backpack(
         None => return Ok(None),
     };
     let edition = game.options().edition;
-    let shells = game
-        .host
-        .inventory
-        .count(&id, &ItemId::from("q1:ammo/shells"));
-    let nails = game
-        .host
-        .inventory
-        .count(&id, &ItemId::from("q1:ammo/nails"));
-    let rockets = game
-        .host
-        .inventory
-        .count(&id, &ItemId::from("q1:ammo/rockets"));
-    let cells = game
-        .host
-        .inventory
-        .count(&id, &ItemId::from("q1:ammo/cells"));
+    let shells = game.host.inventory.count(&id, &ItemId::from("q1:ammo/shells"));
+    let nails = game.host.inventory.count(&id, &ItemId::from("q1:ammo/nails"));
+    let rockets = game.host.inventory.count(&id, &ItemId::from("q1:ammo/rockets"));
+    let cells = game.host.inventory.count(&id, &ItemId::from("q1:ammo/cells"));
     if pack == Q1MissionPack::Hipnotic {
         if shells + nails + rockets + cells == 0.0 {
             return Ok(None);
         }
         let cells = if edition == crate::q1::foundation::types::Q1Edition::Rerelease
-            && matches!(
-                player.weapon,
-                Q1Weapon::HipnoticLaser | Q1Weapon::HipnoticMjolnir
-            ) {
+            && matches!(player.weapon, Q1Weapon::HipnoticLaser | Q1Weapon::HipnoticMjolnir)
+        {
             cells.max(15.0)
         } else {
             cells
@@ -96,18 +80,12 @@ pub fn drop_mission_pack_backpack(
             None,
         );
     }
-    let lava = game
-        .host
-        .inventory
-        .count(&id, &ItemId::from("rogue:ammo/lava-nails"));
+    let lava = game.host.inventory.count(&id, &ItemId::from("rogue:ammo/lava-nails"));
     let multi = game
         .host
         .inventory
         .count(&id, &ItemId::from("rogue:ammo/multi-rockets"));
-    let plasma = game
-        .host
-        .inventory
-        .count(&id, &ItemId::from("rogue:ammo/plasma"));
+    let plasma = game.host.inventory.count(&id, &ItemId::from("rogue:ammo/plasma"));
     // Both source editions omit plasma from this early empty-backpack check.
     if shells + nails + rockets + cells + lava + multi == 0.0 {
         return Ok(None);
@@ -197,10 +175,7 @@ const TOSS_AMMO: [TossAmmo; 7] = [
 ];
 
 /// Toss a Rogue ammunition backpack (`tossRogueBackpack`).
-pub fn toss_rogue_backpack(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-) -> Result<Option<ActorId>, Q1Error> {
+pub fn toss_rogue_backpack(game: &mut Q1EntityServices, player: &ActorId) -> Result<Option<ActorId>, Q1Error> {
     let state = match game.player_ref(player) {
         Some(state) => state.clone(),
         None => return Ok(None),
@@ -244,6 +219,7 @@ pub fn toss_rogue_backpack(
     }
     let amount = |item: &str| amounts.get(item).copied().unwrap_or(0.0);
     let forward = game.make_vectors(state.view_angles).forward;
+    let velocity = vscale(aim(game, &state.actor, forward), 500.0);
     let backpack = drop_backpack(
         game,
         body.origin,
@@ -280,7 +256,7 @@ pub fn toss_rogue_backpack(
                     z: 16.0,
                 },
             ),
-            velocity: vscale(aim(game, &state.actor, forward), 500.0),
+            velocity,
             movement: Q1MoveType::Bounce,
         }),
     )?;
@@ -346,19 +322,16 @@ const TOSS_WEAPONS: [TossWeapon; 6] = [
 ];
 
 /// Toss the selected Rogue weapon (`tossRogueWeapon`).
-pub fn toss_rogue_weapon(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-) -> Result<Option<ActorId>, Q1Error> {
+pub fn toss_rogue_weapon(game: &mut Q1EntityServices, player: &ActorId) -> Result<Option<ActorId>, Q1Error> {
     let state = match game.player_ref(player) {
         Some(state) => state.clone(),
         None => return Ok(None),
     };
     let deathmatch = game.options().deathmatch;
     let teamplay = game.options().teamplay.unwrap_or(0);
-    let definition = TOSS_WEAPONS.iter().find(|candidate| {
-        candidate.weapon == state.weapon || candidate.powered == Some(state.weapon)
-    });
+    let definition = TOSS_WEAPONS
+        .iter()
+        .find(|candidate| candidate.weapon == state.weapon || candidate.powered == Some(state.weapon));
     let body = game.host.bodies.read(player);
     let (Some(definition), Some(body)) = (definition, body) else {
         return Ok(None);
@@ -376,6 +349,7 @@ pub fn toss_rogue_weapon(
         entity.solid = Q1Solid::Trigger;
     })?;
     let forward = game.make_vectors(state.view_angles).forward;
+    let velocity = vscale(aim(game, &state.actor, forward), 500.0);
     game.set_body(
         &item,
         &BodyPatch {
@@ -387,7 +361,7 @@ pub fn toss_rogue_weapon(
                     z: 16.0,
                 },
             )),
-            velocity: Some(vscale(aim(game, &state.actor, forward), 500.0)),
+            velocity: Some(velocity),
             bounds: Some(Bounds {
                 min: Vec3 {
                     x: -16.0,
@@ -407,9 +381,7 @@ pub fn toss_rogue_weapon(
         .inventory
         .consume(&state.actor, &weapon_item(definition.weapon), 1.0);
     if let Some(powered) = definition.powered {
-        game.host
-            .inventory
-            .consume(&state.actor, &weapon_item(powered), 1.0);
+        game.host.inventory.consume(&state.actor, &weapon_item(powered), 1.0);
     }
     let touch = game.named.touch("rogue:tossed-weapon-touch")?;
     game.update_entity(&item, |entity| entity.touch = Some(touch))?;
@@ -442,12 +414,7 @@ fn tossed_weapon_touch(
     let Some(definition) = definition else {
         return Ok(());
     };
-    if entity
-        .owner
-        .as_ref()
-        .is_some_and(|owner| same_actor(owner, other))
-        && entity.next_think - game.time > 119.0
-    {
+    if entity.owner.as_ref().is_some_and(|owner| same_actor(owner, other)) && entity.next_think - game.time > 119.0 {
         return Ok(());
     }
     mission_pickup_message(game, other, definition.name);
@@ -488,6 +455,7 @@ pub fn register_rogue_toss_callbacks(game: &mut Q1EntityServices) -> Result<(), 
 mod tests {
     use super::super::types::test_game;
     use super::*;
+    use crate::q1::base::provider::{Q1BaseGuard, Q1BaseOptions};
     use crate::q1::foundation::entity_services::Q1AttachOptions;
 
     fn attached_player(game: &mut Q1EntityServices) -> (ActorId, OwnedActor) {
@@ -496,8 +464,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         (player, owned)
     }
 
@@ -505,27 +472,21 @@ mod tests {
     fn empty_packs_drop_nothing() {
         let mut game = test_game();
         let (_, owned) = attached_player(&mut game);
-        assert!(
-            drop_mission_pack_backpack(&mut game, &owned, Q1MissionPack::Hipnotic)
-                .expect("drop")
-                .is_none()
-        );
-        assert!(
-            drop_mission_pack_backpack(&mut game, &owned, Q1MissionPack::Rogue)
-                .expect("drop")
-                .is_none()
-        );
+        assert!(drop_mission_pack_backpack(&mut game, &owned, Q1MissionPack::Hipnotic)
+            .expect("drop")
+            .is_none());
+        assert!(drop_mission_pack_backpack(&mut game, &owned, Q1MissionPack::Rogue)
+            .expect("drop")
+            .is_none());
     }
 
     #[test]
     fn loaded_hipnotic_pack_drops() {
         let mut game = test_game();
+        let _guard = Q1BaseGuard::register(&mut game, Q1BaseOptions::default()).expect("base");
         let (_, owned) = attached_player(&mut game);
-        game.host
-            .inventory
-            .give(&owned, &ItemId::from("q1:ammo/shells"), 25.0);
-        let pack =
-            drop_mission_pack_backpack(&mut game, &owned, Q1MissionPack::Hipnotic).expect("drop");
+        game.host.inventory.give(&owned, &ItemId::from("q1:ammo/shells"), 25.0);
+        let pack = drop_mission_pack_backpack(&mut game, &owned, Q1MissionPack::Hipnotic).expect("drop");
         assert!(pack.is_some());
     }
 
@@ -535,15 +496,7 @@ mod tests {
         register_rogue_toss_callbacks(&mut game).expect("register");
         assert!(game.named.touch("rogue:tossed-weapon-touch").is_ok());
         let (player, _) = attached_player(&mut game);
-        assert!(
-            toss_rogue_backpack(&mut game, &player)
-                .expect("toss")
-                .is_none()
-        );
-        assert!(
-            toss_rogue_weapon(&mut game, &player)
-                .expect("toss")
-                .is_none()
-        );
+        assert!(toss_rogue_backpack(&mut game, &player).expect("toss").is_none());
+        assert!(toss_rogue_weapon(&mut game, &player).expect("toss").is_none());
     }
 }

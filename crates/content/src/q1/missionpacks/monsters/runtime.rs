@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use qa_core::identity::{ActorId, OwnedActor, SavedActorId};
 use qa_core::math::Vec3;
@@ -13,15 +13,12 @@ use crate::monsters::monster_target_eligible;
 use crate::q1::base::animation::{MonsterAi, MonsterOperation, SoundComparison};
 use crate::q1::base::monster_actions::monster_jump_touch;
 use crate::q1::base::monsters::{
-    register_monster_source, BaseMonster, BaseMonsterState, MonsterSource,
-    MonsterSourceRegistration,
+    register_monster_source, BaseMonster, BaseMonsterState, MonsterSource, MonsterSourceRegistration,
 };
 use crate::q1::base::species::{MonsterMovement, MonsterSpecies, BASE_SPECIES};
 use crate::q1::foundation::callbacks::{callback_name, Q1CallbackHandlers, Q1StateExtension};
 use crate::q1::foundation::checkpoint::{decode_checkpoint_value, encode_checkpoint_value};
-use crate::q1::foundation::entity::{
-    Q1Actor, Q1AttackState, Q1Monster, Q1MonsterMode, Q1MonsterSpecies,
-};
+use crate::q1::foundation::entity::{Q1Actor, Q1AttackState, Q1Monster, Q1MonsterMode, Q1MonsterSpecies};
 use crate::q1::foundation::entity_services::{Q1EntityServices, Q1SpawnHandler};
 use crate::q1::foundation::gameplay::TouchSurface;
 use crate::q1::foundation::host::Q1ReleaseHook;
@@ -30,9 +27,7 @@ use crate::q1::missionpacks::types::Q1MissionPack;
 use crate::q1::{q1_error, Q1Error};
 use crate::value::{arr, int, obj, str as save_str, SaveJson, SaveReader};
 
-use super::charm::{
-    charmer, find_charmed_target, find_hipnotic_target, hunt_charmer, walk_with_charmer,
-};
+use super::charm::{charmer, find_charmed_target, find_hipnotic_target, hunt_charmer, walk_with_charmer};
 use super::types::{MissionMonsterHooks, PackMonsterDefinition};
 
 /// Pack id text without assuming `Copy` on the pack enum.
@@ -116,7 +111,7 @@ impl<'m> MissionMonster<'m> {
     /// Monster actor id.
     #[must_use]
     pub fn id(&self) -> &ActorId {
-        &self.entity.actor.id
+        self.entity.actor.id()
     }
 
     /// Callback prefix (`source.callbackPrefix`).
@@ -126,7 +121,7 @@ impl<'m> MissionMonster<'m> {
     }
 
     fn is_live(&self) -> bool {
-        self.game.entity_ref(&self.entity.actor.id).is_some()
+        self.game.entity_ref(self.entity.actor.id()).is_some()
     }
 
     /// Flush staged fields, then reload snapshots. Every method calls this
@@ -139,7 +134,7 @@ impl<'m> MissionMonster<'m> {
     /// Flush staged fields, then reload entity, state, and positional
     /// snapshots.
     pub fn refresh(&mut self) {
-        let id = self.entity.actor.id.clone();
+        let id = self.entity.actor.id().clone();
         if self.game.entity_ref(&id).is_none() {
             return;
         }
@@ -149,10 +144,8 @@ impl<'m> MissionMonster<'m> {
         self.controller.lefty = self.lefty;
         self.controller.next_frame = self.next_frame.clone();
         self.controller.counted_death = self.counted_death;
-        let owned = self.entity.actor.clone();
-        self.runtime
-            .controllers
-            .insert(owned, self.controller.clone());
+        let owned = self.entity.actor.id().clone();
+        self.runtime.controllers.insert(owned, self.controller.clone());
         let Some(entity) = self.game.entity_ref(&id).cloned() else {
             return;
         };
@@ -174,7 +167,7 @@ impl<'m> MissionMonster<'m> {
 
     /// Write the staged entity snapshot back without a full sync.
     pub fn flush_entity(&mut self) {
-        let id = self.entity.actor.id.clone();
+        let id = self.entity.actor.id().clone();
         if self.game.entity_ref(&id).is_none() {
             return;
         }
@@ -191,20 +184,19 @@ impl<'m> MissionMonster<'m> {
     /// controller and monster state back afterwards.
     pub fn with_base<R>(&mut self, run: impl FnOnce(&mut BaseMonster) -> R) -> R {
         self.sync();
-        let id = self.entity.actor.id.clone();
+        let id = self.entity.actor.id().clone();
+        let prefix = self.prefix();
         let mut base = BaseMonster {
             game: &mut *self.game,
             id,
             spec: self.spec,
-            prefix: self.prefix(),
+            prefix,
             controller: self.controller.clone(),
             monster: self.state.clone(),
         };
         let result = run(&mut base);
         let BaseMonster {
-            controller,
-            monster,
-            ..
+            controller, monster, ..
         } = base;
         self.lefty = controller.lefty;
         self.next_frame = controller.next_frame.clone();
@@ -212,7 +204,7 @@ impl<'m> MissionMonster<'m> {
         self.controller = controller.clone();
         self.state = monster.clone();
         self.enemy = monster.enemy.clone();
-        let owned = self.entity.actor.clone();
+        let owned = self.entity.actor.id().clone();
         self.runtime.controllers.insert(owned, controller);
         self.refresh();
         result
@@ -249,12 +241,8 @@ impl<'m> MissionMonster<'m> {
     pub fn start_default(&mut self) {
         self.sync();
         let path = self.game.find(&self.state.path).first().cloned();
-        self.entity
-            .references
-            .insert("goalentity".to_string(), path.clone());
-        self.entity
-            .references
-            .insert("movetarget".to_string(), path);
+        self.entity.references.insert("goalentity".to_string(), path.clone());
+        self.entity.references.insert("movetarget".to_string(), path);
         self.flush_entity();
         self.with_base(|base| {
             let _ = base.start();
@@ -268,13 +256,11 @@ impl<'m> MissionMonster<'m> {
         if !self.is_live() {
             return;
         }
-        let id = self.entity.actor.id.clone();
+        let id = self.entity.actor.id().clone();
         if self.game.health(&id) > 0.0 {
             if let Some(enemy) = self.enemy.clone() {
-                let eligible = monster_target_eligible(
-                    self.game.health(&enemy),
-                    self.game.monster_target(&enemy).as_ref(),
-                );
+                let eligible =
+                    monster_target_eligible(self.game.health(&enemy), self.game.monster_target(&enemy).as_ref());
                 if !eligible {
                     let previous = self.state.old_enemy.clone();
                     self.enemy = match previous {
@@ -376,11 +362,7 @@ impl<'m> MissionMonster<'m> {
                     comparison,
                     chance,
                 } => {
-                    let draw = if chance.is_some() {
-                        self.game.host.random()
-                    } else {
-                        0.0
-                    };
+                    let draw = if chance.is_some() { self.game.host.random() } else { 0.0 };
                     let play = match chance {
                         None => true,
                         Some(chance) => match comparison {
@@ -447,7 +429,7 @@ impl<'m> MissionMonster<'m> {
         }
         let attacker = attacker.cloned();
         self.enemy = attacker.clone();
-        let id = self.entity.actor.id.clone();
+        let id = self.entity.actor.id().clone();
         if self.game.health(&id) < -99.0 {
             let owned = self.entity.actor.clone();
             let _ = self.game.host.combat.set_health(&owned, -99.0);
@@ -528,7 +510,7 @@ impl<'m> MissionMonster<'m> {
         let target = target.clone();
         self.enemy = Some(target.clone());
         if self.game.is_player(&target) {
-            self.game.sight_entity = Some(self.entity.actor.id.clone());
+            self.game.sight_entity = Some(self.entity.actor.id().clone());
             self.game.sight_time = self.game.time;
         }
         let hostile = self.game.time + 1.0;
@@ -549,13 +531,12 @@ impl<'m> MissionMonster<'m> {
             };
             sound = format!("enforcer/sight{track}.wav");
         } else if matches!(self.spec.species, Q1MonsterSpecies::Fish)
-            || (matches!(self.spec.species, Q1MonsterSpecies::Gremlin)
-                && self.entity.number("stoleweapon") != 0.0)
+            || (matches!(self.spec.species, Q1MonsterSpecies::Gremlin) && self.entity.number("stoleweapon") != 0.0)
         {
             sound = String::new();
         }
         if !sound.is_empty() {
-            let id = self.entity.actor.id.clone();
+            let id = self.entity.actor.id().clone();
             let _ = self.game.sound_simple(&id, &sound);
         }
         self.state.mode = Q1MonsterMode::Run;
@@ -693,17 +674,11 @@ impl<'m> MissionMonster<'m> {
             if run_straight != 0.0 && self.game.time > self.entity.number("endtime") {
                 if let Some(world) = world {
                     let _ = self.game.update_entity(&world, |entity| {
-                        entity
-                            .fields
-                            .insert("RUN_STRAIGHT".to_string(), "0".to_string());
+                        entity.fields.insert("RUN_STRAIGHT".to_string(), "0".to_string());
                     });
                 }
-                let id = self.entity.actor.id.clone();
-                let yaw = self
-                    .game
-                    .body(&id)
-                    .map(|body| f64::from(body.angles.y))
-                    .unwrap_or(0.0);
+                let id = self.entity.actor.id().clone();
+                let yaw = self.game.body(&id).map(|body| f64::from(body.angles.y)).unwrap_or(0.0);
                 let owned = self.entity.actor.clone();
                 if self.game.host.walk_move(&owned, yaw, distance) {
                     self.refresh();
@@ -735,7 +710,7 @@ impl<'m> MissionMonster<'m> {
     /// Refresh the angle basis (`makeVectors`).
     pub fn make_vectors(&mut self) -> Q1Basis {
         self.sync();
-        let id = self.entity.actor.id.clone();
+        let id = self.entity.actor.id().clone();
         let angles = self.game.body(&id).map(|body| body.angles).unwrap_or(ZERO);
         let basis = self.game.make_vectors(angles);
         self.refresh();
@@ -879,10 +854,8 @@ impl<'m> MissionMonster<'m> {
         self.lefty = self.controller.lefty;
         self.next_frame = self.controller.next_frame.clone();
         self.counted_death = self.controller.counted_death;
-        let owned = self.entity.actor.clone();
-        self.runtime
-            .controllers
-            .insert(owned, self.controller.clone());
+        let owned = self.entity.actor.id().clone();
+        self.runtime.controllers.insert(owned, self.controller.clone());
         self.refresh();
         Ok(())
     }
@@ -908,7 +881,7 @@ pub struct Q1MissionPackMonsters {
     /// Definitions by classname.
     definitions: HashMap<String, &'static PackMonsterDefinition>,
     /// Per-actor controllers.
-    controllers: HashMap<OwnedActor, BaseMonsterState>,
+    controllers: HashMap<ActorId, BaseMonsterState>,
     /// Whether pack callbacks and extensions are installed.
     installed: bool,
 }
@@ -919,14 +892,10 @@ impl Q1MissionPackMonsters {
     /// publishes itself as the installed pack runtime for the `fn`
     /// callbacks. There is no base monster registry; views load straight
     /// from the definitions and controllers stored here.
-    pub fn new(
-        game: &mut Q1EntityServices,
-        pack: Q1MissionPack,
-        hooks: MissionMonsterHooks,
-    ) -> Result<Self, Q1Error> {
+    pub fn new(game: &mut Q1EntityServices, pack: Q1MissionPack, hooks: MissionMonsterHooks) -> Result<Self, Q1Error> {
         let mut this = Self::uninstalled(pack, hooks);
         this.ensure_installed(game)?;
-        *lock_pack(&this.pack) = this.clone();
+        publish_pack(&this);
         Ok(this)
     }
 
@@ -952,7 +921,7 @@ impl Q1MissionPackMonsters {
     /// Whether an actor has a mission controller.
     #[must_use]
     pub fn contains(&self, actor: &OwnedActor) -> bool {
-        self.controllers.contains_key(actor)
+        self.controllers.contains_key(actor.id())
     }
 
     /// Load a controller view (`require`).
@@ -971,23 +940,17 @@ impl Q1MissionPackMonsters {
             .get(&entity.classname)
             .copied()
             .ok_or_else(|| q1_error(format!("Unknown {prefix} monster {}", entity.classname)))?;
-        let owned = entity.actor.clone();
-        let controller = self.controllers.get(&owned).cloned().unwrap_or_else(|| {
-            BaseMonsterState::new(
-                definition.spec.species,
-                prefix.to_string(),
-                definition.spec.stand,
-            )
+        let controller = self.controllers.get(id).cloned().unwrap_or_else(|| {
+            BaseMonsterState::new(definition.spec.species, prefix.to_string(), definition.spec.stand)
         });
         let state = entity
             .monster
             .clone()
             .unwrap_or_else(|| default_monster_state(definition.spec.species, &entity.target));
         game.update_entity(id, |entity| {
-            entity.fields.insert(
-                "source.monsterCallbackPrefix".to_string(),
-                prefix.to_string(),
-            );
+            entity
+                .fields
+                .insert("source.monsterCallbackPrefix".to_string(), prefix.to_string());
             if entity.monster.is_none() {
                 entity.monster = Some(state.clone());
             }
@@ -1020,13 +983,9 @@ impl Q1MissionPackMonsters {
     }
 
     /// Load a controller view for an actor, if mission-controlled (`context`).
-    pub fn context<'m>(
-        &'m mut self,
-        game: &'m mut Q1EntityServices,
-        actor: &ActorId,
-    ) -> Option<MissionMonster<'m>> {
+    pub fn context<'m>(&'m mut self, game: &'m mut Q1EntityServices, actor: &ActorId) -> Option<MissionMonster<'m>> {
         let owned = game.host.actors.resolve_owned(actor)?;
-        if !self.controllers.contains_key(&owned) {
+        if !self.controllers.contains_key(owned.id()) {
             return None;
         }
         let id = owned.id().clone();
@@ -1034,11 +993,7 @@ impl Q1MissionPackMonsters {
     }
 
     /// Register a definition (`register`).
-    pub fn register(
-        &mut self,
-        game: &mut Q1EntityServices,
-        definition: PackMonsterDefinition,
-    ) -> Result<(), Q1Error> {
+    pub fn register(&mut self, game: &mut Q1EntityServices, definition: PackMonsterDefinition) -> Result<(), Q1Error> {
         self.ensure_installed(game)?;
         let prefix = pack_id(&self.pack);
         for (name, handlers) in &definition.callbacks {
@@ -1054,7 +1009,7 @@ impl Q1MissionPackMonsters {
             self.definitions.insert((*classname).to_string(), leaked);
             game.register_spawn(classname, self.spawn_handler())?;
         }
-        *lock_pack(&self.pack) = self.clone();
+        publish_pack(self);
         Ok(())
     }
 
@@ -1075,12 +1030,8 @@ impl Q1MissionPackMonsters {
             .copied()
             .ok_or_else(|| q1_error(format!("Unknown {prefix} monster {}", entity.classname)))?;
         self.controllers.insert(
-            entity.actor.clone(),
-            BaseMonsterState::new(
-                definition.spec.species,
-                prefix.to_string(),
-                definition.spec.stand,
-            ),
+            entity.actor.id().clone(),
+            BaseMonsterState::new(definition.spec.species, prefix.to_string(), definition.spec.stand),
         );
         self.require(game, id)
     }
@@ -1101,12 +1052,8 @@ impl Q1MissionPackMonsters {
             .get(&entity.classname)
             .copied()
             .ok_or_else(|| q1_error(format!("Unknown {prefix} monster {}", entity.classname)))?;
-        let controller = BaseMonsterState::new(
-            definition.spec.species,
-            prefix.to_string(),
-            definition.spec.stand,
-        );
-        self.controllers.insert(entity.actor.clone(), controller);
+        let controller = BaseMonsterState::new(definition.spec.species, prefix.to_string(), definition.spec.stand);
+        self.controllers.insert(entity.actor.id().clone(), controller);
         let mut monster = self.require(game, &id)?;
         monster.spawn();
         monster.finish();
@@ -1118,11 +1065,7 @@ impl Q1MissionPackMonsters {
     /// availability, Hipnotic first. Deviation: the Rust base game keeps no
     /// monster controller registry, so charm builds a fresh controller
     /// instead of migrating the base one.
-    pub fn charm(
-        game: &mut Q1EntityServices,
-        id: &ActorId,
-        owner: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn charm(game: &mut Q1EntityServices, id: &ActorId, owner: &ActorId) -> Result<(), Q1Error> {
         let classname = game
             .entity_ref(id)
             .map(|entity| entity.classname.clone())
@@ -1141,23 +1084,20 @@ impl Q1MissionPackMonsters {
             .entity_ref(&id)
             .map(|entity| entity.actor.clone())
             .ok_or_else(|| q1_error(format!("Missing {prefix} charm entity")))?;
-        if !local.controllers.contains_key(&owned) {
-            let definition = local.definitions.get(&classname).copied().ok_or_else(|| {
-                q1_error(format!("Missing source charm controller for {classname}"))
-            })?;
+        if !local.controllers.contains_key(owned.id()) {
+            let definition = local
+                .definitions
+                .get(&classname)
+                .copied()
+                .ok_or_else(|| q1_error(format!("Missing source charm controller for {classname}")))?;
             local.controllers.insert(
-                owned,
-                BaseMonsterState::new(
-                    definition.spec.species,
-                    prefix.to_string(),
-                    definition.spec.stand,
-                ),
+                owned.id().clone(),
+                BaseMonsterState::new(definition.spec.species, prefix.to_string(), definition.spec.stand),
             );
             game.update_entity(&id, |entity| {
-                entity.fields.insert(
-                    "source.monsterCallbackPrefix".to_string(),
-                    prefix.to_string(),
-                );
+                entity
+                    .fields
+                    .insert("source.monsterCallbackPrefix".to_string(), prefix.to_string());
             })?;
             let current = game
                 .entity_ref(&id)
@@ -1177,15 +1117,9 @@ impl Q1MissionPackMonsters {
             let use_callback = rename(&current.use_callback)
                 .map(|name| game.named.use_callback(&name))
                 .transpose()?;
-            let touch = rename(&current.touch)
-                .map(|name| game.named.touch(&name))
-                .transpose()?;
-            let pain = rename(&current.pain)
-                .map(|name| game.named.pain(&name))
-                .transpose()?;
-            let die = rename(&current.die)
-                .map(|name| game.named.die(&name))
-                .transpose()?;
+            let touch = rename(&current.touch).map(|name| game.named.touch(&name)).transpose()?;
+            let pain = rename(&current.pain).map(|name| game.named.pain(&name)).transpose()?;
+            let die = rename(&current.die).map(|name| game.named.die(&name)).transpose()?;
             let path_end = rename(&current.path_end)
                 .map(|name| game.named.action(&name))
                 .transpose()?;
@@ -1198,7 +1132,7 @@ impl Q1MissionPackMonsters {
                 entity.path_end = path_end;
             })?;
         }
-        *lock_pack(&pack) = local;
+        publish_pack(&local);
         Ok(())
     }
 
@@ -1227,11 +1161,10 @@ impl Q1MissionPackMonsters {
             load: mission_load_controller,
             store: mission_store_controller,
         });
-        let action =
-            |handler: crate::q1::foundation::callbacks::Q1ActionHandler| Q1CallbackHandlers {
-                action: Some(handler),
-                ..Default::default()
-            };
+        let action = |handler: crate::q1::foundation::callbacks::Q1ActionHandler| Q1CallbackHandlers {
+            action: Some(handler),
+            ..Default::default()
+        };
         game.named.register(
             &format!("{prefix}:monster_jump_touch"),
             Q1CallbackHandlers {
@@ -1239,26 +1172,16 @@ impl Q1MissionPackMonsters {
                 ..Default::default()
             },
         )?;
-        game.named.register(
-            &format!("{prefix}:monster_frame"),
-            action(mission_frame_handler),
-        )?;
-        game.named.register(
-            &format!("{prefix}:monster_route"),
-            action(mission_route_handler),
-        )?;
-        game.named.register(
-            &format!("{prefix}:monster_start"),
-            action(mission_start_handler),
-        )?;
-        game.named.register(
-            &format!("{prefix}:monster_stand"),
-            action(mission_stand_handler),
-        )?;
-        game.named.register(
-            &format!("{prefix}:monster_found"),
-            action(mission_found_handler),
-        )?;
+        game.named
+            .register(&format!("{prefix}:monster_frame"), action(mission_frame_handler))?;
+        game.named
+            .register(&format!("{prefix}:monster_route"), action(mission_route_handler))?;
+        game.named
+            .register(&format!("{prefix}:monster_start"), action(mission_start_handler))?;
+        game.named
+            .register(&format!("{prefix}:monster_stand"), action(mission_stand_handler))?;
+        game.named
+            .register(&format!("{prefix}:monster_found"), action(mission_found_handler))?;
         game.named.register(
             &format!("{prefix}:monster_pain"),
             Q1CallbackHandlers {
@@ -1298,10 +1221,10 @@ impl Q1MissionPackMonsters {
                         callbacks: Vec::new(),
                         spawn: None,
                         start: None,
-                        pain: Rc::new(|monster, attacker, damage| {
+                        pain: Arc::new(|monster, attacker, damage| {
                             monster.pain_default(attacker, damage);
                         }),
-                        die: Rc::new(|monster, attacker| {
+                        die: Arc::new(|monster, attacker| {
                             monster.die_default(attacker);
                         }),
                         melee: None,
@@ -1357,11 +1280,25 @@ fn lock_pack(pack: &Q1MissionPack) -> MutexGuard<'static, Q1MissionPackMonsters>
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Merge a runtime into the published pack slot. Merging (rather than
+/// replacing) keeps parallel games from wiping each other's registrations;
+/// actor keys carry unique session tokens so controllers never collide, and
+/// a single game merging its own state back is identical to a replace.
+fn publish_pack(local: &Q1MissionPackMonsters) {
+    let mut global = lock_pack(&local.pack);
+    for (classname, definition) in &local.definitions {
+        global.definitions.entry(classname.clone()).or_insert(*definition);
+    }
+    for (id, controller) in &local.controllers {
+        global.controllers.insert(id.clone(), controller.clone());
+    }
+    global.installed = global.installed || local.installed;
+    global.authored_gremlins = global.authored_gremlins.max(local.authored_gremlins);
+    global.spawned_gremlins = global.spawned_gremlins.max(local.spawned_gremlins);
+}
+
 fn pack_for_entity(game: &Q1EntityServices, id: &ActorId) -> Option<Q1MissionPack> {
-    let prefix = game
-        .entity_ref(id)?
-        .fields
-        .get("source.monsterCallbackPrefix")?;
+    let prefix = game.entity_ref(id)?.fields.get("source.monsterCallbackPrefix")?;
     match prefix.as_str() {
         "hipnotic" => Some(Q1MissionPack::Hipnotic),
         "rogue" => Some(Q1MissionPack::Rogue),
@@ -1371,12 +1308,9 @@ fn pack_for_entity(game: &Q1EntityServices, id: &ActorId) -> Option<Q1MissionPac
 
 /// Pick the pack runtime holding a definition, Hipnotic first.
 fn definition_pack(classname: &str) -> Option<Q1MissionPack> {
-    for pack in [Q1MissionPack::Hipnotic, Q1MissionPack::Rogue] {
-        if lock_pack(&pack).definitions.contains_key(classname) {
-            return Some(pack);
-        }
-    }
-    None
+    [Q1MissionPack::Hipnotic, Q1MissionPack::Rogue]
+        .into_iter()
+        .find(|pack| lock_pack(pack).definitions.contains_key(classname))
 }
 
 /// Run a dispatched callback against a locally cloned runtime. The static
@@ -1394,7 +1328,7 @@ fn with_pack_view<R>(
     let mut monster = local.require(game, id)?;
     let result = run(&mut monster);
     monster.finish();
-    *lock_pack(&pack) = local;
+    publish_pack(&local);
     Ok(Some(result))
 }
 
@@ -1402,7 +1336,7 @@ fn hipnotic_spawn_handler(game: &mut Q1EntityServices, id: &ActorId) -> Result<(
     let id = id.clone();
     let mut local = lock_pack(&Q1MissionPack::Hipnotic).clone();
     local.spawn(game, &id)?;
-    *lock_pack(&Q1MissionPack::Hipnotic) = local;
+    publish_pack(&local);
     Ok(())
 }
 
@@ -1410,7 +1344,7 @@ fn rogue_spawn_handler(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), 
     let id = id.clone();
     let mut local = lock_pack(&Q1MissionPack::Rogue).clone();
     local.spawn(game, &id)?;
-    *lock_pack(&Q1MissionPack::Rogue) = local;
+    publish_pack(&local);
     Ok(())
 }
 
@@ -1472,11 +1406,7 @@ fn mission_pain_handler(
     Ok(())
 }
 
-fn mission_die_handler(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    attacker: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn mission_die_handler(game: &mut Q1EntityServices, id: &ActorId, attacker: Option<&ActorId>) -> Result<(), Q1Error> {
     let id = id.clone();
     let attacker = attacker.cloned();
     with_pack_view(game, &id, |monster| {
@@ -1537,8 +1467,7 @@ fn mission_load_controller(
     id: &ActorId,
     classname: &str,
 ) -> Result<(BaseMonsterState, &'static MonsterSpecies), Q1Error> {
-    let pack =
-        pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
+    let pack = pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
     let guard = lock_pack(&pack);
     let definition = guard
         .definitions
@@ -1547,7 +1476,7 @@ fn mission_load_controller(
         .ok_or_else(|| q1_error(format!("Unknown mission monster {classname}")))?;
     let owned = game
         .entity_ref(id)
-        .map(|entity| entity.actor.clone())
+        .map(|entity| entity.actor.id().clone())
         .ok_or_else(|| q1_error("Missing mission monster entity"))?;
     let controller = guard.controllers.get(&owned).cloned().unwrap_or_else(|| {
         BaseMonsterState::new(
@@ -1564,11 +1493,10 @@ fn mission_store_controller(
     id: &ActorId,
     controller: BaseMonsterState,
 ) -> Result<(), Q1Error> {
-    let pack =
-        pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
+    let pack = pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
     let owned = game
         .entity_ref(id)
-        .map(|entity| entity.actor.clone())
+        .map(|entity| entity.actor.id().clone())
         .ok_or_else(|| q1_error("Missing mission monster entity"))?;
     lock_pack(&pack).controllers.insert(owned, controller);
     Ok(())
@@ -1600,15 +1528,15 @@ impl Q1StateExtension for MissionMonstersExtension {
         let guard = lock_pack(&self.pack());
         let mut monsters = Vec::new();
         for (owned, controller) in guard.controllers.iter() {
-            let Some(entity) = game.entity_ref(owned.id()) else {
+            let Some(entity) = game.entity_ref(owned) else {
                 continue;
             };
             monsters.push(obj(vec![
                 (
                     "actor",
                     obj(vec![
-                        ("slot", int(i64::from(owned.id().slot()))),
-                        ("generation", int(i64::from(owned.id().generation()))),
+                        ("slot", int(i64::from(owned.slot()))),
+                        ("generation", int(i64::from(owned.generation()))),
                     ]),
                 ),
                 ("definition", save_str(&entity.classname)),
@@ -1618,7 +1546,7 @@ impl Q1StateExtension for MissionMonstersExtension {
         encode_checkpoint_value(&obj(vec![
             ("version", int(1)),
             ("authoredGremlins", int(i64::from(guard.authored_gremlins))),
-            ("spawnedGremlins", int(i64::from(guard.spawnedGremlins))),
+            ("spawnedGremlins", int(i64::from(guard.spawned_gremlins))),
             ("monsters", arr(monsters)),
         ]))
     }
@@ -1646,20 +1574,21 @@ impl Q1StateExtension for MissionMonstersExtension {
                 slot: u32::try_from(slot).unwrap_or(u32::MAX),
                 generation: u32::try_from(generation).unwrap_or(u32::MAX),
             };
-            let owned =
-                game.host.actors.resolve_saved(&saved).ok_or_else(|| {
-                    Q1Error::from(root.clone().fail("missing saved monster actor"))
-                })?;
+            let owned = game
+                .host
+                .actors
+                .resolve_saved(&saved)
+                .ok_or_else(|| Q1Error::from(root.clone().fail("missing saved monster actor")))?;
             if game.entity_ref(owned.id()).is_none() {
-                return Err(Q1Error::from(
-                    root.clone().fail("missing saved monster source entity"),
-                ));
+                return Err(Q1Error::from(root.clone().fail("missing saved monster source entity")));
             }
-            let definition = guard.definitions.get(&definition).copied().ok_or_else(|| {
-                Q1Error::from(root.clone().fail("unknown saved mission pack monster"))
-            })?;
+            let definition = guard
+                .definitions
+                .get(&definition)
+                .copied()
+                .ok_or_else(|| Q1Error::from(root.clone().fail("unknown saved mission pack monster")))?;
             guard.controllers.insert(
-                owned,
+                owned.id().clone(),
                 BaseMonsterState {
                     species: definition.spec.species,
                     prefix: self.prefix.to_string(),
@@ -1678,20 +1607,15 @@ impl Q1StateExtension for MissionMonstersExtension {
         Ok(())
     }
 
-    fn clone_state(
-        &mut self,
-        game: &mut Q1EntityServices,
-        source: &ActorId,
-        target: &ActorId,
-    ) -> Result<(), Q1Error> {
+    fn clone_state(&mut self, game: &mut Q1EntityServices, source: &ActorId, target: &ActorId) -> Result<(), Q1Error> {
         let source_owned = game.host.actors.resolve_owned(source);
         let target_owned = game.host.actors.resolve_owned(target);
         let (Some(source_owned), Some(target_owned)) = (source_owned, target_owned) else {
             return Ok(());
         };
         let mut guard = lock_pack(&self.pack());
-        if let Some(controller) = guard.controllers.get(&source_owned).cloned() {
-            guard.controllers.insert(target_owned, controller);
+        if let Some(controller) = guard.controllers.get(source_owned.id()).cloned() {
+            guard.controllers.insert(target_owned.id().clone(), controller);
         }
         Ok(())
     }
@@ -1709,20 +1633,20 @@ impl Q1ReleaseHook for MissionMonstersRelease {
             "hipnotic" => Q1MissionPack::Hipnotic,
             _ => Q1MissionPack::Rogue,
         };
-        lock_pack(&pack).controllers.remove(actor);
+        lock_pack(&pack).controllers.remove(actor.id());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use crate::q1::missionpacks::types::test_game;
 
     use super::super::helpers::HULL_BOUNDS;
 
-    fn test_definition(pinged: Rc<Cell<bool>>) -> PackMonsterDefinition {
+    fn test_definition(pinged: Arc<AtomicBool>) -> PackMonsterDefinition {
         PackMonsterDefinition {
             spec: Box::leak(Box::new(MonsterSpecies {
                 species: Q1MonsterSpecies::Gremlin,
@@ -1746,15 +1670,15 @@ mod tests {
             frames: &[],
             actions: vec![(
                 "ping",
-                Rc::new(move |_monster: &mut MissionMonster| {
-                    pinged.set(true);
+                Arc::new(move |_monster: &mut MissionMonster| {
+                    pinged.store(true, Ordering::SeqCst);
                 }),
             )],
             callbacks: Vec::new(),
             spawn: None,
             start: None,
-            pain: Rc::new(|_, _, _| {}),
-            die: Rc::new(|_, _| {}),
+            pain: Arc::new(|_, _, _| {}),
+            die: Arc::new(|_, _| {}),
             melee: None,
             check_attack: None,
             found: None,
@@ -1765,14 +1689,11 @@ mod tests {
 
     #[test]
     fn require_and_play_action() {
-        let pinged = Rc::new(Cell::new(false));
+        let pinged = Arc::new(AtomicBool::new(false));
         let mut game = test_game();
-        let mut runtime = Q1MissionPackMonsters::new(
-            &mut game,
-            Q1MissionPack::Hipnotic,
-            MissionMonsterHooks::default(),
-        )
-        .expect("new");
+        let mut runtime =
+            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, MissionMonsterHooks::default())
+                .expect("new");
         runtime
             .register(&mut game, test_definition(pinged.clone()))
             .expect("register");
@@ -1780,23 +1701,18 @@ mod tests {
         let mut monster = runtime.require(&mut game, &id).expect("require");
         assert_eq!(monster.spec.model, "grem");
         monster.play("ping");
-        assert!(pinged.get());
+        assert!(pinged.load(Ordering::SeqCst));
         monster.finish();
     }
 
     #[test]
     fn charm_is_noop_when_controlled() {
-        let pinged = Rc::new(Cell::new(false));
+        let pinged = Arc::new(AtomicBool::new(false));
         let mut game = test_game();
-        let mut runtime = Q1MissionPackMonsters::new(
-            &mut game,
-            Q1MissionPack::Hipnotic,
-            MissionMonsterHooks::default(),
-        )
-        .expect("new");
-        runtime
-            .register(&mut game, test_definition(pinged))
-            .expect("register");
+        let mut runtime =
+            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, MissionMonsterHooks::default())
+                .expect("new");
+        runtime.register(&mut game, test_definition(pinged)).expect("register");
         let id = game.create("monster_gremlin", None, None).expect("create");
         runtime.spawn(&mut game, &id).expect("spawn");
         let owner = game.create("player", None, None).expect("owner");

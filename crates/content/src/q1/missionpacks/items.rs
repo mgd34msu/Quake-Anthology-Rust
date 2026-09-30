@@ -9,15 +9,14 @@ use crate::q1::foundation::entity::Q1Actor;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::TouchSurface;
 use crate::q1::foundation::types::{
-    Q1Edition, Q1Effect, Q1MoveType, Q1Powerup, Q1Solid, Q1SoundChannel, Q1Weapon, ZERO,
-    weapon_item,
+    weapon_item, Q1Edition, Q1Effect, Q1MoveType, Q1Powerup, Q1Solid, Q1SoundChannel, Q1Weapon, ZERO,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::arsenal::MissionPackArsenal;
 use super::messages::{mission_message, mission_pickup_message};
 use super::player::MissionPackPlayers;
-use super::types::{MISSION_WEAPONS, MissionWeapon, MissionWeaponDefinition, Q1MissionPack};
+use super::types::{MissionWeapon, MissionWeaponDefinition, Q1MissionPack, MISSION_WEAPONS};
 
 /// Mission-pack item services (`MissionItemServices`).
 pub struct MissionItemServices {
@@ -38,22 +37,12 @@ impl MissionItemServices {
     }
 
     /// Fire the horn of conjuring.
-    pub fn horn(
-        &self,
-        game: &mut Q1EntityServices,
-        item: &ActorId,
-        player: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn horn(&self, game: &mut Q1EntityServices, item: &ActorId, player: &ActorId) -> Result<(), Q1Error> {
         MissionPackArsenal::use_horn(game, item, player)
     }
 
     /// Grant a vengeance sphere.
-    pub fn sphere(
-        &self,
-        game: &mut Q1EntityServices,
-        item: &ActorId,
-        player: &ActorId,
-    ) -> Result<bool, Q1Error> {
+    pub fn sphere(&self, game: &mut Q1EntityServices, item: &ActorId, player: &ActorId) -> Result<bool, Q1Error> {
         self.players().sphere(game, item, player)
     }
 
@@ -69,11 +58,7 @@ impl MissionItemServices {
     }
 
     /// Enable Rogue combo weapons.
-    pub fn enable_combos(
-        &self,
-        game: &mut Q1EntityServices,
-        player: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn enable_combos(&self, game: &mut Q1EntityServices, player: &ActorId) -> Result<(), Q1Error> {
         self.players().enable_combos(game, player)
     }
 }
@@ -161,8 +146,7 @@ fn random_type(game: &mut Q1EntityServices, item: &ActorId) -> Result<(), Q1Erro
         "item_artifact_super_damage"
     };
     game.update_entity(item, |item| {
-        item.fields
-            .insert("rogue:random-type".to_string(), rolled.to_string());
+        item.fields.insert("rogue:random-type".to_string(), rolled.to_string());
     })
 }
 
@@ -192,16 +176,15 @@ fn definition(entity: &Q1Actor) -> Option<MissionItem> {
             kind: MissionItemKind::Weapon { weapon: *weapon },
         });
     }
-    let powerup_item =
-        |powerup, seconds: f64, model: &str, sound: &str, name: &str, bounds: Bounds| MissionItem {
-            appearance: ItemAppearance {
-                model: model.to_string(),
-                sound: sound.to_string(),
-                name: name.to_string(),
-                bounds,
-            },
-            kind: MissionItemKind::Powerup { powerup, seconds },
-        };
+    let powerup_item = |powerup, seconds: f64, model: &str, sound: &str, name: &str, bounds: Bounds| MissionItem {
+        appearance: ItemAppearance {
+            model: model.to_string(),
+            sound: sound.to_string(),
+            name: name.to_string(),
+            bounds,
+        },
+        kind: MissionItemKind::Powerup { powerup, seconds },
+    };
     if name == "item_artifact_wetsuit" {
         return Some(powerup_item(
             Q1Powerup::HipnoticWetsuit,
@@ -265,11 +248,7 @@ fn definition(entity: &Q1Actor) -> Option<MissionItem> {
                         y: -8.0,
                         z: -8.0,
                     },
-                    max: Vec3 {
-                        x: 8.0,
-                        y: 8.0,
-                        z: 8.0,
-                    },
+                    max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
                 },
             },
             kind: MissionItemKind::Sphere,
@@ -396,10 +375,7 @@ fn take_weapon(
         .player_ref(player)
         .cloned()
         .ok_or_else(|| q1_error("Player has no Q1 weapon state"))?;
-    let leave_hook = game
-        .pickup_rules
-        .as_ref()
-        .and_then(|rules| rules.weapon_leave);
+    let leave_hook = game.pickup_rules.as_ref().and_then(|rules| rules.weapon_leave);
     let leave = match leave_hook {
         Some(hook) => hook(game)?,
         None => false,
@@ -419,10 +395,7 @@ fn take_weapon(
     if leave && owned {
         return Ok(TakeWeapon::Refused);
     }
-    let auto_switch = game
-        .pickup_rules
-        .as_ref()
-        .and_then(|rules| rules.auto_switch);
+    let auto_switch = game.pickup_rules.as_ref().and_then(|rules| rules.auto_switch);
     if admitted {
         let switch = match auto_switch {
             Some(hook) => hook(game, player, owned)?,
@@ -454,11 +427,7 @@ fn take_weapon(
         if !granted {
             return Ok(TakeWeapon::Refused);
         }
-        return Ok(if leave {
-            TakeWeapon::Leave
-        } else {
-            TakeWeapon::Taken
-        });
+        return Ok(if leave { TakeWeapon::Leave } else { TakeWeapon::Taken });
     }
     game.host.inventory.give(&state.actor, &item, 1.0);
     game.host.inventory.give(
@@ -476,11 +445,7 @@ fn take_weapon(
             game.select_weapon(&state.actor, Q1Weapon::from(weapon.id))?;
         }
     }
-    Ok(if leave {
-        TakeWeapon::Leave
-    } else {
-        TakeWeapon::Taken
-    })
+    Ok(if leave { TakeWeapon::Leave } else { TakeWeapon::Taken })
 }
 
 /// Pick up a mission-pack item (`pickup`).
@@ -569,10 +534,7 @@ fn pickup(
     } else {
         mission_pickup_message(game, other, &item.appearance.name);
     }
-    let channel = if matches!(
-        item.kind,
-        MissionItemKind::Weapon { .. } | MissionItemKind::Ammo { .. }
-    ) {
+    let channel = if matches!(item.kind, MissionItemKind::Weapon { .. } | MissionItemKind::Ammo { .. }) {
         Q1SoundChannel::Item
     } else {
         Q1SoundChannel::Voice
@@ -609,19 +571,12 @@ fn pickup(
         && (deathmatch == 3 || deathmatch == 5)
     {
         15.0
-    } else if matches!(
-        item.kind,
-        MissionItemKind::Weapon { .. } | MissionItemKind::Ammo { .. }
-    ) || random_powerup
-    {
+    } else if matches!(item.kind, MissionItemKind::Weapon { .. } | MissionItemKind::Ammo { .. }) || random_powerup {
         30.0
     } else {
         60.0
     };
-    let returns = if matches!(
-        item.kind,
-        MissionItemKind::Weapon { .. } | MissionItemKind::Ammo { .. }
-    ) {
+    let returns = if matches!(item.kind, MissionItemKind::Weapon { .. } | MissionItemKind::Ammo { .. }) {
         if edition == Q1Edition::Classic {
             deathmatch == 1
         } else {
@@ -655,12 +610,7 @@ fn pickup_hipnotic(
     _normal: Option<Vec3>,
     _surface: Option<&TouchSurface>,
 ) -> Result<(), Q1Error> {
-    pickup(
-        game,
-        id,
-        other,
-        &MissionItemServices::new(Q1MissionPack::Hipnotic),
-    )
+    pickup(game, id, other, &MissionItemServices::new(Q1MissionPack::Hipnotic))
 }
 
 /// Rogue item touch hook.
@@ -671,12 +621,7 @@ fn pickup_rogue(
     _normal: Option<Vec3>,
     _surface: Option<&TouchSurface>,
 ) -> Result<(), Q1Error> {
-    pickup(
-        game,
-        id,
-        other,
-        &MissionItemServices::new(Q1MissionPack::Rogue),
-    )
+    pickup(game, id, other, &MissionItemServices::new(Q1MissionPack::Rogue))
 }
 
 /// Regenerate a Rogue random powerup (`missionpack:random-regen`).
@@ -686,8 +631,7 @@ fn random_regen(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
         .entity_ref(id)
         .cloned()
         .ok_or_else(|| q1_error("Missing Rogue random powerup definition"))?;
-    let item =
-        definition(&record).ok_or_else(|| q1_error("Missing Rogue random powerup definition"))?;
+    let item = definition(&record).ok_or_else(|| q1_error("Missing Rogue random powerup definition"))?;
     game.update_entity(id, |entity| {
         entity.model = item.appearance.model.clone();
         entity.original_model = item.appearance.model.clone();
@@ -714,8 +658,7 @@ fn spawn_mission_item(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
         .entity_ref(id)
         .cloned()
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
-    let item = definition(&record)
-        .ok_or_else(|| q1_error(format!("Unknown mission-pack item {classname}")))?;
+    let item = definition(&record).ok_or_else(|| q1_error(format!("Unknown mission-pack item {classname}")))?;
     game.update_entity(id, |entity| {
         entity.model = item.appearance.model.clone();
         entity.original_model = item.appearance.model.clone();
@@ -737,10 +680,7 @@ fn spawn_mission_item(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
 }
 
 /// Register mission-pack items (`registerMissionPackItems`).
-pub fn register_mission_pack_items(
-    game: &mut Q1EntityServices,
-    services: &MissionItemServices,
-) -> Result<(), Q1Error> {
+pub fn register_mission_pack_items(game: &mut Q1EntityServices, services: &MissionItemServices) -> Result<(), Q1Error> {
     game.named.register(
         "missionpack:item-touch",
         Q1CallbackHandlers {
@@ -797,8 +737,8 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
+        game.set_health(&player, 100.0).expect("health");
         player
     }
 
@@ -813,11 +753,7 @@ mod tests {
     #[test]
     fn items_register_touch_and_spawns() {
         let mut game = test_game();
-        register_mission_pack_items(
-            &mut game,
-            &MissionItemServices::new(Q1MissionPack::Hipnotic),
-        )
-        .expect("register");
+        register_mission_pack_items(&mut game, &MissionItemServices::new(Q1MissionPack::Hipnotic)).expect("register");
         assert!(game.named.touch("missionpack:item-touch").is_ok());
         assert!(game.named.action("missionpack:random-regen").is_ok());
     }
@@ -825,15 +761,9 @@ mod tests {
     #[test]
     fn wetsuit_pickup_grants_powerup() {
         let mut game = test_game();
-        register_mission_pack_items(
-            &mut game,
-            &MissionItemServices::new(Q1MissionPack::Hipnotic),
-        )
-        .expect("register");
+        register_mission_pack_items(&mut game, &MissionItemServices::new(Q1MissionPack::Hipnotic)).expect("register");
         let player = attached_player(&mut game);
-        let item = game
-            .create("item_artifact_wetsuit", None, None)
-            .expect("item");
+        let item = game.create("item_artifact_wetsuit", None, None).expect("item");
         game.update_entity(&item, |entity| entity.solid = Q1Solid::Trigger)
             .expect("trigger");
         pickup(
@@ -843,12 +773,11 @@ mod tests {
             &MissionItemServices::new(Q1MissionPack::Hipnotic),
         )
         .expect("pickup");
-        assert!(
-            game.player_ref(&player)
-                .expect("state")
-                .powerups
-                .contains_key(&Q1Powerup::HipnoticWetsuit)
-        );
+        assert!(game
+            .player_ref(&player)
+            .expect("state")
+            .powerups
+            .contains_key(&Q1Powerup::HipnoticWetsuit));
         assert_eq!(game.entity_ref(&item).expect("item").solid, Q1Solid::None);
     }
 }

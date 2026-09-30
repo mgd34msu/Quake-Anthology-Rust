@@ -21,7 +21,7 @@ pub fn charmer(monster: &mut MissionMonster) -> Option<ActorId> {
 
 fn update_goal(monster: &mut MissionMonster) -> Option<ActorId> {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let owner = charmer(monster)?;
     let owner_body = monster.game.host.bodies.read(&owner)?;
     let mut goal = monster
@@ -30,12 +30,7 @@ fn update_goal(monster: &mut MissionMonster) -> Option<ActorId> {
         .get("trigger_field")
         .cloned()
         .flatten()
-        .and_then(|goal| {
-            monster
-                .game
-                .entity(&goal)
-                .map(|entity| entity.actor.id.clone())
-        });
+        .and_then(|goal| monster.game.entity(&goal).map(|entity| entity.actor.id().clone()));
     if monster.entity.number("huntingcharmer") == 1.0 {
         let created = monster.game.create("charmed_goal", None, None).ok()?;
         monster
@@ -96,21 +91,13 @@ pub fn hunt_charmer(monster: &mut MissionMonster, flee: bool) {
 
 fn stop_hunting(monster: &mut MissionMonster) {
     monster.sync();
-    let goal = monster
-        .entity
-        .references
-        .get("trigger_field")
-        .cloned()
-        .flatten();
+    let goal = monster.entity.references.get("trigger_field").cloned().flatten();
     if monster.entity.number("huntingcharmer") > 1.0 {
         if let Some(goal) = goal {
             let _ = monster.game.remove(&goal);
         }
     }
-    monster
-        .entity
-        .references
-        .insert("goalentity".to_string(), None);
+    monster.entity.references.insert("goalentity".to_string(), None);
     number(monster, "huntingcharmer", 0.0);
     monster.next_frame = monster.spec.stand.to_string();
     monster.flush_entity();
@@ -123,7 +110,7 @@ fn stop_hunting(monster: &mut MissionMonster) {
 pub fn find_charmed_target(monster: &mut MissionMonster) -> Option<bool> {
     monster.sync();
     let owner = charmer(monster)?;
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let owner_body = monster.game.host.bodies.read(&owner)?;
     monster.entity.effects |= 8;
     monster.flush_entity();
@@ -203,7 +190,7 @@ pub fn find_charmed_target(monster: &mut MissionMonster) -> Option<bool> {
 /// Hipnotic target scan (`findHipnoticTarget`).
 pub fn find_hipnotic_target(monster: &mut MissionMonster) -> bool {
     monster.sync();
-    let id = monster.entity.actor.id.clone();
+    let id = monster.entity.actor.id().clone();
     let candidate = if monster.game.sight_entity.is_some()
         && monster.game.sight_time >= monster.game.time - 0.1
         && monster.entity.spawnflags & 3 == 0
@@ -237,13 +224,7 @@ pub fn find_hipnotic_target(monster: &mut MissionMonster) -> bool {
         monster.refresh();
         return false;
     };
-    if target
-        .as_ref()
-        .map(|entity| entity.movement_flags)
-        .unwrap_or(0)
-        & 128
-        != 0
-    {
+    if target.as_ref().map(|entity| entity.movement_flags).unwrap_or(0) & 128 != 0 {
         monster.refresh();
         return false;
     }
@@ -272,11 +253,7 @@ pub fn find_hipnotic_target(monster: &mut MissionMonster) -> bool {
             .game
             .body(&id)
             .map(|body| body.angles)
-            .unwrap_or(Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            });
+            .unwrap_or(Vec3 { x: 0.0, y: 0.0, z: 0.0 });
         let basis = monster.game.make_vectors(angles);
         if (distance >= 500.0 || hostile < monster.game.time)
             && dot(normalize(vsub(body.origin, monster.origin)), basis.forward) <= 0.3
@@ -286,11 +263,7 @@ pub fn find_hipnotic_target(monster: &mut MissionMonster) -> bool {
         }
     }
     let mut candidate = candidate;
-    if target
-        .as_ref()
-        .map(|entity| entity.number("charmed"))
-        .unwrap_or(0.0)
-        == 0.0
+    if target.as_ref().map(|entity| entity.number("charmed")).unwrap_or(0.0) == 0.0
         && !monster.game.is_player(&candidate)
     {
         let redirected = target
@@ -329,19 +302,11 @@ pub fn walk_with_charmer(monster: &mut MissionMonster, distance: f64) -> bool {
         .get("goalentity")
         .cloned()
         .flatten()
-        .and_then(|goal| {
-            monster
-                .game
-                .entity(&goal)
-                .map(|entity| entity.actor.id.clone())
-        })
+        .and_then(|goal| monster.game.entity(&goal).map(|entity| entity.actor.id().clone()))
         .or_else(|| monster.game.find(&monster.state.path).first().cloned());
     if let Some(goal) = goal {
         let owned = monster.entity.actor.clone();
-        monster
-            .game
-            .host
-            .move_to_goal(&owned, &goal, distance, None);
+        monster.game.host.move_to_goal(&owned, &goal, distance, None);
     }
     if monster.entity.number("huntingcharmer") != 0.0 {
         let remaining = (monster.entity.next_think - monster.game.time) / 2.0;
@@ -360,7 +325,7 @@ mod tests {
     use crate::q1::base::species::{MonsterMovement, MonsterSpecies};
     use crate::q1::foundation::entity::Q1MonsterSpecies;
     use crate::q1::missionpacks::types::{test_game, Q1MissionPack};
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn test_definition() -> PackMonsterDefinition {
         PackMonsterDefinition {
@@ -388,8 +353,8 @@ mod tests {
             callbacks: Vec::new(),
             spawn: None,
             start: None,
-            pain: Rc::new(|_, _, _| {}),
-            die: Rc::new(|_, _| {}),
+            pain: Arc::new(|_, _, _| {}),
+            die: Arc::new(|_, _| {}),
             melee: None,
             check_attack: None,
             found: None,
@@ -401,15 +366,10 @@ mod tests {
     #[test]
     fn uncharmed_monster_has_no_charmer() {
         let mut game = test_game();
-        let mut runtime = Q1MissionPackMonsters::new(
-            &mut game,
-            Q1MissionPack::Hipnotic,
-            MissionMonsterHooks::default(),
-        )
-        .expect("new");
-        runtime
-            .register(&mut game, test_definition())
-            .expect("register");
+        let mut runtime =
+            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, MissionMonsterHooks::default())
+                .expect("new");
+        runtime.register(&mut game, test_definition()).expect("register");
         let id = game.create("monster_dog", None, None).expect("create");
         let mut monster = runtime.require(&mut game, &id).expect("require");
         assert!(charmer(&mut monster).is_none());

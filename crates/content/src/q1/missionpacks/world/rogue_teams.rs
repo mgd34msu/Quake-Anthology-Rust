@@ -5,20 +5,16 @@
 //! The Rust services default `base_team_health` to disabled, which is the
 //! state the donor's constructor selects, so no setter call is needed here.
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::contract::ItemId;
 use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
-use crate::q1::foundation::gameplay::{
-    BodyPatch, DamageRequest, Q1DamageSourceEffects, TouchSurface,
-};
+use crate::q1::foundation::gameplay::{BodyPatch, DamageRequest, Q1DamageSourceEffects, TouchSurface};
 use crate::q1::foundation::spawns::spawn_map_actor;
-use crate::q1::foundation::types::{
-    Q1Event, Q1MessageArg, Q1MoveType, Q1Solid, ZERO, length, vadd, vscale, vsub,
-};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{length, vadd, vscale, vsub, Q1Event, Q1MessageArg, Q1MoveType, Q1Solid, ZERO};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{brush, later, number, vector};
 use super::with_missionpack_hooks;
@@ -57,7 +53,7 @@ fn teamplay_mode(game: &Q1EntityServices) -> i32 {
 
 /// Whether the mode plays capture-the-flag (`ctf`).
 fn is_ctf(game: &Q1EntityServices) -> bool {
-    matches!(teamplay_mode(game), 4 | 5 | 6)
+    matches!(teamplay_mode(game), 4..=6)
 }
 
 /// Read the Rogue gamecfg flags (0 when the session provides none).
@@ -145,10 +141,7 @@ impl RogueTeams {
         if let Some(found) = game.entity_ids().into_iter().find(|id| {
             game.entity(id).is_some_and(|entity| {
                 entity.classname == "rogue_team_state"
-                    && entity
-                        .owner
-                        .as_ref()
-                        .is_some_and(|owner| same_actor(owner, actor))
+                    && entity.owner.as_ref().is_some_and(|owner| same_actor(owner, actor))
             })
         }) {
             return Ok(found);
@@ -167,7 +160,7 @@ impl RogueTeams {
 
     /// Read a player's team color (`color`).
     fn color(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<i32, Q1Error> {
-        with_missionpack_hooks(game, |_, hooks| {
+        with_missionpack_hooks(game, |game, hooks| {
             let Some(team_color) = hooks.team_color.as_ref() else {
                 if teamplay_mode(game) <= 0 {
                     return Ok(0);
@@ -179,11 +172,7 @@ impl RogueTeams {
     }
 
     /// Read a player's team (`team`).
-    pub fn team(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: Option<&ActorId>,
-    ) -> Result<i32, Q1Error> {
+    pub fn team(&self, game: &mut Q1EntityServices, actor: Option<&ActorId>) -> Result<i32, Q1Error> {
         let Some(actor) = actor else {
             return Ok(0);
         };
@@ -198,12 +187,7 @@ impl RogueTeams {
     }
 
     /// Write a player's team color (`setColor`).
-    fn set_color(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        team: i32,
-    ) -> Result<(), Q1Error> {
+    fn set_color(&self, game: &mut Q1EntityServices, actor: &ActorId, team: i32) -> Result<(), Q1Error> {
         with_missionpack_hooks(game, |_, hooks| {
             let Some(set_color) = hooks.set_team_color.as_ref() else {
                 return Err(q1_error("Rogue CTF requires shared color mutation"));
@@ -214,12 +198,7 @@ impl RogueTeams {
     }
 
     /// Adjust a player's score (`score`).
-    fn score(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        delta: i32,
-    ) -> Result<(), Q1Error> {
+    fn score(&self, game: &mut Q1EntityServices, actor: &ActorId, delta: i32) -> Result<(), Q1Error> {
         with_missionpack_hooks(game, |_, hooks| {
             let Some(add_frags) = hooks.add_frags.as_ref() else {
                 return Err(q1_error("Rogue CTF requires shared score authority"));
@@ -240,14 +219,7 @@ impl RogueTeams {
     }
 
     /// Message one player (`message`).
-    fn message(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        text: &str,
-        center: bool,
-        args: Vec<Q1MessageArg>,
-    ) {
+    fn message(&self, game: &mut Q1EntityServices, actor: &ActorId, text: &str, center: bool, args: Vec<Q1MessageArg>) {
         game.host.emit(Q1Event::Message {
             player: actor.clone(),
             text: text.to_string(),
@@ -265,13 +237,7 @@ impl RogueTeams {
     }
 
     /// Play a team sound for a player (`sound`).
-    fn sound(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        path: &str,
-        global: bool,
-    ) -> Result<(), Q1Error> {
+    fn sound(&self, game: &mut Q1EntityServices, actor: &ActorId, path: &str, global: bool) -> Result<(), Q1Error> {
         if game.host.actors.resolve_owned(actor).is_none() {
             return Ok(());
         }
@@ -307,16 +273,9 @@ impl RogueTeams {
     }
 
     /// Assign a spawned player to a team (`playerSpawned`).
-    pub fn player_spawned(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn player_spawned(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> {
         let state = self.state(game, actor)?;
-        let steam = game
-            .entity(&state)
-            .map(|state| state.number("steam"))
-            .unwrap_or(0.0);
+        let steam = game.entity(&state).map(|state| state.number("steam")).unwrap_or(0.0);
         if steam >= 0.0 || teamplay_mode(game) < 4 {
             let color = self.color(game, actor)?;
             if self.legal(game, color) {
@@ -349,11 +308,7 @@ impl RogueTeams {
         }
         game.update_entity(&state, |state| {
             number(state, "steam", f64::from(team));
-            number(
-                state,
-                "ctf_flags",
-                state.number("ctf_flags") as i32 as f64 | 4.0,
-            );
+            number(state, "ctf_flags", (state.number("ctf_flags") as i32 | 4) as f64);
         })?;
         self.message(
             game,
@@ -382,11 +337,7 @@ impl RogueTeams {
             != 0
         {
             game.update_entity(&state, |state| {
-                number(
-                    state,
-                    "ctf_flags",
-                    (state.number("ctf_flags") as i32 & !4) as f64,
-                );
+                number(state, "ctf_flags", (state.number("ctf_flags") as i32 & !4) as f64);
             })?;
             let steam = game
                 .entity(&state)
@@ -420,9 +371,7 @@ impl RogueTeams {
                 self.message(game, actor, "$qc_color_games", false, Vec::new());
                 with_missionpack_hooks(game, |_, hooks| {
                     let Some(disconnect) = hooks.disconnect.as_ref() else {
-                        return Err(q1_error(
-                            "Rogue team enforcement requires shared disconnect",
-                        ));
+                        return Err(q1_error("Rogue team enforcement requires shared disconnect"));
                     };
                     disconnect(actor);
                     Ok(())
@@ -456,12 +405,7 @@ impl RogueTeams {
         if previous >= 0 && !self.legal(game, previous) {
             game.update_entity(&state, |state| number(state, "steam", -50.0))?;
         }
-        if game
-            .entity(&state)
-            .map(|state| state.number("steam"))
-            .unwrap_or(0.0)
-            > 0.0
-        {
+        if game.entity(&state).map(|state| state.number("steam")).unwrap_or(0.0) > 0.0 {
             if game
                 .entity(&state)
                 .map(|state| state.number("ctf_killed"))
@@ -491,14 +435,9 @@ impl RogueTeams {
     }
 
     /// Select a team spawn point (`selectSpawn`).
-    pub fn select_spawn(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-    ) -> Result<Option<ActorId>, Q1Error> {
+    pub fn select_spawn(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<Option<ActorId>, Q1Error> {
         let world = game.world.clone();
-        if game.options().coop || game.options().deathmatch == 0 || !is_ctf(game) || world.is_none()
-        {
+        if game.options().coop || game.options().deathmatch == 0 || !is_ctf(game) || world.is_none() {
             return Ok(None);
         }
         let world = world.expect("world");
@@ -532,10 +471,7 @@ impl RogueTeams {
             .filter(|last| game.entity(last).is_some());
         let points: Vec<ActorId> = entities
             .into_iter()
-            .filter(|id| {
-                game.entity(id)
-                    .is_some_and(|entity| entity.classname == classname)
-            })
+            .filter(|id| game.entity(id).is_some_and(|entity| entity.classname == classname))
             .collect();
         let start = last
             .as_ref()
@@ -548,10 +484,7 @@ impl RogueTeams {
             if occupied_by_last
                 || !(game.host.players)().iter().any(|player| {
                     game.host.bodies.read(player).is_some_and(|body| {
-                        let center = vadd(
-                            body.origin,
-                            vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-                        );
+                        let center = vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5));
                         game.body(&point)
                             .map(|point| f64::from(length(vsub(center, point.origin))) <= 32.0)
                             .unwrap_or(false)
@@ -569,12 +502,7 @@ impl RogueTeams {
     }
 
     /// Report flag status on impulse 23 (`impulse`).
-    pub fn impulse(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        impulse: i32,
-    ) -> Result<bool, Q1Error> {
+    pub fn impulse(&self, game: &mut Q1EntityServices, actor: &ActorId, impulse: i32) -> Result<bool, Q1Error> {
         if impulse != 23 {
             return Ok(false);
         }
@@ -587,17 +515,13 @@ impl RogueTeams {
         }
         let flags = self.flags(game);
         if teamplay_mode(game) == 5 {
-            let flag = flags.iter().find(|flag| {
-                game.entity(flag)
-                    .is_some_and(|entity| entity.classname == "item_flag")
-            });
+            let flag = flags
+                .iter()
+                .find(|flag| game.entity(flag).is_some_and(|entity| entity.classname == "item_flag"));
             let text = match flag {
                 None => "$qc_flag_missing".to_string(),
                 Some(flag) => {
-                    let status = game
-                        .entity(flag)
-                        .map(|entity| entity.number("cnt"))
-                        .unwrap_or(0.0);
+                    let status = game.entity(flag).map(|entity| entity.number("cnt")).unwrap_or(0.0);
                     let owner = game.entity(flag).and_then(|entity| entity.owner.clone());
                     if status == 0.0 {
                         "$qc_flag_at_base".to_string()
@@ -605,9 +529,7 @@ impl RogueTeams {
                         "$qc_flag_lying_about".to_string()
                     } else if status == 1.0 {
                         match owner {
-                            Some(owner) if same_actor(&owner, actor) => {
-                                "$qc_you_have_flag".to_string()
-                            }
+                            Some(owner) if same_actor(&owner, actor) => "$qc_you_have_flag".to_string(),
                             Some(owner) => {
                                 format!(
                                     "{} of the {} team has the flag!\n",
@@ -675,10 +597,7 @@ impl RogueTeams {
                         if teamplay_mode(game) == 4 {
                             "$qc_you_have_enemy_flag".to_string()
                         } else {
-                            format!(
-                                "You have the {} flag!\n",
-                                if index == 0 { "Red" } else { "Blue" }
-                            )
+                            format!("You have the {} flag!\n", if index == 0 { "Red" } else { "Blue" })
                         }
                     } else if teamplay_mode(game) == 4 {
                         format!(
@@ -701,10 +620,7 @@ impl RogueTeams {
             let state = match flag.as_ref() {
                 None => "missing!".to_string(),
                 Some(flag) => {
-                    let status = game
-                        .entity(flag)
-                        .map(|entity| entity.number("cnt"))
-                        .unwrap_or(-1.0);
+                    let status = game.entity(flag).map(|entity| entity.number("cnt")).unwrap_or(-1.0);
                     if status == 0.0 {
                         if teamplay_mode(game) == 6 {
                             "at base.".to_string()
@@ -720,13 +636,7 @@ impl RogueTeams {
                     }
                 }
             };
-            self.message(
-                game,
-                actor,
-                &format!("{label} is {state}\n"),
-                false,
-                Vec::new(),
-            );
+            self.message(game, actor, &format!("{label} is {state}\n"), false, Vec::new());
         }
         Ok(true)
     }
@@ -748,9 +658,7 @@ impl RogueTeams {
             return Ok(());
         }
         let time = game.time;
-        game.update_entity(&world, |world| {
-            number(world, "rogue:nextteamupdtime", time + 120.0)
-        })?;
+        game.update_entity(&world, |world| number(world, "rogue:nextteamupdtime", time + 120.0))?;
         if !is_ctf(game) {
             return Ok(());
         }
@@ -779,17 +687,18 @@ impl RogueTeams {
         } else {
             vec![(5, red), (14, blue)]
         };
-        scores.sort_by(|a, b| b.1.cmp(&a.1));
+        scores.sort_by_key(|score| std::cmp::Reverse(score.1));
         let (first, second) = (scores[0], scores[1]);
         if first.1 > second.1 {
-            return Ok(self.broadcast(
+            self.broadcast(
                 game,
                 &format!(
                     "{} team is leading by {} points!\n",
                     team_name(first.0),
                     first.1 - second.1
                 ),
-            ));
+            );
+            return Ok(());
         }
         let tied = if red == blue {
             (5, 14)
@@ -798,7 +707,7 @@ impl RogueTeams {
         } else {
             (5, 1)
         };
-        Ok(self.broadcast(
+        self.broadcast(
             game,
             &format!(
                 "{} and {} teams are tied with {} points!\n",
@@ -806,7 +715,8 @@ impl RogueTeams {
                 team_name(tied.1),
                 first.1
             ),
-        ))
+        );
+        Ok(())
     }
 
     /// All flag entities (`flags`).
@@ -826,31 +736,22 @@ impl RogueTeams {
     /// Drop a flag or base to the floor (`dropFloor`).
     fn drop_floor(&self, game: &mut Q1EntityServices, id: &ActorId) -> Result<bool, Q1Error> {
         let body = game.body(id)?;
-        let origin = vadd(
-            body.origin,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            },
-        );
-        let hit = game
-            .host
-            .trace(&crate::q1::foundation::types::Q1TraceRequest {
-                start: origin,
-                end: vadd(
-                    origin,
-                    Vec3 {
-                        x: 0.0,
-                        y: 0.0,
-                        z: -256.0,
-                    },
-                ),
-                bounds: body.bounds,
-                ignore: Some(id.clone()),
-                monsters: true,
-                missile: false,
-            });
+        let origin = vadd(body.origin, Vec3 { x: 0.0, y: 0.0, z: 6.0 });
+        let hit = game.host.trace(&crate::q1::foundation::types::Q1TraceRequest {
+            start: origin,
+            end: vadd(
+                origin,
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -256.0,
+                },
+            ),
+            bounds: body.bounds,
+            ignore: Some(id.clone()),
+            monsters: true,
+            missile: false,
+        });
         if hit.fraction == 1.0 || hit.all_solid {
             return Ok(false);
         }
@@ -868,21 +769,16 @@ impl RogueTeams {
     }
 
     /// Spawn a flag base (`flagBase`).
-    fn flag_base(
-        &self,
-        game: &mut Q1EntityServices,
-        flag: &ActorId,
-        classname: &str,
-    ) -> Result<(), Q1Error> {
+    fn flag_base(&self, game: &mut Q1EntityServices, flag: &ActorId, classname: &str) -> Result<(), Q1Error> {
         let base = game.create(classname, None, None)?;
         let (skin, team, origin, angles) = game
             .entity(flag)
-            .map(|flag| {
+            .map(|entity| {
                 (
-                    flag.skin,
-                    flag.number("team"),
-                    game.body(flag).map(|body| body.origin),
-                    game.body(flag).map(|body| body.angles),
+                    entity.skin,
+                    entity.number("team"),
+                    game.body(entity.actor.id()).map(|body| body.origin),
+                    game.body(entity.actor.id()).map(|body| body.angles),
                 )
             })
             .ok_or_else(|| q1_error("Missing Q1 entity"))?;
@@ -915,11 +811,7 @@ impl RogueTeams {
                         y: -8.0,
                         z: 0.0,
                     },
-                    max: Vec3 {
-                        x: 8.0,
-                        y: 8.0,
-                        z: 8.0,
-                    },
+                    max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
                 }),
                 ..Default::default()
             },
@@ -960,9 +852,7 @@ impl RogueTeams {
     fn return_flag(&self, game: &mut Q1EntityServices, flag: &ActorId) -> Result<(), Q1Error> {
         self.regenerate(game, flag)?;
         let (team, mode) = (
-            game.entity(flag)
-                .map(|flag| flag.number("team") as i32)
-                .unwrap_or(0),
+            game.entity(flag).map(|flag| flag.number("team") as i32).unwrap_or(0),
             teamplay_mode(game),
         );
         for actor in (game.host.players)() {
@@ -983,23 +873,20 @@ impl RogueTeams {
     /// Drop a carried flag (`dropFlag`).
     fn drop_flag(&self, game: &mut Q1EntityServices, flag: &ActorId) -> Result<(), Q1Error> {
         let actor = game.entity(flag).and_then(|flag| flag.owner.clone());
-        let body = actor
-            .as_ref()
-            .and_then(|actor| game.host.bodies.read(actor));
+        let body = actor.as_ref().and_then(|actor| game.host.bodies.read(actor));
         let Some(body) = body else {
             return self.return_flag(game, flag);
         };
         if let Some(actor) = actor.as_ref() {
-            let team = game
-                .entity(flag)
-                .map(|flag| flag.number("team") as i32)
-                .unwrap_or(0);
+            let team = game.entity(flag).map(|flag| flag.number("team") as i32).unwrap_or(0);
+            let name = self.name(game, actor)?;
+            let ctf = teamplay_mode(game) == 5;
             self.broadcast(
                 game,
                 &format!(
                     "{} lost the {}flag!\n",
-                    self.name(game, actor)?,
-                    if teamplay_mode(game) == 5 {
+                    name,
+                    if ctf {
                         String::new()
                     } else {
                         format!("{} ", team_name(team))
@@ -1041,21 +928,12 @@ impl RogueTeams {
     /// Think a flag: stick to carriers, time out drops (`flagThink`).
     fn flag_think(&self, game: &mut Q1EntityServices, flag: &ActorId) -> Result<(), Q1Error> {
         later(game, flag, 0.1, "rogue:flag_think")?;
-        let status = game
-            .entity(flag)
-            .map(|flag| flag.number("cnt"))
-            .unwrap_or(0.0);
+        let status = game.entity(flag).map(|flag| flag.number("cnt")).unwrap_or(0.0);
         if status == 0.0 {
             return Ok(());
         }
         if status == 2.0 {
-            if game.time
-                - game
-                    .entity(flag)
-                    .map(|flag| flag.number("super_time"))
-                    .unwrap_or(0.0)
-                > 40.0
-            {
+            if game.time - game.entity(flag).map(|flag| flag.number("super_time")).unwrap_or(0.0) > 40.0 {
                 return self.return_flag(game, flag);
             }
             return Ok(());
@@ -1064,9 +942,7 @@ impl RogueTeams {
             return Err(q1_error("Flag in invalid state"));
         }
         let actor = game.entity(flag).and_then(|flag| flag.owner.clone());
-        let body = actor
-            .as_ref()
-            .and_then(|actor| game.host.bodies.read(actor));
+        let body = actor.as_ref().and_then(|actor| game.host.bodies.read(actor));
         let (Some(actor), Some(body)) = (actor, body) else {
             return self.drop_flag(game, flag);
         };
@@ -1078,14 +954,8 @@ impl RogueTeams {
             .entity(&state)
             .map(|state| state.number("ctf_flags") as i32)
             .unwrap_or(0);
-        let team = game
-            .entity(flag)
-            .map(|flag| flag.number("team") as i32)
-            .unwrap_or(0);
-        if teamplay_mode(game) == 5 && bits & 1 == 0
-            || team == 5 && bits & 1 == 0
-            || team == 14 && bits & 2 == 0
-        {
+        let team = game.entity(flag).map(|flag| flag.number("team") as i32).unwrap_or(0);
+        if teamplay_mode(game) == 5 && bits & 1 == 0 || team == 5 && bits & 1 == 0 || team == 14 && bits & 2 == 0 {
             return self.drop_flag(game, flag);
         }
         let frame = with_missionpack_hooks(game, |_, hooks| {
@@ -1095,9 +965,7 @@ impl RogueTeams {
                 .map(|player_frame| player_frame(&actor))
                 .ok_or_else(|| q1_error("Rogue carried flags require character source frames"))
         })?;
-        const OFFSETS: [f64; 12] = [
-            2.0, 8.0, 12.0, 11.0, 10.0, 4.0, 2.0, 10.0, 10.0, 8.0, 4.0, 2.0,
-        ];
+        const OFFSETS: [f64; 12] = [2.0, 8.0, 12.0, 11.0, 10.0, 4.0, 2.0, 10.0, 10.0, 8.0, 4.0, 2.0];
         let extra = if (29..=40).contains(&frame) {
             OFFSETS[(frame - 29) as usize]
         } else if (103..=106).contains(&frame) {
@@ -1154,22 +1022,15 @@ impl RogueTeams {
     }
 
     /// Capture a flag (`capture`).
-    fn capture(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-        alternate: bool,
-    ) -> Result<(), Q1Error> {
+    fn capture(&self, game: &mut Q1EntityServices, actor: &ActorId, alternate: bool) -> Result<(), Q1Error> {
         let state = self.state(game, actor)?;
         let team = self.team(game, Some(actor))?;
         let bits = game
             .entity(&state)
             .map(|state| state.number("ctf_flags") as i32)
             .unwrap_or(0);
-        self.broadcast(
-            game,
-            &format!("{} captured the flag!\n", self.name(game, actor)?),
-        );
+        let name = self.name(game, actor)?;
+        self.broadcast(game, &format!("{name} captured the flag!\n"));
         self.clear_keys(game, actor);
         self.sound(game, actor, "misc/flagcap.wav", true)?;
         self.score(game, actor, if alternate { 8 } else { 15 })?;
@@ -1207,11 +1068,7 @@ impl RogueTeams {
             }
             if !alternate {
                 game.update_entity(&other, |other| {
-                    number(
-                        other,
-                        "ctf_flags",
-                        (other.number("ctf_flags") as i32 & !3) as f64,
-                    );
+                    number(other, "ctf_flags", (other.number("ctf_flags") as i32 & !3) as f64);
                 })?;
             }
         }
@@ -1220,10 +1077,7 @@ impl RogueTeams {
                 .entity(&flag)
                 .map(|flag| flag.classname.clone())
                 .unwrap_or_default();
-            let team_number = game
-                .entity(&flag)
-                .map(|flag| flag.number("team") as i32)
-                .unwrap_or(0);
+            let team_number = game.entity(&flag).map(|flag| flag.number("team") as i32).unwrap_or(0);
             let wanted = if alternate {
                 team_number == (if bits & 1 != 0 { 5 } else { 14 })
             } else if teamplay_mode(game) == 5 {
@@ -1236,28 +1090,17 @@ impl RogueTeams {
             }
         }
         if alternate {
-            game.update_entity(&state, |state| {
-                number(state, "ctf_flags", (bits & !3) as f64)
-            })?;
+            game.update_entity(&state, |state| number(state, "ctf_flags", (bits & !3) as f64))?;
         }
         Ok(())
     }
 
     /// Pick up (or return) a flag on touch (`touch`).
-    fn touch(
-        &self,
-        game: &mut Q1EntityServices,
-        flag: &ActorId,
-        actor: &ActorId,
-    ) -> Result<(), Q1Error> {
+    fn touch(&self, game: &mut Q1EntityServices, flag: &ActorId, actor: &ActorId) -> Result<(), Q1Error> {
         if !game.is_player(actor)
             || game.health(actor) <= 0.0
             || self.color(game, actor)? != self.team(game, Some(actor))?
-            || game
-                .entity(flag)
-                .map(|flag| flag.number("cnt"))
-                .unwrap_or(0.0)
-                == 1.0
+            || game.entity(flag).map(|flag| flag.number("cnt")).unwrap_or(0.0) == 1.0
         {
             return Ok(());
         }
@@ -1266,21 +1109,13 @@ impl RogueTeams {
             .entity(&state)
             .map(|state| state.number("ctf_flags") as i32)
             .unwrap_or(0);
-        let team = game
-            .entity(flag)
-            .map(|flag| flag.number("team") as i32)
-            .unwrap_or(0);
+        let team = game.entity(flag).map(|flag| flag.number("team") as i32).unwrap_or(0);
         if teamplay_mode(game) != 5 {
             if teamplay_mode(game) != 4 && teamplay_mode(game) != 6 {
                 return Ok(());
             }
             if team == self.team(game, Some(actor))? {
-                if game
-                    .entity(flag)
-                    .map(|flag| flag.number("cnt"))
-                    .unwrap_or(0.0)
-                    == 0.0
-                {
+                if game.entity(flag).map(|flag| flag.number("cnt")).unwrap_or(0.0) == 0.0 {
                     if team == 5 && bits & 2 != 0 || team == 14 && bits & 1 != 0 {
                         return self.capture(game, actor, false);
                     }
@@ -1289,10 +1124,7 @@ impl RogueTeams {
                 self.score(game, actor, 1)?;
                 let time = game.time;
                 game.update_entity(&state, |state| number(state, "ctf_lastreturnedflag", time))?;
-                let noise1 = game
-                    .entity(flag)
-                    .map(|flag| flag.text("noise1"))
-                    .unwrap_or_default();
+                let noise1 = game.entity(flag).map(|flag| flag.text("noise1")).unwrap_or_default();
                 self.sound(game, actor, &noise1, false)?;
                 return self.return_flag(game, flag);
             }
@@ -1300,42 +1132,33 @@ impl RogueTeams {
                 return Ok(());
             }
         }
+        let name = self.name(game, actor)?;
+        let ctf = teamplay_mode(game) == 5;
         self.broadcast(
             game,
             &format!(
                 "{} got the {}flag!\n",
-                self.name(game, actor)?,
-                if teamplay_mode(game) == 5 {
+                name,
+                if ctf {
                     String::new()
                 } else {
                     format!("{} ", team_name(team))
                 }
             ),
         );
-        let noise = game
-            .entity(flag)
-            .map(|flag| flag.text("noise"))
-            .unwrap_or_default();
+        let noise = game.entity(flag).map(|flag| flag.text("noise")).unwrap_or_default();
         self.sound(game, actor, &noise, false)?;
         let time = game.time;
         game.update_entity(&state, |state| {
-            number(
-                state,
-                "ctf_flags",
-                (bits | if team == 14 { 2 } else { 1 }) as f64,
-            );
+            number(state, "ctf_flags", (bits | if team == 14 { 2 } else { 1 }) as f64);
             number(state, "ctf_flagsince", time);
         })?;
         if let Some(owned) = game.host.actors.resolve_owned(actor) {
             if team == 0 || team == 14 {
-                game.host
-                    .inventory
-                    .give(&owned, &ItemId::from("q1:key/silver"), 1.0);
+                game.host.inventory.give(&owned, &ItemId::from("q1:key/silver"), 1.0);
             }
             if team == 0 || team == 5 {
-                game.host
-                    .inventory
-                    .give(&owned, &ItemId::from("q1:key/gold"), 1.0);
+                game.host.inventory.give(&owned, &ItemId::from("q1:key/gold"), 1.0);
             }
         }
         let actor_id = actor.clone();
@@ -1378,12 +1201,7 @@ impl RogueTeams {
     }
 
     /// Capture on a flag base touch (`baseTouch`).
-    fn base_touch(
-        &self,
-        game: &mut Q1EntityServices,
-        base: &ActorId,
-        actor: &ActorId,
-    ) -> Result<(), Q1Error> {
+    fn base_touch(&self, game: &mut Q1EntityServices, base: &ActorId, actor: &ActorId) -> Result<(), Q1Error> {
         if !game.is_player(actor)
             || game.health(actor) <= 0.0
             || self.color(game, actor)? != self.team(game, Some(actor))?
@@ -1395,10 +1213,7 @@ impl RogueTeams {
             .entity(&state)
             .map(|state| state.number("ctf_flags") as i32)
             .unwrap_or(0);
-        let team = game
-            .entity(base)
-            .map(|base| base.number("team") as i32)
-            .unwrap_or(0);
+        let team = game.entity(base).map(|base| base.number("team") as i32).unwrap_or(0);
         if teamplay_mode(game) == 5 {
             let own = self.team(game, Some(actor))?;
             if (team == 5 && own == 14 || team == 14 && own == 5) && bits & 1 != 0 {
@@ -1443,9 +1258,7 @@ impl RogueTeams {
         }
         let attacker_state = self.state(game, attacker)?;
         let time = game.time;
-        game.update_entity(&attacker_state, |state| {
-            number(state, "ctf_lasthurtcarrier", time)
-        })
+        game.update_entity(&attacker_state, |state| number(state, "ctf_lasthurtcarrier", time))
     }
 
     /// Handle player death: assists, flag drops (`playerDied`).
@@ -1482,9 +1295,7 @@ impl RogueTeams {
                     || bits & 2 != 0 && self.team(game, Some(&player))? == 14
                 {
                     let other = self.state(game, &player)?;
-                    game.update_entity(&other, |other| {
-                        number(other, "ctf_lasthurtcarrier", -10.0)
-                    })?;
+                    game.update_entity(&other, |other| number(other, "ctf_lasthurtcarrier", -10.0))?;
                 }
             }
         }
@@ -1492,11 +1303,7 @@ impl RogueTeams {
     }
 
     /// Drop a player's carried flag (`dropCarriedFlag`).
-    pub fn drop_carried_flag(
-        &self,
-        game: &mut Q1EntityServices,
-        actor: &ActorId,
-    ) -> Result<(), Q1Error> {
+    pub fn drop_carried_flag(&self, game: &mut Q1EntityServices, actor: &ActorId) -> Result<(), Q1Error> {
         if !is_ctf(game) {
             return Ok(());
         }
@@ -1514,25 +1321,19 @@ impl RogueTeams {
         } else {
             ""
         };
-        if let Some(flag) = self.flags(game).into_iter().find(|flag| {
-            game.entity(flag)
-                .is_some_and(|entity| entity.classname == wanted)
-        }) {
-            game.update_entity(&state, |state| {
-                number(state, "ctf_flags", (bits & !3) as f64)
-            })?;
+        if let Some(flag) = self
+            .flags(game)
+            .into_iter()
+            .find(|flag| game.entity(flag).is_some_and(|entity| entity.classname == wanted))
+        {
+            game.update_entity(&state, |state| number(state, "ctf_flags", (bits & !3) as f64))?;
             self.drop_flag(game, &flag)?;
         }
         Ok(())
     }
 
     /// Award defense/offense assist bonuses (`assists`).
-    fn assists(
-        &self,
-        game: &mut Q1EntityServices,
-        target: &ActorId,
-        attacker: &ActorId,
-    ) -> Result<(), Q1Error> {
+    fn assists(&self, game: &mut Q1EntityServices, target: &ActorId, attacker: &ActorId) -> Result<(), Q1Error> {
         let victim = self.state(game, target)?;
         let killer = self.state(game, attacker)?;
         let team = self.team(game, Some(attacker))?;
@@ -1545,9 +1346,7 @@ impl RogueTeams {
             && self.team(game, Some(target))? != team
         {
             let time = game.time;
-            game.update_entity(&killer, |killer| {
-                number(killer, "ctf_lastfraggedcarrier", time)
-            })?;
+            game.update_entity(&killer, |killer| number(killer, "ctf_lastfraggedcarrier", time))?;
             if game
                 .entity(&victim)
                 .map(|victim| victim.number("ctf_flagsince"))
@@ -1564,13 +1363,7 @@ impl RogueTeams {
                     vec![Q1MessageArg::Number(2.0)],
                 );
             } else {
-                self.message(
-                    game,
-                    attacker,
-                    "$qc_enemy_killed_no_bonus",
-                    false,
-                    Vec::new(),
-                );
+                self.message(game, attacker, "$qc_enemy_killed_no_bonus", false, Vec::new());
             }
         }
         let mut flag_bonus = false;
@@ -1602,32 +1395,25 @@ impl RogueTeams {
                 let Some(body) = body else {
                     continue;
                 };
-                let center = vadd(
-                    body.origin,
-                    vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-                );
+                let center = vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5));
                 if f64::from(length(vsub(center, origin))) > 400.0 {
                     continue;
                 }
-                if game.is_player(&actor)
-                    && self.team(game, Some(&actor))? == team
-                    && game
-                        .entity(&self.state(game, &actor)?)
+                if game.is_player(&actor) && self.team(game, Some(&actor))? == team {
+                    let carrier = self.state(game, &actor)?;
+                    let flags = game
+                        .entity(&carrier)
                         .map(|state| state.number("ctf_flags") as i32)
-                        .unwrap_or(0)
-                        & 3
-                        != 0
-                    && !same_actor(&actor, attacker)
-                    && !carrier_bonus
-                {
-                    self.score(game, attacker, 1)?;
-                    carrier_bonus = true;
+                        .unwrap_or(0);
+                    if flags & 3 != 0 && !same_actor(&actor, attacker) && !carrier_bonus {
+                        self.score(game, attacker, 1)?;
+                        carrier_bonus = true;
+                    }
                 }
                 let classname = game.host.classname(&actor);
                 if team == 5 && classname == "item_flag_team1"
                     || team == 14 && classname == "item_flag_team2"
-                    || classname == "item_flag"
-                        && (!same_actor(&origin_actor, target) || !flag_bonus)
+                    || classname == "item_flag" && (!same_actor(&origin_actor, target) || !flag_bonus)
                 {
                     self.score(game, attacker, 1)?;
                     flag_bonus = true;
@@ -1638,11 +1424,7 @@ impl RogueTeams {
     }
 
     /// Gameful `armorAllowed` stage for the session damage pipeline.
-    pub fn armor_allowed(
-        &self,
-        game: &mut Q1EntityServices,
-        request: &DamageRequest,
-    ) -> Result<bool, Q1Error> {
+    pub fn armor_allowed(&self, game: &mut Q1EntityServices, request: &DamageRequest) -> Result<bool, Q1Error> {
         if !is_ctf(game) {
             return Ok(true);
         }
@@ -1654,25 +1436,19 @@ impl RogueTeams {
         {
             return Ok(true);
         }
-        if self.team(game, request.attack.attacker.as_ref())?
-            != self.team(game, Some(&request.target))?
-        {
+        if self.team(game, request.attack.attacker.as_ref())? != self.team(game, Some(&request.target))? {
             return Ok(true);
         }
         Ok(gamecfg(game)? & 2 != 0)
     }
 
     /// Gameful `beforeHealth` stage for the session damage pipeline.
-    pub fn before_health(
-        &self,
-        game: &mut Q1EntityServices,
-        request: &DamageRequest,
-    ) -> Result<bool, Q1Error> {
+    pub fn before_health(&self, game: &mut Q1EntityServices, request: &DamageRequest) -> Result<bool, Q1Error> {
         if teamplay_mode(game) <= 0 {
             return Ok(true);
         }
-        let same_teams = self.team(game, request.attack.attacker.as_ref())?
-            == self.team(game, Some(&request.target))?;
+        let same_teams =
+            self.team(game, request.attack.attacker.as_ref())? == self.team(game, Some(&request.target))?;
         if teamplay_mode(game) == 1 && same_teams {
             return Ok(false);
         }
@@ -1747,13 +1523,7 @@ fn flagbase_touch(
 }
 
 /// Spawn a flag entity.
-fn spawn_flag(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    team: i32,
-    skin: i32,
-    base: &str,
-) -> Result<(), Q1Error> {
+fn spawn_flag(game: &mut Q1EntityServices, id: &ActorId, team: i32, skin: i32, base: &str) -> Result<(), Q1Error> {
     if team == 0 {
         if teamplay_mode(game) != 5 {
             return game.remove(id);
@@ -1771,9 +1541,7 @@ fn spawn_flag(
     }
     game.update_entity(id, |entity| {
         entity.model = "progs/ctfmodel.mdl".to_string();
-        entity
-            .fields
-            .insert("noise".to_string(), "misc/flagtk.wav".to_string());
+        entity.fields.insert("noise".to_string(), "misc/flagtk.wav".to_string());
         entity
             .fields
             .insert("noise1".to_string(), "misc/flagret.wav".to_string());
@@ -1822,7 +1590,7 @@ mod tests {
     use crate::q1::foundation::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram};
     use qa_core::identity::ProviderId;
 
-    use super::super::{MissionpackWorldHooks, install_missionpack_hooks};
+    use super::super::{install_missionpack_hooks, MissionpackWorldHooks};
 
     fn ctf_game() -> Q1EntityServices {
         let (host, _) = mock_host();
@@ -1873,6 +1641,8 @@ mod tests {
         let teams = RogueTeams::new(&mut game).expect("teams");
         with_hooks(&mut game);
         let first = player(&mut game);
+        let watch = first.clone();
+        game.host.players = Box::new(move || vec![watch.clone()]);
         teams.player_spawned(&mut game, &first).expect("spawn");
         assert_eq!(teams.team(&mut game, Some(&first)).expect("team"), 5);
     }
@@ -1941,11 +1711,7 @@ mod tests {
                 knockback: 10.0,
                 direction: ZERO,
                 point: ZERO,
-                normal: Vec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 1.0,
-                },
+                normal: Vec3 { x: 0.0, y: 0.0, z: 1.0 },
                 delivery: crate::q1::foundation::gameplay::DamageDelivery::Direct,
             }
         }
@@ -1957,6 +1723,8 @@ mod tests {
         teams.player_spawned(&mut game, &red).expect("red");
         let red2 = player(&mut game);
         teams.player_spawned(&mut game, &red2).expect("red2");
+        let (watch_red, watch_red2) = (red.clone(), red2.clone());
+        game.host.players = Box::new(move || vec![watch_red.clone(), watch_red2.clone()]);
         let friendly = request(&red, Some(&red2));
         assert!(!teams.armor_allowed(&mut game, &friendly).expect("armor"));
         assert!(!teams.before_health(&mut game, &friendly).expect("health"));

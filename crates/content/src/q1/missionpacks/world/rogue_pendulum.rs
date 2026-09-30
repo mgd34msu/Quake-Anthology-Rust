@@ -5,11 +5,11 @@
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3};
 
-use crate::q1::Q1Error;
 use crate::q1::foundation::callbacks::{Q1ActionHandler, Q1CallbackHandlers};
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
 use crate::q1::foundation::types::{Q1Event, Q1Solid, Q1SoundChannel, ZERO};
+use crate::q1::Q1Error;
 
 use super::common::{later, number};
 
@@ -338,9 +338,7 @@ fn pend_step(game: &mut Q1EntityServices, id: &ActorId, index: usize) -> Result<
     if row.impact != 0 {
         if let Some(world) = game.world.clone() {
             let impact = f64::from(row.impact);
-            game.update_entity(&world, |world| {
-                number(world, "rogue:impactVelocity", impact)
-            })?;
+            game.update_entity(&world, |world| number(world, "rogue:impactVelocity", impact))?;
         }
     }
     if row.sound {
@@ -413,12 +411,7 @@ fn pend_touch(
     {
         return Ok(());
     }
-    if game
-        .entity(id)
-        .map(|entity| entity.attack_finished)
-        .unwrap_or(0.0)
-        < game.time
-    {
+    if game.entity(id).map(|entity| entity.attack_finished).unwrap_or(0.0) < game.time {
         game.sound_simple(id, "pendulum/hit.wav")?;
         let time = game.time;
         game.update_entity(id, |entity| entity.attack_finished = time + 1.0)?;
@@ -493,9 +486,7 @@ fn spawn_pendulum(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Err
     })?;
     let spawnflags = game.entity(id).map(|entity| entity.spawnflags).unwrap_or(0);
     if spawnflags & 3 == 0 {
-        return Err(crate::q1::q1_error(
-            "Unimplemented Pendulum Type (pendulum.qc)",
-        ));
+        return Err(crate::q1::q1_error("Unimplemented Pendulum Type (pendulum.qc)"));
     }
     game.set_body(
         id,
@@ -651,8 +642,7 @@ mod tests {
         let id = game.create("pendulum", None, None).expect("pendulum");
         game.spawn_entity(&id, None).expect("spawn");
         let before = game.body(&id).expect("body").bounds;
-        game.invoke_action(&id, "rogue:pend_swing14")
-            .expect("swing");
+        game.invoke_action(&id, "rogue:pend_swing14").expect("swing");
         assert_eq!(game.entity(&id).expect("pendulum").frame, 12);
         assert_eq!(game.body(&id).expect("body").bounds, before);
         assert_eq!(
@@ -670,6 +660,7 @@ mod tests {
         let victim = game.create("player", None, None).expect("victim");
         game.set_health(&victim, 100.0).expect("health");
         game.set_damageable(&victim, true).expect("damageable");
+        game.time = 0.5;
         game.invoke_touch(&id, &victim, None, None).expect("touch");
         let velocity = game.host.bodies.read(&victim).expect("body").velocity;
         assert_eq!(f64::from(velocity.z), 200.0);

@@ -6,18 +6,16 @@
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use crate::q1::foundation::entity::{Q1Actor, move_direction};
+use crate::q1::foundation::entity::{move_direction, Q1Actor};
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::BodyPatch;
 use crate::q1::foundation::types::{Q1MoveType, Q1Solid, ZERO};
 use crate::q1::missionpacks::types::fround;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 /// Store a binary32 numeric field (`number`).
 pub fn number(entity: &mut Q1Actor, key: &str, value: f64) {
-    entity
-        .fields
-        .insert(key.to_string(), fround(value).to_string());
+    entity.fields.insert(key.to_string(), fround(value).to_string());
 }
 
 /// Store a binary32 vector field (`vector`).
@@ -34,12 +32,7 @@ pub fn vector(entity: &mut Q1Actor, key: &str, value: Vec3) {
 }
 
 /// Schedule a named action after a delay (`later`).
-pub fn later(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    delay: f64,
-    name: &str,
-) -> Result<(), Q1Error> {
+pub fn later(game: &mut Q1EntityServices, id: &ActorId, delay: f64, name: &str) -> Result<(), Q1Error> {
     game.schedule(id, delay, name)
 }
 
@@ -80,21 +73,10 @@ pub fn brush(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
 
 /// Fire `useTargets` at an override target, restoring the entity's own
 /// target/message afterwards (`targetEvent`).
-pub fn target_event(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    target: &str,
-    message: &str,
-) -> Result<(), Q1Error> {
+pub fn target_event(game: &mut Q1EntityServices, id: &ActorId, target: &str, message: &str) -> Result<(), Q1Error> {
     let (prior_target, prior_message, activator) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.target.clone(),
-                entity.message.clone(),
-                entity.activator.clone(),
-            )
-        })
+        .map(|entity| (entity.target.clone(), entity.message.clone(), entity.activator.clone()))
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
     let target = target.to_string();
     let message = message.to_string();
@@ -136,10 +118,7 @@ mod tests {
         })
         .expect("update");
         let entity = game.entity(&id).cloned().expect("entity");
-        assert_eq!(
-            entity.fields.get("count").expect("count"),
-            &fround(0.1).to_string()
-        );
+        assert_eq!(entity.fields.get("count").expect("count"), &fround(0.1).to_string());
         assert_eq!(
             entity.vector("origin"),
             Vec3 {
@@ -226,10 +205,7 @@ mod tests {
         })
         .expect("source");
         target_event(&mut game, &source, "t1", "").expect("fire");
-        assert_eq!(
-            game.entity(&target).expect("target").text("used"),
-            "1".to_string()
-        );
+        assert_eq!(game.entity(&target).expect("target").text("used"), "1".to_string());
         let source = game.entity(&source).cloned().expect("source");
         assert_eq!(source.target, "kept");
         assert_eq!(source.message, "msg");

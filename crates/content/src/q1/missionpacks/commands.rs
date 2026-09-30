@@ -5,14 +5,14 @@ use std::rc::Rc;
 use qa_core::identity::ActorId;
 
 use crate::contract::{InventoryEntry, ItemId};
-use crate::q1::Q1Error;
 use crate::q1::base::provider::{campaign_read_flags, campaign_write_flags};
 use crate::q1::foundation::entity_services::{Q1DamageParams, Q1EntityServices};
-use crate::q1::foundation::types::{Q1Edition, Q1Powerup, Q1Weapon, WEAPONS, weapon_item};
+use crate::q1::foundation::types::{weapon_item, Q1Edition, Q1Powerup, Q1Weapon, WEAPONS};
+use crate::q1::Q1Error;
 
 use super::messages::mission_message;
 use super::player::MissionPackPlayers;
-use super::types::{MISSION_WEAPONS, Q1MissionPack, fround};
+use super::types::{fround, Q1MissionPack, MISSION_WEAPONS};
 
 /// Cheat arsenal category (`"weapons" | "ammo"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,6 +25,7 @@ pub enum CheatArsenalCategory {
 
 /// Mission-pack command options (`MissionPackCommandOptions`).
 #[derive(Clone, Default)]
+#[allow(clippy::type_complexity)]
 pub struct MissionPackCommandOptions {
     /// Session cheat-arsenal override.
     pub cheat_arsenal: Option<Rc<dyn Fn(&ActorId, CheatArsenalCategory) -> bool>>,
@@ -118,13 +119,7 @@ pub fn mission_pack_command(
                 .iter()
                 .filter(|weapon| weapon.id.as_str().starts_with(prefix))
             {
-                set_count(
-                    game,
-                    &state.actor,
-                    &weapon_item(Q1Weapon::from(weapon.id)),
-                    1.0,
-                    1.0,
-                )?;
+                set_count(game, &state.actor, &weapon_item(Q1Weapon::from(weapon.id)), 1.0, 1.0)?;
             }
         }
         set_count(game, &state.actor, &ItemId::from("q1:key/silver"), 1.0, 1.0)?;
@@ -135,42 +130,12 @@ pub fn mission_pack_command(
             .map(|arsenal| arsenal(player, CheatArsenalCategory::Ammo))
             .unwrap_or(false))
         {
-            set_count(
-                game,
-                &state.actor,
-                &ItemId::from("q1:ammo/shells"),
-                100.0,
-                100.0,
-            )?;
-            set_count(
-                game,
-                &state.actor,
-                &ItemId::from("q1:ammo/nails"),
-                200.0,
-                200.0,
-            )?;
-            set_count(
-                game,
-                &state.actor,
-                &ItemId::from("q1:ammo/rockets"),
-                100.0,
-                100.0,
-            )?;
-            set_count(
-                game,
-                &state.actor,
-                &ItemId::from("q1:ammo/cells"),
-                200.0,
-                100.0,
-            )?;
+            set_count(game, &state.actor, &ItemId::from("q1:ammo/shells"), 100.0, 100.0)?;
+            set_count(game, &state.actor, &ItemId::from("q1:ammo/nails"), 200.0, 200.0)?;
+            set_count(game, &state.actor, &ItemId::from("q1:ammo/rockets"), 100.0, 100.0)?;
+            set_count(game, &state.actor, &ItemId::from("q1:ammo/cells"), 200.0, 100.0)?;
             if pack == Q1MissionPack::Rogue {
-                set_count(
-                    game,
-                    &state.actor,
-                    &ItemId::from("rogue:ammo/lava-nails"),
-                    200.0,
-                    200.0,
-                )?;
+                set_count(game, &state.actor, &ItemId::from("rogue:ammo/lava-nails"), 200.0, 200.0)?;
                 set_count(
                     game,
                     &state.actor,
@@ -178,13 +143,7 @@ pub fn mission_pack_command(
                     100.0,
                     100.0,
                 )?;
-                set_count(
-                    game,
-                    &state.actor,
-                    &ItemId::from("rogue:ammo/plasma"),
-                    100.0,
-                    100.0,
-                )?;
+                set_count(game, &state.actor, &ItemId::from("rogue:ammo/plasma"), 100.0, 100.0)?;
             }
         }
         if !selected_weapons {
@@ -253,13 +212,7 @@ pub fn mission_pack_command(
         for target in &targets {
             if game.health(target) > 0.0 {
                 let amount = game.health(target) + 10.0;
-                let _ = game.damage(
-                    target,
-                    Some(&world),
-                    Some(&world),
-                    amount,
-                    &Q1DamageParams::default(),
-                );
+                let _ = game.damage(target, Some(&world), Some(&world), amount, &Q1DamageParams::default());
             }
         }
         return Ok(true);
@@ -338,10 +291,7 @@ pub fn dump_mission_pack_coordinates(game: &mut Q1EntityServices, player: &Actor
     };
     game.message(
         None,
-        &format!(
-            "Player: '{} {} {}'\n",
-            body.origin.x, body.origin.y, body.origin.z
-        ),
+        &format!("Player: '{} {} {}'\n", body.origin.x, body.origin.y, body.origin.z),
         false,
         Vec::new(),
     );
@@ -361,8 +311,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -373,15 +322,7 @@ mod tests {
         let player = attached_player(&mut game);
         let options = MissionPackCommandOptions::default();
         assert!(
-            mission_pack_command(
-                &mut game,
-                &players,
-                &player,
-                Q1MissionPack::Hipnotic,
-                9,
-                &options
-            )
-            .expect("impulse")
+            mission_pack_command(&mut game, &players, &player, Q1MissionPack::Hipnotic, 9, &options).expect("impulse")
         );
         assert_eq!(
             game.host
@@ -390,9 +331,7 @@ mod tests {
             1.0
         );
         assert_eq!(
-            game.host
-                .inventory
-                .count(&player, &ItemId::from("q1:ammo/shells")),
+            game.host.inventory.count(&player, &ItemId::from("q1:ammo/shells")),
             100.0
         );
         assert_eq!(
@@ -408,33 +347,15 @@ mod tests {
         let player = attached_player(&mut game);
         let options = MissionPackCommandOptions::default();
         assert!(
-            mission_pack_command(
-                &mut game,
-                &players,
-                &player,
-                Q1MissionPack::Rogue,
-                255,
-                &options
-            )
-            .expect("impulse")
+            mission_pack_command(&mut game, &players, &player, Q1MissionPack::Rogue, 255, &options).expect("impulse")
         );
+        assert!(game
+            .player_ref(&player)
+            .expect("state")
+            .powerups
+            .contains_key(&Q1Powerup::Quad));
         assert!(
-            game.player_ref(&player)
-                .expect("state")
-                .powerups
-                .get(&Q1Powerup::Quad)
-                .is_some()
-        );
-        assert!(
-            !mission_pack_command(
-                &mut game,
-                &players,
-                &player,
-                Q1MissionPack::Rogue,
-                206,
-                &options
-            )
-            .expect("impulse")
+            !mission_pack_command(&mut game, &players, &player, Q1MissionPack::Rogue, 206, &options).expect("impulse")
         );
     }
 
@@ -446,21 +367,12 @@ mod tests {
         let logged: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&logged);
         let options = MissionPackCommandOptions {
-            developer_message: Some(Rc::new(move |text: &str| {
-                sink.borrow_mut().push(text.to_string())
-            })),
+            developer_message: Some(Rc::new(move |text: &str| sink.borrow_mut().push(text.to_string()))),
             ..Default::default()
         };
         assert!(
-            mission_pack_command(
-                &mut game,
-                &players,
-                &player,
-                Q1MissionPack::Hipnotic,
-                202,
-                &options
-            )
-            .expect("impulse")
+            mission_pack_command(&mut game, &players, &player, Q1MissionPack::Hipnotic, 202, &options)
+                .expect("impulse")
         );
         assert!(logged.borrow().iter().any(|line| line.contains("player")));
         dump_mission_pack_coordinates(&mut game, &player);

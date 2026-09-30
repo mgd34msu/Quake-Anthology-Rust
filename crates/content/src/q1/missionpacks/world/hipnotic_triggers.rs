@@ -11,7 +11,7 @@ use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
 use crate::q1::foundation::types::ZERO;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{brush, later, number, trigger};
 
@@ -81,11 +81,7 @@ fn counter_tick(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
 }
 
 /// Start (or restart) a counter (`counterStart`).
-fn counter_start(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    activator: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn counter_start(game: &mut Q1EntityServices, id: &ActorId, activator: Option<&ActorId>) -> Result<(), Q1Error> {
     let (spawnflags, delay) = game
         .entity(id)
         .map(|entity| (entity.spawnflags, entity.delay))
@@ -151,23 +147,13 @@ fn on_count(
 }
 
 /// Consume a key and fire (`useKey`).
-fn use_key(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    activator: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn use_key(game: &mut Q1EntityServices, id: &ActorId, activator: Option<&ActorId>) -> Result<(), Q1Error> {
     let Some(activator) = activator.cloned() else {
         return Ok(());
     };
     let (attack_finished, spawnflags, message) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.attack_finished,
-                entity.spawnflags,
-                entity.message.clone(),
-            )
-        })
+        .map(|entity| (entity.attack_finished, entity.spawnflags, entity.message.clone()))
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
     if !game.is_player(&activator) || attack_finished > game.time {
         return Ok(());
@@ -199,11 +185,7 @@ fn use_key(
                 "key"
             }
         );
-        let text = if message.is_empty() {
-            fallback
-        } else {
-            message
-        };
+        let text = if message.is_empty() { fallback } else { message };
         game.message(Some(&activator), &text, true, Vec::new());
         return game.sound_simple(id, &format!("doors/{sound}try.wav"));
     }
@@ -272,10 +254,7 @@ fn set_gravity_touch(
     if !game.is_player(other) {
         return Ok(());
     }
-    let gravity = game
-        .entity(id)
-        .map(|entity| entity.number("gravity"))
-        .unwrap_or(0.0);
+    let gravity = game.entity(id).map(|entity| entity.number("gravity")).unwrap_or(0.0);
     game.set_gravity(other, if gravity == -1.0 { 1.0 } else { gravity })
 }
 
@@ -317,18 +296,18 @@ fn waterfall_touch(
         .map(|entity| (entity.movedir, entity.count))
         .unwrap_or((ZERO, 0.0));
     let velocity = Vec3 {
-        x: f64::from(body.velocity.x) + f64::from(movedir.x),
-        y: f64::from(body.velocity.y) + f64::from(movedir.y),
-        z: f64::from(body.velocity.z) + f64::from(movedir.z),
+        x: (f64::from(body.velocity.x) + f64::from(movedir.x)) as f32,
+        y: (f64::from(body.velocity.y) + f64::from(movedir.y)) as f32,
+        z: (f64::from(body.velocity.z) + f64::from(movedir.z)) as f32,
     };
-    let turbulence = || game.host.random() - 0.5;
+    let mut turbulence = || game.host.random() - 0.5;
     let jitter_x = count * turbulence();
     let jitter_y = count * turbulence();
     let mut next = body.clone();
     next.velocity = Vec3 {
-        x: (velocity.x + jitter_x) as f32,
-        y: (velocity.y + jitter_y) as f32,
-        z: velocity.z as f32,
+        x: velocity.x + jitter_x as f32,
+        y: velocity.y + jitter_y as f32,
+        z: velocity.z,
     };
     game.host.bodies.write(&owned, &next)?;
     Ok(())
@@ -341,19 +320,12 @@ fn threshold_pain(
     _attacker: Option<&ActorId>,
     _damage: f64,
 ) -> Result<(), Q1Error> {
-    let max_health = game
-        .entity(id)
-        .map(|entity| entity.max_health)
-        .unwrap_or(0.0);
+    let max_health = game.entity(id).map(|entity| entity.max_health).unwrap_or(0.0);
     game.set_health(id, max_health)
 }
 
 /// Fire threshold targets on death (`hip:threshold_die`).
-fn threshold_die(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    attacker: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn threshold_die(game: &mut Q1EntityServices, id: &ActorId, attacker: Option<&ActorId>) -> Result<(), Q1Error> {
     let (max_health, spawnflags) = game
         .entity(id)
         .map(|entity| (entity.max_health, entity.spawnflags))
@@ -439,11 +411,7 @@ fn spawn_setgravity(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
         number(
             entity,
             "gravity",
-            if gravity == 0.0 {
-                -1.0
-            } else {
-                (gravity - 1.0) / 100.0
-            },
+            if gravity == 0.0 { -1.0 } else { (gravity - 1.0) / 100.0 },
         );
     })?;
     let touch_name = game.named.touch("hip:set_gravity")?;
@@ -473,11 +441,7 @@ fn spawn_waterfall(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
         if entity.count == 0.0 {
             entity.count = 100.0;
         }
-        let speed = if entity.speed == 0.0 {
-            50.0
-        } else {
-            entity.speed
-        };
+        let speed = if entity.speed == 0.0 { 50.0 } else { entity.speed };
         entity.movedir = Vec3 {
             x: (f64::from(entity.movedir.x) * speed) as f32,
             y: (f64::from(entity.movedir.y) * speed) as f32,
@@ -504,10 +468,7 @@ fn spawn_threshold(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
         entity.pain = Some(pain_name);
         entity.die = Some(die_name);
     })?;
-    let max_health = game
-        .entity(id)
-        .map(|entity| entity.max_health)
-        .unwrap_or(0.0);
+    let max_health = game.entity(id).map(|entity| entity.max_health).unwrap_or(0.0);
     game.set_health(id, max_health)?;
     game.set_damageable(id, true)
 }
@@ -637,16 +598,11 @@ mod tests {
         let mut game = test_game();
         register_hipnotic_triggers(&mut game).expect("register");
         let id = game.create("func_counter", None, None).expect("counter");
-        game.update_entity(&id, |entity| entity.count = 2.0)
-            .expect("count");
+        game.update_entity(&id, |entity| entity.count = 2.0).expect("count");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "hip:counter_start", None, None)
-            .expect("start");
+        game.invoke_use(&id, "hip:counter_start", None, None).expect("start");
         assert_eq!(game.entity(&id).expect("entity").number("cnt"), 1.0);
-        assert_eq!(
-            game.entity(&id).expect("entity").number("counter_state"),
-            1.0
-        );
+        assert_eq!(game.entity(&id).expect("entity").number("counter_state"), 1.0);
         game.invoke_action(&id, "hip:counter_tick").expect("tick");
         assert!(game.entity(&id).is_none());
     }
@@ -674,13 +630,19 @@ mod tests {
             )
             .expect("register mark");
         let player = game.create("player", None, None).expect("player");
-        let owned = game
-            .entity(&player)
-            .map(|entity| entity.actor.clone())
-            .expect("owned");
+        let owned = game.entity(&player).map(|entity| entity.actor.clone()).expect("owned");
         game.host
             .inventory
-            .give(&owned, &ItemId::from("q1:key/gold"), 1.0);
+            .create(
+                &owned,
+                &[crate::contract::InventoryEntry {
+                    item: ItemId::from("q1:key/gold"),
+                    count: 1.0,
+                    capacity: 1.0,
+                    count_policy: None,
+                }],
+            )
+            .expect("key slot");
         let watch = player.clone();
         game.host.players = Box::new(move || vec![watch.clone()]);
         let target = game.create("target", None, None).expect("target");
@@ -698,12 +660,7 @@ mod tests {
         .expect("flags");
         game.spawn_entity(&key, None).expect("spawn");
         game.invoke_touch(&key, &player, None, None).expect("touch");
-        assert_eq!(
-            game.host
-                .inventory
-                .count(&player, &ItemId::from("q1:key/gold")),
-            0.0
-        );
+        assert_eq!(game.host.inventory.count(&player, &ItemId::from("q1:key/gold")), 0.0);
         assert_eq!(game.entity(&target).expect("target").number("used"), 1.0);
     }
 
@@ -716,8 +673,7 @@ mod tests {
         game.host.players = Box::new(move || vec![watch.clone()]);
         let fall = game.create("trigger_waterfall", None, None).expect("fall");
         game.spawn_entity(&fall, None).expect("spawn");
-        game.invoke_touch(&fall, &player, None, None)
-            .expect("touch");
+        game.invoke_touch(&fall, &player, None, None).expect("touch");
         let body = game.host.bodies.read(&player).expect("body");
         assert!(f64::from(body.velocity.x).abs() > 0.0 || f64::from(body.velocity.y).abs() > 0.0);
     }

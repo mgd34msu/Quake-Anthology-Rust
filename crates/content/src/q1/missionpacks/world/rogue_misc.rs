@@ -12,8 +12,8 @@ use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{
     BodyPatch, DamageDelivery, DamagePreparation, Q1DamageSourceEffects, TouchSurface,
 };
-use crate::q1::foundation::types::{Q1Event, Q1MoveType, Q1Solid, length, normalize, vscale, vsub};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{length, normalize, vscale, vsub, Q1Event, Q1MoveType, Q1Solid};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, trigger};
 
@@ -46,10 +46,7 @@ fn rubble_touch(
     _normal: Option<Vec3>,
     _surface: Option<&TouchSurface>,
 ) -> Result<(), Q1Error> {
-    let flags = game
-        .entity(other)
-        .map(|entity| entity.movement_flags)
-        .unwrap_or(0);
+    let flags = game.entity(other).map(|entity| entity.movement_flags).unwrap_or(0);
     let velocity = game.body(id)?.velocity;
     if (game.is_player(other) || flags & 32 != 0) && f64::from(length(velocity)) > 0.0 {
         let id_copy = id.clone();
@@ -67,10 +64,7 @@ fn rubble_touch(
 
 /// Throw one rubble chunk at the target.
 fn rubble_throw(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     let destination = game
         .find(&target)
         .first()
@@ -146,11 +140,7 @@ fn rubble_use(
 }
 
 /// Fire explosion-trigger targets on death.
-fn explosion_trigger_die(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    attacker: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn explosion_trigger_die(game: &mut Q1EntityServices, id: &ActorId, attacker: Option<&ActorId>) -> Result<(), Q1Error> {
     let attacker = attacker.cloned();
     game.use_targets(id, attacker.as_ref())?;
     game.update_entity(id, |entity| entity.touch = None)?;
@@ -175,9 +165,7 @@ fn spawn_walltorch(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
 }
 
 /// Spawn a `light_lantern` or `light_candle` static.
-fn spawn_light_model(
-    model: &'static str,
-) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
+fn spawn_light_model(model: &'static str) -> fn(&mut Q1EntityServices, &ActorId) -> Result<(), Q1Error> {
     if model == "lantern" {
         spawn_lantern
     } else {
@@ -238,10 +226,7 @@ fn spawn_trigger_explosion(game: &mut Q1EntityServices, id: &ActorId) -> Result<
     game.update_entity(id, |entity| {
         entity.max_health = if health == 0.0 { 20.0 } else { health };
     })?;
-    let max_health = game
-        .entity(id)
-        .map(|entity| entity.max_health)
-        .unwrap_or(0.0);
+    let max_health = game.entity(id).map(|entity| entity.max_health).unwrap_or(0.0);
     game.set_health(id, max_health)?;
     let die_name = game.named.die("rogue:explosion_trigger_die")?;
     game.update_entity(id, |entity| entity.die = Some(die_name))?;
@@ -308,55 +293,57 @@ pub fn register_rogue_misc(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
 mod tests {
     use super::*;
     use crate::q1::base::provider::{Q1BaseGuard, Q1BaseOptions};
-    use crate::q1::missionpacks::types::test_game;
+    use crate::q1::foundation::host::mock::MockEvents;
+    use crate::q1::missionpacks::types::test_game_with_events;
 
-    fn game_with_base() -> (Q1EntityServices, Q1BaseGuard) {
-        let mut game = test_game();
+    fn game_with_base() -> (
+        Box<Q1EntityServices>,
+        Q1BaseGuard,
+        std::rc::Rc<std::cell::RefCell<MockEvents>>,
+    ) {
+        let (game, events) = test_game_with_events();
+        let mut game = Box::new(game);
         let guard = Q1BaseGuard::register(&mut game, Q1BaseOptions::default()).expect("base");
         register_rogue_misc(&mut game).expect("register");
-        (game, guard)
+        (game, guard, events)
     }
 
     #[test]
     fn walltorch_replacement_sets_flame_model() {
-        let (mut game, _guard) = game_with_base();
-        let id = game
-            .create("light_torch_small_walltorch", None, None)
-            .expect("torch");
+        let (mut game, _guard, events) = game_with_base();
+        let id = game.create("light_torch_small_walltorch", None, None).expect("torch");
         game.spawn_entity(&id, None).expect("spawn");
-        assert_eq!(game.entity(&id).expect("torch").model, "progs/flame.mdl");
+        assert!(game.entity(&id).is_none());
+        assert!(events.borrow().events.iter().any(|event| matches!(
+            event,
+            Q1Event::StaticModel { path, .. } if path == "progs/flame.mdl"
+        )));
     }
 
     #[test]
     fn rubble_generator_throws_on_use() {
-        let (mut game, _guard) = game_with_base();
+        let (mut game, _guard, _events) = game_with_base();
         let target = game.create("info_null", None, None).expect("target");
         game.update_entity(&target, |entity| entity.targetname = "t1".to_string())
             .expect("targetname");
-        let id = game
-            .create("rubble_generator", None, None)
-            .expect("generator");
+        let id = game.create("rubble_generator", None, None).expect("generator");
         game.update_entity(&id, |entity| entity.target = "t1".to_string())
             .expect("target");
         game.spawn_entity(&id, None).expect("spawn");
-        game.invoke_use(&id, "rogue:rubble_use", None, None)
-            .expect("use");
+        game.invoke_use(&id, "rogue:rubble_use", None, None).expect("use");
         assert_eq!(game.entity(&id).expect("generator").wait, 1.0);
-        game.invoke_action(&id, "rogue:rubble_throw")
-            .expect("throw");
-        let chunks = game.entity_ids().into_iter().filter(|id| {
-            game.entity(id)
-                .is_some_and(|entity| entity.classname == "rubble")
-        });
+        game.invoke_action(&id, "rogue:rubble_throw").expect("throw");
+        let chunks = game
+            .entity_ids()
+            .into_iter()
+            .filter(|id| game.entity(id).is_some_and(|entity| entity.classname == "rubble"));
         assert_eq!(chunks.count(), 1);
     }
 
     #[test]
     fn explosion_trigger_quad_stage_cancels_direct_only() {
-        let (mut game, _guard) = game_with_base();
-        let id = game
-            .create("trigger_explosion", None, None)
-            .expect("trigger");
+        let (mut game, _guard, _events) = game_with_base();
+        let id = game.create("trigger_explosion", None, None).expect("trigger");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(
             explosion_trigger_before_quad(&game, &id, DamageDelivery::Direct, 50.0),

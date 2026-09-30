@@ -8,9 +8,9 @@ use qa_core::math::Vec3;
 
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::BodyPatch;
-use crate::q1::foundation::types::{ZERO, vadd, vectors, vscale, vsub};
+use crate::q1::foundation::types::{vadd, vectors, vscale, vsub, ZERO};
 use crate::q1::missionpacks::types::fround;
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{number, vector};
 
@@ -32,10 +32,7 @@ pub fn normalize_angles(angles: Vec3) -> Vec3 {
 pub fn link_rotate_targets(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     let origin = game.body(id)?.origin;
     game.update_entity(id, |entity| vector(entity, "oldorigin", origin))?;
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     for target in game.find(&target) {
         let (body, classname) = game
             .entity(&target)
@@ -44,10 +41,7 @@ pub fn link_rotate_targets(game: &mut Q1EntityServices, id: &ActorId) -> Result<
         let body = body?;
         let wall = classname == "func_movewall";
         let center = if wall {
-            vadd(
-                body.origin,
-                vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-            )
+            vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5))
         } else {
             body.origin
         };
@@ -80,14 +74,8 @@ pub fn link_rotate_targets(game: &mut Q1EntityServices, id: &ActorId) -> Result<
 pub fn rotate_targets(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     let body = game.body(id)?;
     let basis = vectors(body.angles);
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
-    let old_origin = game
-        .entity(id)
-        .map(|entity| entity.vector("oldorigin"))
-        .unwrap_or(ZERO);
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
+    let old_origin = game.entity(id).map(|entity| entity.vector("oldorigin")).unwrap_or(ZERO);
     for target in game.find(&target) {
         let (old, rotate_type) = game
             .entity(&target)
@@ -131,10 +119,7 @@ pub fn rotate_targets(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
 /// Stop rotation targets, syncing `rotate_object` angles (`rotateTargetsFinal`).
 pub fn rotate_targets_final(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     let body = game.body(id)?;
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     for target in game.find(&target) {
         let rotate_type = game
             .entity(&target)
@@ -144,11 +129,7 @@ pub fn rotate_targets_final(game: &mut Q1EntityServices, id: &ActorId) -> Result
             &target,
             &BodyPatch {
                 velocity: Some(ZERO),
-                angles: if rotate_type == 0.0 {
-                    Some(body.angles)
-                } else {
-                    None
-                },
+                angles: if rotate_type == 0.0 { Some(body.angles) } else { None },
                 ..Default::default()
             },
         )?;
@@ -187,15 +168,8 @@ pub fn set_target_origin(game: &mut Q1EntityServices, id: &ActorId) -> Result<()
 }
 
 /// Copy crush damage onto hurt/movewall targets (`damageOnTargets`).
-pub fn damage_on_targets(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    damage: f64,
-) -> Result<(), Q1Error> {
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+pub fn damage_on_targets(game: &mut Q1EntityServices, id: &ActorId, damage: f64) -> Result<(), Q1Error> {
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     for target in game.find(&target) {
         let classname = game
             .entity(&target)
@@ -215,9 +189,7 @@ mod tests {
 
     fn linked_pair() -> (Q1EntityServices, ActorId, ActorId) {
         let mut game = test_game();
-        let rotator = game
-            .create("func_rotate_entity", None, None)
-            .expect("rotator");
+        let rotator = game.create("func_rotate_entity", None, None).expect("rotator");
         let target = game.create("rotate_object", None, None).expect("target");
         game.update_entity(&rotator, |entity| entity.target = "t1".to_string())
             .expect("target");
@@ -284,9 +256,7 @@ mod tests {
     #[test]
     fn damage_on_targets_only_touches_hurt_walls() {
         let mut game = test_game();
-        let rotator = game
-            .create("func_rotate_entity", None, None)
-            .expect("rotator");
+        let rotator = game.create("func_rotate_entity", None, None).expect("rotator");
         let hurt = game.create("trigger_hurt", None, None).expect("hurt");
         let other = game.create("rotate_object", None, None).expect("other");
         game.update_entity(&rotator, |entity| entity.target = "t1".to_string())

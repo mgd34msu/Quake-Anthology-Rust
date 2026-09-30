@@ -9,18 +9,14 @@ use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::BodyPatch;
 use crate::q1::foundation::types::{
-    POINT, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, vadd, vectors, vscale, vsub,
+    vadd, vectors, vscale, vsub, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, POINT,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number};
 
 /// Tear a chunk off the dying machine (`chunk`).
-fn chunk(
-    game: &mut Q1EntityServices,
-    explosion: &ActorId,
-    machine: &ActorId,
-) -> Result<(), Q1Error> {
+fn chunk(game: &mut Q1EntityServices, explosion: &ActorId, machine: &ActorId) -> Result<(), Q1Error> {
     let body = game.body(machine)?;
     let basis = vectors(body.angles);
     let gib = game.create("time_machine_gib", None, None)?;
@@ -48,13 +44,7 @@ fn chunk(
             z: 300.0,
         };
     })?;
-    game.sound(
-        explosion,
-        "weapons/r_exp3.wav",
-        Q1SoundChannel::Weapon,
-        0.0,
-        1.0,
-    )?;
+    game.sound(explosion, "weapons/r_exp3.wav", Q1SoundChannel::Weapon, 0.0, 1.0)?;
     let origin = game.body(&gib)?.origin;
     game.effect_simple(Q1Effect::Explosion, origin);
     game.update_entity(machine, |machine| machine.frame = 1)?;
@@ -63,6 +53,11 @@ fn chunk(
 }
 
 /// Rattle the time machine when shot (`pain`).
+/// Death entry shared with the pain handler (`die: pain`).
+fn time_die(game: &mut Q1EntityServices, id: &ActorId, attacker: Option<&ActorId>) -> Result<(), Q1Error> {
+    time_pain(game, id, attacker, 0.0)
+}
+
 fn time_pain(
     game: &mut Q1EntityServices,
     id: &ActorId,
@@ -86,10 +81,7 @@ fn time_pain(
         let body = game.body(id)?;
         let basis = vectors(body.angles);
         let explosion = game.create("time_machine_pain", None, None)?;
-        let target = game
-            .entity(id)
-            .map(|entity| entity.target.clone())
-            .unwrap_or_default();
+        let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
         let owner = id.clone();
         game.update_entity(&explosion, |explosion| {
             explosion.owner = Some(owner);
@@ -106,12 +98,8 @@ fn time_pain(
             )
         };
         game.set_origin(&explosion, vadd(body.origin, offset))?;
-        later(
-            game,
-            &explosion,
-            0.2 + game.host.random() * 0.3,
-            "rogue:time_boom",
-        )?;
+        let fuse = 0.2 + game.host.random() * 0.3;
+        later(game, &explosion, fuse, "rogue:time_boom")?;
     }
     if health < 1000.0 {
         game.update_entity(id, |entity| {
@@ -159,9 +147,7 @@ pub fn crash_time_machine(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
     )?;
     later(game, &machine, 0.1, "rogue:time_fall")?;
     game.update_entity(&machine, |machine| machine.target = "timeramp".to_string())?;
-    let activator = game
-        .entity(&machine)
-        .and_then(|entity| entity.activator.clone());
+    let activator = game.entity(&machine).and_then(|entity| entity.activator.clone());
     game.use_targets(&machine, activator.as_ref())
 }
 
@@ -191,11 +177,7 @@ fn time_crash_pain(
 }
 
 /// Crash from a death dispatch.
-fn time_crash_die(
-    game: &mut Q1EntityServices,
-    _id: &ActorId,
-    _attacker: Option<&ActorId>,
-) -> Result<(), Q1Error> {
+fn time_crash_die(game: &mut Q1EntityServices, _id: &ActorId, _attacker: Option<&ActorId>) -> Result<(), Q1Error> {
     crash_time_machine(game)
 }
 
@@ -217,9 +199,7 @@ fn time_boom(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
         .ok_or_else(|| q1_error("Time machine explosion lost its machine"))?;
     let (health, frame, skin) = (
         game.health(&machine),
-        game.entity(&machine)
-            .map(|entity| entity.frame)
-            .unwrap_or(0),
+        game.entity(&machine).map(|entity| entity.frame).unwrap_or(0),
         game.entity(&machine).map(|entity| entity.skin).unwrap_or(0),
     );
     if health < 1250.0 && frame > 0 {
@@ -257,21 +237,14 @@ fn time_boom(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     game.set_body(
         id,
         &BodyPatch {
-            velocity: Some(Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
+            velocity: Some(Vec3 { x: 0.0, y: 0.0, z: 0.0 }),
             ..Default::default()
         },
     )?;
     later(game, id, 0.1, "base:explosion_frame")?;
     game.link(id)?;
     let stop = game.create("time_stop_shake", None, None)?;
-    let target = game
-        .entity(id)
-        .map(|entity| entity.target.clone())
-        .unwrap_or_default();
+    let target = game.entity(id).map(|entity| entity.target.clone()).unwrap_or_default();
     game.update_entity(&stop, |stop| stop.target = target)?;
     later(game, &stop, 0.7, "rogue:time_stop_shake")
 }
@@ -344,9 +317,7 @@ fn spawn_time_machine(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q
     if let Some(world) = game.world.clone() {
         let machine = id.clone();
         game.update_entity(&world, |world| {
-            world
-                .references
-                .insert("rogue:theMachine".to_string(), Some(machine));
+            world.references.insert("rogue:theMachine".to_string(), Some(machine));
         })?;
     }
     game.set_bounds(
@@ -389,7 +360,7 @@ pub fn register_rogue_time(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
         "rogue:time_pain",
         Q1CallbackHandlers {
             pain: Some(time_pain),
-            die: Some(time_pain),
+            die: Some(time_die),
             ..Default::default()
         },
     )?;
@@ -445,9 +416,7 @@ mod tests {
         let mut game = test_game();
         register_rogue_time(&mut game).expect("register");
         let world = with_world(&mut game);
-        let id = game
-            .create("item_time_machine", None, None)
-            .expect("machine");
+        let id = game.create("item_time_machine", None, None).expect("machine");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(game.health(&id), 1600.0);
         assert!(game.is_damageable(&id));
@@ -464,17 +433,13 @@ mod tests {
         let mut game = test_game();
         register_rogue_time(&mut game).expect("register");
         let world = with_world(&mut game);
-        let id = game
-            .create("item_time_machine", None, None)
-            .expect("machine");
+        let id = game.create("item_time_machine", None, None).expect("machine");
         game.spawn_entity(&id, None).expect("spawn");
         game.set_health(&id, 900.0).expect("health");
         game.invoke_pain(&id, None, 100.0).expect("pain");
         assert!(game.entity(&id).expect("machine").pain.is_none());
         assert_eq!(
-            game.entity(&world)
-                .expect("world")
-                .number("rogue:cutscene_running"),
+            game.entity(&world).expect("world").number("rogue:cutscene_running"),
             1.0
         );
     }
@@ -484,9 +449,7 @@ mod tests {
         let mut game = test_game();
         register_rogue_time(&mut game).expect("register");
         with_world(&mut game);
-        let id = game
-            .create("item_time_machine", None, None)
-            .expect("machine");
+        let id = game.create("item_time_machine", None, None).expect("machine");
         game.spawn_entity(&id, None).expect("spawn");
         game.invoke_action(&id, "rogue:time_crash").expect("crash");
         let machine = game.entity(&id).cloned().expect("machine");

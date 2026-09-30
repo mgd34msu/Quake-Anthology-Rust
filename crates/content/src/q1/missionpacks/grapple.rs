@@ -1,6 +1,6 @@
 //! Rogue grapple (src/content/q1/missionpacks/grapple.ts).
 
-use qa_core::identity::{ActorId, same_actor};
+use qa_core::identity::{same_actor, ActorId};
 use qa_core::math::Vec3;
 
 use crate::contract::InventoryEntry;
@@ -10,10 +10,10 @@ use crate::q1::foundation::extensions::{Q1PlayerExtension, Q1WeaponDefinition};
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
 use crate::q1::foundation::host::Q1Contents;
 use crate::q1::foundation::types::{
-    POINT, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, Q1Weapon, ZERO,
-    length, normalize, vadd, vscale, vsub, weapon_item,
+    length, normalize, vadd, vscale, vsub, weapon_item, Q1BeamStyle, Q1Effect, Q1Event, Q1MoveType, Q1Solid,
+    Q1SoundChannel, Q1Weapon, POINT, ZERO,
 };
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::{q1_error, Q1Error};
 
 use super::types::{fround, mission_reference, set_mission_reference, velocity_angles};
 
@@ -35,11 +35,7 @@ fn find_hook(game: &Q1EntityServices, owner: &ActorId) -> Option<ActorId> {
 }
 
 /// Present the grapple view model (`presentation`).
-fn present_grapple(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    punch: i32,
-) -> Result<(), Q1Error> {
+fn present_grapple(game: &mut Q1EntityServices, player: &ActorId, punch: i32) -> Result<(), Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
@@ -106,13 +102,7 @@ fn fire_grapple(game: &mut Q1EntityServices, player: &ActorId) -> Result<bool, Q
     game.link(&hook)?;
     let reset = game.named.action("rogue:grapple-reset")?;
     game.schedule(&hook, 2.0, &reset)?;
-    game.sound(
-        player,
-        "weapons/chain1.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(player, "weapons/chain1.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     let time = game.time;
     game.update_player(player, |state| {
         state.weapon_frame = 1;
@@ -124,19 +114,12 @@ fn fire_grapple(game: &mut Q1EntityServices, player: &ActorId) -> Result<bool, Q
 }
 
 /// Grapple fire animation (`animate`).
-fn animate_grapple(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    _seconds: f64,
-) -> Result<(), Q1Error> {
+fn animate_grapple(game: &mut Q1EntityServices, player: &ActorId, _seconds: f64) -> Result<(), Q1Error> {
     let state = game
         .player_ref(player)
         .cloned()
         .ok_or_else(|| q1_error("Player has no Q1 weapon state"))?;
-    if find_hook(game, player).is_none()
-        || state.weapon_frame != 1
-        || game.time < state.weapon_animation_at + 0.1
-    {
+    if find_hook(game, player).is_none() || state.weapon_frame != 1 || game.time < state.weapon_animation_at + 0.1 {
         return Ok(());
     }
     game.update_player(player, |state| state.weapon_frame = 2)?;
@@ -154,11 +137,7 @@ fn attach_grapple(game: &mut Q1EntityServices, player: &ActorId) -> Result<(), Q
         &owned,
         &InventoryEntry {
             item: weapon_item(Q1Weapon::RogueGrapple),
-            count: if deathmatch != 0 && teamplay >= 4 {
-                1.0
-            } else {
-                0.0
-            },
+            count: if deathmatch != 0 && teamplay >= 4 { 1.0 } else { 0.0 },
             capacity: 1.0,
             count_policy: None,
         },
@@ -196,9 +175,7 @@ fn anchor_hook(
     _surface: Option<&TouchSurface>,
 ) -> Result<(), Q1Error> {
     let owner = game.entity_ref(hook).and_then(|hook| hook.owner.clone());
-    let player = owner
-        .as_ref()
-        .and_then(|owner| game.player_ref(owner).cloned());
+    let player = owner.as_ref().and_then(|owner| game.player_ref(owner).cloned());
     let Some(player) = player else {
         return reset_hook(game, hook);
     };
@@ -214,16 +191,8 @@ fn anchor_hook(
         ..Default::default()
     };
     if game.is_player(other) {
-        let target_team = game
-            .host
-            .combat
-            .read(other)
-            .and_then(|combat| combat.team.clone());
-        let owner_team = game
-            .host
-            .combat
-            .read(&player_id)
-            .and_then(|combat| combat.team.clone());
+        let target_team = game.host.combat.read(other).and_then(|combat| combat.team.clone());
+        let owner_team = game.host.combat.read(&player_id).and_then(|combat| combat.team.clone());
         if target_team == owner_team {
             return reset_hook(game, hook);
         }
@@ -249,13 +218,7 @@ fn anchor_hook(
         game.update_entity(hook, |hook| hook.angular_velocity = ZERO)?;
     }
     game.update_entity(hook, |hook| hook.frame = 2)?;
-    game.sound(
-        player.actor.id(),
-        "weapons/tink1.wav",
-        Q1SoundChannel::Weapon,
-        1.0,
-        1.0,
-    )?;
+    game.sound(player.actor.id(), "weapons/tink1.wav", Q1SoundChannel::Weapon, 1.0, 1.0)?;
     if !player.attack_held {
         return reset_hook(game, hook);
     }
@@ -283,9 +246,7 @@ fn anchor_hook(
 /// Track an anchored hook (`track`).
 fn track_hook(game: &mut Q1EntityServices, hook: &ActorId) -> Result<(), Q1Error> {
     let owner = game.entity_ref(hook).and_then(|hook| hook.owner.clone());
-    let player = owner
-        .as_ref()
-        .and_then(|owner| game.player_ref(owner).cloned());
+    let player = owner.as_ref().and_then(|owner| game.player_ref(owner).cloned());
     let target = mission_reference(game, hook, "rogue:target");
     let dead_target = target
         .as_ref()
@@ -331,10 +292,7 @@ fn track_hook(game: &mut Q1EntityServices, hook: &ActorId) -> Result<(), Q1Error
         game.set_body(
             hook,
             &BodyPatch {
-                origin: Some(vadd(
-                    body.origin,
-                    vscale(vadd(body.bounds.min, body.bounds.max), 0.5),
-                )),
+                origin: Some(vadd(body.origin, vscale(vadd(body.bounds.min, body.bounds.max), 0.5))),
                 velocity: Some(ZERO),
                 ..Default::default()
             },
@@ -353,11 +311,7 @@ fn track_hook(game: &mut Q1EntityServices, hook: &ActorId) -> Result<(), Q1Error
 }
 
 /// Pull the owner toward an anchored hook (`service`).
-fn service_grapple(
-    game: &mut Q1EntityServices,
-    player: &ActorId,
-    _seconds: f64,
-) -> Result<(), Q1Error> {
+fn service_grapple(game: &mut Q1EntityServices, player: &ActorId, _seconds: f64) -> Result<(), Q1Error> {
     let hook = find_hook(game, player);
     let body = game.host.bodies.read(player);
     let state = game.player_ref(player).cloned();
@@ -368,19 +322,14 @@ fn service_grapple(
     let distance = f64::from(length(vsub(origin, body.origin)));
     let count = game.entity_ref(&hook).map(|hook| hook.count).unwrap_or(0.0);
     if count == 1.0 {
-        if !state.attack_held && state.weapon == Q1Weapon::RogueGrapple
-            || state.teleport_until > game.time
-        {
+        if !state.attack_held && state.weapon == Q1Weapon::RogueGrapple || state.teleport_until > game.time {
             return reset_hook(game, &hook);
         }
         let basis = game.make_vectors(body.angles);
         let direction = vsub(
             origin,
             vadd(
-                vadd(
-                    body.origin,
-                    vscale(basis.up, if state.jump_held { 0.0 } else { 16.0 }),
-                ),
+                vadd(body.origin, vscale(basis.up, if state.jump_held { 0.0 } else { 16.0 })),
                 vscale(basis.forward, 16.0),
             ),
         );
@@ -483,8 +432,7 @@ mod tests {
             .entity_ref(&player)
             .map(|entity| entity.actor.clone())
             .expect("owned");
-        game.attach_player(&owned, &Q1AttachOptions::default())
-            .expect("attach");
+        game.attach_player(&owned, &Q1AttachOptions::default()).expect("attach");
         player
     }
 
@@ -492,10 +440,7 @@ mod tests {
     fn grapple_registers_weapon_and_callbacks() {
         let mut game = test_game();
         RogueGrapple::new(&mut game).expect("grapple");
-        assert!(
-            game.registered_weapons
-                .contains_key(&Q1Weapon::RogueGrapple)
-        );
+        assert!(game.registered_weapons.contains_key(&Q1Weapon::RogueGrapple));
         assert!(game.named.action("rogue:grapple-reset").is_ok());
         assert!(game.named.touch("rogue:grapple-anchor").is_ok());
         assert!(game.named.action("rogue:grapple-track").is_ok());

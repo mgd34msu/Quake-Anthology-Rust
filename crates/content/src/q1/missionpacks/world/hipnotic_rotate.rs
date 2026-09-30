@@ -10,13 +10,12 @@ use crate::q1::foundation::callbacks::Q1CallbackHandlers;
 use crate::q1::foundation::entity::move_direction;
 use crate::q1::foundation::entity_services::Q1EntityServices;
 use crate::q1::foundation::gameplay::{BodyPatch, TouchSurface};
-use crate::q1::foundation::types::{Q1MoveType, Q1Solid, ZERO, length, vadd, vscale, vsub};
-use crate::q1::{Q1Error, q1_error};
+use crate::q1::foundation::types::{length, vadd, vscale, vsub, Q1MoveType, Q1Solid, ZERO};
+use crate::q1::{q1_error, Q1Error};
 
 use super::common::{later, number, target_event, vector};
 use super::rotate_targets::{
-    damage_on_targets, link_rotate_targets, normalize_angles, rotate_targets, rotate_targets_final,
-    set_target_origin,
+    damage_on_targets, link_rotate_targets, normalize_angles, rotate_targets, rotate_targets_final, set_target_origin,
 };
 
 /// Spin a continuous rotator (`continuousThink`).
@@ -51,10 +50,7 @@ fn continuous_think(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1E
         elapsed *= count;
     }
     let body = game.body(id)?;
-    let rotate = game
-        .entity(id)
-        .map(|entity| entity.vector("rotate"))
-        .unwrap_or(ZERO);
+    let rotate = game.entity(id).map(|entity| entity.vector("rotate")).unwrap_or(ZERO);
     game.set_body(
         id,
         &BodyPatch {
@@ -75,13 +71,7 @@ fn continuous_use(
 ) -> Result<(), Q1Error> {
     let (state, spawnflags, speed) = game
         .entity(id)
-        .map(|entity| {
-            (
-                entity.number("rotate_state"),
-                entity.spawnflags,
-                entity.speed,
-            )
-        })
+        .map(|entity| (entity.number("rotate_state"), entity.spawnflags, entity.speed))
         .unwrap_or((0.0, 0, 0.0));
     game.update_entity(id, |entity| entity.frame = 1 - entity.frame)?;
     if state == 0.0 {
@@ -131,20 +121,12 @@ fn reverse_door(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
         .ok_or_else(|| q1_error("Missing Q1 entity"))?;
     game.update_entity(id, |entity| entity.frame = 1 - entity.frame)?;
     let closing = state == 7.0;
-    let (start, destination) = if closing {
-        (dest1, dest2)
-    } else {
-        (dest2, dest1)
-    };
+    let (start, destination) = if closing { (dest1, dest2) } else { (dest2, dest1) };
     let time = game.time;
     game.update_entity(id, |entity| {
         vector(entity, "dest", destination);
         number(entity, "rotate_state", if closing { 6.0 } else { 7.0 });
-        vector(
-            entity,
-            "rotate",
-            vscale(vsub(destination, start), 1.0 / speed),
-        );
+        vector(entity, "rotate", vscale(vsub(destination, start), 1.0 / speed));
         number(entity, "endtime", time + speed - (endtime - time));
         number(entity, "ltime", time);
     })?;
@@ -154,10 +136,7 @@ fn reverse_door(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
 
 /// Reverse a door group (`reverseGroup`).
 fn reverse_group(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
-    let group = game
-        .entity(id)
-        .map(|entity| entity.text("group"))
-        .unwrap_or_default();
+    let group = game.entity(id).map(|entity| entity.text("group")).unwrap_or_default();
     if group.is_empty() {
         return reverse_door(game, id);
     }
@@ -165,9 +144,7 @@ fn reverse_group(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
         .entity_ids()
         .into_iter()
         .filter(|member| {
-            game.entity(member)
-                .is_some_and(|entity| entity.text("group") == group)
-                && game.is_live(member)
+            game.entity(member).is_some_and(|entity| entity.text("group") == group) && game.is_live(member)
         })
         .collect();
     for member in members {
@@ -191,10 +168,7 @@ fn train_stop(game: &mut Q1EntityServices, id: &ActorId, wait: bool) -> Result<(
         number(entity, "rotate_state", if wait { 0.0 } else { 2.0 })
     })?;
     if noise.is_empty() {
-        let fallback = game
-            .entity(id)
-            .map(|entity| entity.text("noise"))
-            .unwrap_or_default();
+        let fallback = game.entity(id).map(|entity| entity.text("noise")).unwrap_or_default();
         game.sound_simple(id, &fallback)?;
     } else {
         game.sound_simple(id, &noise)?;
@@ -217,10 +191,7 @@ fn train_stop(game: &mut Q1EntityServices, id: &ActorId, wait: bool) -> Result<(
         game.update_entity(id, |entity| vector(entity, "rotate", ZERO))?;
     }
     if wait {
-        let ltime = game
-            .entity(id)
-            .map(|entity| entity.number("ltime"))
-            .unwrap_or(0.0);
+        let ltime = game.entity(id).map(|entity| entity.number("ltime")).unwrap_or(0.0);
         game.update_entity(id, |entity| number(entity, "endtime", ltime + goal_wait))?;
     } else {
         game.update_entity(id, |entity| entity.damage = 0.0)?;
@@ -235,19 +206,14 @@ fn train_stop(game: &mut Q1EntityServices, id: &ActorId, wait: bool) -> Result<(
 /// Advance a rotate train to its next path corner (`trainNext`).
 fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| number(entity, "rotate_state", 4.0))?;
-    let path = game
-        .entity(id)
-        .map(|entity| entity.text("path"))
-        .unwrap_or_default();
+    let path = game.entity(id).map(|entity| entity.text("path")).unwrap_or_default();
     let current = game
         .entity(id)
         .and_then(|entity| entity.references.get("goalentity").cloned().flatten())
         .filter(|current| game.entity(current).is_some());
     let target = game.find(&path).first().cloned();
     let (Some(current), Some(target)) = (current, target) else {
-        return Err(q1_error(
-            "rotate_train_next: next target is not path_rotate",
-        ));
+        return Err(q1_error("rotate_train_next: next target is not path_rotate"));
     };
     if game
         .entity(&target)
@@ -255,9 +221,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
         .unwrap_or_default()
         != "path_rotate"
     {
-        return Err(q1_error(
-            "rotate_train_next: next target is not path_rotate",
-        ));
+        return Err(q1_error("rotate_train_next: next target is not path_rotate"));
     }
     let noise1 = game
         .entity(&current)
@@ -268,19 +232,14 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
             entity.fields.insert("noise1".to_string(), noise1);
         })?;
     }
-    let start_sound = game
-        .entity(id)
-        .map(|entity| entity.text("noise1"))
-        .unwrap_or_default();
+    let start_sound = game.entity(id).map(|entity| entity.text("noise1")).unwrap_or_default();
     game.sound_simple(id, &start_sound)?;
     let next_path = game
         .entity(&target)
         .map(|target| target.target.clone())
         .unwrap_or_default();
     game.update_entity(id, |entity| {
-        entity
-            .references
-            .insert("goalentity".to_string(), Some(target.clone()));
+        entity.references.insert("goalentity".to_string(), Some(target.clone()));
         entity.fields.insert("path".to_string(), next_path);
     })?;
     if game
@@ -291,14 +250,8 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
     {
         return Err(q1_error("rotate_train_next: no next target"));
     }
-    let target_flags = game
-        .entity(&target)
-        .map(|target| target.spawnflags)
-        .unwrap_or(0);
-    let target_wait = game
-        .entity(&target)
-        .map(|target| target.wait)
-        .unwrap_or(0.0);
+    let target_flags = game.entity(&target).map(|target| target.spawnflags).unwrap_or(0);
+    let target_wait = game.entity(&target).map(|target| target.wait).unwrap_or(0.0);
     let think1 = if target_flags & 4 != 0 {
         "hip:rotate_train_stop"
     } else if target_wait != 0.0 {
@@ -307,9 +260,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
         "hip:rotate_train_next"
     };
     game.update_entity(id, |entity| {
-        entity
-            .fields
-            .insert("think1".to_string(), think1.to_string());
+        entity.fields.insert("think1".to_string(), think1.to_string());
     })?;
     let (event, message) = game
         .entity(&current)
@@ -318,10 +269,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
     if !event.is_empty() {
         target_event(game, id, &event, &message)?;
     }
-    let current_flags = game
-        .entity(&current)
-        .map(|current| current.spawnflags)
-        .unwrap_or(0);
+    let current_flags = game.entity(&current).map(|current| current.spawnflags).unwrap_or(0);
     if current_flags & 2 != 0 {
         let final_angle = game
             .entity(id)
@@ -344,29 +292,17 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
         game.update_entity(id, |entity| vector(entity, "rotate", rotate))?;
     }
     if current_flags & 16 != 0 {
-        let damage = game
-            .entity(&current)
-            .map(|current| current.damage)
-            .unwrap_or(0.0);
+        let damage = game.entity(&current).map(|current| current.damage).unwrap_or(0.0);
         game.update_entity(id, |entity| entity.damage = damage)?;
     }
     if current_flags & 64 != 0 {
-        let damage = game
-            .entity(&current)
-            .map(|current| current.damage)
-            .unwrap_or(0.0);
+        let damage = game.entity(&current).map(|current| current.damage).unwrap_or(0.0);
         damage_on_targets(game, id, damage)?;
     }
     let target_body = game.body(&target)?;
     let body = game.body(id)?;
-    let current_speed = game
-        .entity(&current)
-        .map(|current| current.speed)
-        .unwrap_or(0.0);
-    let ltime = game
-        .entity(id)
-        .map(|entity| entity.number("ltime"))
-        .unwrap_or(0.0);
+    let current_speed = game.entity(&current).map(|current| current.speed).unwrap_or(0.0);
+    let ltime = game.entity(id).map(|entity| entity.number("ltime")).unwrap_or(0.0);
     let time = game.time;
     if current_speed == -1.0 {
         game.set_origin(id, target_body.origin)?;
@@ -446,11 +382,7 @@ fn train_next(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> 
         let angles = game.body(id)?.angles;
         game.update_entity(id, |entity| {
             vector(entity, "finalangle", normalize_angles(target_body.angles));
-            vector(
-                entity,
-                "rotate",
-                vscale(vsub(target_body.angles, angles), inverse),
-            );
+            vector(entity, "rotate", vscale(vsub(target_body.angles, angles), inverse));
         })?;
     }
     game.update_entity(id, |entity| number(entity, "endtime", ltime + travel))?;
@@ -536,20 +468,12 @@ fn rotate_door_use(
         link_rotate_targets(game, id)?;
     }
     game.update_entity(id, |entity| entity.frame = 1 - entity.frame)?;
-    let (destination, start) = if state == 4.0 {
-        (dest2, dest1)
-    } else {
-        (dest1, dest2)
-    };
+    let (destination, start) = if state == 4.0 { (dest2, dest1) } else { (dest1, dest2) };
     let time = game.time;
     game.update_entity(id, |entity| {
         vector(entity, "dest", destination);
         number(entity, "rotate_state", if state == 4.0 { 6.0 } else { 7.0 });
-        vector(
-            entity,
-            "rotate",
-            vscale(vsub(destination, start), 1.0 / speed),
-        );
+        vector(entity, "rotate", vscale(vsub(destination, start), 1.0 / speed));
         number(entity, "endtime", time + speed);
         number(entity, "ltime", time);
     })?;
@@ -605,10 +529,7 @@ fn movewall_touch(
     let Some(owner) = owner else {
         return Ok(());
     };
-    let attack_finished = game
-        .entity(&owner)
-        .map(|owner| owner.attack_finished)
-        .unwrap_or(0.0);
+    let attack_finished = game.entity(&owner).map(|owner| owner.attack_finished).unwrap_or(0.0);
     if game.time < attack_finished {
         return Ok(());
     }
@@ -634,19 +555,12 @@ fn movewall_touch(
 }
 
 /// Damage whoever blocks a moving wall, reversing doors.
-fn movewall_blocked(
-    game: &mut Q1EntityServices,
-    id: &ActorId,
-    other: &ActorId,
-) -> Result<(), Q1Error> {
+fn movewall_blocked(game: &mut Q1EntityServices, id: &ActorId, other: &ActorId) -> Result<(), Q1Error> {
     let owner = game.entity(id).and_then(|entity| entity.owner.clone());
     let Some(owner) = owner else {
         return Ok(());
     };
-    let attack_finished = game
-        .entity(&owner)
-        .map(|owner| owner.attack_finished)
-        .unwrap_or(0.0);
+    let attack_finished = game.entity(&owner).map(|owner| owner.attack_finished).unwrap_or(0.0);
     if game.time < attack_finished {
         return Ok(());
     }
@@ -690,15 +604,10 @@ fn movewall_action(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Er
 fn rotate_train_find(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
     game.update_entity(id, |entity| number(entity, "rotate_state", 3.0))?;
     link_rotate_targets(game, id)?;
-    let path = game
-        .entity(id)
-        .map(|entity| entity.text("path"))
-        .unwrap_or_default();
+    let path = game.entity(id).map(|entity| entity.text("path")).unwrap_or_default();
     let target = game.find(&path).first().cloned();
     let Some(target) = target else {
-        return Err(q1_error(
-            "rotate_train_find: next target is not path_rotate",
-        ));
+        return Err(q1_error("rotate_train_find: next target is not path_rotate"));
     };
     if game
         .entity(&target)
@@ -706,21 +615,14 @@ fn rotate_train_find(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1
         .unwrap_or_default()
         != "path_rotate"
     {
-        return Err(q1_error(
-            "rotate_train_find: next target is not path_rotate",
-        ));
+        return Err(q1_error("rotate_train_find: next target is not path_rotate"));
     }
     let target_id = target.clone();
     game.update_entity(id, |entity| {
-        entity
-            .references
-            .insert("goalentity".to_string(), Some(target_id));
+        entity.references.insert("goalentity".to_string(), Some(target_id));
     })?;
     let target_body = game.body(&target)?;
-    let target_flags = game
-        .entity(&target)
-        .map(|target| target.spawnflags)
-        .unwrap_or(0);
+    let target_flags = game.entity(&target).map(|target| target.spawnflags).unwrap_or(0);
     if target_flags & 2 != 0 {
         game.set_body(
             id,
@@ -753,15 +655,7 @@ fn rotate_train_find(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1
         entity
             .fields
             .insert("think1".to_string(), "hip:rotate_train_next".to_string());
-        number(
-            entity,
-            "endtime",
-            if targetname.is_empty() {
-                ltime + 0.1
-            } else {
-                0.0
-            },
-        );
+        number(entity, "endtime", if targetname.is_empty() { ltime + 0.1 } else { 0.0 });
         number(entity, "duration", 1.0);
         number(entity, "cnt", time);
         entity.dest2 = ZERO;
@@ -787,10 +681,7 @@ fn rotate_train_action(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), 
     if endtime != 0.0 && time >= endtime {
         game.update_entity(id, |entity| number(entity, "endtime", 0.0))?;
         if state == 1.0 {
-            let final_dest = game
-                .entity(id)
-                .map(|entity| entity.vector("finaldest"))
-                .unwrap_or(ZERO);
+            let final_dest = game.entity(id).map(|entity| entity.vector("finaldest")).unwrap_or(ZERO);
             game.set_body(
                 id,
                 &BodyPatch {
@@ -800,10 +691,7 @@ fn rotate_train_action(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), 
                 },
             )?;
         }
-        let think1 = game
-            .entity(id)
-            .map(|entity| entity.text("think1"))
-            .unwrap_or_default();
+        let think1 = game.entity(id).map(|entity| entity.text("think1")).unwrap_or_default();
         if !think1.is_empty() {
             game.invoke_action(id, &think1)?;
         }
@@ -819,16 +707,10 @@ fn rotate_train_action(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), 
                 )
             })
             .unwrap_or((ZERO, ZERO, 0.0, 0.0));
-        game.set_origin(
-            id,
-            vadd(dest1, vscale(dest2, 1.0f64.min((time - cnt) * duration))),
-        )?;
+        game.set_origin(id, vadd(dest1, vscale(dest2, 1.0f64.min((time - cnt) * duration))))?;
     }
     let body = game.body(id)?;
-    let rotate = game
-        .entity(id)
-        .map(|entity| entity.vector("rotate"))
-        .unwrap_or(ZERO);
+    let rotate = game.entity(id).map(|entity| entity.vector("rotate")).unwrap_or(ZERO);
     game.set_body(
         id,
         &BodyPatch {
@@ -848,15 +730,8 @@ fn rotate_train_use(
     _activator: Option<&ActorId>,
 ) -> Result<(), Q1Error> {
     let velocity = game.body(id)?.velocity;
-    let think1 = game
-        .entity(id)
-        .map(|entity| entity.text("think1"))
-        .unwrap_or_default();
-    if think1 == "hip:rotate_train_find"
-        || velocity.x != 0.0
-        || velocity.y != 0.0
-        || velocity.z != 0.0
-    {
+    let think1 = game.entity(id).map(|entity| entity.text("think1")).unwrap_or_default();
+    if think1 == "hip:rotate_train_find" || velocity.x != 0.0 || velocity.y != 0.0 || velocity.z != 0.0 {
         return Ok(());
     }
     if think1.is_empty() {
@@ -937,11 +812,7 @@ fn rotate_first(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error
     let spawnflags = game.entity(id).map(|entity| entity.spawnflags).unwrap_or(0);
     game.update_entity(id, |entity| {
         entity.use_callback = Some(use_name);
-        number(
-            entity,
-            "rotate_state",
-            if spawnflags & 2 != 0 { 0.0 } else { 1.0 },
-        );
+        number(entity, "rotate_state", if spawnflags & 2 != 0 { 0.0 } else { 1.0 });
     })?;
     if spawnflags & 2 != 0 {
         let time = game.time;
@@ -1048,10 +919,7 @@ fn spawn_movewall(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Err
             ..Default::default()
         },
     )?;
-    let solid = game
-        .entity(id)
-        .map(|entity| entity.solid)
-        .unwrap_or(Q1Solid::None);
+    let solid = game.entity(id).map(|entity| entity.solid).unwrap_or(Q1Solid::None);
     if solid == Q1Solid::Bsp {
         let blocked_name = game.named.blocked("hip:movewall")?;
         game.update_entity(id, |entity| entity.blocked = Some(blocked_name))?;
@@ -1268,9 +1136,7 @@ mod tests {
     fn rotate_first_starts_spinning_when_flagged() {
         let mut game = test_game();
         register_hipnotic_rotation(&mut game).expect("register");
-        let id = game
-            .create("func_rotate_entity", None, None)
-            .expect("rotator");
+        let id = game.create("func_rotate_entity", None, None).expect("rotator");
         game.update_entity(&id, |entity| {
             entity.spawnflags = 2;
             vector(
@@ -1286,10 +1152,7 @@ mod tests {
         .expect("flags");
         game.spawn_entity(&id, None).expect("spawn");
         game.invoke_action(&id, "hip:rotate_first").expect("first");
-        assert_eq!(
-            game.entity(&id).expect("entity").number("rotate_state"),
-            0.0
-        );
+        assert_eq!(game.entity(&id).expect("entity").number("rotate_state"), 0.0);
         assert_eq!(
             game.entity(&id).expect("entity").think.as_deref(),
             Some("hip:rotate_entity")
@@ -1321,8 +1184,7 @@ mod tests {
         .expect("angles");
         game.spawn_entity(&id, None).expect("spawn");
         assert_eq!(game.entity(&id).expect("door").number("rotate_state"), 4.0);
-        game.invoke_use(&id, "hip:rotate_door", None, None)
-            .expect("use");
+        game.invoke_use(&id, "hip:rotate_door", None, None).expect("use");
         assert_eq!(game.entity(&id).expect("door").number("rotate_state"), 6.0);
         let endtime = game.entity(&id).expect("door").number("endtime");
         game.time = endtime + 1.0;
@@ -1331,8 +1193,7 @@ mod tests {
             game.entity(&id).expect("door").think.as_deref(),
             Some("hip:rotate_door_done")
         );
-        game.invoke_action(&id, "hip:rotate_door_done")
-            .expect("done");
+        game.invoke_action(&id, "hip:rotate_door_done").expect("done");
         assert_eq!(game.entity(&id).expect("door").number("rotate_state"), 5.0);
         assert_eq!(
             game.body(&id).expect("body").angles,
@@ -1351,16 +1212,10 @@ mod tests {
         let id = game.create("func_clock", None, None).expect("clock");
         game.spawn_entity(&id, None).expect("spawn");
         game.invoke_action(&id, "hip:clock_first").expect("first");
-        assert_eq!(
-            game.entity(&id).expect("clock").think.as_deref(),
-            Some("hip:clock")
-        );
+        assert_eq!(game.entity(&id).expect("clock").think.as_deref(), Some("hip:clock"));
         game.time = 1.0;
         game.invoke_action(&id, "hip:clock").expect("tick");
         assert!(game.entity(&id).expect("clock").number("ltime") > 0.0);
-        assert_eq!(
-            game.entity(&id).expect("clock").think.as_deref(),
-            Some("hip:clock")
-        );
+        assert_eq!(game.entity(&id).expect("clock").think.as_deref(), Some("hip:clock"));
     }
 }
