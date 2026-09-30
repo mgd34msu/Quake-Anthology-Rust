@@ -199,6 +199,16 @@ fn ammo_changed(game: &mut Q2GameServices, actor: &ActorId, ammo: &ItemId) {
     game.weapons.engine = engine;
 }
 
+/// Report ammo changes (`hooks.ammoChanged`, shared with equipment).
+pub fn weapon_ammo_changed(game: &mut Q2GameServices, actor: &ActorId, ammo: &ItemId) {
+    ammo_changed(game, actor, ammo);
+}
+
+/// Adjust a firing interval (`hooks.firingInterval`, shared with equipment).
+pub fn weapon_firing_interval(game: &mut Q2GameServices, actor: &ActorId, seconds: f64) -> f64 {
+    firing_interval(game, actor, seconds)
+}
+
 /// Adjust a firing interval (`hooks.firingInterval`).
 fn firing_interval(game: &mut Q2GameServices, actor: &ActorId, seconds: f64) -> f64 {
     let mut engine = game.weapons.engine.take();

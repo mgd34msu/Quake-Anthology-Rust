@@ -523,6 +523,7 @@ impl Q2GameServices {
         self.authored_targets.remove(id);
         self.monsters.on_actor_released(id);
         self.players.states.remove(id);
+        crate::q2::equipment::equipment_actor_released(self, id);
         self.weapons.on_actor_released(id);
         self.movers.on_actor_released(id);
         self.items.on_actor_released(id);
