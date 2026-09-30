@@ -151,6 +151,11 @@ impl ObservedProcess {
         self.child.try_wait().map(|status| status.is_some()).map_err(|error| ToolsError::io("polling a child process", error))
     }
 
+    /// Whether the child is still running.
+    pub fn alive(&mut self) -> Result<bool, ToolsError> {
+        self.exited().map(|exited| !exited)
+    }
+
     /// Wait for natural exit and return the exit code (`None` on signals).
     pub fn wait_for_exit(&mut self) -> Result<Option<i32>, ToolsError> {
         let status = self.child.wait().map_err(|error| ToolsError::io("waiting for a child process", error))?;
