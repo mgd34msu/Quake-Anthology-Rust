@@ -1,5 +1,5 @@
-//! Q1 mission-pack root. The mission-pack workers own every other
-//! module here; `world::finale_text` is ported with the foundation
-//! because foundation text formatting depends on it.
+//! Q1 mission-pack root (`src/content/q1/missionpacks`).
 
+pub mod hipnotic_weapons;
+pub mod types;
 pub mod world;
