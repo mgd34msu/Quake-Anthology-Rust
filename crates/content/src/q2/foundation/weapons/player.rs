@@ -181,15 +181,6 @@ pub struct Q2ThrowDefinition {
     pub fire: fn(&Q2WeaponContext, &mut Q2GameServices, &mut Q2WeaponState, bool),
 }
 
-/// Emit a weapon event through the session engine (`hooks.emit`).
-fn weapon_emit(game: &mut Q2GameServices, event: &Q2WeaponEvent) {
-    let mut engine = game.weapons.engine.take();
-    if let Some(engine) = engine.as_mut() {
-        engine.emit(event);
-    }
-    game.weapons.engine = engine;
-}
-
 /// Report ammo changes (`hooks.ammoChanged`).
 fn ammo_changed(game: &mut Q2GameServices, actor: &ActorId, ammo: &ItemId) {
     let mut engine = game.weapons.engine.take();
@@ -207,6 +198,178 @@ pub fn weapon_ammo_changed(game: &mut Q2GameServices, actor: &ActorId, ammo: &It
 /// Adjust a firing interval (`hooks.firingInterval`, shared with equipment).
 pub fn weapon_firing_interval(game: &mut Q2GameServices, actor: &ActorId, seconds: f64) -> f64 {
     firing_interval(game, actor, seconds)
+}
+
+/// Project a muzzle (`project`, shared with weapon extensions).
+pub fn weapon_project(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    offset: Vec3,
+    angles: Option<Vec3>,
+) -> (Vec3, Vec3) {
+    project_weapon(
+        &context.owner,
+        game,
+        &context.input,
+        angles.unwrap_or(context.input.angles),
+        offset,
+    )
+}
+
+/// Apply view kick (`kick`, shared with weapon extensions).
+pub fn weapon_kick(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    origin: Vec3,
+    angles: Vec3,
+) {
+    set_q2_weapon_recoil(state, game.options.edition, context.now, origin, angles, None);
+}
+
+/// Emit a muzzle flash (`flash`, shared with weapon extensions).
+pub fn weapon_flash(context: &Q2WeaponContext, game: &mut Q2GameServices, flash: i32) {
+    muzzle_flash(context, game, flash);
+}
+
+/// Read ammo (`ammo`, shared with weapon extensions).
+pub fn weapon_ammo(context: &Q2WeaponContext, game: &mut Q2GameServices) -> f64 {
+    read_ammo(
+        game,
+        context.owner.actor.id(),
+        &context.definition,
+    )
+}
+
+/// Damage multiplier (`multiplier`, shared with weapon extensions).
+pub fn weapon_multiplier(context: &Q2WeaponContext, game: &mut Q2GameServices) -> f64 {
+    damage_multiplier(context, game)
+}
+
+/// Handle missing ammo (`noAmmo`, shared with weapon extensions).
+pub fn weapon_no_ammo(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    sound: bool,
+) {
+    no_ammo(context, game, state, sound);
+}
+
+/// Consume ammo (`consume`, shared with weapon extensions).
+pub fn weapon_consume(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+) {
+    use_ammo(context, game, state);
+}
+
+/// Consume counted ammo (`consume(context, count)`, shared with weapon extensions).
+pub fn weapon_consume_count(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    count: f64,
+) {
+    use_ammo_count(context, game, state, count);
+}
+
+/// Whether the attack continues (`continuesAttack`, shared with weapon extensions).
+pub fn weapon_continues_attack(context: &Q2WeaponContext, state: &Q2WeaponState) -> bool {
+    continues_attack(context, state)
+}
+
+/// Set the loop sound (`setLoop`, shared with weapon extensions).
+pub fn weapon_set_loop(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    path: &str,
+) {
+    set_loop(context, game, state, path);
+}
+
+/// Play the powerup sound (`powerupSound`, shared with weapon extensions).
+pub fn weapon_powerup_sound(context: &Q2WeaponContext, game: &mut Q2GameServices) {
+    powerup_sound(context, game);
+}
+
+/// Step the classic frame (`genericClassic`, shared with weapon extensions).
+pub fn weapon_generic_classic(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+) {
+    generic_classic(context, game, state);
+}
+
+/// Step the rerelease frame (`genericRerelease`, shared with weapon extensions).
+pub fn weapon_generic_rerelease(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+) {
+    generic_rerelease(context, game, state);
+}
+
+/// Step a classic throw (`throwClassic`, shared with weapon extensions).
+pub fn weapon_throw_classic(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    throwing: Option<&Q2ThrowDefinition>,
+) {
+    throw_classic(context, game, state, throwing);
+}
+
+/// Step a rerelease throw (`throwRerelease`, shared with weapon extensions).
+pub fn weapon_throw_rerelease(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    throwing: Option<&Q2ThrowDefinition>,
+) {
+    throw_rerelease(context, game, state, throwing);
+}
+
+/// Emit a weapon event (`hooks.emit`, shared with weapon extensions).
+pub fn weapon_emit(game: &mut Q2GameServices, event: &Q2WeaponEvent) {
+    let mut engine = game.weapons.engine.take();
+    if let Some(engine) = engine.as_mut() {
+        engine.emit(event);
+    }
+    game.weapons.engine = engine;
+}
+
+/// Begin lag compensation (`lagCompensation.begin`, shared with weapon extensions).
+pub fn weapon_lag_begin(
+    game: &mut Q2GameServices,
+    owner: &ActorId,
+    start: Vec3,
+    direction: Vec3,
+) -> Option<LagToken> {
+    lag_begin(game, owner, start, direction)
+}
+
+/// End lag compensation (shared with weapon extensions).
+pub fn weapon_lag_end(game: &mut Q2GameServices, token: Option<LagToken>) {
+    lag_end(game, token);
+}
+
+/// Target eligibility (`hooks.canTarget`, shared with weapon extensions).
+pub fn weapon_can_target(
+    game: &mut Q2GameServices,
+    attacker: Option<&ActorId>,
+    target: &ActorId,
+) -> bool {
+    let mut engine = game.weapons.engine.take();
+    let allowed = engine
+        .as_mut()
+        .map(|engine| engine.can_target(attacker, target))
+        .unwrap_or(attacker != Some(target));
+    game.weapons.engine = engine;
+    allowed
 }
 
 /// Adjust a firing interval (`hooks.firingInterval`).
