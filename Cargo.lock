@@ -162,6 +162,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qa-tools"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "qa-client",
+ "qa-core",
+ "thiserror",
+]
+
+[[package]]
 name = "qa-world"
 version = "0.1.0"
 dependencies = [
