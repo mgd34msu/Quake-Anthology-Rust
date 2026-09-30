@@ -3,9 +3,20 @@
 use qa_core::identity::{ActorId, SavedActorId};
 use qa_core::math::Vec3;
 
-use super::types::MonsterSoundTarget;
 use crate::q2::foundation::checkpoint::Q2AttackCheckpoint;
-use crate::q2::support::contracts::DeathReaction;
+
+/// Saved sound target.
+#[derive(Debug, Clone, Copy)]
+pub struct SavedSoundTarget {
+    /// Noise actor.
+    pub actor: SavedActorId,
+    /// Noise owner.
+    pub owner: SavedActorId,
+    /// Noise origin.
+    pub origin: Vec3,
+    /// Noise time.
+    pub time: f64,
+}
 
 /// Saved monster state (`Q2MonsterStateCheckpoint`).
 #[derive(Debug, Clone)]
@@ -15,7 +26,7 @@ pub struct Q2MonsterStateCheckpoint {
     /// Next move name.
     pub next_move: Option<String>,
     /// Sound target.
-    pub sound_target: Option<MonsterSoundTarget>,
+    pub sound_target: Option<SavedSoundTarget>,
     /// Old enemy.
     pub old_enemy: Option<SavedActorId>,
     /// Move target.
@@ -29,8 +40,12 @@ pub struct Q2MonsterStateCheckpoint {
 /// Saved pending monster damage (`Q2MonsterDamageCheckpoint`).
 #[derive(Debug, Clone)]
 pub struct Q2MonsterDamageCheckpoint {
-    /// Death reaction with saved actors.
-    pub reaction: DeathReaction,
+    /// Queued damage.
+    pub damage: f64,
+    /// Queued kick.
+    pub kick: f64,
+    /// Impact point.
+    pub point: Vec3,
     /// Saved attacker.
     pub attacker: Option<SavedActorId>,
     /// Saved inflictor.

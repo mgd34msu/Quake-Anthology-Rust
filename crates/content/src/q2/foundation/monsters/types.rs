@@ -126,6 +126,19 @@ pub enum MonsterWeapon {
     Machinegun,
 }
 
+impl MonsterWeapon {
+    /// Weapon from a soldier classname (`admit`).
+    pub fn from_classname(classname: &str) -> Self {
+        if classname == "monster_soldier_light" {
+            MonsterWeapon::Blaster
+        } else if classname == "monster_soldier" {
+            MonsterWeapon::Shotgun
+        } else {
+            MonsterWeapon::Machinegun
+        }
+    }
+}
+
 /// Monster locomotion (`MonsterState["locomotion"]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MonsterLocomotion {
@@ -838,6 +851,11 @@ impl<'a> MonsterContext<'a> {
     /// Monster definition.
     pub fn definition(&self) -> std::rc::Rc<Q2MonsterDefinition> {
         self.game.monsters.require_definition(&self.actor)
+    }
+
+    /// Monster definition, when admitted.
+    pub fn try_definition(&self) -> Option<std::rc::Rc<Q2MonsterDefinition>> {
+        self.game.monsters.actor_definitions.get(&self.actor).cloned()
     }
 
     /// Set the current move (`setMove`).
