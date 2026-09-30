@@ -8,4 +8,6 @@ license.workspace = true
 thiserror = { workspace = true }
 qa-core = { workspace = true }
 qa-platform = { workspace = true }
+qa-world = { workspace = true }
+qa-guest = { workspace = true }
 flate2 = { workspace = true }
