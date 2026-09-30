@@ -915,11 +915,13 @@ pub struct Q2MonsterHooks {
     pub platform_state: Option<fn(&ActorId) -> Option<PlatformPhase>>,
     /// Look up an authored mission.
     pub mission: Option<Box<dyn Fn(&ActorId) -> Option<Box<dyn MonsterMission>>>>,
+    /// Retarget a health bar (`transferHealthbarTarget`).
+    pub healthbar_transfer: Option<fn(ActorId, ActorId, &mut Q2GameServices)>,
 }
 
 impl Default for Q2MonsterHooks {
     fn default() -> Self {
-        Self { drop_item: None, platform_state: None, mission: None }
+        Self { drop_item: None, platform_state: None, mission: None, healthbar_transfer: None }
     }
 }
 
