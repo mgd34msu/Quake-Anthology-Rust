@@ -6,12 +6,26 @@ use qa_core::math::{add3, vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation_config::*;
-use crate::q3::foundation::mirrors::*;
+use crate::q3::foundation::player_pose::qvm_angle_mod;
+use qa_world::movement::q3::constants::player_animation;
+use thiserror::Error;
 
 // ---------------------------------------------------------------------------
 // weapon-pose.ts: CG_CalculateWeaponPosition, CG_MapTorsoToWeaponFrame,
 // CG_MachinegunSpinAngle.
 // ---------------------------------------------------------------------------
+
+/// Weapon pose failure (donor `Error` throws).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum WeaponPoseError {
+    /// Operation failure (donor `Error`).
+    #[error("{0}")]
+    Failed(String),
+}
+
+fn failed(message: impl Into<String>) -> WeaponPoseError {
+    WeaponPoseError::Failed(message.into())
+}
 
 /// Weapon view motion (`Q3WeaponViewMotion`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -66,15 +80,15 @@ pub fn q3_weapon_view_pose(input: &Q3WeaponViewMotion) -> (Vec3, Vec3) {
 }
 
 /// Map a torso frame to its weapon frame (`q3TorsoWeaponFrame`).
-pub fn q3_torso_weapon_frame(config: &PlayerAnimationConfig, frame: i32) -> Result<i32, Q3FoundationError> {
+pub fn q3_torso_weapon_frame(config: &PlayerAnimationConfig, frame: i32) -> Result<i32, WeaponPoseError> {
     for index in [
-        Q3PlayerAnimation::TORSO_DROP,
-        Q3PlayerAnimation::TORSO_ATTACK,
-        Q3PlayerAnimation::TORSO_ATTACK2,
+        player_animation::TORSO_DROP,
+        player_animation::TORSO_ATTACK,
+        player_animation::TORSO_ATTACK2,
     ] {
         let animation = config.animations[index as usize]
             .ok_or_else(|| failed(format!("Missing Q3 weapon torso animation {index}")))?;
-        let drop = index == Q3PlayerAnimation::TORSO_DROP;
+        let drop = index == player_animation::TORSO_DROP;
         let width = if drop { 9 } else { 6 };
         if frame >= animation.first_frame && frame < animation.first_frame + width {
             return Ok(frame - animation.first_frame + if drop { 6 } else { 1 });
@@ -120,5 +134,57 @@ impl Q3WeaponBarrel {
             self.spinning = firing;
         }
         Q3BarrelStep { angle, stopped }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn animation_fixture() -> String {
+        let mut text = String::from("sex f\nfootsteps boot\nheadoffset 1 2 3\nfixedlegs\nfixedtorso\n");
+        for frame in 0..31 {
+            text.push_str(&format!("{frame} 6 0 10\n"));
+        }
+        text
+    }
+    #[test]
+    fn weapon_view_pose_torso_frames_and_barrel() {
+        let motion = Q3WeaponViewMotion {
+            origin: vec3(1.0, 2.0, 3.0),
+            angles: vec3(0.0, 0.0, 0.0),
+            time_ms: 1000,
+            horizontal_speed: 200.0,
+            bob_cycle: 2,
+            bob_fraction_sine: 0.5,
+            land_time: 900,
+            land_change: 8.0,
+        };
+        let first = q3_weapon_view_pose(&motion);
+        assert_eq!(first, q3_weapon_view_pose(&motion));
+        let odd = Q3WeaponViewMotion { bob_cycle: 3, ..motion };
+        assert_ne!(first.1.z, q3_weapon_view_pose(&odd).1.z);
+
+        let config = parse_player_animation_config(&animation_fixture(), "<t>").unwrap();
+        let drop = config.animations[player_animation::TORSO_DROP as usize]
+            .as_ref()
+            .unwrap()
+            .first_frame;
+        assert_eq!(q3_torso_weapon_frame(&config, drop + 2).unwrap(), 8);
+        let attack = config.animations[player_animation::TORSO_ATTACK as usize]
+            .as_ref()
+            .unwrap()
+            .first_frame;
+        assert_eq!(q3_torso_weapon_frame(&config, attack).unwrap(), 1);
+        assert_eq!(q3_torso_weapon_frame(&config, 5000).unwrap(), 0);
+        let mut missing = config.clone();
+        missing.animations[player_animation::TORSO_DROP as usize] = None;
+        assert!(q3_torso_weapon_frame(&missing, drop).is_err());
+
+        let mut barrel = Q3WeaponBarrel::default();
+        let spin = barrel.step(100, true);
+        assert!(!spin.stopped);
+        barrel.step(200, true);
+        let stop = barrel.step(300, false);
+        assert!(stop.stopped);
     }
 }

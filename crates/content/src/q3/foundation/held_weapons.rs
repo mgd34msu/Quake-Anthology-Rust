@@ -25,3 +25,19 @@ pub const Q3_WEAPON_HAND_GRIP: ModelTransform = ModelTransform {
     ],
     scale: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
 };
+
+#[cfg(test)]
+mod tests {
+    use crate::q3::foundation::character::{Q3_CHARACTER_BOUNDS, Q3_CHARACTER_VIEW_HEIGHT};
+    use qa_core::math::vec3;
+
+    use super::*;
+    #[test]
+    fn weapon_hand_grip_matches_sarge_registration() {
+        assert_eq!(Q3_WEAPON_HAND_GRIP.origin.x, -2.9841071642362156f64 as f32);
+        assert_eq!(Q3_WEAPON_HAND_GRIP.axis[0], vec3(1.0, 0.0, 0.0));
+        assert_eq!(Q3_WEAPON_HAND_GRIP.scale, vec3(1.0, 1.0, 1.0));
+        assert_eq!(Q3_CHARACTER_VIEW_HEIGHT, 26);
+        assert_eq!(Q3_CHARACTER_BOUNDS.min, vec3(-15.0, -15.0, -24.0));
+    }
+}
