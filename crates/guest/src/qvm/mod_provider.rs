@@ -28,6 +28,7 @@
 //! through [`ModProviderHost`]; sub-component runtimes owned by other workers
 //! are host seams, while all declaration validation here is complete.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use qa_core::identity::{ActorId, SavedActorId};
@@ -824,8 +825,8 @@ pub fn qualify_qvm_region_evaluation(
             let right = pop(&mut stack)?;
             let left = pop(&mut stack)?;
             let fold = if opcode == QvmOpcode::OpAdd || opcode == QvmOpcode::OpSub {
-                match (left, right) {
-                    (RegionOperand::Local(base), RegionOperand::Constant(delta)) => Some((base, delta)),
+                match (&left, &right) {
+                    (RegionOperand::Local(base), RegionOperand::Constant(delta)) => Some((*base, *delta)),
                     _ => None,
                 }
             } else {
@@ -1615,6 +1616,7 @@ pub enum ModCallbackOperation {
     /// Actor pain.
     ActorPain,
     /// Actor die.
+    ActorDie,
     /// Damage.
     Damage,
     /// Inventory give.
@@ -1717,7 +1719,7 @@ pub enum ModClientOutputDeclaration {
 }
 
 /// Movement-mode output value.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutputModeValue {
     /// Source value.
     pub value: f64,
@@ -1790,7 +1792,7 @@ fn check_output_values(mask: Option<u32>, values: &[f64]) -> Result<(), GuestErr
     }
     if values.is_empty()
         || values.iter().any(|value| !value.is_finite())
-        || values.iter().map(f64::to_bits).collect::<HashSet<_>>().len() != values.len()
+        || values.iter().map(|value| value.to_bits()).collect::<HashSet<_>>().len() != values.len()
     {
         return Err(GuestError::invalid("Ambiguous source client output values"));
     }
@@ -2700,6 +2702,7 @@ pub fn validate_qvm_mod_pickups_mirror(declaration: &QvmModCallbackDeclaration) 
                             return Err(GuestError::invalid("QVM pickup context overlaps source actor lifetime"));
                         }
                     }
+                }
             }
         }
     }
@@ -2941,7 +2944,7 @@ pub fn validate_qvm_mod(artifact: &QvmArtifact, declaration: &QvmModCallbackDecl
                 for output in outputs {
                     match output {
                         QvmModInputOutput::Field { .. } => {}
-                        QvmModInputOutput::Handler { entry, actor_pointer, returns, .. } | QvmModInputOutput::Command { entry, actor_pointer, .. } => {
+                        QvmModInputOutput::Handler { entry, actor_pointer, .. } | QvmModInputOutput::Command { entry, actor_pointer, .. } => {
                             if image.instruction(*entry).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
                                 return Err(GuestError::invalid("QVM input handler requires an original function entry"));
                             }
@@ -3141,8 +3144,8 @@ pub fn read_mod_host_image(host: &ProfileValue, declaration: &QvmModCallbackDecl
         return Err(GuestError::invalid("Invalid QVM projection allocation cursor"));
     }
     let entity_capacity = declaration.entity_record.as_deref().and_then(|id| declaration.actor_records.iter().find(|record| record.id == *id)).map_or(0, |record| record.capacity);
-    let mut slots = HashSet::new();
-    let mut actors = HashSet::new();
+    let slots = RefCell::new(HashSet::new());
+    let actors = RefCell::new(HashSet::new());
     let projections = reader.field("projections")?.list(|entry| {
         let actor = read_saved_actor(&entry.field("actor")?)?;
         let slot = entry.field("slot")?.integer(0)? as usize;
@@ -3153,7 +3156,7 @@ pub fn read_mod_host_image(host: &ProfileValue, declaration: &QvmModCallbackDecl
         } else {
             slot >= next_slot
         };
-        if bad || !slots.insert(slot) || !actors.insert(key) {
+        if bad || !slots.borrow_mut().insert(slot) || !actors.borrow_mut().insert(key) {
             return entry.fail("Invalid saved QVM actor projection");
         }
         entry.field("event")?.nullable(|event| event.string())?;
@@ -3773,7 +3776,7 @@ impl<H: ModProviderHost> QvmModProvider<H> {
                 Ok(slot as i32)
             }
             QvmModValue::Time { input, units, encoding } => {
-                let Some(ModRuntimeValue::Float(value)) = inputs.get(&input.callback()).copied() else {
+                let Some(ModRuntimeValue::Float(value)) = inputs.get(&input.callback()).cloned() else {
                     return Err(GuestError::invalid("Missing QVM time input"));
                 };
                 encode_mod_scalar(value * if *units == TimeUnits::Milliseconds { 1000.0 } else { 1.0 }, *encoding)

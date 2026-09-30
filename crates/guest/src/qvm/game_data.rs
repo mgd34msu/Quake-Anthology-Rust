@@ -2287,9 +2287,9 @@ pub fn qualify_qvm_region_evaluation(
                     if opcode == QvmOpcode::OpAdd || opcode == QvmOpcode::OpSub =>
                 {
                     let next = if opcode == QvmOpcode::OpAdd {
-                        offset as i32 + value
+                        *offset as i32 + *value
                     } else {
-                        offset as i32 - value
+                        *offset as i32 - *value
                     };
                     stack.push(QvmRegionOperand::Local(next.max(0) as usize));
                 }

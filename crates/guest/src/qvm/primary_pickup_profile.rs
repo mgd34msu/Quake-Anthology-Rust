@@ -8,6 +8,7 @@
 //! [`super::mod_provider`]. The donor's `eligible` interpreter closure is a
 //! declarative [`EligibilityOverride`] list plus [`QvmPickupGrant::decide`].
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use super::mod_provider::{
@@ -395,11 +396,11 @@ pub fn read_qvm_primary_pickup_profile(reader: &ProfileReader<'_>, artifact: &Qv
             };
             PickupOperation::Region { entry: region.0, join: region.1, quantity: region.2, weapon: grant }
         };
-        let mut seen = HashSet::new();
+        let seen = RefCell::new(HashSet::new());
         let branches = at.field("eligibility")?.field("branches")?.list(|value| {
             let instruction_index = value.field("instructionIndex")?.integer(gate.entry as i64 + 1)? as usize;
             let instruction = instructions.get(instruction_index);
-            if instruction_index >= owner_end(gate.entry) || instruction.is_none_or(|instruction| !instruction.opcode.is_branch()) || !seen.insert(instruction_index) {
+            if instruction_index >= owner_end(gate.entry) || instruction.is_none_or(|instruction| !instruction.opcode.is_branch()) || !seen.borrow_mut().insert(instruction_index) {
                 return value.fail("eligibility override must name a distinct original conditional inside the gate");
             }
             Ok(EligibilityOverride { instruction_index, taken: value.field("taken")?.boolean()? })

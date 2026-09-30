@@ -12,6 +12,8 @@
 //! native-weapon worker. Runtime stepping (`WeaponBehaviorInstance`) is
 //! interpreter-owned; this port covers declarations, reads, and validation.
 
+use std::collections::HashSet;
+
 use super::mod_provider::{ModuleId, ProfileReader, ProfileValue, QvmAbi, QvmArtifact, QvmOpcode, qvm_shared_entity_bytes};
 use crate::error::GuestError;
 
@@ -308,7 +310,172 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
         id: format!("qvm:{id}"),
         title: reader.field("title")?.string()?,
         module: artifact.module.clone(),
-        role: WeaponBehaviorRole::parse(&role).expect("validated role"),
+        role: WeaponBehaviorRole::parse(&role).ok_or_else(|| GuestError::invalid("unknown weapon role"))?,
         aspect: reader.field("aspect")?.literal_str("trajectory")?,
-        fire: WeaponBehaviorCallback::Qvm { module: artifact.module.clone(), instruction_index: read_entry(&reader.field("fireFunction")?)?
-...[truncated 5050 chars]
+        fire: WeaponBehaviorCallback::Qvm { module: artifact.module.clone(), instruction_index: read_entry(&reader.field("fireFunction")?)? },
+        activate: match activation.value() {
+            ProfileValue::Null | ProfileValue::Undefined => None,
+            _ => Some(WeaponBehaviorCallback::Qvm { module: artifact.module.clone(), instruction_index: read_entry(&activation)? }),
+        },
+    };
+    let minimum = qvm_shared_entity_bytes(artifact.abi());
+    let entity_stride = reader.field("entityStride")?.integer(minimum as i64)? as usize;
+    if entity_stride % 4 != 0 || entity_stride > artifact.image.allocated_data_length {
+        return reader.field("entityStride")?.fail("invalid entity stride");
+    }
+    let mut occupied = HashSet::new();
+    let fields = reader.field("fields")?;
+    let mut field = |name: &str| -> Result<usize, GuestError> {
+        let source = fields.field(name)?;
+        let offset = source.integer(minimum as i64)? as usize;
+        if offset % 4 != 0 || offset > entity_stride - 4 || !occupied.insert(offset) {
+            return source.fail("private field is overlapping, unaligned or outside the entity");
+        }
+        Ok(offset)
+    };
+    let level_time = reader.field("levelTime")?.integer(4)? as usize;
+    if level_time % 4 != 0 || level_time > artifact.image.data_length + artifact.image.literal_length + artifact.image.bss_length - 4 {
+        return reader.field("levelTime")?.fail("level clock is outside declared guest data");
+    }
+    Ok(QvmWeaponProfile {
+        definition,
+        layout: QvmWeaponBehaviorLayout {
+            entity_stride,
+            level_time,
+            allocate: read_entry(&reader.field("allocateFunction")?)?,
+            free: read_entry(&reader.field("freeFunction")?)?,
+            fields: WeaponLayoutFields { inuse: field("inuse")?, nextthink: field("nextthink")?, think: field("think")?, health: field("health")? },
+            fire_abi: {
+                reader.field("fireAbi")?.literal_str("entity-pointer-start-direction")?;
+                FireAbi::EntityPointerStartDirection
+            },
+        },
+    })
+}
+
+/// Validate a profile against its artifact through a declaration round trip.
+pub fn validate_qvm_weapon_profile(profile: &QvmWeaponProfile, artifact: &QvmArtifact) -> Result<QvmWeaponProfile, GuestError> {
+    let validated = read_qvm_weapon_profile(&qvm_weapon_profile_declaration(profile, artifact.abi())?, artifact)?;
+    if !same_weapon_behavior(&profile.definition, &validated.definition) {
+        return Err(GuestError::invalid("QVM weapon callback identity differs from the loaded artifact"));
+    }
+    Ok(validated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::mod_provider::{ModuleId, ProfileValue, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole};
+    use super::*;
+
+    fn module() -> ModuleId {
+        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+    }
+
+    fn enters(count: usize) -> Vec<QvmInstruction> {
+        let mut instructions = Vec::new();
+        for _ in 0..count {
+            instructions.push(QvmInstruction::word(QvmOpcode::OpEnter, 0));
+            instructions.push(QvmInstruction::word(QvmOpcode::OpLeave, 0));
+        }
+        instructions
+    }
+
+    fn artifact() -> QvmArtifact {
+        QvmArtifact {
+            module: module(),
+            role: QvmRole::Qagame,
+            abi_profile: None,
+            image: QvmImage { instructions: enters(8), data_length: 4096, literal_length: 0, bss_length: 0, initialized_length: 4096, allocated_data_length: 8192 },
+        }
+    }
+
+    fn profile() -> QvmWeaponProfile {
+        QvmWeaponProfile {
+            definition: WeaponBehaviorDefinition {
+                id: "qvm:rocket".to_string(),
+                title: "Rocket".to_string(),
+                role: WeaponBehaviorRole::Rocket,
+                aspect: "trajectory".to_string(),
+                module: module(),
+                fire: WeaponBehaviorCallback::Qvm { module: module(), instruction_index: 2 },
+                activate: None,
+            },
+            layout: QvmWeaponBehaviorLayout {
+                entity_stride: 1024,
+                level_time: 100,
+                allocate: 2,
+                free: 2,
+                fields: WeaponLayoutFields { inuse: 600, nextthink: 604, think: 608, health: 612 },
+                fire_abi: FireAbi::EntityPointerStartDirection,
+            },
+        }
+    }
+
+    #[test]
+    fn reads_a_valid_profile() {
+        let profile = profile();
+        let declaration = qvm_weapon_profile_declaration(&profile, QvmAbi::Modern).expect("declare");
+        let read = read_qvm_weapon_profile(&ProfileReader::new(&declaration), &artifact()).expect("read");
+        assert_eq!(read.definition.id, "qvm:rocket");
+        assert_eq!(read.layout.entity_stride, 1024);
+        assert_eq!(read.layout.fields.health, 612);
+        assert!(same_weapon_behavior(&profile.definition, &read.definition));
+        assert!(same_qvm_weapon_layout(&profile.layout, &read.layout));
+        assert_eq!(validate_qvm_weapon_profile(&profile, &artifact()).expect("validate").definition.id, "qvm:rocket");
+    }
+
+    #[test]
+    fn same_qvm_weapon_layout_compares_layouts() {
+        let left = profile().layout;
+        assert!(same_qvm_weapon_layout(&left, &left));
+        let mut drifted = left;
+        drifted.entity_stride = 2048;
+        assert!(!same_qvm_weapon_layout(&left, &drifted));
+        drifted = left;
+        drifted.level_time = 104;
+        assert!(!same_qvm_weapon_layout(&left, &drifted));
+        drifted = left;
+        drifted.fields.think = 616;
+        assert!(!same_qvm_weapon_layout(&left, &drifted));
+    }
+
+    #[test]
+    fn validate_rejects_foreign_digest() {
+        let mut foreign = artifact();
+        foreign.module.digest = "sha256:other".to_string();
+        assert!(validate_qvm_weapon_profile(&profile(), &foreign).is_err());
+    }
+
+    #[test]
+    fn rejects_unstable_identifiers_and_entries() {
+        let mut bad_id = profile();
+        bad_id.definition.id = "qvm:Bad-Id!".to_string();
+        let declaration = qvm_weapon_profile_declaration(&bad_id, QvmAbi::Modern).expect("declare");
+        assert!(read_qvm_weapon_profile(&ProfileReader::new(&declaration), &artifact()).is_err());
+        let mut bad_entry = artifact();
+        bad_entry.image.instructions[2] = QvmInstruction::word(QvmOpcode::OpConst, 0);
+        let declaration = qvm_weapon_profile_declaration(&profile(), QvmAbi::Modern).expect("declare");
+        assert!(read_qvm_weapon_profile(&ProfileReader::new(&declaration), &bad_entry).is_err());
+    }
+
+    #[test]
+    fn same_weapon_behavior_compares_callbacks() {
+        let left = profile().definition;
+        assert!(same_weapon_behavior(&left, &left));
+        let mut activated = left.clone();
+        activated.activate = Some(WeaponBehaviorCallback::Qvm { module: module(), instruction_index: 4 });
+        assert!(!same_weapon_behavior(&left, &activated));
+        let native = |offset: usize| WeaponBehaviorCallback::NativeArtifact {
+            module: module(),
+            image_offset: offset,
+            abi: NativeArtifactAbi { kind: "windows-x86-64".to_string(), call: "system".to_string(), image: "pe".to_string(), pointer_bytes: 8 },
+        };
+        let mut left_native = left.clone();
+        left_native.fire = native(16);
+        let mut right_native = left.clone();
+        right_native.fire = native(16);
+        assert!(same_weapon_behavior(&left_native, &right_native));
+        right_native.fire = native(24);
+        assert!(!same_weapon_behavior(&left_native, &right_native));
+    }
+}

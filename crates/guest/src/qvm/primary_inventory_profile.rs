@@ -8,6 +8,7 @@
 //! Capacity evaluation delegates to [`CapacityModule`]; the donor's closures
 //! are a declarative [`InventoryCapacity`] plus [`CapacityContext`].
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use super::mod_provider::{
@@ -282,7 +283,7 @@ pub fn read_qvm_primary_inventory_profile(
                 }
             }
         }
-        let mut occupied: HashMap<(String, usize), bool> = HashMap::new();
+        let occupied: RefCell<HashMap<(String, usize), bool>> = RefCell::new(HashMap::new());
         super::mod_provider::validate_qvm_item_storage_mirror(&storage, &items, &artifact.image, &|field, usage_capacity| {
             let bytes = if field.record == "client" {
                 records.client_stride
@@ -291,11 +292,11 @@ pub fn read_qvm_primary_inventory_profile(
             } else {
                 0
             };
-            let previous = occupied.get(&(field.record.clone(), field.offset)).copied();
+            let previous = occupied.borrow().get(&(field.record.clone(), field.offset)).copied();
             if field.offset % 4 != 0 || field.offset + 4 > bytes || previous.is_some_and(|was_capacity| !(was_capacity && usage_capacity)) {
                 return reader.fail("private inventory field is outside or overlaps its source record");
             }
-            occupied.insert((field.record.clone(), field.offset), usage_capacity);
+            occupied.borrow_mut().insert((field.record.clone(), field.offset), usage_capacity);
             Ok(())
         })?;
         return Ok(QvmInventoryProfile::Private {

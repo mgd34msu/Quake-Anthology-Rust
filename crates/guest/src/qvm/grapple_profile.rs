@@ -296,7 +296,7 @@ pub fn read_qvm_grapple_profile(
         callback(name).map(Some)
     };
     let pulling_flag = reader.field("pullingFlag")?.integer(1)?;
-    if pulling_flag > 0x4000_0000 || !pulling_flag.is_power_of_two() {
+    if pulling_flag > 0x4000_0000 || pulling_flag <= 0 || !(pulling_flag as u64).is_power_of_two() {
         return reader.field("pullingFlag")?.fail("expected one player movement flag");
     }
     let cvars = reader.field("initialCvars")?;

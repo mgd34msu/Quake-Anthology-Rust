@@ -159,13 +159,13 @@ pub fn read_qvm_primary_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::super::mod_provider::{InputPointerKind, ModuleId, ProfileValue, QvmAbi, QvmImage, QvmModInputPointer, QvmRegionEvaluation};
+    use super::super::mod_provider::{InputPointerKind, ModuleId, ProfileValue, QvmAbi, QvmImage, QvmModInputPointer, QvmRegionEvaluation, QvmRole};
     use super::super::mod_weapon_stage::{
         DispatcherHead, QvmItemCapacity, QvmItemField, QvmItemStorage, QvmWeaponActor, QvmWeaponDispatcherDefinition, SelectionValue, StageRequest,
         StageSelection,
     };
     use super::super::primary_inventory_profile::InventoryCapacity;
-    use super::super::primary_pickup_profile::{FunctionCalls, GateProfile, ItemTableFields, PickupFields, TableAddress, TableCount};
+    use super::super::primary_pickup_profile::{FunctionCalls, GateProfile, ItemTableFields, PickupFields, QvmPickupGrant, TableAddress, TableCount, WeaponGrant};
     use super::super::primary_player_profile::{
         ArmorDefinition, CombatCallbacks, CombatFields, CombatReactions, CombatState, CombatStateFlags, CombatTeamState, DamageFactor, DelayPlayer,
         DropProfile, GiveProfile, InputEntries, NamedGrant, PowerupOffsets, QvmCombatCall, QvmCombatMass, QvmDamageFlags, QvmEquipmentMovementProfile,
@@ -392,5 +392,100 @@ mod tests {
         let mut offset_drop = weapons.clone();
         offset_drop.drop.ammo = DropAmmo::Offset(12);
         let error = check((&input, &offset_drop, &inventory, &pickups, &combat, &items)).expect_err("offset drop");
-        assert!(error.to_string().contains("projection through its declared st
-...[truncated 2732 chars]
+        assert!(error.to_string().contains("projection through its declared storage"), "unexpected: {error}");
+        let mut offset_grant = weapons.clone();
+        offset_grant.drop.ammo = DropAmmo::Inventory;
+        let mut grants = pickups.clone();
+        grants.grants.push(QvmPickupGrant {
+            entry: 1,
+            calls: Vec::new(),
+            item_type: 2,
+            operation: PickupOperation::Region {
+                entry: 1,
+                join: 2,
+                quantity: 3,
+                weapon: Some(WeaponGrant {
+                    location: WeaponGrantLocation::Offsets { bits_offset: 4, ammo_offset: 8 },
+                    quantity: region(),
+                }),
+            },
+            eligibility: Vec::new(),
+        });
+        let error = check((&input, &offset_grant, &inventory, &grants, &combat, &items)).expect_err("offset grant");
+        assert!(error.to_string().contains("projection through its declared storage"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn public_inventory_rejects_wide_selection() {
+        let input = input();
+        let mut weapons = weapons();
+        let inventory = QvmInventoryProfile::Public {
+            module: module(),
+            abi_profile: QvmAbi::Modern,
+            weapons_offset: 8,
+            ammo_offset: 12,
+            capacity: InventoryCapacity::Constant(10),
+        };
+        let pickups = pickups();
+        let combat = combat();
+        let items = layout();
+        assert!(check((&input, &weapons, &inventory, &pickups, &combat, &items)).is_ok());
+        weapons.stage.selection.values.push(SelectionValue { value: 16, item: "weapon_bfg".to_string() });
+        let error = check((&input, &weapons, &inventory, &pickups, &combat, &items)).expect_err("wide selection");
+        assert!(error.to_string().contains("exceeds public inventory storage"), "unexpected: {error}");
+    }
+
+    fn artifact() -> QvmArtifact {
+        QvmArtifact {
+            module: module(),
+            role: QvmRole::Qagame,
+            abi_profile: None,
+            image: QvmImage { instructions: Vec::new(), data_length: 0, literal_length: 0, bss_length: 0, initialized_length: 0, allocated_data_length: 0 },
+        }
+    }
+
+    struct FixtureSource;
+
+    impl BuiltinPrimarySource for FixtureSource {
+        fn builtin_input(&self, _artifact: &QvmArtifact) -> QvmInputDefinition {
+            input()
+        }
+
+        fn builtin_weapons(&self, _artifact: &QvmArtifact, _catalog: &[QvmWeaponCatalogRow]) -> QvmPrimaryWeaponProfile {
+            weapons()
+        }
+
+        fn builtin_inventory(&self, _artifact: &QvmArtifact) -> QvmInventoryProfile {
+            inventory()
+        }
+
+        fn builtin_pickups(&self, _artifact: &QvmArtifact) -> QvmPickupProfile {
+            pickups()
+        }
+
+        fn builtin_combat(&self, _artifact: &QvmArtifact) -> QvmPrimaryCombatProfile {
+            combat()
+        }
+    }
+
+    #[test]
+    fn builtin_factory_fills_all_parts() {
+        let profile = builtin_qvm_primary_profile(&FixtureSource, &artifact(), &[]);
+        assert!(profile.declaration.is_none());
+        assert!(profile.input.is_some());
+        assert!(profile.weapons.is_some());
+        assert!(profile.inventory.is_some());
+        assert!(profile.pickups.is_some());
+        assert!(profile.combat.is_some());
+    }
+
+    #[test]
+    fn read_glue_wires_sub_readers() {
+        let root = ProfileValue::record(Vec::new());
+        let items = layout();
+        let declaration =
+            ResolvedResourceReference { id: "test:primary".to_string(), requested_path: "primary.json".to_string(), digest: "sha256:primary".to_string(), byte_length: 0 };
+        let error = read_qvm_primary_profile(&ProfileReader::new(&root), &artifact(), None, &items, declaration).expect_err("empty declaration");
+        assert!(!error.to_string().is_empty());
+    }
+}

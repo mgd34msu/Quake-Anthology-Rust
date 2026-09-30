@@ -33,7 +33,9 @@ use super::game_combat_scope::{
     QvmDamageReaction, QvmDamageReactions, QvmDamageScopeOptions, QvmDamageScopes, QvmScopeDamageRequest,
     SharedDamageObserver, SourceDamageResult,
 };
-use super::game_data::{QvmArtifact, QvmFunctionCall, QvmGameData, QvmHookFn, QvmModule, QvmOpcode};
+use super::game_data::{
+    AbiProfile, ModuleIdentity, QvmArtifact, QvmFunctionCall, QvmGameData, QvmHookFn, QvmModule, QvmOpcode,
+};
 use super::shared_entity_record::qvm_shared_entity_bytes;
 use crate::error::GuestError;
 
@@ -828,7 +830,8 @@ impl QvmCombatBindings {
         if let Some(id) = inner.remove_armor.take() {
             inner.options.module.remove_hook(id);
         }
-        for id in inner.removals.drain(..) {
+        let removals: Vec<u64> = inner.removals.drain(..).collect();
+        for id in removals {
             inner.options.module.remove_hook(id);
         }
         if let Some(id) = inner.release_hook.take() {
@@ -1467,7 +1470,8 @@ impl QvmCombatBindings {
                 Ok(())
             }),
         );
-        *outcome.borrow()
+        let copied = *outcome.borrow();
+        copied
     }
 
     fn after_free(&self, call: &mut QvmFunctionCall) -> i32 {
@@ -1652,7 +1656,8 @@ impl QvmCombatBindings {
                     outcome.map(|_| ())
                 }),
             );
-            *result.borrow()
+            let copied = *result.borrow();
+            copied
         })
     }
 }

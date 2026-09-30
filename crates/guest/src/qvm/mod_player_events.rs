@@ -10,6 +10,7 @@
 //! [`super::mod_presentation_checkpoint::SourcePlayerState`]; [`ModuleId`] and
 //! [`QvmAbi`] reuse [`super::mod_provider`].
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use qa_core::identity::{ActorId, SavedActorId};
@@ -136,24 +137,24 @@ pub fn read_qvm_player_events(reader: &ProfileReader<'_>) -> Result<Option<QvmPl
         return Ok(None);
     }
     let next_order = reader.field("nextOrder")?.integer(0)? as u64;
-    let mut actors = HashSet::new();
-    let mut order_set = HashSet::new();
-    let read_order = |value: &ProfileReader<'_>, orders: &mut HashSet<u64>| -> Result<u64, GuestError> {
+    let actors = RefCell::new(HashSet::new());
+    let order_set = RefCell::new(HashSet::new());
+    let read_order = |value: &ProfileReader<'_>| -> Result<u64, GuestError> {
         let result = value.integer(0)? as u64;
-        if result >= next_order || !orders.insert(result) {
+        if result >= next_order || !order_set.borrow_mut().insert(result) {
             return value.fail("invalid player event publication order");
         }
         Ok(result)
     };
     let clients = reader.field("clients")?.list(|value| {
         let actor = read_saved_actor_id(&value.field("actor")?)?;
-        if !actors.insert((actor.slot, actor.generation)) {
+        if !actors.borrow_mut().insert((actor.slot, actor.generation)) {
             return value.fail("duplicate player event cursor");
         }
         let sequence = read_int32(&value.field("sequence")?)?;
         let observed = read_int32(&value.field("observedSequence")?)?;
         let predictable = value.field("predictable")?.list(|entry| {
-            Ok((read_int32(&entry.field("sequence")?)?, read_order(&entry.field("order")?, &mut order_set)?))
+            Ok((read_int32(&entry.field("sequence")?)?, read_order(&entry.field("order")?)?))
         })?;
         let sequences: HashSet<i32> = predictable.iter().map(|(sequence, _)| *sequence).collect();
         if predictable.len() > 2
@@ -170,7 +171,7 @@ pub fn read_qvm_player_events(reader: &ProfileReader<'_>) -> Result<Option<QvmPl
             external_time: read_int32(&value.field("externalTime")?)?,
             sequence,
             observed_sequence: observed,
-            external_order: value.field("externalOrder")?.nullable(|order| read_order(order, &mut order_set))?,
+            external_order: value.field("externalOrder")?.nullable(|order| read_order(order))?,
             predictable,
         })
     })?;
@@ -656,4 +657,3 @@ mod tests {
     }
 }
    
-...[truncated 6964 chars]
