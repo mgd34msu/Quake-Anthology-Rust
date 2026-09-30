@@ -365,7 +365,7 @@ pub fn snapshot_from_bytes(bytes: &[u8], abi: QvmAbi, number: i32) -> Result<Qvm
     let player_len = qvm_player_state_bytes(abi);
     let entity_len = qvm_entity_state_bytes(abi);
     let count = read_i32(bytes, 44 + player_len)?;
-    if count < 0 || count > 256 {
+    if !(0..=256).contains(&count) {
         return Err(GuestError::invalid("invalid source snapshot entity count"));
     }
     let mut entities = Vec::with_capacity(count as usize);
@@ -604,7 +604,7 @@ pub fn read_mod_scene_publication(
                 text: row.field("text")?.string()?,
                 recipient: row
                     .field("recipient")?
-                    .nullable(|value| Ok(resolve(read_saved_actor_id(value)?)?))?,
+                    .nullable(|value| resolve(read_saved_actor_id(value)?))?,
             })
         })?,
     })

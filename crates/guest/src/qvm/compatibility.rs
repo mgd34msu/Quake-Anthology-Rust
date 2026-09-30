@@ -91,10 +91,7 @@ pub fn parse_qvm_compatibility_declaration(
     reader.field("version").literal_i64(1).map_err(GuestError::from)?;
     let mut seen = HashSet::new();
     let mut selected = QvmCompatibilityDeclaration::default();
-    let entries: Vec<SaveReader<'_>> = reader
-        .field("modules")
-        .list(|entry| Ok::<_, GuestError>(entry))
-        .map_err(GuestError::from)?;
+    let entries: Vec<SaveReader<'_>> = reader.field("modules").list(Ok::<_, GuestError>)?;
     for entry in entries {
         let entry_role = entry
             .field("role")

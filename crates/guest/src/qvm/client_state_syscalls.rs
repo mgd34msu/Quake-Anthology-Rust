@@ -53,7 +53,7 @@ pub fn client_state_syscall(
         let index = call.int(1)?;
         let word = call.int(2)?;
         let size = call.int(3)?;
-        if index < 0 || index >= 1024 {
+        if !(0..1024).contains(&index) {
             return Ok(Some(0));
         }
         let value = services.game_state_get(qvm_configstring(index, profile)? as usize);

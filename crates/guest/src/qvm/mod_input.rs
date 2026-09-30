@@ -238,7 +238,7 @@ impl QvmModInput {
                 QvmModInputOutput::Field { record, .. } => Some(record.as_str()),
                 output => output.actor_record(),
             };
-            if record.map_or(true, |id| self.records.iter().all(|record| record.id != id)) {
+            if record.is_none_or(|id| self.records.iter().all(|record| record.id != id)) {
                 return Err(GuestError::invalid("QVM input output names an undeclared actor record"));
             }
             Ok(())
@@ -396,7 +396,7 @@ impl QvmModInput {
 
     /// Read a field output.
     fn field(&self, output: &QvmModInputOutput, actor: &ActorId) -> Result<QvmModClientInputOutput, GuestError> {
-        let (QvmModInputOutput::Field { record, offset, value }) = output else {
+        let QvmModInputOutput::Field { record, offset, value } = output else {
             return Err(GuestError::invalid("QVM input field requires a field output"));
         };
         let memory = self.module.memory();
@@ -578,7 +578,7 @@ impl QvmModInput {
                         .player_state(&application.identity.actor)?
                         .delta_angle_words;
                     let word = |index: usize| {
-                        (i64::from(after.angles[index]) + i64::from(delta[index]) & 0xffff) as f64 * 360.0 / 65536.0
+                        ((i64::from(after.angles[index]) + i64::from(delta[index])) & 0xffff) as f64 * 360.0 / 65536.0
                     };
                     capture.changes.push(QvmModClientInputOutput::Set {
                         input: QvmModClientInput::ViewAngles,
@@ -758,20 +758,6 @@ mod tests {
         }
     }
 
-    fn handler_output() -> QvmModInputOutput {
-        QvmModInputOutput::Handler {
-            entry: 9,
-            record: "client".to_string(),
-            pointer: QvmModInputPointer {
-                base: QvmModInputPointerBase::Argument { index: 0 },
-                indirections: Vec::new(),
-                offset: 0,
-            },
-            inputs: vec![QvmModClientInput::Attack],
-            returns: None,
-        }
-    }
-
     fn command_output() -> QvmModInputOutput {
         QvmModInputOutput::Command {
             entry: 9,
@@ -826,12 +812,14 @@ mod tests {
     fn make_fixture(outputs: Vec<QvmModInputOutput>) -> (Fixture, ActorId) {
         let owner = IdentityOwner::create("mod-input-test").unwrap();
         let actor = owner.actor(0, 1);
-        let mut image = QvmImage::default();
-        image.instructions = (0..32)
-            .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
-            .collect();
-        image.data_length = 4096;
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            instructions: (0..32)
+                .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
+                .collect(),
+            data_length: 4096,
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),
@@ -1020,7 +1008,7 @@ mod tests {
         let _close = fixture.input.open(&fixture.application).unwrap();
         let changes = fixture
             .input
-            .output(&[handler.clone()], &fixture.application, &|| {
+            .output(std::slice::from_ref(&handler), &fixture.application, &|| {
                 fixture.module.call(&[8192], 9).unwrap();
             })
             .unwrap();

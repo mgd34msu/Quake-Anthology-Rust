@@ -84,12 +84,17 @@ impl QvmAllocation {
     }
 }
 
+/// Arena callback that issues one storage block per allocation request.
+pub type QvmAllocationFn = Box<dyn FnMut(&QvmAllocationRequest) -> Result<QvmAllocation, GuestError>>;
+
 /// How a VM instance accounts its storage blocks.
+#[derive(Default)]
 pub enum QvmAllocationProfile {
     /// The VM owns plain zeroed bytes with no arena.
+    #[default]
     Unaccounted,
     /// The arena issues every block and can release it later.
-    Accounted(Box<dyn FnMut(&QvmAllocationRequest) -> Result<QvmAllocation, GuestError>>),
+    Accounted(QvmAllocationFn),
 }
 
 impl std::fmt::Debug for QvmAllocationProfile {
@@ -98,12 +103,6 @@ impl std::fmt::Debug for QvmAllocationProfile {
             Self::Unaccounted => write!(f, "Unaccounted"),
             Self::Accounted(_) => write!(f, "Accounted(..)"),
         }
-    }
-}
-
-impl Default for QvmAllocationProfile {
-    fn default() -> Self {
-        Self::Unaccounted
     }
 }
 

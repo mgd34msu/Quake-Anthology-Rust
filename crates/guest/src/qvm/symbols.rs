@@ -15,6 +15,11 @@ use std::cell::RefCell;
 
 use crate::error::GuestError;
 
+/// Profile output sink.
+type QvmSymbolPrint = Box<dyn FnMut(&str)>;
+/// Retained `vmSymbol_t` block allocator.
+type QvmSymbolAllocate = Box<dyn FnMut(usize, &str) -> Result<Vec<u8>, GuestError>>;
+
 /// Retained symbol-file bytes (NUL-terminated by the filesystem layer).
 #[derive(Debug, Clone)]
 pub struct QvmSymbolFile {

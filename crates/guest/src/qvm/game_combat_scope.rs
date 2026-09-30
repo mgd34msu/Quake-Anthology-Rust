@@ -402,8 +402,8 @@ impl QvmDamageScopes {
                     }
                     if event.touches(&velocity_range) {
                         if let Ok(next) = memory.read_vec3(velocity_range.byte_offset) {
-                            let before = velocity_cell.borrow().clone();
-                            *velocity_cell.borrow_mut() = next.clone();
+                            let before = *velocity_cell.borrow();
+                            *velocity_cell.borrow_mut() = next;
                             if report && before != next {
                                 changes.push((
                                     velocity_range.byte_offset,
@@ -571,8 +571,10 @@ mod tests {
     }
 
     fn fixture() -> (QvmDamageScopes, QvmSharedMemory, ActorId) {
-        let mut image = QvmImage::default();
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: super::super::game_data::ModuleIdentity {
                 id: "q3:qagame".to_string(),

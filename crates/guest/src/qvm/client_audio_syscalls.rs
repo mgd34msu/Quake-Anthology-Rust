@@ -123,7 +123,7 @@ pub fn client_audio_syscall(
             let origin_word = call.int(1)?;
             let entity = call.int(2)?;
             let channel = call.int(3)?;
-            if origin_word == 0 && (entity < 0 || entity > 1024) {
+            if origin_word == 0 && !(0..=1024).contains(&entity) {
                 return Err(GuestError::runtime(format!("S_StartSound: bad entitynum {entity}")));
             }
             if let Some(sound) = pcm(host, call.int(4)?) {
@@ -193,7 +193,7 @@ mod tests {
 
     impl ClientAudioHost for FakeAudio {
         fn resolve_sound(&mut self, index: i32) -> Option<SoundHandle> {
-            (0..64).contains(&index).then(|| SoundHandle(index))
+            (0..64).contains(&index).then_some(SoundHandle(index))
         }
         fn register_sound(&mut self, name: Option<&str>, compressed: bool) -> i32 {
             self.log.push(format!("register {name:?} {compressed}"));

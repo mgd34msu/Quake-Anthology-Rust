@@ -21,6 +21,12 @@ use super::mod_actors::{
 use super::mod_input::QvmModTime;
 use crate::error::GuestError;
 
+/// Take-handler shared by one original pickup rule.
+type QvmOriginalPickupTake =
+    Rc<dyn Fn(&QvmOriginalPickupOffer, &QvmOriginalPickupExecution) -> Result<QvmPickupDecision, GuestError>>;
+/// Per-actor delegate removers.
+type QvmPickupDelegateRemovers = RefCell<HashMap<ActorId, Vec<Box<dyn FnOnce()>>>>;
+
 /// Pickup inventory write fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QvmPickupWriteFields {
@@ -200,7 +206,7 @@ pub struct QvmOriginalPickupRule {
     /// Writes.
     pub writes: Vec<QvmPickupWriteDecl>,
     /// Take handler.
-    pub take: Rc<dyn Fn(&QvmOriginalPickupOffer, &QvmOriginalPickupExecution) -> Result<QvmPickupDecision, GuestError>>,
+    pub take: QvmOriginalPickupTake,
 }
 
 /// Inventory pickup binding.
@@ -386,7 +392,7 @@ pub struct QvmModPickups {
     /// Execution depth.
     depth: Cell<usize>,
     /// Per-actor delegate removers.
-    delegates: RefCell<HashMap<ActorId, Vec<Box<dyn FnOnce()>>>>,
+    delegates: QvmPickupDelegateRemovers,
 }
 
 impl QvmModPickups {

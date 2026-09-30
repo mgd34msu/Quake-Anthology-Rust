@@ -56,6 +56,7 @@ pub struct QvmWriteCapture {
 
 type PublishCallback = Box<dyn FnMut(&QvmCommittedWrite) -> Result<(), GuestError>>;
 type AfterCallback = Box<dyn FnMut(&QvmCommittedWrite) -> Result<(), GuestError>>;
+type EffectCallback = Box<dyn FnMut(&mut dyn FnMut())>;
 
 struct Watch {
     ranges: Vec<QvmWriteRange>,

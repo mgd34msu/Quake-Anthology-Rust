@@ -407,7 +407,7 @@ pub fn qvm_view_angles(
 ) -> QvmViewAngles {
     if intermission.contains(&movement_type) || (movement_type != 2 && health <= 0) {
         return QvmViewAngles {
-            angles: previous.clone(),
+            angles: *previous,
             delta_words: delta,
         };
     }
@@ -1140,14 +1140,14 @@ impl QvmInputBinding {
                     let result = call.proceed();
                     spawn.borrow_mut().spawning.pop();
                     call.effect(|| {});
-                    let notify = (|| -> Result<(), GuestError> {
+                    let notify: Result<(), GuestError> = {
                         if let Some(identity) = deps.services.identity(slot) {
                             if deps.services.live(&identity) {
                                 deps.services.spawned(&identity);
                             }
                         }
                         Ok(())
-                    })();
+                    };
                     notify?;
                     Ok(result)
                 })
@@ -1294,6 +1294,8 @@ mod tests {
     const SLOTS: usize = 4;
     const MOVE_ADDR: usize = 16384;
 
+    type BeginHook = Rc<dyn Fn(&QvmApplicationInput)>;
+
     fn client_ptr(slot: usize) -> i32 {
         (CLIENTS + slot * CLIENT_STRIDE) as i32
     }
@@ -1306,7 +1308,7 @@ mod tests {
         applications: RefCell<Vec<QvmClientApplication>>,
         finished: RefCell<Vec<(u64, bool)>>,
         remap_aim: RefCell<Option<Vec3>>,
-        on_begin: RefCell<Option<Rc<dyn Fn(&QvmApplicationInput)>>>,
+        on_begin: RefCell<Option<BeginHook>>,
         probe: RefCell<Option<(QvmSharedMemory, usize)>>,
         probed: RefCell<Vec<i32>>,
     }
@@ -1348,7 +1350,7 @@ mod tests {
                 scope: input.scope,
                 command,
                 angle_space: input.angle_space,
-                absolute_aim: input.absolute_aim.clone(),
+                absolute_aim: input.absolute_aim,
                 frame: input.frame,
                 accepted: input.accepted.clone(),
                 arsenal: input.arsenal.clone(),
@@ -1483,8 +1485,10 @@ mod tests {
         }
 
         fn set_player(&self, slot: usize, command_time_ms: i32) {
-            let mut player = QvmPlayerState::default();
-            player.command_time_ms = command_time_ms;
+            let mut player = QvmPlayerState {
+                command_time_ms,
+                ..Default::default()
+            };
             player.stats[0] = 100;
             self.source.game.data.write_player_state(slot, &player).unwrap();
         }
@@ -1510,8 +1514,10 @@ mod tests {
                 actor: owner.actor(slot, 1),
             })
             .collect();
-        let mut image = QvmImage::default();
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),
@@ -1813,8 +1819,10 @@ mod tests {
     #[test]
     fn aim_mapper_rewrites_angle_words() {
         let fixture = movement_fixture();
-        let mut player = QvmPlayerState::default();
-        player.command_time_ms = 900;
+        let mut player = QvmPlayerState {
+            command_time_ms: 900,
+            ..Default::default()
+        };
         player.stats[0] = 100;
         player.delta_angle_words = [100, 200, 300];
         fixture.source.game.data.write_player_state(0, &player).unwrap();

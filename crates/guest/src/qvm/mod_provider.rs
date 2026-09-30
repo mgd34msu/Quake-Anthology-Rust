@@ -780,7 +780,7 @@ pub fn qualify_qvm_region_evaluation(
 ) -> Result<usize, GuestError> {
     let fail = |message: String| GuestError::invalid(format!("QVM region: {message}"));
     let frame = qualify_qvm_region(instructions, owner, region.entry, region.join)?;
-    let valid = |offset: usize| offset >= 8 && offset % 4 == 0 && offset + 4 <= frame;
+    let valid = |offset: usize| offset >= 8 && offset.is_multiple_of(4) && offset + 4 <= frame;
     if region.inputs.iter().any(|offset| !valid(*offset))
         || BTreeSet::from_iter(region.inputs.iter().copied()).len() != region.inputs.len()
         || region.result.is_some_and(|result| !valid(result))
@@ -1614,7 +1614,7 @@ pub enum QvmModCombatAbi {
     /// Declared calls.
     Declared {
         /// Calls.
-        calls: QvmModCombatCalls,
+        calls: Box<QvmModCombatCalls>,
         /// Damage flag masks.
         damage_flags: super::primary_player_profile::QvmDamageFlags,
         /// Mass source.
@@ -2160,7 +2160,7 @@ pub fn validate_qvm_objective_address(end: usize, address: &QvmModObjectiveAddre
 }
 
 fn objective_word(end: usize, address: usize) -> Result<usize, GuestError> {
-    if address % 4 != 0 || address + 4 > end {
+    if !address.is_multiple_of(4) || address + 4 > end {
         return Err(GuestError::invalid(
             "Objective address exceeds original QVM data or is not aligned",
         ));
@@ -2530,7 +2530,7 @@ pub fn validate_qvm_mod_actor_frame(
             encoding: ModScalar::Int32
         })
     ) && clock.argument < QVM_MAX_PRIVATE_ARGUMENT_WORDS;
-    let address_ok = clock.address % 4 == 0 && clock.address + 4 <= image.initialized_length + image.bss_length;
+    let address_ok = clock.address.is_multiple_of(4) && clock.address + 4 <= image.initialized_length + image.bss_length;
     let store_ok = clock.store > entry && clock.store < end;
     let const_ok =
         address.is_some_and(|value| value.opcode == QvmOpcode::OpConst && value.operand == clock.address as i32);
@@ -2587,7 +2587,7 @@ pub fn validate_qvm_mod_actors_mirror(
         ));
     }
     let field = |owner: &QvmModActorRecord, offset: usize| -> Result<(), GuestError> {
-        if offset % 4 != 0 || offset + 4 > owner.stride {
+        if !offset.is_multiple_of(4) || offset + 4 > owner.stride {
             return Err(GuestError::invalid(
                 "QVM actor semantic field exceeds its declared record",
             ));
@@ -2800,7 +2800,7 @@ pub fn validate_qvm_mod_items_mirror(
         let record = declaration.actor_records.iter().find(|value| value.id == source.record);
         let previous = occupied.borrow().get(&(source.record.clone(), source.offset)).copied();
         if record.is_none_or(|record| !clients.records.contains(&record.id))
-            || source.offset % 4 != 0
+            || !source.offset.is_multiple_of(4)
             || source.offset + 4 > record.map_or(0, |record| record.stride)
             || !view && previous.is_some_and(|was_capacity| !(usage_capacity && was_capacity))
         {
@@ -4976,7 +4976,7 @@ impl<H: ModProviderHost> QvmModProvider<H> {
     /// Slot of an entity pointer.
     pub fn pointer_slot(&self, pointer: usize) -> Result<usize, GuestError> {
         let record = self.entity_record()?;
-        if pointer < record.address || (pointer - record.address) % record.stride != 0 {
+        if pointer < record.address || !(pointer - record.address).is_multiple_of(record.stride) {
             return Err(GuestError::invalid("QVM entity exceeds its declared source array"));
         }
         let slot = (pointer - record.address) / record.stride;

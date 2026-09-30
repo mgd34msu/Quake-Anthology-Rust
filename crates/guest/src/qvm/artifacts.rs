@@ -145,6 +145,9 @@ impl std::fmt::Debug for QvmReplacementInstance {
     }
 }
 
+/// Factory that creates a replacement instance bound to `module` and `host`.
+pub type QvmReplacementCreate = Box<dyn FnMut(&ModuleIdentity, Box<dyn QvmHost>) -> QvmReplacementInstance>;
+
 /// Native replacement for one known artifact.
 pub struct QvmReplacement {
     /// Artifact replaced.
@@ -152,7 +155,7 @@ pub struct QvmReplacement {
     /// Implementing provider.
     pub implementation: ProviderId,
     /// Create an instance bound to `module` and `host`.
-    pub create: Box<dyn FnMut(&ModuleIdentity, Box<dyn QvmHost>) -> QvmReplacementInstance>,
+    pub create: QvmReplacementCreate,
 }
 
 impl std::fmt::Debug for QvmReplacement {
@@ -265,7 +268,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         padded.push(0);
     }
     padded.extend_from_slice(&bit_length.to_be_bytes());
-    for block in padded.chunks_exact(64) {
+    for block in padded.as_chunks::<64>().0 {
         let mut schedule = [0u32; 64];
         for (index, word) in schedule.iter_mut().take(16).enumerate() {
             *word = u32::from_be_bytes([

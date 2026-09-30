@@ -160,7 +160,7 @@ pub fn read_held_weapon_declaration(reader: &ProfileReader<'_>) -> Result<HeldWe
         None
     } else {
         Some(HeldWeaponPart {
-            digests: part.field("digests")?.list(&read_digest)?,
+            digests: part.field("digests")?.list(read_digest)?,
             vertices: part
                 .field("vertices")?
                 .list(|value| value.integer(0).map(|vertex| vertex as usize))?,
@@ -355,7 +355,7 @@ pub fn read_qvm_equipment_presentation(
     };
     let read_word = |value: &ProfileReader<'_>, bytes: usize| -> Result<usize, GuestError> {
         let offset = value.integer(0)? as usize;
-        if offset % 4 != 0 || offset + 4 > bytes {
+        if !offset.is_multiple_of(4) || offset + 4 > bytes {
             return value.fail("source word exceeds its record or is unaligned");
         }
         Ok(offset)
@@ -411,7 +411,7 @@ pub fn read_qvm_equipment_presentation(
         },
         status: if kind == "functions" {
             PresentationStatus::Functions {
-                entries: status.field("entries")?.list(&read_entry)?,
+                entries: status.field("entries")?.list(read_entry)?,
             }
         } else {
             PresentationStatus::Regions {

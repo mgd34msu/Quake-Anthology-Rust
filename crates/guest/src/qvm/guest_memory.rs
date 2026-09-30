@@ -50,7 +50,7 @@ impl QvmGuestMemory {
     /// Mask a raw 32-bit value to an address. Zero maps to null; values
     /// outside the 32-bit representation fail.
     pub fn pointer(&self, raw: i64) -> Result<Option<GuestAddress>, GuestError> {
-        if raw < -0x8000_0000 || raw > 0xffff_ffff {
+        if !(-0x8000_0000..=0xffff_ffff).contains(&raw) {
             return Err(GuestError::invalid("QVM pointer is outside its 32-bit representation"));
         }
         let word = raw as u32 as i32;

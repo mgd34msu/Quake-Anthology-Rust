@@ -363,8 +363,8 @@ pub enum QvmModItemKind {
     Weapon {
         /// Ammo item, if any.
         ammo: Option<ItemId>,
-        /// Held-weapon presentation, if any.
-        held: Option<HeldWeaponDeclaration>,
+        /// Held-weapon presentation, if any (boxed: the declaration is large).
+        held: Option<Box<HeldWeaponDeclaration>>,
     },
 }
 
@@ -597,7 +597,7 @@ pub fn parse_qvm_mod_items(
         Ok(QvmModItemDefinition {
             kind: QvmModItemKind::Weapon {
                 ammo: value.field("ammo")?.nullable(|field| namespaced_id(field))?,
-                held,
+                held: held.map(Box::new),
             },
             ..common
         })
@@ -688,7 +688,7 @@ pub enum QvmItemFieldUsage {
 
 fn capacity_constant(image: &QvmImage, instruction: usize) -> Result<i32, GuestError> {
     let value = image.instruction(instruction);
-    if value.map_or(true, |instruction| {
+    if value.is_none_or(|instruction| {
         instruction.opcode != QvmOpcode::OpConst || instruction.operand < 0
     }) {
         return Err(GuestError::invalid(
@@ -928,13 +928,14 @@ mod tests {
     }
 
     fn image() -> QvmImage {
-        let mut image = QvmImage::default();
-        image.instructions = vec![
-            QvmInstruction::word(QvmOpcode::OpConst, 200, 0),
-            QvmInstruction::word(QvmOpcode::OpConst, 50, 5),
-        ];
-        image.initialized_data = vec![0u8; 64];
-        image
+        QvmImage {
+            instructions: vec![
+                QvmInstruction::word(QvmOpcode::OpConst, 200, 0),
+                QvmInstruction::word(QvmOpcode::OpConst, 50, 5),
+            ],
+            initialized_data: vec![0u8; 64],
+            ..Default::default()
+        }
     }
 
     #[test]

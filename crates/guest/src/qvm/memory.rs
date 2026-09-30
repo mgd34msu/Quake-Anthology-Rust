@@ -368,7 +368,7 @@ impl QvmMemory {
     }
 
     /// Route `after_publication` hooks through `effect` (default: run inline).
-    pub fn set_effect(&self, effect: Option<Box<dyn FnMut(&mut dyn FnMut())>>) {
+    pub fn set_effect(&self, effect: QvmEffectHook) {
         self.inner.borrow_mut().writes.set_effect(effect);
     }
 
@@ -376,8 +376,8 @@ impl QvmMemory {
     pub fn observe_writes(
         &self,
         ranges: &[QvmWriteRange],
-        publish: Box<dyn FnMut(&QvmCommittedWrite) -> Result<(), GuestError>>,
-        after_publication: Option<Box<dyn FnMut(&QvmCommittedWrite) -> Result<(), GuestError>>>,
+        publish: QvmPublishHook,
+        after_publication: Option<QvmPublishHook>,
     ) -> Result<u64, GuestError> {
         let mut inner = self.inner.borrow_mut();
         let total = inner.bytes.len();

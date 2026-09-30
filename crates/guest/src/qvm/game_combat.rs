@@ -22,6 +22,9 @@ use super::game_data::{
 use super::shared_entity_record::qvm_shared_entity_bytes;
 use crate::error::GuestError;
 
+/// Override that consumes damage words instead of calling into the module.
+type DamageWordsFn<'a> = &'a mut dyn FnMut(&[i32]) -> Result<(), GuestError>;
+
 /// Damage-call argument roles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QvmDamageRole {
@@ -571,7 +574,7 @@ impl QvmGameCombat {
             if artifact
                 .image
                 .instruction(entry)
-                .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
             {
                 return Err(GuestError::invalid("Source combat callback is not a function entry"));
             }
@@ -649,7 +652,7 @@ impl QvmGameCombat {
     pub fn damage(
         &self,
         hit: &QvmGameDamage,
-        invoke: Option<&mut dyn FnMut(&[i32]) -> Result<(), GuestError>>,
+        invoke: Option<DamageWordsFn<'_>>,
     ) -> Result<(), GuestError> {
         let state = self.state(hit.target)?;
         let Some(state) = state else {
@@ -746,13 +749,15 @@ mod tests {
     }
 
     fn fixture() -> (QvmModule, QvmGameData, QvmArtifact) {
-        let mut image = QvmImage::default();
-        image.instructions = vec![
-            QvmInstruction::word(QvmOpcode::OpEnter, 16, 0),
-            QvmInstruction::word(QvmOpcode::OpEnter, 16, 5),
-            QvmInstruction::word(QvmOpcode::OpEnter, 16, 10),
-        ];
-        image.allocated_data_length = 65536 + 4096;
+        let image = QvmImage {
+            instructions: vec![
+                QvmInstruction::word(QvmOpcode::OpEnter, 16, 0),
+                QvmInstruction::word(QvmOpcode::OpEnter, 16, 5),
+                QvmInstruction::word(QvmOpcode::OpEnter, 16, 10),
+            ],
+            allocated_data_length: 65536 + 4096,
+            ..Default::default()
+        };
         let module_id = ModuleIdentity {
             id: "q3:qagame".to_string(),
             artifact_path: "qagame.qvm".to_string(),

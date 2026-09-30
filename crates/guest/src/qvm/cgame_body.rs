@@ -488,7 +488,7 @@ mod tests {
     }
 
     fn image() -> QvmImage {
-        let image = QvmImage {
+        QvmImage {
             instructions: vec![
                 QvmInstruction::word(QvmOpcode::OpEnter, 64, 0),
                 QvmInstruction::word(QvmOpcode::OpConst, 4, 5),
@@ -498,8 +498,7 @@ mod tests {
             ],
             allocated_data_length: 4096,
             ..Default::default()
-        };
-        image
+        }
     }
 
     fn submissions(hidden_entity: i32) -> (QvmBodySubmissions, Rc<FixtureCapture>) {

@@ -470,8 +470,8 @@ pub fn read_qvm_primary_inventory_profile(
             result: Some(source.field("result")?.integer(8)? as usize),
         };
         qualify_qvm_region_evaluation(&artifact.image.instructions, owner, &region, true)?;
-        let arguments = capacity.field("arguments")?.list(&read_word)?;
-        let inputs = capacity.field("inputs")?.list(&read_word)?;
+        let arguments = capacity.field("arguments")?.list(read_word)?;
+        let inputs = capacity.field("inputs")?.list(read_word)?;
         if arguments.len() > QVM_MAX_PRIVATE_ARGUMENT_WORDS || inputs.len() != region.inputs.len() {
             return capacity.fail("capacity arguments and live-ins differ from the original source frame");
         }
@@ -486,7 +486,7 @@ pub fn read_qvm_primary_inventory_profile(
     let offset = |name: &str| -> Result<usize, GuestError> {
         let at = reader.field(name)?;
         let result = at.integer(0)? as usize;
-        if result % 4 != 0 || result + if name == "ammoOffset" { 64 } else { 4 } > qvm_player_state_bytes(abi_profile) {
+        if !result.is_multiple_of(4) || result + if name == "ammoOffset" { 64 } else { 4 } > qvm_player_state_bytes(abi_profile) {
             return at.fail("inventory field exceeds its aligned public player record");
         }
         Ok(result)

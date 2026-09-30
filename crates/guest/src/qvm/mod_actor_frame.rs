@@ -151,7 +151,7 @@ pub fn validate_qvm_mod_actor_frame(
         if pc <= entry
             || pc >= end
             || !decisions.insert(pc)
-            || instruction.map_or(true, |instruction| !instruction.opcode.is_branch())
+            || instruction.is_none_or(|instruction| !instruction.opcode.is_branch())
         {
             return Err(GuestError::invalid(
                 "QVM actor frame predicate is not a distinct original conditional",
@@ -205,7 +205,7 @@ pub fn validate_qvm_mod_actor_frame(
     let end_bytes = image.initialized_data.len() + image.bss_length;
     let valid = clock.argument < QVM_MAX_PRIVATE_ARGUMENT_WORDS
         && argument_valid
-        && clock.address % 4 == 0
+        && clock.address.is_multiple_of(4)
         && clock.address + 4 <= end_bytes
         && clock.store > entry
         && clock.store < end
@@ -439,8 +439,10 @@ mod tests {
     use super::*;
 
     fn image() -> QvmImage {
-        let mut image = QvmImage::default();
-        image.instructions = vec![QvmInstruction::word(QvmOpcode::OpEnter, 64, 0)];
+        let mut image = QvmImage {
+            instructions: vec![QvmInstruction::word(QvmOpcode::OpEnter, 64, 0)],
+            ..Default::default()
+        };
         for index in 1..6 {
             image
                 .instructions
