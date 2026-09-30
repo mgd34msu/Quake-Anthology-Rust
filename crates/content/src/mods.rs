@@ -1,10 +1,11 @@
 //! Mod declaration readers ported from `src/content/mods/*`.
 //!
-//! Donors: `client-input.ts`, `client-outputs.ts`, `item-actions.ts`,
-//! `match.ts`, `native-callbacks.ts`, `pickups.ts`, `qvm-items.ts`,
-//! `selection.ts`, `source-call.ts`. The QuakeC/QVM declaration readers
-//! (`callbacks.ts`, `qvm-callbacks.ts`, `qvm-presentation.ts`,
-//! `declaration.ts`, `catalog.ts`) are out of scope.
+//! Donors: `catalog.ts`, `client-input.ts`, `client-outputs.ts`,
+//! `declaration.ts`, `item-actions.ts`, `match.ts`, `native-callbacks.ts`,
+//! `pickups.ts`, `qvm-callbacks.ts`, `qvm-items.ts`,
+//! `qvm-presentation.ts`, `selection.ts`, `source-call.ts`. The QuakeC
+//! declaration reader (`callbacks.ts`) stays sibling-owned: the declaration
+//! dispatch receives its reader as a caller-provided function.
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,11 +13,13 @@ use qa_core::identity::ProviderId;
 use thiserror::Error;
 
 use crate::contract::{
-    CallbackId, ContractError, GrantAcceptance, ItemId, ItemTestComparison, ModActorInput, ModActorOperation,
-    ModCallbackBinding, ModCallbackBindingKind, ModCallbackGlobal, ModCallbackInput, ModCallbackOperation,
-    ModCallbackString, ModCallbackValue, ModClientInput, ModClientInputBinding, ModClientInputPhase,
-    ModClientInputScope, ModClientMovementMode, ModClientOutputDeclaration, ModClientScalarInput, ModDescription,
-    ModPickupRule, ModProtectionAdmission, ModPurpose, ModSelection, ModSourceCall, ModTimeInput, ModTimeUnits,
+    mod_selection_key, read_mod_selection, CallbackId, ContractError, DamageTransformResult, GrantAcceptance,
+    InventoryTransformOperation, ItemId, ItemTestComparison, ModActorInput, ModActorOperation, ModCallbackBinding,
+    ModCallbackBindingKind, ModCallbackDeclaration, ModCallbackGlobal, ModCallbackInput, ModCallbackOperation,
+    ModCallbackString, ModCallbackValue, ModClientCommandInput, ModClientInput, ModClientInputBinding,
+    ModClientInputPhase, ModClientInputScope, ModClientMovementMode, ModClientOutputDeclaration, ModClientScalarInput,
+    ModDeclaration, ModDescription, ModPickupRule, ModProtectionAdmission, ModPurpose, ModQcProtectionFlags,
+    ModSelection, ModSourceCall, ModTimeInput, ModTimeUnits,
     NativeItemCapacity, NativeItemDefinition, NativeItemKind, NativeItemPointer, NativeItemStorage, NativeItemTest,
     NativeModAcceptance, NativeModActorField, NativeModActorRecord, NativeModAddress, NativeModAdmissionCall,
     NativeModArmor, NativeModArmorField, NativeModArmorSelection, NativeModCallback, NativeModClientInputField,
@@ -32,19 +35,34 @@ use crate::contract::{
     NativeModSourceActorFields, NativeModSourceActors, NativeModSourceCall, NativeModTarget, NativeModUpdate,
     NativeModValue, NativeModValueKind, NativePowerArmorKind, NativeWeaponClearedField, NativeWeaponDecision,
     NativeWeaponDispatcher, NativeWeaponSelection, NativeWeaponStage, NativeWeaponValue, ObjectiveId,
-    OriginalPickupOperation, PickupWrite, PickupWriteFields, ProtectionChannel, Q2CallbackAbi, QvmItemCapacity,
-    QvmItemCapacityOverride, QvmItemDefinition, QvmItemField, QvmItemKind, QvmItemStorage, QvmItemTest,
-    QvmItemsWeaponInput, QvmItemsWeaponStage, QvmMaskedItem, QvmModInputPointer, QvmModInputPointerBase,
-    QvmWeaponActor, QvmWeaponCall, QvmWeaponContinuation, QvmWeaponDispatcher, QvmWeaponPredicate, QvmWeaponProjection,
-    QvmWeaponRequest, QvmWeaponSelection, QvmWeaponStage, QvmWeaponValue, SourceItemActionCalls,
+    OriginalPickupOperation, PickupWrite, PickupWriteFields, PoweredProtectionKind, ProtectionChannel, Q2CallbackAbi,
+    QvmAbiProfile, QvmBodyPart, QvmBodyPresentation, QvmCentities, QvmCombatCall, QvmCombatExtra, QvmCombatExtraKind,
+    QvmCombatMass, QvmCombatMassStorage, QvmCombatTeam, QvmDamageFlags, QvmDamageRole, QvmDieRole, QvmEventCheck,
+    QvmItemCapacity, QvmItemCapacityOverride, QvmItemDefinition, QvmItemField, QvmItemKind, QvmItemStorage, QvmItemTest,
+    QvmItemsWeaponInput, QvmItemsWeaponStage, QvmMaskedItem, QvmMeshPart, QvmMeshPresentation, QvmModActorClock,
+    QvmModActorEnd, QvmModActorField, QvmModActorFieldBinding, QvmModActorFrame, QvmModActorRecord, QvmModCallback,
+    QvmModCallbackDeclaration, QvmModClients, QvmModCombat, QvmModCombatAbi, QvmModCombatCalls, QvmModCombatClient,
+    QvmModEntityCallbacks, QvmModFieldAccess, QvmModFieldInput, QvmModGlobal, QvmModHandlerReturn, QvmModInputOutput,
+    QvmModInputPointer, QvmModInputPointerBase, QvmModObjectiveAddress, QvmModObjectiveStorage,
+    QvmModOwnedInstruction, QvmModPickup, QvmModPickupContext, QvmModPresentationDeclaration, QvmModProtection,
+    QvmModProtectionChannel, QvmModProtectionScalar, QvmModProtectionSelection, QvmModProtectionValue, QvmModRelease,
+    QvmModReturn, QvmModScalar, QvmModSourceActors, QvmModSourceCall, QvmModValue, QvmModValueKind, QvmPainRole,
+    QvmPlayerEventPresentation, QvmPlayerEventStorage, QvmPresentationArgument, QvmPresentationBase,
+    QvmPresentationCall, QvmPresentationHud, QvmPresentationHudMode, QvmPresentationImmediateKind,
+    QvmPresentationProgram, QvmPresentationSource, QvmPresentationTiming, QvmSceneCentities, QvmScenePresentation,
+    QvmSceneStorage, QvmSyntheticSnapshot, QvmTouchRole, QvmUseRole, QvmWeaponActor, QvmWeaponCall,
+    QvmWeaponContinuation, QvmWeaponDispatcher, QvmWeaponPredicate, QvmWeaponProjection, QvmWeaponRequest,
+    QvmWeaponSelection, QvmWeaponStage, QvmWeaponValue, ResolvedGameplayMod, SourceItemActionCalls,
     SourceItemAdmissionMode, SourceMatchField, SourceObjectiveDeclaration, SourceObjectiveRole, SourceObjectiveValue,
     SourceTeamValue, SourceWeaponItem,
 };
 use crate::contract::{
     ItemCapacityComparison, ModAvailability, ModCvar, ModProgram, NativeClassicGame, NativeModClock,
 };
+use crate::catalog::CatalogProduct;
 use crate::held_weapon::{read_held_weapon_declaration, HeldWeaponError};
 use crate::item_icon::{read_item_icon_declaration, ItemIconError};
+use crate::mounts::{MountError, MountedContent};
 use crate::paths::{normalize_resource_path, PathError};
 use crate::value::{namespaced, parse_save_json, read_digest, read_vector, SaveJson, SaveReader, ValueError};
 
@@ -66,6 +84,9 @@ pub enum ModsError {
     /// Invalid item icon declaration.
     #[error(transparent)]
     ItemIcon(#[from] ItemIconError),
+    /// Mounted content access failed.
+    #[error(transparent)]
+    Mount(#[from] MountError),
     /// Invalid declaration.
     #[error("{0}")]
     Invalid(String),
@@ -2444,6 +2465,1228 @@ pub fn read_native_mod_callbacks(bytes: &[u8]) -> Result<NativeModDeclaration, M
         .map_err(|_| ModsError::Invalid("Declaration bytes are not valid UTF-8".to_string()))?;
     let value = parse_save_json(text)?;
     read_native_mod_declaration(SaveReader::new(&value))
+}
+
+// `qvm-callbacks.ts`.
+
+/// Maximum QVM private argument words (`QVM_MAX_PRIVATE_ARGUMENT_WORDS` in
+/// `compat/qvm/image.ts`, mirrored by `qa-guest`).
+pub const QVM_MAX_PRIVATE_ARGUMENT_WORDS: u32 = 62;
+
+/// Read a QVM scalar encoding.
+fn qvm_scalar(reader: SaveReader) -> Result<QvmModScalar, ModsError> {
+    Ok(match reader.choice_str(&["int32", "float32"])?.as_str() {
+        "int32" => QvmModScalar::Int32,
+        _ => QvmModScalar::Float32,
+    })
+}
+
+/// Read a combat call role index.
+fn qvm_combat_role(call: &SaveReader, name: &str) -> Result<u32, ModsError> {
+    u32_field(&call.field("roles"), name, 0)
+}
+
+/// Read combat call extra arguments.
+fn qvm_combat_extras(reader: SaveReader) -> Result<Vec<QvmCombatExtra>, ModsError> {
+    reader.field("extras").list(|extra| -> Result<_, ModsError> {
+        Ok(QvmCombatExtra {
+            index: u32_field(&extra, "index", 0)?,
+            kind: match extra.field("kind").choice_str(&["int32", "float32", "address"])?.as_str() {
+                "int32" => QvmCombatExtraKind::Int32,
+                "float32" => QvmCombatExtraKind::Float32,
+                _ => QvmCombatExtraKind::Address,
+            },
+            value: extra.field("value").number()?,
+        })
+    })
+}
+
+/// Read a QVM combat definition.
+fn qvm_combat_definition(combat: SaveReader) -> Result<QvmModCombat, ModsError> {
+    let entry = u32_field(&combat, "entry", 0)?;
+    let health = u32_field(&combat, "health", 0)?;
+    let takedamage = u32_field(&combat, "takedamage", 0)?;
+    let flags = u32_field(&combat, "flags", 0)?;
+    let godmode = u32_field(&combat, "godmode", 1)?;
+    let no_knockback = u32_field(&combat, "noKnockback", 1)?;
+    let globals = combat.field("globals").list(|global| -> Result<_, ModsError> {
+        Ok(QvmModGlobal {
+            address: u32_field(&global, "address", 0)?,
+            value: qvm_argument(global.field("value"))?,
+        })
+    })?;
+    let client = combat.field("client").nullable(|client| -> Result<_, ModsError> {
+        Ok(QvmModCombatClient {
+            pointer: u32_field(&client, "pointer", 0)?,
+            record: client.field("record").string()?,
+            health: u32_field(&client, "health", 0)?,
+            armor: u32_field(&client, "armor", 0)?,
+            protection: u32_field(&client, "protection", 0)?,
+            team: u32_field(&client, "team", 0)?,
+        })
+    })?;
+    if combat.field("abi").choice_str(&["q3-g-damage", "declared"])?.as_str() == "q3-g-damage" {
+        return Ok(QvmModCombat {
+            entry,
+            health,
+            takedamage,
+            flags,
+            godmode,
+            no_knockback,
+            globals,
+            client,
+            abi: QvmModCombatAbi::GDamage,
+        });
+    }
+    let calls = combat.field("calls");
+    let damage = calls.field("damage");
+    let touch = calls.field("touch");
+    let use_call = calls.field("use");
+    let pain = calls.field("pain");
+    let die = calls.field("die");
+    let damage_flags = combat.field("damageFlags");
+    let mass = combat.field("mass");
+    let abi = QvmModCombatAbi::Declared {
+        calls: QvmModCombatCalls {
+            damage: QvmCombatCall {
+                roles: vec![
+                    (QvmDamageRole::Target, qvm_combat_role(&damage, "target")?),
+                    (QvmDamageRole::Inflictor, qvm_combat_role(&damage, "inflictor")?),
+                    (QvmDamageRole::Attacker, qvm_combat_role(&damage, "attacker")?),
+                    (QvmDamageRole::Direction, qvm_combat_role(&damage, "direction")?),
+                    (QvmDamageRole::Point, qvm_combat_role(&damage, "point")?),
+                    (QvmDamageRole::Amount, qvm_combat_role(&damage, "amount")?),
+                    (QvmDamageRole::Flags, qvm_combat_role(&damage, "flags")?),
+                    (QvmDamageRole::Method, qvm_combat_role(&damage, "method")?),
+                ],
+                extras: qvm_combat_extras(damage)?,
+            },
+            touch: QvmCombatCall {
+                roles: vec![
+                    (QvmTouchRole::Target, qvm_combat_role(&touch, "target")?),
+                    (QvmTouchRole::Other, qvm_combat_role(&touch, "other")?),
+                    (QvmTouchRole::Trace, qvm_combat_role(&touch, "trace")?),
+                ],
+                extras: qvm_combat_extras(touch)?,
+            },
+            r#use: QvmCombatCall {
+                roles: vec![
+                    (QvmUseRole::Target, qvm_combat_role(&use_call, "target")?),
+                    (QvmUseRole::Other, qvm_combat_role(&use_call, "other")?),
+                    (QvmUseRole::Activator, qvm_combat_role(&use_call, "activator")?),
+                ],
+                extras: qvm_combat_extras(use_call)?,
+            },
+            pain: QvmCombatCall {
+                roles: vec![
+                    (QvmPainRole::Target, qvm_combat_role(&pain, "target")?),
+                    (QvmPainRole::Attacker, qvm_combat_role(&pain, "attacker")?),
+                    (QvmPainRole::Amount, qvm_combat_role(&pain, "amount")?),
+                ],
+                extras: qvm_combat_extras(pain)?,
+            },
+            die: QvmCombatCall {
+                roles: vec![
+                    (QvmDieRole::Target, qvm_combat_role(&die, "target")?),
+                    (QvmDieRole::Inflictor, qvm_combat_role(&die, "inflictor")?),
+                    (QvmDieRole::Attacker, qvm_combat_role(&die, "attacker")?),
+                    (QvmDieRole::Amount, qvm_combat_role(&die, "amount")?),
+                    (QvmDieRole::Method, qvm_combat_role(&die, "method")?),
+                ],
+                extras: qvm_combat_extras(die)?,
+            },
+        },
+        damage_flags: QvmDamageFlags {
+            radius: u32_field(&damage_flags, "radius", 1)?,
+            no_armor: u32_field(&damage_flags, "noArmor", 1)?,
+            no_knockback: u32_field(&damage_flags, "noKnockback", 1)?,
+            no_protection: u32_field(&damage_flags, "noProtection", 1)?,
+            no_team_protection: u32_field(&damage_flags, "noTeamProtection", 1)?,
+        },
+        mass: if mass.field("kind").choice_str(&["constant", "entity"])?.as_str() == "constant" {
+            QvmCombatMass::Constant {
+                value: mass.field("value").number()?,
+            }
+        } else {
+            QvmCombatMass::Entity {
+                offset: u32_field(&mass, "offset", 0)?,
+                storage: match mass.field("storage").choice_str(&["int32", "float32"])?.as_str() {
+                    "int32" => QvmCombatMassStorage::Int32,
+                    _ => QvmCombatMassStorage::Float32,
+                },
+            }
+        },
+        teams: combat.field("teams").list(|team| -> Result<_, ModsError> {
+            Ok(QvmCombatTeam {
+                value: int_number(&team, "value", i64::MIN)?,
+                team: namespaced(team.field("team"))?,
+            })
+        })?,
+    };
+    Ok(QvmModCombat {
+        entry,
+        health,
+        takedamage,
+        flags,
+        godmode,
+        no_knockback,
+        globals,
+        client,
+        abi,
+    })
+}
+
+/// Read a QVM mod value.
+fn qvm_argument(reader: SaveReader) -> Result<QvmModValue, ModsError> {
+    let kind = reader.field("kind").choice_str(&[
+        "int32", "float32", "vector", "string", "actor", "client", "time", "address",
+    ])?;
+    match kind.as_str() {
+        "actor" => Ok(QvmModValue::Actor {
+            record: reader.field("record").string()?,
+            input: qvm_actor_input(reader.field("input"))?,
+        }),
+        "client" => Ok(QvmModValue::Client {
+            input: qvm_actor_input(reader.field("input"))?,
+        }),
+        "time" => Ok(QvmModValue::Time {
+            input: match reader.field("input").choice_str(&["time", "elapsed"])?.as_str() {
+                "time" => ModTimeInput::Time,
+                _ => ModTimeInput::Elapsed,
+            },
+            units: match reader.field("units").choice_str(&["seconds", "milliseconds"])?.as_str() {
+                "seconds" => ModTimeUnits::Seconds,
+                _ => ModTimeUnits::Milliseconds,
+            },
+            encoding: qvm_scalar(reader.field("encoding"))?,
+        }),
+        "address" => Ok(QvmModValue::Address(u32_field(&reader, "value", 0)?)),
+        _ => Ok(QvmModValue::Value {
+            kind: match kind.as_str() {
+                "int32" => QvmModValueKind::Int32,
+                "float32" => QvmModValueKind::Float32,
+                "vector" => QvmModValueKind::Vector,
+                _ => QvmModValueKind::Str,
+            },
+            value: mod_callback_value(reader.field("value"))?,
+        }),
+    }
+}
+
+/// Read a QVM actor input.
+fn qvm_actor_input(reader: SaveReader) -> Result<ModActorInput, ModsError> {
+    Ok(
+        match reader.choice_str(&["self", "other", "activator", "attacker", "inflictor"])?.as_str() {
+            "self" => ModActorInput::Slf,
+            "other" => ModActorInput::Other,
+            "activator" => ModActorInput::Activator,
+            "attacker" => ModActorInput::Attacker,
+            _ => ModActorInput::Inflictor,
+        },
+    )
+}
+
+/// Read a QVM source call.
+fn qvm_source_call(reader: SaveReader) -> Result<QvmModSourceCall, ModsError> {
+    Ok(QvmModSourceCall {
+        entry: u32_field(&reader, "entry", 0)?,
+        arguments: reader.field("arguments").list(qvm_argument)?,
+        globals: reader.field("globals").list(|global| -> Result<_, ModsError> {
+            Ok(QvmModGlobal {
+                address: u32_field(&global, "address", 0)?,
+                value: qvm_argument(global.field("value"))?,
+            })
+        })?,
+        returns: match reader.field("returns").choice_str(&["int32", "float32", "void"])?.as_str() {
+            "int32" => QvmModReturn::Int32,
+            "float32" => QvmModReturn::Float32,
+            _ => QvmModReturn::Void,
+        },
+    })
+}
+
+/// Read a QVM callback binding.
+fn qvm_binding(reader: SaveReader) -> Result<ModCallbackBinding, ModsError> {
+    let id = CallbackId(namespaced(reader.field("id"))?);
+    let operation = reader.field("operation").choice_str(&[
+        "damage",
+        "inventory.give",
+        "inventory.consume",
+        "actor.think",
+        "actor.touch",
+        "actor.use",
+        "actor.pain",
+        "actor.die",
+    ])?;
+    match reader.field("stage").choice_str(&["observe", "transform", "replace"])?.as_str() {
+        "observe" => Ok(ModCallbackBinding {
+            id,
+            binding: ModCallbackBindingKind::Observe {
+                operation: callback_operation(&operation),
+            },
+        }),
+        "transform" => {
+            if operation == "damage" {
+                return Ok(ModCallbackBinding {
+                    id,
+                    binding: ModCallbackBindingKind::DamageTransform {
+                        result: match reader.field("result").choice_str(&["amount", "knockback"])?.as_str() {
+                            "amount" => DamageTransformResult::Amount,
+                            _ => DamageTransformResult::Knockback,
+                        },
+                    },
+                });
+            }
+            if operation == "inventory.give" || operation == "inventory.consume" {
+                reader.field("result").literal_str("amount")?;
+                return Ok(ModCallbackBinding {
+                    id,
+                    binding: ModCallbackBindingKind::InventoryTransform {
+                        operation: if operation == "inventory.give" {
+                            InventoryTransformOperation::Give
+                        } else {
+                            InventoryTransformOperation::Consume
+                        },
+                    },
+                });
+            }
+            Err(reader.fail("actor callbacks support observation or replacement").into())
+        }
+        _ => {
+            if operation == "damage" || operation == "inventory.give" || operation == "inventory.consume" {
+                return Err(reader.fail("only actor callbacks support replacement").into());
+            }
+            reader.field("result").literal_str("boolean")?;
+            let actor = match operation.as_str() {
+                "actor.think" => ModActorOperation::Think,
+                "actor.touch" => ModActorOperation::Touch,
+                "actor.use" => ModActorOperation::Use,
+                "actor.pain" => ModActorOperation::Pain,
+                _ => ModActorOperation::Die,
+            };
+            Ok(ModCallbackBinding {
+                id,
+                binding: ModCallbackBindingKind::ActorReplace { operation: actor },
+            })
+        }
+    }
+}
+
+/// Read a QVM actor field.
+fn qvm_actor_field(reader: SaveReader) -> Result<QvmModActorField, ModsError> {
+    let offset = u32_field(&reader, "offset", 0)?;
+    let binding = reader.field("binding").choice_str(&[
+        "health",
+        "inventory",
+        "origin",
+        "velocity",
+        "angles",
+        "bounds-min",
+        "bounds-max",
+        "record",
+        "constant",
+        "constant-vector",
+        "private",
+        "team",
+        "score",
+    ])?;
+    let access = if reader.field("access").is_missing() {
+        None
+    } else {
+        Some(match reader.field("access").choice_str(&["read-only", "read-write"])?.as_str() {
+            "read-only" => QvmModFieldAccess::ReadOnly,
+            _ => QvmModFieldAccess::ReadWrite,
+        })
+    };
+    if access.is_some()
+        && ![
+            "health",
+            "inventory",
+            "origin",
+            "velocity",
+            "angles",
+            "bounds-min",
+            "bounds-max",
+        ]
+        .contains(&binding.as_str())
+    {
+        return Err(reader.fail("Projection access applies only to canonical actor fields").into());
+    }
+    let binding = match binding.as_str() {
+        "team" => QvmModActorFieldBinding::Match {
+            field: SourceMatchField::Team {
+                values: read_source_team_values(reader.field("values"))?,
+            },
+            encoding: qvm_scalar(reader.field("encoding"))?,
+        },
+        "score" => QvmModActorFieldBinding::Match {
+            field: SourceMatchField::Score,
+            encoding: qvm_scalar(reader.field("encoding"))?,
+        },
+        "health" => QvmModActorFieldBinding::Health {
+            encoding: qvm_scalar(reader.field("encoding"))?,
+        },
+        "inventory" => QvmModActorFieldBinding::Inventory {
+            encoding: qvm_scalar(reader.field("encoding"))?,
+            item: namespaced(reader.field("item"))?,
+        },
+        "record" => QvmModActorFieldBinding::Record {
+            record: reader.field("record").string()?,
+        },
+        "constant" => QvmModActorFieldBinding::Constant {
+            encoding: qvm_scalar(reader.field("encoding"))?,
+            value: reader.field("value").number()?,
+        },
+        "constant-vector" => QvmModActorFieldBinding::ConstantVector(read_vector(reader.field("value"))?),
+        "private" => QvmModActorFieldBinding::Private {
+            byte_length: u64_field(&reader, "byteLength", 1)?,
+        },
+        "origin" => QvmModActorFieldBinding::Origin,
+        "velocity" => QvmModActorFieldBinding::Velocity,
+        "angles" => QvmModActorFieldBinding::Angles,
+        "bounds-min" => QvmModActorFieldBinding::BoundsMin,
+        _ => QvmModActorFieldBinding::BoundsMax,
+    };
+    Ok(QvmModActorField { offset, access, binding })
+}
+
+/// Read a QVM protection scalar.
+fn qvm_protection_scalar(reader: SaveReader) -> Result<QvmModProtectionScalar, ModsError> {
+    Ok(QvmModProtectionScalar {
+        record: reader.field("record").string()?,
+        offset: u32_field(&reader, "offset", 0)?,
+        encoding: qvm_scalar(reader.field("encoding"))?,
+    })
+}
+
+/// Read a QVM protection selection.
+fn qvm_protection_selection<Value>(
+    reader: SaveReader,
+    mut selected: impl FnMut(SaveReader) -> Result<Value, ModsError>,
+) -> Result<QvmModProtectionSelection<Value>, ModsError> {
+    Ok(QvmModProtectionSelection {
+        field: qvm_protection_scalar(reader.field("field"))?,
+        mask: reader
+            .field("mask")
+            .nullable(|value| Ok::<f64, ModsError>(as_int_number(value.integer(0)?)))?,
+        values: reader.field("values").list(|value| -> Result<_, ModsError> {
+            Ok(QvmModProtectionValue {
+                value: value.field("value").number()?,
+                selected: selected(value.field("selected"))?,
+            })
+        })?,
+    })
+}
+
+/// Read a QVM protection declaration.
+fn qvm_protection(reader: SaveReader) -> Result<QvmModProtection, ModsError> {
+    let admission = reader.field("admission");
+    let flags = reader.field("flags");
+    let storage = reader.field("storage");
+    let kind = admission.field("kind").choice_str(&["claim", "replace-primary", "replace-current-primary"])?;
+    let admission = if kind.as_str() == "replace-primary" {
+        ModProtectionAdmission::ReplacePrimary {
+            owner: provider_id(&namespaced(admission.field("owner"))?),
+        }
+    } else if kind.as_str() == "replace-current-primary" {
+        ModProtectionAdmission::ReplaceCurrentPrimary
+    } else {
+        ModProtectionAdmission::Claim
+    };
+    let id = namespaced(reader.field("id"))?;
+    let absorb = qvm_source_call(reader.field("absorb"))?;
+    let flags = ModQcProtectionFlags {
+        no_armor: u32_field(&flags, "noArmor", 0)?,
+        no_power_armor: u32_field(&flags, "noPowerArmor", 0)?,
+        no_regular_armor: u32_field(&flags, "noRegularArmor", 0)?,
+        energy: u32_field(&flags, "energy", 0)?,
+        radius: if flags.field("radius").is_missing() {
+            0
+        } else {
+            u32_field(&flags, "radius", 0)?
+        },
+    };
+    if reader.field("channel").choice_str(&["regular", "powered"])?.as_str() == "regular" {
+        return Ok(QvmModProtection {
+            id,
+            admission,
+            absorb,
+            flags,
+            channel: QvmModProtectionChannel::Regular {
+                points: qvm_protection_scalar(storage.field("points"))?,
+                item: storage.field("item").nullable(namespaced)?,
+                selection: if storage.field("selection").is_missing() {
+                    None
+                } else {
+                    Some(qvm_protection_selection(storage.field("selection"), |value| {
+                        Ok(value.nullable(namespaced)?)
+                    })?)
+                },
+            },
+        });
+    }
+    Ok(QvmModProtection {
+        id,
+        admission,
+        absorb,
+        flags,
+        channel: QvmModProtectionChannel::Powered {
+            cells: qvm_protection_scalar(storage.field("cells"))?,
+            selection: qvm_protection_selection(storage.field("selection"), |value| {
+                Ok(match value.choice_str(&["none", "screen", "shield"])?.as_str() {
+                    "none" => PoweredProtectionKind::None,
+                    "screen" => PoweredProtectionKind::Screen,
+                    _ => PoweredProtectionKind::Shield,
+                })
+            })?,
+        },
+    })
+}
+
+/// Read a QVM callback input pointer.
+fn qvm_callback_pointer(reader: SaveReader) -> Result<QvmModInputPointer, ModsError> {
+    let indirections = reader.field("indirections").list(|value| -> Result<_, ModsError> {
+        as_u32(&value, value.integer(0)?)
+    })?;
+    let offset = u32_field(&reader, "offset", 0)?;
+    if reader.field("kind").choice_str(&["argument", "global"])?.as_str() == "global" {
+        return Ok(QvmModInputPointer {
+            base: QvmModInputPointerBase::Global {
+                address: u32_field(&reader, "address", 0)?,
+            },
+            indirections,
+            offset,
+        });
+    }
+    let index = u32_field(&reader, "index", 0)?;
+    if index >= QVM_MAX_PRIVATE_ARGUMENT_WORDS {
+        return Err(reader.fail("Input pointer argument exceeds source call ABI").into());
+    }
+    Ok(QvmModInputPointer {
+        base: QvmModInputPointerBase::Argument { index },
+        indirections,
+        offset,
+    })
+}
+
+/// Read a QVM objective address: a bare instruction address or a source
+/// global pointer.
+fn qvm_objective_address(reader: SaveReader) -> Result<QvmModObjectiveAddress, ModsError> {
+    if matches!(reader.value, Some(SaveJson::Number(_))) {
+        return Ok(QvmModObjectiveAddress::Address(as_u32(&reader, reader.integer(0)?)?));
+    }
+    let pointer = qvm_callback_pointer(reader.clone())?;
+    match pointer.base {
+        QvmModInputPointerBase::Global { address } => Ok(QvmModObjectiveAddress::Global {
+            address,
+            indirections: pointer.indirections,
+            offset: pointer.offset,
+        }),
+        QvmModInputPointerBase::Argument { .. } => {
+            Err(reader.fail("Persistent objective storage requires a source global pointer").into())
+        }
+    }
+}
+
+/// Read a QVM client input/output declaration.
+fn qvm_input_output(reader: SaveReader) -> Result<QvmModInputOutput, ModsError> {
+    let kind = reader.field("kind").choice_str(&["field", "handler", "command"])?;
+    if kind.as_str() == "field" {
+        let value = reader.field("value");
+        let input = value.field("input").choice_str(&[
+            "view-angles",
+            "attack",
+            "jump",
+            "impulse",
+            "forward-move",
+            "side-move",
+            "up-move",
+        ])?;
+        let record = reader.field("record").string()?;
+        let offset = u32_field(&reader, "offset", 0)?;
+        if input.as_str() == "view-angles" {
+            return Ok(QvmModInputOutput::Field {
+                record,
+                offset,
+                value: QvmModFieldInput::ViewAngles,
+            });
+        }
+        let scale = value.field("scale").number()?;
+        if scale <= 0.0 {
+            return Err(value.fail("Input field scale must be positive").into());
+        }
+        let input = match input.as_str() {
+            "attack" => ModClientScalarInput::Attack,
+            "jump" => ModClientScalarInput::Jump,
+            "impulse" => ModClientScalarInput::Impulse,
+            "forward-move" => ModClientScalarInput::ForwardMove,
+            "side-move" => ModClientScalarInput::SideMove,
+            _ => ModClientScalarInput::UpMove,
+        };
+        return Ok(QvmModInputOutput::Field {
+            record,
+            offset,
+            value: QvmModFieldInput::Scalar {
+                input,
+                encoding: qvm_scalar(value.field("encoding"))?,
+                scale,
+            },
+        });
+    }
+    let actor = reader.field("actor");
+    let actor = QvmWeaponActor {
+        record: actor.field("record").string()?,
+        pointer: qvm_callback_pointer(actor.field("pointer"))?,
+    };
+    let entry = u32_field(&reader, "entry", 0)?;
+    if kind.as_str() == "command" {
+        return Ok(QvmModInputOutput::Command {
+            entry,
+            actor,
+            command: qvm_callback_pointer(reader.field("command"))?,
+            inputs: reader.field("inputs").list(|value| -> Result<_, ModsError> {
+                Ok(match value
+                    .choice_str(&["view-angles", "attack", "jump", "forward-move", "side-move", "up-move"])?
+                    .as_str()
+                {
+                    "view-angles" => ModClientCommandInput::ViewAngles,
+                    "attack" => ModClientCommandInput::Attack,
+                    "jump" => ModClientCommandInput::Jump,
+                    "forward-move" => ModClientCommandInput::ForwardMove,
+                    "side-move" => ModClientCommandInput::SideMove,
+                    _ => ModClientCommandInput::UpMove,
+                })
+            })?,
+        });
+    }
+    Ok(QvmModInputOutput::Handler {
+        entry,
+        actor,
+        inputs: reader.field("inputs").list(|value| -> Result<_, ModsError> {
+            Ok(match value
+                .choice_str(&["attack", "jump", "impulse", "forward-move", "side-move", "up-move"])?
+                .as_str()
+            {
+                "attack" => ModClientScalarInput::Attack,
+                "jump" => ModClientScalarInput::Jump,
+                "impulse" => ModClientScalarInput::Impulse,
+                "forward-move" => ModClientScalarInput::ForwardMove,
+                "side-move" => ModClientScalarInput::SideMove,
+                _ => ModClientScalarInput::UpMove,
+            })
+        })?,
+        returns: if reader.field("returns").is_missing() {
+            None
+        } else {
+            Some(QvmModHandlerReturn {
+                encoding: qvm_scalar(reader.field("returns").field("encoding"))?,
+                value: reader.field("returns").field("value").number()?,
+            })
+        },
+    })
+}
+
+/// Read QVM client bindings.
+fn qvm_clients(reader: SaveReader) -> Result<QvmModClients, ModsError> {
+    Ok(QvmModClients {
+        outputs: if reader.field("outputs").is_missing() {
+            Vec::new()
+        } else {
+            read_client_output_declarations(
+                reader.field("outputs"),
+                |value| -> Result<_, ModsError> {
+                    Ok(QvmModProtectionScalar {
+                        record: value.field("record").string()?,
+                        offset: u32_field(&value, "offset", 0)?,
+                        encoding: qvm_scalar(value.field("encoding"))?,
+                    })
+                },
+                qvm_field,
+            )?
+        },
+        maximum: u64_field(&reader, "maximum", 1)?,
+        records: reader.field("records").list(|value| value.string())?,
+        player_state_record: reader.field("playerStateRecord").string()?,
+        admit: reader.field("admit").list(qvm_source_call)?,
+        userinfo: reader.field("userinfo").list(qvm_source_call)?,
+        disconnect: reader.field("disconnect").list(qvm_source_call)?,
+        frame: if reader.field("frame").is_missing() {
+            Vec::new()
+        } else {
+            reader.field("frame").list(qvm_source_call)?
+        },
+        input: if reader.field("input").is_missing() {
+            Vec::new()
+        } else {
+            read_mod_client_input(reader.field("input"), qvm_source_call, Some(qvm_input_output))?
+        },
+    })
+}
+
+/// Read QVM source actor bindings.
+fn qvm_source_actors(reader: SaveReader) -> Result<QvmModSourceActors, ModsError> {
+    let release = reader.field("release");
+    Ok(QvmModSourceActors {
+        allocate: u32_field(&reader, "allocate", 0)?,
+        release: QvmModRelease {
+            entry: u32_field(&release, "entry", 0)?,
+            argument: u32_field(&release, "argument", 0)?,
+        },
+        initial_stores: if reader.field("initialStores").is_missing() {
+            Vec::new()
+        } else {
+            reader.field("initialStores").list(|value| -> Result<_, ModsError> {
+                as_u32(&value, value.integer(0)?)
+            })?
+        },
+        inuse: u32_field(&reader, "inuse", 0)?,
+        event_entity_type: u32_field(&reader, "eventEntityType", 0)?,
+        update: reader.field("update").nullable(qvm_source_call)?,
+        frame: if reader.field("frame").is_missing() {
+            None
+        } else {
+            let frame = reader.field("frame");
+            let clock = frame.field("clock");
+            let end = frame.field("end");
+            Some(QvmModActorFrame {
+                call: qvm_source_call(frame.field("call"))?,
+                clock: QvmModActorClock {
+                    address: u32_field(&clock, "address", 0)?,
+                    store: u32_field(&clock, "store", 0)?,
+                    argument: u32_field(&clock, "argument", 0)?,
+                },
+                owned: frame.field("owned").list(|value| -> Result<_, ModsError> {
+                    Ok(QvmModOwnedInstruction {
+                        instruction: u32_field(&value, "instruction", 0)?,
+                        local_instruction: u32_field(&value, "localInstruction", 0)?,
+                    })
+                })?,
+                end: QvmModActorEnd {
+                    instruction: u32_field(&end, "instruction", 0)?,
+                    completed_taken: end.field("completedTaken").boolean()?,
+                },
+            })
+        },
+        callbacks: if reader.field("callbacks").is_missing() {
+            None
+        } else {
+            let callbacks = reader.field("callbacks");
+            Some(QvmModEntityCallbacks {
+                touch: callbacks.field("touch").nullable(|value| as_u32(&value, value.integer(0)?))?,
+                r#use: callbacks.field("use").nullable(|value| as_u32(&value, value.integer(0)?))?,
+                pain: callbacks.field("pain").nullable(|value| as_u32(&value, value.integer(0)?))?,
+                die: callbacks.field("die").nullable(|value| as_u32(&value, value.integer(0)?))?,
+            })
+        },
+    })
+}
+
+/// Read a QVM mod declaration.
+pub fn read_qvm_mod_declaration(reader: SaveReader) -> Result<QvmModCallbackDeclaration, ModsError> {
+    let program = reader.field("program");
+    let actors = reader.field("sourceActors");
+    let combat = reader.field("combat");
+    let clients = reader.field("clients");
+    reader.field("version").literal_i64(1)?;
+    reader.field("runtime").literal_str("qvm")?;
+    Ok(QvmModCallbackDeclaration {
+        objectives: if reader.field("objectives").is_missing() {
+            Vec::new()
+        } else {
+            read_source_objectives(
+                reader.field("objectives"),
+                |value| -> Result<_, ModsError> {
+                    Ok(QvmModObjectiveStorage {
+                        address: qvm_objective_address(value.field("address"))?,
+                        encoding: qvm_scalar(value.field("encoding"))?,
+                    })
+                },
+                qvm_objective_address,
+                qvm_source_call,
+            )?
+        },
+        version: 1,
+        program: ModProgram {
+            path: normalize_resource_path(&program.field("path").string()?)?,
+            digest: read_digest(program.field("digest"))?,
+        },
+        abi_profile: match reader.field("abiProfile").choice_str(&["q3-modern", "q3-1.16n-base"])?.as_str() {
+            "q3-modern" => QvmAbiProfile::Modern,
+            _ => QvmAbiProfile::Legacy116n,
+        },
+        presentation: if reader.field("presentation").is_missing() {
+            None
+        } else {
+            Some(read_qvm_mod_presentation_declaration(reader.field("presentation"))?)
+        },
+        spawn_entities: if reader.field("spawnEntities").is_missing() {
+            None
+        } else {
+            reader.field("spawnEntities").nullable(|value| value.string())?
+        },
+        clients: if clients.is_missing() { None } else { Some(qvm_clients(clients)?) },
+        actor_records: reader.field("actorRecords").list(|record| -> Result<_, ModsError> {
+            Ok(QvmModActorRecord {
+                id: record.field("id").string()?,
+                address: u32_field(&record, "address", 1)?,
+                stride: u32_field(&record, "stride", 4)?,
+                capacity: u64_field(&record, "capacity", 1)?,
+                fields: record.field("fields").list(qvm_actor_field)?,
+            })
+        })?,
+        entity_record: reader.field("entityRecord").nullable(|value| value.string())?,
+        source_actors: if actors.is_missing() { None } else { Some(qvm_source_actors(actors)?) },
+        combat: if combat.is_missing() { None } else { Some(qvm_combat_definition(combat)?) },
+        protection: if reader.field("protection").is_missing() {
+            Vec::new()
+        } else {
+            reader.field("protection").list(qvm_protection)?
+        },
+        pickups: if reader.field("pickups").is_missing() {
+            Vec::new()
+        } else {
+            reader.field("pickups").list(|rule| -> Result<_, ModsError> {
+                Ok(QvmModPickup {
+                    rule: read_mod_pickup_rule(rule.clone(), qvm_source_call)?,
+                    context: rule.field("context").list(|field| -> Result<_, ModsError> {
+                        Ok(QvmModPickupContext {
+                            record: field.field("record").string()?,
+                            offset: u32_field(&field, "offset", 0)?,
+                            value: qvm_argument(field.field("value"))?,
+                        })
+                    })?,
+                })
+            })?
+        },
+        items: if reader.field("items").is_missing() {
+            None
+        } else {
+            Some(read_qvm_mod_items(reader.field("items"), qvm_source_call)?)
+        },
+        initialize: reader.field("initialize").list(qvm_source_call)?,
+        callbacks: reader.field("callbacks").list(|entry| -> Result<_, ModsError> {
+            Ok(QvmModCallback {
+                call: qvm_source_call(entry.clone())?,
+                binding: qvm_binding(entry)?,
+            })
+        })?,
+    })
+}
+
+/// Read a QVM mod declaration file.
+pub fn read_qvm_mod_callbacks(bytes: &[u8]) -> Result<QvmModCallbackDeclaration, ModsError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ModsError::Invalid("Declaration bytes are not valid UTF-8".to_string()))?;
+    let value = parse_save_json(text)?;
+    read_qvm_mod_declaration(SaveReader::new(&value))
+}
+
+// `qvm-presentation.ts`.
+
+/// Read a QVM presentation 32-bit integer.
+fn qvm_presentation_int32(reader: SaveReader) -> Result<f64, ModsError> {
+    let value = reader.integer(-0x8000_0000)?;
+    if value > 0x7fff_ffff {
+        return Err(reader.fail("Source scalar exceeds int32").into());
+    }
+    Ok(as_int_number(value))
+}
+
+/// Read a QVM presentation argument.
+fn qvm_presentation_argument(reader: SaveReader) -> Result<QvmPresentationArgument, ModsError> {
+    let kind = reader.field("kind").choice_str(&["int32", "float32", "address", "source"])?;
+    let value = reader.field("value");
+    match kind.as_str() {
+        "source" => Ok(QvmPresentationArgument::Source(
+            match value
+                .choice_str(&[
+                    "player-state",
+                    "entity-state",
+                    "centity",
+                    "origin",
+                    "snapshot",
+                    "client-number",
+                    "time",
+                    "event",
+                    "parameter",
+                    "snapshot-number",
+                    "server-command-sequence",
+                ])?
+                .as_str()
+            {
+                "player-state" => QvmPresentationSource::PlayerState,
+                "entity-state" => QvmPresentationSource::EntityState,
+                "centity" => QvmPresentationSource::Centity,
+                "origin" => QvmPresentationSource::Origin,
+                "snapshot" => QvmPresentationSource::Snapshot,
+                "client-number" => QvmPresentationSource::ClientNumber,
+                "time" => QvmPresentationSource::Time,
+                "event" => QvmPresentationSource::Event,
+                "parameter" => QvmPresentationSource::Parameter,
+                "snapshot-number" => QvmPresentationSource::SnapshotNumber,
+                _ => QvmPresentationSource::ServerCommandSequence,
+            },
+        )),
+        "int32" => Ok(QvmPresentationArgument::Immediate {
+            kind: QvmPresentationImmediateKind::Int32,
+            value: qvm_presentation_int32(value)?,
+        }),
+        "address" => Ok(QvmPresentationArgument::Immediate {
+            kind: QvmPresentationImmediateKind::Address,
+            value: as_int_number(value.integer(0)?),
+        }),
+        _ => {
+            let scalar = value.finite()?;
+            #[allow(clippy::cast_possible_truncation)]
+            let narrowed = scalar as f32;
+            if !narrowed.is_finite() {
+                return Err(value.fail("Source scalar exceeds float32").into());
+            }
+            Ok(QvmPresentationArgument::Immediate {
+                kind: QvmPresentationImmediateKind::Float32,
+                value: scalar,
+            })
+        }
+    }
+}
+
+/// Read a QVM presentation call.
+fn qvm_presentation_call(reader: SaveReader) -> Result<QvmPresentationCall, ModsError> {
+    let arguments = reader.field("arguments").list(qvm_presentation_argument)?;
+    if arguments.len() > QVM_MAX_PRIVATE_ARGUMENT_WORDS as usize {
+        return Err(reader.fail("Source presentation call exceeds QVM argument ABI").into());
+    }
+    Ok(QvmPresentationCall {
+        entry: u32_field(&reader, "entry", 0)?,
+        when: if reader.field("when").is_missing() {
+            None
+        } else {
+            reader.field("when").literal_str("weapon-presented")?;
+            Some(QvmPresentationTiming::WeaponPresented)
+        },
+        arguments,
+    })
+}
+
+/// Read a QVM presentation program.
+fn qvm_presentation_program(reader: SaveReader) -> Result<QvmPresentationProgram, ModsError> {
+    Ok(QvmPresentationProgram {
+        path: normalize_resource_path(&reader.field("path").string()?)?,
+        digest: read_digest(reader.field("digest"))?,
+        abi_profile: match reader.field("abiProfile").choice_str(&["q3-modern", "q3-1.16n-base"])?.as_str() {
+            "q3-modern" => QvmAbiProfile::Modern,
+            _ => QvmAbiProfile::Legacy116n,
+        },
+    })
+}
+
+/// Read an optional address list, defaulting to empty.
+fn qvm_address_list(reader: SaveReader, name: &str) -> Result<Vec<u32>, ModsError> {
+    if reader.field(name).is_missing() {
+        return Ok(Vec::new());
+    }
+    reader.field(name).list(|value| -> Result<_, ModsError> { as_u32(&value, value.integer(0)?) })
+}
+
+/// Read the shared QVM presentation base.
+fn qvm_presentation_base(reader: SaveReader) -> Result<QvmPresentationBase, ModsError> {
+    reader.field("version").literal_i64(1)?;
+    Ok(QvmPresentationBase {
+        version: 1,
+        gameplay: qvm_presentation_program(reader.field("gameplay"))?,
+        cgame: qvm_presentation_program(reader.field("cgame"))?,
+        initialize: reader.field("initialize").list(qvm_presentation_call)?,
+        refresh: reader.field("refresh").list(qvm_presentation_call)?,
+        frame: reader.field("frame").list(qvm_presentation_call)?,
+        hud: if reader.field("hud").is_missing() {
+            None
+        } else {
+            let hud = reader.field("hud");
+            Some(QvmPresentationHud {
+                mode: match hud.field("mode").choice_str(&["overlay", "replace-status"])?.as_str() {
+                    "overlay" => QvmPresentationHudMode::Overlay,
+                    _ => QvmPresentationHudMode::ReplaceStatus,
+                },
+                frame: hud.field("frame").list(qvm_presentation_call)?,
+            })
+        },
+    })
+}
+
+/// Read a QVM mod presentation declaration.
+pub fn read_qvm_mod_presentation_declaration(
+    reader: SaveReader,
+) -> Result<QvmModPresentationDeclaration, ModsError> {
+    let storage = reader.field("storage");
+    let centities = storage.field("centities");
+    let base = qvm_presentation_base(reader.clone())?;
+    let runtime = reader.field("runtime").choice_str(&["qvm-player-events", "qvm-scene"])?;
+    let time = storage.field("time").list(|value| -> Result<_, ModsError> { as_u32(&value, value.integer(0)?) })?;
+    let frame_time =
+        storage.field("frameTime").list(|value| -> Result<_, ModsError> { as_u32(&value, value.integer(0)?) })?;
+    let view_origin =
+        storage.field("viewOrigin").list(|value| -> Result<_, ModsError> { as_u32(&value, value.integer(0)?) })?;
+    let view_angles = qvm_address_list(storage.clone(), "viewAngles")?;
+    let view_axis = qvm_address_list(storage.clone(), "viewAxis")?;
+    if runtime.as_str() == "qvm-scene" {
+        let body = reader.field("body");
+        let player = body.field("player");
+        let mesh = body.field("mesh");
+        let event_check = reader.field("eventCheck");
+        return Ok(QvmModPresentationDeclaration::Scene(QvmScenePresentation {
+            base,
+            cvars: reader.field("cvars").list(|entry| -> Result<_, ModsError> {
+                Ok(ModCvar {
+                    name: entry.field("name").string()?,
+                    value: entry.field("value").string()?,
+                })
+            })?,
+            storage: QvmSceneStorage {
+                game_state: u32_field(&storage, "gameState", 0)?,
+                server_command_sequence: u32_field(&storage, "serverCommandSequence", 0)?,
+                time,
+                frame_time,
+                view_origin,
+                view_angles,
+                view_axis,
+                centities: QvmSceneCentities {
+                    address: u32_field(&centities, "address", 0)?,
+                    stride: u32_field(&centities, "stride", 1)?,
+                    capacity: u64_field(&centities, "capacity", 1)?,
+                    state: u32_field(&centities, "state", 0)?,
+                    previous_event: u32_field(&centities, "previousEvent", 0)?,
+                    snapshot_time: u32_field(&centities, "snapshotTime", 0)?,
+                },
+            },
+            snapshots: reader.field("snapshots").list(qvm_presentation_call)?,
+            event_entity_type: u32_field(&reader, "eventEntityType", 0)?,
+            event_check: QvmEventCheck {
+                entry: u32_field(&event_check, "entry", 0)?,
+                centity_argument: u32_field(&event_check, "centityArgument", 0)?,
+            },
+            body: QvmBodyPresentation {
+                player: crate::contract::QvmPlayerPresentation {
+                    entry: u32_field(&player, "entry", 0)?,
+                    centity_argument: u32_field(&player, "centityArgument", 0)?,
+                },
+                mesh: QvmMeshPresentation {
+                    entry: u32_field(&mesh, "entry", 0)?,
+                    entity_argument: u32_field(&mesh, "entityArgument", 0)?,
+                    state_argument: u32_field(&mesh, "stateArgument", 0)?,
+                    shader_offset: u32_field(&mesh, "shaderOffset", 0)?,
+                    parts: if mesh.field("parts").is_missing() {
+                        Vec::new()
+                    } else {
+                        mesh.field("parts").list(|row| -> Result<_, ModsError> {
+                            Ok(QvmMeshPart {
+                                call: u32_field(&row, "call", 0)?,
+                                part: match row.field("part").choice_str(&["body", "lower", "upper", "head"])?.as_str()
+                                {
+                                    "body" => QvmBodyPart::Body,
+                                    "lower" => QvmBodyPart::Lower,
+                                    "upper" => QvmBodyPart::Upper,
+                                    _ => QvmBodyPart::Head,
+                                },
+                            })
+                        })?
+                    },
+                },
+            },
+        }));
+    }
+    let snapshot = storage.field("snapshot");
+    Ok(QvmModPresentationDeclaration::PlayerEvents(QvmPlayerEventPresentation {
+        base,
+        storage: QvmPlayerEventStorage {
+            game_state: u32_field(&storage, "gameState", 0)?,
+            player_state: u32_field(&storage, "playerState", 0)?,
+            snapshot: {
+                snapshot.field("kind").literal_str("synthetic-player-event")?;
+                QvmSyntheticSnapshot {
+                    address: u32_field(&snapshot, "address", 0)?,
+                    pointers: snapshot
+                        .field("pointers")
+                        .list(|value| -> Result<_, ModsError> { as_u32(&value, value.integer(0)?) })?,
+                }
+            },
+            centities: QvmCentities {
+                address: u32_field(&centities, "address", 0)?,
+                stride: u32_field(&centities, "stride", 1)?,
+                capacity: u64_field(&centities, "capacity", 1)?,
+                state: u32_field(&centities, "state", 0)?,
+                origin: u32_field(&centities, "origin", 0)?,
+            },
+            time,
+            frame_time,
+            view_origin,
+            view_angles,
+            view_axis,
+        },
+        project: reader.field("project").list(qvm_presentation_call)?,
+        event: qvm_presentation_call(reader.field("event"))?,
+    }))
+}
+
+/// Read a QVM mod presentation file.
+pub fn read_qvm_mod_presentation(bytes: &[u8]) -> Result<QvmModPresentationDeclaration, ModsError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ModsError::Invalid("Declaration bytes are not valid UTF-8".to_string()))?;
+    let value = parse_save_json(text)?;
+    read_qvm_mod_presentation_declaration(SaveReader::at(&value, "qvm-presentation"))
+}
+
+// `declaration.ts`.
+
+/// Read a gameplay mod declaration, dispatching on its runtime
+/// (`readGameplayModDeclaration`).
+///
+/// The QuakeC reader is sibling-owned (`mods/callbacks.ts`) and arrives as a
+/// caller-provided function; QVM and native readers live in this module.
+pub fn read_gameplay_mod_declaration(
+    reader: SaveReader,
+    read_quakec: impl Fn(SaveReader) -> Result<ModCallbackDeclaration, ModsError>,
+) -> Result<ModDeclaration, ModsError> {
+    match reader.field("runtime").choice_str(&["quakec", "qvm", "native"])?.as_str() {
+        "quakec" => Ok(ModDeclaration::Quakec(read_quakec(reader)?)),
+        "qvm" => Ok(ModDeclaration::Qvm(read_qvm_mod_declaration(reader)?)),
+        _ => Ok(ModDeclaration::Native(read_native_mod_declaration(reader)?)),
+    }
+}
+
+/// Parse a gameplay mod declaration file (`parseGameplayModDeclaration`).
+pub fn parse_gameplay_mod_declaration(
+    bytes: &[u8],
+    read_quakec: impl Fn(SaveReader) -> Result<ModCallbackDeclaration, ModsError>,
+) -> Result<ModDeclaration, ModsError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ModsError::Invalid("Declaration bytes are not valid UTF-8".to_string()))?;
+    let value = parse_save_json(text)?;
+    read_gameplay_mod_declaration(SaveReader::new(&value), read_quakec)
+}
+
+// `catalog.ts`.
+
+/// Discovered gameplay mod (`DiscoveredGameplayMod`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiscoveredGameplayMod {
+    /// Available mod with its resolved declaration.
+    Available(ResolvedGameplayMod),
+    /// Unavailable mod with its reason.
+    Unavailable(ModDescription),
+}
+
+/// Mod program path and digest behind any declaration runtime.
+fn gameplay_mod_program(declaration: &ModDeclaration) -> &ModProgram {
+    match declaration {
+        ModDeclaration::Quakec(declaration) => &declaration.program,
+        ModDeclaration::Qvm(declaration) => &declaration.program,
+        ModDeclaration::Native(declaration) => &declaration.program,
+    }
+}
+
+/// Discover gameplay mods declared by a product (`discoverGameplayMods`).
+///
+/// Packages explicitly declare independent features; filenames do not
+/// establish their behavior. Entries whose callbacks fail to load report as
+/// unavailable with their reason instead of failing discovery.
+pub fn discover_gameplay_mods(
+    product: &CatalogProduct,
+    mounted: &MountedContent,
+    read_quakec: impl Fn(SaveReader) -> Result<ModCallbackDeclaration, ModsError>,
+) -> Result<Vec<DiscoveredGameplayMod>, ModsError> {
+    let Some(document) = mounted.open("gameplay-mods.json", |mount| mount.identity().content == product.id)? else {
+        return Ok(Vec::new());
+    };
+    let text = std::str::from_utf8(&document.bytes)
+        .map_err(|_| ModsError::Invalid("Declaration bytes are not valid UTF-8".to_string()))?;
+    let value = parse_save_json(text)?;
+    let reader = SaveReader::new(&value);
+    reader.field("version").literal_i64(1)?;
+    let declared: Vec<(String, String, ModPurpose, SaveJson)> = reader.field("components").list(|entry| {
+        Ok::<_, ModsError>((
+            entry.field("id").string()?,
+            entry.field("title").string()?,
+            match entry.field("purpose").choice_str(&["addition", "game-type"])?.as_str() {
+                "addition" => ModPurpose::Addition,
+                _ => ModPurpose::GameType,
+            },
+            entry.value.cloned().unwrap_or(SaveJson::Null),
+        ))
+    })?;
+    let family = product.expectation.family.to_string();
+    let mut result: Vec<DiscoveredGameplayMod> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for (id, title, purpose, entry) in &declared {
+        let selection = crate::contract::ModSelection {
+            product: product.expectation.id.clone(),
+            id: id.clone(),
+        };
+        let key = mod_selection_key(&selection)?;
+        if !seen.insert(key.clone()) {
+            return Err(ModsError::Invalid(format!("Duplicate mod component: {key}")));
+        }
+        if *purpose == ModPurpose::GameType {
+            continue;
+        }
+        let entry = SaveReader::new(entry);
+        let description = ModDescription {
+            selection,
+            title: title.clone(),
+            source_title: format!(
+                "{} ({}{})",
+                product.expectation.title,
+                family.to_uppercase(),
+                if product.expectation.edition == "rerelease" { " rerelease" } else { "" }
+            ),
+            source: crate::contract::ProviderReference {
+                provider: ProviderId::new(&family, "official"),
+                content: product.id.clone(),
+            },
+            purpose: ModPurpose::Addition,
+            requires: Vec::new(),
+            conflicts: Vec::new(),
+            availability: crate::contract::ModAvailability::Available,
+        };
+        let loaded: Result<DiscoveredGameplayMod, ModsError> = (|| {
+            let path = normalize_resource_path(&entry.field("callbacks").string()?)?;
+            let requires: Vec<crate::contract::ModSelection> = entry
+                .field("requires")
+                .list(|value| Ok::<_, ModsError>(read_mod_selection(&value.string()?)?))?;
+            let conflicts: Vec<crate::contract::ModSelection> = entry
+                .field("conflicts")
+                .list(|value| Ok::<_, ModsError>(read_mod_selection(&value.string()?)?))?;
+            let Some(file) = mounted.open(&path, |_| true)? else {
+                return Err(ModsError::Invalid(format!("Missing callback declaration {path}")));
+            };
+            let declaration = parse_gameplay_mod_declaration(&file.bytes, &read_quakec)?;
+            let program = gameplay_mod_program(&declaration);
+            let program_file = mounted.open(&program.path, |_| true)?;
+            match program_file {
+                Some(program_file) if program_file.reference.digest == program.digest => {}
+                _ => return Err(ModsError::Invalid("Executable differs from its callback declaration".to_string())),
+            }
+            Ok(DiscoveredGameplayMod::Available(ResolvedGameplayMod {
+                selection: description.selection.clone(),
+                source: description.source.clone(),
+                title: description.title.clone(),
+                source_title: description.source_title.clone(),
+                requires,
+                conflicts,
+                declaration,
+                declaration_digest: file.reference.digest.clone(),
+            }))
+        })();
+        match loaded {
+            Ok(found) => result.push(found),
+            Err(error) => result.push(DiscoveredGameplayMod::Unavailable(ModDescription {
+                availability: crate::contract::ModAvailability::Unavailable {
+                    reason: error.to_string(),
+                },
+                ..description
+            })),
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
