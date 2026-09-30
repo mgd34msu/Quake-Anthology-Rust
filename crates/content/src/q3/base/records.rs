@@ -3,7 +3,8 @@
 //! Donor provenance: `src/content/q3/base/records.ts`.
 
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
-use qa_core::math::{vec3, Vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
+use qa_world::body::{BodyState, LinkedBody};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
@@ -1076,3 +1077,19 @@ impl Q3EntityRecords {
         self.core.damage_inflictor(actor)
     }
 }
+
+// ---------------------------------------------------------------------------
+// contracts/world.ts (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Zero body state for unowned record slots.
+pub const ZERO_BODY: BodyState = BodyState {
+    origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+    angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+    velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+    bounds: Bounds {
+        min: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        max: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+    },
+    ground: None,
+};

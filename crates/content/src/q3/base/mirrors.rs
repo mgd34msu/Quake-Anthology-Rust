@@ -13,6 +13,7 @@ use std::rc::{Rc, Weak};
 use thiserror::Error;
 
 use crate::contract::{ItemId, ProtectionChannel};
+use qa_world::body::{BodyState, LinkedBody};
 use qa_world::combat::{Delivery, Reaction};
 
 // Intra-group imports: sibling modules split from the same flat port.
@@ -38,50 +39,6 @@ pub enum Q3BaseError {
     #[error("range: {0}")]
     Range(String),
 }
-
-// ---------------------------------------------------------------------------
-// Session body mirrors (contracts/world.ts BodyState/LinkedBody, minimal)
-// ---------------------------------------------------------------------------
-
-/// Actor body state (`BodyState`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct BodyState {
-    /// Origin.
-    pub origin: Vec3,
-    /// Angles.
-    pub angles: Vec3,
-    /// Velocity.
-    pub velocity: Vec3,
-    /// Local bounds.
-    pub bounds: Bounds,
-    /// Ground actor.
-    pub ground: Option<ActorId>,
-}
-
-/// Linked body with its captured absolute bounds (`LinkedBody`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct LinkedBody {
-    /// Actor.
-    pub actor: ActorId,
-    /// State at link time.
-    pub state: BodyState,
-    /// Absolute bounds visible to spatial queries.
-    pub absolute_bounds: Bounds,
-    /// Link count.
-    pub link_count: i32,
-}
-
-/// Zero body state for unowned record slots.
-pub const ZERO_BODY: BodyState = BodyState {
-    origin: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-    angles: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-    velocity: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-    bounds: Bounds {
-        min: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-        max: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
-    },
-    ground: None,
-};
 
 // ---------------------------------------------------------------------------
 // Gameplay mirrors (contracts/gameplay.ts, world/gameplay/*, minimal)

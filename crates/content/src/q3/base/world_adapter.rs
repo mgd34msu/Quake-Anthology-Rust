@@ -5,6 +5,7 @@
 use qa_core::identity::{ActorId, OwnedActor};
 use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::numeric::{NumericProfile, Q3_BINARY32_PROFILE};
+use qa_world::body::{BodyState, LinkedBody};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
@@ -296,7 +297,7 @@ impl ServerWorld for Q3WorldAdapter {
         Some(LinkState {
             absbounds: linked.absolute_bounds,
             linked: true,
-            linkcount: linked.link_count,
+            linkcount: linked.link_count as i32,
         })
     }
 

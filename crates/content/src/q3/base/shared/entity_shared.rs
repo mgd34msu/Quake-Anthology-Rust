@@ -3,6 +3,7 @@
 //! Donor provenance: `src/content/q3/base/shared/entity-shared.ts`.
 
 use qa_core::math::{vec3, Vec3};
+use qa_world::body::{BodyState, LinkedBody};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
@@ -148,9 +149,9 @@ impl EntityShared {
     #[must_use]
     pub fn linkcount(&self) -> i32 {
         if let Some(linked) = self.body.linked() {
-            linked.link_count
+            linked.link_count as i32
         } else {
-            self.previous_link.as_ref().map_or(0, |link| link.link_count)
+            self.previous_link.as_ref().map_or(0, |link| link.link_count as i32)
         }
     }
 
