@@ -2500,10 +2500,10 @@ pub fn validate_qvm_mod_items_mirror(
     if defined.len() != items.definitions.len() {
         return Err(GuestError::invalid("Duplicate QVM source item definition"));
     }
-    let mut occupied: HashMap<(String, usize), bool> = HashMap::new();
+    let occupied: RefCell<HashMap<(String, usize), bool>> = RefCell::new(HashMap::new());
     let field = |source: &QvmItemField, usage_capacity: bool, view: bool| -> Result<(), GuestError> {
         let record = declaration.actor_records.iter().find(|value| value.id == source.record);
-        let previous = occupied.get(&(source.record.clone(), source.offset)).copied();
+        let previous = occupied.borrow().get(&(source.record.clone(), source.offset)).copied();
         if record.is_none_or(|record| !clients.records.contains(&record.id))
             || source.offset % 4 != 0
             || source.offset + 4 > record.map_or(0, |record| record.stride)
@@ -2512,7 +2512,7 @@ pub fn validate_qvm_mod_items_mirror(
             return Err(GuestError::invalid("Invalid QVM item source field"));
         }
         if !view {
-            occupied.insert((source.record.clone(), source.offset), usage_capacity);
+            occupied.borrow_mut().insert((source.record.clone(), source.offset), usage_capacity);
         }
         let record = record.expect("checked record");
         for value in &record.fields {
@@ -4197,7 +4197,7 @@ impl<H: ModProviderHost> QvmModProvider<H> {
 
     fn entity_record(&self) -> Result<QvmModActorRecord, GuestError> {
         let record = self.declaration.entity_record.as_deref().and_then(|id| self.records.get(id)).cloned();
-        if record.is_none_or(|record| record.stride < qvm_shared_entity_bytes(self.declaration.abi_profile)) {
+        if record.as_ref().is_none_or(|record| record.stride < qvm_shared_entity_bytes(self.declaration.abi_profile)) {
             return Err(GuestError::invalid("QVM engine service requires its declared sharedEntity_t array"));
         }
         Ok(record.expect("checked record"))
@@ -4524,9 +4524,10 @@ impl<H: ModProviderHost> QvmModProvider<H> {
                 &self.host.read_bytes(self.entity_address(slot)?, super::mod_presentation_checkpoint::entity_state_len(self.declaration.abi_profile))?,
                 self.declaration.abi_profile,
             )?;
+            let owned = self.owned.contains(&actor);
             entities.push(super::mod_presentation_checkpoint::SceneEntity {
                 actor,
-                owned: self.owned.contains(&actor),
+                owned,
                 linked: link.linked,
                 server_flags: link.sv_flags,
                 single_client: link.single_client,

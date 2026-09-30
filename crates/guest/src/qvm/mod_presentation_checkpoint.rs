@@ -367,7 +367,7 @@ pub fn read_bounds(reader: &ProfileReader<'_>) -> Result<(Vec3, Vec3), GuestErro
 }
 
 /// Scene entity row of a mod scene publication.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneEntity {
     /// Actor.
     pub actor: ActorId,
@@ -410,7 +410,7 @@ pub struct SceneCommand {
 }
 
 /// Mod scene publication (mirror of `QvmModScenePublication`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModScenePublication {
     /// Publication revision.
     pub revision: u64,

@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use super::mod_provider::{
-    ProfileReader, QvmAbi, QvmArtifact, QvmOpcode, QvmRegionEvaluation, QVM_MAX_PRIVATE_ARGUMENT_WORDS, qualify_qvm_region, qualify_qvm_region_evaluation,
+    ProfileReader, ProfileValue, QvmAbi, QvmArtifact, QvmOpcode, QvmRegionEvaluation, QVM_MAX_PRIVATE_ARGUMENT_WORDS, qualify_qvm_region, qualify_qvm_region_evaluation,
     qvm_player_state_bytes, qvm_shared_entity_bytes,
 };
 use crate::error::GuestError;

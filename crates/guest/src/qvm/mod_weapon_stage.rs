@@ -312,7 +312,7 @@ pub enum ItemAdmission {
 }
 
 /// Item action calls.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ItemActions {
     /// Use call, if any.
     pub use_: Option<QvmModSourceCall>,
@@ -321,7 +321,7 @@ pub struct ItemActions {
 }
 
 /// Item definition kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QvmItemDefinitionKind {
     /// Counter item.
     Counter,
@@ -335,7 +335,7 @@ pub enum QvmItemDefinitionKind {
 }
 
 /// Item definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QvmItemDefinition {
     /// Item identity.
     pub item: String,
@@ -369,7 +369,7 @@ pub struct WeaponInput {
 }
 
 /// Declared weapon consumer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModItemWeapons {
     /// Input.
     pub input: WeaponInput,
@@ -378,7 +378,7 @@ pub struct ModItemWeapons {
 }
 
 /// Item definitions (mirror of `QvmModItems`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QvmModItems {
     /// Definitions.
     pub definitions: Vec<QvmItemDefinition>,

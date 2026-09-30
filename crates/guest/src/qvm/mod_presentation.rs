@@ -1148,10 +1148,11 @@ impl<H: PresentationHost> QvmModPresentation<H> {
                 Some(true) => {}
             }
         }
+        let selected = event.cloned().or_else(|| self.active_event.clone());
         let words = call
             .arguments
             .iter()
-            .map(|argument| self.address_word(argument, event.or(self.active_event.as_ref()), &context))
+            .map(|argument| self.address_word(argument, selected.as_ref(), &context))
             .collect::<Result<Vec<_>, _>>()?;
         self.view(&context)?;
         self.host.call_module(&words, call.entry)?;
@@ -1256,7 +1257,7 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             let Some(scene) = context.scene.clone() else {
                 return Err(GuestError::invalid("Scene presentation requires its published scene"));
             };
-            let QvmModPresentationDeclaration::Scene(declaration) = &self.declaration else {
+            let QvmModPresentationDeclaration::Scene(declaration) = self.declaration.clone() else {
                 return Err(GuestError::invalid("Scene presentation requires its published scene"));
             };
             self.host.write_i32(declaration.storage.server_command_sequence, scene.snapshot.server_command_sequence)?;
@@ -1387,8 +1388,8 @@ impl<H: PresentationHost> QvmModPresentation<H> {
                         return Err(GuestError::invalid("Scene presentation requires its published scene").into());
                     };
                     self.host.write_i32(declaration.storage.server_command_sequence, scene.snapshot.server_command_sequence)?;
-                    for (slot, row) in &scene.actors {
-                        if let Some(actor) = self.scene_actors.get(slot) {
+                    for row in &scene.actors {
+                        if let Some(actor) = self.scene_actors.get(&row.slot) {
                             if actor.actor == row.actor {
                                 continue;
                             }
@@ -1703,7 +1704,7 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             ("sceneActors", ProfileValue::Array(scene_actors)),
             (
                 "currentGameState",
-                self.current_game_state.clone().map(capture_presentation_game_state).unwrap_or(ProfileValue::Null),
+                self.current_game_state.as_ref().map(capture_presentation_game_state).unwrap_or(ProfileValue::Null),
             ),
         ]))
     }

@@ -204,7 +204,7 @@ pub struct ArmorHit {
 #[derive(Clone)]
 pub struct ArmorStage {
     /// Bind an intercept; returns its remover.
-    pub bind: Rc<dyn Fn(ArmorIntercept) -> Box<dyn FnOnce()>>,
+    pub bind: Rc<dyn Fn(ArmorIntercept) -> Result<Box<dyn FnOnce()>, GuestError>>,
 }
 
 /// Protection channel.
@@ -575,7 +575,8 @@ impl QvmCombatBindings {
                 definition.state.flags.notarget,
                 definition.state.flags.invulnerable,
                 definition.state.flags.no_knockback,
-            ],
+            ]
+            .as_slice(),
             [
                 definition.damage_flags.radius,
                 definition.damage_flags.no_armor,

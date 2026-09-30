@@ -786,8 +786,8 @@ fn observe_frame(state: &Rc<RefCell<QvmPickupState>>, id: u64) -> Result<u64, Gu
 
 /// Finish a frame: stop its watch, remove it, dispose when closed and idle.
 fn finish_frame(state: &Rc<RefCell<QvmPickupState>>, id: u64, watch: u64) {
-    let module = state.borrow().options.game.module.clone();
-    module.remove_observer(watch);
+    let memory = state.borrow().options.game.module.memory();
+    memory.remove_observer(watch);
     let mut inner = state.borrow_mut();
     if let Some(index) = inner.frames.iter().position(|frame| frame.id == id) {
         inner.frames.remove(index);
@@ -864,14 +864,14 @@ fn quantity(
         .supply
         .as_ref()
         .and_then(|supply| (supply.ammo)(&frame.item_record));
-    let project = options.supply.as_ref().and_then(|supply| supply.project.clone());
-    if weapon.storage == QvmGrantWeaponStorage::Inventory && project.is_none() {
+    let supply_project = options.supply.as_ref().and_then(|supply| supply.project.clone());
+    if weapon.storage == QvmGrantWeaponStorage::Inventory && supply_project.is_none() {
         return Err(GuestError::invalid(
             "Original pickup requires its declared inventory projection",
         ));
     }
     let writes = if weapon.storage == QvmGrantWeaponStorage::Inventory {
-        match (&ammo, &project) {
+        match (&ammo, &supply_project) {
             (Some(ammo), Some(project)) => project(&frame.recipient, ammo, word)?,
             _ => Vec::new(),
         }
@@ -1151,7 +1151,7 @@ fn grant(
                 }
             }
             let restore: Rc<RefCell<Box<dyn FnMut() -> Result<(), GuestError>>>> =
-                Rc::new(RefCell::new(project(state, &writes)?));
+                Rc::new(RefCell::new(Box::new(project(state, &writes)?)));
             let outcome: QvmGrantRegionOutcome = Rc::new(RefCell::new(None));
             call.regions(vec![grant_region(
                 state,

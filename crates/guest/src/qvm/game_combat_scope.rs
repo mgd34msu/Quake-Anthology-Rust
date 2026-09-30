@@ -374,6 +374,8 @@ impl QvmDamageScopes {
                 let movement_provider = request.movement_provider.clone();
                 let ranges = armor_ranges.clone();
                 let memory = memory.clone();
+                let watch_ranges = ranges.clone();
+                let watch_memory = memory.clone();
                 let publish: QvmWatchCallback = Rc::new(move |event: &QvmCommittedWrite| {
                     let report = is_current();
                     let mut changes: Vec<(usize, StoredChange)> = Vec::new();
@@ -431,8 +433,8 @@ impl QvmDamageScopes {
                     }
                 });
                 let mut all = vec![health_range, velocity_range];
-                all.extend(ranges);
-                watches.push(memory.observe_writes(all, publish, None));
+                all.extend(watch_ranges);
+                watches.push(watch_memory.observe_writes(all, publish, None));
             }
 
             for reaction in [QvmDamageReaction::Pain, QvmDamageReaction::Death] {

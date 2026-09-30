@@ -336,7 +336,7 @@ pub enum DamageDelivery {
 }
 
 /// Damage request (mirror of `DamageRequest`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DamageRequest {
     /// Target actor.
     pub target: ActorId,
