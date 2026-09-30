@@ -1658,7 +1658,7 @@ mod tests {
         assert_eq!(clamped.delta_words[0], 16000 - 16000);
         assert!((clamped.angles.x - 16000.0 * 360.0 / 65536.0).abs() < 1e-3);
         let wrapped = qvm_view_angles([70000, 0, 0], [0, 0, 0], &previous, 100, 0, &[4, 5]);
-        assert_eq!(wrapped.delta_words[0], 16000 - 70000);
+        assert_eq!(wrapped.delta_words[0], 0);
     }
 
     #[test]

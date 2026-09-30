@@ -3213,7 +3213,7 @@ mod tests {
                 (O::OpConst, word(0)),
                 (O::OpLeave, word(8)),
             ],
-            256,
+            64,
             &[],
         );
         let mut vm = QvmInterpreter::new(

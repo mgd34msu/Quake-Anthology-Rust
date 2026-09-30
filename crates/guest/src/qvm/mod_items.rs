@@ -1593,12 +1593,6 @@ impl QvmModItems {
             let id = row.field("id")?.integer(1)? as u64;
             let item = row.field("item")?.nullable_namespaced()?;
             let status = row.field("status")?.status()?;
-            let mut entries = self.entries.borrow_mut();
-            let Some(entry) = entries.get_mut(&actor) else {
-                return Err(GuestError::invalid(
-                    "Saved QVM weapon request is not its current admitted owner",
-                ));
-            };
             if !self.current(&actor)
                 || id > self.next_request.get()
                 || !ids.insert(id)
@@ -1609,6 +1603,12 @@ impl QvmModItems {
                     "Saved QVM weapon request is not its current admitted owner",
                 ));
             }
+            let mut entries = self.entries.borrow_mut();
+            let Some(entry) = entries.get_mut(&actor) else {
+                return Err(GuestError::invalid(
+                    "Saved QVM weapon request is not its current admitted owner",
+                ));
+            };
             entry.request = Some(WeaponRequest {
                 id,
                 item,
