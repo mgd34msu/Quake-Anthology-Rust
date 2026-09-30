@@ -10,21 +10,27 @@
 
 use qa_core::binary::{BinaryError, BinaryReader};
 
+pub mod archive;
 pub mod bsp;
 pub mod bsp2;
 pub mod bsp3;
 pub mod common;
 pub mod composition;
 pub mod contract;
+pub mod hash;
+pub mod held_weapon;
 pub mod images;
+pub mod item_icon;
 pub mod lod;
 pub mod md2;
 pub mod md3;
 pub mod md4;
 pub mod md5;
 pub mod mdl;
+pub mod model_attachment;
 pub mod model_text;
 pub mod monsters;
+pub mod mounts;
 pub mod normals;
 pub mod paths;
 pub mod q3anim;
@@ -32,6 +38,7 @@ pub mod q3scene;
 pub mod quaternion;
 pub mod replacements;
 pub mod spr;
+pub mod user_data;
 pub mod value;
 pub mod wad;
 
