@@ -41,10 +41,18 @@ use std::rc::Rc;
 
 use qa_core::identity::ActorId;
 
+use self::combat::{create_rogue_combat_hooks, rogue_target_anger};
 use self::state::{MissionPackMonstersCheckpoint, RogueFlyerNext, RogueMonsterState};
-use self::types::{Q2MissionPackMonsterServices, Q2MissionPackMonsterWeapons};
-use crate::q2::foundation::host::Q2GameServices;
-use crate::q2::foundation::monsters::set_hint_paths;
+use self::types::{
+    Q2MissionPackMonsterServices, Q2MissionPackMonsterWeapons, Q2MonsterMissionPack,
+    mission_services,
+};
+use crate::q2::base::monsters::boss_common::with_boss_explosion_callbacks;
+use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
+use crate::q2::foundation::monsters::types::{Q2MonsterDefinition, SourceCombatMode};
+use crate::q2::foundation::monsters::{
+    register_monster, set_hint_paths, set_source_combat_rules,
+};
 
 /// Arena runtime state for this module.
 pub struct MissionMonsterRuntime {
@@ -116,4 +124,111 @@ pub fn restore_mission_pack_monsters(
         }
         hints::restore_rogue_hints(game, saved);
     }
+}
+
+/// Xatrix monster definitions (`q2XatrixMonsterDefinitions`).
+pub fn q2_xatrix_monster_definitions() -> Vec<Q2MonsterDefinition> {
+    let mut definitions = vec![
+        gekk::create_gekk_definition(),
+        fixbot::create_fixbot_definition(),
+        gladb::create_gladb_definition(),
+        with_boss_explosion_callbacks(boss5::boss5_definition()),
+        chick_heat::create_chick_heat_definition(),
+    ];
+    definitions.extend(soldierh::create_soldier_heavy_definitions());
+    definitions.extend(xatrix_variants::create_xatrix_base_variants());
+    definitions
+}
+
+/// Rogue monster definitions (`q2RogueMonsterDefinitions`).
+pub fn q2_rogue_monster_definitions() -> Vec<Q2MonsterDefinition> {
+    let mut definitions = vec![
+        stalker::create_stalker_definition(),
+        turret::create_rogue_turret_definition(),
+        carrier::create_carrier_definition(),
+        widow::create_widow_definition(),
+        widow2::create_widow2_definition(),
+        rogue_gunner::create_rogue_gunner_definition(),
+    ];
+    definitions.extend(rogue_flyer::create_rogue_flyer_definitions());
+    definitions.extend(rogue_hover::create_rogue_hover_definitions());
+    definitions.extend(medic::create_rogue_medic_definitions());
+    definitions.extend(rogue_variants::create_rogue_base_variants());
+    definitions.extend(rogue_arsenal::create_rogue_arsenal_monsters());
+    definitions.extend(rogue_jumpers::create_rogue_jumping_monsters());
+    definitions
+}
+
+/// Original mission-pack fallbacks (`q2OriginalMissionPackFallbacks`).
+pub const Q2_ORIGINAL_MISSION_PACK_FALLBACKS: [&str; 16] = [
+    "monster_gekk",
+    "monster_fixbot",
+    "monster_gladb",
+    "monster_boss5",
+    "monster_chick_heat",
+    "monster_soldier_ripper",
+    "monster_soldier_hypergun",
+    "monster_soldier_lasergun",
+    "monster_stalker",
+    "monster_kamikaze",
+    "monster_daedalus",
+    "monster_turret",
+    "monster_carrier",
+    "monster_medic_commander",
+    "monster_widow",
+    "monster_widow2",
+];
+
+/// Register mission-pack monsters (`registerQ2MissionPackMonsters`).
+///
+/// Returns the fallback classnames (`originalSourceFallbacks`). Spawn
+/// dispatch composes structurally: the hint-path module answers
+/// `hint_path` spawns and the monster registry answers the rest.
+pub fn register_q2_mission_pack_monsters(
+    game: &mut Q2GameServices,
+    pack: Q2MonsterMissionPack,
+    edition: Q2Edition,
+) -> Vec<String> {
+    let rogue = pack == Q2MonsterMissionPack::Rogue;
+    if rogue {
+        register_q2_rogue_hint_paths(game);
+    }
+    game.source_callbacks.register(&dabeam::monster_dabeam_callbacks());
+    let definitions = if rogue {
+        q2_rogue_monster_definitions()
+    } else {
+        q2_xatrix_monster_definitions()
+    };
+    let fallbacks: Vec<String> = definitions
+        .iter()
+        .filter(|definition| {
+            Q2_ORIGINAL_MISSION_PACK_FALLBACKS.contains(&definition.classname.as_str())
+        })
+        .map(|definition| definition.classname.clone())
+        .collect();
+    for definition in definitions {
+        if edition == Q2Edition::Classic {
+            register_monster(game, definition.clone(), Some(Q2Edition::Classic));
+        }
+        if Q2_ORIGINAL_MISSION_PACK_FALLBACKS.contains(&definition.classname.as_str()) {
+            register_monster(game, definition, None);
+        }
+    }
+    if rogue {
+        let services = mission_services(game);
+        let hooks = create_rogue_combat_hooks(services);
+        set_source_combat_rules(game, SourceCombatMode::Rogue, Some(Box::new(hooks)));
+    } else {
+        set_source_combat_rules(game, SourceCombatMode::Base, None);
+    }
+    fallbacks
+}
+
+/// Mission-pack target anger (`Q2MissionPackMonsters.targetAnger`).
+pub fn mission_pack_target_anger(
+    game: &mut Q2GameServices,
+    entity: &ActorId,
+    target: &ActorId,
+) {
+    rogue_target_anger(game, entity, target);
 }
