@@ -2530,7 +2530,8 @@ pub fn validate_qvm_mod_actor_frame(
             encoding: ModScalar::Int32
         })
     ) && clock.argument < QVM_MAX_PRIVATE_ARGUMENT_WORDS;
-    let address_ok = clock.address.is_multiple_of(4) && clock.address + 4 <= image.initialized_length + image.bss_length;
+    let address_ok =
+        clock.address.is_multiple_of(4) && clock.address + 4 <= image.initialized_length + image.bss_length;
     let store_ok = clock.store > entry && clock.store < end;
     let const_ok =
         address.is_some_and(|value| value.opcode == QvmOpcode::OpConst && value.operand == clock.address as i32);

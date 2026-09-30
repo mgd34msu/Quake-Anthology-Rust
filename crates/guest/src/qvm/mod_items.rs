@@ -388,8 +388,7 @@ pub enum QvmItemStoreError {
 }
 
 /// Publishes stored item changes.
-pub type QvmSourceItemStorePublish =
-    Rc<dyn Fn(&[QvmSourceItemStore]) -> Result<(), QvmItemStoreError>>;
+pub type QvmSourceItemStorePublish = Rc<dyn Fn(&[QvmSourceItemStore]) -> Result<(), QvmItemStoreError>>;
 /// Reads one inventory entry.
 pub type QvmInventoryEntryRead = Rc<dyn Fn(&str) -> Result<Option<InventoryEntry>, GuestError>>;
 /// Invokes an item action.

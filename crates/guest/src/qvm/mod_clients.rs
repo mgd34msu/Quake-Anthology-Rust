@@ -122,15 +122,10 @@ pub struct QvmAcceptedClientCommand {
 /// Opens an input application; returns its closer.
 pub type QvmClientInputOpen = Rc<dyn Fn(&ModClientApplication) -> Result<Box<dyn FnOnce()>, GuestError>>;
 /// Invokes a bound input call.
-pub type QvmClientInputInvoke =
-    Rc<dyn Fn(&QvmModSourceCall, &ModClientApplication) -> Result<(), GuestError>>;
+pub type QvmClientInputInvoke = Rc<dyn Fn(&QvmModSourceCall, &ModClientApplication) -> Result<(), GuestError>>;
 /// Runs bound input outputs around a call sequence.
 pub type QvmClientInputOutputRunner = Rc<
-    dyn Fn(
-        &[QvmModInputOutput],
-        &ModClientApplication,
-        &dyn Fn(),
-    ) -> Result<Vec<QvmModClientInputOutput>, GuestError>,
+    dyn Fn(&[QvmModInputOutput], &ModClientApplication, &dyn Fn()) -> Result<Vec<QvmModClientInputOutput>, GuestError>,
 >;
 /// Client-event listener.
 pub type QvmClientEventListener = Rc<dyn Fn(&QvmModClientEvent) -> Result<(), GuestError>>;

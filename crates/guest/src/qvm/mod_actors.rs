@@ -819,24 +819,20 @@ pub struct QvmDeathReaction {
 }
 
 /// Runs source damage for a request.
-pub type QvmSourceDamageRunner =
-    Rc<dyn Fn(&QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>>;
+pub type QvmSourceDamageRunner = Rc<dyn Fn(&QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>>;
 /// Validates or writes armor state.
 pub type QvmArmorStateWriter = Rc<dyn Fn(&QvmArmorState) -> Result<(), GuestError>>;
 /// Touch reaction.
 pub type QvmTouchReactionRunner = Rc<dyn Fn(&QvmTouchContact) -> Result<(), GuestError>>;
 /// Use reaction.
-pub type QvmUseReactionRunner =
-    Rc<dyn Fn(&OwnedActor, &ActorId, &ActorId) -> Result<(), GuestError>>;
+pub type QvmUseReactionRunner = Rc<dyn Fn(&OwnedActor, &ActorId, &ActorId) -> Result<(), GuestError>>;
 /// Pain reaction.
 pub type QvmPainReactionRunner = Rc<dyn Fn(&QvmPainReaction) -> Result<(), GuestError>>;
 /// Death reaction.
 pub type QvmDeathReactionRunner = Rc<dyn Fn(&QvmDeathReaction) -> Result<(), GuestError>>;
 /// Runs source damage under an observer.
-pub type QvmObservedDamageRunner<'a> = &'a dyn Fn(
-    Rc<dyn QvmDamageObserver>,
-    &QvmModDamageRequest,
-) -> Result<QvmDamageOutcome, GuestError>;
+pub type QvmObservedDamageRunner<'a> =
+    &'a dyn Fn(Rc<dyn QvmDamageObserver>, &QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>;
 /// Actor-release listener.
 pub type QvmActorReleaseListener = Rc<dyn Fn(&OwnedActor)>;
 
@@ -1760,9 +1756,7 @@ impl QvmModActors {
                 } else {
                     3
                 },
-                signbits: u8::from(normal.x < 0.0)
-                    | (u8::from(normal.y < 0.0) * 2)
-                    | (u8::from(normal.z < 0.0) * 4),
+                signbits: u8::from(normal.x < 0.0) | (u8::from(normal.y < 0.0) * 2) | (u8::from(normal.z < 0.0) * 4),
             },
             surface_flags: 0,
             contents: 0,

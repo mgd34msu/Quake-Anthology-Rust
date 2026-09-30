@@ -1710,9 +1710,7 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(None);
         };
         let entities = &declaration.storage.centities;
-        if centity < entities.address
-            || !(centity - entities.address).is_multiple_of(entities.stride)
-        {
+        if centity < entities.address || !(centity - entities.address).is_multiple_of(entities.stride) {
             return Ok(None);
         }
         let slot = (centity - entities.address) / entities.stride;
@@ -1854,9 +1852,7 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(());
         };
         let entities = &declaration.storage.centities;
-        if centity < entities.address
-            || !(centity - entities.address).is_multiple_of(entities.stride)
-        {
+        if centity < entities.address || !(centity - entities.address).is_multiple_of(entities.stride) {
             return Ok(());
         }
         let entity = super::mod_presentation_checkpoint::SourceEntityState::from_bytes(

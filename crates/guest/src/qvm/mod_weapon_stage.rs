@@ -17,9 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use super::game_data::{
-    QvmCancellationScope, QvmFunctionCall, QvmImage, QvmModule, QvmOpcode, QvmRegionEvaluation,
-};
+use super::game_data::{QvmCancellationScope, QvmFunctionCall, QvmImage, QvmModule, QvmOpcode, QvmRegionEvaluation};
 use super::mod_provider::{
     InputPointerKind, ModReturns, QvmModInputPointer, QvmModSourceCall, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
@@ -698,24 +696,18 @@ pub trait WeaponStageHost {
 }
 
 /// Resolves the source actor of a weapon call.
-pub type QvmWeaponActorResolver = Rc<
-    dyn Fn(
-        &super::item_storage::QvmWeaponActor,
-        &mut QvmFunctionCall,
-    ) -> Result<Option<ActorId>, GuestError>,
->;
+pub type QvmWeaponActorResolver =
+    Rc<dyn Fn(&super::item_storage::QvmWeaponActor, &mut QvmFunctionCall) -> Result<Option<ActorId>, GuestError>>;
 /// Resolves a record pointer for an actor.
 pub type QvmWeaponPointerResolver = Rc<dyn Fn(&ActorId, &str) -> Result<usize, GuestError>>;
 /// Cancellation scope of a weapon call.
-pub type QvmWeaponCancellationResolver =
-    Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> QvmCancellationScope>;
+pub type QvmWeaponCancellationResolver = Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> QvmCancellationScope>;
 /// Notes a weapon request transition.
 pub type QvmWeaponRequestNote = Rc<dyn Fn(&ActorId, i32)>;
 /// Notes a completed weapon dispatch.
 pub type QvmWeaponCompletionNote = Rc<dyn Fn(&ActorId, bool)>;
 /// Optional weapon-dispatch prepare hook.
-pub type QvmWeaponPrepareHook =
-    Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> Option<Box<dyn FnOnce()>>>;
+pub type QvmWeaponPrepareHook = Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> Option<Box<dyn FnOnce()>>>;
 
 /// Donor dispatcher operations (mirror of `QvmWeaponDispatcherOperations`).
 ///
