@@ -207,10 +207,7 @@ mod tests {
         };
         assert_eq!(evaluate_trajectory(&head_stop, 50), vec3(0.5, 0.0, 0.0));
         assert_eq!(evaluate_trajectory(&head_stop, 5000), vec3(1.0, 0.0, 0.0));
-        assert_eq!(
-            evaluate_trajectory_delta(&head_stop, 5000),
-            vec3(0.0, 0.0, 0.0)
-        );
+        assert_eq!(evaluate_trajectory_delta(&head_stop, 5000), vec3(0.0, 0.0, 0.0));
         let stationary = Trajectory::zero(TrajectoryType::TrStationary);
         assert_eq!(evaluate_trajectory(&stationary, 1234), vec3(0.0, 0.0, 0.0));
     }
