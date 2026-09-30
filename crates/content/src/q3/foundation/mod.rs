@@ -8,7 +8,6 @@ pub mod character;
 pub mod events;
 pub mod held_weapons;
 pub mod index;
-pub mod mirrors;
 pub mod movement_hooks;
 pub mod player_pose;
 pub mod presentation;
