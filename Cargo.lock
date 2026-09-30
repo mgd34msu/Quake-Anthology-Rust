@@ -166,7 +166,9 @@ name = "qa-tools"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "qa-bots",
  "qa-client",
+ "qa-content",
  "qa-core",
  "thiserror",
 ]

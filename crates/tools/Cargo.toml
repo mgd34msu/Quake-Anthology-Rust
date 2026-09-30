@@ -7,5 +7,7 @@ license.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 flate2 = { workspace = true }
-qa-core = { workspace = true }
+qa-bots = { workspace = true }
 qa-client = { workspace = true }
+qa-content = { workspace = true }
+qa-core = { workspace = true }

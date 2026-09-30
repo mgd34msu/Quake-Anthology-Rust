@@ -13,6 +13,7 @@ pub mod fsutil;
 pub mod inventory;
 pub mod js;
 pub mod json;
+pub mod navigation;
 pub mod process;
 pub mod reference;
 pub mod sha256;
