@@ -58,7 +58,7 @@ impl MergedFeature {
     }
 }
 
-fn git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, ToolsError> {
+pub(crate) fn git_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, ToolsError> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)

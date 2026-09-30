@@ -132,6 +132,12 @@ impl<'a> Tokenizer<'a> {
                 Some(ch) => ch,
                 None => break,
             };
+            if self.pos == 0 && ch == '#' && self.bytes.get(1) == Some(&b'!') {
+                while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
+                    self.pos += 1;
+                }
+                continue;
+            }
             if ch.is_whitespace() {
                 self.pos += ch.len_utf8();
                 continue;
@@ -1036,41 +1042,38 @@ impl<'a> Walker<'a> {
         let Some(close) = self.match_angle(self.pos) else {
             return;
         };
-        let mut index = self.pos + 1;
-        while index < close {
-            let token = self.tokens[index];
-            if token.kind == TokKind::Ident && matches!(self.text(token), "const" | "in" | "out") {
-                index += 1;
+        self.bump();
+        while !self.at_eof() && self.pos < close {
+            if self.at_punct(0, ",") {
+                self.bump();
                 continue;
             }
-            if token.kind == TokKind::Ident {
-                let name = self.text(token).to_owned();
-                self.record("TypeParameterDeclaration", name, token.start, token.end, None, None, None, &[]);
-                index += 1;
-                if index < close && matches!(self.text(self.tokens[index]), "extends" | "=") {
-                    index += 1;
-                    let mut depth = 0i32;
-                    while index < close {
-                        let text = self.text(self.tokens[index]);
-                        if matches!(text, "(" | "[" | "{") {
-                            depth += 1;
-                        } else if matches!(text, ")" | "]" | "}") {
-                            depth -= 1;
-                        } else if depth == 0 && text == "," {
-                            break;
-                        }
-                        index += 1;
-                    }
-                }
-            } else if self.text(token) == "," {
-                index += 1;
-            } else if matches!(self.text(token), "(" | "[" | "{") {
-                index = self.match_paren(index).map_or(close, |found| found + 1);
-            } else {
-                index += 1;
+            let param_start = self.peek().map(|token| token.start).unwrap_or(self.source.len());
+            while self.peek().is_some_and(|token| token.kind == TokKind::Ident)
+                && matches!(self.text(self.peek().expect("modifier peek")), "const" | "in" | "out")
+                && self.peek_at(1).is_some_and(|token| token.kind == TokKind::Ident)
+            {
+                self.bump();
             }
+            let Some(name_token) = self.peek() else { break };
+            if name_token.kind != TokKind::Ident {
+                self.bump();
+                continue;
+            }
+            let name = self.text(name_token).to_owned();
+            self.bump();
+            if self.at_ident(0, "extends") {
+                self.bump();
+                self.parse_type(None);
+            }
+            if self.at_punct(0, "=") {
+                self.bump();
+                self.parse_type(None);
+            }
+            let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(name_token.end, |token| token.end);
+            self.record("TypeParameter", name, param_start, end.max(param_start), None, None, None, &[]);
         }
-        self.pos = close + 1;
+        self.pos = self.pos.max(close + 1);
     }
 
     fn skip_type_args(&mut self) {
@@ -1081,7 +1084,7 @@ impl<'a> Walker<'a> {
             let saved = self.pos;
             self.pos += 1;
             while self.pos < close {
-                if !self.parse_type_inner() {
+                if !self.parse_type_inner(None) {
                     self.pos += 1;
                 }
             }
@@ -1112,13 +1115,13 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn parse_type(&mut self) {
+    fn parse_type(&mut self, context: Option<String>) {
         self.guarded((), |walker| {
-            walker.parse_type_inner();
+            walker.parse_type_inner(context);
         });
     }
 
-    fn parse_type_inner(&mut self) -> bool {
+    fn parse_type_inner(&mut self, mut context: Option<String>) -> bool {
         let mut consumed = false;
         let mut expect_operand = true;
         let mut extends_seen = false;
@@ -1139,19 +1142,23 @@ impl<'a> Walker<'a> {
                                 let start = self.pos;
                                 let save_decls = self.decls.len();
                                 let save_diags = self.diagnostics.len();
+                                let inline_name = context.take().unwrap_or_else(|| "anonymous".to_owned());
+                                self.frames.push(Frame { kind: "FunctionType", name: inline_name.clone(), exports: Vec::new() });
                                 self.parse_parameters("function-type");
                                 if self.diagnostics.len() == save_diags && self.at_punct(0, "=>") {
                                     self.bump();
-                                    self.parse_type();
+                                    self.parse_type(None);
                                     let start_offset = self.tokens[start].start;
                                     let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(start_offset, |token| token.end);
-                                    self.record("FunctionType", "anonymous".to_owned(), start_offset, end.max(start_offset), None, None, None, &[]);
+                                    self.frames.pop();
+                                    self.record("FunctionType", inline_name, start_offset, end.max(start_offset), None, None, None, &[]);
                                 } else {
+                                    self.frames.pop();
                                     self.pos = start;
                                     self.decls.truncate(save_decls);
                                     self.diagnostics.truncate(save_diags);
                                     self.bump();
-                                    self.parse_type();
+                                    self.parse_type(None);
                                     if self.at_punct(0, ")") {
                                         self.bump();
                                     } else {
@@ -1160,7 +1167,7 @@ impl<'a> Walker<'a> {
                                 }
                             } else {
                                 self.bump();
-                                self.parse_type();
+                                self.parse_type(None);
                                 if self.at_punct(0, ")") {
                                     self.bump();
                                 } else {
@@ -1193,7 +1200,7 @@ impl<'a> Walker<'a> {
                             continue;
                         }
                         if text == "new" && self.at_punct(1, "(") {
-                            self.parse_function_type(true);
+                            self.parse_function_type(true, context.take());
                         } else if text == "infer" {
                             self.bump();
                             if matches!(self.peek(), Some(next) if next.kind == TokKind::Ident) {
@@ -1332,7 +1339,10 @@ impl<'a> Walker<'a> {
                 }
                 self.bump();
             }
-            self.parse_type();
+            self.parse_type(None);
+            if self.at_punct(0, "?") {
+                self.bump();
+            }
             if self.at_punct(0, ",") {
                 self.bump();
             } else {
@@ -1381,27 +1391,22 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn parse_function_type(&mut self, constructor: bool) {
+    fn parse_function_type(&mut self, constructor: bool, context: Option<String>) {
         let start_token = self.peek().map(|token| token.start).unwrap_or(self.source.len());
+        let kind = if constructor { "ConstructorType" } else { "FunctionType" };
+        let name = context.unwrap_or_else(|| "anonymous".to_owned());
         if constructor {
             self.bump();
         }
+        self.frames.push(Frame { kind, name: name.clone(), exports: Vec::new() });
         self.parse_parameters("FunctionType");
         if self.at_punct(0, "=>") {
             self.bump();
-            self.parse_type();
+            self.parse_type(None);
         }
         let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(start_token, |token| token.end);
-        self.record(
-            if constructor { "ConstructorType" } else { "FunctionType" },
-            "anonymous".to_owned(),
-            start_token,
-            end,
-            None,
-            None,
-            None,
-            &[],
-        );
+        self.frames.pop();
+        self.record(kind, name, start_token, end, None, None, None, &[]);
     }
 
     fn parse_type_literal(&mut self) {
@@ -1432,6 +1437,7 @@ impl<'a> Walker<'a> {
                 self.bump();
                 continue;
             }
+            let param_start = self.peek().map(|token| token.start).unwrap_or(self.source.len());
             while self.peek().is_some_and(|token| {
                 token.kind == TokKind::Ident
                     && matches!(self.text(token), "public" | "private" | "protected" | "readonly" | "override")
@@ -1451,7 +1457,7 @@ impl<'a> Walker<'a> {
                 self.parse_binding_pattern();
                 if self.at_punct(0, ":") {
                     self.bump();
-                    self.parse_type();
+                    self.parse_type(None);
                 }
                 let mut initializer_start = None;
                 if self.at_punct(0, "=") {
@@ -1461,7 +1467,7 @@ impl<'a> Walker<'a> {
                     // here has the parameter as its parent, so it stays anonymous.
                     self.scan_expression(Some("anonymous".to_owned()));
                 }
-                self.record("Parameter", name, pattern_start, self.tokens.get(self.pos.saturating_sub(1)).map_or(pattern_end, |token| token.end), None, None, initializer_start, &[]);
+                self.record("Parameter", name, param_start, self.tokens.get(self.pos.saturating_sub(1)).map_or(pattern_end, |token| token.end), None, None, initializer_start, &[]);
             } else if name_token.kind == TokKind::Ident {
                 let name = self.text(name_token).to_owned();
                 let start = name_token.start;
@@ -1471,7 +1477,7 @@ impl<'a> Walker<'a> {
                 }
                 if self.at_punct(0, ":") {
                     self.bump();
-                    self.parse_type();
+                    self.parse_type(None);
                 }
                 let mut initializer_start = None;
                 if self.at_punct(0, "=") {
@@ -1482,7 +1488,7 @@ impl<'a> Walker<'a> {
                     self.scan_expression(Some("anonymous".to_owned()));
                 }
                 let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(start, |token| token.end);
-                self.record("Parameter", name, start, end.max(start), None, None, initializer_start, &[]);
+                self.record("Parameter", name, param_start, end.max(param_start), None, None, initializer_start, &[]);
             } else {
                 self.error_here("Unexpected parameter");
                 self.recover();
@@ -1507,23 +1513,31 @@ impl<'a> Walker<'a> {
                     continue;
                 }
                 if walker.at_punct(0, "...") {
+                    let dots = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
                     walker.bump();
                     if matches!(walker.peek(), Some(next) if next.kind == TokKind::Ident) {
                         let token = walker.bump().expect("binding rest");
                         let name = walker.text(token).to_owned();
-                        walker.record("BindingElement", name, token.start, token.end, None, None, None, &[]);
+                        walker.record("BindingElement", name, dots, token.end, None, None, None, &[]);
                     }
                     continue;
                 }
                 let Some(token) = walker.peek() else { break };
                 if token.kind == TokKind::Punct && (walker.text(token) == "{" || walker.text(token) == "[") {
+                    let pattern_start = token.start;
                     walker.parse_binding_pattern();
+                    let pattern_end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(pattern_start, |token| token.end);
+                    let pattern_name = walker.source[pattern_start..pattern_end.min(walker.source.len())].to_owned();
+                    let mut nested_init = None;
                     if walker.at_punct(0, "=") {
                         walker.bump();
+                        nested_init = walker.peek().map(|token| token.start);
                         // A binding default is not an assignment: a function directly
                         // here has the binding element as its parent, so it stays anonymous.
                         walker.scan_expression(Some("anonymous".to_owned()));
                     }
+                    let nested_end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(pattern_end, |token| token.end);
+                    walker.record("BindingElement", pattern_name, pattern_start, nested_end.max(pattern_start), None, None, nested_init, &[]);
                     continue;
                 }
                 if token.kind != TokKind::Ident && token.kind != TokKind::Str && token.kind != TokKind::Number {
@@ -1539,7 +1553,10 @@ impl<'a> Walker<'a> {
                     walker.bump();
                     match walker.peek() {
                         Some(next) if walker.text(next) == "{" || walker.text(next) == "[" => {
+                            let nested_start = next.start;
                             walker.parse_binding_pattern();
+                            let nested_end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(nested_start, |token| token.end);
+                            name = walker.source[nested_start..nested_end.min(walker.source.len())].to_owned();
                         }
                         Some(next) if next.kind == TokKind::Ident => {
                             name = walker.text(next).to_owned();
@@ -1601,27 +1618,24 @@ impl<'a> Walker<'a> {
                 let token = walker.bump().expect("function name");
                 name = Some(walker.text(token).to_owned());
             }
+            let kind = if declaration { "FunctionDeclaration" } else { "FunctionExpression" };
+            let name = name.unwrap_or_else(|| "anonymous".to_owned());
+            walker.frames.push(Frame { kind, name: name.clone(), exports: own_exports.to_vec() });
             walker.skip_type_params_decl();
             if walker.at_punct(0, "(") {
                 walker.parse_parameters("function");
             } else {
                 walker.error_here("Expected a parameter list");
                 walker.recover();
+                walker.frames.pop();
                 return;
             }
             if walker.at_punct(0, ":") {
                 walker.bump();
-                walker.parse_type();
+                walker.parse_type(None);
             }
-            let kind = if declaration { "FunctionDeclaration" } else { "FunctionExpression" };
-            let name = name.unwrap_or_else(|| "anonymous".to_owned());
             if walker.at_punct(0, "{") {
                 let open = walker.bump().expect("function body");
-                walker.frames.push(Frame {
-                    kind,
-                    name: name.clone(),
-                    exports: own_exports.to_vec(),
-                });
                 walker.guarded((), |inner| {
                     while !inner.at_eof() && !inner.at_punct(0, "}") {
                         inner.parse_statement();
@@ -1642,6 +1656,7 @@ impl<'a> Walker<'a> {
                     walker.bump();
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
+                walker.frames.pop();
                 walker.record(kind, name, start, end.max(start), None, None, None, own_exports);
             }
         });
@@ -1698,16 +1713,15 @@ impl<'a> Walker<'a> {
         self.equals_name_before(index)
     }
 
-    fn parse_arrow_at(&mut self, arrow: usize, context: Option<String>, start: usize) {
+    fn parse_arrow_at(&mut self, arrow: usize, context: Option<String>, start: usize, with_params: bool) {
         self.guarded((), |walker| {
+            let name = context.unwrap_or_else(|| "anonymous".to_owned());
+            walker.frames.push(Frame { kind: "ArrowFunction", name: name.clone(), exports: Vec::new() });
+            if with_params {
+                walker.parse_arrow_params(arrow);
+            }
             walker.pos = arrow + 1;
             let body_start_token = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
-            let name = context.unwrap_or_else(|| "anonymous".to_owned());
-            walker.frames.push(Frame {
-                kind: "ArrowFunction",
-                name: name.clone(),
-                exports: Vec::new(),
-            });
             let (body, end) = if walker.at_punct(0, "{") {
                 let open = walker.bump().expect("arrow block");
                 walker.guarded((), |inner| {
@@ -1745,6 +1759,9 @@ impl<'a> Walker<'a> {
                 let token = walker.bump().expect("class name");
                 name = Some(walker.text(token).to_owned());
             }
+            let early_kind = if declaration { "ClassDeclaration" } else { "ClassExpression" };
+            let early_name = name.clone().unwrap_or_else(|| "anonymous".to_owned());
+            walker.frames.push(Frame { kind: early_kind, name: early_name, exports: own_exports.to_vec() });
             walker.skip_type_params_decl();
             if walker.at_ident(0, "extends") {
                 walker.bump();
@@ -1762,7 +1779,7 @@ impl<'a> Walker<'a> {
             if walker.at_ident(0, "implements") {
                 walker.bump();
                 loop {
-                    walker.parse_type();
+                    walker.parse_type(None);
                     if walker.at_punct(0, ",") {
                         walker.bump();
                     } else {
@@ -1774,16 +1791,12 @@ impl<'a> Walker<'a> {
             let name = name.unwrap_or_else(|| "anonymous".to_owned());
             if !walker.at_punct(0, "{") {
                 walker.error_here("Expected a class body");
+                walker.frames.pop();
                 walker.record(kind, name, start, start, None, None, None, own_exports);
                 return;
             }
             let open = walker.bump().expect("class open");
             let members_pos = Some(open.end);
-            walker.frames.push(Frame {
-                kind,
-                name: name.clone(),
-                exports: own_exports.to_vec(),
-            });
             let frame_index = walker.decls.len();
             walker.guarded((), |inner| {
                 while !inner.at_eof() && !inner.at_punct(0, "}") {
@@ -1847,25 +1860,22 @@ impl<'a> Walker<'a> {
         in_class: bool,
     ) {
         self.guarded((), |walker| {
+            walker.frames.push(Frame { kind, name: name.clone(), exports: Vec::new() });
             walker.skip_type_params_decl();
             if walker.at_punct(0, "(") {
                 walker.parse_parameters("method");
             } else {
                 walker.error_here("Expected a parameter list");
                 walker.recover();
+                walker.frames.pop();
                 return;
             }
             if walker.at_punct(0, ":") {
                 walker.bump();
-                walker.parse_type();
+                walker.parse_type(None);
             }
             if walker.at_punct(0, "{") {
                 let open = walker.bump().expect("method body");
-                walker.frames.push(Frame {
-                    kind,
-                    name: name.clone(),
-                    exports: Vec::new(),
-                });
                 walker.guarded((), |inner| {
                     while !inner.at_eof() && !inner.at_punct(0, "}") {
                         inner.parse_statement();
@@ -1886,6 +1896,7 @@ impl<'a> Walker<'a> {
                     walker.bump();
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
+                walker.frames.pop();
                 walker.record(kind, name, start, end.max(start), None, None, None, &[]);
             }
             let _ = in_class;
@@ -1918,6 +1929,10 @@ impl<'a> Walker<'a> {
                     walker.bump();
                     walker.parse_block_body();
                     return;
+                }
+                if walker.at_ident(0, "async") && walker.at_punct(1, "*") {
+                    walker.bump();
+                    break;
                 }
                 if walker.at_ident(0, "async")
                     && !matches!(walker.peek_text(1), Some("(") | Some("<"))
@@ -2001,7 +2016,7 @@ impl<'a> Walker<'a> {
             }
             if walker.at_punct(0, ":") {
                 walker.bump();
-                walker.parse_type();
+                walker.parse_type(Some(name.clone()));
             }
             let mut initializer_start = None;
             if walker.at_punct(0, "=") {
@@ -2058,11 +2073,12 @@ impl<'a> Walker<'a> {
                 let token = walker.bump().expect("interface name");
                 name = walker.text(token).to_owned();
             }
+            walker.frames.push(Frame { kind: "InterfaceDeclaration", name: name.clone(), exports: own_exports.to_vec() });
             walker.skip_type_params_decl();
             if walker.at_ident(0, "extends") {
                 walker.bump();
                 loop {
-                    walker.parse_type();
+                    walker.parse_type(None);
                     if walker.at_punct(0, ",") {
                         walker.bump();
                     } else {
@@ -2072,16 +2088,12 @@ impl<'a> Walker<'a> {
             }
             if !walker.at_punct(0, "{") {
                 walker.error_here("Expected an interface body");
+                walker.frames.pop();
                 walker.record("InterfaceDeclaration", name, start, start, None, None, None, own_exports);
                 return;
             }
             let open = walker.bump().expect("interface open");
             let members_pos = Some(open.end);
-            walker.frames.push(Frame {
-                kind: "InterfaceDeclaration",
-                name: name.clone(),
-                exports: own_exports.to_vec(),
-            });
             let frame_index = walker.decls.len();
             walker.guarded((), |inner| {
                 while !inner.at_eof() && !inner.at_punct(0, "}") {
@@ -2138,29 +2150,33 @@ impl<'a> Walker<'a> {
                 }
             }
             if walker.at_punct(0, "(") {
+                walker.frames.push(Frame { kind: "CallSignature", name: "call".to_owned(), exports: Vec::new() });
                 walker.parse_parameters("signature");
                 if walker.at_punct(0, ":") {
                     walker.bump();
-                    walker.parse_type();
+                    walker.parse_type(None);
                 }
                 if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
                     walker.bump();
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
+                walker.frames.pop();
                 walker.record("CallSignature", "call".to_owned(), start, end.max(start), None, None, None, &[]);
                 return;
             }
             if walker.at_ident(0, "new") && walker.at_punct(1, "(") {
                 walker.bump();
+                walker.frames.push(Frame { kind: "ConstructSignature", name: "constructor".to_owned(), exports: Vec::new() });
                 walker.parse_parameters("signature");
                 if walker.at_punct(0, ":") {
                     walker.bump();
-                    walker.parse_type();
+                    walker.parse_type(None);
                 }
                 if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
                     walker.bump();
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
+                walker.frames.pop();
                 walker.record("ConstructSignature", "constructor".to_owned(), start, end.max(start), None, None, None, &[]);
                 return;
             }
@@ -2176,38 +2192,66 @@ impl<'a> Walker<'a> {
                 if nameish && followed.is_some_and(|token| token.kind == TokKind::Punct && walker.text(token) == "(") {
                     walker.bump();
                     let (name, _) = walker.member_name().expect("accessor name");
+                    let accessor_kind = if is_get { "GetAccessor" } else { "SetAccessor" };
+                    walker.frames.push(Frame { kind: accessor_kind, name: name.clone(), exports: Vec::new() });
                     walker.skip_type_params_decl();
                     walker.parse_parameters("accessor");
                     if walker.at_punct(0, ":") {
                         walker.bump();
-                        walker.parse_type();
+                        walker.parse_type(None);
                     }
                     if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
                         walker.bump();
                     }
                     let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
+                    walker.frames.pop();
                     walker.record(if is_get { "GetAccessor" } else { "SetAccessor" }, name, start, end.max(start), None, None, None, &[]);
                     return;
                 }
             }
             if walker.at_punct(0, "[") {
-                while !walker.at_eof() && !walker.at_punct(0, ";") && !walker.at_punct(0, ",") && !walker.at_punct(0, "}") {
-                    if walker.at_punct(0, "(") || walker.at_punct(0, "[") || walker.at_punct(0, "{") {
-                        walker.skip_balanced();
-                    } else if walker.at_punct(0, "<") {
-                        if let Some(close) = walker.match_angle(walker.pos) {
-                            walker.pos = close + 1;
-                        } else {
-                            walker.bump();
-                        }
-                    } else {
+                let named = walker.peek_at(1).is_some_and(|token| token.kind == TokKind::Ident);
+                let is_index = named && walker.peek_text(2) == Some(":");
+                let is_mapped = named && walker.peek_text(2) == Some("in");
+                if is_index || is_mapped {
+                    walker.bump();
+                    let name_token = walker.bump().expect("index name");
+                    let name = walker.text(name_token).to_owned();
+                    walker.bump();
+                    walker.parse_type(None);
+                    let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(name_token.end, |token| token.end);
+                    if is_mapped && walker.at_ident(0, "as") {
+                        walker.bump();
+                        walker.parse_type(None);
+                    }
+                    if walker.at_punct(0, "]") {
                         walker.bump();
                     }
+                    if !is_mapped && walker.at_punct(0, ":") {
+                        walker.bump();
+                        walker.parse_type(None);
+                    }
+                    if is_mapped && (walker.at_punct(0, "-") || walker.at_punct(0, "+")) && walker.at_punct(1, "?") {
+                        walker.bump();
+                        walker.bump();
+                    }
+                    if is_mapped && walker.at_punct(0, "?") {
+                        walker.bump();
+                    }
+                    if is_mapped && walker.at_punct(0, ":") {
+                        walker.bump();
+                        walker.parse_type(None);
+                    }
+                    if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
+                        walker.bump();
+                    }
+                    if is_mapped {
+                        walker.record("TypeParameter", name, name_token.start, end.max(name_token.start), None, None, None, &[]);
+                    } else {
+                        walker.record("Parameter", name, name_token.start, end.max(name_token.start), None, None, None, &[]);
+                    }
+                    return;
                 }
-                if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
-                    walker.bump();
-                }
-                return;
             }
             let Some((name, _)) = walker.member_name() else {
                 walker.error_here("Unexpected interface member");
@@ -2220,36 +2264,40 @@ impl<'a> Walker<'a> {
             if walker.at_punct(0, "<") {
                 let close = walker.match_angle(walker.pos);
                 if close.is_some_and(|found| walker.tokens.get(found + 1).is_some_and(|token| walker.text(*token) == "(")) {
+                    walker.frames.push(Frame { kind: "MethodSignature", name: name.clone(), exports: Vec::new() });
                     walker.skip_type_params_decl();
                     walker.parse_parameters("method");
                     if walker.at_punct(0, ":") {
                         walker.bump();
-                        walker.parse_type();
+                        walker.parse_type(None);
                     }
                     if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
                         walker.bump();
                     }
                     let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
-                    walker.record("MethodSignature", name, start, end.max(start), None, None, None, &[]);
+                    walker.frames.pop();
+                walker.record("MethodSignature", name, start, end.max(start), None, None, None, &[]);
                     return;
                 }
             }
             if walker.at_punct(0, "(") {
+                walker.frames.push(Frame { kind: "MethodSignature", name: name.clone(), exports: Vec::new() });
                 walker.parse_parameters("method");
                 if walker.at_punct(0, ":") {
                     walker.bump();
-                    walker.parse_type();
+                    walker.parse_type(None);
                 }
                 if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
                     walker.bump();
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
+                walker.frames.pop();
                 walker.record("MethodSignature", name, start, end.max(start), None, None, None, &[]);
                 return;
             }
             if walker.at_punct(0, ":") {
                 walker.bump();
-                walker.parse_type();
+                walker.parse_type(None);
             }
             if walker.at_punct(0, ";") || walker.at_punct(0, ",") {
                 walker.bump();
@@ -2301,10 +2349,10 @@ impl<'a> Walker<'a> {
                         // directly here stays anonymous.
                         inner.scan_expression(Some("anonymous".to_owned()));
                     }
+                    let end = inner.tokens.get(inner.pos.saturating_sub(1)).map_or(member_start, |token| token.end);
                     if inner.at_punct(0, ",") || inner.at_punct(0, ";") {
                         inner.bump();
                     }
-                    let end = inner.tokens.get(inner.pos.saturating_sub(1)).map_or(member_start, |token| token.end);
                     inner.record("EnumMember", name, member_start, end.max(member_start), None, None, initializer_start, &[]);
                 }
             });
@@ -2342,13 +2390,15 @@ impl<'a> Walker<'a> {
                 let token = walker.bump().expect("alias name");
                 name = walker.text(token).to_owned();
             }
+            walker.frames.push(Frame { kind: "TypeAliasDeclaration", name: name.clone(), exports: own_exports.to_vec() });
             walker.skip_type_params_decl();
             if walker.at_punct(0, "=") {
                 walker.bump();
-                walker.parse_type();
+                walker.parse_type(Some(name.clone()));
             } else {
                 walker.error_here("Expected = in a type alias");
             }
+            walker.frames.pop();
             if walker.at_punct(0, ";") {
                 walker.bump();
             }
@@ -2402,6 +2452,7 @@ impl<'a> Walker<'a> {
                 walker.error_here("Unbalanced module body");
             }
             let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(open.end, |token| token.end);
+            let module_body = Some((open.start, end));
             walker.frames.pop();
             let enclosing = walker.enclosing();
             let exports = walker.exports(own_exports);
@@ -2412,7 +2463,7 @@ impl<'a> Walker<'a> {
                     name,
                     start,
                     end: end.max(start),
-                    body: None,
+                    body: module_body,
                     members_pos: Some(open.end),
                     initializer_start: None,
                     enclosing,
@@ -2423,6 +2474,10 @@ impl<'a> Walker<'a> {
     }
 
     fn parse_variable_declarators(&mut self, own_exports: &[String]) {
+        let statement_frame = !own_exports.is_empty();
+        if statement_frame {
+            self.frames.push(Frame { kind: "VariableStatement", name: String::new(), exports: own_exports.to_vec() });
+        }
         loop {
             let Some(token) = self.peek() else { break };
             if token.kind == TokKind::Punct && (self.text(token) == "{" || self.text(token) == "[") {
@@ -2432,7 +2487,7 @@ impl<'a> Walker<'a> {
                 self.parse_binding_pattern();
                 if self.at_punct(0, ":") {
                     self.bump();
-                    self.parse_type();
+                    self.parse_type(Some(name.clone()));
                 }
                 let mut initializer_start = None;
                 if self.at_punct(0, "=") {
@@ -2441,7 +2496,7 @@ impl<'a> Walker<'a> {
                     self.scan_expression(Some(name.clone()));
                 }
                 let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(pattern_start, |token| token.end);
-                self.record("VariableDeclaration", name, pattern_start, end.max(pattern_start), None, None, initializer_start, own_exports);
+                self.record("VariableDeclaration", name, pattern_start, end.max(pattern_start), None, None, initializer_start, &[]);
             } else if token.kind == TokKind::Ident {
                 let name = self.text(token).to_owned();
                 let start = token.start;
@@ -2451,7 +2506,7 @@ impl<'a> Walker<'a> {
                 }
                 if self.at_punct(0, ":") {
                     self.bump();
-                    self.parse_type();
+                    self.parse_type(Some(name.clone()));
                 }
                 let mut initializer_start = None;
                 if self.at_punct(0, "=") {
@@ -2460,7 +2515,7 @@ impl<'a> Walker<'a> {
                     self.scan_expression(Some(name.clone()));
                 }
                 let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(start, |token| token.end);
-                self.record("VariableDeclaration", name, start, end.max(start), None, None, initializer_start, own_exports);
+                self.record("VariableDeclaration", name, start, end.max(start), None, None, initializer_start, &[]);
             } else {
                 break;
             }
@@ -2469,6 +2524,9 @@ impl<'a> Walker<'a> {
             } else {
                 break;
             }
+        }
+        if statement_frame {
+            self.frames.pop();
         }
     }
 
@@ -2483,6 +2541,7 @@ impl<'a> Walker<'a> {
                 }
                 return;
             }
+            let clause_start = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
             if walker.at_ident(0, "type") {
                 walker.bump();
                 if matches!(walker.peek(), Some(token) if token.kind == TokKind::Str) {
@@ -2498,7 +2557,6 @@ impl<'a> Walker<'a> {
                 walker.skip_balanced();
                 return;
             }
-            let clause_start = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
             let mut default_name: Option<String> = None;
             if matches!(walker.peek(), Some(token) if token.kind == TokKind::Ident) {
                 let token = walker.bump().expect("default import");
@@ -2507,6 +2565,7 @@ impl<'a> Walker<'a> {
             if default_name.is_some() && walker.at_punct(0, ",") {
                 walker.bump();
             }
+            let mut pending_namespace: Option<(String, usize, usize)> = None;
             if walker.at_punct(0, "{") {
                 walker.bump();
                 while !walker.at_eof() && !walker.at_punct(0, "}") {
@@ -2514,10 +2573,10 @@ impl<'a> Walker<'a> {
                         walker.bump();
                         continue;
                     }
+                    let spec_start = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
                     if walker.at_ident(0, "type") {
                         walker.bump();
                     }
-                    let spec_start = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
                     if !matches!(walker.peek(), Some(token) if token.kind == TokKind::Ident || token.kind == TokKind::Str) {
                         walker.error_here("Unexpected import specifier");
                         walker.recover();
@@ -2550,7 +2609,7 @@ impl<'a> Walker<'a> {
                     name = walker.text(token).to_owned();
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(star.start, |token| token.end);
-                walker.record("NamespaceImport", name, star.start, end.max(star.start), None, None, None, &[]);
+                pending_namespace = Some((name, star.start, end.max(star.start)));
             }
             let clause_end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(clause_start, |token| token.end);
             walker.record(
@@ -2563,6 +2622,9 @@ impl<'a> Walker<'a> {
                 None,
                 &[],
             );
+            if let Some((name, start, end)) = pending_namespace {
+                walker.record("NamespaceImport", name, start, end, None, None, None, &[]);
+            }
             if walker.at_ident(0, "from") {
                 walker.bump();
                 if matches!(walker.peek(), Some(token) if token.kind == TokKind::Str) {
@@ -2609,10 +2671,10 @@ impl<'a> Walker<'a> {
                         walker.bump();
                         continue;
                     }
+                    let spec_start = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
                     if walker.at_ident(0, "type") {
                         walker.bump();
                     }
-                    let spec_start = walker.peek().map(|token| token.start).unwrap_or(walker.source.len());
                     if !matches!(walker.peek(), Some(token) if token.kind == TokKind::Ident || token.kind == TokKind::Str) {
                         walker.error_here("Unexpected export specifier");
                         walker.recover();
@@ -2716,7 +2778,9 @@ impl<'a> Walker<'a> {
             self.parse_type_alias(start, own_exports);
         } else if matches!(self.peek_text(0), Some("namespace") | Some("module")) {
             self.parse_module(start, own_exports);
-        } else if matches!(self.peek_text(0), Some("const") | Some("let") | Some("var")) {
+        } else if matches!(self.peek_text(0), Some("const") | Some("let") | Some("var"))
+            || (self.at_ident(0, "using") && self.using_name_ahead(1))
+        {
             self.bump();
             self.parse_variable_declarators(own_exports);
             if self.at_punct(0, ";") {
@@ -2748,6 +2812,13 @@ impl<'a> Walker<'a> {
             }
         }
         false
+    }
+
+    /// Whether `using` at `offset` opens a declaration (`using` stays an identifier elsewhere).
+    fn using_name_ahead(&self, offset: usize) -> bool {
+        self.peek_at(offset).is_some_and(|token| {
+            token.kind == TokKind::Ident || (token.kind == TokKind::Punct && matches!(self.text(token), "{" | "["))
+        })
     }
 
     fn parse_statement(&mut self) {
@@ -2813,8 +2884,27 @@ impl<'a> Walker<'a> {
                 walker.parse_type_alias(start, &own);
                 return;
             }
-            if matches!(walker.peek_text(0), Some("namespace") | Some("module")) {
+            if matches!(walker.peek_text(0), Some("namespace") | Some("module"))
+                && walker.peek_at(1).is_some_and(|token| matches!(token.kind, TokKind::Ident | TokKind::Str))
+            {
                 walker.parse_module(start, &own);
+                return;
+            }
+            if walker.at_ident(0, "await") && walker.at_ident(1, "using") && walker.using_name_ahead(2) {
+                walker.bump();
+                walker.bump();
+                walker.parse_variable_declarators(&own);
+                if walker.at_punct(0, ";") {
+                    walker.bump();
+                }
+                return;
+            }
+            if walker.at_ident(0, "using") && walker.using_name_ahead(1) {
+                walker.bump();
+                walker.parse_variable_declarators(&own);
+                if walker.at_punct(0, ";") {
+                    walker.bump();
+                }
                 return;
             }
             if matches!(walker.peek_text(0), Some("const") | Some("let") | Some("var")) {
@@ -2925,7 +3015,7 @@ impl<'a> Walker<'a> {
                             let mut end = token.end;
                             if walker.at_punct(0, ":") {
                                 walker.bump();
-                                walker.parse_type();
+                                walker.parse_type(None);
                                 end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(end, |token| token.end);
                             }
                             walker.record("VariableDeclaration", name, token.start, end.max(token.start), None, None, None, &[]);
@@ -2936,7 +3026,7 @@ impl<'a> Walker<'a> {
                             walker.parse_binding_pattern();
                             if walker.at_punct(0, ":") {
                                 walker.bump();
-                                walker.parse_type();
+                                walker.parse_type(None);
                             }
                             let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(pattern_start, |token| token.end);
                             walker.record("VariableDeclaration", name, pattern_start, end.max(pattern_start), None, None, None, &[]);
@@ -3008,7 +3098,9 @@ impl<'a> Walker<'a> {
             return;
         }
         self.bump();
-        if matches!(self.peek_text(0), Some("const") | Some("let") | Some("var")) {
+        if matches!(self.peek_text(0), Some("const") | Some("let") | Some("var"))
+            || (self.at_ident(0, "using") && self.using_name_ahead(1))
+        {
             self.bump();
             self.parse_variable_declarators(&[]);
         } else if !self.at_punct(0, ";") {
@@ -3218,17 +3310,14 @@ impl<'a> Walker<'a> {
             let name = context.take().or_else(|| self.equals_name());
             let start = self.arrow_start_from(self.pos);
             self.bump();
-            self.parse_arrow_params(arrow);
-            self.parse_arrow_at(arrow, name, start);
+            self.parse_arrow_at(arrow, name, start, true);
             true
         } else if self.arrow_ahead().is_some() {
             let arrow = self.arrow_ahead().expect("leading arrow");
             let name = context.take().or_else(|| self.equals_name());
             let start = self.arrow_start_from(self.pos);
-            if self.at_punct(0, "(") || self.peek().is_some_and(|token| token.kind == TokKind::Ident) || self.at_punct(0, "<") {
-                self.parse_arrow_params(arrow);
-            }
-            self.parse_arrow_at(arrow, name, start);
+            let with_params = self.at_punct(0, "(") || self.peek().is_some_and(|token| token.kind == TokKind::Ident) || self.at_punct(0, "<");
+            self.parse_arrow_at(arrow, name, start, with_params);
             true
         } else {
             false
@@ -3289,7 +3378,7 @@ impl<'a> Walker<'a> {
                     self.parse_parameters("arrow");
                     if self.at_punct(0, ":") {
                         self.bump();
-                        self.parse_type();
+                        self.parse_type(None);
                     }
                 }
             }
@@ -3319,8 +3408,7 @@ impl<'a> Walker<'a> {
                         if let Some(arrow) = self.arrow_ahead() {
                             let name = if first { context.take() } else { None }.or_else(|| self.arrow_equals_name_at(self.pos));
                             let start = self.arrow_start_from(self.pos);
-                            self.parse_arrow_params(arrow);
-                            self.parse_arrow_at(arrow, name, start);
+                            self.parse_arrow_at(arrow, name, start, true);
                         } else {
                             let open = self.pos;
                             let callee = self.callee_text(open);
@@ -3405,7 +3493,7 @@ impl<'a> Walker<'a> {
                             .or_else(|| self.pos.checked_sub(1).and_then(|param| self.arrow_equals_name_at(param)));
                         let start = self.arrow_start_from(self.pos.saturating_sub(1));
                         let arrow = self.pos;
-                        self.parse_arrow_at(arrow, name, start);
+                        self.parse_arrow_at(arrow, name, start, false);
                     }
                     _ => {
                         self.bump();
@@ -3471,17 +3559,13 @@ impl<'a> Walker<'a> {
                     if self.at_ident(0, "const") {
                         self.bump();
                     } else {
-                        self.parse_type();
+                        self.parse_type(None);
                     }
                 } else if self.at_punct(1, "=>") {
                     let name = if first { context.take() } else { None }.or_else(|| self.arrow_equals_name_at(self.pos));
-                    let param_index = self.pos;
-                    let param = self.bump().expect("arrow param");
-                    let param_name = self.text(param).to_owned();
-                    self.record("Parameter", param_name, param.start, param.end, None, None, None, &[]);
-                    let arrow = self.pos;
-                    let start = self.arrow_start_from(param_index);
-                    self.parse_arrow_at(arrow, name, start);
+                    let arrow = self.pos + 1;
+                    let start = self.arrow_start_from(self.pos);
+                    self.parse_arrow_at(arrow, name, start, true);
                 } else {
                     self.bump();
                 }
@@ -3611,6 +3695,15 @@ mod tests {
     }
 
     #[test]
+    fn skips_shebang_trivia() {
+        let scan = tokenize("#!/usr/bin/env bun\nimport { x } from \"node:fs\";\n");
+        let first = scan.tokens.first().expect("token");
+        assert_eq!(first.start, 19);
+        let decls = scan_declarations("#!/usr/bin/env bun\nimport { x } from \"node:fs\";\n");
+        assert_eq!(decls.imports, vec!["\"node:fs\"".to_owned()]);
+    }
+
+    #[test]
     fn finds_function_forms() {
         let decls = scan_declarations(
             "export function top(a: number): string { return String(a); }\n\
@@ -3683,7 +3776,7 @@ mod tests {
         let members: Vec<(&str, &str)> = decls
             .declarations
             .iter()
-            .filter(|decl| decl.kind != "ClassDeclaration" && decl.kind != "Parameter" && decl.kind != "TypeParameterDeclaration")
+            .filter(|decl| decl.kind != "ClassDeclaration" && decl.kind != "Parameter" && decl.kind != "TypeParameter")
             .map(|decl| (decl.kind, decl.name.as_str()))
             .collect();
         assert_eq!(
@@ -3697,7 +3790,7 @@ mod tests {
                 ("MethodDeclaration", "create"),
             ]
         );
-        assert!(decls.declarations.iter().any(|decl| decl.kind == "TypeParameterDeclaration" && decl.name == "T"));
+        assert!(decls.declarations.iter().any(|decl| decl.kind == "TypeParameter" && decl.name == "T"));
         for member in decls.declarations.iter().filter(|decl| decl.kind == "MethodDeclaration") {
             assert_eq!(member.exports, vec!["export".to_owned()]);
             assert_eq!(member.enclosing, vec!["Widget".to_owned()]);
@@ -3759,7 +3852,7 @@ mod tests {
         assert!(names.contains(&("CallSignature", "call")));
         assert!(names.contains(&("ConstructSignature", "constructor")));
         assert!(names.contains(&("TypeAliasDeclaration", "Handler")));
-        assert!(names.contains(&("FunctionType", "anonymous")));
+        assert!(names.contains(&("FunctionType", "Handler")));
         let enum_kinds = decl_kinds("export enum Mode { Fast = 1, Slow }");
         assert!(enum_kinds.iter().any(|(kind, name)| kind == "EnumMember" && name == "Fast"));
         let member = decls.declarations.iter().find(|decl| decl.kind == "EnumMember" && decl.name == "Slow").expect("slow member");
@@ -3891,7 +3984,7 @@ pub fn scan_declarations(source: &str) -> ScanDeclarations {
     while !walker.at_eof() {
         walker.parse_statement();
     }
-    walker.decls.sort_by(|left, right| left.start.cmp(&right.start).then_with(|| left.end.cmp(&right.end)));
+    walker.decls.sort_by(|left, right| left.start.cmp(&right.start).then_with(|| right.end.cmp(&left.end)));
     ScanDeclarations {
         declarations: walker.decls,
         imports: walker.imports,
