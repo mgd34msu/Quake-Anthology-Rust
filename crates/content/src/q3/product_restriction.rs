@@ -3,7 +3,7 @@
 //! Donor provenance: `src/content/q3/product-restriction.ts`.
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::mirrors::*;
+use crate::q3::base::records::Q3BaseError;
 
 // ---------------------------------------------------------------------------
 // product-restriction.ts (+ core/q3-product-policy.ts restriction layer)

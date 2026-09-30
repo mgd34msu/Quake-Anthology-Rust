@@ -6,7 +6,7 @@ use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Plane, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::mirrors::*;
+use crate::q3::base::records::EntityRef;
 
 // ---------------------------------------------------------------------------
 // world.ts (+ shared/slide-move.ts)

@@ -4,15 +4,20 @@
 
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Vec3};
+use qa_core::time::SourceTime;
 use qa_world::body::{BodyState, LinkedBody};
+use qa_world::combat::{Delivery, Reaction};
+use thiserror::Error;
+
+use crate::contract::ItemId;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::state::{MAX_CLIENTS, MAX_GENTITIES};
-use crate::q3::base::mirrors::*;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::*;
+use crate::q3::base::shared::entity_state::*;
 use crate::q3::base::shared::player_state::*;
 use crate::q3::foundation::arsenal::{q3_weapon_item, Q3_WEAPON_ITEMS};
 
@@ -1093,3 +1098,851 @@ pub const ZERO_BODY: BodyState = BodyState {
     },
     ground: None,
 };
+
+// ---------------------------------------------------------------------------
+// Base-group error (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Base-game failure for map/save-data inputs (donor `Error`, `RangeError`,
+/// and `CommonError("drop", ...)`).
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum Q3BaseError {
+    /// Dropped-operation failure (donor `CommonError("drop", ...)`).
+    #[error("drop: {0}")]
+    Drop(String),
+    /// Invalid map/save/entity input (donor `Error`).
+    #[error("invalid: {0}")]
+    Invalid(String),
+    /// Out-of-range map/save/entity input (donor `RangeError`).
+    #[error("range: {0}")]
+    Range(String),
+}
+
+// ---------------------------------------------------------------------------
+// contracts/gameplay.ts record words (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Q1 armor effect word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q1ArmorEffect {
+    /// Bypass armor.
+    Bypass,
+    /// Half effectiveness.
+    HalfEffectiveness,
+}
+
+/// Q2 classic game word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q2ClassicGame {
+    /// Base game.
+    Base,
+    /// Xatrix.
+    Xatrix,
+    /// Rogue.
+    Rogue,
+    /// Capture the flag.
+    Ctf,
+}
+
+/// Q2 native cause encoding (`Q2NativeCause`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Q2NativeCause {
+    /// Classic encoding.
+    Classic {
+        /// Game.
+        game: Q2ClassicGame,
+        /// Native value.
+        value: i32,
+    },
+    /// Rerelease encoding.
+    Rerelease {
+        /// Native identifier.
+        id: i32,
+        /// Friendly fire.
+        friendly_fire: bool,
+        /// No point loss.
+        no_point_loss: bool,
+    },
+}
+
+/// Environment hazard word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentHazard {
+    /// Fall.
+    Fall,
+    /// Drown.
+    Drown,
+    /// Lava.
+    Lava,
+    /// Slime.
+    Slime,
+    /// Crush.
+    Crush,
+    /// Trigger.
+    Trigger,
+}
+
+/// Attack cause word (`AttackProvenance` cause).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttackCause {
+    /// Quake cause.
+    Q1 {
+        /// Death type.
+        death_type: String,
+        /// Armor effect.
+        armor_effect: Option<Q1ArmorEffect>,
+    },
+    /// Quake II cause.
+    Q2 {
+        /// Canonical means of death.
+        means_of_death: i32,
+        /// Damage flags.
+        damage_flags: i32,
+        /// Native encoding.
+        native: Option<Q2NativeCause>,
+    },
+    /// Quake III cause.
+    Q3 {
+        /// Means of death.
+        means_of_death: i32,
+        /// Damage flags.
+        damage_flags: i32,
+    },
+    /// Environment cause.
+    Environment {
+        /// Hazard.
+        hazard: EnvironmentHazard,
+    },
+}
+
+/// Attack provenance (`AttackProvenance`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttackProvenance {
+    /// Sequence number.
+    pub sequence: i32,
+    /// Attack time.
+    pub time: SourceTime,
+    /// Attacker.
+    pub attacker: Option<ActorId>,
+    /// Inflictor.
+    pub inflictor: Option<ActorId>,
+    /// Originating projectile.
+    pub originating_projectile: Option<ActorId>,
+    /// Weapon item.
+    pub weapon: Option<ItemId>,
+    /// Weapon provider.
+    pub weapon_provider: ProviderId,
+    /// Damage powerup owner, when this source already applied its
+    /// damage modifier.
+    pub damage_powerup_owner: Option<ProviderId>,
+    /// Combat provider.
+    pub combat_provider: ProviderId,
+    /// Inventory provider.
+    pub inventory_provider: ProviderId,
+    /// Movement provider.
+    pub movement_provider: ProviderId,
+    /// Cause.
+    pub cause: AttackCause,
+}
+
+/// Damage request (`DamageRequest`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageRequest {
+    /// Attack provenance.
+    pub attack: AttackProvenance,
+    /// Target.
+    pub target: ActorId,
+    /// Amount.
+    pub amount: f32,
+    /// Knockback.
+    pub knockback: f32,
+    /// Direction.
+    pub direction: Vec3,
+    /// Point.
+    pub point: Vec3,
+    /// Normal.
+    pub normal: Vec3,
+    /// Delivery.
+    pub delivery: Delivery,
+}
+
+/// Regular armor state (`RegularArmorState`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RegularArmorState {
+    /// No armor.
+    None,
+    /// Quake armor.
+    Q1 {
+        /// Points.
+        points: i32,
+        /// Absorption.
+        absorption: f32,
+        /// Item.
+        item: ItemId,
+    },
+    /// Quake II armor.
+    Q2 {
+        /// Points.
+        points: i32,
+        /// Normal protection.
+        normal_protection: f32,
+        /// Energy protection.
+        energy_protection: f32,
+        /// Item.
+        item: ItemId,
+    },
+    /// Quake III armor.
+    Q3 {
+        /// Points.
+        points: i32,
+        /// Protection.
+        protection: f32,
+    },
+    /// Source armor.
+    Source {
+        /// Points.
+        points: i32,
+        /// Item.
+        item: Option<ItemId>,
+    },
+}
+
+/// Powered protection state (`PoweredProtectionState`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PoweredProtectionState {
+    /// No powered protection.
+    None,
+    /// Screen.
+    Screen {
+        /// Cells.
+        cells: i32,
+    },
+    /// Shield.
+    Shield {
+        /// Cells.
+        cells: i32,
+    },
+}
+
+/// Armor state (`ArmorState`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmorState {
+    /// Regular armor.
+    pub regular: RegularArmorState,
+    /// Powered protection.
+    pub powered: PoweredProtectionState,
+}
+
+/// Combat state snapshot (`CombatState`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombatState {
+    /// Health.
+    pub health: i32,
+    /// Armor.
+    pub armor: ArmorState,
+    /// Mass.
+    pub mass: i32,
+    /// Whether damage is admitted.
+    pub can_take_damage: bool,
+    /// Invulnerable.
+    pub invulnerable: bool,
+    /// Source immunity to damage momentum.
+    pub no_knockback: bool,
+    /// Team word.
+    pub team: Option<String>,
+}
+
+/// Damage mutation (`DamageMutation`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DamageMutation {
+    /// Health change.
+    Health {
+        /// Health before.
+        before: i32,
+        /// Health after.
+        after: i32,
+    },
+    /// Armor change.
+    Armor {
+        /// Armor before.
+        before: ArmorState,
+        /// Armor after.
+        after: ArmorState,
+    },
+    /// Source velocity change.
+    SourceVelocity {
+        /// Velocity before.
+        before: Vec3,
+        /// Velocity after.
+        after: Vec3,
+        /// Movement provider.
+        movement_provider: ProviderId,
+    },
+    /// Impulse.
+    Impulse {
+        /// Impulse vector.
+        impulse: Vec3,
+        /// Movement provider.
+        movement_provider: ProviderId,
+    },
+}
+
+/// Damage feedback word (`DamageDecision` feedback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageFeedback {
+    /// Quake II feedback.
+    Q2 {
+        /// Power armor saved.
+        power_armor: i32,
+        /// Armor saved.
+        armor: i32,
+        /// Blood.
+        blood: i32,
+        /// Knockback.
+        knockback: i32,
+    },
+    /// Quake III feedback.
+    Q3 {
+        /// Knockback.
+        knockback: i32,
+        /// Battlesuit absorbed.
+        battlesuit: bool,
+    },
+}
+
+/// Damage decision (`DamageDecision`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageDecision {
+    /// Damage request.
+    pub request: DamageRequest,
+    /// Mutations.
+    pub mutations: Vec<DamageMutation>,
+    /// Applied damage.
+    pub applied_damage: i32,
+    /// Reaction.
+    pub reaction: Reaction,
+    /// Feedback.
+    pub feedback: Option<DamageFeedback>,
+}
+
+/// Damage outcome (`DamageOutcome`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DamageOutcome {
+    /// Stale target.
+    StaleTarget {
+        /// Damage request.
+        request: DamageRequest,
+    },
+    /// Committed decision.
+    Committed {
+        /// Decision.
+        decision: DamageDecision,
+        /// Whether the target survived.
+        survived: bool,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// game/state.ts entity records (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Shared game entity handle.
+pub type EntityRef = Rc<RefCell<GameEntity>>;
+
+/// Shared game client handle.
+pub type ClientRef = Rc<RefCell<GameClient>>;
+
+/// Damage participant (`DamageParticipant`/`UseParticipant`/`DamageInflictor`,
+/// game/state.ts).
+#[derive(Clone)]
+pub enum DamageParticipant {
+    /// Native entity.
+    Native(EntityRef),
+    /// Shared foreign actor.
+    SharedActor(SharedParticipant),
+}
+
+impl std::fmt::Debug for DamageParticipant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Native(entity) => f.debug_tuple("Native").field(&entity.borrow().slot).finish(),
+            Self::SharedActor(participant) => f.debug_tuple("SharedActor").field(&participant.actor).finish(),
+        }
+    }
+}
+
+/// Shared foreign participant (game/state.ts `shared-actor` layer).
+#[derive(Clone)]
+pub struct SharedParticipant {
+    /// Actor.
+    pub actor: ActorId,
+    origin: Rc<dyn Fn() -> Option<Vec3>>,
+}
+
+impl SharedParticipant {
+    /// Shared participant with an origin resolver.
+    #[must_use]
+    pub fn new(actor: ActorId, origin: Rc<dyn Fn() -> Option<Vec3>>) -> Self {
+        Self { actor, origin }
+    }
+
+    /// Resolve the current origin, if live.
+    #[must_use]
+    pub fn origin(&self) -> Option<Vec3> {
+        (self.origin)()
+    }
+}
+
+/// Use participant (`UseParticipant`, game/state.ts).
+pub type UseParticipant = DamageParticipant;
+
+/// Damage inflictor (`DamageInflictor`, game/state.ts).
+pub type DamageInflictor = DamageParticipant;
+
+/// Actor for a participant (`useActor`, game/use-participant.ts).
+#[must_use]
+pub fn use_actor(participant: &DamageParticipant) -> ActorId {
+    match participant {
+        DamageParticipant::Native(entity) => entity.borrow().actor().id().clone(),
+        DamageParticipant::SharedActor(shared) => shared.actor.clone(),
+    }
+}
+
+/// Entity think callback (`EntityThink`, game/state.ts).
+pub type EntityThinkCallback = Rc<dyn Fn(EntityRef)>;
+
+/// Entity touch callback (`EntityTouch`, game/state.ts).
+pub type EntityTouchCallback = Rc<dyn Fn(EntityRef, DamageParticipant, TouchContact)>;
+
+/// Entity use callback (`EntityUse`, game/state.ts).
+pub type EntityUseCallback = Rc<dyn Fn(EntityRef, Option<UseParticipant>, Option<UseParticipant>)>;
+
+/// Entity pain callback (`EntityPain`, game/state.ts).
+pub type EntityPainCallback = Rc<dyn Fn(EntityRef, DamageParticipant, i32)>;
+
+/// Entity die callback (`EntityDie`, game/state.ts).
+pub type EntityDieCallback = Rc<dyn Fn(EntityRef, DamageInflictor, DamageParticipant, i32, i32)>;
+
+/// Source-zero `gentity_t` binding (`GameEntityBinding`, game/state.ts).
+pub trait GameEntityBinding {
+    /// Body binding.
+    fn body(&self) -> Rc<dyn EntityBodyBinding>;
+    /// Owning actor.
+    fn actor(&self) -> OwnedActor;
+    /// Whether the slot is live.
+    fn active(&self) -> bool;
+    /// Health.
+    fn health(&self) -> i32;
+    /// Write health.
+    fn set_health(&self, value: i32);
+    /// Whether damage is admitted.
+    fn takes_damage(&self) -> bool;
+    /// Write damage admission.
+    fn set_takes_damage(&self, value: bool);
+    /// Schedule the next think.
+    fn schedule(&self, nextthink: i32);
+    /// Run a think at a time.
+    fn run_think(&self, time_milliseconds: i32);
+}
+
+/// Source-zero `gentity_t` (`GameEntity`, game/state.ts).
+///
+/// This mirror carries the words the base root reads and writes; the
+/// sibling game-layer port owns the full record.
+pub struct GameEntity {
+    /// Owned-table slot.
+    pub slot: usize,
+    /// Session binding.
+    pub binding: Rc<dyn GameEntityBinding>,
+    /// Entity state words.
+    pub s: EntityState,
+    /// Shared collision metadata.
+    pub r: EntityShared,
+    /// Client record, for player slots.
+    pub client: Option<ClientRef>,
+    /// Game flags.
+    pub flags: i32,
+    /// Team name.
+    pub team: Option<String>,
+    /// Next teammate in the chain.
+    pub teamchain: Option<EntityRef>,
+    /// Team master (weak; the master owns the chain).
+    pub teammaster: Option<Weak<RefCell<GameEntity>>>,
+    /// Target name.
+    pub targetname: Option<String>,
+    nextthink_value: i32,
+    /// Think callback.
+    pub think: Option<EntityThinkCallback>,
+    /// Touch callback.
+    pub touch: Option<EntityTouchCallback>,
+    /// Use callback.
+    pub use_action: Option<EntityUseCallback>,
+    /// Pain callback.
+    pub pain: Option<EntityPainCallback>,
+    /// Die callback.
+    pub die: Option<EntityDieCallback>,
+}
+
+impl std::fmt::Debug for GameEntity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameEntity")
+            .field("slot", &self.slot)
+            .field("flags", &self.flags)
+            .field("team", &self.team)
+            .finish()
+    }
+}
+
+impl GameEntity {
+    /// Source-zero entity over a binding.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `slot` is outside `0..1023`.
+    #[must_use]
+    pub fn new(slot: usize, binding: Rc<dyn GameEntityBinding>) -> Self {
+        assert!(slot < MAX_GENTITIES, "Game entity slot outside 0..1023");
+        let r = EntityShared::new(binding.body());
+        Self {
+            slot,
+            binding,
+            s: EntityState::new(),
+            r,
+            client: None,
+            flags: 0,
+            team: None,
+            teamchain: None,
+            teammaster: None,
+            targetname: None,
+            nextthink_value: 0,
+            think: None,
+            touch: None,
+            use_action: None,
+            pain: None,
+            die: None,
+        }
+    }
+
+    /// Whether the slot is live.
+    #[must_use]
+    pub fn inuse(&self) -> bool {
+        self.binding.active()
+    }
+
+    /// Owning actor.
+    #[must_use]
+    pub fn actor(&self) -> OwnedActor {
+        self.binding.actor()
+    }
+
+    /// Health.
+    #[must_use]
+    pub fn health(&self) -> i32 {
+        self.binding.health()
+    }
+
+    /// Write health.
+    pub fn set_health(&self, value: i32) {
+        self.binding.set_health(value);
+    }
+
+    /// Whether damage is admitted.
+    #[must_use]
+    pub fn takes_damage(&self) -> bool {
+        self.binding.takes_damage()
+    }
+
+    /// Write damage admission.
+    pub fn set_takes_damage(&self, value: bool) {
+        self.binding.set_takes_damage(value);
+    }
+
+    /// Next think time.
+    #[must_use]
+    pub fn nextthink(&self) -> i32 {
+        self.nextthink_value
+    }
+
+    /// Write the next think time and schedule it.
+    pub fn set_nextthink(&mut self, value: i32) {
+        self.nextthink_value = value;
+        self.binding.schedule(value);
+    }
+
+    /// Restore a think time without scheduling (save hydration).
+    pub fn restore_nextthink(&mut self, value: i32) {
+        self.nextthink_value = value;
+    }
+
+    /// Reset source metadata in place, keeping the slot and binding.
+    pub fn reset(&mut self) {
+        let binding = self.binding.clone();
+        let slot = self.slot;
+        *self = Self::new(slot, binding);
+    }
+}
+
+impl SharedEntity for GameEntity {
+    fn entity_state(&self) -> &EntityState {
+        &self.s
+    }
+
+    fn shared(&self) -> &EntityShared {
+        &self.r
+    }
+}
+
+/// Client session words (`ClientSession`, game/state.ts, minimal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientSession {
+    /// Session team.
+    pub session_team: Team,
+}
+
+impl Default for ClientSession {
+    fn default() -> Self {
+        Self {
+            session_team: Team::TeamFree,
+        }
+    }
+}
+
+/// Source-zero `gclient_t` (`GameClient`, game/state.ts).
+///
+/// This mirror carries the words the base root reads and writes; the
+/// sibling game-layer port owns the full record.
+pub struct GameClient {
+    /// Player state.
+    pub ps: PlayerState,
+    /// Session.
+    pub sess: ClientSession,
+    /// Noclip.
+    pub noclip: bool,
+    /// Invulnerability time.
+    pub invulnerability_time: i32,
+    /// Ammunition timers.
+    pub ammo_times: PlayerStateSlots,
+}
+
+impl std::fmt::Debug for GameClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GameClient")
+            .field("ps", &self.ps)
+            .field("sess", &self.sess)
+            .finish()
+    }
+}
+
+impl GameClient {
+    /// Source-zero client with an optional authority and ammunition
+    /// store notification.
+    #[must_use]
+    pub fn new(
+        product: Product,
+        authority: Option<Rc<dyn PlayerAuthorityBinding>>,
+        ammo_timer_stored: Option<Rc<dyn Fn(usize, i32)>>,
+    ) -> Self {
+        Self {
+            ps: create_player_state(product, authority),
+            sess: ClientSession::default(),
+            noclip: false,
+            invulnerability_time: 0,
+            ammo_times: PlayerStateSlots::new(weapon_count(product) as usize, None, None, ammo_timer_stored),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// contracts/world.ts reactions (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Touch contact (`TouchContact`, contracts/world.ts, minimal).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TouchContact {
+    /// Other actor.
+    pub other: ActorId,
+}
+
+/// Pain reaction (`PainReaction`, contracts/world.ts, minimal).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PainReaction {
+    /// Attack provenance, if any.
+    pub attack: Option<AttackProvenance>,
+    /// Attacker.
+    pub attacker: Option<ActorId>,
+    /// Damage.
+    pub damage: i32,
+}
+
+/// Death reaction (`DeathReaction`, contracts/world.ts, minimal).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeathReaction {
+    /// Attack provenance, if any.
+    pub attack: Option<AttackProvenance>,
+    /// Attacker.
+    pub attacker: Option<ActorId>,
+    /// Damage.
+    pub damage: i32,
+    /// Inflictor.
+    pub inflictor: Option<ActorId>,
+    /// Point.
+    pub point: Vec3,
+}
+
+/// Actor callbacks bound by the records (`ActorCallbacks`,
+/// contracts/world.ts, minimal).
+#[derive(Clone)]
+pub struct ActorCallbacks {
+    /// Think callback.
+    pub think: Rc<dyn Fn()>,
+    /// Touch callback.
+    pub touch: Rc<dyn Fn(&TouchContact)>,
+    /// Use callback over other and activator actors.
+    pub use_action: Rc<dyn Fn(Option<ActorId>, Option<ActorId>)>,
+    /// Pain callback.
+    pub pain: Rc<dyn Fn(&PainReaction)>,
+    /// Die callback.
+    pub die: Rc<dyn Fn(&DeathReaction)>,
+}
+
+// ---------------------------------------------------------------------------
+// Session combat services (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Damage admission word (`admitDamage` result).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageAdmission {
+    /// Continue to combat.
+    Continue,
+    /// Handled by the game.
+    Handled,
+}
+
+/// Damage admission callback.
+pub type DamageAdmissionFn = Rc<dyn Fn(&DamageRequest) -> DamageAdmission>;
+
+/// Session actor registry services (`SessionActorRegistry`, minimal).
+pub trait Q3SessionActors {
+    /// Assert an actor handle is owned.
+    fn assert_owned(&self, actor: &OwnedActor) -> Result<(), Q3BaseError>;
+    /// Allocate an actor at a source slot.
+    fn allocate_at_source(&self, provider: &ProviderId, slot: usize, definition: &str) -> OwnedActor;
+    /// Whether an actor is live.
+    fn is_live(&self, actor: &ActorId) -> bool;
+    /// Observe actor release; returns an unobserve callback.
+    fn on_release(&self, callback: Box<dyn Fn(&OwnedActor)>) -> Box<dyn Fn()>;
+    /// Release an actor.
+    fn release(&self, actor: &OwnedActor);
+    /// Resolve an owned handle.
+    fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor>;
+}
+
+/// Shared body table services (`SharedBodyTable`, minimal).
+pub trait Q3SessionBodies {
+    /// Create a body.
+    fn create(&self, actor: &OwnedActor, state: BodyState);
+    /// Read a body.
+    fn read(&self, actor: &ActorId) -> Option<BodyState>;
+    /// Write a body.
+    fn write(&self, actor: &OwnedActor, state: BodyState);
+    /// Read a linked body.
+    fn linked(&self, actor: &ActorId) -> Option<LinkedBody>;
+    /// Link a body, optionally at a snapped origin.
+    fn link(&self, actor: &OwnedActor, origin: Option<Vec3>);
+    /// Unlink a body.
+    fn unlink(&self, actor: &OwnedActor);
+}
+
+/// Gameplay authority services (`GameplayAuthority`, minimal).
+pub trait Q3SessionCombat {
+    /// Read combat state.
+    fn read(&self, actor: &ActorId) -> Option<CombatState>;
+    /// Create combat state with optional damage admission.
+    fn create(&self, actor: &OwnedActor, initial: CombatState, admit_damage: Option<DamageAdmissionFn>);
+    /// Write health.
+    fn set_health(&self, actor: &OwnedActor, health: i32);
+    /// Write damage admission.
+    fn set_can_take_damage(&self, actor: &OwnedActor, can_take_damage: bool);
+    /// Write regular armor points.
+    fn set_regular_points(&self, actor: &OwnedActor, points: i32, initial: RegularArmorState);
+    /// Bind damage admission.
+    fn bind_damage_admission(&self, actor: &OwnedActor, admit_damage: DamageAdmissionFn);
+    /// Apply a damage request.
+    fn apply(&self, request: DamageRequest) -> DamageOutcome;
+}
+
+/// Inventory entry (`InventoryEntry`, minimal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryEntry {
+    /// Item.
+    pub item: ItemId,
+    /// Count.
+    pub count: i32,
+    /// Capacity.
+    pub capacity: i32,
+}
+
+/// Shared inventory table services (`SharedInventoryTable`, minimal).
+pub trait Q3SessionInventory {
+    /// Whether an inventory exists.
+    fn has(&self, actor: &ActorId) -> bool;
+    /// Create an inventory.
+    fn create(&self, actor: &OwnedActor, entries: Vec<InventoryEntry>);
+    /// Count an item.
+    fn count(&self, actor: &ActorId, item: &ItemId) -> i32;
+    /// Configure an item count and capacity.
+    fn configure(&self, actor: &OwnedActor, item: &ItemId, count: i32, capacity: i32);
+}
+
+/// Actor callback table services (`ActorCallbackTable`, minimal).
+pub trait Q3ActorCallbacks {
+    /// Bind actor callbacks.
+    fn bind(&self, actor: &OwnedActor, callbacks: ActorCallbacks);
+}
+
+/// Damage call record (`Q3DamageCall`, game/combat.ts).
+#[derive(Clone)]
+pub struct Q3DamageCall {
+    /// Target.
+    pub target: EntityRef,
+    /// Inflictor participant.
+    pub source: DamageParticipant,
+    /// Attacker participant.
+    pub owner: UseParticipant,
+    /// Direction.
+    pub direction: Option<Vec3>,
+    /// Point.
+    pub point: Option<Vec3>,
+    /// Amount.
+    pub amount: f32,
+    /// Flags.
+    pub flags: i32,
+    /// Means of death.
+    pub method_of_death: i32,
+}
+
+impl std::fmt::Debug for Q3DamageCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Q3DamageCall")
+            .field("target", &self.target.borrow().slot)
+            .field("amount", &self.amount)
+            .field("flags", &self.flags)
+            .field("method_of_death", &self.method_of_death)
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// game/entities.ts entity pool view (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Entity pool view (`EntityPool`, game/entities.ts, minimal).
+pub trait Q3EntityPool {
+    /// Entity count.
+    fn num_entities(&self) -> usize;
+    /// Entity at an index.
+    fn entity_at(&self, index: usize) -> EntityRef;
+}
+
+/// Shared entity pool handle.
+pub type EntityPoolRef = Rc<dyn Q3EntityPool>;

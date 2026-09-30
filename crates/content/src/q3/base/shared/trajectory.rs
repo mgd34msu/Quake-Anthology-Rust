@@ -5,7 +5,7 @@
 use qa_core::math::{add3, scale3, vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::mirrors::*;
+use crate::q3::base::records::Q3BaseError;
 use crate::q3::base::shared::definitions::*;
 
 // ---------------------------------------------------------------------------
