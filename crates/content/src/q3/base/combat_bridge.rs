@@ -10,6 +10,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::combat::DamageDiagnostic;
+use crate::q3::base::game::state::GameFlags;
 use crate::q3::base::mirrors::*;
 use crate::q3::base::records::*;
 use crate::q3::base::shared::definitions::*;
@@ -462,7 +464,7 @@ impl Q3CombatBridge {
                     .is_some_and(|client| client.invulnerability_time > host.time()),
             no_knockback: target
                 .as_ref()
-                .is_some_and(|entity| entity.borrow().flags & GameFlags::NoKnockback.bits() != 0),
+                .is_some_and(|entity| entity.borrow().flags & GameFlags::NO_KNOCKBACK != 0),
             knockback_scale: host.knockback(),
             friendly_fire: host.friendly_fire(),
             battlesuit: target_borrow
@@ -495,7 +497,7 @@ impl Q3CombatBridge {
         next.invulnerable = state.invulnerable
             || entity
                 .as_ref()
-                .is_some_and(|entity| entity.borrow().flags & GameFlags::Godmode.bits() != 0);
+                .is_some_and(|entity| entity.borrow().flags & GameFlags::GODMODE != 0);
         next.team = entity
             .as_ref()
             .and_then(|entity| entity.borrow().client.clone())

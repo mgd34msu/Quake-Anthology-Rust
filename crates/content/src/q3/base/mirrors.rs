@@ -13,6 +13,8 @@ use std::rc::{Rc, Weak};
 use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::combat::DamageDiagnostic;
+use crate::q3::base::game::state::MAX_GENTITIES;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::*;
 use crate::q3::base::shared::entity_state::*;
@@ -1242,42 +1244,6 @@ pub fn create_q3_combat_policy(
 // self-contained. The parent unifies these with the sibling definitions
 // at merge.
 
-/// Client slot count (`MAX_CLIENTS`, game/state.ts).
-pub const MAX_CLIENTS: usize = 64;
-
-/// Entity slot count (`MAX_GENTITIES`, game/state.ts).
-pub const MAX_GENTITIES: usize = 1024;
-
-/// Game entity flags (`GameFlags`, game/state.ts).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(i32)]
-pub enum GameFlags {
-    /// God mode.
-    Godmode = 0x10,
-    /// Notarget.
-    Notarget = 0x20,
-    /// Team slave.
-    Teamslave = 0x400,
-    /// No knockback.
-    NoKnockback = 0x800,
-    /// Dropped item.
-    DroppedItem = 0x1000,
-    /// No bots.
-    NoBots = 0x2000,
-    /// No humans.
-    NoHumans = 0x4000,
-    /// Force gesture.
-    ForceGesture = 0x8000,
-}
-
-impl GameFlags {
-    /// Flag bits.
-    #[must_use]
-    pub fn bits(self) -> i32 {
-        self as i32
-    }
-}
-
 /// Weapon inventory binding (`Q3WeaponItem`, foundation/arsenal.ts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Q3WeaponItem {
@@ -1820,21 +1786,6 @@ impl std::fmt::Debug for Q3DamageCall {
     }
 }
 
-/// Damage diagnostic (`DamageDiagnostic`, game/combat.ts).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DamageDiagnostic {
-    /// Time.
-    pub time: i32,
-    /// Entity number.
-    pub entity_num: i32,
-    /// Health.
-    pub health: i32,
-    /// Damage.
-    pub damage: i32,
-    /// Armor.
-    pub armor: i32,
-}
-
 /// Combat actor services (`CombatContext` actors word, game/combat.ts).
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
@@ -1913,6 +1864,7 @@ pub type EntityPoolRef = Rc<dyn Q3EntityPool>;
 mod tests {
     use super::*;
     use crate::q3::base::combat_bridge::*;
+    use crate::q3::base::game::state::{GameFlags, MAX_CLIENTS};
     use crate::q3::base::map_spawns::*;
     use crate::q3::base::records::*;
     use crate::q3::base::shared::items::{
@@ -3297,7 +3249,7 @@ mod tests {
     fn bridge_policy_blocks_godmode_targets() {
         let (records_host, records) = test_records();
         let target = records.activate(5);
-        target.borrow_mut().flags |= GameFlags::Godmode.bits();
+        target.borrow_mut().flags |= GameFlags::GODMODE;
         let host = FakeBridgeHost::new(records_host, records);
         let bridge = Q3CombatBridge::new(host);
         let policy = bridge.policy();
@@ -3753,7 +3705,7 @@ mod tests {
         assert_eq!(counts, EntityTeamCounts { teams: 2, entities: 3 });
         assert_eq!(first.borrow().targetname, Some("slave-target".to_string()));
         assert_eq!(second.borrow().targetname, None);
-        assert_ne!(second.borrow().flags & GameFlags::Teamslave.bits(), 0);
+        assert_ne!(second.borrow().flags & GameFlags::TEAMSLAVE, 0);
         assert!(Rc::ptr_eq(first.borrow().teamchain.as_ref().unwrap(), &second));
         assert!(third.borrow().teamchain.is_none());
     }

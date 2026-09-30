@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::state::GameFlags;
 use crate::q3::base::mirrors::*;
 use crate::q3::base::shared::definitions::*;
 
@@ -129,7 +130,7 @@ pub fn find_q3_entity_teams(pool: &dyn Q3EntityPool) -> EntityTeamCounts {
             (
                 borrowed.inuse(),
                 borrowed.team.clone(),
-                borrowed.flags & GameFlags::Teamslave.bits() != 0,
+                borrowed.flags & GameFlags::TEAMSLAVE != 0,
             )
         };
         if !inuse || team.is_none() || slave {
@@ -147,7 +148,7 @@ pub fn find_q3_entity_teams(pool: &dyn Q3EntityPool) -> EntityTeamCounts {
                 (
                     borrowed.inuse(),
                     borrowed.team.clone(),
-                    borrowed.flags & GameFlags::Teamslave.bits() != 0,
+                    borrowed.flags & GameFlags::TEAMSLAVE != 0,
                     borrowed.team == team,
                 )
             };
@@ -160,7 +161,7 @@ pub fn find_q3_entity_teams(pool: &dyn Q3EntityPool) -> EntityTeamCounts {
             entity.borrow_mut().teamchain = head;
             master.borrow_mut().teamchain = Some(entity.clone());
             entity.borrow_mut().teammaster = Some(Rc::downgrade(&master));
-            entity.borrow_mut().flags |= GameFlags::Teamslave.bits();
+            entity.borrow_mut().flags |= GameFlags::TEAMSLAVE;
             if let Some(targetname) = entity.borrow_mut().targetname.take() {
                 master.borrow_mut().targetname = Some(targetname);
             }

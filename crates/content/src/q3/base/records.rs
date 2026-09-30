@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::state::{MAX_CLIENTS, MAX_GENTITIES};
 use crate::q3::base::mirrors::*;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::*;
