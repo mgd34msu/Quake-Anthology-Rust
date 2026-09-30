@@ -1975,6 +1975,12 @@ mod tests {
         composition.player_post_think(&mut *game, owned.id()).expect("post");
         assert!(!composition.impulse(&mut *game, owned.id()).expect("idle"));
         let _ = composition.character_pose(&mut *game, owned.id()).expect("pose");
+        let (rogue_game, rogue_comp, _) = setup(Q1SourceProgram::Rogue);
+        let rogue = join(&mut *rogue_game, &rogue_comp, 0, "Rogue");
+        rogue_comp
+            .player_post_think(&mut *rogue_game, rogue.id())
+            .expect("post");
+        rogue_comp.pre_frame(&mut *rogue_game, 0.016).expect("frame");
     }
 
     /// Stub base weapons so mg3 replacements apply. The donor
