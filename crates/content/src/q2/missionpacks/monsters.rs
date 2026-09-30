@@ -24,6 +24,7 @@ pub mod rogue_variants;
 pub mod soldierh;
 pub mod spawn;
 pub mod stalker;
+pub mod turret;
 pub mod xatrix_variants;
 pub mod state;
 pub mod tables;

@@ -3,7 +3,7 @@
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use crate::q2::foundation::host::Q2GameServices;
+use crate::q2::foundation::host::{Q2GameServices, Q2Think};
 
 /// Mission-pack selector (`Q2MonsterMissionPack`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,12 +26,17 @@ pub struct Q2MissionPackPowerups {
 }
 
 /// Mission-pack monster services (`Q2MissionPackMonsterServices`).
-///
-/// The `movers` module joins this boundary once the foundation mover
-/// module is ported.
 pub trait Q2MissionPackMonsterServices {
     /// Gravity.
     fn gravity(&self) -> f64;
+    /// Move an entity linearly toward a destination, then run a think callback.
+    fn move_linear(
+        &self,
+        actor: &ActorId,
+        game: &mut Q2GameServices,
+        destination: Vec3,
+        done: Q2Think,
+    );
     /// Whether an actor stands in a bad area.
     fn bad_area(&self, actor: &ActorId) -> bool;
     /// Bad-area entity for an actor.
