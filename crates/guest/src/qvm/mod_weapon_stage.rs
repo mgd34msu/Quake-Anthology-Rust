@@ -130,6 +130,15 @@ impl QvmItemStorage {
             Self::Counter { field, .. } | Self::Bits { field, .. } => field,
         }
     }
+
+    /// Item identities packed into this storage entry.
+    #[must_use]
+    pub fn stored_items(&self) -> Vec<&str> {
+        match self {
+            Self::Counter { item, .. } => vec![item.as_str()],
+            Self::Bits { items, .. } => items.iter().map(|entry| entry.item.as_str()).collect(),
+        }
+    }
 }
 
 /// Source actor selector.

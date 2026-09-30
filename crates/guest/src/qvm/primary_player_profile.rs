@@ -326,11 +326,11 @@ pub struct InputEntries {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MovementModes {
     /// Normal mode.
-    pub normal: i32,
+    pub normal: i64,
     /// Noclip mode.
-    pub noclip: i32,
+    pub noclip: i64,
     /// Freeze mode.
-    pub freeze: i32,
+    pub freeze: i64,
 }
 
 /// Input definition (mirror of `QvmInputDefinition`).
@@ -345,7 +345,7 @@ pub struct QvmInputDefinition {
     /// Client pointer.
     pub client_pointer: usize,
     /// Intermission values.
-    pub intermission: Vec<i32>,
+    pub intermission: Vec<i64>,
     /// Movement modes, if any.
     pub movement_modes: Option<MovementModes>,
     /// Entries.
@@ -361,9 +361,9 @@ pub fn read_qvm_primary_input(reader: &ProfileReader<'_>, artifact: &QvmArtifact
         None
     } else {
         Some(MovementModes {
-            normal: read_integer(&modes.field("normal")?, i64::from(i32::MIN), i64::from(i32::MAX))? as i32,
-            noclip: read_integer(&modes.field("noclip")?, i64::from(i32::MIN), i64::from(i32::MAX))? as i32,
-            freeze: read_integer(&modes.field("freeze")?, i64::from(i32::MIN), i64::from(i32::MAX))? as i32,
+            normal: modes.field("normal")?.integer(i64::MIN)?,
+            noclip: modes.field("noclip")?.integer(i64::MIN)?,
+            freeze: modes.field("freeze")?.integer(i64::MIN)?,
         })
     };
     Ok(QvmInputDefinition {
@@ -371,7 +371,7 @@ pub fn read_qvm_primary_input(reader: &ProfileReader<'_>, artifact: &QvmArtifact
         entity_stride: common.entity_stride,
         client_stride: common.client_stride,
         client_pointer: read_aligned(&reader.field("clientPointer")?, common.entity_stride, 4)?,
-        intermission: reader.field("intermission")?.list(|value| read_integer(value, i64::from(i32::MIN), i64::from(i32::MAX)).map(|number| number as i32))?,
+        intermission: reader.field("intermission")?.list(|value| value.integer(i64::MIN))?,
         movement_modes,
         entries: InputEntries {
             client_think: read_entry(&entries.field("clientThink")?, artifact)?,
@@ -520,13 +520,13 @@ pub struct WeaponAvailability {
     /// Movement type.
     pub movement_type: usize,
     /// Excluded values.
-    pub excluded: Vec<i32>,
+    pub excluded: Vec<i64>,
     /// Health offset.
     pub health: usize,
     /// Team offset.
     pub team: usize,
     /// Spectator team.
-    pub spectator_team: i32,
+    pub spectator_team: i64,
     /// Flags offset.
     pub flags: usize,
     /// Respawn flag.
@@ -782,10 +782,10 @@ pub fn read_qvm_primary_weapons(
         },
         availability: WeaponAvailability {
             movement_type: read_aligned(&availability.field("movementType")?, common.client_stride, 4)?,
-            excluded: availability.field("excluded")?.list(|value| read_integer(value, i64::from(i32::MIN), i64::from(i32::MAX)).map(|number| number as i32))?,
+            excluded: availability.field("excluded")?.list(|value| value.integer(i64::MIN))?,
             health: read_aligned(&availability.field("health")?, common.client_stride, 4)?,
             team: read_aligned(&availability.field("team")?, common.client_stride, 4)?,
-            spectator_team: read_integer(&availability.field("spectatorTeam")?, i64::from(i32::MIN), i64::from(i32::MAX))? as i32,
+            spectator_team: availability.field("spectatorTeam")?.integer(i64::MIN)?,
             flags: read_aligned(&availability.field("flags")?, common.client_stride, 4)?,
             respawn_flag: read_integer(&availability.field("respawnFlag")?, 1, 0x7fff_ffff)? as i32,
         },
