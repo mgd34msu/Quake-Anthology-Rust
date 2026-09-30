@@ -23,6 +23,7 @@ use super::generic_frame::{
     Q2RereleaseFrameInput, RereleaseFrameHooks, millisecond_sum, step_q2_classic_frame,
     step_q2_rerelease_frame,
 };
+use super::super::items::{add_player_power_cells, flush_player_power_cells};
 use super::hand_grenade::{
     HandGrenadeTempo, HandProjectileSpec, HandThrowInput, calculate_hand_throw, hand_deadline,
     hand_fuse_deadline, hand_recovery_seconds,
@@ -305,10 +306,16 @@ fn use_ammo_count(
         return;
     }
     let owner = context.owner.actor.id().clone();
+    if ammo == "q2:ammo_cells" {
+        flush_player_power_cells(game, &owner);
+    }
     let before = game.host.inventory().count(&owner, &ammo);
     let owned = game.owned_of(owner.clone());
     if !game.host.inventory().consume(&owned, &ammo, count) {
         return;
+    }
+    if ammo == "q2:ammo_cells" {
+        add_player_power_cells(game, &owner, -count);
     }
     if context.rerelease
         && before > f64::from(context.definition.warning)
@@ -795,8 +802,14 @@ fn prime_finite_hold(
     let owner = context.owner.actor.id().clone();
     let owned = game.owned_of(owner.clone());
     let Some(ammo) = context.definition.ammo.clone() else { return };
+    if ammo == "q2:ammo_cells" {
+        flush_player_power_cells(game, &owner);
+    }
     if !game.host.inventory().consume(&owned, &ammo, 1.0) {
         return;
+    }
+    if ammo == "q2:ammo_cells" {
+        add_player_power_cells(game, &owner, -1.0);
     }
     ammo_changed(game, &owner, &ammo);
     let haste = context.input.haste || game.weapons.match_hooks.ctf.is_some_and(|ctf| (ctf.haste)(context, game));

@@ -234,6 +234,9 @@ impl Q2GameServices {
 
     /// Resolve an item display name (`itemName`).
     pub fn item_name(&self, classname: &str) -> Option<String> {
+        if let Some(item) = self.items.catalog.get(classname) {
+            return Some(item.name.clone());
+        }
         for module in &self.modules {
             if let Some(name) = (module.item_name)(classname) {
                 return Some(name);
@@ -520,6 +523,8 @@ impl Q2GameServices {
         self.authored_targets.remove(id);
         self.monsters.on_actor_released(id);
         self.weapons.on_actor_released(id);
+        self.movers.on_actor_released(id);
+        self.items.on_actor_released(id);
     }
 
     /// Resolve a weapon target (`weaponTarget`).

@@ -211,6 +211,16 @@ pub struct MoverRuntime {
     pub hooks: Option<Q2MoverHooks>,
 }
 
+impl MoverRuntime {
+    /// Clean arena state after any actor release.
+    pub fn on_actor_released(&mut self, actor: &ActorId) {
+        self.doors.remove(actor);
+        self.trains.remove(actor);
+        self.angular_moves.remove(actor);
+        self.linear_moves.remove(actor);
+    }
+}
+
 /// Q2 mover module (`Q2MoverModule`).
 #[derive(Debug, Clone, Copy)]
 pub struct Q2MoverModule {
