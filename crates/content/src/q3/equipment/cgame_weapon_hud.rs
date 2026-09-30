@@ -1,4 +1,4 @@
-//! Cgame weapon HUD profile (`cgame-weapon-hud.ts`).
+//! Cgame weapon HUD profile (`src/content/q3/equipment/cgame-weapon-hud.ts`).
 
 use qa_guest::qvm::game_data::{QvmArtifact, QvmRole};
 

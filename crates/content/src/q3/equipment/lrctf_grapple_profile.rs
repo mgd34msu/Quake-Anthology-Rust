@@ -1,4 +1,4 @@
-//! LRCTF grapple profile (`lrctf-grapple-profile.ts`).
+//! LRCTF grapple profile (`src/content/q3/equipment/lrctf-grapple-profile.ts`).
 
 use qa_guest::error::GuestError;
 use qa_guest::qvm::game_data::{ProfileReader, ProfileValue, QvmArtifact};

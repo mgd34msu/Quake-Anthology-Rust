@@ -1,4 +1,4 @@
-//! Q3 primary weapon profile (`weapon-profile.ts`).
+//! Q3 primary weapon profile (`src/content/q3/equipment/weapon-profile.ts`).
 
 use qa_guest::qvm::game_data::{AbiProfile, QvmArtifact, QvmRegionEvaluation};
 use qa_guest::qvm::game_equipment_movement::{QvmBodyTrace, QvmEquipmentMovementProfile, QvmLocomotion};

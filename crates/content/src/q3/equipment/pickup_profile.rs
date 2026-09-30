@@ -1,4 +1,4 @@
-//! Q3 native pickup profile (`pickup-profile.ts`).
+//! Q3 native pickup profile (`src/content/q3/equipment/pickup-profile.ts`).
 
 use std::rc::Rc;
 

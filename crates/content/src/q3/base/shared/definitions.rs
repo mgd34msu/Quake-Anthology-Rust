@@ -99,6 +99,25 @@ pub enum GameType {
     GtMaxGameType = 8,
 }
 
+impl GameType {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::GtFfa),
+            1 => Some(Self::GtTournament),
+            2 => Some(Self::GtSinglePlayer),
+            3 => Some(Self::GtTeam),
+            4 => Some(Self::GtCtf),
+            5 => Some(Self::Gt1fctf),
+            6 => Some(Self::GtObelisk),
+            7 => Some(Self::GtHarvester),
+            8 => Some(Self::GtMaxGameType),
+            _ => None,
+        }
+    }
+}
+
 /// Team.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -113,6 +132,21 @@ pub enum Team {
     TeamSpectator = 3,
     /// Team count.
     TeamNumTeams = 4,
+}
+
+impl Team {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::TeamFree),
+            1 => Some(Self::TeamRed),
+            2 => Some(Self::TeamBlue),
+            3 => Some(Self::TeamSpectator),
+            4 => Some(Self::TeamNumTeams),
+            _ => None,
+        }
+    }
 }
 
 /// Item type.
@@ -171,6 +205,30 @@ pub enum EntityType {
     EtTeam = 12,
     /// Events.
     EtEvents = 13,
+}
+
+impl EntityType {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::EtGeneral),
+            1 => Some(Self::EtPlayer),
+            2 => Some(Self::EtItem),
+            3 => Some(Self::EtMissile),
+            4 => Some(Self::EtMover),
+            5 => Some(Self::EtBeam),
+            6 => Some(Self::EtPortal),
+            7 => Some(Self::EtSpeaker),
+            8 => Some(Self::EtPushTrigger),
+            9 => Some(Self::EtTeleportTrigger),
+            10 => Some(Self::EtInvisible),
+            11 => Some(Self::EtGrapple),
+            12 => Some(Self::EtTeam),
+            13 => Some(Self::EtEvents),
+            _ => None,
+        }
+    }
 }
 
 /// Persistent player-state index.
@@ -332,6 +390,62 @@ pub fn stat_schema(product: Product) -> StatSchema {
     }
 }
 
+impl StatSchema {
+    /// Health stat slot.
+    #[must_use]
+    pub fn health(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.health as usize,
+            Self::Missionpack(layout) => layout.health as usize,
+        }
+    }
+
+    /// Armor stat slot.
+    #[must_use]
+    pub fn armor(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.armor as usize,
+            Self::Missionpack(layout) => layout.armor as usize,
+        }
+    }
+
+    /// Holdable-item stat slot.
+    #[must_use]
+    pub fn holdable_item(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.holdable_item as usize,
+            Self::Missionpack(layout) => layout.holdable_item as usize,
+        }
+    }
+
+    /// Weapons stat slot.
+    #[must_use]
+    pub fn weapons(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.weapons as usize,
+            Self::Missionpack(layout) => layout.weapons as usize,
+        }
+    }
+
+    /// Dead-yaw stat slot.
+    #[must_use]
+    pub fn dead_yaw(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.dead_yaw as usize,
+            Self::Missionpack(layout) => layout.dead_yaw as usize,
+        }
+    }
+
+    /// Clients-ready stat slot.
+    #[must_use]
+    pub fn clients_ready(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.clients_ready as usize,
+            Self::Missionpack(layout) => layout.clients_ready as usize,
+        }
+    }
+}
+
 /// Weapon count for a product.
 #[must_use]
 pub fn weapon_count(product: Product) -> i32 {
@@ -471,6 +585,30 @@ pub enum Weapon {
     WpProxLauncher = weapon::PROX_LAUNCHER,
     /// Chaingun.
     WpChaingun = weapon::CHAINGUN,
+}
+
+impl Weapon {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::WpNone),
+            1 => Some(Self::WpGauntlet),
+            2 => Some(Self::WpMachinegun),
+            3 => Some(Self::WpShotgun),
+            4 => Some(Self::WpGrenadeLauncher),
+            5 => Some(Self::WpRocketLauncher),
+            6 => Some(Self::WpLightning),
+            7 => Some(Self::WpRailgun),
+            8 => Some(Self::WpPlasmagun),
+            9 => Some(Self::WpBfg),
+            10 => Some(Self::WpGrapplingHook),
+            11 => Some(Self::WpNailgun),
+            12 => Some(Self::WpProxLauncher),
+            13 => Some(Self::WpChaingun),
+            _ => None,
+        }
+    }
 }
 
 /// Entity event.
@@ -737,5 +875,68 @@ mod tests {
         assert_eq!(Q3Product::from(Product::Missionpack), Q3Product::MissionPack);
         assert_eq!(Product::from(Q3Product::BaseQ3), Product::Baseq3);
         assert_eq!(Product::from(QvmProduct::Missionpack), Product::Missionpack);
+    }
+
+    #[test]
+    fn stat_schemas_match_source_slots() {
+        let StatSchema::Base(base) = stat_schema(Product::Baseq3) else {
+            panic!("base product must yield the base stat layout");
+        };
+        assert_eq!(base.product, Product::Baseq3);
+        assert_eq!((base.health, base.weapons, base.armor, base.max_health), (0, 2, 3, 6));
+        let StatSchema::Missionpack(pack) = stat_schema(Product::Missionpack) else {
+            panic!("missionpack product must yield the missionpack stat layout");
+        };
+        assert_eq!(pack.product, Product::Missionpack);
+        assert_eq!(pack.persistent_powerup, 2);
+        assert_eq!((pack.health, pack.weapons, pack.armor, pack.max_health), (0, 3, 4, 7));
+    }
+
+    #[test]
+    fn weapon_availability_follows_product() {
+        assert_eq!(weapon_count(Product::Baseq3), 11);
+        assert_eq!(weapon_count(Product::Missionpack), 14);
+        assert!(weapon_available(Product::Baseq3, Weapon::WpGrapplingHook));
+        assert!(!weapon_available(Product::Baseq3, Weapon::WpNailgun));
+        assert!(weapon_available(Product::Missionpack, Weapon::WpChaingun));
+        assert!(!weapon_available(Product::Missionpack, Weapon::WpNone));
+        assert_eq!(GameType::GtTeam as i32, 3);
+        assert_eq!(Team::TeamSpectator as i32, 3);
+        assert_eq!(EntityType::EtEvents as i32, 13);
+        assert_eq!(EV_EVENT_BITS, EV_EVENT_BIT1 | EV_EVENT_BIT2);
+    }
+    #[test]
+    fn product_spellings() {
+        assert_eq!(Product::Baseq3.as_str(), "baseq3");
+        assert_eq!(Product::Missionpack.as_str(), "missionpack");
+    }
+    #[test]
+    fn game_type_ordering_matches_source_comparisons() {
+        assert!((GameType::GtTeam as i32) < (GameType::GtCtf as i32));
+        assert!((GameType::GtTournament as i32) < (GameType::GtTeam as i32));
+        assert_eq!(GameType::from_i32(4), Some(GameType::GtCtf));
+        assert_eq!(GameType::from_i32(99), None);
+        assert_eq!(Team::from_i32(3), Some(Team::TeamSpectator));
+        assert_eq!(PersistentIndex::PersRank as i32, 2);
+    }
+    #[test]
+    fn stat_schema_slots() {
+        let base = stat_schema(Product::Baseq3);
+        assert_eq!(base.health(), BaseStatIndex::StatHealth as usize);
+        assert_eq!(base.armor(), BaseStatIndex::StatArmor as usize);
+        let mission = stat_schema(Product::Missionpack);
+        assert_eq!(mission.health(), MissionpackStatIndex::StatHealth as usize);
+        assert_eq!(mission.armor(), MissionpackStatIndex::StatArmor as usize);
+        assert!((ARMOR_PROTECTION - 0.66).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stat_schema_and_counts() {
+        assert_eq!(stat_schema(Product::Baseq3).weapons(), 2);
+        assert_eq!(stat_schema(Product::Missionpack).weapons(), 3);
+        assert_eq!(weapon_count(Product::Baseq3), 11);
+        assert_eq!(weapon_count(Product::Missionpack), 14);
+        assert_eq!(EntityType::from_i32(13), Some(EntityType::EtEvents));
+        assert_eq!(Weapon::from_i32(7), Some(Weapon::WpRailgun));
     }
 }

@@ -1254,4 +1254,197 @@ mod tests {
             Err(ItemsError::Drop("BG_EvaluateTrajectory: unknown trType: 7".to_string()))
         );
     }
+
+    struct FixedInventory {
+        product: Product,
+        health: i32,
+        armor: i32,
+        max_health: i32,
+        holdable_item: i32,
+        team: i32,
+        ammo: i32,
+        powerup: i32,
+        persistent: i32,
+    }
+
+    impl PlayerInventory for FixedInventory {
+        fn product(&self) -> Product {
+            self.product
+        }
+
+        fn health(&self) -> i32 {
+            self.health
+        }
+
+        fn armor(&self) -> i32 {
+            self.armor
+        }
+
+        fn max_health(&self) -> i32 {
+            self.max_health
+        }
+
+        fn holdable_item(&self) -> i32 {
+            self.holdable_item
+        }
+
+        fn team(&self) -> i32 {
+            self.team
+        }
+
+        fn ammo(&self, _weapon: Weapon) -> i32 {
+            self.ammo
+        }
+
+        fn powerup(&self, _powerup: Powerup) -> i32 {
+            self.powerup
+        }
+
+        fn persistent_powerup_index(&self) -> i32 {
+            self.persistent
+        }
+    }
+
+    fn base_inventory() -> FixedInventory {
+        FixedInventory {
+            product: Product::Baseq3,
+            health: 100,
+            armor: 0,
+            max_health: 100,
+            holdable_item: 0,
+            team: Team::TeamFree as i32,
+            ammo: 0,
+            powerup: 0,
+            persistent: 0,
+        }
+    }
+
+    #[test]
+    fn item_lists_split_at_the_missionpack_tail() {
+        assert_eq!(item_list(Product::Baseq3).len(), 36);
+        assert_eq!(item_list(Product::Missionpack).len(), 52);
+        assert_eq!(item_at(Product::Baseq3, 0).unwrap().item_type(), ItemType::ItBad);
+        assert_eq!(item_at(Product::Baseq3, 8).unwrap().pickup_name, Some("Gauntlet"));
+        assert!(item_at(Product::Baseq3, 36).is_err());
+        assert_eq!(item_at(Product::Missionpack, 51).unwrap().pickup_name, Some("Chaingun"));
+    }
+
+    #[test]
+    fn item_finds_cover_names_tags_and_errors() {
+        assert_eq!(
+            find_item(Product::Baseq3, "quad damage").unwrap().class_name,
+            Some("item_quad")
+        );
+        assert!(find_item(Product::Baseq3, "missing").is_none());
+        assert_eq!(
+            find_item_for_powerup(Product::Baseq3, Powerup::PwFlight)
+                .unwrap()
+                .class_name,
+            Some("item_flight")
+        );
+        assert_eq!(
+            find_item_for_holdable(Product::Baseq3, Holdable::HiMedkit)
+                .unwrap()
+                .class_name,
+            Some("holdable_medkit")
+        );
+        assert!(find_item_for_holdable(Product::Baseq3, Holdable::HiNumHoldable).is_err());
+        assert_eq!(
+            find_item_for_weapon(Product::Baseq3, Weapon::WpShotgun)
+                .unwrap()
+                .class_name,
+            Some("weapon_shotgun")
+        );
+        assert!(find_item_for_weapon(Product::Baseq3, Weapon::WpNone).is_err());
+    }
+
+    #[test]
+    fn grab_rules_match_bg_canitemgrabbed() {
+        let ps = base_inventory();
+        let weapon = PickupEntity {
+            model_index: 10,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(can_item_be_grabbed(0, &weapon, &ps).unwrap());
+        let mut full_ammo = base_inventory();
+        full_ammo.ammo = 200;
+        let ammo = PickupEntity {
+            model_index: 18,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(!can_item_be_grabbed(0, &ammo, &full_ammo).unwrap());
+        let mut hurt = base_inventory();
+        hurt.health = 50;
+        let health = PickupEntity {
+            model_index: 5,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(can_item_be_grabbed(0, &health, &hurt).unwrap());
+        assert!(!can_item_be_grabbed(0, &health, &ps).unwrap());
+        let mut red = base_inventory();
+        red.team = Team::TeamRed as i32;
+        let blue_flag = PickupEntity {
+            model_index: 35,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(can_item_be_grabbed(GameType::GtCtf as i32, &blue_flag, &red).unwrap());
+        let red_flag = PickupEntity {
+            model_index: 34,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(!can_item_be_grabbed(GameType::GtCtf as i32, &red_flag, &red).unwrap());
+        let mut holding = base_inventory();
+        holding.holdable_item = 1;
+        let teleporter = PickupEntity {
+            model_index: 26,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(!can_item_be_grabbed(0, &teleporter, &holding).unwrap());
+        let bad = PickupEntity {
+            model_index: 0,
+            model_index2: 0,
+            generic1: 0,
+        };
+        assert!(can_item_be_grabbed(0, &bad, &ps).is_err());
+    }
+
+    #[test]
+    fn armor_grab_rules_cover_scout_and_guard() {
+        let mut scout = base_inventory();
+        scout.product = Product::Missionpack;
+        scout.persistent = 42;
+        assert!(!can_q3_armor_be_grabbed(&scout).unwrap());
+        let mut guard = base_inventory();
+        guard.product = Product::Missionpack;
+        guard.persistent = 43;
+        guard.armor = 100;
+        assert!(!can_q3_armor_be_grabbed(&guard).unwrap());
+        guard.armor = 99;
+        assert!(can_q3_armor_be_grabbed(&guard).unwrap());
+        let mut plain = base_inventory();
+        plain.armor = 199;
+        assert!(can_q3_armor_be_grabbed(&plain).unwrap());
+        plain.armor = 200;
+        assert!(!can_q3_armor_be_grabbed(&plain).unwrap());
+    }
+
+    #[test]
+    fn player_touch_uses_source_bounds() {
+        let item = Trajectory {
+            trajectory_type: TrajectoryType::TrStationary as i32,
+            time: 0,
+            duration: 0,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(0.0, 0.0, 0.0),
+        };
+        assert!(player_touches_item(vec3(0.0, 0.0, 0.0), &item, 0).unwrap());
+        assert!(!player_touches_item(vec3(45.0, 0.0, 0.0), &item, 0).unwrap());
+        assert!(!player_touches_item(vec3(0.0, 37.0, 0.0), &item, 0).unwrap());
+    }
 }
