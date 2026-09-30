@@ -10,3 +10,6 @@ pub mod floater;
 pub mod flyer;
 pub mod hover;
 pub mod insane;
+pub mod mutant;
+pub mod parasite;
+pub mod proboscis;
