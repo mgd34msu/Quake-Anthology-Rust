@@ -3879,19 +3879,16 @@ fn required_content(launch: &SelectedLaunch) -> Vec<ContentId> {
     references.extend(launch.weapons.iter());
     let equipment = equipment_provider_refs(&launch.equipment);
     references.extend(equipment.iter());
-    references.extend(
-        [
-            &launch.engine_behavior,
-            &launch.combat,
-            &launch.inventory,
-            &launch.r#match,
-            &launch.transition,
-            &launch.presentation.hud,
-            &launch.presentation.effects,
-            &launch.presentation.audio,
-        ]
-        .into_iter(),
-    );
+    references.extend([
+        &launch.engine_behavior,
+        &launch.combat,
+        &launch.inventory,
+        &launch.r#match,
+        &launch.transition,
+        &launch.presentation.hud,
+        &launch.presentation.effects,
+        &launch.presentation.audio,
+    ]);
     let owners: Vec<&ProviderReference> = launch
         .execution
         .iter()
@@ -3909,10 +3906,7 @@ fn required_content(launch: &SelectedLaunch) -> Vec<ContentId> {
     }
     let monsters = selected_monster_definitions(&launch.enemies);
     references.extend(monsters.iter().map(|definition| &definition.source));
-    let mut contents: Vec<ContentId> = vec![
-        launch.map.geometry.content.clone(),
-        launch.presentation.assets.clone(),
-    ];
+    let mut contents: Vec<ContentId> = vec![launch.map.geometry.content.clone(), launch.presentation.assets.clone()];
     if let EnvironmentSelection::Selected { resource } = &launch.presentation.environment {
         contents.push(resource.content.clone());
     }
@@ -3973,9 +3967,7 @@ pub fn resolve_launch_resource(
                 default_order: order_for_content(catalog, &mounted.plan, &request.content)?,
                 prefix_orders: Vec::new(),
             })?;
-            reader.open(&request.path, |mount| {
-                allowed_paths.contains(&launch_mount_path(mount))
-            })?
+            reader.open(&request.path, |mount| allowed_paths.contains(&launch_mount_path(mount)))?
         }
     };
     let Some(opened) = opened else {
@@ -4035,7 +4027,12 @@ pub fn prepare_launch_mount_plan(
             // The donor quakec module carries a constant `server-game` role.
             ExecutionModule::Quakec { owner, .. } => (owner, ModuleRole::ServerGame),
         };
-        let key = format!("{}:{}/{}", owner.provider.namespace, owner.provider.name, module_role_name(role));
+        let key = format!(
+            "{}:{}/{}",
+            owner.provider.namespace,
+            owner.provider.name,
+            module_role_name(role)
+        );
         if !execution_roles.insert(key.clone()) {
             return Err(failed(format!("Conflicting execution modules for {key}")));
         }
@@ -4147,9 +4144,7 @@ pub fn resolve_launch(
             })?;
             for request in requests.iter().filter(|request| &request.content == content) {
                 match scoped.resolve(&request.path)? {
-                    Some(resource)
-                        if allowed_paths.contains(&provenance_mount_path(&resource.provenance)) =>
-                    {
+                    Some(resource) if allowed_paths.contains(&provenance_mount_path(&resource.provenance)) => {
                         admit_resource(&mut resources, resource);
                     }
                     _ => {
@@ -4186,7 +4181,12 @@ pub fn resolve_launch(
                     api: *api,
                 });
             }
-            ExecutionModule::Qvm { owner, artifact, role, api } => {
+            ExecutionModule::Qvm {
+                owner,
+                artifact,
+                role,
+                api,
+            } => {
                 let resolved =
                     resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
                 admit_resource(&mut resources, resolved.clone());
@@ -4254,7 +4254,12 @@ pub fn resolve_launch(
     }
     let equipment = equipment_providers();
     let mut selected_source_ids: HashSet<ProviderId> = HashSet::new();
-    for id in [&equipment.threewave, &equipment.ctf, &equipment.lmctf, &equipment.hand_grenades] {
+    for id in [
+        &equipment.threewave,
+        &equipment.ctf,
+        &equipment.lmctf,
+        &equipment.hand_grenades,
+    ] {
         selected_source_ids.insert(id.clone());
     }
     for reference in equipment_provider_refs(&selected.equipment) {
@@ -4267,8 +4272,7 @@ pub fn resolve_launch(
         selected_source_ids.insert(source.provider.clone());
     }
     let monster_profiles = selected_monster_timing(&selected.enemies);
-    let weapon_profiles =
-        weapons.selected_weapon_timing(&selected.map.entities, &selected.weapons, options.catalog)?;
+    let weapon_profiles = weapons.selected_weapon_timing(&selected.map.entities, &selected.weapons, options.catalog)?;
     let mut timing: Vec<ProviderTiming> = selected
         .timing
         .iter()
@@ -4373,6 +4377,7 @@ pub struct SourceWeaponBehaviorMetadata {
 
 /// Weapon behavior compatibility (`WeaponBehaviorCompatibility`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[allow(clippy::large_enum_variant)]
 pub enum WeaponBehaviorCompatibility {
     /// Supported behavior with its definition.
     Supported {
@@ -4460,7 +4465,9 @@ pub struct QcWeaponProgramSnapshot {
 impl QcWeaponProgramSnapshot {
     /// Read one initial global word, or `None` when out of range.
     fn word(&self, offset: i32) -> Option<i32> {
-        usize::try_from(offset).ok().and_then(|index| self.initial_global_words.get(index).copied())
+        usize::try_from(offset)
+            .ok()
+            .and_then(|index| self.initial_global_words.get(index).copied())
     }
 }
 
@@ -4477,9 +4484,7 @@ pub fn resolve_qc_weapon_behavior(
         };
     }
     if let Some(reason) = &program.capability_error {
-        return WeaponBehaviorCompatibility::Unsupported {
-            reason: reason.clone(),
-        };
+        return WeaponBehaviorCompatibility::Unsupported { reason: reason.clone() };
     }
     let callback = |name: &str| -> Option<WeaponBehaviorCallback> {
         let function = program.functions.iter().find(|candidate| candidate.name == name)?;
@@ -4545,7 +4550,11 @@ impl WeaponBehaviorCatalog {
     /// Definitions for one projectile role.
     #[must_use]
     pub fn for_role(&self, role: ProjectileRole) -> Vec<WeaponBehaviorDefinition> {
-        self.entries.iter().filter(|entry| entry.role == role).cloned().collect()
+        self.entries
+            .iter()
+            .filter(|entry| entry.role == role)
+            .cloned()
+            .collect()
     }
 
     /// Require one definition by identity.
@@ -4593,8 +4602,7 @@ pub fn inspect_qc_trajectory_bindings(program: &QcWeaponProgramSnapshot) -> Vec<
             .unwrap_or(program.statements.len());
         let mut cursor = start;
         while cursor.saturating_add(1) < end {
-            let (Some(address), Some(store)) =
-                (program.statements.get(cursor), program.statements.get(cursor + 1))
+            let (Some(address), Some(store)) = (program.statements.get(cursor), program.statements.get(cursor + 1))
             else {
                 cursor += 1;
                 continue;
@@ -4609,18 +4617,21 @@ pub fn inspect_qc_trajectory_bindings(program: &QcWeaponProgramSnapshot) -> Vec<
             }
             let target = program.word(store.a);
             let callback = target.and_then(|index| {
-                usize::try_from(index).ok().and_then(|at| program.functions.get(at)).filter(|candidate| {
-                    candidate.index != 0 && candidate.first_statement >= 0
-                })
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|at| program.functions.get(at))
+                    .filter(|candidate| candidate.index != 0 && candidate.first_statement >= 0)
             });
             let Some(callback) = callback else {
                 continue;
             };
             // Only the literal function global is an artifact identity;
             // mutable function variables require runtime observation.
-            if !program.function_globals.iter().any(|global| {
-                global.offset == store.a && global.name == callback.name
-            }) {
+            if !program
+                .function_globals
+                .iter()
+                .any(|global| global.offset == store.a && global.name == callback.name)
+            {
                 continue;
             }
             if program
@@ -4695,7 +4706,10 @@ fn declaration_digest(value: &str) -> Option<ContentDigest> {
     if is_content_digest(value) {
         return Some(ContentDigest(value.to_string()));
     }
-    let hex = value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+    let hex = value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
     if hex {
         create_content_digest(value).ok()
     } else {
@@ -4716,8 +4730,7 @@ pub fn discover_qc_weapon_behaviors(
             reason: "No authored weapon behavior declaration; bytecode callback stores do not establish projectile role, activation gate or selected aspect".to_string(),
         });
     };
-    let text =
-        std::str::from_utf8(&opened.bytes).map_err(|_| invalid("Invalid weapon behavior declaration"))?;
+    let text = std::str::from_utf8(&opened.bytes).map_err(|_| invalid("Invalid weapon behavior declaration"))?;
     let value = parse_save_json(text).map_err(|_| invalid("Invalid weapon behavior declaration"))?;
     let version_ok = matches!(value.get("version"), Some(SaveJson::Number(version)) if *version == 1.0);
     let SaveJson::Array(behaviors) = value.get("behaviors").cloned().unwrap_or(SaveJson::Null) else {
@@ -4734,14 +4747,25 @@ pub fn discover_qc_weapon_behaviors(
             && matches!(entry.get("title"), Some(SaveJson::String(_)))
             && matches!(entry.get("artifactDigest"), Some(SaveJson::String(_)))
             && matches!(entry.get("fireFunction"), Some(SaveJson::String(_)))
-            && entry.get("activationFunction").is_none_or(|value| matches!(value, SaveJson::String(_)))
+            && entry
+                .get("activationFunction")
+                .is_none_or(|value| matches!(value, SaveJson::String(_)))
             && entry.get("role").is_some_and(parse_projectile_role_is_valid)
             && matches!(entry.get("aspect"), Some(SaveJson::String(aspect)) if aspect == "trajectory");
         if !valid {
             return Err(invalid("Invalid weapon behavior entry"));
         }
-        let (Some(SaveJson::String(id)), Some(SaveJson::String(title)), Some(SaveJson::String(digest_text)), Some(SaveJson::String(fire))) =
-            (entry.get("id"), entry.get("title"), entry.get("artifactDigest"), entry.get("fireFunction"))
+        let (
+            Some(SaveJson::String(id)),
+            Some(SaveJson::String(title)),
+            Some(SaveJson::String(digest_text)),
+            Some(SaveJson::String(fire)),
+        ) = (
+            entry.get("id"),
+            entry.get("title"),
+            entry.get("artifactDigest"),
+            entry.get("fireFunction"),
+        )
         else {
             return Err(invalid("Invalid weapon behavior entry"));
         };
@@ -4751,7 +4775,10 @@ pub fn discover_qc_weapon_behaviors(
         if !seen.insert(id.clone()) {
             return Err(invalid(format!("Duplicate declared weapon behavior {id}")));
         }
-        let role = entry.get("role").and_then(parse_projectile_role).ok_or_else(|| invalid("Invalid weapon behavior entry"))?;
+        let role = entry
+            .get("role")
+            .and_then(parse_projectile_role)
+            .ok_or_else(|| invalid("Invalid weapon behavior entry"))?;
         let activation = match entry.get("activationFunction") {
             Some(SaveJson::String(name)) => Some(name.clone()),
             _ => None,
@@ -4816,11 +4843,7 @@ pub trait QvmWeaponBehaviorService<Artifact, Profile> {
     ) -> Result<QvmWeaponArtifactResolution<Artifact>, CatalogError>;
     /// Read the weapon profile guarding a bytecode artifact
     /// (`readQvmWeaponProfile`).
-    fn read_qvm_weapon_profile(
-        &self,
-        declaration: &SaveJson,
-        artifact: &Artifact,
-    ) -> Result<Profile, CatalogError>;
+    fn read_qvm_weapon_profile(&self, declaration: &SaveJson, artifact: &Artifact) -> Result<Profile, CatalogError>;
     /// Behavior identity carried by a profile.
     fn qvm_weapon_profile_id(&self, profile: &Profile) -> String;
 }
@@ -4832,9 +4855,9 @@ pub fn read_qvm_weapon_behavior_document(bytes: &[u8]) -> Result<Vec<SaveJson>, 
     let value = parse_save_json(text)?;
     let reader = SaveReader::at(&value, "qvm-weapon-behaviors.json");
     reader.field("version").literal_i64(1)?;
-    Ok(reader.field("profiles").list(|entry| {
-        Ok::<SaveJson, ValueError>(entry.value.cloned().unwrap_or(SaveJson::Null))
-    })?)
+    Ok(reader
+        .field("profiles")
+        .list(|entry| Ok::<SaveJson, ValueError>(entry.value.cloned().unwrap_or(SaveJson::Null)))?)
 }
 
 /// Load one declared QVM weapon behavior (`loadQvmWeaponBehavior`).
@@ -4846,7 +4869,11 @@ pub fn load_qvm_weapon_behavior<Artifact, Profile>(
 ) -> Result<MountedQvmWeaponBehavior<Artifact, Profile>, CatalogError> {
     let reader = SaveReader::new(declaration);
     let path = normalize_resource_path(&reader.field("artifactPath").string()?)?;
-    let abi_profile = match reader.field("abiProfile").choice_str(&["q3-modern", "q3-1.16n-base"])?.as_str() {
+    let abi_profile = match reader
+        .field("abiProfile")
+        .choice_str(&["q3-modern", "q3-1.16n-base"])?
+        .as_str()
+    {
         "q3-modern" => QvmAbiProfile::Modern,
         _ => QvmAbiProfile::Legacy116n,
     };
@@ -4915,10 +4942,8 @@ pub struct MountedNativeWeaponBehavior {
 /// lane).
 pub trait NativeWeaponBehaviorService {
     /// Read a native weapon declaration (`readNativeWeaponDeclaration`).
-    fn read_native_weapon_declaration(
-        &self,
-        value: &SaveJson,
-    ) -> Result<NativeWeaponBehaviorDeclaration, CatalogError>;
+    fn read_native_weapon_declaration(&self, value: &SaveJson)
+        -> Result<NativeWeaponBehaviorDeclaration, CatalogError>;
     /// Revalidate a declaration against its module, validate the executable
     /// image, and derive the executable definition (`readNativeWeaponDeclaration`
     /// with module identity, `validateNativeWeaponImage`,
@@ -4944,9 +4969,9 @@ pub fn read_native_weapon_behavior_document(bytes: &[u8]) -> Result<Vec<SaveJson
     let value = parse_save_json(text)?;
     let reader = SaveReader::at(&value, "native-weapon-behaviors.json");
     reader.field("version").literal_i64(1)?;
-    Ok(reader.field("profiles").list(|entry| {
-        Ok::<SaveJson, ValueError>(entry.value.cloned().unwrap_or(SaveJson::Null))
-    })?)
+    Ok(reader
+        .field("profiles")
+        .list(|entry| Ok::<SaveJson, ValueError>(entry.value.cloned().unwrap_or(SaveJson::Null)))?)
 }
 
 /// Load one declared native weapon behavior (`loadNativeWeaponBehavior`).
@@ -5008,14 +5033,22 @@ pub fn discover_native_weapon_behaviors(
         let Some(declaration) = service.builtin_rerelease_weapon_declaration(&module)? else {
             return Ok(None);
         };
-        return Ok(Some(vec![load_declared_native_weapon_behavior(mounts, provider, &declaration, service)?]));
+        return Ok(Some(vec![load_declared_native_weapon_behavior(
+            mounts,
+            provider,
+            &declaration,
+            service,
+        )?]));
     };
     let mut result: Vec<MountedNativeWeaponBehavior> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for declaration in read_native_weapon_behavior_document(&document.bytes)? {
         let entry = load_native_weapon_behavior(mounts, provider, &declaration, service)?;
         if !seen.insert(entry.definition.id.clone()) {
-            return Err(failed(format!("Duplicate native weapon behavior {}", entry.definition.id)));
+            return Err(failed(format!(
+                "Duplicate native weapon behavior {}",
+                entry.definition.id
+            )));
         }
         result.push(entry);
     }
@@ -6564,12 +6597,20 @@ mod tests {
             mounts: None,
         };
         let error = prepare_launch_mount_plan(&options, &StubWeapons { timing: Vec::new() }).unwrap_err();
-        assert!(error.to_string().contains("Conflicting execution modules for q1:official/server-game"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("Conflicting execution modules for q1:official/server-game"),
+            "{error}"
+        );
     }
 
     #[test]
     fn launch_resolves_geometry_execution_and_ordering() {
-        for (profile, server, client, ui) in [(QvmAbiProfile::Modern, 8u8, 4u8, 6u8), (QvmAbiProfile::Legacy116n, 7u8, 3u8, 4u8)] {
+        for (profile, server, client, ui) in [
+            (QvmAbiProfile::Modern, 8u8, 4u8, 6u8),
+            (QvmAbiProfile::Legacy116n, 7u8, 3u8, 4u8),
+        ] {
             let root = temp_root("launch");
             std::fs::create_dir_all(root.join("maps")).unwrap();
             std::fs::create_dir_all(root.join("vm")).unwrap();
@@ -6648,13 +6689,27 @@ mod tests {
             assert_eq!(recipe.map.geometry.requested_path, "maps/test.bsp");
             assert_eq!(recipe.execution.len(), 4);
             assert!(matches!(recipe.execution[0], ExecutionModule::Typescript { .. }));
-            assert!(matches!(recipe.execution[1], ExecutionModule::Qvm { api: Q3ApiIdentity::Qagame(v), .. } if v == server));
-            assert!(matches!(recipe.execution[2], ExecutionModule::Qvm { api: Q3ApiIdentity::Cgame(v), .. } if v == client));
+            assert!(
+                matches!(recipe.execution[1], ExecutionModule::Qvm { api: Q3ApiIdentity::Qagame(v), .. } if v == server)
+            );
+            assert!(
+                matches!(recipe.execution[2], ExecutionModule::Qvm { api: Q3ApiIdentity::Cgame(v), .. } if v == client)
+            );
             assert!(matches!(recipe.execution[3], ExecutionModule::Qvm { api: Q3ApiIdentity::Ui(v), .. } if v == ui));
-            assert!(recipe.resources.iter().any(|resource| resource.requested_path == "maps/test.bsp"));
-            assert!(recipe.resources.iter().any(|resource| resource.requested_path == "vm/qagame.qvm"));
+            assert!(recipe
+                .resources
+                .iter()
+                .any(|resource| resource.requested_path == "maps/test.bsp"));
+            assert!(recipe
+                .resources
+                .iter()
+                .any(|resource| resource.requested_path == "vm/qagame.qvm"));
             // Single-source artifacts pin their mount order.
-            assert!(recipe.mounts.prefix_orders.iter().any(|order| order.prefix == "vm/qagame.qvm"));
+            assert!(recipe
+                .mounts
+                .prefix_orders
+                .iter()
+                .any(|order| order.prefix == "vm/qagame.qvm"));
             // Stock preset timing is replaced by surviving, equipment, monster, and weapon rows.
             assert_eq!(recipe.timing.len(), 2);
             assert_eq!(recipe.timing[0].provider, ProviderId::new("q1", "custom"));
@@ -6700,7 +6755,10 @@ mod tests {
         let error = resolve_launch_resource(
             &catalog,
             &mounted,
-            &ResourceRequest { content: content.clone(), path: "maps/absent.bsp".to_string() },
+            &ResourceRequest {
+                content: content.clone(),
+                path: "maps/absent.bsp".to_string(),
+            },
             LaunchResourceKind::Map,
         )
         .unwrap_err();
@@ -6709,11 +6767,19 @@ mod tests {
         let error = resolve_launch_resource(
             &catalog,
             &mounted,
-            &ResourceRequest { content: other_content.clone(), path: "maps/test.bsp".to_string() },
+            &ResourceRequest {
+                content: other_content.clone(),
+                path: "maps/test.bsp".to_string(),
+            },
             LaunchResourceKind::Map,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("is absent from its selected content and base"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("is absent from its selected content and base"),
+            "{error}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -6736,17 +6802,45 @@ mod tests {
             digest: seam_digest(),
             capability_error: None,
             functions: vec![
-                QcWeaponFunction { index: 0, name: "<none>".to_string(), first_statement: -1, parameter_words: 0 },
-                QcWeaponFunction { index: 1, name: "fire".to_string(), first_statement: 0, parameter_words: 0 },
-                QcWeaponFunction { index: 2, name: "think".to_string(), first_statement: 2, parameter_words: 0 },
+                QcWeaponFunction {
+                    index: 0,
+                    name: "<none>".to_string(),
+                    first_statement: -1,
+                    parameter_words: 0,
+                },
+                QcWeaponFunction {
+                    index: 1,
+                    name: "fire".to_string(),
+                    first_statement: 0,
+                    parameter_words: 0,
+                },
+                QcWeaponFunction {
+                    index: 2,
+                    name: "think".to_string(),
+                    first_statement: 2,
+                    parameter_words: 0,
+                },
             ],
             statements: vec![
-                QcWeaponStatement { opcode: QcWeaponOpcode::Address, a: 0, b: 10, c: 4 },
-                QcWeaponStatement { opcode: QcWeaponOpcode::StorePFn, a: 11, b: 4, c: 0 },
+                QcWeaponStatement {
+                    opcode: QcWeaponOpcode::Address,
+                    a: 0,
+                    b: 10,
+                    c: 4,
+                },
+                QcWeaponStatement {
+                    opcode: QcWeaponOpcode::StorePFn,
+                    a: 11,
+                    b: 4,
+                    c: 0,
+                },
             ],
             think_field_offset: Some(7),
             initial_global_words: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 2],
-            function_globals: vec![QcFunctionGlobal { name: "think".to_string(), offset: 11 }],
+            function_globals: vec![QcFunctionGlobal {
+                name: "think".to_string(),
+                offset: 11,
+            }],
         }
     }
 
@@ -6816,11 +6910,19 @@ mod tests {
             panic!("expected supported");
         };
         catalog.add(definition.clone()).unwrap();
-        assert!(catalog.add(definition.clone()).unwrap_err().to_string().contains("Duplicate weapon behavior"));
+        assert!(catalog
+            .add(definition.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("Duplicate weapon behavior"));
         assert_eq!(catalog.for_role(ProjectileRole::Rocket).len(), 1);
         assert!(catalog.for_role(ProjectileRole::Grenade).is_empty());
         assert_eq!(catalog.require("q1:rocket").unwrap(), definition);
-        assert!(catalog.require("q1:absent").unwrap_err().to_string().contains("Unknown weapon behavior"));
+        assert!(catalog
+            .require("q1:absent")
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown weapon behavior"));
     }
 
     #[test]
@@ -6828,12 +6930,24 @@ mod tests {
         let bindings = inspect_qc_trajectory_bindings(&seam_program());
         assert_eq!(
             bindings,
-            vec![QcTrajectoryBindingInspection { producer_function: 1, think_function: 2, statement: 1 }]
+            vec![QcTrajectoryBindingInspection {
+                producer_function: 1,
+                think_function: 2,
+                statement: 1
+            }]
         );
-        let no_think = QcWeaponProgramSnapshot { think_field_offset: None, ..seam_program() };
+        let no_think = QcWeaponProgramSnapshot {
+            think_field_offset: None,
+            ..seam_program()
+        };
         assert!(inspect_qc_trajectory_bindings(&no_think).is_empty());
         let mut reassigned = seam_program();
-        reassigned.statements.push(QcWeaponStatement { opcode: QcWeaponOpcode::StoreFn, a: 0, b: 11, c: 0 });
+        reassigned.statements.push(QcWeaponStatement {
+            opcode: QcWeaponOpcode::StoreFn,
+            a: 0,
+            b: 11,
+            c: 0,
+        });
         assert!(inspect_qc_trajectory_bindings(&reassigned).is_empty());
     }
 
@@ -6854,12 +6968,8 @@ mod tests {
                     requested_path: path.to_string(),
                     provenance: ResourceProvenance::Loose {
                         mount: LooseMount {
-                            identity: create_mount_identity(
-                                create_mount_id("seam", "stub").unwrap(),
-                                content,
-                                0,
-                            )
-                            .unwrap(),
+                            identity: create_mount_identity(create_mount_id("seam", "stub").unwrap(), content, 0)
+                                .unwrap(),
                             root_path: "/stub".to_string(),
                         },
                         member_path: path.to_string(),
@@ -6880,7 +6990,10 @@ mod tests {
     fn qc_weapon_discovery_reads_declarations_or_reports_bindings() {
         let program = seam_program();
         let module = seam_module();
-        let empty = StubMounts { files: HashMap::new(), digest: seam_digest() };
+        let empty = StubMounts {
+            files: HashMap::new(),
+            digest: seam_digest(),
+        };
         match discover_qc_weapon_behaviors(&empty, &module, &program).unwrap() {
             MountedWeaponBehaviorDiscovery::Undeclared { bindings, reason } => {
                 assert_eq!(bindings.len(), 1);
@@ -6904,20 +7017,29 @@ mod tests {
             MountedWeaponBehaviorDiscovery::Declared { declarations } => {
                 assert_eq!(declarations.len(), 2);
                 assert!(matches!(declarations[0], WeaponBehaviorCompatibility::Supported { .. }));
-                assert!(matches!(declarations[1], WeaponBehaviorCompatibility::Unsupported { .. }));
+                assert!(matches!(
+                    declarations[1],
+                    WeaponBehaviorCompatibility::Unsupported { .. }
+                ));
             }
             discovery => panic!("expected declared, got {discovery:?}"),
         }
         for (name, bytes) in [
             ("bad json", b"{not json".to_vec()),
             ("bad version", br#"{"version": 2, "behaviors": []}"#.to_vec()),
-            ("bad entry", br#"{"version": 1, "behaviors": [{"id": "no-namespace"}]}"#.to_vec()),
+            (
+                "bad entry",
+                br#"{"version": 1, "behaviors": [{"id": "no-namespace"}]}"#.to_vec(),
+            ),
         ] {
             let mounts = StubMounts {
                 files: HashMap::from([("weapon-behaviors.json".to_string(), bytes)]),
                 digest: seam_digest(),
             };
-            assert!(discover_qc_weapon_behaviors(&mounts, &module, &program).is_err(), "{name}");
+            assert!(
+                discover_qc_weapon_behaviors(&mounts, &module, &program).is_err(),
+                "{name}"
+            );
         }
         let bad_digest = br#"{"version": 1, "behaviors": [
             {"id": "q1:bad", "title": "Bad", "artifactDigest": "zzz", "role": "rocket",
@@ -6940,7 +7062,10 @@ mod tests {
             digest: seam_digest(),
         };
         let error = discover_qc_weapon_behaviors(&mounts, &module, &program).unwrap_err();
-        assert!(error.to_string().contains("Duplicate declared weapon behavior"), "{error}");
+        assert!(
+            error.to_string().contains("Duplicate declared weapon behavior"),
+            "{error}"
+        );
     }
 
     struct StubQvmService {
@@ -6961,11 +7086,7 @@ mod tests {
             }
         }
 
-        fn read_qvm_weapon_profile(
-            &self,
-            declaration: &SaveJson,
-            _artifact: &String,
-        ) -> Result<String, CatalogError> {
+        fn read_qvm_weapon_profile(&self, declaration: &SaveJson, _artifact: &String) -> Result<String, CatalogError> {
             match declaration.get("id") {
                 Some(SaveJson::String(id)) => Ok(id.clone()),
                 _ => Err(invalid("missing profile id")),
@@ -6986,7 +7107,8 @@ mod tests {
 
     #[test]
     fn qvm_weapon_behaviors_load_and_deduplicate() {
-        let document = read_qvm_weapon_behavior_document(br#"{"version": 1, "profiles": [{"id": "a"}, {"id": "b"}]}"#).unwrap();
+        let document =
+            read_qvm_weapon_behavior_document(br#"{"version": 1, "profiles": [{"id": "a"}, {"id": "b"}]}"#).unwrap();
         assert_eq!(document.len(), 2);
         assert!(read_qvm_weapon_behavior_document(br#"{"version": 2, "profiles": []}"#).is_err());
         let provider = ProviderId::new("q3", "gameplay");
@@ -7008,10 +7130,17 @@ mod tests {
         assert_eq!(loaded.artifact, "vm/qagame.qvm");
         assert_eq!(loaded.resource.requested_path, "vm/qagame.qvm");
         assert_eq!(loaded.profile, "qvm:rocket");
-        let discovered = discover_qvm_weapon_behaviors(&mounts, &provider, &service).unwrap().unwrap();
+        let discovered = discover_qvm_weapon_behaviors(&mounts, &provider, &service)
+            .unwrap()
+            .unwrap();
         assert_eq!(discovered.len(), 2);
-        let absent = StubMounts { files: HashMap::new(), digest: seam_digest() };
-        assert!(discover_qvm_weapon_behaviors(&absent, &provider, &service).unwrap().is_none());
+        let absent = StubMounts {
+            files: HashMap::new(),
+            digest: seam_digest(),
+        };
+        assert!(discover_qvm_weapon_behaviors(&absent, &provider, &service)
+            .unwrap()
+            .is_none());
         let error = load_qvm_weapon_behavior(&absent, &provider, &qvm_declaration("qvm:rocket"), &service).unwrap_err();
         assert!(error.to_string().contains("artifact is missing"), "{error}");
         let error = load_qvm_weapon_behavior(
@@ -7044,7 +7173,10 @@ mod tests {
             NativeWeaponAllocate, NativeWeaponCalls, NativeWeaponClient, NativeWeaponCommand, NativeWeaponEntity,
             NativeWeaponEntry, NativeWeaponEquipped, NativeWeaponFree, NativeWeaponThink, NativeWeaponTime,
         };
-        let entry = NativeWeaponEntry { rva: 16, registration: None };
+        let entry = NativeWeaponEntry {
+            rva: 16,
+            registration: None,
+        };
         NativeWeaponBehaviorDeclaration {
             version: 1,
             id: id.to_string(),
@@ -7053,29 +7185,57 @@ mod tests {
             artifact_path: artifact.to_string(),
             artifact_digest: seam_digest(),
             entity: NativeWeaponEntity {
-                byte_length: 64, origin: 0, angles: 8, velocity: 16, client: 24, owner: 32,
-                view_height: 40, generation: 44, next_think: 48, think_callback: 52,
-                think_registration: 56, touch_callback: 60,
+                byte_length: 64,
+                origin: 0,
+                angles: 8,
+                velocity: 16,
+                client: 24,
+                owner: 32,
+                view_height: 40,
+                generation: 44,
+                next_think: 48,
+                think_callback: 52,
+                think_registration: 56,
+                touch_callback: 60,
             },
-            client: NativeWeaponClient { byte_length: 16, weapon: 0, view_angles: 4, forward: 8 },
-            equipped_weapon: NativeWeaponEquipped { byte_length: 8, callback: 0, expected: entry.clone() },
+            client: NativeWeaponClient {
+                byte_length: 16,
+                weapon: 0,
+                view_angles: 4,
+                forward: 8,
+            },
+            equipped_weapon: NativeWeaponEquipped {
+                byte_length: 8,
+                callback: 0,
+                expected: entry.clone(),
+            },
             time: NativeWeaponTime { rva: 32 },
             think: NativeWeaponThink {
                 tag: 1,
                 registration: crate::contract::NativeWeaponRegistrationLayout {
-                    byte_length: 8, name: 0, tag: 4, callback: 8,
+                    byte_length: 8,
+                    name: 0,
+                    tag: 4,
+                    callback: 8,
                 },
             },
             allocate: NativeWeaponAllocate { entry: entry.clone() },
             free: NativeWeaponFree { entry: entry.clone() },
             projectile_touch: entry.clone(),
-            equip: NativeWeaponCalls { calls: vec![entry.clone()] },
-            launch: NativeWeaponCalls { calls: vec![entry.clone()] },
+            equip: NativeWeaponCalls {
+                calls: vec![entry.clone()],
+            },
+            launch: NativeWeaponCalls {
+                calls: vec![entry.clone()],
+            },
             activate_rva: None,
             fire_rva: 48,
             initialization_classes: Vec::new(),
             equipment: Vec::new(),
-            ammunition: NativeWeaponCommand { arguments: Vec::new(), tail: String::new() },
+            ammunition: NativeWeaponCommand {
+                arguments: Vec::new(),
+                tail: String::new(),
+            },
             initial_cvars: Vec::new(),
             provisioning_cvars: Vec::new(),
         }
@@ -7102,7 +7262,10 @@ mod tests {
     }
 
     impl NativeWeaponBehaviorService for StubNativeService {
-        fn read_native_weapon_declaration(&self, value: &SaveJson) -> Result<NativeWeaponBehaviorDeclaration, CatalogError> {
+        fn read_native_weapon_declaration(
+            &self,
+            value: &SaveJson,
+        ) -> Result<NativeWeaponBehaviorDeclaration, CatalogError> {
             let reader = SaveReader::new(value);
             let artifact = reader.field("artifactPath").string().map_err(CatalogError::from)?;
             let id = reader.field("id").string().map_err(CatalogError::from)?;
@@ -7122,18 +7285,22 @@ mod tests {
             &self,
             _module: &ModuleIdentity,
         ) -> Result<Option<NativeWeaponBehaviorDeclaration>, CatalogError> {
-            Ok(self.builtin.then(|| native_declaration("game_x64.dll", "native:blaster")))
+            Ok(self
+                .builtin
+                .then(|| native_declaration("game_x64.dll", "native:blaster")))
         }
     }
 
     #[test]
     fn native_weapon_behaviors_load_document_and_builtin_fallback() {
-        let document =
-            read_native_weapon_behavior_document(br#"{"version": 1, "profiles": [{"id": "a"}]}"#).unwrap();
+        let document = read_native_weapon_behavior_document(br#"{"version": 1, "profiles": [{"id": "a"}]}"#).unwrap();
         assert_eq!(document.len(), 1);
         assert!(read_native_weapon_behavior_document(br#"{"version": 0, "profiles": []}"#).is_err());
         let provider = ProviderId::new("q2", "gameplay");
-        let service = StubNativeService { definition: true, builtin: true };
+        let service = StubNativeService {
+            definition: true,
+            builtin: true,
+        };
         let mounts = StubMounts {
             files: HashMap::from([
                 ("game_x64.dll".to_string(), b"pe-bytes".to_vec()),
@@ -7151,24 +7318,41 @@ mod tests {
         let loaded = load_native_weapon_behavior(&mounts, &provider, &value, &service).unwrap();
         assert_eq!(loaded.definition.id, "native:blaster");
         assert_eq!(loaded.declaration.artifact_path, "game_x64.dll");
-        let discovered = discover_native_weapon_behaviors(&mounts, &provider, &service).unwrap().unwrap();
+        let discovered = discover_native_weapon_behaviors(&mounts, &provider, &service)
+            .unwrap()
+            .unwrap();
         assert_eq!(discovered.len(), 2);
         // No document falls back to the stock game image.
         let fallback = StubMounts {
             files: HashMap::from([("game_x64.dll".to_string(), b"pe-bytes".to_vec())]),
             digest: seam_digest(),
         };
-        let discovered = discover_native_weapon_behaviors(&fallback, &provider, &service).unwrap().unwrap();
+        let discovered = discover_native_weapon_behaviors(&fallback, &provider, &service)
+            .unwrap()
+            .unwrap();
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].definition.id, "native:blaster");
-        let empty = StubMounts { files: HashMap::new(), digest: seam_digest() };
-        assert!(discover_native_weapon_behaviors(&empty, &provider, &service).unwrap().is_none());
-        let no_builtin = StubNativeService { definition: true, builtin: false };
-        assert!(discover_native_weapon_behaviors(&fallback, &provider, &no_builtin).unwrap().is_none());
+        let empty = StubMounts {
+            files: HashMap::new(),
+            digest: seam_digest(),
+        };
+        assert!(discover_native_weapon_behaviors(&empty, &provider, &service)
+            .unwrap()
+            .is_none());
+        let no_builtin = StubNativeService {
+            definition: true,
+            builtin: false,
+        };
+        assert!(discover_native_weapon_behaviors(&fallback, &provider, &no_builtin)
+            .unwrap()
+            .is_none());
         // Missing artifacts and empty definitions fail the load.
         let error = load_native_weapon_behavior(&empty, &provider, &value, &service).unwrap_err();
         assert!(error.to_string().contains("artifact is missing"), "{error}");
-        let no_definition = StubNativeService { definition: false, builtin: true };
+        let no_definition = StubNativeService {
+            definition: false,
+            builtin: true,
+        };
         let error = load_native_weapon_behavior(&mounts, &provider, &value, &no_definition).unwrap_err();
         assert!(error.to_string().contains("no executable definition"), "{error}");
         let duplicated = StubMounts {
@@ -7185,6 +7369,9 @@ mod tests {
             digest: seam_digest(),
         };
         let error = discover_native_weapon_behaviors(&duplicated, &provider, &service).unwrap_err();
-        assert!(error.to_string().contains("Duplicate native weapon behavior"), "{error}");
+        assert!(
+            error.to_string().contains("Duplicate native weapon behavior"),
+            "{error}"
+        );
     }
 }
