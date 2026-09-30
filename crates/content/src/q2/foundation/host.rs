@@ -25,7 +25,7 @@ use crate::q2::foundation::monsters::MonsterRuntime;
 use crate::q2::foundation::movers::MoverRuntime;
 use crate::q2::foundation::shadow_lights::Q2ShadowLightState;
 use crate::q2::foundation::weapons::WeaponRuntime;
-use crate::q2::missionpacks::modes::{DeathballRuntime, TagRuntime};
+use crate::q2::missionpacks::modes::{deathball::DeathballRuntime, tag::TagRuntime};
 use crate::q2::missionpacks::monsters::MissionMonsterRuntime;
 use crate::q2::multiplayer::ctf::CtfRuntime;
 use crate::q2::multiplayer::lmctf::LmctfRuntime;
