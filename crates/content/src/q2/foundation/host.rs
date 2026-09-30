@@ -17,6 +17,7 @@ use crate::contract::{ItemId, MonsterDefinitionReference};
 use crate::monsters::{AuthoredTarget, MonsterTargetObservation};
 use crate::q2::base::entities::BaseEntitiesRuntime;
 use crate::q2::base::player::PlayerRuntime;
+use crate::q2::missionpacks::MissionPackRuntime;
 use crate::q2::equipment::EquipmentRuntime;
 use crate::q2::foundation::callbacks::{free_q2_entity, Q2CallbackDefinitions, Q2SourceCallbacks};
 use crate::q2::foundation::items::ItemRuntime;
@@ -24,7 +25,6 @@ use crate::q2::foundation::monsters::MonsterRuntime;
 use crate::q2::foundation::movers::MoverRuntime;
 use crate::q2::foundation::shadow_lights::Q2ShadowLightState;
 use crate::q2::foundation::weapons::WeaponRuntime;
-use crate::q2::missionpacks::items::MissionItemRuntime;
 use crate::q2::missionpacks::modes::{DeathballRuntime, TagRuntime};
 use crate::q2::missionpacks::monsters::MissionMonsterRuntime;
 use crate::q2::multiplayer::ctf::CtfRuntime;
@@ -1020,7 +1020,7 @@ pub struct Q2GameServices {
     /// Mission-pack monster runtime.
     pub mission_monsters: MissionMonsterRuntime,
     /// Mission-pack item runtime.
-    pub mission_items: MissionItemRuntime,
+    pub mission_packs: MissionPackRuntime,
     /// Tag runtime.
     pub tag: TagRuntime,
     /// Deathball runtime.
@@ -1072,7 +1072,7 @@ impl Q2GameServices {
             players: PlayerRuntime::default(),
             base_entities: BaseEntitiesRuntime::default(),
             mission_monsters: MissionMonsterRuntime::default(),
-            mission_items: MissionItemRuntime::default(),
+            mission_packs: MissionPackRuntime::default(),
             tag: TagRuntime::default(),
             deathball: DeathballRuntime::default(),
             ctf: CtfRuntime::default(),
