@@ -9,5 +9,6 @@ pub mod boss;
 pub mod common;
 pub mod gladiator;
 pub mod guardian;
+pub mod guncmdr;
 pub mod spawn_placement;
 pub mod tables;
