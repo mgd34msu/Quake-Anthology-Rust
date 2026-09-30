@@ -16,7 +16,7 @@ use crate::q2::foundation::monsters::types::{MonsterContext, MonsterHandler, Q2M
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 
 /// Run (`run`).
-fn gunner_run(context: &mut MonsterContext) {
+pub fn gunner_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
         context.set_move("gunner_move_stand", false);
     } else {

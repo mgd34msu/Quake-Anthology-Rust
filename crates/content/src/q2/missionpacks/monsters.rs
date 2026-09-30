@@ -13,6 +13,7 @@ pub mod power_armor;
 pub mod rogue_arsenal;
 pub mod rogue_common;
 pub mod rogue_flyer;
+pub mod rogue_gunner;
 pub mod rogue_hover;
 pub mod rogue_infantry;
 pub mod rogue_jumpers;
