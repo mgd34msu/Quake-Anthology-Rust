@@ -697,6 +697,26 @@ pub trait WeaponStageHost {
     fn cancel_scope(&mut self, scope: u64);
 }
 
+/// Resolves the source actor of a weapon call.
+pub type QvmWeaponActorResolver = Rc<
+    dyn Fn(
+        &super::item_storage::QvmWeaponActor,
+        &mut QvmFunctionCall,
+    ) -> Result<Option<ActorId>, GuestError>,
+>;
+/// Resolves a record pointer for an actor.
+pub type QvmWeaponPointerResolver = Rc<dyn Fn(&ActorId, &str) -> Result<usize, GuestError>>;
+/// Cancellation scope of a weapon call.
+pub type QvmWeaponCancellationResolver =
+    Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> QvmCancellationScope>;
+/// Notes a weapon request transition.
+pub type QvmWeaponRequestNote = Rc<dyn Fn(&ActorId, i32)>;
+/// Notes a completed weapon dispatch.
+pub type QvmWeaponCompletionNote = Rc<dyn Fn(&ActorId, bool)>;
+/// Optional weapon-dispatch prepare hook.
+pub type QvmWeaponPrepareHook =
+    Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> Option<Box<dyn FnOnce()>>>;
+
 /// Donor dispatcher operations (mirror of `QvmWeaponDispatcherOperations`).
 ///
 /// Concrete over the interpreter-owning workers' types so game callers
@@ -706,24 +726,23 @@ pub struct QvmWeaponDispatcherOperations {
     /// Source module.
     pub module: QvmModule,
     /// Resolve the source actor of a call.
-    pub actor:
-        Rc<dyn Fn(&super::item_storage::QvmWeaponActor, &mut QvmFunctionCall) -> Result<Option<ActorId>, GuestError>>,
+    pub actor: QvmWeaponActorResolver,
     /// Resolve a record pointer for an actor.
-    pub pointer: Rc<dyn Fn(&ActorId, &str) -> Result<usize, GuestError>>,
+    pub pointer: QvmWeaponPointerResolver,
     /// Whether an actor is live.
     pub live: Rc<dyn Fn(&ActorId) -> bool>,
     /// Whether an actor has this source selected.
     pub selected: Rc<dyn Fn(&ActorId) -> bool>,
     /// Cancellation scope of a call.
-    pub cancellation: Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> QvmCancellationScope>,
+    pub cancellation: QvmWeaponCancellationResolver,
     /// Note an attempted weapon request.
-    pub attempted: Rc<dyn Fn(&ActorId, i32)>,
+    pub attempted: QvmWeaponRequestNote,
     /// Note an accepted weapon request.
-    pub accepted: Rc<dyn Fn(&ActorId, i32)>,
+    pub accepted: QvmWeaponRequestNote,
     /// Note a completed dispatch.
-    pub completed: Rc<dyn Fn(&ActorId, bool)>,
+    pub completed: QvmWeaponCompletionNote,
     /// Prepare hook, if any.
-    pub prepare: Option<Rc<dyn Fn(&ActorId, &mut QvmFunctionCall) -> Option<Box<dyn FnOnce()>>>>,
+    pub prepare: Option<QvmWeaponPrepareHook>,
 }
 
 /// Process-unique dispatcher scope tokens.
@@ -857,9 +876,8 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
     }
 
     fn scalar(&self, actor: &ActorId, field: &QvmItemField) -> Result<i32, GuestError> {
-        Ok(self
-            .host
-            .read_i32(self.host.pointer(actor, &field.record)? + field.offset)?)
+        self.host
+            .read_i32(self.host.pointer(actor, &field.record)? + field.offset)
     }
 
     fn test(&self, actor: &ActorId, test: &QvmItemTest) -> Result<bool, GuestError> {

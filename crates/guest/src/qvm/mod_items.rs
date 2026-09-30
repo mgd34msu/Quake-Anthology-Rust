@@ -131,7 +131,7 @@ pub fn validate_qvm_mod_items(
             return Err(GuestError::invalid("Invalid QVM item source field"));
         };
         if !clients.records.contains(&record.id)
-            || source.offset % 4 != 0
+            || !source.offset.is_multiple_of(4)
             || source.offset + 4 > record.stride
             || usage != FieldUsage::View
                 && previous.is_some()
@@ -239,7 +239,7 @@ pub fn validate_qvm_mod_items(
         .collect();
     if image
         .instruction(entry)
-        .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+        .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
         || inputs.len() != 1
         || inputs[0].scope != "movement-slice"
         || inputs[0].phase != QvmInputPhase::After
@@ -387,12 +387,20 @@ pub enum QvmItemStoreError {
     Other(GuestError),
 }
 
+/// Publishes stored item changes.
+pub type QvmSourceItemStorePublish =
+    Rc<dyn Fn(&[QvmSourceItemStore]) -> Result<(), QvmItemStoreError>>;
+/// Reads one inventory entry.
+pub type QvmInventoryEntryRead = Rc<dyn Fn(&str) -> Result<Option<InventoryEntry>, GuestError>>;
+/// Invokes an item action.
+pub type QvmItemActionInvoke = Rc<dyn Fn(&str, &str) -> Result<(), GuestError>>;
+
 /// Source item lease.
 pub struct QvmSourceItemLease {
     /// Currency check.
     pub current: Rc<dyn Fn() -> bool>,
     /// Publish stored changes.
-    pub stored: Rc<dyn Fn(&[QvmSourceItemStore]) -> Result<(), QvmItemStoreError>>,
+    pub stored: QvmSourceItemStorePublish,
     /// Close the lease.
     pub close: Box<dyn FnOnce()>,
 }
@@ -403,7 +411,7 @@ pub struct QvmItemStateAccess {
     /// Read all entries.
     pub read: Rc<dyn Fn() -> Result<Vec<InventoryEntry>, GuestError>>,
     /// Read one entry.
-    pub entry: Rc<dyn Fn(&str) -> Result<Option<InventoryEntry>, GuestError>>,
+    pub entry: QvmInventoryEntryRead,
     /// Write one entry.
     pub write: Rc<dyn Fn(InventoryEntry) -> Result<(), GuestError>>,
     /// Whether capacity is field-backed.
@@ -418,7 +426,7 @@ pub struct QvmItemsAdmission {
     /// Items.
     pub items: Vec<QvmSourceItemAdmission>,
     /// Invoke an item action.
-    pub invoke: Rc<dyn Fn(&str, &str) -> Result<(), GuestError>>,
+    pub invoke: QvmItemActionInvoke,
     /// Live state.
     pub state: QvmItemStateAccess,
 }
@@ -835,7 +843,7 @@ impl QvmModItems {
             .definitions
             .iter()
             .map(|item| QvmSourceItemAdmission {
-                admission: item.admission.clone(),
+                admission: item.admission,
                 definition: QvmSourceItemDefinition {
                     item: item.item.clone(),
                     label: item.label.clone(),
@@ -1496,7 +1504,7 @@ impl QvmModItems {
                     let entries = restore_this.entries.borrow();
                     let request = entries.get(&restore_actor).and_then(|entry| entry.request.as_ref());
                     if !restore_this.current(&restore_actor)
-                        || request.map_or(true, |request| request.id != id || request.item != item)
+                        || request.is_none_or(|request| request.id != id || request.item != item)
                     {
                         return Err(GuestError::invalid(
                             "Saved QVM weapon request differs from its original source owner",
@@ -1986,14 +1994,15 @@ mod tests {
     }
 
     fn image() -> QvmImage {
-        let mut image = QvmImage::default();
-        image.instructions = (0..32)
-            .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
-            .collect();
-        image.data_length = 8192;
-        image.initialized_data = vec![0u8; 8192];
-        image.allocated_data_length = 65536;
-        image
+        QvmImage {
+            instructions: (0..32)
+                .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
+                .collect(),
+            data_length: 8192,
+            initialized_data: vec![0u8; 8192],
+            allocated_data_length: 65536,
+            ..Default::default()
+        }
     }
 
     fn fixture() -> Fixture {
@@ -2215,7 +2224,10 @@ mod tests {
         fixture.items.admit(&fixture.actor).unwrap();
         *fixture.services.store_result.borrow_mut() = Some(QvmItemStoreError::Retired);
         fixture.module.memory().write_i32(CLIENTS + 64, 12).unwrap();
-        assert_eq!(fixture.driver.cancelled.borrow().as_slice(), &[fixture.actor.clone()]);
+        assert_eq!(
+            fixture.driver.cancelled.borrow().as_slice(),
+            std::slice::from_ref(&fixture.actor)
+        );
         assert!(fixture.items.take_error().is_some());
     }
 
