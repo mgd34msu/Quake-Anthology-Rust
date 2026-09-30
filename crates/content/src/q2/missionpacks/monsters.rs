@@ -8,6 +8,7 @@ pub mod chick_heat;
 pub mod combat;
 pub mod dabeam;
 pub mod fixbot;
+pub mod gekk;
 pub mod gladb;
 pub mod hints;
 pub mod power_armor;

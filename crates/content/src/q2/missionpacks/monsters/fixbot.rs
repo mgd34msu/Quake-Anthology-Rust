@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, length3, scale3, sub3, vec3};
+use qa_core::math::{Bounds, add3, length3, scale3, sub3, vec3};
 
 use super::dabeam::monster_dabeam;
 use super::tables::xatrix_fixbot::{fixbot_frame, fixbot_moves};
@@ -15,8 +15,7 @@ use crate::q2::base::monsters::common::{
 };
 use crate::q2::foundation::callbacks::{Q2CallbackDefinitions, free_q2_entity};
 use crate::q2::foundation::host::{
-    Q2EffectEvent, Q2Entity, Q2GameServices, Q2PresentationEvent, Q2Solid,
-    Q2TraceRequest,
+    Q2EffectEvent, Q2Entity, Q2PresentationEvent, Q2Solid, Q2TraceRequest,
 };
 use crate::q2::foundation::monsters::ai::{
     MASK_SHOT, angles_vectors, change_yaw, health, in_front, monster_solid_mask,
