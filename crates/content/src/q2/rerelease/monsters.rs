@@ -10,5 +10,7 @@ pub mod common;
 pub mod gladiator;
 pub mod guardian;
 pub mod guncmdr;
+pub mod shambler;
 pub mod spawn_placement;
+pub mod supertank;
 pub mod tables;
