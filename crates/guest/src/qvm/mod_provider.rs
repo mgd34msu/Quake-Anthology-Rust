@@ -2413,8 +2413,8 @@ pub fn validate_qvm_mod_actors_mirror(artifact: &QvmArtifact, declaration: &QvmM
 }
 
 fn is_const(image: &QvmImage, pc: usize) -> Result<(), GuestError> {
-    if image.instruction(pc).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpConst) {
-        return Err(GuestError::invalid("QVM item capacity exceeds its source ABI"));
+    if image.instruction(pc).is_none_or(|instruction| instruction.opcode != QvmOpcode::OpConst || instruction.operand < 0) {
+        return Err(GuestError::invalid("QVM item capacity is not its declared original constant"));
     }
     Ok(())
 }
@@ -2446,7 +2446,7 @@ pub fn validate_qvm_item_storage_mirror(
                         is_const(image, *instruction)?;
                         for value in overrides {
                             is_const(image, value.instruction)?;
-                            if value.address % 4 != 0 || value.address + 4 > image.initialized_length + image.bss_length {
+                            if value.value < i64::from(i32::MIN) || value.value > i64::from(i32::MAX) || value.address % 4 != 0 || value.address + 4 > image.initialized_length + image.bss_length {
                                 return Err(GuestError::invalid("QVM capacity selector exceeds original source storage"));
                             }
                         }
@@ -2462,7 +2462,7 @@ pub fn validate_qvm_item_storage_mirror(
                     if !items.contains(&value.item) || !bound.insert(value.item.clone()) {
                         return Err(GuestError::invalid("QVM item lacks distinct declared storage"));
                     }
-                    if value.mask < 1 || !value.mask.is_power_of_two() || mask & value.mask != 0 {
+                    if value.mask < 1 || value.mask > 0x8000_0000 || !value.mask.is_power_of_two() || mask & value.mask != 0 {
                         return Err(GuestError::invalid("QVM packed item masks overlap"));
                     }
                     mask |= value.mask;
@@ -3219,13 +3219,14 @@ pub fn read_mod_host_image(host: &ProfileValue, declaration: &QvmModCallbackDecl
         return Err(GuestError::invalid("Missing QVM actor templates"));
     }
     let configstrings = reader.field("configstrings")?.list(|entry| {
-        Ok((entry.field("index")?.integer(0)? as u32, entry.field("value")?.string()?))
+        Ok((entry.field("index")?.integer(0)?, entry.field("value")?.string()?))
     })?;
     if configstrings.iter().map(|(index, _)| index).collect::<HashSet<_>>().len() != configstrings.len()
         || configstrings.iter().any(|(index, _)| *index >= 1024)
     {
         return Err(GuestError::invalid("Invalid QVM configstrings"));
     }
+    let configstrings = configstrings.into_iter().map(|(index, value)| (index as u32, value)).collect();
     Ok(ModHostImage { projections, client_slots, next_slot, defaults, configstrings })
 }
 

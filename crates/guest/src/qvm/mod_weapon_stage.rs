@@ -68,8 +68,8 @@ pub struct CapacityOverride {
     pub address: usize,
     /// Comparison.
     pub comparison: OverrideComparison,
-    /// Value.
-    pub value: i32,
+    /// Value (int32-checked at validation, mirroring the donor).
+    pub value: i64,
     /// Constant instruction.
     pub instruction: usize,
 }

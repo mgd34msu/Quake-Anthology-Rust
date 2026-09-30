@@ -343,9 +343,12 @@ pub fn capture_presentation_snapshot(snapshot: &QvmSourceSnapshot, abi: QvmAbi) 
 
 /// Read a captured snapshot.
 pub fn read_presentation_snapshot(reader: &ProfileReader<'_>, abi: QvmAbi) -> Result<QvmSourceSnapshot, GuestError> {
-    let number = reader.field("number")?.integer(0)? as i32;
+    let number = reader.field("number")?.integer(0)?;
+    if number > i64::from(i32::MAX) {
+        return reader.fail("invalid source snapshot number");
+    }
     let bytes = reader.field("bytes")?.bytes()?;
-    snapshot_from_bytes(&bytes, abi, number)
+    snapshot_from_bytes(&bytes, abi, number as i32)
 }
 
 /// Capture one bounding box.

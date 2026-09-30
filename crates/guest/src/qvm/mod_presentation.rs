@@ -1733,7 +1733,11 @@ impl<H: PresentationHost> QvmModPresentation<H> {
                 return Err(GuestError::invalid("Duplicate source snapshot"));
             }
         }
-        let snapshot_number = reader.field("snapshotNumber")?.integer(0)? as i32;
+        let snapshot_number = reader.field("snapshotNumber")?.integer(0)?;
+        if snapshot_number > i64::from(i32::MAX) {
+            return Err(GuestError::invalid("Invalid source snapshot number"));
+        }
+        let snapshot_number = snapshot_number as i32;
         if !snapshots.contains_key(&snapshot_number) {
             return Err(GuestError::invalid("Source presentation restore has no current snapshot"));
         }
@@ -1794,4 +1798,331 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use qa_core::identity::IdentityOwner;
+
+    use super::super::mod_player_events::PlayerEventSequence;
+    use super::super::mod_provider::{QvmInstruction, QvmRole};
+    use super::*;
+
+    struct FakeHost {
+        memory: Vec<u8>,
+        context: QvmPresentationContext,
+        slots: HashMap<usize, ActorId>,
+        live: HashSet<ActorId>,
+        calls: Vec<(Vec<i32>, usize)>,
+        ref_entities: HashMap<usize, RefEntityView>,
+        closed: bool,
+    }
+
+    impl FakeHost {
+        fn new(context: QvmPresentationContext) -> Self {
+            Self { memory: vec![0; 200000], context, slots: HashMap::new(), live: HashSet::new(), calls: Vec::new(), ref_entities: HashMap::new(), closed: false }
+        }
+    }
+
+    impl PresentationHost for FakeHost {
+        fn presentation_context(&self) -> Result<QvmPresentationContext, GuestError> {
+            Ok(self.context.clone())
+        }
+        fn actor_for_slot(&self, slot: usize) -> Option<ActorId> {
+            self.slots.get(&slot).cloned()
+        }
+        fn live(&self, actor: &ActorId) -> bool {
+            self.live.contains(actor)
+        }
+        fn assert_current(&self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn read_i32(&self, address: usize) -> Result<i32, GuestError> {
+            Ok(i32::from_le_bytes(self.memory[address..address + 4].try_into().map_err(|_| GuestError::invalid("oob"))?))
+        }
+        fn write_i32(&mut self, address: usize, value: i32) -> Result<(), GuestError> {
+            self.memory[address..address + 4].copy_from_slice(&value.to_le_bytes());
+            Ok(())
+        }
+        fn write_f32(&mut self, address: usize, value: f32) -> Result<(), GuestError> {
+            self.memory[address..address + 4].copy_from_slice(&value.to_le_bytes());
+            Ok(())
+        }
+        fn read_bytes(&self, address: usize, len: usize) -> Result<Vec<u8>, GuestError> {
+            Ok(self.memory[address..address + len].to_vec())
+        }
+        fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> Result<(), GuestError> {
+            self.memory[address..address + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+        fn fill_bytes(&mut self, address: usize, len: usize, value: u8) -> Result<(), GuestError> {
+            self.memory[address..address + len].fill(value);
+            Ok(())
+        }
+        fn call_module(&mut self, words: &[i32], entry: usize) -> Result<i32, GuestError> {
+            self.calls.push((words.to_vec(), entry));
+            Ok(0)
+        }
+        fn module_command(&mut self, words: &[i32], argv: &[String]) -> Result<i32, GuestError> {
+            self.calls.push((words.to_vec(), argv.len()));
+            Ok(1)
+        }
+        fn read_ref_entity(&self, pointer: usize) -> Result<Option<RefEntityView>, GuestError> {
+            Ok(self.ref_entities.get(&pointer).cloned())
+        }
+        fn close_module(&mut self) {
+            self.closed = true;
+        }
+    }
+
+    fn gameplay_module() -> ModuleId {
+        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+    }
+
+    fn cgame_module() -> ModuleId {
+        ModuleId { id: "test:cgame".to_string(), artifact_path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), revision: "1".to_string() }
+    }
+
+    fn fixture_artifact() -> QvmArtifact {
+        QvmArtifact {
+            module: cgame_module(),
+            role: QvmRole::Cgame,
+            abi_profile: None,
+            image: QvmImage {
+                instructions: vec![QvmInstruction::word(QvmOpcode::OpEnter, 32), QvmInstruction::word(QvmOpcode::OpLeave, 0)],
+                data_length: 200000,
+                literal_length: 0,
+                bss_length: 0,
+                initialized_length: 200000,
+                allocated_data_length: 200000,
+            },
+        }
+    }
+
+    fn simple_call(entry: usize) -> QvmPresentationCall {
+        QvmPresentationCall { entry, when_weapon_presented: false, arguments: Vec::new() }
+    }
+
+    fn player_events_declaration() -> QvmModPresentationDeclaration {
+        QvmModPresentationDeclaration::PlayerEvents(QvmPlayerEventPresentation {
+            gameplay: QvmPresentationProgram { path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), abi: QvmAbi::Modern },
+            cgame: QvmPresentationProgram { path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), abi: QvmAbi::Modern },
+            initialize: vec![simple_call(0)],
+            refresh: Vec::new(),
+            frame: vec![simple_call(0)],
+            hud: None,
+            storage: PlayerEventStorage {
+                game_state: 1000,
+                player_state: 22000,
+                snapshot_address: 23000,
+                snapshot_pointers: vec![90024],
+                centities: PlayerEventCentities { address: 80000, stride: 512, capacity: 4, state: 0, origin: 208 },
+                time: vec![90000],
+                frame_time: vec![90004],
+                view_origin: vec![90008],
+                view_angles: Vec::new(),
+                view_axis: Vec::new(),
+            },
+            project: Vec::new(),
+            event: QvmPresentationCall { entry: 0, when_weapon_presented: false, arguments: vec![QvmPresentationArgument::Source(PresentationSource::Event)] },
+        })
+    }
+
+    fn fixture_context() -> QvmPresentationContext {
+        QvmPresentationContext {
+            client_number: None,
+            game_state: SourceGameState::empty(),
+            game_state_revision: 0,
+            frame_time_ms: 16,
+            time_ms: None,
+            view_origin: vec3(1.0, 2.0, 3.0),
+            view_axis: None,
+            weapon_presented: None,
+            snapshot: PresentationSnapshot { server_time: 100, player_state: SourcePlayerState::zeroed(QvmAbi::Modern) },
+            scene: None,
+        }
+    }
+
+    #[test]
+    fn player_events_initialize_consume_and_advance() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut host = FakeHost::new(fixture_context());
+        host.live.insert(actor.clone());
+        host.slots.insert(0, actor.clone());
+        let mut presentation = QvmModPresentation::new(fixture_artifact(), gameplay_module(), player_events_declaration(), host).unwrap();
+        presentation.initialize(-1).unwrap();
+        assert_eq!(presentation.host().calls.len(), 1);
+        let event = SourcePlayerEvent {
+            actor: actor.clone(),
+            module: gameplay_module(),
+            abi: QvmAbi::Modern,
+            player_state: SourcePlayerState::zeroed(QvmAbi::Modern),
+            origin: vec3(4.0, 5.0, 6.0),
+            time: 100,
+            event: 7,
+            parameter: 3,
+            sequence: PlayerEventSequence::Predictable { sequence: 40 },
+        };
+        presentation.consume(&event, 1).unwrap();
+        assert_eq!(presentation.last_sequence(), 1);
+        assert_eq!(presentation.host().read_i32(80000 + 180).unwrap(), 7);
+        assert_eq!(presentation.host().read_i32(80000 + 184).unwrap(), 3);
+        presentation.advance(0).unwrap();
+        assert!(presentation.console_command(&["status".to_string()]).unwrap());
+        presentation.draw_hud(0).unwrap();
+        assert!(presentation.consume(&event, 1).is_err());
+        presentation.close();
+        assert!(presentation.host().closed);
+    }
+
+    #[test]
+    fn validation_rejects_mismatched_artifacts() {
+        let mut artifact = fixture_artifact();
+        artifact.role = QvmRole::Qagame;
+        assert!(validate_qvm_mod_presentation(&artifact, &gameplay_module(), &player_events_declaration()).is_err());
+        let mut declaration = player_events_declaration();
+        if let QvmModPresentationDeclaration::PlayerEvents(declaration) = &mut declaration {
+            declaration.storage.player_state = declaration.storage.snapshot_address + 8;
+        }
+        assert!(validate_qvm_mod_presentation(&fixture_artifact(), &gameplay_module(), &declaration).is_err());
+    }
+
+    fn scene_fixture() -> (QvmArtifact, QvmModPresentationDeclaration) {
+        let artifact = QvmArtifact {
+            module: cgame_module(),
+            role: QvmRole::Cgame,
+            abi_profile: None,
+            image: QvmImage {
+                instructions: vec![
+                    QvmInstruction::word(QvmOpcode::OpEnter, 32),
+                    QvmInstruction::word(QvmOpcode::OpConst, 5),
+                    QvmInstruction::word(QvmOpcode::OpCall, 0),
+                    QvmInstruction::word(QvmOpcode::OpLeave, 0),
+                    QvmInstruction::word(QvmOpcode::OpEnter, 0),
+                    QvmInstruction::word(QvmOpcode::OpEnter, 16),
+                    QvmInstruction::word(QvmOpcode::OpLeave, 0),
+                    QvmInstruction::word(QvmOpcode::OpEnter, 8),
+                    QvmInstruction::word(QvmOpcode::OpLeave, 0),
+                ],
+                data_length: 200000,
+                literal_length: 0,
+                bss_length: 0,
+                initialized_length: 200000,
+                allocated_data_length: 200000,
+            },
+        };
+        let declaration = QvmModPresentationDeclaration::Scene(QvmScenePresentation {
+            gameplay: QvmPresentationProgram { path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), abi: QvmAbi::Modern },
+            cgame: QvmPresentationProgram { path: "vm/cgame.qvm".to_string(), digest: "sha256:cgame".to_string(), abi: QvmAbi::Modern },
+            initialize: vec![simple_call(4)],
+            refresh: Vec::new(),
+            frame: vec![simple_call(4)],
+            hud: None,
+            cvars: Vec::new(),
+            storage: SceneStorage {
+                game_state: 1000,
+                server_command_sequence: 90024,
+                time: vec![90000],
+                frame_time: vec![90004],
+                view_origin: vec![90008],
+                view_angles: Vec::new(),
+                view_axis: Vec::new(),
+                centities: SceneCentities { address: 80000, stride: 512, capacity: 4, state: 0, previous_event: 256, snapshot_time: 260 },
+            },
+            snapshots: vec![simple_call(4)],
+            event_entity_type: 100,
+            event_check: SceneBodyEndpoint { entry: 7, centity_argument: 0 },
+            body: SceneBodyScope {
+                player: SceneBodyEndpoint { entry: 0, centity_argument: 0 },
+                mesh: SceneMeshEndpoint { entry: 5, entity_argument: 0, state_argument: 1, shader_offset: 112, parts: None },
+            },
+        });
+        (artifact, declaration)
+    }
+
+    fn scene_context(actor: &ActorId) -> QvmSceneContext {
+        QvmSceneContext {
+            revision: 1,
+            game_state: SourceGameState::empty(),
+            game_state_revision: 0,
+            snapshot: QvmSourceSnapshot {
+                number: 0,
+                server_time: 200,
+                flags: 0,
+                area_mask: vec![0u8; 32],
+                player_state: SourcePlayerState::zeroed(QvmAbi::Modern),
+                entities: Vec::new(),
+                server_command_sequence: 5,
+            },
+            actors: vec![QvmSceneActor { actor: actor.clone(), slot: 0, owned: true }],
+            commands: Vec::new(),
+            baseline: None,
+        }
+    }
+
+    #[test]
+    fn scene_accepts_publications_and_restores() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut context = fixture_context();
+        context.scene = Some(scene_context(&actor));
+        let mut host = FakeHost::new(context);
+        host.live.insert(actor.clone());
+        host.slots.insert(0, actor.clone());
+        let (artifact, declaration) = scene_fixture();
+        let mut presentation = QvmModPresentation::new(artifact, gameplay_module(), declaration, host).unwrap();
+        presentation.initialize(-1).unwrap();
+        assert_eq!(presentation.snapshot_trap_state().0, 1);
+        presentation.advance(1).unwrap();
+        assert_eq!(presentation.host().read_i32(90024).unwrap(), 5);
+        let saved = presentation.capture_host_state().unwrap();
+        let mut context = fixture_context();
+        context.scene = Some(scene_context(&actor));
+        let mut host = FakeHost::new(context);
+        host.live.insert(actor.clone());
+        let (artifact, declaration) = scene_fixture();
+        let mut restored = QvmModPresentation::new(artifact, gameplay_module(), declaration, host).unwrap();
+        restored.restore_host_state(&saved, &|_| Ok(actor.clone())).unwrap();
+        assert_eq!(restored.snapshot_trap_state().0, 1);
+        assert!(restored.server_command_args(9).is_err());
+        restored.note_event_check(80000).unwrap();
+    }
+
+    #[test]
+    fn body_hooks_capture_mesh_passes() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut context = fixture_context();
+        context.scene = Some(scene_context(&actor));
+        let mut host = FakeHost::new(context);
+        host.live.insert(actor.clone());
+        host.slots.insert(0, actor.clone());
+        host.ref_entities.insert(81000, RefEntityView { is_model: true, custom_shader: 7, bytes: vec![1, 2] });
+        let (artifact, declaration) = scene_fixture();
+        let mut presentation = QvmModPresentation::new(artifact, gameplay_module(), declaration, host).unwrap();
+        presentation.initialize(-1).unwrap();
+        let player = presentation.enter_player_mesh(80000, 80000, &[(2, QvmBodyPart::Body)]).unwrap();
+        assert_eq!(player, Some(0));
+        let mesh = presentation.enter_mesh_call(0, 81000, 80000, Some(2));
+        assert_eq!(mesh, Some(0));
+        assert!(presentation.note_add_ref_entity(81000).unwrap());
+        assert!(presentation.note_add_ref_entity(81000).unwrap());
+        assert!(!presentation.note_add_ref_entity(99999).unwrap());
+        presentation.exit_mesh_call(0);
+        presentation.exit_player_mesh(0);
+        assert_eq!(presentation.bodies().unwrap().len(), 1);
+        assert_eq!(presentation.bodies().unwrap()[0].parts[0].passes.len(), 1);
+    }
+
+    #[test]
+    fn view_math_matches_forward_vectors() {
+        let angles = vector_to_angles(vec3(1.0, 0.0, 0.0));
+        assert_eq!((angles.x, angles.y, angles.z), (0.0, 0.0, 0.0));
+        let axis = qvm_angles_to_axis(vec3(0.0, 0.0, 0.0));
+        assert!((axis[0].x - 1.0).abs() < 1e-6);
+    }
+}
+
 
