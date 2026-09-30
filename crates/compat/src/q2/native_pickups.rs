@@ -1,4 +1,4 @@
-//! Port of `src/compat/q2/native-primary-pickups.ts`.
+//! Port of `src/compat/q2/native-pickups.ts`.
 //! Bridges original pickup touch/grant/supply calls over synthetic entities.
 
 use qa_guest::core::contracts::{
