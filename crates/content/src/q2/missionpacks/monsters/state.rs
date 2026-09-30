@@ -90,9 +90,6 @@ pub struct SavedRogueMonsterState {
 }
 
 /// Mission-pack monsters checkpoint (`Q2MissionPackMonstersCheckpoint`).
-///
-/// The donor capture always records a null hints entry; the hints
-/// module joins this checkpoint when it is ported.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MissionPackMonstersCheckpoint {
     /// Version.
@@ -103,6 +100,8 @@ pub struct MissionPackMonstersCheckpoint {
     pub widow_shots_fired: i32,
     /// Widow damage multiplier.
     pub widow_damage_multiplier: u8,
+    /// Rogue hint-path snapshot (the donor capture always records null).
+    pub hints: Option<super::hints::RogueHintsCheckpoint>,
     /// Actor states.
     pub actors: Vec<SavedRogueMonsterState>,
 }
@@ -154,6 +153,7 @@ pub fn capture_mission_monsters(game: &mut Q2GameServices) -> MissionPackMonster
         flyer_next_move: game.mission_monsters.flyer_next_move,
         widow_shots_fired: game.mission_monsters.widow_shots_fired,
         widow_damage_multiplier: game.mission_monsters.widow_damage_multiplier,
+        hints: None,
         actors,
     }
 }
