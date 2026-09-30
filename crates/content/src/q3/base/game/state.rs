@@ -19,7 +19,7 @@ use crate::q3::base::game::rankings::Q3RankingReports;
 use crate::q3::base::game::save_callbacks::Q3CallbackCatalog;
 use crate::q3::base::game::utilities::GameUtilityScratch;
 use crate::q3::base::game::weapon::{BulletHost, ContactHost, RailHost, ShotgunHost};
-use crate::q3::base::mirrors::Q3BaseError;
+use crate::q3::base::records::Q3BaseError;
 use crate::q3::base::shared::definitions::{
     stat_schema, weapon_count, EntityEvent, MoveType, Powerup, Product, StatSchema, Team, Weapon,
 };
