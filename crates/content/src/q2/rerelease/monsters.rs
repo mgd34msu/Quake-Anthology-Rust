@@ -3,6 +3,7 @@
 //! Gameplay logic adapted from the ZeniMax rerelease game DLL (GPL-2.0-or-later).
 
 pub mod arachnid;
+pub mod base_variants;
 pub mod beam;
 pub mod berserk;
 pub mod boss;
