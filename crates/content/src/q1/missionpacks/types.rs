@@ -260,7 +260,11 @@ pub fn velocity_angles(velocity: Vec3) -> Vec3 {
         y.atan2(x) * 180.0 / std::f64::consts::PI
     };
     let pitch = if x == 0.0 && y == 0.0 {
-        if z > 0.0 { 90.0 } else { 270.0 }
+        if z > 0.0 {
+            90.0
+        } else {
+            270.0
+        }
     } else {
         z.atan2(x.hypot(y)) * 180.0 / std::f64::consts::PI
     };
