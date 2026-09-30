@@ -143,7 +143,7 @@ const DEATH_AIM: [Vec3; 12] = [
 ];
 
 /// Fire the machine gun (`machineGun`).
-fn machine_gun(context: &mut MonsterContext) {
+pub(crate) fn machine_gun(context: &mut MonsterContext) {
     let rerelease = context.game.options.edition == Q2Edition::Rerelease;
     let table = frames(context);
     let enemy = enemy_body(context);

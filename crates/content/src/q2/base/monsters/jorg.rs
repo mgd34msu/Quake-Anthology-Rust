@@ -24,7 +24,7 @@ fn jorg_run(context: &mut MonsterContext) {
 }
 
 /// Initialize (`initialize`).
-fn jorg_initialize(context: &mut MonsterContext) {
+pub(crate) fn jorg_initialize(context: &mut MonsterContext) {
     context.entity_mut().model2 = "models/monsters/boss3/jorg/tris.md2".to_string();
 }
 
