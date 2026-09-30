@@ -37,5 +37,6 @@ pub fn q1_range(message: impl Into<String>) -> Q1Error {
 }
 
 pub mod base;
+pub mod equipment;
 pub mod foundation;
 pub mod missionpacks;

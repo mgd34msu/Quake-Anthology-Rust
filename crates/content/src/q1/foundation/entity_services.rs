@@ -216,6 +216,10 @@ pub struct Q1EntityServices {
     spawners: HashMap<String, Q1SpawnHandler>,
     /// Monster admission overrides.
     pub monster_admission: Option<Box<dyn super::runtime::Q1MonsterAdmission>>,
+    /// Threewave grapple service state.
+    pub threewave_grapple: Option<super::super::equipment::grapple::ThreewaveGrappleService>,
+    /// Threewave weapon hooks.
+    pub threewave_weapon: Option<super::super::equipment::weapon::ThreewaveWeaponService>,
 }
 
 impl std::fmt::Debug for Q1EntityServices {
@@ -287,6 +291,8 @@ impl Q1EntityServices {
             next_dynamic_slot: 1,
             spawners: HashMap::new(),
             monster_admission: None,
+            threewave_grapple: None,
+            threewave_weapon: None,
         };
         game.named.register(
             "SUB_Remove",

@@ -65,15 +65,17 @@ pub struct Q1CallbackHandlers {
     pub blocked: Option<Q1BlockedHandler>,
 }
 
-/// Source state extension (`Q1StateExtension`).
+/// Source state extension (`Q1StateExtension`). Capture and restore
+/// resolve live records through the game; extension state itself
+/// lives in game-owned service tables.
 pub trait Q1StateExtension {
     /// Extension id.
     fn id(&self) -> &str;
     /// Capture extension bytes.
-    fn capture(&self) -> Vec<u8>;
+    fn capture(&self, game: &Q1EntityServices) -> Vec<u8>;
     /// Restore extension bytes after all entity/player references exist,
     /// before thinks are scheduled.
-    fn restore(&mut self, bytes: &[u8]) -> Result<(), Q1Error>;
+    fn restore(&mut self, game: &mut Q1EntityServices, bytes: &[u8]) -> Result<(), Q1Error>;
     /// Duplicate initialized source state for a cloned entity without
     /// running a spawn function (`SUB_CopyEntity` semantics).
     fn clone_state(

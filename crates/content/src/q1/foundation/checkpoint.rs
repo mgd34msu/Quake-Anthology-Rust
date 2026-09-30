@@ -639,7 +639,7 @@ pub fn capture_foundation(
             .values()
             .map(|extension| Q1SavedExtension {
                 id: extension.id().to_string(),
-                bytes: extension.capture(),
+                bytes: extension.capture(game),
             })
             .collect(),
     })
@@ -901,13 +901,18 @@ pub fn restore_foundation(game: &mut Q1EntityServices, checkpoint: &Q1Foundation
     });
     let mut restored = std::collections::HashSet::new();
     for saved in &checkpoint.extensions {
-        let extension = game
+        if !restored.insert(saved.id.clone()) {
+            return Err(q1_error(format!(
+                "Unknown or duplicate Q1 saved extension: {}",
+                saved.id
+            )));
+        }
+        let mut extension = game
             .state_extensions
-            .get_mut(&saved.id)
-            .filter(|_| !restored.contains(&saved.id))
+            .remove(&saved.id)
             .ok_or_else(|| q1_error(format!("Unknown or duplicate Q1 saved extension: {}", saved.id)))?;
-        extension.restore(&saved.bytes)?;
-        restored.insert(saved.id.clone());
+        extension.restore(game, &saved.bytes)?;
+        game.state_extensions.insert(saved.id.clone(), extension);
     }
     for id in game.state_extensions.keys() {
         if !restored.contains(id) {
