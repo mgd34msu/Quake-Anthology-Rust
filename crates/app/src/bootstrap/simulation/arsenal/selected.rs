@@ -4,7 +4,12 @@ use qa_content::contract::{ItemId, PickupSelection, ProviderReference};
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::time::FrameContext;
 use qa_net::common::commands::ArsenalIntent;
-use qa_world::movement::types::ArsenalState;
+use qa_world::movement::q1::types::{Q1MovementState, QwMovementState};
+use qa_world::movement::q2::types::{Q2MovementState, Q2RereleaseMovementState};
+use qa_world::movement::q3::types::Q3MovementState;
+use qa_world::movement::types::{
+    ActorAnimationState, ArsenalState, MovementContinuation, MovementEffect, MovementEnvironment, UserCommand,
+};
 use qa_world::pickups::PickupAmmoReceipt;
 
 pub use super::super::weapon_slot::{PrimaryWeaponHandoff, WeaponReference};
@@ -141,27 +146,25 @@ pub struct ArsenalView {
     pub frame: f64,
 }
 
-/// Absorbed placeholder pending the movement-contract port.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MovementCommand;
+/// Movement command, mirroring donor `MovementCommand` (`UserCommand`).
+pub type MovementCommand = UserCommand;
 
-/// Absorbed placeholder pending the movement-contract port.
+/// Any-family movement state, mirroring donor `MovementState`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MovementEnvironment;
+pub enum MovementState {
+    /// NetQuake state.
+    Q1Netquake(Q1MovementState),
+    /// QuakeWorld state.
+    Q1Quakeworld(QwMovementState),
+    /// Quake II classic state.
+    Q2Classic(Q2MovementState),
+    /// Quake II rerelease state.
+    Q2Rerelease(Q2RereleaseMovementState),
+    /// Quake III state.
+    Q3(Q3MovementState),
+}
 
-/// Absorbed placeholder pending the movement-contract port.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MovementContinuation;
-
-/// Absorbed placeholder pending the movement-contract port.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MovementEffect;
-
-/// Absorbed placeholder pending the movement-contract port.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ActorAnimationState;
-
-/// Weapon step input. Absorbed pending the movement-contract port.
+/// Weapon step input, mirroring donor `WeaponStepInput`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponStepInput {
     /// Acting actor.
@@ -180,11 +183,11 @@ pub struct WeaponStepInput {
     pub gauntlet_hit: bool,
 }
 
-/// Weapon step result. Absorbed pending the movement-contract port.
+/// Weapon step result, mirroring donor `WeaponStepResult`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponStepResult {
     /// Continuation, when stepping continues.
-    pub continuation: Option<MovementContinuation>,
+    pub continuation: Option<MovementContinuation<MovementState>>,
     /// Next arsenal.
     pub arsenal: ArsenalState,
     /// Next animation.

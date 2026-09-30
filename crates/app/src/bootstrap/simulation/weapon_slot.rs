@@ -60,7 +60,7 @@ pub trait SourceWeaponHandoff {
     fn is_holstered(&self) -> bool;
     /// Resume this source, optionally onto an item.
     fn resume(&mut self, item: Option<&ItemId>) -> ResumeOutcome;
-    /// Rebuild a saved deferred request. Immediate handoffs return a refused stub.
+    /// Rebuild a saved deferred request. Immediate handoffs return a refused request.
     fn restore_request(&mut self, id: u64, item: Option<&ItemId>) -> Box<dyn SourceWeaponRequest>;
     /// Whether resumption defers through a source-input request.
     fn is_deferred(&self) -> bool;
@@ -251,7 +251,7 @@ impl SourceWeaponHandoff for EquipmentHandoff {
     }
 }
 
-/// Fail-closed stub; immediate handoffs never take the restore-request path.
+/// Fail-closed refused request; immediate handoffs never take the restore-request path.
 struct RefusedRequest;
 
 impl SourceWeaponRequest for RefusedRequest {
