@@ -4,6 +4,7 @@
 
 pub mod arachnid;
 pub mod beam;
+pub mod berserk;
 pub mod boss;
 pub mod common;
 pub mod gladiator;
