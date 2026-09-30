@@ -35,6 +35,7 @@ pub mod monsters;
 pub mod mounts;
 pub mod normals;
 pub mod paths;
+pub mod q1;
 pub mod q3;
 pub mod q3anim;
 pub mod q3scene;
