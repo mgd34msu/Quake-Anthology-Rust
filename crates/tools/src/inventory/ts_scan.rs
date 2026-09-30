@@ -884,6 +884,35 @@ impl<'a> Walker<'a> {
         })
     }
 
+    fn is_operand_end(&self, index: usize) -> bool {
+        let token = self.tokens[index];
+        if matches!(token.kind, TokKind::Str | TokKind::Number | TokKind::TmplTail | TokKind::TmplNoSub) {
+            return true;
+        }
+        if token.kind == TokKind::Punct && matches!(self.text(token), ")" | "]") {
+            return true;
+        }
+        if token.kind == TokKind::Ident {
+            if index > 0
+                && self.tokens[index - 1].kind == TokKind::Punct
+                && matches!(self.text(self.tokens[index - 1]), "." | "?.")
+            {
+                return true;
+            }
+            return !matches!(
+                self.text(token),
+                "new" | "typeof" | "return" | "case" | "do" | "else" | "in" | "of" | "delete" | "void" | "instanceof"
+                    | "yield" | "await" | "throw" | "if" | "for" | "while" | "switch" | "catch" | "with" | "const"
+                    | "let" | "var" | "function" | "class"
+            );
+        }
+        false
+    }
+
+    fn bang_is_postfix(&self, index: usize) -> bool {
+        index > 0 && self.chain_continues(index) && self.is_operand_end(index - 1)
+    }
+
     fn callee_text(&self, paren: usize) -> String {
         let mut start = paren;
         let mut end = paren.saturating_sub(1);
@@ -896,10 +925,13 @@ impl<'a> Walker<'a> {
                 let member_name = index > 0
                     && self.tokens[index - 1].kind == TokKind::Punct
                     && matches!(self.text(self.tokens[index - 1]), "." | "?.");
+                // Note: `new` is intentionally not a stop keyword: it can prefix a
+                // callee chain (`new Array(30).fill(null).map(fn)` names the callee
+                // `new Array(30).fill(null).map`).
                 if !member_name
                     && matches!(
                         text,
-                        "new" | "typeof" | "return" | "case" | "do" | "else" | "in" | "of" | "delete" | "void" | "instanceof" | "yield" | "await" | "throw" | "if" | "for" | "while" | "switch" | "catch" | "with"
+                        "typeof" | "return" | "case" | "do" | "else" | "in" | "of" | "delete" | "void" | "instanceof" | "yield" | "await" | "throw" | "if" | "for" | "while" | "switch" | "catch" | "with"
                     )
                 {
                     break;
@@ -907,7 +939,7 @@ impl<'a> Walker<'a> {
                 start = index;
             } else if token.kind == TokKind::Punct && (text == "." || text == "?." || text == "!" || text == ")" || text == "]") {
                 if text == "!" {
-                    if self.chain_continues(index) {
+                    if self.bang_is_postfix(index) {
                         start = index;
                     } else {
                         break;
@@ -935,6 +967,7 @@ impl<'a> Walker<'a> {
                     start = index;
                 }
             } else if token.kind == TokKind::Punct && (text == ">" || text == ">>" || text == ">>>") {
+                let gt = index;
                 let mut angles = if text == ">" { 1 } else if text == ">>" { 2 } else { 3 };
                 let mut back = index;
                 while back > 0 && angles > 0 {
@@ -971,7 +1004,11 @@ impl<'a> Walker<'a> {
                 if angles == 0 {
                     index = back;
                     start = back;
-                    end = back.saturating_sub(1);
+                    if gt + 1 == paren {
+                        // Type arguments of the final call (`f<T>(...)`) are not
+                        // part of the callee expression; mid-chain brackets are.
+                        end = back.saturating_sub(1);
+                    }
                 } else {
                     break;
                 }
@@ -1050,6 +1087,28 @@ impl<'a> Walker<'a> {
             }
             self.pos = close + 1;
             let _ = saved;
+        }
+    }
+
+    /// Consume an `import("...")(.Name)*<...>?` import type. The caller must have
+    /// verified `import` followed by `(`.
+    fn bump_import_type(&mut self) {
+        self.bump();
+        self.bump();
+        while !self.at_eof() && !self.at_punct(0, ")") {
+            self.bump();
+        }
+        if self.at_punct(0, ")") {
+            self.bump();
+        }
+        while self.at_punct(0, ".") {
+            self.bump();
+            if matches!(self.peek(), Some(next) if next.kind == TokKind::Ident) {
+                self.bump();
+            }
+        }
+        if self.at_punct(0, "<") {
+            self.skip_type_args();
         }
     }
 
@@ -1141,23 +1200,7 @@ impl<'a> Walker<'a> {
                                 self.bump();
                             }
                         } else if text == "import" && self.at_punct(1, "(") {
-                            self.bump();
-                            self.bump();
-                            while !self.at_eof() && !self.at_punct(0, ")") {
-                                self.bump();
-                            }
-                            if self.at_punct(0, ")") {
-                                self.bump();
-                            }
-                            while self.at_punct(0, ".") {
-                                self.bump();
-                                if matches!(self.peek(), Some(next) if next.kind == TokKind::Ident) {
-                                    self.bump();
-                                }
-                            }
-                            if self.at_punct(0, "<") {
-                                self.skip_type_args();
-                            }
+                            self.bump_import_type();
                         } else if text == "typeof" {
                             self.bump();
                             if self.at_punct(0, "(") {
@@ -1166,6 +1209,8 @@ impl<'a> Walker<'a> {
                                 if self.at_punct(0, ")") {
                                     self.bump();
                                 }
+                            } else if self.at_ident(0, "import") && self.at_punct(1, "(") {
+                                self.bump_import_type();
                             } else if matches!(self.peek(), Some(next) if next.kind == TokKind::Ident) {
                                 self.bump();
                                 while self.at_punct(0, ".") {
@@ -1412,7 +1457,9 @@ impl<'a> Walker<'a> {
                 if self.at_punct(0, "=") {
                     self.bump();
                     initializer_start = self.peek().map(|token| token.start);
-                    self.scan_expression(None);
+                    // A parameter default is not an assignment: a function directly
+                    // here has the parameter as its parent, so it stays anonymous.
+                    self.scan_expression(Some("anonymous".to_owned()));
                 }
                 self.record("Parameter", name, pattern_start, self.tokens.get(self.pos.saturating_sub(1)).map_or(pattern_end, |token| token.end), None, None, initializer_start, &[]);
             } else if name_token.kind == TokKind::Ident {
@@ -1430,7 +1477,9 @@ impl<'a> Walker<'a> {
                 if self.at_punct(0, "=") {
                     self.bump();
                     initializer_start = self.peek().map(|token| token.start);
-                    self.scan_expression(None);
+                    // A parameter default is not an assignment: a function directly
+                    // here has the parameter as its parent, so it stays anonymous.
+                    self.scan_expression(Some("anonymous".to_owned()));
                 }
                 let end = self.tokens.get(self.pos.saturating_sub(1)).map_or(start, |token| token.end);
                 self.record("Parameter", name, start, end.max(start), None, None, initializer_start, &[]);
@@ -1471,7 +1520,9 @@ impl<'a> Walker<'a> {
                     walker.parse_binding_pattern();
                     if walker.at_punct(0, "=") {
                         walker.bump();
-                        walker.scan_expression(None);
+                        // A binding default is not an assignment: a function directly
+                        // here has the binding element as its parent, so it stays anonymous.
+                        walker.scan_expression(Some("anonymous".to_owned()));
                     }
                     continue;
                 }
@@ -1505,7 +1556,9 @@ impl<'a> Walker<'a> {
                 if walker.at_punct(0, "=") {
                     walker.bump();
                     initializer_start = walker.peek().map(|token| token.start);
-                    walker.scan_expression(None);
+                    // A binding default is not an assignment: a function directly
+                    // here has the binding element as its parent, so it stays anonymous.
+                    walker.scan_expression(Some("anonymous".to_owned()));
                 }
                 let end = walker.tokens.get(walker.pos.saturating_sub(1)).map_or(start, |token| token.end);
                 walker.record("BindingElement", name, start, end.max(start), None, None, initializer_start, &[]);
@@ -1685,7 +1738,10 @@ impl<'a> Walker<'a> {
             let start = start_override.unwrap_or(start_token);
             walker.bump();
             let mut name = context;
-            if matches!(walker.peek(), Some(token) if token.kind == TokKind::Ident) {
+            if matches!(walker.peek(), Some(token) if token.kind == TokKind::Ident)
+                && !walker.at_ident(0, "extends")
+                && !walker.at_ident(0, "implements")
+            {
                 let token = walker.bump().expect("class name");
                 name = Some(walker.text(token).to_owned());
             }
@@ -2241,7 +2297,9 @@ impl<'a> Walker<'a> {
                     if inner.at_punct(0, "=") {
                         inner.bump();
                         initializer_start = inner.peek().map(|token| token.start);
-                        inner.scan_expression(None);
+                        // An enum member initializer is not an assignment: a function
+                        // directly here stays anonymous.
+                        inner.scan_expression(Some("anonymous".to_owned()));
                     }
                     if inner.at_punct(0, ",") || inner.at_punct(0, ";") {
                         inner.bump();
@@ -2999,7 +3057,7 @@ impl<'a> Walker<'a> {
                 }
                 start = index;
             } else if token.kind == TokKind::Punct && (text == "." || text == "?." || text == "!") {
-                if text == "!" && index + 1 != equals && !self.chain_continues(index) {
+                if text == "!" && index + 1 != equals && !self.bang_is_postfix(index) {
                     break;
                 }
                 start = index;
@@ -3373,15 +3431,19 @@ impl<'a> Walker<'a> {
                     self.parse_function(false, name, &[], Some(start));
                 } else if text == "new" {
                     self.bump();
-                    while let Some(next) = self.peek() {
-                        if next.kind == TokKind::Ident || (next.kind == TokKind::Punct && matches!(self.text(next), "." | "?.")) {
-                            self.bump();
-                        } else {
-                            break;
+                    if self.at_ident(0, "class") {
+                        self.parse_class(false, None, &[], None);
+                    } else {
+                        while let Some(next) = self.peek() {
+                            if next.kind == TokKind::Ident || (next.kind == TokKind::Punct && matches!(self.text(next), "." | "?.")) {
+                                self.bump();
+                            } else {
+                                break;
+                            }
                         }
-                    }
-                    if self.at_punct(0, "<") {
-                        self.skip_type_args();
+                        if self.at_punct(0, "<") {
+                            self.skip_type_args();
+                        }
                     }
                     if self.at_punct(0, "(") {
                         self.bump();
