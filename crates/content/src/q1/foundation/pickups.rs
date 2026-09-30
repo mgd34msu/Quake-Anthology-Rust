@@ -1681,3 +1681,79 @@ pub fn register_pickup_callbacks(game: &mut Q1EntityServices) -> Result<(), Q1Er
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use qa_core::identity::ProviderId;
+
+    use super::super::host::mock::{mock_host, MockEvents};
+    use super::super::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram};
+    use super::*;
+
+    fn options() -> Q1FoundationOptions {
+        Q1FoundationOptions {
+            provider: None,
+            precache_program: Some(Q1PrecacheProgram::Id1),
+            edition: Q1Edition::Classic,
+            physics_edition: None,
+            skill: 1,
+            deathmatch: 0,
+            coop: false,
+            campaign: ProviderId::new("q1", "campaign"),
+            combat_provider: ProviderId::new("q1", "combat"),
+            movement_provider: ProviderId::new("q1", "movement"),
+            inventory_provider: ProviderId::new("q1", "inventory"),
+            gravity: 800.0,
+            max_clients: Some(4),
+            no_exit: None,
+            teamplay: None,
+            aim_threshold: None,
+        }
+    }
+
+    fn game() -> (Q1EntityServices, std::rc::Rc<std::cell::RefCell<MockEvents>>) {
+        let (host, events) = mock_host();
+        (Q1EntityServices::new(host, options()).expect("game"), events)
+    }
+
+    #[test]
+    fn pickup_definition_matches_donor_tables() {
+        let (mut game, _) = game();
+        let health = game.create("item_health", None, None).expect("health");
+        let definition = pickup_definition(&game, &health).expect("definition").expect("known");
+        assert_eq!(definition.model, "maps/b_bh25.bsp");
+        assert_eq!(definition.sound, "items/health1.wav");
+        assert_eq!(definition.respawn, 20.0);
+        assert!(matches!(
+            definition.take,
+            Q1TakeKind::Health { big: false, mega: false, amount } if amount == 25.0
+        ));
+        let nailgun = game.create("weapon_nailgun", None, None).expect("nailgun");
+        let definition = pickup_definition(&game, &nailgun).expect("definition").expect("known");
+        assert_eq!(definition.model, "progs/g_nail.mdl");
+        assert_eq!(definition.sound, "weapons/pkup.wav");
+        assert!(matches!(definition.supply, Some(PickupSupplyOffer::Weapon(_))));
+        let key = game.create("item_key1", None, None).expect("key");
+        let definition = pickup_definition(&game, &key).expect("definition").expect("known");
+        assert!(matches!(definition.take, Q1TakeKind::Key { .. }));
+        let unknown = game.create("monster_army", None, None).expect("army");
+        assert!(pickup_definition(&game, &unknown).expect("lookup").is_none());
+    }
+
+    #[test]
+    fn spawn_pickup_schedules_placement() {
+        let (mut game, _) = game();
+        let health = game.create("item_health", None, None).expect("health");
+        assert!(spawn_pickup(&mut game, &health).expect("spawn"));
+        assert_eq!(
+            game.entity_ref(&health).and_then(|entity| entity.think.clone()),
+            Some(String::from("PlaceItem"))
+        );
+        assert_eq!(
+            game.entity_ref(&health).map(|entity| entity.model.clone()),
+            Some(String::from("maps/b_bh25.bsp"))
+        );
+        let army = game.create("monster_army", None, None).expect("army");
+        assert!(!spawn_pickup(&mut game, &army).expect("not a pickup"));
+    }
+}

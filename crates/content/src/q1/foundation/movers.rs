@@ -1352,3 +1352,75 @@ pub fn register_mover_callbacks(game: &mut Q1EntityServices) -> Result<(), Q1Err
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use qa_core::identity::ProviderId;
+
+    use super::super::host::mock::{mock_host, MockEvents};
+    use super::super::types::{Q1Edition, Q1FoundationOptions, Q1PrecacheProgram};
+    use super::*;
+
+    fn options() -> Q1FoundationOptions {
+        Q1FoundationOptions {
+            provider: None,
+            precache_program: Some(Q1PrecacheProgram::Id1),
+            edition: Q1Edition::Classic,
+            physics_edition: None,
+            skill: 1,
+            deathmatch: 0,
+            coop: false,
+            campaign: ProviderId::new("q1", "campaign"),
+            combat_provider: ProviderId::new("q1", "combat"),
+            movement_provider: ProviderId::new("q1", "movement"),
+            inventory_provider: ProviderId::new("q1", "inventory"),
+            gravity: 800.0,
+            max_clients: Some(4),
+            no_exit: None,
+            teamplay: None,
+            aim_threshold: None,
+        }
+    }
+
+    fn game() -> (Q1EntityServices, std::rc::Rc<std::cell::RefCell<MockEvents>>) {
+        let (host, events) = mock_host();
+        (Q1EntityServices::new(host, options()).expect("game"), events)
+    }
+
+    #[test]
+    fn spawn_door_sets_defaults_and_callbacks() {
+        let (mut game, _) = game();
+        let door = game.create("func_door", None, None).expect("door");
+        spawn_door(&mut game, &door).expect("spawn");
+        let entity = game.entity_ref(&door).cloned().expect("door");
+        assert_eq!(entity.speed, 100.0);
+        assert_eq!(entity.wait, 3.0);
+        assert_eq!(entity.damage, 2.0);
+        assert_eq!(entity.solid, Q1Solid::Bsp);
+        assert_eq!(entity.movement, Q1MoveType::Push);
+        assert_eq!(entity.use_callback.as_deref(), Some("door_use"));
+        assert_eq!(entity.blocked.as_deref(), Some("door_blocked"));
+        assert_eq!(entity.touch.as_deref(), Some("door_touch"));
+    }
+
+    #[test]
+    fn link_doors_groups_and_adds_trigger() {
+        let (mut game, _) = game();
+        let first = game.create("func_door", None, None).expect("first");
+        let second = game.create("func_door", None, None).expect("second");
+        spawn_door(&mut game, &first).expect("spawn");
+        spawn_door(&mut game, &second).expect("spawn");
+        link_doors(&mut game).expect("link");
+        assert_eq!(game.entity_ref(&first).map(|entity| entity.door_group.len()), Some(2));
+        assert_eq!(game.entity_ref(&second).map(|entity| entity.door_group.len()), Some(2));
+        let triggers = game
+            .entity_ids()
+            .iter()
+            .filter(|id| {
+                game.entity_ref(id)
+                    .is_some_and(|entity| entity.classname == "door_trigger")
+            })
+            .count();
+        assert_eq!(triggers, 1);
+    }
+}

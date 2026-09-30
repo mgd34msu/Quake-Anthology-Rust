@@ -503,6 +503,31 @@ impl Q1FoundationHost {
         (self.step_pusher)(actor, elapsed)
     }
 
+    /// Run a monster step move.
+    pub fn walk_move(&mut self, actor: &OwnedActor, yaw: f64, distance: f64) -> bool {
+        (self.walk_move)(actor, yaw, distance)
+    }
+
+    /// Update a monster yaw.
+    pub fn change_yaw(&mut self, actor: &OwnedActor) {
+        (self.change_yaw)(actor);
+    }
+
+    /// Move a monster toward a goal.
+    pub fn move_to_goal(&mut self, actor: &OwnedActor, goal: &ActorId, distance: f64, mode: Option<Q1GoalMode>) {
+        (self.move_to_goal)(actor, goal, distance, mode);
+    }
+
+    /// Check a monster has ground below.
+    pub fn check_bottom(&mut self, actor: &ActorId) -> bool {
+        (self.check_bottom)(actor)
+    }
+
+    /// Cycle the visible client for monster sighting.
+    pub fn check_client(&mut self, actor: &OwnedActor) -> Option<ActorId> {
+        (self.check_client)(actor)
+    }
+
     /// Require the gravity hook (donor throws without a movement host).
     pub fn require_set_gravity(&mut self, actor: &ActorId, scale: f64) -> Result<(), Q1Error> {
         match self.set_gravity.as_mut() {

@@ -214,6 +214,8 @@ pub struct Q1EntityServices {
     sequence: u64,
     pub(crate) next_dynamic_slot: u32,
     spawners: HashMap<String, Q1SpawnHandler>,
+    /// Monster admission overrides.
+    pub monster_admission: Option<Box<dyn super::runtime::Q1MonsterAdmission>>,
 }
 
 impl std::fmt::Debug for Q1EntityServices {
@@ -284,6 +286,7 @@ impl Q1EntityServices {
             sequence: 0,
             next_dynamic_slot: 1,
             spawners: HashMap::new(),
+            monster_admission: None,
         };
         game.named.register(
             "SUB_Remove",
@@ -307,12 +310,10 @@ impl Q1EntityServices {
             },
         )?;
         super::movers::register_mover_callbacks(&mut game)?;
-        // TEMP-WIRE(spawns): re-enable when spawns.rs lands this session.
-        // super::spawns::register_spawn_callbacks(&mut game)?;
+        super::spawns::register_spawn_callbacks(&mut game)?;
         super::pickups::register_pickup_callbacks(&mut game)?;
         super::weapons::register_weapon_callbacks(&mut game)?;
-        // TEMP-WIRE(monsters): re-enable when monsters.rs lands this session.
-        // super::monsters::register_monster_callbacks(&mut game)?;
+        super::monsters::register_monster_callbacks(&mut game)?;
         Ok(game)
     }
 
@@ -799,7 +800,7 @@ impl Q1EntityServices {
     /// Register a named spawn handler.
     pub fn register_spawn(&mut self, classname: &str, spawn: Q1SpawnHandler) -> Result<(), Q1Error> {
         if self.spawners.contains_key(classname) {
-            return Err(q1_error(format!("Duplicate Q1 spawn function: {classname}")));
+            return Err(q1_error(format!("Q1 spawn handler already registered: {classname}")));
         }
         self.spawners.insert(classname.to_string(), spawn);
         Ok(())
@@ -808,7 +809,7 @@ impl Q1EntityServices {
     /// Replace a named spawn handler.
     pub fn replace_spawn(&mut self, classname: &str, spawn: Q1SpawnHandler) -> Result<(), Q1Error> {
         if !self.spawners.contains_key(classname) {
-            return Err(q1_error(format!("Missing Q1 spawn function: {classname}")));
+            return Err(q1_error(format!("No registered Q1 spawn to replace: {classname}")));
         }
         self.spawners.insert(classname.to_string(), spawn);
         Ok(())
@@ -2491,6 +2492,7 @@ impl Q1EntityServices {
 
     /// Run a spawn function for an entity.
     pub fn spawn_entity(&mut self, id: &ActorId, deathmatch: Option<i32>) -> Result<(), Q1Error> {
+        let previous = self.spawn_options.clone();
         if let Some(deathmatch) = deathmatch {
             let mut options = self.configured_options.clone();
             options.deathmatch = deathmatch;
@@ -2501,16 +2503,18 @@ impl Q1EntityServices {
             .map(|entity| entity.classname.clone())
             .unwrap_or_default();
         let spawn = self.spawners.get(&classname).copied();
-        let result = match spawn {
-            Some(spawn) => spawn(self, id),
-            None => Ok(()),
-        };
-        self.spawn_options = None;
-        result?;
-        if self.is_live(id) {
-            self.link(id)?;
-        }
-        Ok(())
+        let result = (|| -> Result<(), Q1Error> {
+            match spawn {
+                Some(spawn) => spawn(self, id)?,
+                None => super::spawns::spawn_map_actor(self, id)?,
+            }
+            if self.is_live(id) {
+                self.link(id)?;
+            }
+            Ok(())
+        })();
+        self.spawn_options = previous;
+        result
     }
 
     /// Initialize the weapon inventory for a player.
