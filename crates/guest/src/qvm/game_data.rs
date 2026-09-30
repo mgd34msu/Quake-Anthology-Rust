@@ -2839,7 +2839,7 @@ mod tests {
             QvmInstruction::word(QvmOpcode::OpEnter, 16, 0),
             QvmInstruction::word(QvmOpcode::OpConst, 3, 1),
             QvmInstruction::word(QvmOpcode::OpConst, 4, 6),
-            QvmInstruction::word(QvmOpcode::OpEq, 5, 11),
+            QvmInstruction::word(QvmOpcode::OpEq, 4, 11),
             QvmInstruction::single(QvmOpcode::OpPop, 16),
             QvmInstruction::single(QvmOpcode::OpLeave, 17),
         ];

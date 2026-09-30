@@ -571,6 +571,8 @@ mod tests {
     }
 
     fn fixture() -> (QvmDamageScopes, QvmSharedMemory, ActorId) {
+        let mut image = QvmImage::default();
+        image.allocated_data_length = 65536;
         let artifact = QvmArtifact {
             module: super::super::game_data::ModuleIdentity {
                 id: "q3:qagame".to_string(),
@@ -580,7 +582,7 @@ mod tests {
             },
             role: QvmRole::Qagame,
             abi_profile: None,
-            image: QvmImage::default(),
+            image,
         };
         let module = QvmModule::new(artifact, None, None).unwrap();
         let memory = module.memory();
