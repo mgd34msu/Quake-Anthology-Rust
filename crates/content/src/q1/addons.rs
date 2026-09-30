@@ -14,6 +14,7 @@ pub mod corpses;
 pub mod ctf;
 pub mod effects;
 pub mod field_triggers;
+pub mod horde;
 pub mod items;
 pub mod lights;
 pub mod monsters;
