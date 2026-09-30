@@ -29,6 +29,8 @@ pub mod stalker;
 pub mod turret;
 pub mod widow;
 pub mod widow2;
+pub mod widow_common;
+pub mod widow_death;
 pub mod xatrix_variants;
 pub mod state;
 pub mod tables;

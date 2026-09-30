@@ -5,12 +5,12 @@
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3, add3, scale3, vec3};
 
-use super::super::power_armor::{
+use super::power_armor::{
     PowerArmorKind, monster_power_armor, restore_monster_power_armor,
 };
-use super::super::spawn::{create_rogue_ground_monster, find_rogue_spawn_point, rogue_spawn_grow};
-use super::super::state::rogue_state;
-use super::super::types::mission_services;
+use super::spawn::{create_rogue_ground_monster, find_rogue_spawn_point, rogue_spawn_grow};
+use super::state::rogue_state;
+use super::types::mission_services;
 use crate::q2::foundation::host::{Q2GameServices, Q2Mode};
 use crate::q2::foundation::monsters::ai::{angles_vectors, health, visible};
 use crate::q2::foundation::monsters::perception::found_target;

@@ -10,11 +10,11 @@ use super::spawn::rogue_spawn_callbacks;
 use super::state::rogue_state;
 use super::tables::rogue_widow2::{widow2_frame, widow2_moves};
 use super::types::{mission_services, mission_weapons};
-use super::widow::common::{
+use super::widow_common::{
     widow_clear_powerups, widow_power_think, widow_powerups, widow_project,
     widow_restore_armor, widow_slots, widow_slots_left, widow_summon,
 };
-use super::widow::death::{
+use super::widow_death::{
     widow_debris_callbacks, widow_explode_think, widow_explosion,
     widow_explosion_leg, widow_gib,
 };

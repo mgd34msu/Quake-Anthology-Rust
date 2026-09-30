@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3, add3, scale3, vec3};
 
-use super::common::widow_project;
+use super::widow_common::widow_project;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
     Q2EffectEvent, Q2GameServices, Q2Mode, Q2MotionKind, Q2PresentationEvent,
