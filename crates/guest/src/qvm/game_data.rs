@@ -37,7 +37,6 @@ use std::rc::Rc;
 
 use qa_core::math::{vec3, Vec3};
 
-use super::entity_record::qvm_entity_state_bytes;
 use super::player_record::qvm_player_state_bytes;
 use super::player_record::QvmPlayerState;
 use super::shared_entity_record::qvm_shared_entity_bytes;
@@ -652,7 +651,7 @@ impl QvmSharedMemory {
         }
         let offset = word as usize;
         if offset >= self.len() {
-            return None;
+            None
         } else {
             Some(offset)
         }
@@ -1280,13 +1279,16 @@ pub struct QvmModuleCommand {
     pub arguments: Vec<String>,
 }
 
+/// Restore host state from a value tree.
+pub type QvmHostStateRestore = Rc<dyn Fn(&ProfileValue) -> Result<(), GuestError>>;
+
 /// Host-state checkpoint callbacks (mirror of `QvmHostState`).
 #[derive(Clone)]
 pub struct QvmHostStateFns {
     /// Capture host state as a format tag plus value tree.
     pub checkpoint: Rc<dyn Fn() -> (String, ProfileValue)>,
     /// Restore host state from a value tree.
-    pub restore: Rc<dyn Fn(&ProfileValue) -> Result<(), GuestError>>,
+    pub restore: QvmHostStateRestore,
 }
 
 /// Module checkpoint (mirror of `QvmCheckpoint`).
@@ -2084,7 +2086,7 @@ pub fn qualify_qvm_region_evaluation(
 ) -> Result<usize, GuestError> {
     let fail = |message: String| GuestError::invalid(format!("QVM region evaluation: {message}"));
     let frame = qualify_qvm_region(instructions, owner, region.entry, region.join)?;
-    let valid = |offset: usize| offset >= 8 && offset % 4 == 0 && offset + 4 <= frame;
+    let valid = |offset: usize| offset >= 8 && offset.is_multiple_of(4) && offset + 4 <= frame;
     let unique: std::collections::HashSet<usize> = region.inputs.iter().copied().collect();
     if region.inputs.iter().any(|offset| !valid(*offset))
         || unique.len() != region.inputs.len()
@@ -2342,8 +2344,8 @@ pub fn qualify_qvm_body_calls<P: Clone>(
     }
     let player = image.instruction(player_entry);
     let mesh = image.instruction(mesh_entry);
-    if player.map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
-        || mesh.map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+    if player.is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
+        || mesh.is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
     {
         return Err(GuestError::invalid(
             "Source body scope requires original function entries",
@@ -2575,7 +2577,7 @@ impl QvmGameData {
             return Err(GuestError::invalid("Q3 wire entity capacity is 1024 slots"));
         }
         let stride = |value: usize, minimum: usize| -> Result<(), GuestError> {
-            if value < minimum || value % 4 != 0 {
+            if value < minimum || !value.is_multiple_of(4) {
                 return Err(GuestError::invalid("Game-data stride is undersized or unaligned"));
             }
             Ok(())

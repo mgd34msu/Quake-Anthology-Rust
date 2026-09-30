@@ -262,7 +262,7 @@ fn read_entry(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<usiz
 
 fn read_aligned(reader: &ProfileReader<'_>, bytes: usize, size: usize) -> Result<usize, GuestError> {
     let value = read_integer(reader, 0, bytes.saturating_sub(size) as i64)? as usize;
-    if value % 4 != 0 {
+    if !value.is_multiple_of(4) {
         return reader.fail("source word is unaligned");
     }
     Ok(value)
@@ -310,7 +310,7 @@ fn read_source_pointer(reader: &ProfileReader<'_>, data_bytes: usize) -> Result<
     let indirections = reader
         .field("indirections")?
         .list(|value| value.integer(0).map(|step| step as usize))?;
-    if offset % 4 != 0 || indirections.iter().any(|step| step % 4 != 0) {
+    if !offset.is_multiple_of(4) || indirections.iter().any(|step| step % 4 != 0) {
         return reader.fail("source pointer path must use aligned words");
     }
     if kind == "argument" {
@@ -360,7 +360,7 @@ fn read_layout(reader: &ProfileReader<'_>, artifact: &QvmArtifact) -> Result<Pri
         qvm_player_state_bytes(abi_profile) as i64,
         artifact.image.allocated_data_length as i64,
     )? as usize;
-    if entity_stride % 4 != 0 || client_stride % 4 != 0 {
+    if !entity_stride.is_multiple_of(4) || !client_stride.is_multiple_of(4) {
         return reader.fail("source record strides must be aligned");
     }
     Ok(PrimaryLayout {
@@ -550,7 +550,7 @@ pub fn read_source_primary_match(
             arguments: value.field("arguments")?.list(|field| field.string())?,
         })
     })?;
-    if score % 4 != 0 || score + 4 > client_bytes {
+    if !score.is_multiple_of(4) || score + 4 > client_bytes {
         return reader
             .field("score")?
             .fail("score is outside the original client record");
@@ -865,7 +865,7 @@ pub fn read_qvm_primary_weapons(
                     unselected: value.field("unselected")?.boolean()?,
                 })
             })?,
-            settled: stage.field("settled")?.list(&read_test)?,
+            settled: stage.field("settled")?.list(read_test)?,
             selection: StageSelection {
                 field: QvmItemField {
                     record: selection_field.field("record")?.literal_str("client")?,
@@ -885,7 +885,7 @@ pub fn read_qvm_primary_weapons(
                     0,
                     QVM_MAX_PRIVATE_ARGUMENT_WORDS as i64 - 1,
                 )? as usize,
-                accepted: request.field("accepted")?.list(&read_test)?,
+                accepted: request.field("accepted")?.list(read_test)?,
             },
         },
         equipment_movement: QvmEquipmentMovementProfile {

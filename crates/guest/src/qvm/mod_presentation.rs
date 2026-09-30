@@ -552,7 +552,7 @@ const QVM_PI: f32 = std::f32::consts::PI;
 /// Dot product with f32 rounding.
 #[must_use]
 pub fn dot3(left: Vec3, right: Vec3) -> f32 {
-    (left.x * right.x + (left.y * right.y + left.z * right.z) as f32) as f32
+    left.x * right.x + (left.y * right.y + left.z * right.z)
 }
 
 /// Forward vector to angles (pitch, yaw, roll).
@@ -954,6 +954,8 @@ struct MeshScope {
 /// Executes artifact-qualified original presentation.
 pub struct QvmModPresentation<H: PresentationHost> {
     host: H,
+    // Retained qualification input; never read after construction.
+    #[allow(dead_code)]
     artifact: QvmArtifact,
     source: ModuleId,
     declaration: QvmModPresentationDeclaration,
@@ -1311,7 +1313,7 @@ impl<H: PresentationHost> QvmModPresentation<H> {
         Ok(())
     }
 
-    fn apply_context(&mut self, event: Option<&SourcePlayerEvent>) -> Result<QvmPresentationContext, FlowError> {
+    fn apply_context(&mut self, _event: Option<&SourcePlayerEvent>) -> Result<QvmPresentationContext, FlowError> {
         let context = self.host.presentation_context()?;
         if context.frame_time_ms < 0
             || ![context.view_origin.x, context.view_origin.y, context.view_origin.z]
