@@ -6,7 +6,9 @@ use crate::q3anim::{PlayerFootsteps, PlayerGender};
 use qa_core::math::{vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Team;
 use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::retail_snapshot::{default_model, PcmSound, SceneModel, SceneShader, SceneSkin};
 
 /// One stable `cgs.clientinfo` slot (`ClientInfo`).
 #[derive(Debug, Clone, PartialEq)]
@@ -104,7 +106,7 @@ impl Default for ClientInfo {
         Self {
             info_valid: false,
             name: String::new(),
-            team: Team::Free,
+            team: Team::TeamFree,
             bot_skill: 0,
             color1: vec3(0.0, 0.0, 0.0),
             color2: vec3(0.0, 0.0, 0.0),
@@ -136,9 +138,9 @@ impl Default for ClientInfo {
             head_offset: vec3(0.0, 0.0, 0.0),
             footsteps: PlayerFootsteps::Normal,
             gender: PlayerGender::Male,
-            legs_model: SceneModel::Default,
-            torso_model: SceneModel::Default,
-            head_model: SceneModel::Default,
+            legs_model: default_model(),
+            torso_model: default_model(),
+            head_model: default_model(),
             legs_skin: None,
             torso_skin: None,
             head_skin: None,

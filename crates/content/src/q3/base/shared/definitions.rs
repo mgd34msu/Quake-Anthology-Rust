@@ -99,6 +99,25 @@ pub enum GameType {
     GtMaxGameType = 8,
 }
 
+impl GameType {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::GtFfa),
+            1 => Some(Self::GtTournament),
+            2 => Some(Self::GtSinglePlayer),
+            3 => Some(Self::GtTeam),
+            4 => Some(Self::GtCtf),
+            5 => Some(Self::Gt1fctf),
+            6 => Some(Self::GtObelisk),
+            7 => Some(Self::GtHarvester),
+            8 => Some(Self::GtMaxGameType),
+            _ => None,
+        }
+    }
+}
+
 /// Team.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -113,6 +132,21 @@ pub enum Team {
     TeamSpectator = 3,
     /// Team count.
     TeamNumTeams = 4,
+}
+
+impl Team {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::TeamFree),
+            1 => Some(Self::TeamRed),
+            2 => Some(Self::TeamBlue),
+            3 => Some(Self::TeamSpectator),
+            4 => Some(Self::TeamNumTeams),
+            _ => None,
+        }
+    }
 }
 
 /// Item type.

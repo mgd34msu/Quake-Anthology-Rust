@@ -24,7 +24,6 @@ pub mod local_entities;
 pub mod mark_projector;
 pub mod marks;
 pub mod media;
-pub mod mirrors_present_client;
 pub mod mirrors_present_hud;
 pub mod mirrors_present_scene;
 pub mod mission_hud;

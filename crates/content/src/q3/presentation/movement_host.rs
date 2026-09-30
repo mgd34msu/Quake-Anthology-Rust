@@ -5,6 +5,7 @@
 use qa_core::math::{Bounds, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::presentation::collision_host::TraceResult;
 use crate::q3::presentation::mirrors_present_scene::*;
 
 // ---------------------------------------------------------------------------

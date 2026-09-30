@@ -2814,6 +2814,11 @@ pub trait RendererResources {
     fn model_for_handle(&self, handle: u32) -> SceneModel;
     /// Shader for a handle.
     fn shader_for_handle(&self, handle: u32) -> Option<SceneShader>;
+    /// Skin for a handle.
+    fn skin_for_handle(&self, handle: u32) -> Option<SceneSkin> {
+        let _ = handle;
+        None
+    }
     /// Bounds for a model (`modelBounds`).
     fn model_bounds(&self, model: &SceneModel) -> Bounds;
 }

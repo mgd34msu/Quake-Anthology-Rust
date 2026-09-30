@@ -6,6 +6,7 @@ use qa_core::math::{vec3, vec4, Vec4};
 use std::cell::Cell;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Team as CanonicalTeam;
 use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::draw_icons::*;
 use crate::q3::presentation::draw_tools::*;
@@ -216,7 +217,7 @@ impl BaseScoreboard {
         }
         let text = if score.ping == -1 {
             game_format(" connecting    %s", &[GameFormatArg::Text(client.name.clone())], 1024)
-        } else if client.team == Team::Spectator {
+        } else if client.team == CanonicalTeam::TeamSpectator {
             game_format(
                 " SPECT %3i %4i %s",
                 &[
@@ -271,7 +272,7 @@ impl BaseScoreboard {
     }
 
     /// Draw one team's rows (`teamScoreboard`).
-    fn team_scoreboard(&self, y: f32, team: Team, fade: f32, max_clients: i32, line_height: f32) -> i32 {
+    fn team_scoreboard(&self, y: f32, team: CanonicalTeam, fade: f32, max_clients: i32, line_height: f32) -> i32 {
         let mut count = 0;
         let color = vec4(1.0, 1.0, 1.0, fade);
         let num_scores = self.state.borrow().num_scores;
@@ -390,9 +391,9 @@ impl BaseScoreboard {
             y += line_height / 2.0;
             let team_scores = self.state.borrow().team_scores;
             let first_team = if team_scores[0] >= team_scores[1] {
-                Team::Red
+                CanonicalTeam::TeamRed
             } else {
-                Team::Blue
+                CanonicalTeam::TeamBlue
             };
             let first = self.team_scoreboard(y, first_team, fade, max_clients, line_height);
             self.host.icons.borrow().draw_team_background(
@@ -402,7 +403,11 @@ impl BaseScoreboard {
             );
             y += first as f32 * line_height + 16.0;
             max_clients -= first;
-            let second_team = if first_team == Team::Red { Team::Blue } else { Team::Red };
+            let second_team = if first_team == CanonicalTeam::TeamRed {
+                CanonicalTeam::TeamBlue
+            } else {
+                CanonicalTeam::TeamRed
+            };
             let second = self.team_scoreboard(y, second_team, fade, max_clients, line_height);
             self.host.icons.borrow().draw_team_background(
                 rect2d(0.0, y - top_border, 640.0, second as f32 * line_height + 16.0),
@@ -411,11 +416,14 @@ impl BaseScoreboard {
             );
             y += second as f32 * line_height + 16.0;
             max_clients -= second;
-            y += self.team_scoreboard(y, Team::Spectator, fade, max_clients, line_height) as f32 * line_height + 16.0;
+            y += self.team_scoreboard(y, CanonicalTeam::TeamSpectator, fade, max_clients, line_height) as f32
+                * line_height
+                + 16.0;
         } else {
-            let count = self.team_scoreboard(y, Team::Free, fade, max_clients, line_height);
+            let count = self.team_scoreboard(y, CanonicalTeam::TeamFree, fade, max_clients, line_height);
             y += count as f32 * line_height + 16.0;
-            y += self.team_scoreboard(y, Team::Spectator, fade, max_clients - count, line_height) as f32 * line_height
+            y += self.team_scoreboard(y, CanonicalTeam::TeamSpectator, fade, max_clients - count, line_height) as f32
+                * line_height
                 + 16.0;
         }
         if !self.local_client.get() {
@@ -517,7 +525,7 @@ impl BaseScoreboard {
             for index in 0..64 {
                 let client = self.client(index);
                 let client = client.borrow();
-                if !client.info_valid || client.team != Team::Free {
+                if !client.info_valid || client.team != CanonicalTeam::TeamFree {
                     continue;
                 }
                 // Borrow ends before drawing.

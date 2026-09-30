@@ -3,7 +3,10 @@
 //! Donor provenance: `src/content/q3/presentation/snapshots.ts`.
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_state::*;
+use crate::q3::base::shared::player_state::*;
+use crate::q3::base::shared::snapshot_state::*;
 use crate::q3::presentation::prediction::*;
 use crate::q3::presentation::retail_snapshot::*;
 use crate::q3::presentation::state::*;
@@ -11,6 +14,12 @@ use crate::q3::presentation::state::*;
 // ---------------------------------------------------------------------------
 // Snapshots (snapshots.ts)
 // ---------------------------------------------------------------------------
+
+/// Parse-entity ring size (`MAX_PARSE_ENTITIES`).
+pub const MAX_PARSE_ENTITIES: i32 = 2048;
+
+/// Snapshot history window (`PACKET_BACKUP`-style 32-slot check).
+pub const SNAPSHOT_HISTORY_WINDOW: i32 = 32;
 
 /// Latest snapshot cursor (`SnapshotSource.current`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +46,7 @@ pub struct HistoryLatest {
     /// Server time.
     pub server_time: i32,
     /// Player-state product.
-    pub product: Q3Product,
+    pub product: Product,
 }
 
 /// Snapshot-history view for `CL_GetSnapshot` (`SnapshotHistory` mirror).
@@ -45,7 +54,7 @@ pub trait SnapshotHistoryView {
     /// Latest entry, if any.
     fn latest(&self) -> Option<HistoryLatest>;
     /// Valid slot snapshot, if the slot is valid.
-    fn borrow_slot(&self, number: i32, product: Q3Product) -> Option<Snapshot>;
+    fn borrow_slot(&self, number: i32, product: Product) -> Option<Snapshot>;
     /// Retained parse-entity ring base, if retained.
     fn retained_parse_entities_number(&self) -> Option<i32>;
     /// Retained parse entity by absolute index.
@@ -285,7 +294,7 @@ impl<H: SnapshotHost> SnapshotRuntime<H> {
         entity.trail_time = server_time;
         entity.lerp_origin = entity.current_state.origin;
         entity.lerp_angles = entity.current_state.angles;
-        let is_player = entity.current_state.e_type == EntityType::Player as i32;
+        let is_player = entity.current_state.e_type == EntityType::EtPlayer as i32;
         if is_player {
             self.host.reset_player_entity(state, static_state, entity_number);
         }
@@ -304,7 +313,7 @@ impl<H: SnapshotHost> SnapshotRuntime<H> {
             &mut snapshot.player_state,
             &mut state.entity_at_mut(client_num)?.current_state,
             false,
-        )?;
+        );
         let server_time = snapshot.server_time;
         let numbers: Vec<i32> = snapshot.entities.iter().map(|entry| entry.number).collect();
         state.snap = Some(snapshot);
@@ -347,7 +356,7 @@ impl<H: SnapshotHost> SnapshotRuntime<H> {
             &mut snapshot.player_state,
             &mut state.entity_at_mut(client_num)?.next_state,
             false,
-        )?;
+        );
         state.entity_at_mut(previous_client)?.interpolate = true;
         for entry in snapshot.entities.clone() {
             let entity = state.entity_at_mut(entry.number)?;
@@ -385,7 +394,7 @@ impl<H: SnapshotHost> SnapshotRuntime<H> {
             &mut next.player_state,
             &mut state.entity_at_mut(local_num)?.current_state,
             false,
-        )?;
+        );
         state.entity_at_mut(local_num)?.interpolate = false;
         let next_server_time = next.server_time;
         let numbers: Vec<i32> = next.entities.iter().map(|entry| entry.number).collect();
@@ -406,7 +415,7 @@ impl<H: SnapshotHost> SnapshotRuntime<H> {
                 if !trail_ok {
                     entity.previous_event = 0;
                 }
-                if entity.current_state.e_type == EntityType::Player as i32 {
+                if entity.current_state.e_type == EntityType::EtPlayer as i32 {
                     self.host.reset_player_entity(state, static_state, entity_number);
                 }
             }
@@ -417,7 +426,7 @@ impl<H: SnapshotHost> SnapshotRuntime<H> {
         if ((next.player_state.e_flags ^ previous.player_state.e_flags) & 4) != 0 {
             state.this_frame_teleport = true;
         }
-        let follow = (next.player_state.pm_flags & MoveFlags::FOLLOW) != 0;
+        let follow = (next.player_state.pm_flags & (MoveFlags::Follow as i32)) != 0;
         state.snap = Some(next);
         state.next_snap = None;
         if self.host.demo_playback() || follow || self.host.no_predict() || self.host.synchronous_clients() {

@@ -7,7 +7,16 @@ use qa_core::math::{
 };
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_state::EntityState as CanonicalEntityState;
+use crate::q3::base::shared::player_state::PlayerState as CanonicalPlayerState;
+use crate::q3::base::shared::trajectory::evaluate_trajectory;
+use crate::q3::base::world::{TraceContact, TraceSolidity};
+use crate::q3::foundation::animation::ANIMATION_TOGGLE_BIT;
+use crate::q3::presentation::client_info::ClientInfo;
+use crate::q3::presentation::collision_host::*;
+use crate::q3::presentation::ref_entity::{RF_LIGHTING_ORIGIN, RF_SHADOW_PLANE, RF_THIRD_PERSON};
 use crate::q3::presentation::resources::*;
 use crate::q3::presentation::retail_snapshot::*;
 use crate::q3::presentation::state::*;
@@ -15,6 +24,24 @@ use crate::q3::presentation::state::*;
 // ---------------------------------------------------------------------------
 // Player media and presentation (players.ts)
 // ---------------------------------------------------------------------------
+
+/// Copy a client model between slots (`CG_CopyClientInfoModel`).
+pub fn copy_client_model(from: &ClientInfo, to: &mut ClientInfo) -> PresentResult<()> {
+    to.head_offset = from.head_offset;
+    to.footsteps = from.footsteps;
+    to.gender = from.gender;
+    to.legs_model = from.legs_model.clone();
+    to.legs_skin = from.legs_skin.clone();
+    to.torso_model = from.torso_model.clone();
+    to.torso_skin = from.torso_skin.clone();
+    to.head_model = from.head_model.clone();
+    to.head_skin = from.head_skin.clone();
+    to.model_icon = from.model_icon.clone();
+    to.new_anims = from.new_anims;
+    to.animations = from.animations;
+    to.sounds = from.sounds;
+    Ok(())
+}
 
 /// Custom player sound names (`CUSTOM_SOUND_NAMES`).
 pub const CUSTOM_SOUND_NAMES: [&str; 13] = [
@@ -201,7 +228,7 @@ pub struct ClientInfoSettings {
 /// into direct methods; donor `async` registration is synchronous here.
 pub trait ClientInfoHost: AssetReader {
     /// Presentation product.
-    fn product(&self) -> Q3Product;
+    fn product(&self) -> Product;
     /// Current settings.
     fn settings(&self) -> ClientInfoSettings;
     /// Bytes of memory remaining.
@@ -428,7 +455,7 @@ pub struct PlayerPoseAxes {
 /// synchronous here.
 pub trait PlayerPresentationHost {
     /// Presentation product.
-    fn product(&self) -> Q3Product;
+    fn product(&self) -> Product;
     /// Player media.
     fn media(&self) -> PlayerMedia;
     /// Mission-pack player media.
@@ -477,7 +504,7 @@ pub trait PlayerPresentationHost {
     fn add_player_weapon(
         &mut self,
         parent: &RefModelEntity,
-        ps: Option<&PlayerState>,
+        ps: Option<&CanonicalPlayerState>,
         entity: &ClientEntity,
         team: Team,
     );
@@ -488,7 +515,7 @@ pub trait PlayerPresentationHost {
     fn calculate_pose(
         &mut self,
         player: &ClientPlayerEntity,
-        current: &EntityState,
+        current: &CanonicalEntityState,
         ci: &ClientInfo,
         lerp_angles: Vec3,
         time_ms: i32,
@@ -568,7 +595,7 @@ pub struct ShadowOutcome {
     pub plane: f32,
 }
 
-pub(crate) fn powered(state: &EntityState, powerup: Powerup) -> bool {
+pub(crate) fn powered(state: &CanonicalEntityState, powerup: Powerup) -> bool {
     (state.powerups & (1 << (powerup as i32))) != 0
 }
 
@@ -585,7 +612,7 @@ pub(crate) fn same_fold(a: &str, b: &str) -> bool {
 }
 
 pub(crate) fn info_color(value: &str) -> Vec3 {
-    let bits = game_atoi(value);
+    let bits = game_atoi(value).unwrap_or_default();
     if !(1..=7).contains(&bits) {
         return vec3(1.0, 1.0, 1.0);
     }
@@ -606,9 +633,9 @@ pub(crate) fn model_skin(value: &str) -> (String, String) {
 
 /// Custom sound fallback model (`q3CustomSoundFallback`).
 #[must_use]
-pub const fn custom_sound_fallback(product: Q3Product, team_game: bool) -> &'static str {
+pub const fn custom_sound_fallback(product: Product, team_game: bool) -> &'static str {
     match (product, team_game) {
-        (Q3Product::MissionPack, true) => "james",
+        (Product::Missionpack, true) => "james",
         _ => "sarge",
     }
 }
@@ -621,7 +648,7 @@ pub struct PlayerPresenter<H> {
 
 impl<H: PlayerPresentationHost> PlayerPresenter<H> {
     /// New presenter for one seat's product.
-    pub fn new(host: H, product: Q3Product) -> PresentResult<Self> {
+    pub fn new(host: H, product: Product) -> PresentResult<Self> {
         if host.product() != product {
             return Err(state_msg("Player media product differs from cgame product"));
         }
@@ -649,8 +676,8 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
             time,
             settings.debug_animation,
         );
-        entity.lerp_origin = evaluate_trajectory(&entity.current_state.pos, time)?;
-        entity.lerp_angles = evaluate_trajectory(&entity.current_state.apos, time)?;
+        entity.lerp_origin = evaluate_trajectory(&entity.current_state.pos, time);
+        entity.lerp_angles = evaluate_trajectory(&entity.current_state.apos, time);
         entity.raw_origin = entity.lerp_origin;
         entity.raw_angles = entity.lerp_angles;
         // The source memset follows ClearLerpFrame and discards its timing/animation pointer.
@@ -670,14 +697,14 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
             pitching: false,
         };
         if settings.debug_position {
-            let message = game_format(
+            let message = game_format_bounded(
                 "%i ResetPlayerEntity yaw=%i\n",
                 &[
-                    GameFormatArg::from(entity.current_state.number),
-                    GameFormatArg::from(entity.player.torso.yaw_angle.to_bits() as i32),
+                    GameFormatArgument::from(entity.current_state.number),
+                    GameFormatArgument::from(entity.player.torso.yaw_angle.to_bits() as i32),
                 ],
                 1024,
-            )?;
+            );
             self.host.print(&message);
         }
         Ok(())
@@ -687,7 +714,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
     pub fn add_ref_entity_with_powerups(
         &mut self,
         entity: &mut RefModelEntity,
-        state: &EntityState,
+        state: &CanonicalEntityState,
         team: Team,
         part: Option<QvmBodyPart>,
         time: i32,
@@ -706,25 +733,25 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
                 host.add_entity(RefEntity::Model(entity.clone()));
             }
         };
-        if powered(state, Powerup::Invis) {
+        if powered(state, Powerup::PwInvis) {
             entity.custom_shader = media.invis_shader.clone();
             submit(&mut self.host, entity);
             return;
         }
         submit(&mut self.host, entity);
-        if powered(state, Powerup::Quad) {
-            entity.custom_shader = if team == Team::Red {
+        if powered(state, Powerup::PwQuad) {
+            entity.custom_shader = if team == Team::TeamRed {
                 media.red_quad_shader.clone()
             } else {
                 media.quad_shader.clone()
             };
             submit(&mut self.host, entity);
         }
-        if powered(state, Powerup::Regen) && (time / 100) % 10 == 1 {
+        if powered(state, Powerup::PwRegen) && (time / 100) % 10 == 1 {
             entity.custom_shader = media.regen_shader.clone();
             submit(&mut self.host, entity);
         }
-        if powered(state, Powerup::Battlesuit) {
+        if powered(state, Powerup::PwBattlesuit) {
             entity.custom_shader = media.battle_suit_shader.clone();
             submit(&mut self.host, entity);
         }
@@ -768,7 +795,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
             return;
         }
         let state = entity.current_state.clone();
-        let speed_scale = if powered(&state, Powerup::Haste) { 1.5 } else { 1.0 };
+        let speed_scale = if powered(&state, Powerup::PwHaste) { 1.5 } else { 1.0 };
         let animation =
             if entity.player.legs.yawing && (state.legs_anim & !ANIMATION_TOGGLE_BIT) == PlayerAnim::LegsIdle as i32 {
                 PlayerAnim::LegsTurn as i32
@@ -848,7 +875,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
         }
         if entity.current_state.e_flags & PLAYER_DEAD == 0
             && ctx.snapshot_team == ci.team as i32
-            && options.game_type >= GameType::Team
+            && (options.game_type as i32) >= (GameType::GtTeam as i32)
             && options.draw_friend
         {
             self.sprite(
@@ -861,7 +888,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
     }
 
     fn shadow(&mut self, entity: &ClientEntity, options: &PlayerPresentationSettings) -> PresentResult<ShadowOutcome> {
-        if options.shadows == 0 || powered(&entity.current_state, Powerup::Invis) {
+        if options.shadows == 0 || powered(&entity.current_state, Powerup::PwInvis) {
             return Ok(ShadowOutcome {
                 visible: false,
                 plane: 0.0,
@@ -1164,7 +1191,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
             return Ok(());
         }
         let media = self.host.media();
-        if powered(&state, Powerup::Quad) {
+        if powered(&state, Powerup::PwQuad) {
             let radius = 200.0 + (self.host.random_int() & 31) as f32;
             self.host.add_light(DynamicLight {
                 origin: entity.lerp_origin,
@@ -1173,7 +1200,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
                 additive: false,
             });
         }
-        if powered(&state, Powerup::Flight) {
+        if powered(&state, Powerup::PwFlight) {
             self.host.add_looping_sound(
                 state.number,
                 entity.lerp_origin,
@@ -1183,19 +1210,19 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
         }
         let flags: [(Powerup, SceneModel, Option<SceneSkin>, Vec3); 3] = [
             (
-                Powerup::RedFlag,
+                Powerup::PwRedflag,
                 media.red_flag_model.clone(),
                 media.red_flag_flap_skin.clone(),
                 vec3(1.0, 0.2, 0.2),
             ),
             (
-                Powerup::BlueFlag,
+                Powerup::PwBlueflag,
                 media.blue_flag_model.clone(),
                 media.blue_flag_flap_skin.clone(),
                 vec3(0.2, 0.2, 1.0),
             ),
             (
-                Powerup::NeutralFlag,
+                Powerup::PwNeutralflag,
                 media.neutral_flag_model.clone(),
                 media.neutral_flag_flap_skin.clone(),
                 vec3(1.0, 1.0, 1.0),
@@ -1218,7 +1245,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
                 });
             }
         }
-        if powered(&state, Powerup::Haste) {
+        if powered(&state, Powerup::PwHaste) {
             self.haste_trail(entity, time);
         }
         Ok(())
@@ -1261,7 +1288,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
             }
             origin = trail.positions[i];
         }
-        let mut skull = create_model_entity_with(if ci.team == Team::Blue {
+        let mut skull = create_model_entity_with(if ci.team == Team::TeamBlue {
             media.red_cube_model.clone()
         } else {
             media.blue_cube_model.clone()
@@ -1362,10 +1389,10 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
             self.kamikaze(entity, torso, media, time);
         }
         let attachments: [(Powerup, SceneModel); 4] = [
-            (Powerup::Guard, media.guard_powerup_model.clone()),
-            (Powerup::Scout, media.scout_powerup_model.clone()),
-            (Powerup::Doubler, media.doubler_powerup_model.clone()),
-            (Powerup::Ammoregen, media.ammo_regen_powerup_model.clone()),
+            (Powerup::PwGuard, media.guard_powerup_model.clone()),
+            (Powerup::PwScout, media.scout_powerup_model.clone()),
+            (Powerup::PwDoubler, media.doubler_powerup_model.clone()),
+            (Powerup::PwAmmoregen, media.ammo_regen_powerup_model.clone()),
         ];
         for (powerup, model) in attachments {
             if powered(&entity.current_state, powerup) {
@@ -1377,7 +1404,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
                 self.host.add_entity(RefEntity::Model(attachment));
             }
         }
-        let invulnerable = powered(&entity.current_state, Powerup::Invulnerability);
+        let invulnerable = powered(&entity.current_state, Powerup::PwInvulnerability);
         {
             let ci = at_mut(clients, ci_index, "Player index")?;
             if invulnerable {
@@ -1515,7 +1542,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
         }
         render_flags |= RF_LIGHTING_ORIGIN;
         let mission_media = self.host.mission_media();
-        if self.host.product() == Q3Product::MissionPack && options.game_type == GameType::Harvester {
+        if self.host.product() == Product::Missionpack && options.game_type == GameType::GtHarvester {
             let media = mission_media
                 .as_ref()
                 .ok_or_else(|| state_msg("Mission player media requires missionpack"))?;
@@ -1544,7 +1571,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
         torso.shadow_plane = shadow.plane;
         torso.render_flags = render_flags;
         self.add_ref_entity_with_powerups(&mut torso, &current, ci.team, Some(QvmBodyPart::Upper), time);
-        if self.host.product() == Q3Product::MissionPack {
+        if self.host.product() == Product::Missionpack {
             let media = mission_media
                 .as_ref()
                 .ok_or_else(|| state_msg("Mission player media requires missionpack"))?;
@@ -1562,7 +1589,7 @@ impl<H: PlayerPresentationHost> PlayerPresenter<H> {
         head.shadow_plane = shadow.plane;
         head.render_flags = render_flags;
         self.add_ref_entity_with_powerups(&mut head, &current, ci.team, Some(QvmBodyPart::Head), time);
-        if body_visible && self.host.product() == Q3Product::MissionPack {
+        if body_visible && self.host.product() == Product::Missionpack {
             let media = mission_media
                 .as_ref()
                 .ok_or_else(|| state_msg("Mission player media requires missionpack"))?;
@@ -1634,7 +1661,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
     pub fn reset(&mut self, slots: &mut [ClientInfo]) {
         self.lifecycle = self.lifecycle.wrapping_add(1);
         for slot in slots.iter_mut() {
-            *slot = ClientInfo::new();
+            *slot = ClientInfo::default();
         }
     }
 
@@ -1656,8 +1683,8 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
     }
 
     fn team_folder(&self, ci: &ClientInfo, settings: &ClientInfoSettings) -> String {
-        if settings.game_type >= GameType::Team {
-            if ci.team == Team::Blue {
+        if (settings.game_type as i32) >= (GameType::GtTeam as i32) {
+            if ci.team == Team::TeamBlue {
                 "blue".to_string()
             } else {
                 "red".to_string()
@@ -1667,17 +1694,17 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         }
     }
 
-    fn filename(&mut self, length: usize, format: &str, args: &[GameFormatArg]) -> PresentResult<String> {
-        let filename = game_format(format, args, usize::MAX)?;
+    fn filename(&mut self, length: usize, format: &str, args: &[GameFormatArgument]) -> PresentResult<String> {
+        let filename = game_format_bounded(format, args, usize::MAX);
         if filename.len() >= length {
-            let message = game_format(
+            let message = game_format_bounded(
                 "Com_sprintf: overflow of %i in %i\n",
                 &[
-                    GameFormatArg::from(filename.len() as i32),
-                    GameFormatArg::from(length as i32),
+                    GameFormatArgument::from(filename.len() as i32),
+                    GameFormatArgument::from(length as i32),
                 ],
                 1024,
-            )?;
+            );
             self.host.print(&message);
         }
         Ok(filename.chars().take(length - 1).collect())
@@ -1716,19 +1743,19 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                     64,
                     "models/players/%s%s/%s%s_%s_%s.%s",
                     &[
-                        GameFormatArg::from(folder),
-                        GameFormatArg::from(model),
-                        GameFormatArg::from(*prefix),
-                        GameFormatArg::from(base),
-                        GameFormatArg::from(skin),
-                        GameFormatArg::from(team.as_str()),
-                        GameFormatArg::from(ext),
+                        GameFormatArgument::from(folder),
+                        GameFormatArgument::from(model),
+                        GameFormatArgument::from(*prefix),
+                        GameFormatArgument::from(base),
+                        GameFormatArgument::from(skin),
+                        GameFormatArgument::from(team.as_str()),
+                        GameFormatArgument::from(ext),
                     ],
                 )?;
                 if self.exists(&filename)? {
                     return Ok(ClientFile::Found { path: filename });
                 }
-                let patch = if settings.game_type >= GameType::Team {
+                let patch = if (settings.game_type as i32) >= (GameType::GtTeam as i32) {
                     team.as_str()
                 } else {
                     skin
@@ -1737,12 +1764,12 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                     64,
                     "models/players/%s%s/%s%s_%s.%s",
                     &[
-                        GameFormatArg::from(folder),
-                        GameFormatArg::from(model),
-                        GameFormatArg::from(*prefix),
-                        GameFormatArg::from(base),
-                        GameFormatArg::from(patch),
-                        GameFormatArg::from(ext),
+                        GameFormatArgument::from(folder),
+                        GameFormatArgument::from(model),
+                        GameFormatArgument::from(*prefix),
+                        GameFormatArgument::from(base),
+                        GameFormatArgument::from(patch),
+                        GameFormatArgument::from(ext),
                     ],
                 )?;
                 if self.exists(&filename)? {
@@ -1784,19 +1811,19 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                     length,
                     "models/players/%s%s/%s/%s%s_%s.%s",
                     &[
-                        GameFormatArg::from(folder),
-                        GameFormatArg::from(name),
-                        GameFormatArg::from(skin),
-                        GameFormatArg::from(*prefix),
-                        GameFormatArg::from(base),
-                        GameFormatArg::from(team.as_str()),
-                        GameFormatArg::from(ext),
+                        GameFormatArgument::from(folder),
+                        GameFormatArgument::from(name),
+                        GameFormatArgument::from(skin),
+                        GameFormatArgument::from(*prefix),
+                        GameFormatArgument::from(base),
+                        GameFormatArgument::from(team.as_str()),
+                        GameFormatArgument::from(ext),
                     ],
                 )?;
                 if self.exists(&filename)? {
                     return Ok(ClientFile::Found { path: filename });
                 }
-                let patch = if settings.game_type >= GameType::Team {
+                let patch = if (settings.game_type as i32) >= (GameType::GtTeam as i32) {
                     team.as_str()
                 } else {
                     skin
@@ -1805,12 +1832,12 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                     length,
                     "models/players/%s%s/%s%s_%s.%s",
                     &[
-                        GameFormatArg::from(folder),
-                        GameFormatArg::from(name),
-                        GameFormatArg::from(*prefix),
-                        GameFormatArg::from(base),
-                        GameFormatArg::from(patch),
-                        GameFormatArg::from(ext),
+                        GameFormatArgument::from(folder),
+                        GameFormatArgument::from(name),
+                        GameFormatArgument::from(*prefix),
+                        GameFormatArgument::from(base),
+                        GameFormatArgument::from(patch),
+                        GameFormatArgument::from(ext),
                     ],
                 )?;
                 if self.exists(&filename)? {
@@ -1889,45 +1916,45 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         team: &str,
     ) -> PresentResult<bool> {
         let head = if head_model.is_empty() { model } else { head_model };
-        let mut path = self.filename(128, "models/players/%s/lower.md3", &[GameFormatArg::from(model)])?;
+        let mut path = self.filename(128, "models/players/%s/lower.md3", &[GameFormatArgument::from(model)])?;
         let mut handle = self.host.register_model(&path)?;
         ci.legs_model = handle.clone();
         if ci.legs_model.is_default() {
             path = self.filename(
                 128,
                 "models/players/characters/%s/lower.md3",
-                &[GameFormatArg::from(model)],
+                &[GameFormatArgument::from(model)],
             )?;
             handle = self.host.register_model(&path)?;
             ci.legs_model = handle.clone();
         }
         if ci.legs_model.is_default() {
-            let message = game_format(
+            let message = game_format_bounded(
                 "Failed to load model file %s\n",
-                &[GameFormatArg::from(path.as_str())],
+                &[GameFormatArgument::from(path.as_str())],
                 1024,
-            )?;
+            );
             self.host.print(&message);
             return Ok(false);
         }
-        path = self.filename(128, "models/players/%s/upper.md3", &[GameFormatArg::from(model)])?;
+        path = self.filename(128, "models/players/%s/upper.md3", &[GameFormatArgument::from(model)])?;
         handle = self.host.register_model(&path)?;
         ci.torso_model = handle.clone();
         if ci.torso_model.is_default() {
             path = self.filename(
                 128,
                 "models/players/characters/%s/upper.md3",
-                &[GameFormatArg::from(model)],
+                &[GameFormatArgument::from(model)],
             )?;
             handle = self.host.register_model(&path)?;
             ci.torso_model = handle.clone();
         }
         if ci.torso_model.is_default() {
-            let message = game_format(
+            let message = game_format_bounded(
                 "Failed to load model file %s\n",
-                &[GameFormatArg::from(path.as_str())],
+                &[GameFormatArgument::from(path.as_str())],
                 1024,
-            )?;
+            );
             self.host.print(&message);
             return Ok(false);
         }
@@ -1937,10 +1964,10 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             self.filename(
                 128,
                 "models/players/heads/%s/%s.md3",
-                &[GameFormatArg::from(bare), GameFormatArg::from(bare)],
+                &[GameFormatArgument::from(bare), GameFormatArgument::from(bare)],
             )?
         } else {
-            self.filename(128, "models/players/%s/head.md3", &[GameFormatArg::from(head)])?
+            self.filename(128, "models/players/%s/head.md3", &[GameFormatArgument::from(head)])?
         };
         handle = self.host.register_model(&path)?;
         ci.head_model = handle.clone();
@@ -1948,17 +1975,20 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             path = self.filename(
                 128,
                 "models/players/heads/%s/%s.md3",
-                &[GameFormatArg::from(head_model), GameFormatArg::from(head_model)],
+                &[
+                    GameFormatArgument::from(head_model),
+                    GameFormatArgument::from(head_model),
+                ],
             )?;
             handle = self.host.register_model(&path)?;
             ci.head_model = handle.clone();
         }
         if ci.head_model.is_default() {
-            let message = game_format(
+            let message = game_format_bounded(
                 "Failed to load model file %s\n",
-                &[GameFormatArg::from(path.as_str())],
+                &[GameFormatArgument::from(path.as_str())],
                 1024,
-            )?;
+            );
             self.host.print(&message);
             return Ok(false);
         }
@@ -1976,7 +2006,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             let fallback_team = self.filename(
                 128,
                 "%s/",
-                &[GameFormatArg::from(if ci.team == Team::Blue {
+                &[GameFormatArgument::from(if ci.team == Team::TeamBlue {
                     "Pagans"
                 } else {
                     "Stroggs"
@@ -1990,21 +2020,25 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                 return Ok(false);
             }
         }
-        path = self.filename(128, "models/players/%s/animation.cfg", &[GameFormatArg::from(model)])?;
+        path = self.filename(
+            128,
+            "models/players/%s/animation.cfg",
+            &[GameFormatArgument::from(model)],
+        )?;
         let mut animated = self.animation(ci, &path)?;
         if !animated {
             path = self.filename(
                 128,
                 "models/players/characters/%s/animation.cfg",
-                &[GameFormatArg::from(model)],
+                &[GameFormatArgument::from(model)],
             )?;
             animated = self.animation(ci, &path)?;
             if !animated {
-                let message = game_format(
+                let message = game_format_bounded(
                     "Failed to load animation file %s\n",
-                    &[GameFormatArg::from(path.as_str())],
+                    &[GameFormatArgument::from(path.as_str())],
                     1024,
-                )?;
+                );
                 self.host.print(&message);
                 return Ok(false);
             }
@@ -2021,18 +2055,18 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
 
     fn load(&mut self, ci: &mut ClientInfo, settings: &ClientInfoSettings) -> PresentResult<()> {
         let product = self.host.product();
-        let team_model = if product == Q3Product::MissionPack {
+        let team_model = if product == Product::Missionpack {
             "james"
         } else {
             "sarge"
         };
-        let team_head = if product == Q3Product::MissionPack {
+        let team_head = if product == Product::Missionpack {
             "*james"
         } else {
             "sarge"
         };
-        let mut team = if product == Q3Product::MissionPack && settings.game_type >= GameType::Team {
-            qpath_truncate(if ci.team == Team::Blue {
+        let mut team = if product == Product::Missionpack && (settings.game_type as i32) >= (GameType::GtTeam as i32) {
+            qpath_truncate(if ci.team == Team::TeamBlue {
                 &settings.blue_team_name
             } else {
                 &settings.red_team_name
@@ -2059,8 +2093,8 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                     ci.model_name, ci.skin_name, ci.head_model_name, ci.head_skin_name, team
                 )));
             }
-            if settings.game_type >= GameType::Team {
-                let team = if ci.team == Team::Blue { "Pagans" } else { "Stroggs" };
+            if (settings.game_type as i32) >= (GameType::GtTeam as i32) {
+                let team = if ci.team == Team::TeamBlue { "Pagans" } else { "Stroggs" };
                 let fallback = self.model(
                     ci,
                     settings,
@@ -2085,8 +2119,8 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         }
         let torso_model = ci.torso_model.clone();
         ci.new_anims = self.host.model_has_tag(&torso_model, "tag_flag");
-        let fallback = custom_sound_fallback(product, settings.game_type >= GameType::Team);
-        let mut sounds: [Option<PcmSound>; CLIENT_SOUND_COUNT] = [None; CLIENT_SOUND_COUNT];
+        let fallback = custom_sound_fallback(product, (settings.game_type as i32) >= (GameType::GtTeam as i32));
+        let mut sounds: [Option<PcmSound>; 32] = [None; 32];
         for (index, name) in CUSTOM_SOUND_NAMES.iter().enumerate() {
             let bare = name.strip_prefix('*').unwrap_or(name);
             sounds[index] = if loaded {
@@ -2123,7 +2157,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                 && same_fold(&ci.head_skin_name, &slot.head_skin_name)
                 && same_fold(&ci.blue_team, &slot.blue_team)
                 && same_fold(&ci.red_team, &slot.red_team)
-                && (settings.game_type < GameType::Team || ci.team == slot.team)
+                && ((settings.game_type as i32) < (GameType::GtTeam as i32) || ci.team == slot.team)
             {
                 ci.deferred = false;
                 let source = slot.clone();
@@ -2142,7 +2176,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
                 && !slot.deferred
                 && same_fold(&ci.skin_name, &slot.skin_name)
                 && same_fold(&ci.model_name, &slot.model_name)
-                && (settings.game_type < GameType::Team || ci.team == slot.team)
+                && ((settings.game_type as i32) < (GameType::GtTeam as i32) || ci.team == slot.team)
         }) {
             return self.load(ci, settings);
         }
@@ -2150,7 +2184,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             .iter()
             .find(|slot| {
                 slot.info_valid
-                    && (settings.game_type < GameType::Team
+                    && ((settings.game_type as i32) < (GameType::GtTeam as i32)
                         || (!slot.deferred && same_fold(&ci.skin_name, &slot.skin_name) && ci.team == slot.team))
             })
             .cloned();
@@ -2159,7 +2193,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             copy_client_model(&source, ci)?;
             return Ok(());
         }
-        if settings.game_type < GameType::Team {
+        if (settings.game_type as i32) < (GameType::GtTeam as i32) {
             self.host.print("CG_SetDeferredClientInfo: no valid clients!\n");
         }
         self.load(ci, settings)
@@ -2175,7 +2209,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             return Err(range_msg(format!("Player index {index} outside clients")));
         }
         self.requests[slot_index] = self.requests[slot_index].wrapping_add(1);
-        let mut next = ClientInfo::new();
+        let mut next = ClientInfo::default();
         if configstring.is_empty() || configstring.starts_with('\0') {
             slots[slot_index] = next;
             return Ok(());
@@ -2185,31 +2219,31 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         next.name = qpath_truncate(&value("n")?);
         next.color1 = info_color(&value("c1")?);
         next.color2 = info_color(&value("c2")?);
-        next.bot_skill = game_atoi(&value("skill")?);
-        next.handicap = game_atoi(&value("hc")?);
-        next.wins = game_atoi(&value("w")?);
-        next.losses = game_atoi(&value("l")?);
-        let team = game_atoi(&value("t")?);
-        if team != Team::Free as i32
-            && team != Team::Red as i32
-            && team != Team::Blue as i32
-            && team != Team::Spectator as i32
+        next.bot_skill = game_atoi(&value("skill")?)?;
+        next.handicap = game_atoi(&value("hc")?)?;
+        next.wins = game_atoi(&value("w")?)?;
+        next.losses = game_atoi(&value("l")?)?;
+        let team = game_atoi(&value("t")?)?;
+        if team != Team::TeamFree as i32
+            && team != Team::TeamRed as i32
+            && team != Team::TeamBlue as i32
+            && team != Team::TeamSpectator as i32
         {
             return Err(range_msg(format!("Invalid player team {team}")));
         }
-        next.team = Team::from_i32(team).unwrap_or(Team::Free);
-        next.team_task = game_atoi(&value("tt")?);
-        next.team_leader = game_atoi(&value("tl")?) != 0;
+        next.team = Team::from_i32(team).unwrap_or(Team::TeamFree);
+        next.team_task = game_atoi(&value("tt")?)?;
+        next.team_leader = game_atoi(&value("tl")?)? != 0;
         next.red_team = value("g_redteam")?.chars().take(31).collect();
         next.blue_team = value("g_blueteam")?.chars().take(31).collect();
         let product = self.host.product();
-        let forced = if product == Q3Product::MissionPack {
+        let forced = if product == Product::Missionpack {
             "james"
         } else {
             "sarge"
         };
         let (model_name, skin_name) = if settings.force_model {
-            model_skin(if settings.game_type >= GameType::Team {
+            model_skin(if (settings.game_type as i32) >= (GameType::GtTeam as i32) {
                 forced
             } else {
                 &settings.model
@@ -2220,7 +2254,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         next.model_name = model_name;
         next.skin_name = skin_name;
         let (head_model_name, head_skin_name) = if settings.force_model {
-            model_skin(if settings.game_type >= GameType::Team {
+            model_skin(if (settings.game_type as i32) >= (GameType::GtTeam as i32) {
                 forced
             } else {
                 &settings.head_model
@@ -2230,7 +2264,7 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         };
         next.head_model_name = head_model_name;
         next.head_skin_name = head_skin_name;
-        if settings.force_model && settings.game_type >= GameType::Team {
+        if settings.force_model && (settings.game_type as i32) >= (GameType::GtTeam as i32) {
             let model = value("model")?;
             let head = value("hmodel")?;
             if let Some(slash) = model.find('/') {
@@ -2298,7 +2332,8 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
             slots[slot_index] = owned;
             for number in 0..MAX_ENTITIES as i32 {
                 let entity = state.entity_at_mut(number)?;
-                if entity.current_state.client_num == index && entity.current_state.e_type == EntityType::Player as i32
+                if entity.current_state.client_num == index
+                    && entity.current_state.e_type == EntityType::EtPlayer as i32
                 {
                     let ci = at(slots, slot_index, "Player index")?.clone();
                     reset(entity, &ci, time)?;
@@ -2308,4 +2343,718 @@ impl<H: ClientInfoHost> ClientInfoStore<H> {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::q3::base::shared::entity_state::EntityState as CanonicalEntityState;
+    use crate::q3::base::shared::player_state::PlayerState as CanonicalPlayerState;
+    use crate::q3::base::world::{TraceContact, TraceSolidity};
+    use crate::q3::presentation::client_info::ClientInfo;
+    use crate::q3::presentation::mirrors_present_hud::{AnimationCell, ANIMATION_COUNT};
+    use qa_core::math::{vec3, vec4, Plane, Vec3};
+    use std::collections::HashMap;
+
+    pub(crate) struct TestClientInfoHost {
+        files: HashMap<String, Vec<u8>>,
+        settings: ClientInfoSettings,
+        product: Product,
+        cache: HashMap<String, PcmSound>,
+        prints: Vec<String>,
+        parsed: Vec<String>,
+        next_model: u32,
+        next_skin: u32,
+        next_shader: u32,
+        next_sound: u32,
+        memory: i64,
+    }
+
+    impl TestClientInfoHost {
+        pub(crate) fn new() -> Self {
+            Self {
+                files: HashMap::new(),
+                settings: ClientInfoSettings {
+                    game_type: GameType::GtFfa,
+                    max_clients: MAX_CLIENTS as i32,
+                    force_model: false,
+                    model: String::new(),
+                    head_model: String::new(),
+                    red_team_name: String::new(),
+                    blue_team_name: String::new(),
+                    defer_players: false,
+                    build_script: false,
+                    loading: false,
+                },
+                product: Product::Baseq3,
+                cache: HashMap::new(),
+                prints: Vec::new(),
+                parsed: Vec::new(),
+                next_model: 1,
+                next_skin: 1,
+                next_shader: 1,
+                next_sound: 1,
+                memory: i64::MAX,
+            }
+        }
+
+        fn with_sarge_files() -> Self {
+            let mut host = Self::new();
+            for path in [
+                "models/players/sarge/lower_default_default.skin",
+                "models/players/sarge/upper_default_default.skin",
+                "models/players/sarge/default/head_default.skin",
+                "models/players/sarge/animation.cfg",
+                "models/players/sarge/default/icon_default.skin",
+            ] {
+                host.files.insert(path.to_string(), b"data".to_vec());
+            }
+            host
+        }
+    }
+
+    impl AssetReader for TestClientInfoHost {
+        fn read_asset(&mut self, path: &str) -> PresentResult<Vec<u8>> {
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| state_msg(format!("asset not found: {path}")))
+        }
+        fn has_asset(&self, path: &str) -> bool {
+            self.files.contains_key(path)
+        }
+        fn list_assets(&self, prefix: Option<&str>) -> Vec<String> {
+            let mut names: Vec<String> = self
+                .files
+                .keys()
+                .filter(|name| prefix.is_none_or(|prefix| name.starts_with(prefix)))
+                .cloned()
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl ClientInfoHost for TestClientInfoHost {
+        fn product(&self) -> Product {
+            self.product
+        }
+        fn settings(&self) -> ClientInfoSettings {
+            self.settings.clone()
+        }
+        fn memory_remaining(&self) -> i64 {
+            self.memory
+        }
+        fn register_model(&mut self, _path: &str) -> PresentResult<SceneModel> {
+            let id = self.next_model;
+            self.next_model += 1;
+            Ok(SceneModel::Loaded { id })
+        }
+        fn register_skin(&mut self, _path: &str) -> PresentResult<Option<SceneSkin>> {
+            let id = self.next_skin;
+            self.next_skin += 1;
+            Ok(Some(SceneSkin {
+                id,
+                surfaces: Vec::new(),
+            }))
+        }
+        fn register_shader_no_mip(&mut self, name: &str) -> PresentResult<Option<SceneShader>> {
+            let id = self.next_shader;
+            self.next_shader += 1;
+            Ok(Some(SceneShader {
+                id,
+                name: name.to_string(),
+                material_order: id as i32,
+            }))
+        }
+        fn register_sound(&mut self, _name: &str) -> PresentResult<Option<PcmSound>> {
+            let id = self.next_sound;
+            self.next_sound += 1;
+            Ok(Some(PcmSound::new(id)))
+        }
+        fn sound(&self, name: &str) -> Option<PcmSound> {
+            self.cache.get(name).copied()
+        }
+        fn parse_animation_config(&mut self, ci: &mut ClientInfo, _text: &str, path: &str) -> PresentResult<bool> {
+            self.parsed.push(path.to_string());
+            let dummy = AnimationCell {
+                first_frame: 0,
+                num_frames: 1,
+                loop_frames: 0,
+                frame_lerp: 100,
+                initial_lerp: 100,
+                reversed: false,
+                flipflop: false,
+            };
+            ci.animations = [dummy; ANIMATION_COUNT];
+            Ok(true)
+        }
+        fn model_has_tag(&mut self, _model: &SceneModel, tag: &str) -> bool {
+            tag == "tag_flag"
+        }
+        fn print(&mut self, message: &str) {
+            self.prints.push(message.to_string());
+        }
+    }
+
+    // ---------- player doubles ----------
+    fn player_media_fixture() -> PlayerMedia {
+        PlayerMedia {
+            connection_shader: None,
+            balloon_shader: None,
+            medal_impressive: None,
+            medal_excellent: None,
+            medal_gauntlet: None,
+            medal_defend: None,
+            medal_assist: None,
+            medal_capture: None,
+            friend_shader: None,
+            shadow_mark_shader: None,
+            wake_mark_shader: None,
+            invis_shader: None,
+            quad_shader: None,
+            red_quad_shader: None,
+            regen_shader: None,
+            battle_suit_shader: None,
+            haste_puff_shader: None,
+            flight_sound: None,
+            red_flag_model: default_model(),
+            blue_flag_model: default_model(),
+            neutral_flag_model: default_model(),
+            flag_pole_model: default_model(),
+            flag_flap_model: default_model(),
+            red_flag_flap_skin: None,
+            blue_flag_flap_skin: None,
+            neutral_flag_flap_skin: None,
+        }
+    }
+    fn player_settings_fixture() -> PlayerPresentationSettings {
+        PlayerPresentationSettings {
+            game_type: GameType::GtFfa,
+            camera_mode: false,
+            no_player_animations: true,
+            animation_speed: 1.0,
+            swing_speed: 1.0,
+            draw_friend: false,
+            shadows: 0,
+            enable_breath: false,
+            enable_dust: false,
+            debug_position: false,
+            debug_animation: false,
+        }
+    }
+    pub(crate) struct TestPlayerHost {
+        product: Product,
+        media: PlayerMedia,
+        settings: PlayerPresentationSettings,
+        entities: Vec<RefEntity>,
+        polys: Vec<RefPoly>,
+        lights: Vec<DynamicLight>,
+        puffs: Vec<(SmokePuffOptions, bool)>,
+        loops: Vec<(i32, Vec3, Option<PcmSound>)>,
+        weapons_added: u32,
+        prints: Vec<String>,
+        trace_result: TraceResult,
+        contents: i32,
+        random: i32,
+        light: LightingSample,
+        pose: PlayerPoseAxes,
+    }
+
+    impl TestPlayerHost {
+        pub(crate) fn new() -> Self {
+            let axis = [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)];
+            Self {
+                product: Product::Baseq3,
+                media: player_media_fixture(),
+                settings: player_settings_fixture(),
+                entities: Vec::new(),
+                polys: Vec::new(),
+                lights: Vec::new(),
+                puffs: Vec::new(),
+                loops: Vec::new(),
+                weapons_added: 0,
+                prints: Vec::new(),
+                trace_result: TraceResult {
+                    fraction: 1.0,
+                    end: vec3(0.0, 0.0, 0.0),
+                    solidity: TraceSolidity::Clear,
+                    contact: TraceContact::None,
+                    contents: 0,
+                    surface_flags: 0,
+                },
+                contents: 0,
+                random: 0,
+                light: LightingSample {
+                    ambient_light: vec3(10.0, 10.0, 10.0),
+                    directed_light: vec3(20.0, 20.0, 20.0),
+                    light_dir: vec3(0.0, 0.0, 1.0),
+                },
+                pose: PlayerPoseAxes {
+                    legs: axis,
+                    torso: axis,
+                    head: axis,
+                },
+            }
+        }
+    }
+
+    impl PlayerPresentationHost for TestPlayerHost {
+        fn product(&self) -> Product {
+            self.product
+        }
+        fn media(&self) -> PlayerMedia {
+            self.media.clone()
+        }
+        fn mission_media(&self) -> Option<MissionPlayerMedia> {
+            None
+        }
+        fn settings(&self) -> PlayerPresentationSettings {
+            self.settings.clone()
+        }
+        fn trace_world(&mut self, _start: Vec3, _end: Vec3, _mins: Vec3, _maxs: Vec3, _mask: i32) -> TraceResult {
+            self.trace_result
+        }
+        fn trace_skip(
+            &mut self,
+            _start: Vec3,
+            _end: Vec3,
+            _mins: Vec3,
+            _maxs: Vec3,
+            _skip_number: i32,
+            _mask: i32,
+        ) -> TraceResult {
+            self.trace_result
+        }
+        fn point_contents(&mut self, _point: Vec3) -> i32 {
+            self.contents
+        }
+        fn add_entity(&mut self, entity: RefEntity) {
+            self.entities.push(entity);
+        }
+        fn add_light(&mut self, light: DynamicLight) {
+            self.lights.push(light);
+        }
+        fn add_poly(&mut self, poly: RefPoly) {
+            self.polys.push(poly);
+        }
+        fn light_for_point(&mut self, _point: Vec3) -> LightingSample {
+            self.light
+        }
+        fn impact_mark(&mut self, request: &ImpactMarkRequest) -> Vec<RefPoly> {
+            vec![RefPoly {
+                shader: request.shader.clone(),
+                vertices: Vec::new(),
+            }]
+        }
+        fn smoke_puff(&mut self, options: &SmokePuffOptions, scale_fade: bool) {
+            self.puffs.push((options.clone(), scale_fade));
+        }
+        fn add_looping_sound(&mut self, entity_num: i32, origin: Vec3, _velocity: Vec3, sound: Option<PcmSound>) {
+            self.loops.push((entity_num, origin, sound));
+        }
+        fn add_player_weapon(
+            &mut self,
+            _parent: &RefModelEntity,
+            _ps: Option<&CanonicalPlayerState>,
+            _entity: &ClientEntity,
+            _team: Team,
+        ) {
+            self.weapons_added += 1;
+        }
+        fn random_int(&mut self) -> i32 {
+            self.random
+        }
+        fn calculate_pose(
+            &mut self,
+            _player: &ClientPlayerEntity,
+            _current: &CanonicalEntityState,
+            _ci: &ClientInfo,
+            _lerp_angles: Vec3,
+            _time_ms: i32,
+            _frame_time_ms: i32,
+            _swing_speed: f32,
+        ) -> PlayerPoseAxes {
+            self.pose
+        }
+        fn clear_lerp_frame(
+            &mut self,
+            _ci: &ClientInfo,
+            frame: &mut LerpFrame,
+            animation: i32,
+            time_ms: i32,
+            _verbose: bool,
+        ) {
+            frame.animation_number = animation;
+            frame.frame_time = time_ms;
+            frame.old_frame_time = time_ms;
+            frame.animation_time = time_ms;
+        }
+        fn run_lerp_frame(
+            &mut self,
+            _ci: &ClientInfo,
+            frame: &mut LerpFrame,
+            new_animation: i32,
+            _speed_scale: f32,
+            time_ms: i32,
+            _frozen: bool,
+            _verbose: bool,
+        ) {
+            frame.animation_number = new_animation;
+            frame.frame = new_animation;
+            frame.old_frame = new_animation;
+            frame.frame_time = time_ms;
+        }
+        fn swing_angles(
+            &mut self,
+            destination: f32,
+            _swing_tolerance: f32,
+            _clamp_tolerance: f32,
+            _speed: f32,
+            _frame_time_ms: i32,
+            _angle: f32,
+            _swinging: bool,
+        ) -> (f32, bool) {
+            (destination, false)
+        }
+        fn position_on_tag(
+            &mut self,
+            entity: &mut RefModelEntity,
+            parent: &RefModelEntity,
+            _parent_model: &SceneModel,
+            _tag: &str,
+        ) -> PresentResult<()> {
+            entity.origin = parent.origin;
+            entity.axis = parent.axis;
+            entity.back_lerp = parent.back_lerp;
+            Ok(())
+        }
+        fn position_rotated_on_tag(
+            &mut self,
+            entity: &mut RefModelEntity,
+            parent: &RefModelEntity,
+            _parent_model: &SceneModel,
+            _tag: &str,
+        ) -> PresentResult<()> {
+            entity.origin = parent.origin;
+            Ok(())
+        }
+        fn print(&mut self, message: &str) {
+            self.prints.push(message.to_string());
+        }
+    }
+
+    // ---------- frame doubles ----------
+    const CLIENT_CONFIG: &str = "\\n\\Newbie\\c1\\4\\c2\\3\\skill\\5\\hc\\100\\w\\7\\l\\2\\t\\0\\tt\\1\\tl\\0\\g_redteam\\redders\\g_blueteam\\blues\\model\\sarge\\hmodel\\sarge";
+    #[test]
+    fn client_info_empty_config_clears_slot() {
+        let mut store = ClientInfoStore::new(TestClientInfoHost::new());
+        let mut slots = vec![ClientInfo::default(); MAX_CLIENTS];
+        slots[0].info_valid = true;
+        store.new_client_info(&mut slots, 0, "").unwrap();
+        assert!(!slots[0].info_valid);
+        slots[0].info_valid = true;
+        store.new_client_info(&mut slots, 0, "\0trailing").unwrap();
+        assert!(!slots[0].info_valid);
+    }
+
+    #[test]
+    fn client_info_rejects_bad_index_and_team() {
+        let mut store = ClientInfoStore::new(TestClientInfoHost::new());
+        let mut slots = vec![ClientInfo::default(); MAX_CLIENTS];
+        assert!(store.new_client_info(&mut slots, 64, CLIENT_CONFIG).is_err());
+        assert!(store.new_client_info(&mut slots, -1, CLIENT_CONFIG).is_err());
+        assert!(store.new_client_info(&mut slots, 0, "\\t\\9").is_err());
+    }
+
+    #[test]
+    fn client_info_loads_model_and_sounds() {
+        let mut store = ClientInfoStore::new(TestClientInfoHost::with_sarge_files());
+        let mut slots = vec![ClientInfo::default(); MAX_CLIENTS];
+        store.new_client_info(&mut slots, 0, CLIENT_CONFIG).unwrap();
+        let slot = &slots[0];
+        assert!(slot.info_valid);
+        assert_eq!(slot.name, "Newbie");
+        assert_eq!(slot.color1, vec3(1.0, 0.0, 0.0));
+        assert_eq!(slot.bot_skill, 5);
+        assert_eq!(slot.team, Team::TeamFree);
+        assert_eq!(slot.model_name, "sarge");
+        assert_eq!(slot.skin_name, "default");
+        assert!(slot.new_anims);
+        assert!(!slot.legs_model.is_default());
+        assert!(slot.model_icon.is_some());
+        assert!(slot.sounds[0].is_some());
+        assert!(slot.sounds[12].is_some());
+        assert!(slot.sounds[13].is_none());
+        assert!(!slot.deferred);
+        assert!(store.host.prints.is_empty());
+    }
+
+    #[test]
+    fn client_info_reuses_matching_model() {
+        let mut store = ClientInfoStore::new(TestClientInfoHost::with_sarge_files());
+        let mut slots = vec![ClientInfo::default(); MAX_CLIENTS];
+        store.new_client_info(&mut slots, 0, CLIENT_CONFIG).unwrap();
+        let before = store.host.next_model;
+        store.new_client_info(&mut slots, 1, CLIENT_CONFIG).unwrap();
+        assert!(slots[1].info_valid);
+        assert!(!slots[1].deferred);
+        assert_eq!(slots[1].legs_model, slots[0].legs_model);
+        assert_eq!(store.host.next_model, before);
+    }
+
+    #[test]
+    fn client_info_defers_without_match() {
+        let mut host = TestClientInfoHost::with_sarge_files();
+        host.settings.defer_players = true;
+        let mut store = ClientInfoStore::new(host);
+        let mut slots = vec![ClientInfo::default(); MAX_CLIENTS];
+        slots[0].info_valid = true;
+        slots[0].model_name = "other".to_string();
+        slots[0].skin_name = "other".to_string();
+        slots[0].head_model_name = "other".to_string();
+        slots[0].head_skin_name = "other".to_string();
+        let dummy = AnimationCell {
+            first_frame: 0,
+            num_frames: 1,
+            loop_frames: 0,
+            frame_lerp: 100,
+            initial_lerp: 100,
+            reversed: false,
+            flipflop: false,
+        };
+        slots[0].animations = [dummy; ANIMATION_COUNT];
+        store.new_client_info(&mut slots, 1, CLIENT_CONFIG).unwrap();
+        assert!(slots[1].info_valid);
+        assert!(slots[1].deferred);
+        assert_eq!(slots[1].model_name, "sarge");
+    }
+
+    #[test]
+    fn client_info_custom_sounds() {
+        let mut host = TestClientInfoHost::new();
+        host.cache.insert("sound/x.wav".to_string(), PcmSound::new(7));
+        let mut store = ClientInfoStore::new(host);
+        let mut slots = vec![ClientInfo::default(); MAX_CLIENTS];
+        slots[0].sounds[0] = Some(PcmSound::new(1));
+        assert_eq!(
+            store.custom_sound(&slots, 0, "sound/x.wav").unwrap(),
+            Some(PcmSound::new(7))
+        );
+        assert_eq!(store.custom_sound(&slots, 0, "sound/missing.wav").unwrap(), None);
+        assert_eq!(
+            store.custom_sound(&slots, 0, "*death1.wav").unwrap(),
+            Some(PcmSound::new(1))
+        );
+        assert_eq!(
+            store.custom_sound(&slots, 99, "*death1.wav").unwrap(),
+            Some(PcmSound::new(1))
+        );
+        assert!(matches!(
+            store.custom_sound(&slots, 0, "*nope.wav"),
+            Err(PresentClientError::Drop(_))
+        ));
+    }
+
+    #[test]
+    fn custom_sound_fallback_names() {
+        assert_eq!(custom_sound_fallback(Product::Missionpack, true), "james");
+        assert_eq!(custom_sound_fallback(Product::Missionpack, false), "sarge");
+        assert_eq!(custom_sound_fallback(Product::Baseq3, true), "sarge");
+    }
+
+    // ---------- presenter tests ----------
+
+    fn render_fixture() -> (Vec<ClientInfo>, [SkullTrail; MAX_CLIENTS], ClientEntity) {
+        let clients = vec![ClientInfo::default(); MAX_CLIENTS];
+        let trails: [SkullTrail; MAX_CLIENTS] = std::array::from_fn(|_| SkullTrail {
+            positions: [vec3(0.0, 0.0, 0.0); 10],
+            num_positions: 0,
+        });
+        let mut entity = ClientEntity::new();
+        entity.current_state.number = 7;
+        entity.current_state.e_type = EntityType::EtPlayer as i32;
+        entity.current_state.client_num = 0;
+        (clients, trails, entity)
+    }
+
+    #[test]
+    fn presenter_rejects_product_mismatch() {
+        let mut host = TestPlayerHost::new();
+        host.product = Product::Missionpack;
+        assert!(PlayerPresenter::new(host, Product::Baseq3).is_err());
+    }
+
+    #[test]
+    fn presenter_rejects_bad_client_number() {
+        let host = TestPlayerHost::new();
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        let (mut clients, mut trails, mut entity) = render_fixture();
+        entity.current_state.client_num = 99;
+        let mut ctx = PlayerRenderContext {
+            time: 1000,
+            frame_time: 50,
+            rendering_third_person: true,
+            snapshot_client_num: 3,
+            snapshot_team: Team::TeamRed as i32,
+            clients: &mut clients,
+            skull_trails: &mut trails,
+        };
+        assert!(matches!(
+            presenter.player(&mut ctx, &mut entity),
+            Err(PresentClientError::Drop(_))
+        ));
+    }
+
+    #[test]
+    fn presenter_skips_invalid_info() {
+        let host = TestPlayerHost::new();
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        let (mut clients, mut trails, mut entity) = render_fixture();
+        let mut ctx = PlayerRenderContext {
+            time: 1000,
+            frame_time: 50,
+            rendering_third_person: true,
+            snapshot_client_num: 3,
+            snapshot_team: Team::TeamRed as i32,
+            clients: &mut clients,
+            skull_trails: &mut trails,
+        };
+        presenter.player(&mut ctx, &mut entity).unwrap();
+        assert!(presenter.host.entities.is_empty());
+        assert_eq!(presenter.host.weapons_added, 0);
+    }
+
+    #[test]
+    fn presenter_renders_body_and_weapon() {
+        let host = TestPlayerHost::new();
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        let (mut clients, mut trails, mut entity) = render_fixture();
+        clients[0].info_valid = true;
+        clients[0].team = Team::TeamRed;
+        clients[0].legs_model = SceneModel::Loaded { id: 1 };
+        clients[0].torso_model = SceneModel::Loaded { id: 2 };
+        clients[0].head_model = SceneModel::Loaded { id: 3 };
+        let mut ctx = PlayerRenderContext {
+            time: 1000,
+            frame_time: 50,
+            rendering_third_person: true,
+            snapshot_client_num: 3,
+            snapshot_team: Team::TeamRed as i32,
+            clients: &mut clients,
+            skull_trails: &mut trails,
+        };
+        presenter.player(&mut ctx, &mut entity).unwrap();
+        assert_eq!(presenter.host.entities.len(), 3);
+        assert_eq!(presenter.host.weapons_added, 1);
+        assert!(presenter.host.polys.is_empty());
+    }
+
+    #[test]
+    fn presenter_quad_adds_shell_and_light() {
+        let mut host = TestPlayerHost::new();
+        host.media.quad_shader = Some(SceneShader {
+            id: 9,
+            name: "quad".to_string(),
+            material_order: 9,
+        });
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        let (mut clients, mut trails, mut entity) = render_fixture();
+        clients[0].info_valid = true;
+        clients[0].team = Team::TeamRed;
+        clients[0].legs_model = SceneModel::Loaded { id: 1 };
+        clients[0].torso_model = SceneModel::Loaded { id: 2 };
+        clients[0].head_model = SceneModel::Loaded { id: 3 };
+        entity.current_state.powerups = 1 << (Powerup::PwQuad as i32);
+        let mut ctx = PlayerRenderContext {
+            time: 1000,
+            frame_time: 50,
+            rendering_third_person: true,
+            snapshot_client_num: 3,
+            snapshot_team: Team::TeamRed as i32,
+            clients: &mut clients,
+            skull_trails: &mut trails,
+        };
+        presenter.player(&mut ctx, &mut entity).unwrap();
+        assert_eq!(presenter.host.entities.len(), 6);
+        assert_eq!(presenter.host.lights.len(), 1);
+        assert_eq!(presenter.host.lights[0].color, vec3(0.2, 0.2, 1.0));
+    }
+
+    #[test]
+    fn presenter_shadow_reports_mark_plane() {
+        let mut host = TestPlayerHost::new();
+        host.settings.shadows = 1;
+        host.trace_result = TraceResult {
+            fraction: 0.5,
+            end: vec3(0.0, 0.0, 10.0),
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::Plane {
+                plane: Plane {
+                    normal: vec3(0.0, 0.0, 1.0),
+                    distance: 10.0,
+                },
+            },
+            contents: 0,
+            surface_flags: 0,
+        };
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        let (mut clients, mut trails, mut entity) = render_fixture();
+        clients[0].info_valid = true;
+        clients[0].team = Team::TeamRed;
+        clients[0].legs_model = SceneModel::Loaded { id: 1 };
+        clients[0].torso_model = SceneModel::Loaded { id: 2 };
+        clients[0].head_model = SceneModel::Loaded { id: 3 };
+        let mut ctx = PlayerRenderContext {
+            time: 1000,
+            frame_time: 50,
+            rendering_third_person: true,
+            snapshot_client_num: 3,
+            snapshot_team: Team::TeamRed as i32,
+            clients: &mut clients,
+            skull_trails: &mut trails,
+        };
+        presenter.player(&mut ctx, &mut entity).unwrap();
+        assert_eq!(presenter.host.polys.len(), 1);
+        match &presenter.host.entities[0] {
+            RefEntity::Model(legs) => assert_eq!(legs.shadow_plane, 11.0),
+            RefEntity::Sprite(_) => panic!("legs must render as a model"),
+        }
+    }
+
+    #[test]
+    fn presenter_reset_rebuilds_lerp() {
+        let mut host = TestPlayerHost::new();
+        host.settings.debug_position = true;
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        let mut entity = ClientEntity::new();
+        entity.current_state.pos.base = vec3(10.0, 20.0, 30.0);
+        let ci = ClientInfo::default();
+        presenter.reset_player_entity(1000, &mut entity, &ci).unwrap();
+        assert_eq!(entity.error_time, -99999);
+        assert!(!entity.extrapolated);
+        assert_eq!(entity.lerp_origin, vec3(10.0, 20.0, 30.0));
+        assert_eq!(entity.raw_origin, vec3(10.0, 20.0, 30.0));
+        assert_eq!(entity.player.legs.base.animation_number, 0);
+        assert_eq!(presenter.host.prints.len(), 1);
+        assert!(presenter.host.prints[0].contains("ResetPlayerEntity"));
+    }
+
+    #[test]
+    fn presenter_light_verts_requires_vertices() {
+        let host = TestPlayerHost::new();
+        let mut presenter = PlayerPresenter::new(host, Product::Baseq3).unwrap();
+        assert!(presenter.light_verts(vec3(0.0, 0.0, 1.0), &mut []).is_err());
+        let mut vertices = vec![RefPolyVertex {
+            position: vec3(0.0, 0.0, 0.0),
+            tex_coord: [0.0, 0.0],
+            color: vec4(0.0, 0.0, 0.0, 0.0),
+        }];
+        assert!(presenter.light_verts(vec3(0.0, 0.0, 1.0), &mut vertices).unwrap());
+        assert_eq!(vertices[0].color, vec4(30.0, 30.0, 30.0, 255.0));
+        assert!(presenter.light_verts(vec3(0.0, 0.0, -1.0), &mut vertices).unwrap());
+        assert_eq!(vertices[0].color, vec4(10.0, 10.0, 10.0, 255.0));
+    }
+
+    // ---------- frame tests ----------
 }

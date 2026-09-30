@@ -8,6 +8,8 @@ use qa_core::math::{
 use qa_core::numeric::qvm_float_to_int;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::world::{TraceContact, TraceSolidity};
+use crate::q3::presentation::collision_host::TraceResult;
 use crate::q3::presentation::effects::*;
 use crate::q3::presentation::marks::*;
 use crate::q3::presentation::mirrors_present_scene::*;

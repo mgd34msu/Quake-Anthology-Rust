@@ -5,7 +5,8 @@
 use qa_core::math::{angle_vectors, dot3, length3, sub3, vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::player_state::*;
 use crate::q3::presentation::retail_snapshot::*;
 use crate::q3::presentation::state::*;
 
@@ -13,9 +14,63 @@ use crate::q3::presentation::state::*;
 // Player-state transitions (player-state.ts)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Weapon HUD contract (contracts/ui.ts substance used by player-state,
+// unified from mirrors_present_client)
+// ---------------------------------------------------------------------------
+
+/// Arsenal ammo warning (`ArsenalAmmoWarning`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArsenalAmmoWarning {
+    /// No warning.
+    None,
+    /// Low ammo.
+    Low,
+    /// Empty.
+    Empty,
+}
+
+/// Weapon HUD ammo (`WeaponHudStatus.ammo`, reduced to read fields).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WeaponHudAmmo {
+    /// Unmetered.
+    Unmetered,
+    /// Finite count.
+    Finite {
+        /// Count.
+        count: i32,
+        /// Low flag.
+        low: bool,
+    },
+}
+
+/// Weapon HUD status (`WeaponHudStatus`, reduced to read fields).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeaponHudStatus {
+    /// Label.
+    pub label: String,
+    /// Ammo.
+    pub ammo: WeaponHudAmmo,
+}
+
+/// Weapon HUD reader (`WeaponHudReader`).
+pub trait WeaponHudReader {
+    /// Read the current HUD status and ammo warning.
+    fn read(&mut self) -> (Option<WeaponHudStatus>, ArsenalAmmoWarning);
+}
+
 pub(crate) const PS_LOCAL_SOUND: i32 = 6;
 
 pub(crate) const PS_ANNOUNCER: i32 = 7;
+
+/// Weapons stat slot for a product.
+fn weapons_slot(product: Product) -> usize {
+    let slot = match stat_schema(product) {
+        StatSchema::Base(layout) => layout.weapons,
+        StatSchema::Missionpack(layout) => layout.weapons,
+    };
+    slot as usize
+}
 
 /// Player-state sounds (`PlayerStateSound` record).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,7 +154,7 @@ pub struct RewardMedals {
 /// Player-state transition services (`PlayerStateHost`).
 pub trait PlayerStateHost {
     /// Product.
-    fn product(&self) -> Q3Product;
+    fn product(&self) -> Product;
     /// Show-miss flag.
     fn show_miss(&self) -> bool;
     /// Weapon HUD reader, if the recipe supplies one.
@@ -194,17 +249,17 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             .ok_or_else(|| state_msg("Player-state transition requires cg.snap"))?
             .player_state
             .clone();
-        let weapons = ps.stats.get(stat_schema(ps.product).weapons)?;
+        let weapons = ps.stats.get(weapons_slot(ps.product()));
         let mut total = 0i32;
-        let mut weapon = Weapon::Machinegun as i32;
-        while weapon < weapon_count(ps.product) {
+        let mut weapon = Weapon::WpMachinegun as i32;
+        while weapon < weapon_count(ps.product()) {
             if (weapons & (1 << weapon)) != 0 {
-                let slow = weapon == Weapon::RocketLauncher as i32
-                    || weapon == Weapon::GrenadeLauncher as i32
-                    || weapon == Weapon::Railgun as i32
-                    || weapon == Weapon::Shotgun as i32
-                    || (ps.product == Q3Product::MissionPack && weapon == Weapon::ProxLauncher as i32);
-                total = total.wrapping_add(ps.ammo.get(weapon)?.wrapping_mul(if slow { 1000 } else { 200 }));
+                let slow = weapon == Weapon::WpRocketLauncher as i32
+                    || weapon == Weapon::WpGrenadeLauncher as i32
+                    || weapon == Weapon::WpRailgun as i32
+                    || weapon == Weapon::WpShotgun as i32
+                    || (ps.product() == Product::Missionpack && weapon == Weapon::WpProxLauncher as i32);
+                total = total.wrapping_add(ps.ammo.get(weapon as usize).wrapping_mul(if slow { 1000 } else { 200 }));
                 if total >= 5000 {
                     state.low_ammo_warning = 0;
                     return Ok(());
@@ -233,7 +288,7 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             .snap
             .as_ref()
             .ok_or_else(|| state_msg("Player-state transition requires cg.snap"))?;
-        let health = snapshot.player_state.health()?;
+        let health = snapshot.player_state.health();
         let server_time = snapshot.server_time;
         state.attacker_time = state.time;
         let scale = if health < 40 { 1.0 } else { 40.0 / health as f32 };
@@ -309,17 +364,17 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
         while index < current.event_sequence {
             if index >= previous.event_sequence
                 || (index > previous.event_sequence.wrapping_sub(2)
-                    && current.events.get(index & 1)? != previous.events.get(index & 1)?)
+                    && current.events.get((index & 1) as usize) != previous.events.get((index & 1) as usize))
             {
-                let event = current.events.get(index & 1)?;
-                let parm = current.event_parms.get(index & 1)?;
+                let event = current.events.get((index & 1) as usize);
+                let parm = current.event_parms.get((index & 1) as usize);
                 let entity = event_entity_mut(state, EventEntityRef::PredictedPlayer)?;
                 entity.current_state.event = event;
                 entity.current_state.event_parm = parm;
                 let position = entity.lerp_origin;
                 self.host
                     .entity_event(state, static_state, EventEntityRef::PredictedPlayer, position)?;
-                state.predictable_events.set(index & 15, event)?;
+                state.predictable_events.set((index & 15) as usize, event);
                 state.event_sequence = state.event_sequence.wrapping_add(1);
             }
             index = index.wrapping_add(1);
@@ -338,17 +393,17 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
         while index < ps.event_sequence {
             if index < state.event_sequence
                 && index > state.event_sequence.wrapping_sub(16)
-                && ps.events.get(index & 1)? != state.predictable_events.get(index & 15)?
+                && ps.events.get((index & 1) as usize) != state.predictable_events.get((index & 15) as usize)
             {
-                let event = ps.events.get(index & 1)?;
-                let parm = ps.event_parms.get(index & 1)?;
+                let event = ps.events.get((index & 1) as usize);
+                let parm = ps.event_parms.get((index & 1) as usize);
                 let entity = event_entity_mut(state, EventEntityRef::PredictedPlayer)?;
                 entity.current_state.event = event;
                 entity.current_state.event_parm = parm;
                 let position = entity.lerp_origin;
                 self.host
                     .entity_event(state, static_state, EventEntityRef::PredictedPlayer, position)?;
-                state.predictable_events.set(index & 15, event)?;
+                state.predictable_events.set((index & 15) as usize, event);
                 if self.host.show_miss() {
                     self.host.print("WARNING: changed predicted event\n");
                 }
@@ -387,12 +442,16 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
         previous: &PlayerState,
     ) -> PresentResult<()> {
         self.check_product(state, static_state)?;
-        if ps.persistant.get(PersistentIndex::Team as i32)? != previous.persistant.get(PersistentIndex::Team as i32)? {
+        if ps.persistant.get(PersistentIndex::PersTeam as usize)
+            != previous.persistant.get(PersistentIndex::PersTeam as usize)
+        {
             return Ok(());
         }
-        let mission = self.host.product() == Q3Product::MissionPack;
-        if ps.persistant.get(PersistentIndex::Hits as i32)? > previous.persistant.get(PersistentIndex::Hits as i32)? {
-            let packed = ps.persistant.get(PersistentIndex::AttackeeArmor as i32)?;
+        let mission = self.host.product() == Product::Missionpack;
+        if ps.persistant.get(PersistentIndex::PersHits as usize)
+            > previous.persistant.get(PersistentIndex::PersHits as usize)
+        {
+            let packed = ps.persistant.get(PersistentIndex::PersAttackeeArmor as usize);
             let armor = packed & 255;
             let health = packed >> 8;
             if mission && armor > 50 {
@@ -408,36 +467,36 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
                 let sound = self.host.sounds().hit_sound;
                 self.local(sound, PS_LOCAL_SOUND);
             }
-        } else if ps.persistant.get(PersistentIndex::Hits as i32)?
-            < previous.persistant.get(PersistentIndex::Hits as i32)?
+        } else if ps.persistant.get(PersistentIndex::PersHits as usize)
+            < previous.persistant.get(PersistentIndex::PersHits as usize)
         {
             let sound = self.host.sounds().hit_team_sound;
             self.local(sound, PS_LOCAL_SOUND);
         }
-        if ps.health()? < previous.health()?.wrapping_sub(1) && ps.health()? > 0 {
+        if ps.health() < previous.health().wrapping_sub(1) && ps.health() > 0 {
             self.host
-                .pain_event(state, static_state, EventEntityRef::PredictedPlayer, ps.health()?)?;
+                .pain_event(state, static_state, EventEntityRef::PredictedPlayer, ps.health())?;
         }
         if state.intermission_started {
             return Ok(());
         }
         let mut rewarded = false;
-        let changed = |index: PersistentIndex| -> PresentResult<bool> {
-            Ok(ps.persistant.get(index as i32)? != previous.persistant.get(index as i32)?)
+        let changed = |index: PersistentIndex| -> bool {
+            ps.persistant.get(index as usize) != previous.persistant.get(index as usize)
         };
-        if changed(PersistentIndex::Captures)? {
+        if changed(PersistentIndex::PersCaptures) {
             let sounds = *self.host.sounds();
             let medals = self.host.medals().clone();
             Self::push_reward(
                 state,
                 sounds.capture_award_sound,
                 medals.medal_capture,
-                ps.persistant.get(PersistentIndex::Captures as i32)?,
+                ps.persistant.get(PersistentIndex::PersCaptures as usize),
             )?;
             rewarded = true;
         }
-        if changed(PersistentIndex::ImpressiveCount)? {
-            let count = ps.persistant.get(PersistentIndex::ImpressiveCount as i32)?;
+        if changed(PersistentIndex::PersImpressiveCount) {
+            let count = ps.persistant.get(PersistentIndex::PersImpressiveCount as usize);
             let sounds = *self.host.sounds();
             let medals = self.host.medals().clone();
             let sound = if mission && count == 1 {
@@ -450,8 +509,8 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             Self::push_reward(state, sound, medals.medal_impressive, count)?;
             rewarded = true;
         }
-        if changed(PersistentIndex::ExcellentCount)? {
-            let count = ps.persistant.get(PersistentIndex::ExcellentCount as i32)?;
+        if changed(PersistentIndex::PersExcellentCount) {
+            let count = ps.persistant.get(PersistentIndex::PersExcellentCount as usize);
             let sounds = *self.host.sounds();
             let medals = self.host.medals().clone();
             let sound = if mission && count == 1 {
@@ -464,11 +523,11 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             Self::push_reward(state, sound, medals.medal_excellent, count)?;
             rewarded = true;
         }
-        if changed(PersistentIndex::GauntletFragCount)? {
-            let count = ps.persistant.get(PersistentIndex::GauntletFragCount as i32)?;
+        if changed(PersistentIndex::PersGauntletFragCount) {
+            let count = ps.persistant.get(PersistentIndex::PersGauntletFragCount as usize);
             let sounds = *self.host.sounds();
             let medals = self.host.medals().clone();
-            let sound = if mission && previous.persistant.get(PersistentIndex::GauntletFragCount as i32)? == 1 {
+            let sound = if mission && previous.persistant.get(PersistentIndex::PersGauntletFragCount as usize) == 1 {
                 self.host
                     .mission_sounds()
                     .and_then(|sounds| sounds.first_humiliation_sound)
@@ -478,31 +537,31 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             Self::push_reward(state, sound, medals.medal_gauntlet, count)?;
             rewarded = true;
         }
-        if changed(PersistentIndex::DefendCount)? {
+        if changed(PersistentIndex::PersDefendCount) {
             let sounds = *self.host.sounds();
             let medals = self.host.medals().clone();
             Self::push_reward(
                 state,
                 sounds.defend_sound,
                 medals.medal_defend,
-                ps.persistant.get(PersistentIndex::DefendCount as i32)?,
+                ps.persistant.get(PersistentIndex::PersDefendCount as usize),
             )?;
             rewarded = true;
         }
-        if changed(PersistentIndex::AssistCount)? {
+        if changed(PersistentIndex::PersAssistCount) {
             let sounds = *self.host.sounds();
             let medals = self.host.medals().clone();
             Self::push_reward(
                 state,
                 sounds.assist_sound,
                 medals.medal_assist,
-                ps.persistant.get(PersistentIndex::AssistCount as i32)?,
+                ps.persistant.get(PersistentIndex::PersAssistCount as usize),
             )?;
             rewarded = true;
         }
-        if changed(PersistentIndex::PlayerEvents)? {
-            let changed_bits = ps.persistant.get(PersistentIndex::PlayerEvents as i32)?
-                ^ previous.persistant.get(PersistentIndex::PlayerEvents as i32)?;
+        if changed(PersistentIndex::PersPlayerevents) {
+            let changed_bits = ps.persistant.get(PersistentIndex::PersPlayerevents as usize)
+                ^ previous.persistant.get(PersistentIndex::PersPlayerevents as usize);
             if (changed_bits & 1) != 0 {
                 let sound = self.host.sounds().denied_sound;
                 self.local(sound, PS_ANNOUNCER);
@@ -515,10 +574,10 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             }
             rewarded = true;
         }
-        if static_state.game_type >= GameType::Team {
-            for powerup in [Powerup::RedFlag, Powerup::BlueFlag, Powerup::NeutralFlag] {
-                if ps.powerups.get(powerup as i32)? != previous.powerups.get(powerup as i32)?
-                    && ps.powerups.get(powerup as i32)? != 0
+        if (static_state.game_type as i32) >= GameType::GtTeam as i32 {
+            for powerup in [Powerup::PwRedflag, Powerup::PwBlueflag, Powerup::PwNeutralflag] {
+                if ps.powerups.get(powerup as usize) != previous.powerups.get(powerup as usize)
+                    && ps.powerups.get(powerup as usize) != 0
                 {
                     let sound = self.host.sounds().you_have_flag_sound;
                     self.local(sound, PS_ANNOUNCER);
@@ -526,16 +585,19 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
                 }
             }
         }
-        if !rewarded && state.warmup == 0 && changed(PersistentIndex::Rank)? && static_state.game_type < GameType::Team
+        if !rewarded
+            && state.warmup == 0
+            && changed(PersistentIndex::PersRank)
+            && (static_state.game_type as i32) < GameType::GtTeam as i32
         {
-            let rank = ps.persistant.get(PersistentIndex::Rank as i32)?;
+            let rank = ps.persistant.get(PersistentIndex::PersRank as usize);
             if rank == 0 {
                 let sound = self.host.sounds().taken_lead_sound;
                 self.buffered(sound);
             } else if rank == 0x4000 {
                 let sound = self.host.sounds().tied_lead_sound;
                 self.buffered(sound);
-            } else if (previous.persistant.get(PersistentIndex::Rank as i32)? & !0x4000) == 0 {
+            } else if (previous.persistant.get(PersistentIndex::PersRank as usize) & !0x4000) == 0 {
                 let sound = self.host.sounds().lost_lead_sound;
                 self.buffered(sound);
             }
@@ -578,7 +640,7 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
                 self.local(sound, PS_ANNOUNCER);
             }
         }
-        if static_state.fraglimit > 0 && static_state.game_type < GameType::Ctf {
+        if static_state.fraglimit > 0 && (static_state.game_type as i32) < GameType::GtCtf as i32 {
             if (state.fraglimit_warnings & 4) == 0 && static_state.scores1 == static_state.fraglimit.wrapping_sub(1) {
                 state.fraglimit_warnings |= 7;
                 let sound = self.host.sounds().one_frag_sound;
@@ -612,13 +674,13 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
     ) -> PresentResult<()> {
         if current.client_num != previous.client_num {
             state.this_frame_teleport = true;
-            previous.copy_from_state(current)?;
+            previous.copy_from(current, AuthorityStores::PreserveAuthority);
         }
         if current.damage_event != previous.damage_event && current.damage_count != 0 {
             self.damage_feedback(state, current.damage_yaw, current.damage_pitch, current.damage_count)?;
         }
-        if current.persistant.get(PersistentIndex::SpawnCount as i32)?
-            != previous.persistant.get(PersistentIndex::SpawnCount as i32)?
+        if current.persistant.get(PersistentIndex::PersSpawnCount as usize)
+            != previous.persistant.get(PersistentIndex::PersSpawnCount as usize)
         {
             self.respawn(state)?;
         }
@@ -632,8 +694,8 @@ impl<H: PlayerStateHost> PlayerStateRuntime<H> {
             .ok_or_else(|| state_msg("Player-state transition requires cg.snap"))?
             .player_state
             .pm_type;
-        if snapshot_pm != MoveType::Intermission as i32
-            && current.persistant.get(PersistentIndex::Team as i32)? != Team::Spectator as i32
+        if snapshot_pm != MoveType::PmIntermission as i32
+            && current.persistant.get(PersistentIndex::PersTeam as usize) != Team::TeamSpectator as i32
         {
             self.check_local_sounds(state, static_state, current, previous)?;
         }

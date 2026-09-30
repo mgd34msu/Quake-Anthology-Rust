@@ -3,11 +3,153 @@
 //! Donor provenance: `src/content/q3/presentation/state.ts`.
 
 use crate::q3anim::PlayerAnimation;
+use qa_core::cmd::ascii_fold;
 use qa_core::math::{vec3, Axis, Vec3};
+use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::game::numeric::game_atoi as canonical_game_atoi;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_state::*;
+use crate::q3::base::shared::items::ItemsError;
+use crate::q3::base::shared::player_state::*;
+use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::retail_snapshot::*;
+
+// ---------------------------------------------------------------------------
+// Group error (unified from mirrors_present_client)
+// ---------------------------------------------------------------------------
+
+/// Presentation-client failure (`CommonError("drop")`, `RangeError`, `Error`).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PresentClientError {
+    /// Source `drop`: the session must tear down with this message.
+    #[error("dropped: {0}")]
+    Drop(String),
+    /// Source `RangeError`: value outside its defined bounds.
+    #[error("out of range: {0}")]
+    Range(String),
+    /// Any other source `Error`: misuse or violated invariant.
+    #[error("client presentation error: {0}")]
+    State(String),
+}
+
+/// Fallible presentation-client result.
+pub type PresentResult<T> = Result<T, PresentClientError>;
+
+pub(crate) fn drop_msg(message: impl Into<String>) -> PresentClientError {
+    PresentClientError::Drop(message.into())
+}
+
+pub(crate) fn range_msg(message: impl Into<String>) -> PresentClientError {
+    PresentClientError::Range(message.into())
+}
+
+pub(crate) fn state_msg(message: impl Into<String>) -> PresentClientError {
+    PresentClientError::State(message.into())
+}
+
+pub(crate) fn at<'a, T>(items: &'a [T], index: usize, what: &str) -> PresentResult<&'a T> {
+    items
+        .get(index)
+        .ok_or_else(|| range_msg(format!("{what} index {index} outside {}", items.len())))
+}
+
+pub(crate) fn at_mut<'a, T>(items: &'a mut [T], index: usize, what: &str) -> PresentResult<&'a mut T> {
+    let len = items.len();
+    items
+        .get_mut(index)
+        .ok_or_else(|| range_msg(format!("{what} index {index} outside {len}")))
+}
+
+impl From<ItemsError> for PresentClientError {
+    fn from(error: ItemsError) -> Self {
+        match error {
+            ItemsError::Drop(message) => Self::Drop(message),
+            ItemsError::OutOfRange(message) => Self::Range(message),
+        }
+    }
+}
+
+/// `bg_lib` atoi mapped onto the group error.
+pub(crate) fn game_atoi(text: &str) -> PresentResult<i32> {
+    canonical_game_atoi(text).map_err(|error| range_msg(error.to_string()))
+}
+
+/// Maximum clients (`MAX_CLIENTS` cgame slots).
+pub const MAX_CLIENTS: usize = 64;
+
+/// Maximum entities (`MAX_GENTITIES` cgame slots).
+pub const MAX_ENTITIES: usize = 1024;
+
+/// `Info_ValueForKey` over a backslash-delimited info string.
+pub fn info_value_for_key(input: &str, wanted: &str, maximum_length: usize) -> PresentResult<String> {
+    if !(1..=8192).contains(&maximum_length) {
+        return Err(range_msg("Invalid source info-string bound"));
+    }
+    let end = input.find('\0').unwrap_or(input.len());
+    let key_end = wanted.find('\0').unwrap_or(wanted.len());
+    let text = &input[..end];
+    let key = &wanted[..key_end];
+    if text.chars().count() >= maximum_length {
+        return Err(drop_msg("Info_ValueForKey: oversize infostring"));
+    }
+    for value in [text, key] {
+        if value.chars().any(|c| c as u32 > 255) {
+            return Err(range_msg("Info_ValueForKey requires byte characters"));
+        }
+    }
+    let bytes = text.as_bytes();
+    let folded_key = ascii_fold(key);
+    let mut cursor = usize::from(text.starts_with('\\'));
+    while cursor < bytes.len() {
+        let rest = &bytes[cursor..];
+        let separator = rest.iter().position(|b| *b == b'\\');
+        let Some(sep) = separator else { return Ok(String::new()) };
+        let separator = cursor + sep;
+        let after = &bytes[separator + 1..];
+        let next = after.iter().position(|b| *b == b'\\');
+        let value_end = next.map_or(bytes.len(), |n| separator + 1 + n);
+        let name = String::from_utf8_lossy(&bytes[cursor..separator]);
+        if ascii_fold(&name) == folded_key {
+            return Ok(String::from_utf8_lossy(&bytes[separator + 1..value_end]).into_owned());
+        }
+        cursor = value_end + 1;
+    }
+    Ok(String::new())
+}
+
+/// Event entity reference: a world entity or the predicted player entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventEntityRef {
+    /// World entity number.
+    Entity(usize),
+    /// Predicted player entity.
+    PredictedPlayer,
+}
+
+pub(crate) fn event_entity(state: &ClientGameState, entity_ref: EventEntityRef) -> PresentResult<&ClientEntity> {
+    match entity_ref {
+        EventEntityRef::Entity(number) => {
+            let number = i32::try_from(number).map_err(|_| range_msg("Entity number outside int32"))?;
+            state.entity_at(number)
+        }
+        EventEntityRef::PredictedPlayer => Ok(&state.predicted_player_entity),
+    }
+}
+
+pub(crate) fn event_entity_mut(
+    state: &mut ClientGameState,
+    entity_ref: EventEntityRef,
+) -> PresentResult<&mut ClientEntity> {
+    match entity_ref {
+        EventEntityRef::Entity(number) => {
+            let number = i32::try_from(number).map_err(|_| range_msg("Entity number outside int32"))?;
+            state.entity_at_mut(number)
+        }
+        EventEntityRef::PredictedPlayer => Ok(&mut state.predicted_player_entity),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Owned client state (state.ts)
@@ -268,7 +410,7 @@ impl Default for ClientEntity {
 #[derive(Debug, Clone)]
 pub struct ClientGameStaticState {
     /// Product.
-    pub product: Q3Product,
+    pub product: Product,
     /// Server command sequence.
     pub server_command_sequence: i32,
     /// Cursor X.
@@ -368,7 +510,7 @@ pub struct ClientGameStaticState {
 impl ClientGameStaticState {
     /// Blank static state.
     #[must_use]
-    pub fn new(product: Q3Product) -> Self {
+    pub fn new(product: Product) -> Self {
         Self {
             product,
             server_command_sequence: 0,
@@ -388,10 +530,10 @@ impl ClientGameStaticState {
             current_order: 0,
             order_pending: false,
             order_time: 0,
-            client_info: std::array::from_fn(|_| ClientInfo::new()),
+            client_info: std::array::from_fn(|_| ClientInfo::default()),
             game_models: std::array::from_fn(|_| default_model()),
             game_sounds: std::array::from_fn(|_| None),
-            game_type: GameType::Ffa,
+            game_type: GameType::GtFfa,
             dm_flags: 0,
             team_flags: 0,
             fraglimit: 0,
@@ -426,7 +568,7 @@ impl ClientGameStaticState {
 #[derive(Debug, Clone)]
 pub struct ClientGameState {
     /// Product.
-    pub product: Q3Product,
+    pub product: Product,
     /// Client number.
     pub client_num: i32,
     /// Processed snapshot number.
@@ -668,7 +810,7 @@ pub struct ClientGameState {
 
 impl ClientGameState {
     /// New client state.
-    pub fn new(product: Q3Product, client_num: i32, processed_snapshot_num: i32) -> PresentResult<Self> {
+    pub fn new(product: Product, client_num: i32, processed_snapshot_num: i32) -> PresentResult<Self> {
         if client_num < 0 || client_num >= MAX_CLIENTS as i32 {
             return Err(range_msg("Invalid cgame client number"));
         }
@@ -742,7 +884,7 @@ impl ClientGameState {
             auto_axis_fast: [vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0)],
             map_restart: false,
             hyperspace: false,
-            predicted_player_state: PlayerState::new(product),
+            predicted_player_state: PlayerState::new(product, None),
             valid_pps: false,
             predicted_error_time: 0,
             predicted_error: vec3(0.0, 0.0, 0.0),
@@ -796,7 +938,7 @@ impl ClientGameState {
             next_orbit_time: 0,
             test_model_name: String::new(),
             test_model_entity: create_model_entity(),
-            predictable_events: PlayerStateSlots::new(16),
+            predictable_events: PlayerStateSlots::new(16, None, None, None),
         })
     }
 
@@ -821,6 +963,6 @@ impl ClientGameState {
 
     /// Take the predicted player state, leaving a fresh record.
     pub fn take_predicted_player_state(&mut self) -> PlayerState {
-        std::mem::replace(&mut self.predicted_player_state, PlayerState::new(self.product))
+        std::mem::replace(&mut self.predicted_player_state, PlayerState::new(self.product, None))
     }
 }

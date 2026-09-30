@@ -5,7 +5,8 @@
 use qa_core::math::{add3, scale3, Axis, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::player_state::MoveFlags;
 use crate::q3::presentation::retail_snapshot::*;
 use crate::q3::presentation::server_commands::*;
 use crate::q3::presentation::state::*;
@@ -13,6 +14,15 @@ use crate::q3::presentation::state::*;
 // ---------------------------------------------------------------------------
 // Presentation frame loop (frame.ts)
 // ---------------------------------------------------------------------------
+
+/// Weapons stat slot for a product.
+fn weapons_slot(product: Product) -> usize {
+    let slot = match stat_schema(product) {
+        StatSchema::Base(layout) => layout.weapons,
+        StatSchema::Missionpack(layout) => layout.weapons,
+    };
+    slot as usize
+}
 
 /// Frame stereo eye.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,9 +320,9 @@ impl<H: Q3PresentationSceneHost> Q3PresentationFrameRuntime<H> {
         let count = weapon_count(state.product);
         let mut required = vec![state.predicted_player_state.weapon];
         for entity in &snapshot.entities {
-            if entity.e_type == EntityType::Player as i32
-                || entity.e_type == EntityType::Missile as i32
-                || entity.e_type == EntityType::Grapple as i32
+            if entity.e_type == EntityType::EtPlayer as i32
+                || entity.e_type == EntityType::EtMissile as i32
+                || entity.e_type == EntityType::EtGrapple as i32
             {
                 let weapon = if entity.weapon > count { 0 } else { entity.weapon };
                 if !required.contains(&weapon) {
@@ -399,7 +409,7 @@ impl<H: Q3PresentationFrameHost> Q3PresentationFrameRuntime<H> {
         self.host.calculate_view_values(state);
         let count = weapon_count(state.product);
         let mut required = vec![state.predicted_player_state.weapon];
-        let owned = snapshot.player_state.stats.get(stat_schema(state.product).weapons)?;
+        let owned = snapshot.player_state.stats.get(weapons_slot(state.product));
         for weapon in 1..count {
             if owned & (1 << weapon) != 0 && !required.contains(&weapon) {
                 required.push(weapon);
@@ -407,11 +417,11 @@ impl<H: Q3PresentationFrameHost> Q3PresentationFrameRuntime<H> {
         }
         for entity in &snapshot.entities {
             let current = state.entity_at(entity.number)?.current_state.clone();
-            if current.e_type == EntityType::Player as i32 {
+            if current.e_type == EntityType::EtPlayer as i32 {
                 if !required.contains(&current.weapon) {
                     required.push(current.weapon);
                 }
-            } else if current.e_type == EntityType::Missile as i32 || current.e_type == EntityType::Grapple as i32 {
+            } else if current.e_type == EntityType::EtMissile as i32 || current.e_type == EntityType::EtGrapple as i32 {
                 let weapon = if current.weapon > count { 0 } else { current.weapon };
                 if !required.contains(&weapon) {
                     required.push(weapon);
@@ -460,8 +470,8 @@ impl<H: Q3PresentationFrameHost> Q3PresentationFrameRuntime<H> {
             self.host.add_lagometer_frame_info(state);
         }
         self.fade_timescale(state);
-        let team = snapshot.player_state.persistant.get(PersistentIndex::Team as i32)?;
-        if team == Team::Spectator as i32 && snapshot.player_state.pm_flags & MoveFlags::SCOREBOARD != 0 {
+        let team = snapshot.player_state.persistant.get(PersistentIndex::PersTeam as usize);
+        if team == Team::TeamSpectator as i32 && snapshot.player_state.pm_flags & (MoveFlags::Scoreboard as i32) != 0 {
             self.host.draw_tourney_scoreboard(state, static_state);
             return Ok(());
         }
@@ -503,4 +513,463 @@ impl<H: Q3PresentationFrameHost> Q3PresentationFrameRuntime<H> {
             self.host.set_timescale(value);
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::q3::base::shared::entity_state::EntityState as CanonicalEntityState;
+    use crate::q3::base::shared::player_state::MoveFlags;
+    use crate::q3::base::shared::player_state::PlayerState as CanonicalPlayerState;
+    use qa_core::math::{vec3, Axis, Vec3};
+    use std::collections::HashMap;
+
+    fn test_state() -> ClientGameState {
+        ClientGameState::new(Product::Baseq3, 0, 0).unwrap()
+    }
+    fn test_static() -> ClientGameStaticState {
+        ClientGameStaticState::new(Product::Baseq3)
+    }
+
+    // ---------- resource doubles ----------
+    pub(crate) struct TestFrameHost {
+        snap: Option<Snapshot>,
+        cvars: HashMap<String, CvarSnapshot>,
+        rage_pro: bool,
+        weapons: Vec<i32>,
+        pre_view_weapon: bool,
+        view_weapons: u32,
+        test_model: Option<RefEntity>,
+        damage_blob: Option<RefEntity>,
+        marks: Vec<RefPoly>,
+        particles: Vec<RefPoly>,
+        scene_entities: Vec<RefEntity>,
+        scene_polys: Vec<RefPoly>,
+        clears: u32,
+        rendered: u32,
+        loading_frames: u32,
+        draws_2d: u32,
+        scoreboards: u32,
+        lag: u32,
+        prints: Vec<String>,
+        listener: Option<(i32, Vec3)>,
+        user_command: Option<(i32, f32)>,
+        timescale_cvar: Option<f32>,
+        timescale: Option<f32>,
+        looping: Vec<bool>,
+    }
+
+    impl TestFrameHost {
+        pub(crate) fn new() -> Self {
+            Self {
+                snap: None,
+                cvars: HashMap::new(),
+                rage_pro: false,
+                weapons: Vec::new(),
+                pre_view_weapon: true,
+                view_weapons: 0,
+                test_model: None,
+                damage_blob: None,
+                marks: Vec::new(),
+                particles: Vec::new(),
+                scene_entities: Vec::new(),
+                scene_polys: Vec::new(),
+                clears: 0,
+                rendered: 0,
+                loading_frames: 0,
+                draws_2d: 0,
+                scoreboards: 0,
+                lag: 0,
+                prints: Vec::new(),
+                listener: None,
+                user_command: None,
+                timescale_cvar: None,
+                timescale: None,
+                looping: Vec::new(),
+            }
+        }
+
+        fn with_cvar(mut self, name: FrameCvar, numeric_value: f32, integer_value: i32) -> Self {
+            self.cvars.insert(
+                name.as_str().to_string(),
+                CvarSnapshot {
+                    name: name.as_str().to_string(),
+                    value: numeric_value.to_string(),
+                    numeric_value,
+                    integer_value,
+                },
+            );
+            self
+        }
+    }
+
+    impl Q3PresentationSceneHost for TestFrameHost {
+        fn update_cvars(&mut self) -> PresentResult<()> {
+            Ok(())
+        }
+        fn register_weapon(&mut self, weapon: i32) -> PresentResult<()> {
+            self.weapons.push(weapon);
+            Ok(())
+        }
+        fn process_snapshots(
+            &mut self,
+            state: &mut ClientGameState,
+            _static_state: &mut ClientGameStaticState,
+        ) -> PresentResult<()> {
+            state.snap = self.snap.clone();
+            Ok(())
+        }
+        fn packet_options(&self, static_state: &ClientGameStaticState) -> PacketEntityOptions {
+            PacketEntityOptions {
+                game_type: static_state.game_type,
+                smooth_clients: false,
+                simple_items: false,
+                obelisk_respawn_delay: 0,
+            }
+        }
+        fn add_packet_entities(
+            &mut self,
+            _state: &mut ClientGameState,
+            _static_state: &ClientGameStaticState,
+            _options: &PacketEntityOptions,
+        ) {
+        }
+        fn poll_impact_marks(&mut self, _state: &ClientGameState) -> Vec<RefPoly> {
+            std::mem::take(&mut self.marks)
+        }
+        fn poll_particles(&mut self, _state: &ClientGameState) -> Vec<RefPoly> {
+            std::mem::take(&mut self.particles)
+        }
+        fn add_local_entities(&mut self, _state: &ClientGameState) {}
+        fn play_buffered_sounds(&mut self, _state: &mut ClientGameState) {}
+        fn play_buffered_voice_chats(
+            &mut self,
+            _state: &mut ClientGameState,
+            _static_state: &mut ClientGameStaticState,
+        ) -> PresentResult<()> {
+            Ok(())
+        }
+        fn add_poly(&mut self, poly: RefPoly) {
+            self.scene_polys.push(poly);
+        }
+        fn add_ref_entity(&mut self, entity: RefEntity) {
+            self.scene_entities.push(entity);
+        }
+        fn clear_scene(&mut self) {
+            self.clears += 1;
+            self.scene_entities.clear();
+            self.scene_polys.clear();
+        }
+        fn render_scene(&mut self, _state: &ClientGameState) {
+            self.rendered += 1;
+        }
+        fn enter_frame(&mut self, _frame: &Q3PresentationFrame) {}
+        fn clear_looping_sounds(&mut self, kill_all: bool) {
+            self.looping.push(kill_all);
+        }
+    }
+
+    impl Q3PresentationFrameHost for TestFrameHost {
+        fn hardware_is_rage_pro(&self) -> bool {
+            self.rage_pro
+        }
+        fn predict_player_state(
+            &mut self,
+            state: &mut ClientGameState,
+            _static_state: &mut ClientGameStaticState,
+        ) -> PresentResult<()> {
+            if let Some(snapshot) = &state.snap {
+                state.predicted_player_state = snapshot.player_state.clone();
+            }
+            Ok(())
+        }
+        fn calculate_view_values(&mut self, _state: &mut ClientGameState) {}
+        fn damage_blend_blob(&mut self, _state: &ClientGameState, _rage_pro: bool) -> Option<RefEntity> {
+            self.damage_blob.clone()
+        }
+        fn pre_present_view_weapon(&mut self, _state: &ClientGameState) -> bool {
+            self.pre_view_weapon
+        }
+        fn add_view_weapon(&mut self, _state: &mut ClientGameState) {
+            self.view_weapons += 1;
+        }
+        fn post_present_view_weapon(&mut self, _state: &mut ClientGameState) {}
+        fn add_test_model(&mut self, _state: &ClientGameState) -> PresentResult<Option<RefEntity>> {
+            Ok(self.test_model.clone())
+        }
+        fn finish_refdef(&mut self, state: &mut ClientGameState) {
+            state.refdef.time = state.time;
+        }
+        fn powerup_timer_sounds(&mut self, _state: &ClientGameState) {}
+        fn set_listener(&mut self, client: i32, origin: Vec3, _axis: Axis) {
+            self.listener = Some((client, origin));
+        }
+        fn add_lagometer_frame_info(&mut self, _state: &ClientGameState) {
+            self.lag += 1;
+        }
+        fn read_frame_cvar(&self, name: FrameCvar) -> CvarSnapshot {
+            self.cvars.get(name.as_str()).cloned().unwrap_or(CvarSnapshot {
+                name: name.as_str().to_string(),
+                value: "0".to_string(),
+                numeric_value: 0.0,
+                integer_value: 0,
+            })
+        }
+        fn set_timescale_cvar(&mut self, value: f32) {
+            self.timescale_cvar = Some(value);
+        }
+        fn set_timescale(&mut self, value: f32) {
+            self.timescale = Some(value);
+        }
+        fn set_user_command_value(&mut self, weapon: i32, sensitivity: f32) {
+            self.user_command = Some((weapon, sensitivity));
+        }
+        fn loading_frame(
+            &mut self,
+            _state: &mut ClientGameState,
+            _static_state: &mut ClientGameStaticState,
+        ) -> PresentResult<()> {
+            self.loading_frames += 1;
+            Ok(())
+        }
+        fn draw_tourney_scoreboard(&mut self, _state: &mut ClientGameState, _static_state: &mut ClientGameStaticState) {
+            self.scoreboards += 1;
+        }
+        fn tile_clear(&mut self, _state: &ClientGameState) {}
+        fn draw_2d(
+            &mut self,
+            _state: &mut ClientGameState,
+            _static_state: &mut ClientGameStaticState,
+        ) -> PresentResult<()> {
+            self.draws_2d += 1;
+            Ok(())
+        }
+        fn print(&mut self, text: &str) {
+            self.prints.push(text.to_string());
+        }
+    }
+
+    // ---------- session / server doubles ----------
+    fn snap_fixture() -> Snapshot {
+        let mut ps = CanonicalPlayerState::new(Product::Baseq3, None);
+        ps.client_num = 3;
+        ps.weapon = 2;
+        // Transitional: the base-game weapons slot is 2.
+        ps.stats.set(2, (1 << 2) | (1 << 5));
+        ps.persistant
+            .set(PersistentIndex::PersTeam as usize, Team::TeamFree as i32);
+        Snapshot {
+            message_number: 1,
+            server_time: 1000,
+            delta_number: 0,
+            flags: 0,
+            server_command_number: 0,
+            parse_entities_number: 0,
+            area_mask: [0; 32],
+            player_state: ps,
+            entities: vec![CanonicalEntityState {
+                number: 5,
+                e_type: EntityType::EtPlayer as i32,
+                weapon: 3,
+                ..CanonicalEntityState::default()
+            }],
+        }
+    }
+    fn frame_input() -> Q3PresentationFrame {
+        Q3PresentationFrame {
+            server_time: 100,
+            stereo: FrameStereo::Center,
+            demo_playback: false,
+            engine_frame_number: 7,
+        }
+    }
+    #[test]
+    fn frame_scope_guards_hold() {
+        let mut scene = Q3PresentationFrameRuntime::new_scene(TestFrameHost::new());
+        let mut state = test_state();
+        let mut static_state = test_static();
+        assert!(scene
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .is_err());
+        let mut primary = Q3PresentationFrameRuntime::new(TestFrameHost::new());
+        let camera = SceneCamera {
+            origin: vec3(0.0, 0.0, 0.0),
+            axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
+            projection: [1.0; 16],
+            viewport_x: 0,
+            viewport_y: 0,
+            viewport_width: 640,
+            viewport_height: 480,
+        };
+        assert!(primary
+            .draw_scene_frame(&mut state, &mut static_state, &frame_input(), &camera)
+            .is_err());
+        primary.close().unwrap();
+        assert!(primary
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .is_err());
+    }
+
+    #[test]
+    fn frame_registers_weapons_and_renders() {
+        let mut host = TestFrameHost::new();
+        host.snap = Some(snap_fixture());
+        let mut frames = Q3PresentationFrameRuntime::new(host);
+        let mut state = test_state();
+        let mut static_state = test_static();
+        state.weapon_select = 5;
+        state.zoom_sensitivity = 1.5;
+        state.hyperspace = false;
+        state.rendering_third_person = false;
+        state.entity_at_mut(5).unwrap().current_state.e_type = EntityType::EtPlayer as i32;
+        state.entity_at_mut(5).unwrap().current_state.weapon = 3;
+        let before = state.client_frame;
+        frames
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .unwrap();
+        assert_eq!(frames.host.weapons, vec![2, 5, 3]);
+        assert_eq!(frames.host.rendered, 1);
+        assert_eq!(frames.host.draws_2d, 1);
+        assert_eq!(frames.host.view_weapons, 1);
+        assert_eq!(state.client_frame, before.wrapping_add(1));
+        assert_eq!(state.frame_time, 100);
+        assert_eq!(state.old_time, 100);
+        assert_eq!(frames.host.user_command, Some((5, 1.5)));
+        assert_eq!(frames.host.listener.unwrap().0, 3);
+        assert_eq!(frames.host.lag, 1);
+        assert_eq!(state.refdef.view_origin, vec3(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn frame_loading_paths_skip_render() {
+        let mut host = TestFrameHost::new();
+        host.snap = Some(snap_fixture());
+        let mut frames = Q3PresentationFrameRuntime::new(host);
+        let mut state = test_state();
+        let mut static_state = test_static();
+        state.info_screen_text = "loading".to_string();
+        frames
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .unwrap();
+        assert_eq!(frames.host.loading_frames, 1);
+        assert_eq!(frames.host.rendered, 0);
+
+        let mut frames = Q3PresentationFrameRuntime::new(TestFrameHost::new());
+        let mut state = test_state();
+        frames
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .unwrap();
+        assert_eq!(frames.host.loading_frames, 1);
+        assert_eq!(frames.host.rendered, 0);
+    }
+
+    #[test]
+    fn frame_spectator_scoreboard_skips_scene() {
+        let mut snapshot = snap_fixture();
+        snapshot
+            .player_state
+            .persistant
+            .set(PersistentIndex::PersTeam as usize, Team::TeamSpectator as i32);
+        snapshot.player_state.pm_flags = MoveFlags::Scoreboard as i32;
+        let mut host = TestFrameHost::new();
+        host.snap = Some(snapshot);
+        let mut frames = Q3PresentationFrameRuntime::new(host);
+        let mut state = test_state();
+        let mut static_state = test_static();
+        frames
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .unwrap();
+        assert_eq!(frames.host.scoreboards, 1);
+        assert_eq!(frames.host.rendered, 0);
+        assert_eq!(frames.host.draws_2d, 0);
+    }
+
+    #[test]
+    fn frame_right_eye_skips_frame_time() {
+        let mut host = TestFrameHost::new();
+        host.snap = Some(snap_fixture());
+        let mut frames = Q3PresentationFrameRuntime::new(host);
+        let mut state = test_state();
+        let mut static_state = test_static();
+        let input = Q3PresentationFrame {
+            stereo: FrameStereo::Right,
+            ..frame_input()
+        };
+        frames.draw_active_frame(&mut state, &mut static_state, &input).unwrap();
+        assert_eq!(frames.host.lag, 0);
+        assert_eq!(state.frame_time, 0);
+        assert_eq!(frames.host.rendered, 1);
+    }
+
+    #[test]
+    fn frame_timescale_fades_toward_end() {
+        let mut host = TestFrameHost::new();
+        host.snap = Some(snap_fixture());
+        host = host
+            .with_cvar(FrameCvar::CgTimescaleFadeEnd, 1.0, 1)
+            .with_cvar(FrameCvar::CgTimescaleFadeSpeed, 1.0, 1)
+            .with_cvar(FrameCvar::CgTimescale, 0.0, 0);
+        let mut frames = Q3PresentationFrameRuntime::new(host);
+        let mut state = test_state();
+        let mut static_state = test_static();
+        frames
+            .draw_active_frame(&mut state, &mut static_state, &frame_input())
+            .unwrap();
+        let cvar = frames.host.timescale_cvar.unwrap();
+        assert!((cvar - 0.1).abs() < 1e-6, "unexpected timescale {cvar}");
+        assert!((frames.host.timescale.unwrap() - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn frame_scene_sets_refdef_from_camera() {
+        let mut snapshot = snap_fixture();
+        snapshot.entities[0].e_type = EntityType::EtMissile as i32;
+        snapshot.entities[0].weapon = 99;
+        let mut host = TestFrameHost::new();
+        host.snap = Some(snapshot);
+        let mut frames = Q3PresentationFrameRuntime::new_scene(host);
+        let mut state = test_state();
+        let mut static_state = test_static();
+        let camera = SceneCamera {
+            origin: vec3(1.0, 2.0, 3.0),
+            axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
+            projection: [1.0; 16],
+            viewport_x: 0,
+            viewport_y: 0,
+            viewport_width: 640,
+            viewport_height: 480,
+        };
+        frames
+            .draw_scene_frame(&mut state, &mut static_state, &frame_input(), &camera)
+            .unwrap();
+        assert_eq!(state.refdef.view_origin, vec3(1.0, 2.0, 3.0));
+        assert_eq!(state.refdef.width, 640);
+        assert_eq!(state.refdef.height, 480);
+        assert!((state.refdef.fov_x - 90.0).abs() < 1e-4);
+        assert!((state.refdef.fov_y - 90.0).abs() < 1e-4);
+        assert_eq!(state.refdef.time, 100);
+        assert_eq!(frames.host.weapons, vec![2, 0]);
+    }
+
+    #[test]
+    fn frame_scene_rejects_backward_time() {
+        let mut frames = Q3PresentationFrameRuntime::new_scene(TestFrameHost::new());
+        let mut state = test_state();
+        let mut static_state = test_static();
+        state.old_time = 200;
+        let camera = SceneCamera {
+            origin: vec3(0.0, 0.0, 0.0),
+            axis: [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)],
+            projection: [1.0; 16],
+            viewport_x: 0,
+            viewport_y: 0,
+            viewport_width: 640,
+            viewport_height: 480,
+        };
+        assert!(frames
+            .draw_scene_frame(&mut state, &mut static_state, &frame_input(), &camera)
+            .is_err());
+    }
+
+    // ---------- assembly tests ----------
 }

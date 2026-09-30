@@ -6,6 +6,7 @@ use qa_core::math::{vec3, vec4, Vec4};
 use std::cell::Cell;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Team as CanonicalTeam;
 use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::draw_icons::*;
 use crate::q3::presentation::draw_status::*;
@@ -636,10 +637,10 @@ impl ClientHud {
     /// Draw the team vote (`drawTeamVote`).
     pub fn draw_team_vote(&self) {
         let team = self.client(0).borrow().team;
-        if team != Team::Red && team != Team::Blue {
+        if team != CanonicalTeam::TeamRed && team != CanonicalTeam::TeamBlue {
             return;
         }
-        let index = if team == Team::Red { 0 } else { 1 };
+        let index = if team == CanonicalTeam::TeamRed { 0 } else { 1 };
         if self.static_state.borrow().team_vote_time[index] == 0 {
             return;
         }
@@ -831,7 +832,7 @@ impl ClientHud {
             for index in 0..maxclients {
                 let client = self.client(index);
                 let client = client.borrow();
-                if client.info_valid && client.team == Team::Free {
+                if client.info_valid && client.team == CanonicalTeam::TeamFree {
                     if first.is_none() {
                         first = Some(client.name.clone());
                     } else {

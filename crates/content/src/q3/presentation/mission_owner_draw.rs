@@ -6,6 +6,7 @@ use qa_core::math::{vec3, vec4, Vec4};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Team as CanonicalTeam;
 use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::config::*;
 use crate::q3::presentation::draw_icons::*;
@@ -794,7 +795,11 @@ impl MissionOwnerDraw {
         for index in 0..self.static_state.borrow().maxclients {
             let client = self.client(index);
             let client = client.borrow();
-            let wanted_team = if blue { Team::Red } else { Team::Blue };
+            let wanted_team = if blue {
+                CanonicalTeam::TeamRed
+            } else {
+                CanonicalTeam::TeamBlue
+            };
             let wanted_flag = if blue { Powerup::BlueFlag } else { Powerup::RedFlag };
             if client.info_valid && client.team == wanted_team && client.powerups & (1 << wanted_flag as i32) != 0 {
                 return Some(index);

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Team as CanonicalTeam;
 use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::config::*;
 use crate::q3::presentation::console::*;
@@ -997,7 +998,7 @@ impl MissionHud {
                     } else if team == -1 {
                         if self.static_state.borrow().game_type == GameType::Tournament {
                             text = format!("{}/{}", info.wins, info.losses);
-                        } else if info.team == Team::Spectator {
+                        } else if info.team == CanonicalTeam::TeamSpectator {
                             text = "Spectator".to_string();
                         }
                     } else if info.team_leader {

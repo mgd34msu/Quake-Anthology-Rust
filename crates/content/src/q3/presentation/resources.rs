@@ -6,8 +6,8 @@ use qa_core::math::{dot3, Bounds, Plane, Vec3};
 use std::collections::HashMap;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
 use crate::q3::presentation::retail_snapshot::*;
+use crate::q3::presentation::state::*;
 
 // ---------------------------------------------------------------------------
 // Renderer resources (resources.ts)
@@ -952,4 +952,347 @@ impl<H: Q3ResourceHost, W: ResourceWorld> RendererResources for Q3RendererResour
         self.world_loaded = true;
         Ok(scene)
     }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use qa_core::math::{vec3, Plane};
+
+    pub(crate) struct TestResourceHost {
+        next_model: u32,
+        next_skin: u32,
+        next_shader: u32,
+        pub(crate) cleared: u32,
+        rendered: u32,
+        entities: Vec<RefEntity>,
+        polys: Vec<RefPoly>,
+        lights: Vec<DynamicLight>,
+        remaps: Vec<(String, String, String)>,
+        world: WorldScene,
+    }
+
+    impl TestResourceHost {
+        pub(crate) fn new() -> Self {
+            Self {
+                next_model: 1,
+                next_skin: 1,
+                next_shader: 1,
+                cleared: 0,
+                rendered: 0,
+                entities: Vec::new(),
+                polys: Vec::new(),
+                lights: Vec::new(),
+                remaps: Vec::new(),
+                world: WorldScene {
+                    model_bounds: Vec::new(),
+                },
+            }
+        }
+    }
+
+    impl Q3ResourceHost for TestResourceHost {
+        fn zero_picture(&self) -> MaterialPicture {
+            SceneShader {
+                id: 0,
+                name: String::new(),
+                material_order: 0,
+            }
+        }
+        fn load_model(&mut self, _path: &str) -> PresentResult<SceneModel> {
+            let id = self.next_model;
+            self.next_model += 1;
+            Ok(SceneModel::Loaded { id })
+        }
+        fn load_skin(&mut self, _path: &str) -> PresentResult<Option<SceneSkin>> {
+            let id = self.next_skin;
+            self.next_skin += 1;
+            Ok(Some(SceneSkin {
+                id,
+                surfaces: Vec::new(),
+            }))
+        }
+        fn load_shader(&mut self, path: &str, _mip: bool) -> PresentResult<Option<MaterialPicture>> {
+            let id = self.next_shader;
+            self.next_shader += 1;
+            Ok(Some(SceneShader {
+                id,
+                name: path.to_string(),
+                material_order: id as i32,
+            }))
+        }
+        fn load_world_scene(&mut self, _requested_path: &str) -> PresentResult<WorldScene> {
+            Ok(self.world.clone())
+        }
+        fn remap_shader(&mut self, original: &str, replacement: &str, offset: &str) -> PresentResult<()> {
+            self.remaps
+                .push((original.to_string(), replacement.to_string(), offset.to_string()));
+            Ok(())
+        }
+        fn clear_scene(&mut self) {
+            self.cleared += 1;
+        }
+        fn add_ref_entity(&mut self, entity: RefEntity) {
+            self.entities.push(entity);
+        }
+        fn add_poly(&mut self, poly: RefPoly) {
+            self.polys.push(poly);
+        }
+        fn add_light(&mut self, light: DynamicLight) {
+            self.lights.push(light);
+        }
+        fn render_scene(&mut self, _refdef: &Refdef) {
+            self.rendered += 1;
+        }
+    }
+    pub(crate) struct TestWorld {
+        map: ResourceWorldMap,
+        pvs: Vec<u8>,
+    }
+
+    impl TestWorld {
+        fn flat(cluster: i32, visible: bool) -> Self {
+            Self {
+                map: ResourceWorldMap {
+                    entities: String::new(),
+                    nodes: Vec::new(),
+                    leaves: vec![ResourceBspLeaf { cluster }],
+                    planes: Vec::new(),
+                },
+                pvs: vec![if visible { 1u8 << (cluster as u32 & 7) } else { 0 }],
+            }
+        }
+    }
+
+    impl ResourceWorld for TestWorld {
+        fn resource_map(&self) -> &ResourceWorldMap {
+            &self.map
+        }
+        fn cluster_pvs_byte(&self, _cluster: i32, offset: usize) -> u8 {
+            *self.pvs.get(offset).unwrap_or(&0)
+        }
+    }
+
+    // ---------- client-info doubles ----------
+    #[test]
+    fn resource_models_cache_and_roundtrip_handles() {
+        let mut resources: Q3RendererResources<TestResourceHost, TestWorld> =
+            Q3RendererResources::new(TestResourceHost::new());
+        assert!(resources.register_model(None).unwrap().is_default());
+        assert!(resources.register_model(Some("")).unwrap().is_default());
+        let first = resources.register_model(Some("models/a.md3")).unwrap();
+        let second = resources.register_model(Some("models/a.md3")).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(resources.model_handle(&first).unwrap(), 1);
+        assert_eq!(resources.model_for_handle(1).unwrap(), first);
+        assert!(resources.model_for_handle(0).unwrap().is_default());
+        assert!(resources.model_for_handle(99).is_err());
+        assert!(resources.model_for_handle(-1).is_err());
+        assert!(resources.model_handle(&SceneModel::Loaded { id: 999 }).is_err());
+        let rows = resources.registered_models().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "models/a.md3");
+        assert_eq!(rows[0].handle, 1);
+    }
+
+    #[test]
+    fn resource_skins_cache_and_roundtrip_handles() {
+        let mut resources: Q3RendererResources<TestResourceHost, TestWorld> =
+            Q3RendererResources::new(TestResourceHost::new());
+        let first = resources.register_skin("models/a.skin").unwrap().unwrap();
+        let second = resources.register_skin("models/a.skin").unwrap().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(resources.skin_handle(&Some(first.clone())).unwrap(), 1);
+        assert_eq!(resources.skin_handle(&None).unwrap(), 0);
+        assert_eq!(resources.skin_for_handle(1).unwrap(), Some(first));
+        assert_eq!(resources.skin_for_handle(0).unwrap(), None);
+        assert!(resources.skin_for_handle(7).is_err());
+        assert!(resources.skin_for_handle(-1).is_err());
+        let rows = resources.registered_skins().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "models/a.skin");
+    }
+
+    #[test]
+    fn resource_shaders_fold_case_and_zero_picture() {
+        let mut resources: Q3RendererResources<TestResourceHost, TestWorld> =
+            Q3RendererResources::new(TestResourceHost::new());
+        let upper = resources.register_shader("textures/Foo").unwrap().unwrap();
+        let lower = resources.register_shader("textures/foo").unwrap().unwrap();
+        assert_eq!(upper, lower);
+        assert_eq!(resources.register_shader_no_mip(None).unwrap(), None);
+        let picture = resources.picture(Some(&upper)).unwrap();
+        assert_eq!(picture.name, "textures/Foo");
+        assert_eq!(resources.picture(None).unwrap().id, 0);
+        assert_eq!(resources.shader_for_handle(0).unwrap(), None);
+        let missing = SceneShader {
+            id: 77,
+            name: "nope".to_string(),
+            material_order: 77,
+        };
+        assert!(resources.picture(Some(&missing)).is_err());
+        assert!(resources.shader_for_handle(77).is_err());
+    }
+
+    #[test]
+    fn resource_renderer_shader_uses_material_order() {
+        let mut resources: Q3RendererResources<TestResourceHost, TestWorld> =
+            Q3RendererResources::new(TestResourceHost::new());
+        let shader = resources.register_shader("s").unwrap().unwrap();
+        assert_eq!(resources.shader_handle(Some(&shader)).unwrap(), 1);
+        assert_eq!(resources.shader_handle(None).unwrap(), 0);
+        assert_eq!(resources.shader_for_handle(1).unwrap(), Some(shader));
+    }
+
+    #[test]
+    fn resource_checkpoint_roundtrips_client_owner() {
+        let mut resources =
+            Q3RendererResources::with_world(TestResourceHost::new(), None::<TestWorld>, ResourceHandleOwner::Client);
+        let model = resources.register_model(Some("m")).unwrap();
+        let skin = resources.register_skin("s").unwrap();
+        let shader = resources.register_shader("h").unwrap();
+        let checkpoint = resources.capture_checkpoint().unwrap();
+        assert_eq!(checkpoint.models.len(), 1);
+        assert_eq!(checkpoint.models[0].handle, 1);
+        assert_eq!(checkpoint.models[0].resource, model.resource_id());
+        assert_eq!(checkpoint.skins[0].handle, 1);
+        assert_eq!(checkpoint.shaders[0].handle, 1);
+        let mut restored =
+            Q3RendererResources::with_world(TestResourceHost::new(), None::<TestWorld>, ResourceHandleOwner::Client);
+        restored.restore_checkpoint(&checkpoint).unwrap();
+        assert_eq!(restored.model_for_handle(1).unwrap(), model);
+        assert_eq!(restored.skin_for_handle(1).unwrap(), skin);
+        assert_eq!(restored.shader_for_handle(1).unwrap(), shader);
+        assert!(restored.restore_checkpoint(&checkpoint).is_err());
+    }
+
+    #[test]
+    fn resource_checkpoint_requires_client_owner() {
+        let resources: Q3RendererResources<TestResourceHost, TestWorld> =
+            Q3RendererResources::new(TestResourceHost::new());
+        assert!(resources.capture_checkpoint().is_err());
+    }
+
+    #[test]
+    fn resource_entity_tokens_skip_comments_and_restart() {
+        let world = TestWorld {
+            map: ResourceWorldMap {
+                entities: "{\n\"classname\" \"worldspawn\" // trailing\n/* block */ key value\n}".to_string(),
+                nodes: Vec::new(),
+                leaves: vec![ResourceBspLeaf { cluster: 0 }],
+                planes: Vec::new(),
+            },
+            pvs: vec![1],
+        };
+        let mut resources =
+            Q3RendererResources::with_world(TestResourceHost::new(), Some(world), ResourceHandleOwner::Renderer);
+        resources.load_world("maps/test.bsp").unwrap();
+        let mut tokens = Vec::new();
+        loop {
+            let mut token = String::new();
+            let more = resources
+                .get_entity_token(&mut |text: &str| token = text.to_string())
+                .unwrap();
+            tokens.push(token);
+            if !more {
+                break;
+            }
+        }
+        assert_eq!(tokens, vec!["{", "classname", "worldspawn", "key", "value", "}", ""]);
+        let mut restart = String::new();
+        assert!(resources
+            .get_entity_token(&mut |text: &str| restart = text.to_string())
+            .unwrap());
+        assert_eq!(restart, "{");
+    }
+
+    #[test]
+    fn resource_entity_cursor_rejects_non_latin1() {
+        assert!(EntityParseCursor::new("héllo \u{0100}").is_err());
+        assert!(EntityParseCursor::new("plain").is_ok());
+    }
+
+    #[test]
+    fn resource_pvs_reports_visibility() {
+        let visible = TestWorld::flat(0, true);
+        let resources =
+            Q3RendererResources::with_world(TestResourceHost::new(), Some(visible), ResourceHandleOwner::Renderer);
+        let mut resources = resources;
+        resources.load_world("maps/test.bsp").unwrap();
+        let mut zero = || vec3(0.0, 0.0, 0.0);
+        let mut zero_b = || vec3(0.0, 0.0, 0.0);
+        assert!(resources.in_pvs(&mut zero, &mut zero_b).unwrap());
+
+        let hidden = TestWorld::flat(0, false);
+        let mut resources =
+            Q3RendererResources::with_world(TestResourceHost::new(), Some(hidden), ResourceHandleOwner::Renderer);
+        resources.load_world("maps/test.bsp").unwrap();
+        assert!(!resources.in_pvs(&mut zero, &mut zero_b).unwrap());
+    }
+
+    #[test]
+    fn resource_point_cluster_walks_nodes() {
+        let world = TestWorld {
+            map: ResourceWorldMap {
+                entities: String::new(),
+                nodes: vec![
+                    ResourceBspNode {
+                        plane: 0,
+                        children: [ResourceBspChild::Leaf { index: 0 }, ResourceBspChild::Node { index: 1 }],
+                    },
+                    ResourceBspNode {
+                        plane: 0,
+                        children: [ResourceBspChild::Leaf { index: 1 }, ResourceBspChild::Leaf { index: 1 }],
+                    },
+                ],
+                leaves: vec![ResourceBspLeaf { cluster: 7 }, ResourceBspLeaf { cluster: 3 }],
+                planes: vec![Plane {
+                    normal: vec3(0.0, 0.0, 1.0),
+                    distance: 0.0,
+                }],
+            },
+            pvs: vec![0x80],
+        };
+        let mut resources =
+            Q3RendererResources::with_world(TestResourceHost::new(), Some(world), ResourceHandleOwner::Renderer);
+        resources.load_world("maps/test.bsp").unwrap();
+        let mut front = || vec3(0.0, 0.0, 5.0);
+        let mut front_b = || vec3(0.0, 0.0, 5.0);
+        let mut back = || vec3(0.0, 0.0, -5.0);
+        assert!(resources.in_pvs(&mut front, &mut front_b).unwrap());
+        assert!(!resources.in_pvs(&mut front, &mut back).unwrap());
+    }
+
+    #[test]
+    fn resource_point_cluster_validates_world() {
+        let resources = Q3RendererResources::new(TestResourceHost::new());
+        let resources: Q3RendererResources<TestResourceHost, TestWorld> = resources;
+        let mut zero = || vec3(0.0, 0.0, 0.0);
+        let mut zero_b = || vec3(0.0, 0.0, 0.0);
+        assert!(matches!(
+            resources.in_pvs(&mut zero, &mut zero_b),
+            Err(PresentClientError::Drop(_))
+        ));
+        let world = TestWorld {
+            map: ResourceWorldMap {
+                entities: String::new(),
+                nodes: vec![ResourceBspNode {
+                    plane: 9,
+                    children: [ResourceBspChild::Leaf { index: 0 }, ResourceBspChild::Leaf { index: 0 }],
+                }],
+                leaves: vec![ResourceBspLeaf { cluster: 0 }],
+                planes: Vec::new(),
+            },
+            pvs: vec![1],
+        };
+        let mut resources =
+            Q3RendererResources::with_world(TestResourceHost::new(), Some(world), ResourceHandleOwner::Renderer);
+        resources.load_world("maps/test.bsp").unwrap();
+        assert!(matches!(
+            resources.in_pvs(&mut zero, &mut zero_b),
+            Err(PresentClientError::Range(_))
+        ));
+    }
+
+    // ---------- client-info tests ----------
 }

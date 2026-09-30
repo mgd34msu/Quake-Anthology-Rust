@@ -111,16 +111,20 @@ impl ClientDrawIcons {
             if client.head_model.is_default() {
                 return;
             }
-            let bounds = self
-                .tools
-                .media
-                .borrow()
-                .resources
-                .borrow()
-                .model_bounds(&client.head_model);
+            // Canonical client assets resolve to renderer views through the
+            // shared resource host's handle table.
+            let resources = self.tools.media.borrow().resources.clone();
+            let model = client
+                .head_model
+                .resource_id()
+                .map(|id| resources.borrow().model_for_handle(id))
+                .unwrap_or_default();
+            let bounds = resources.borrow().model_bounds(&model);
             let origin = add3(icon_origin(&bounds, 0.7), client.head_offset);
-            let model = client.head_model.clone();
-            let skin = client.head_skin.clone();
+            let skin = client
+                .head_skin
+                .clone()
+                .and_then(|skin| resources.borrow().skin_for_handle(skin.id));
             let deferred = client.deferred;
             drop(client);
             self.draw_3d_model(rect, &model, skin, origin, head_angles);
@@ -130,7 +134,15 @@ impl ClientDrawIcons {
             }
         } else {
             if settings.draw_icons {
-                let icon = client.model_icon.clone();
+                let icon = client.model_icon.clone().and_then(|shader| {
+                    self.tools
+                        .media
+                        .borrow()
+                        .resources
+                        .clone()
+                        .borrow()
+                        .shader_for_handle(shader.id)
+                });
                 drop(client);
                 self.tools.draw_pic(rect, &icon);
                 let deferred = static_state.borrow().client_info[client_num as usize].borrow().deferred;

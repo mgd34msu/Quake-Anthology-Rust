@@ -10,6 +10,7 @@ use qa_core::numeric::qvm_float_to_int;
 use std::collections::HashSet;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::world::TraceContact;
 use crate::q3::presentation::effects::*;
 use crate::q3::presentation::entities::*;
 use crate::q3::presentation::local_entities::*;
