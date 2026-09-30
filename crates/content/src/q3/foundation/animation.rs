@@ -6,11 +6,34 @@ use qa_core::numeric::qvm_float_to_int;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation_config::*;
-use crate::q3::foundation::mirrors::*;
+use thiserror::Error;
 
 // ---------------------------------------------------------------------------
 // animation.ts: CG_SetLerpFrameAnimation, CG_RunLerpFrame, CG_ClearLerpFrame.
 // ---------------------------------------------------------------------------
+
+/// Lerp-frame failure (donor `CommonError("drop")`, `RangeError`, and
+/// `Error` throws).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum AnimationError {
+    /// Dropped animation selection (donor `CommonError` with `"drop"`).
+    #[error("drop: {0}")]
+    Drop(String),
+    /// Out-of-range value (donor `RangeError`).
+    #[error("{0}")]
+    Range(String),
+    /// Operation failure (donor `Error`).
+    #[error("{0}")]
+    Failed(String),
+}
+
+fn range(message: impl Into<String>) -> AnimationError {
+    AnimationError::Range(message.into())
+}
+
+fn failed(message: impl Into<String>) -> AnimationError {
+    AnimationError::Failed(message.into())
+}
 
 /// Animation toggle bit.
 pub const ANIMATION_TOGGLE_BIT: i32 = 128;
@@ -66,9 +89,9 @@ pub struct RunLerpFrameInput {
     pub no_player_animations: bool,
 }
 
-pub(crate) fn animation_at(config: &PlayerAnimationConfig, index: i32) -> Result<Animation, Q3FoundationError> {
+pub(crate) fn animation_at(config: &PlayerAnimationConfig, index: i32) -> Result<Animation, AnimationError> {
     if index < 0 || index as usize >= MAX_TOTAL_ANIMATIONS {
-        return Err(Q3FoundationError::Drop(format!("Bad animation number: {index}")));
+        return Err(AnimationError::Drop(format!("Bad animation number: {index}")));
     }
     config.animations[index as usize].ok_or_else(|| range(format!("animation slot {index} is not playable")))
 }
@@ -79,7 +102,7 @@ pub fn set_lerp_frame_animation(
     state: &mut LerpFrame,
     new_animation: i32,
     print: Option<&mut (dyn FnMut(&str) + '_)>,
-) -> Result<(), Q3FoundationError> {
+) -> Result<(), AnimationError> {
     state.animation_number = new_animation;
     let animation = animation_at(config, new_animation & !ANIMATION_TOGGLE_BIT)?;
     state.current_animation = Some(animation);
@@ -90,7 +113,7 @@ pub fn set_lerp_frame_animation(
     Ok(())
 }
 
-pub(crate) fn current_animation(state: &LerpFrame) -> Result<Animation, Q3FoundationError> {
+pub(crate) fn current_animation(state: &LerpFrame) -> Result<Animation, AnimationError> {
     state
         .current_animation
         .ok_or_else(|| failed("lerp frame has no current animation"))
@@ -102,7 +125,7 @@ pub fn run_lerp_frame(
     state: &mut LerpFrame,
     input: &RunLerpFrameInput,
     mut print: Option<&mut (dyn FnMut(&str) + '_)>,
-) -> Result<(), Q3FoundationError> {
+) -> Result<(), AnimationError> {
     if input.no_player_animations {
         state.old_frame = 0;
         state.frame = 0;
@@ -200,7 +223,7 @@ pub fn clear_lerp_frame(
     animation: i32,
     time_ms: i32,
     print: Option<&mut (dyn FnMut(&str) + '_)>,
-) -> Result<(), Q3FoundationError> {
+) -> Result<(), AnimationError> {
     state.frame_time = time_ms;
     state.old_frame_time = time_ms;
     set_lerp_frame_animation(config, state, animation, print)?;
@@ -208,4 +231,144 @@ pub fn clear_lerp_frame(
     state.old_frame = selected.first_frame;
     state.frame = selected.first_frame;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn animation_fixture() -> String {
+        let mut text = String::from("sex f\nfootsteps boot\nheadoffset 1 2 3\nfixedlegs\nfixedtorso\n");
+        for frame in 0..31 {
+            text.push_str(&format!("{frame} 6 0 10\n"));
+        }
+        text
+    }
+
+    #[test]
+    fn lerp_frame_selects_advances_and_resets() {
+        let config = parse_player_animation_config(&animation_fixture(), "<t>").unwrap();
+        let mut state = create_lerp_frame();
+        set_lerp_frame_animation(&config, &mut state, 129, None).unwrap();
+        assert_eq!(state.animation_number, 129);
+        assert_eq!(
+            state.current_animation.unwrap().first_frame,
+            config.animations[1].as_ref().unwrap().first_frame
+        );
+        assert!(set_lerp_frame_animation(&config, &mut state, 99, None).is_err());
+        assert!(set_lerp_frame_animation(&config, &mut state, 31, None).is_err());
+
+        run_lerp_frame(
+            &config,
+            &mut state,
+            &RunLerpFrameInput {
+                time_ms: 500,
+                new_animation: 129,
+                speed_scale: 1.0,
+                no_player_animations: false,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(state.frame >= state.old_frame);
+        assert!((0.0..=1.0).contains(&state.back_lerp));
+
+        run_lerp_frame(
+            &config,
+            &mut state,
+            &RunLerpFrameInput {
+                time_ms: 600,
+                new_animation: 129,
+                speed_scale: 1.0,
+                no_player_animations: true,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!((state.frame, state.back_lerp), (0, 0.0));
+
+        assert!(run_lerp_frame(
+            &config,
+            &mut state,
+            &RunLerpFrameInput {
+                time_ms: 600,
+                new_animation: 129,
+                speed_scale: f32::NAN,
+                no_player_animations: false,
+            },
+            None,
+        )
+        .is_err());
+
+        clear_lerp_frame(&config, &mut state, 0, 700, None).unwrap();
+        assert_eq!(state.frame, 0);
+        assert_eq!(state.frame_time, 700);
+    }
+
+    #[test]
+    fn lerp_frame_loops_and_reverses() {
+        let mut config = parse_player_animation_config(&animation_fixture(), "<t>").unwrap();
+        config.animations[0] = Some(Animation {
+            first_frame: 10,
+            num_frames: 4,
+            loop_frames: 2,
+            frame_lerp: 100,
+            initial_lerp: 100,
+            reversed: false,
+            flipflop: false,
+        });
+        let mut state = create_lerp_frame();
+        for time in [0, 100, 200, 300, 400, 500, 600] {
+            run_lerp_frame(
+                &config,
+                &mut state,
+                &RunLerpFrameInput {
+                    time_ms: time,
+                    new_animation: 0,
+                    speed_scale: 1.0,
+                    no_player_animations: false,
+                },
+                None,
+            )
+            .unwrap();
+        }
+        assert!((10..14).contains(&state.frame));
+
+        config.animations[1] = Some(Animation {
+            first_frame: 20,
+            num_frames: 4,
+            loop_frames: 0,
+            frame_lerp: 100,
+            initial_lerp: 100,
+            reversed: true,
+            flipflop: false,
+        });
+        let mut state = create_lerp_frame();
+        run_lerp_frame(
+            &config,
+            &mut state,
+            &RunLerpFrameInput {
+                time_ms: 0,
+                new_animation: 1,
+                speed_scale: 1.0,
+                no_player_animations: false,
+            },
+            None,
+        )
+        .unwrap();
+        let first = state.frame;
+        run_lerp_frame(
+            &config,
+            &mut state,
+            &RunLerpFrameInput {
+                time_ms: 100,
+                new_animation: 1,
+                speed_scale: 1.0,
+                no_player_animations: false,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(state.frame <= first);
+    }
 }

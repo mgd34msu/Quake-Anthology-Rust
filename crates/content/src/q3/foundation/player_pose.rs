@@ -2,16 +2,33 @@
 //!
 //! Donor provenance: `src/content/q3/foundation/player-pose.ts`.
 
-use qa_core::math::{dot3, length3, normalize3, vec3, Axis, Vec3};
+use qa_core::math::{dot3, length3, normalize3, sub3, vec3, Axis, Vec3};
 use qa_core::numeric::qvm_float_to_int;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation::*;
-use crate::q3::foundation::mirrors::*;
+use qa_world::movement::q3::constants::player_animation;
+use thiserror::Error;
 
 // ---------------------------------------------------------------------------
 // player-pose.ts: CG_SwingAngles, CG_PlayerAngles, CG_AddPainTwitch.
 // ---------------------------------------------------------------------------
+
+/// Player pose failure (donor `RangeError` and `CommonError("drop")`
+/// throws).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PlayerPoseError {
+    /// Out-of-range value (donor `RangeError`).
+    #[error("{0}")]
+    Range(String),
+    /// Dropped movement angle (donor `CommonError` with `"drop"`).
+    #[error("drop: {0}")]
+    Drop(String),
+}
+
+fn range(message: impl Into<String>) -> PlayerPoseError {
+    PlayerPoseError::Range(message.into())
+}
 
 pub(crate) const PAIN_TWITCH_TIME: i32 = 200;
 
@@ -164,7 +181,7 @@ pub(crate) fn angle_subtract(first: f32, second: f32) -> f32 {
 }
 
 /// Swing one angle toward its destination (`swingAngles`).
-pub fn swing_angles(input: &SwingAnglesInput) -> Result<SwingAnglesResult, Q3FoundationError> {
+pub fn swing_angles(input: &SwingAnglesInput) -> Result<SwingAnglesResult, PlayerPoseError> {
     if !input.destination.is_finite() {
         return Err(range("swing destination must be a finite float32 value"));
     }
@@ -258,13 +275,13 @@ pub(crate) fn subtract_angles(first: Vec3, second: Vec3) -> Vec3 {
     )
 }
 
-pub(crate) fn movement_offset(entity: &PoseEntityState) -> Result<f32, Q3FoundationError> {
+pub(crate) fn movement_offset(entity: &PoseEntityState) -> Result<f32, PlayerPoseError> {
     if entity.e_flags & DEAD_ENTITY_FLAG != 0 {
         return Ok(0.0);
     }
     let direction = qvm_float_to_int(entity.movement_direction);
     if direction < 0 || direction as usize >= MOVEMENT_OFFSETS.len() {
-        return Err(Q3FoundationError::Drop("Bad player movement angle".to_string()));
+        return Err(PlayerPoseError::Drop("Bad player movement angle".to_string()));
     }
     MOVEMENT_OFFSETS
         .get(direction as usize)
@@ -277,7 +294,7 @@ pub(crate) fn update_yaw(
     destination: f32,
     tolerance: f32,
     input: &CalculatePlayerPoseInput,
-) -> Result<f32, Q3FoundationError> {
+) -> Result<f32, PlayerPoseError> {
     let result = swing_angles(&SwingAnglesInput {
         destination,
         swing_tolerance: tolerance,
@@ -296,7 +313,7 @@ pub(crate) fn update_yaw(
 pub fn calculate_player_pose(
     state: &mut PlayerPoseState,
     input: &CalculatePlayerPoseInput,
-) -> Result<PlayerPose, Q3FoundationError> {
+) -> Result<PlayerPose, PlayerPoseError> {
     if input.frame_time_ms < 0 {
         return Err(range("frame time must be a non-negative int32 millisecond value"));
     }
@@ -311,8 +328,8 @@ pub fn calculate_player_pose(
         qvm_angle_mod(input.lerp_angles.y),
         input.lerp_angles.z,
     );
-    if input.entity.legs_anim & !ANIMATION_TOGGLE_BIT != Q3PlayerAnimation::LEGS_IDLE
-        || input.entity.torso_anim & !ANIMATION_TOGGLE_BIT != Q3PlayerAnimation::TORSO_STAND
+    if input.entity.legs_anim & !ANIMATION_TOGGLE_BIT != player_animation::LEGS_IDLE
+        || input.entity.torso_anim & !ANIMATION_TOGGLE_BIT != player_animation::TORSO_STAND
     {
         state.torso.yawing = true;
         state.torso.pitching = true;
@@ -377,4 +394,166 @@ pub fn calculate_player_pose(
         torso: qvm_angles_to_axis(torso_local),
         head: qvm_angles_to_axis(head_local),
     })
+}
+
+// ---------------------------------------------------------------------------
+// QVM math profile (`src/core/qvm-math.ts`).
+// ---------------------------------------------------------------------------
+
+pub(crate) const QVM_ANGLE_SCALE: f32 = (65536.0f64 / 360.0) as f32;
+
+pub(crate) const QVM_ANGLE_UNSCALE: f32 = (360.0f64 / 65536.0) as f32;
+
+pub(crate) const QVM_ANGLE_RADIANS: f32 = (std::f64::consts::PI * 2.0 / 360.0) as f32;
+
+/// QVM `AngleMod` (`qvmAngleMod`).
+#[must_use]
+pub fn qvm_angle_mod(angle: f32) -> f32 {
+    let scaled = angle * QVM_ANGLE_SCALE;
+    f64::from(qvm_float_to_int(scaled) & 65535) as f32 * QVM_ANGLE_UNSCALE
+}
+
+/// Forward/right/up vectors (`AngleVectors`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QvmAngleVectors {
+    /// Forward direction.
+    pub forward: Vec3,
+    /// Right direction.
+    pub right: Vec3,
+    /// Up direction.
+    pub up: Vec3,
+}
+
+/// QVM angle vectors (`qvmAngleVectors`).
+#[must_use]
+pub fn qvm_angle_vectors(angles: Vec3) -> QvmAngleVectors {
+    let yaw = angles.y * QVM_ANGLE_RADIANS;
+    let pitch = angles.x * QVM_ANGLE_RADIANS;
+    let roll = angles.z * QVM_ANGLE_RADIANS;
+    let sy = f64::from(yaw).sin() as f32;
+    let cy = f64::from(yaw).cos() as f32;
+    let sp = f64::from(pitch).sin() as f32;
+    let cp = f64::from(pitch).cos() as f32;
+    let sr = f64::from(roll).sin() as f32;
+    let cr = f64::from(roll).cos() as f32;
+    QvmAngleVectors {
+        forward: vec3(cp * cy, cp * sy, -sp),
+        right: vec3((-sr * sp) * cy + -cr * -sy, (-sr * sp) * sy + -cr * cy, -sr * cp),
+        up: vec3((cr * sp) * cy + -sr * -sy, (cr * sp) * sy + -sr * cy, cr * cp),
+    }
+}
+
+/// QVM angles-to-axis (`qvmAnglesToAxis`).
+#[must_use]
+pub fn qvm_angles_to_axis(angles: Vec3) -> Axis {
+    let vectors = qvm_angle_vectors(angles);
+    [vectors.forward, sub3(vec3(0.0, 0.0, 0.0), vectors.right), vectors.up]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swing_angles_pain_twitch_and_pose() {
+        let held = swing_angles(&SwingAnglesInput {
+            destination: 10.0,
+            swing_tolerance: 30.0,
+            clamp_tolerance: 90.0,
+            speed: 0.1,
+            frame_time_ms: 16,
+            angle: 0.0,
+            swinging: false,
+        })
+        .unwrap();
+        assert!(!held.swinging);
+        assert_eq!(held.angle, 0.0);
+
+        let moving = swing_angles(&SwingAnglesInput {
+            destination: 100.0,
+            swing_tolerance: 10.0,
+            clamp_tolerance: 90.0,
+            speed: 0.5,
+            frame_time_ms: 10,
+            angle: 0.0,
+            swinging: false,
+        })
+        .unwrap();
+        assert!(moving.swinging);
+        assert!(moving.angle > 0.0);
+
+        assert!(swing_angles(&SwingAnglesInput {
+            destination: 0.0,
+            swing_tolerance: 10.0,
+            clamp_tolerance: 0.5,
+            speed: 0.1,
+            frame_time_ms: 16,
+            angle: 0.0,
+            swinging: false,
+        })
+        .is_err());
+
+        let twitch = add_pain_twitch(
+            vec3(1.0, 2.0, 3.0),
+            &PainTwitchInput {
+                time_ms: 100,
+                pain_time: 0,
+                pain_direction: true,
+            },
+        );
+        assert!(twitch.z > 3.0);
+        let settled = add_pain_twitch(
+            vec3(1.0, 2.0, 3.0),
+            &PainTwitchInput {
+                time_ms: 500,
+                pain_time: 0,
+                pain_direction: true,
+            },
+        );
+        assert_eq!(settled.z, 3.0);
+
+        let mut pose = create_player_pose_state();
+        let result = calculate_player_pose(
+            &mut pose,
+            &CalculatePlayerPoseInput {
+                entity: PoseEntityState {
+                    e_flags: 0,
+                    velocity: vec3(100.0, 0.0, 0.0),
+                    movement_direction: 1.0,
+                    legs_anim: player_animation::LEGS_IDLE,
+                    torso_anim: player_animation::TORSO_STAND,
+                },
+                fixed_legs: false,
+                fixed_torso: false,
+                lerp_angles: vec3(0.0, 90.0, 0.0),
+                time_ms: 1000,
+                frame_time_ms: 16,
+                swing_speed: 0.2,
+            },
+        )
+        .unwrap();
+        assert!(pose.legs.yawing);
+        assert_eq!(result.legs.len(), 3);
+
+        let mut pose = create_player_pose_state();
+        assert!(calculate_player_pose(
+            &mut pose,
+            &CalculatePlayerPoseInput {
+                entity: PoseEntityState {
+                    e_flags: 0,
+                    velocity: vec3(0.0, 0.0, 0.0),
+                    movement_direction: 9.0,
+                    legs_anim: 0,
+                    torso_anim: 0,
+                },
+                fixed_legs: false,
+                fixed_torso: false,
+                lerp_angles: vec3(0.0, 0.0, 0.0),
+                time_ms: 0,
+                frame_time_ms: 16,
+                swing_speed: 0.2,
+            },
+        )
+        .is_err());
+    }
 }

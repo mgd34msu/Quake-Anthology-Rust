@@ -9,17 +9,45 @@ use crate::q3scene::{joint_attachment_tag, SceneMd3};
 use qa_core::identity::ActorId;
 use qa_core::math::{add3, scale3, sub3, vec3, Axis, Vec3, Vec4};
 use qa_core::time::SourceTime;
+use qa_world::movement::q3::constants::{player_animation, powerup};
+use qa_world::movement::types::AnimationState;
 use std::rc::Rc;
+use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation::*;
 use crate::q3::foundation::assets::*;
-use crate::q3::foundation::mirrors::*;
 use crate::q3::foundation::player_pose::*;
 
 // ---------------------------------------------------------------------------
 // presentation.ts: CG_Player, CG_PlayerAnimation, powerup passes.
 // ---------------------------------------------------------------------------
+
+/// Character presentation failure (donor `RangeError` and `TypeError`
+/// throws plus wrapped lerp-frame and pose failures).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PresentationError {
+    /// Out-of-range value (donor `RangeError`).
+    #[error("{0}")]
+    Range(String),
+    /// Wrong provider or state kind (donor `TypeError`).
+    #[error("{0}")]
+    Type(String),
+    /// Wrapped lerp-frame failure.
+    #[error(transparent)]
+    Animation(#[from] AnimationError),
+    /// Wrapped pose failure.
+    #[error(transparent)]
+    PlayerPose(#[from] PlayerPoseError),
+}
+
+fn range(message: impl Into<String>) -> PresentationError {
+    PresentationError::Range(message.into())
+}
+
+fn type_error(message: impl Into<String>) -> PresentationError {
+    PresentationError::Type(message.into())
+}
 
 /// Presented model (the `q3-md3` and `md5` arms of `DecodedModel` the
 /// attachment lookup supports).
@@ -144,7 +172,7 @@ pub(crate) fn compose_model_transform(parent: &ModelTransform, child: &ModelTran
 }
 
 /// Resolve a named attachment tag (`modelAttachmentTag`).
-pub fn model_attachment_tag(entity: &Q3SceneEntity, name: &str) -> Result<Option<Q3AttachmentTag>, Q3FoundationError> {
+pub fn model_attachment_tag(entity: &Q3SceneEntity, name: &str) -> Result<Option<Q3AttachmentTag>, PresentationError> {
     match &entity.model {
         Q3PresentedModel::Md3(scene) => {
             let Q3ModelPose::Frame {
@@ -265,7 +293,7 @@ pub struct Q3CharacterView {
     /// Movement direction.
     pub movement_direction: f32,
     /// Animation.
-    pub animation: Q3AnimationState,
+    pub animation: AnimationState,
     /// Source flags.
     pub source_flags: i32,
     /// Powerups bitmask.
@@ -391,21 +419,12 @@ impl Q3CharacterPresenter {
     }
 
     /// Reset to a view (`reset`).
-    pub fn reset(&mut self, view: &Q3CharacterView, time_ms: i32) -> Result<(), Q3FoundationError> {
-        clear_lerp_frame(
-            &self.assets.animation,
-            &mut self.pose.legs.lerp,
-            view.animation.legs,
-            time_ms,
-            None,
-        )?;
-        clear_lerp_frame(
-            &self.assets.animation,
-            &mut self.pose.torso.lerp,
-            view.animation.torso,
-            time_ms,
-            None,
-        )?;
+    pub fn reset(&mut self, view: &Q3CharacterView, time_ms: i32) -> Result<(), PresentationError> {
+        let AnimationState::Q3 { legs, torso, .. } = view.animation else {
+            return Err(type_error("Q3 character view requires Q3 animation"));
+        };
+        clear_lerp_frame(&self.assets.animation, &mut self.pose.legs.lerp, legs, time_ms, None)?;
+        clear_lerp_frame(&self.assets.animation, &mut self.pose.torso.lerp, torso, time_ms, None)?;
         self.pose.legs.lerp = create_lerp_frame();
         self.pose.legs.yaw_angle = view.angles.y;
         self.pose.legs.yawing = false;
@@ -424,10 +443,13 @@ impl Q3CharacterPresenter {
         &mut self,
         view: &Q3CharacterView,
         options: &Q3CharacterRenderOptions,
-    ) -> Result<Vec<Q3CharacterPass>, Q3FoundationError> {
+    ) -> Result<Vec<Q3CharacterPass>, PresentationError> {
         if view.source_flags & 0x80 != 0 {
             return Ok(Vec::new());
         }
+        let AnimationState::Q3 { legs, torso, .. } = view.animation else {
+            return Err(type_error("Q3 character view requires Q3 animation"));
+        };
         let axes = calculate_player_pose(
             &mut self.pose,
             &CalculatePlayerPoseInput {
@@ -435,8 +457,8 @@ impl Q3CharacterPresenter {
                     e_flags: view.source_flags,
                     velocity: view.velocity,
                     movement_direction: view.movement_direction,
-                    legs_anim: view.animation.legs,
-                    torso_anim: view.animation.torso,
+                    legs_anim: legs,
+                    torso_anim: torso,
                 },
                 fixed_legs: self.assets.animation.fixed_legs,
                 fixed_torso: self.assets.animation.fixed_torso,
@@ -446,17 +468,16 @@ impl Q3CharacterPresenter {
                 swing_speed: options.swing_speed,
             },
         )?;
-        let speed_scale = if view.powerups & (1 << Q3Powerup::HASTE) != 0 {
+        let speed_scale = if view.powerups & (1 << powerup::HASTE) != 0 {
             1.5
         } else {
             1.0
         };
-        let legs_animation =
-            if self.pose.legs.yawing && view.animation.legs & !ANIMATION_TOGGLE_BIT == Q3PlayerAnimation::LEGS_IDLE {
-                Q3PlayerAnimation::LEGS_TURN
-            } else {
-                view.animation.legs
-            };
+        let legs_animation = if self.pose.legs.yawing && legs & !ANIMATION_TOGGLE_BIT == player_animation::LEGS_IDLE {
+            player_animation::LEGS_TURN
+        } else {
+            legs
+        };
         run_lerp_frame(
             &self.assets.animation,
             &mut self.pose.legs.lerp,
@@ -473,7 +494,7 @@ impl Q3CharacterPresenter {
             &mut self.pose.torso.lerp,
             &RunLerpFrameInput {
                 time_ms: options.time_ms,
-                new_animation: view.animation.torso,
+                new_animation: torso,
                 speed_scale,
                 no_player_animations: options.no_player_animations,
             },
@@ -550,23 +571,23 @@ impl Q3CharacterPresenter {
             shader: shader.map(str::to_string),
             options: Q3PassOptions::Character,
         };
-        let mut passes = if view.powerups & (1 << Q3Powerup::INVIS) != 0 {
+        let mut passes = if view.powerups & (1 << powerup::INVIS) != 0 {
             vec![pass(Some("powerups/invisibility"))]
         } else {
             vec![pass(None)]
         };
-        if view.powerups & (1 << Q3Powerup::INVIS) == 0 {
-            if view.powerups & (1 << Q3Powerup::QUAD) != 0 {
+        if view.powerups & (1 << powerup::INVIS) == 0 {
+            if view.powerups & (1 << powerup::QUAD) != 0 {
                 passes.push(pass(Some(if view.team == Some(Q3Team::Red) {
                     "powerups/blueflag"
                 } else {
                     "powerups/quad"
                 })));
             }
-            if view.powerups & (1 << Q3Powerup::REGEN) != 0 && options.time_ms / 100 % 10 == 1 {
+            if view.powerups & (1 << powerup::REGEN) != 0 && options.time_ms / 100 % 10 == 1 {
                 passes.push(pass(Some("powerups/regen")));
             }
-            if view.powerups & (1 << Q3Powerup::BATTLESUIT) != 0 {
+            if view.powerups & (1 << powerup::BATTLESUIT) != 0 {
                 passes.push(pass(Some("powerups/battleSuit")));
             }
         }
@@ -591,4 +612,291 @@ impl Q3CharacterPresenter {
 #[must_use]
 pub fn q3_identity_axis() -> Axis {
     qvm_angles_to_axis(vec3(0.0, 0.0, 0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::contract::{
+        ContentDigest, ContentId, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId, ResourceProvenance,
+        ResourceResolution,
+    };
+    use crate::md3::Md3Model;
+    use crate::q3::foundation::animation_config::parse_player_animation_config;
+    use crate::q3::foundation::arsenal::q3_spawn_animation;
+    use crate::q3::foundation::character::Q3_CHARACTER_BOUNDS;
+    use crate::q3::foundation::held_weapons::Q3_WEAPON_HAND_GRIP;
+    use crate::q3scene::{SceneMd3Frame, SceneMd3Tag};
+    use qa_core::identity::{IdentityOwner, OwnedActor, ProviderId};
+
+    use super::*;
+
+    fn animation_fixture() -> String {
+        let mut text = String::from("sex f\nfootsteps boot\nheadoffset 1 2 3\nfixedlegs\nfixedtorso\n");
+        for frame in 0..31 {
+            text.push_str(&format!("{frame} 6 0 10\n"));
+        }
+        text
+    }
+
+    fn test_actor() -> (OwnedActor, ProviderId) {
+        let owner = IdentityOwner::create("test").unwrap();
+        let provider = ProviderId::new("q3", "test");
+        let owned = owner.owned_actor(&owner.actor(3, 1), provider.clone()).unwrap();
+        (owned, provider)
+    }
+
+    fn dummy_reference(path: &str, len: usize) -> ResolvedResourceReference {
+        ResolvedResourceReference {
+            id: ResourceId(format!("resource:test:{path}")),
+            requested_path: path.to_string(),
+            provenance: ResourceProvenance::Loose {
+                mount: LooseMount {
+                    identity: MountIdentity {
+                        id: MountId("mount:test:loose".to_string()),
+                        content: ContentId("q3:test:pkg:1".to_string()),
+                        generation: 0,
+                    },
+                    root_path: "/test".to_string(),
+                },
+                member_path: path.to_string(),
+            },
+            digest: ContentDigest("sha256:00".to_string()),
+            byte_length: len as u64,
+            resolution: ResourceResolution::DefaultOrder {
+                plan: MountPlanId("mount-plan:test:p".to_string()),
+                rank: 0,
+            },
+        }
+    }
+
+    fn empty_scene(name: &str) -> SceneMd3 {
+        SceneMd3 {
+            name: name.to_string(),
+            source_model: Md3Model {
+                name: name.to_string(),
+                flags: 0,
+                skin_count: 0,
+                frames: Vec::new(),
+                tags: Vec::new(),
+                surfaces: Vec::new(),
+            },
+            frames: Vec::new(),
+            tags: Vec::new(),
+            surfaces: Vec::new(),
+        }
+    }
+
+    fn dummy_part(name: &str, shader: &str) -> Q3CharacterPart {
+        Q3CharacterPart {
+            resource: dummy_reference(&format!("models/{name}.md3"), 8),
+            model: empty_scene(name),
+            skin_resource: dummy_reference(&format!("models/{name}.skin"), 8),
+            surfaces: vec![SkinSurface {
+                name: name.to_string(),
+                shader: shader.to_string(),
+            }],
+        }
+    }
+
+    fn dummy_assets() -> Q3CharacterAssets {
+        Q3CharacterAssets {
+            selection: Q3CharacterSelection {
+                model: "sarge".to_string(),
+                skin: "default".to_string(),
+                head_model: String::new(),
+                head_skin: "default".to_string(),
+                team: None,
+                team_name: String::new(),
+            },
+            lower: dummy_part("lower", "models/lower"),
+            upper: dummy_part("upper", "models/upper"),
+            head: dummy_part("head", "models/head"),
+            animation_resource: dummy_reference("models/animation.cfg", 8),
+            animation: parse_player_animation_config(&animation_fixture(), "<test>").unwrap(),
+            icon: None,
+        }
+    }
+
+    fn view_fixture() -> Q3CharacterView {
+        let (actor, _) = test_actor();
+        Q3CharacterView {
+            actor: actor.id().clone(),
+            origin: vec3(10.0, 20.0, 30.0),
+            angles: vec3(0.0, 45.0, 0.0),
+            velocity: vec3(0.0, 0.0, 0.0),
+            movement_direction: 0.0,
+            animation: q3_spawn_animation(),
+            source_flags: 0,
+            powerups: 0,
+            team: None,
+            color: Vec4 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+                w: 1.0,
+            },
+            scale: None,
+            opacity: None,
+        }
+    }
+
+    fn render_options() -> Q3CharacterRenderOptions {
+        Q3CharacterRenderOptions {
+            time_ms: 1000,
+            frame_ms: 16,
+            shader_time: SourceTime::Milliseconds(1000),
+            swing_speed: 0.2,
+            no_player_animations: false,
+            personal_model: false,
+            shadow_plane: None,
+            weapon: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn qvm_math_matches_source_profile() {
+        assert_eq!(qvm_angle_mod(0.0), 0.0);
+        assert_eq!(qvm_angle_mod(360.0), 0.0);
+        assert_eq!(qvm_angle_mod(720.0), 0.0);
+        assert!((qvm_angle_mod(-90.0) - 270.0).abs() < 0.01);
+        let axis = q3_identity_axis();
+        assert!((axis[0].x - 1.0).abs() < 1e-6);
+        assert!((axis[1].y - 1.0).abs() < 1e-6);
+        assert!((axis[2].z - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn presenter_resets_and_renders_passes() {
+        let assets = dummy_assets();
+        let mut presenter = Q3CharacterPresenter::new(assets);
+        let view = view_fixture();
+        presenter.reset(&view, 500).unwrap();
+        assert_eq!(presenter.pose.legs.yaw_angle, 45.0);
+        assert_eq!(presenter.pose.torso.pitch_angle, 0.0);
+
+        let passes = presenter.frame(&view, &render_options()).unwrap();
+        assert_eq!(passes.len(), 1);
+        assert!(passes[0].shader.is_none());
+        assert_eq!(passes[0].entity.attachments.len(), 1);
+        assert_eq!(passes[0].entity.transform.origin, view.origin);
+
+        let mut gibbed = view.clone();
+        gibbed.source_flags = 0x80;
+        assert!(presenter.frame(&gibbed, &render_options()).unwrap().is_empty());
+
+        let mut quad = view.clone();
+        quad.powerups = 1 << powerup::QUAD;
+        quad.team = Some(Q3Team::Red);
+        let passes = presenter.frame(&quad, &render_options()).unwrap();
+        assert_eq!(passes.len(), 2);
+        assert_eq!(passes[1].shader.as_deref(), Some("powerups/blueflag"));
+
+        let mut invis = view.clone();
+        invis.powerups = (1 << powerup::INVIS) | (1 << powerup::QUAD);
+        let passes = presenter.frame(&invis, &render_options()).unwrap();
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].shader.as_deref(), Some("powerups/invisibility"));
+
+        let mut regen = view.clone();
+        regen.powerups = 1 << powerup::REGEN;
+        let options = Q3CharacterRenderOptions {
+            time_ms: 100,
+            ..render_options()
+        };
+        let passes = presenter.frame(&regen, &options).unwrap();
+        assert_eq!(passes.len(), 2);
+
+        let resolved = passes[0].options(&presenter.assets, &passes[0].entity);
+        assert_eq!(resolved.custom_skin.as_ref().unwrap()[0].shader, "models/lower");
+        let mut foreign = passes[0].entity.clone();
+        foreign.resource = dummy_reference("other.md3", 4);
+        let resolved = passes[0].options(&presenter.assets, &foreign);
+        assert!(resolved.custom_skin.is_none());
+    }
+
+    #[test]
+    fn attachment_tags_resolve_md3_and_md5() {
+        let tag = SceneMd3Tag {
+            name: "tag_torso".to_string(),
+            origin: vec3(1.0, 2.0, 3.0),
+            axis: q3_identity_axis(),
+        };
+        let mut scene = empty_scene("lower");
+        scene.frames = vec![SceneMd3Frame {
+            name: "f0".to_string(),
+            bounds: Q3_CHARACTER_BOUNDS,
+            local_origin: vec3(0.0, 0.0, 0.0),
+            radius: 1.0,
+        }];
+        scene.tags = vec![vec![tag]];
+        let entity = Q3SceneEntity {
+            actor: None,
+            resource: dummy_reference("lower.md3", 8),
+            model: Q3PresentedModel::Md3(scene),
+            opacity: 1.0,
+            transform: Q3_WEAPON_HAND_GRIP,
+            previous_origin: vec3(0.0, 0.0, 0.0),
+            pose: Q3ModelPose::Frame {
+                frame: 0,
+                previous_frame: 0,
+                back_lerp: 0.0,
+            },
+            skin: 0,
+            color: Vec4 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+                w: 1.0,
+            },
+            shader_time: SourceTime::Milliseconds(0),
+            flags: 0,
+            lighting_origin: vec3(0.0, 0.0, 0.0),
+            shadow_plane: 0.0,
+            attachments: Vec::new(),
+        };
+        let resolved = model_attachment_tag(&entity, "tag_torso").unwrap().unwrap();
+        assert_eq!(resolved.origin, vec3(1.0, 2.0, 3.0));
+        assert_eq!(resolved.scale, 1.0);
+        assert!(model_attachment_tag(&entity, "tag_missing").unwrap().is_none());
+
+        let joint = SkeletonJointPose {
+            position: vec3(4.0, 5.0, 6.0),
+            orientation: Vec4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+            scale: 2.0,
+        };
+        let md5 = Q3SceneEntity {
+            model: Q3PresentedModel::Md5 {
+                joints: vec![crate::md5::Md5Joint {
+                    name: "tag_weapon".to_string(),
+                    parent: -1,
+                    scale_positions: false,
+                }],
+                frames: Vec::new(),
+            },
+            pose: Q3ModelPose::Skeleton { joints: vec![joint] },
+            ..entity.clone()
+        };
+        let resolved = model_attachment_tag(&md5, "tag_weapon").unwrap().unwrap();
+        assert_eq!(resolved.origin, vec3(4.0, 5.0, 6.0));
+        assert_eq!(resolved.scale, 2.0);
+        assert!(model_attachment_tag(&md5, "nope").unwrap().is_none());
+
+        let broken = Q3SceneEntity {
+            pose: Q3ModelPose::Frame {
+                frame: -1,
+                previous_frame: 0,
+                back_lerp: 0.0,
+            },
+            ..md5.clone()
+        };
+        assert!(model_attachment_tag(&broken, "tag_weapon").is_err());
+
+        let attached = attach_scene_entity(&entity, &entity, &resolved);
+        assert_eq!(attached.lighting_origin, entity.lighting_origin);
+    }
 }
