@@ -3722,7 +3722,7 @@ pub struct QvmModActorField {
     /// Field offset.
     pub offset: u32,
     /// Access mode.
-    pub access: QvmModFieldAccess,
+    pub access: Option<QvmModFieldAccess>,
     /// Field binding.
     pub binding: QvmModActorFieldBinding,
 }
@@ -5372,8 +5372,8 @@ pub enum NativeModActorField {
 pub struct NativeModSharedActorField {
     /// Field offset.
     pub offset: u64,
-    /// Access mode.
-    pub access: QvmModFieldAccess,
+    /// Access mode (the native reader leaves this unset).
+    pub access: Option<QvmModFieldAccess>,
     /// Field binding.
     pub binding: NativeModSharedActorBinding,
 }

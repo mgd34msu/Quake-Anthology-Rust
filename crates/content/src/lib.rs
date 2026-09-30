@@ -29,6 +29,7 @@ pub mod md5;
 pub mod mdl;
 pub mod model_attachment;
 pub mod model_text;
+pub mod mods;
 pub mod monsters;
 pub mod mounts;
 pub mod normals;
