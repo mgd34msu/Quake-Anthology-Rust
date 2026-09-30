@@ -2029,7 +2029,7 @@ mod tests {
         assert!(error_text(bad).contains("differs from its QVM executable"));
         let bad = try_build(&fixture, |profile, _| profile.fields.inuse = 2, None);
         assert!(error_text(bad).contains("outside its entity record"));
-        let bad = try_build(&fixture, |profile, _| profile.fields.flags = 256, None);
+        let bad = try_build(&fixture, |profile, _| profile.fields.flags = 516, None);
         assert!(error_text(bad).contains("outside its entity record"));
         let bad = try_build(&fixture, |profile, _| profile.touch = 3, None);
         assert!(error_text(bad).contains("source function entry"));

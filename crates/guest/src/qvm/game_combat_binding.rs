@@ -1498,19 +1498,20 @@ impl QvmCombatBindings {
                 owned && freed
             };
             if release {
-                if let Some(source) = self.inner.borrow().options.source.clone() {
+                let source = self.inner.borrow().options.source.clone();
+                if let Some(source) = source {
                     source.actors.release(&actor);
                 }
             }
         }
-        if let Some(after_free) = self
+        let after_free = self
             .inner
             .borrow()
             .options
             .source
             .clone()
-            .and_then(|source| source.after_free)
-        {
+            .and_then(|source| source.after_free);
+        if let Some(after_free) = after_free {
             after_free(pointer, call);
         }
         result

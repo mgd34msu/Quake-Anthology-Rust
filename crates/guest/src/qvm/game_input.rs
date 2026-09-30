@@ -1322,11 +1322,13 @@ mod tests {
             encode_aim: &mut dyn FnMut(&Vec3, &Q3UserCommand) -> Result<Q3UserCommand, GuestError>,
         ) -> Result<Option<QvmClientApplication>, GuestError> {
             self.begun.borrow_mut().push(input.clone());
-            if let Some(hook) = self.on_begin.borrow_mut().take() {
+            let hook = self.on_begin.borrow_mut().take();
+            if let Some(hook) = hook {
                 hook(input);
             }
             let mut command = input.command;
-            if let Some(aim) = self.remap_aim.borrow_mut().take() {
+            let aim = self.remap_aim.borrow_mut().take();
+            if let Some(aim) = aim {
                 command = encode_aim(&aim, &command)?;
             }
             if !self.active.get() || self.dead.borrow().contains(&input.identity.actor) {
