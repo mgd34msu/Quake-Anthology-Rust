@@ -158,6 +158,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qa-tools"
+version = "0.1.0"
+dependencies = [
+ "qa-bots",
+ "qa-content",
+ "thiserror",
+]
+
+[[package]]
 name = "qa-world"
 version = "0.1.0"
 dependencies = [
