@@ -37,6 +37,7 @@ pub mod normals;
 pub mod paths;
 pub mod q3_base;
 pub mod q3_foundation;
+pub mod q3_game_state;
 pub mod q3_present_hud;
 pub mod q3_present_scene;
 pub mod q3_supply;
