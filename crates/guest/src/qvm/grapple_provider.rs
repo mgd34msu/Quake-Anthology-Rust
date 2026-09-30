@@ -499,7 +499,7 @@ mod tests {
 
     const ENTITIES: usize = 4096;
     const CLIENTS: usize = 8192;
-    const STRIDE: usize = 516;
+    const STRIDE: usize = 1024;
     const SCRATCH: usize = 32768;
 
     struct FixtureBridge {
@@ -596,16 +596,16 @@ mod tests {
             (
                 "fields",
                 ProfileValue::record(vec![
-                    ("inuse", ProfileValue::Int(208)),
-                    ("client", ProfileValue::Int(212)),
-                    ("parent", ProfileValue::Int(216)),
-                    ("target", ProfileValue::Int(220)),
+                    ("inuse", ProfileValue::Int(516)),
+                    ("client", ProfileValue::Int(520)),
+                    ("parent", ProfileValue::Int(524)),
+                    ("target", ProfileValue::Int(528)),
                     ("mover", ProfileValue::Null),
                     ("hook", ProfileValue::Int(468)),
-                    ("health", ProfileValue::Int(224)),
-                    ("takedamage", ProfileValue::Int(228)),
-                    ("eventTime", ProfileValue::Int(232)),
-                    ("freeAfterEvent", ProfileValue::Int(236)),
+                    ("health", ProfileValue::Int(532)),
+                    ("takedamage", ProfileValue::Int(536)),
+                    ("eventTime", ProfileValue::Int(540)),
+                    ("freeAfterEvent", ProfileValue::Int(544)),
                 ]),
             ),
             (
@@ -708,13 +708,13 @@ mod tests {
         let module = QvmModule::new(artifact.clone(), None, None).unwrap();
         let data = QvmGameData::new(module.memory(), AbiProfile::Modern);
         data.locate(ENTITIES as i32, 4, STRIDE, CLIENTS as i32, STRIDE).unwrap();
-        module.memory().write_i32(ENTITIES + 208, 1).unwrap();
-        module.memory().write_i32(ENTITIES + 212, CLIENTS as i32).unwrap();
-        module.memory().write_i32(ENTITIES + 224, 100).unwrap();
-        module.memory().write_i32(ENTITIES + STRIDE + 208, 1).unwrap();
+        module.memory().write_i32(ENTITIES + 516, 1).unwrap();
+        module.memory().write_i32(ENTITIES + 520, CLIENTS as i32).unwrap();
+        module.memory().write_i32(ENTITIES + 532, 100).unwrap();
+        module.memory().write_i32(ENTITIES + STRIDE + 516, 1).unwrap();
         module
             .memory()
-            .write_i32(ENTITIES + STRIDE + 216, ENTITIES as i32)
+            .write_i32(ENTITIES + STRIDE + 524, ENTITIES as i32)
             .unwrap();
         let profile = read_qvm_grapple_profile(&ProfileReader::new(&profile_value()), &artifact).unwrap();
         let bridge = Rc::new(FixtureBridge {
@@ -794,7 +794,7 @@ mod tests {
         let calls = fixture.module.calls();
         assert_eq!(calls.last().unwrap().entry, 7);
 
-        fixture.memory().write_i32(ENTITIES + 224, 0).unwrap();
+        fixture.memory().write_i32(ENTITIES + 532, 0).unwrap();
         fixture.provider.step().unwrap();
         let calls = fixture.module.calls();
         assert_eq!(calls.last().unwrap().entry, 5);
@@ -841,7 +841,7 @@ mod tests {
         fixture.set_hook((ENTITIES + STRIDE) as i32);
         fixture
             .memory()
-            .write_i32(ENTITIES + STRIDE + 220, (ENTITIES + STRIDE) as i32)
+            .write_i32(ENTITIES + STRIDE + 528, (ENTITIES + STRIDE) as i32)
             .unwrap();
         fixture.provider.actor_released(&fixture.hook_actor).unwrap();
         let calls = fixture.module.calls();
@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(fixture.module.calls().len(), 2);
         fixture.set_hook(0);
         fixture.provider.restore(&checkpoint).unwrap();
-        assert_eq!(fixture.bridge.published.borrow().len(), 3);
+        assert_eq!(fixture.bridge.published.borrow().len(), 4);
 
         let mut foreign = checkpoint.clone();
         foreign.version = 2;
