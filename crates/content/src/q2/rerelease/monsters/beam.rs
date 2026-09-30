@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Vec3, add3, scale3, vec3};
+use qa_core::math::{add3, scale3, vec3};
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{
@@ -22,7 +22,7 @@ pub fn update_monster_beam(beam: &ActorId, game: &mut Q2GameServices, damage: bo
     let movedir = game.require_entity(beam).movedir;
     let end = add3(start, scale3(movedir, 2048.0));
     let mut exclude: Vec<ActorId> = Vec::new();
-    let mut endpoint = end;
+    let mut endpoint: qa_core::math::Vec3;
     loop {
         let trace = game.host.trace(&Q2TraceRequest {
             start,

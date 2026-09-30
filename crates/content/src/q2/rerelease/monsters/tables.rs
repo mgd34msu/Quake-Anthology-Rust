@@ -9,6 +9,7 @@ pub mod boss32;
 pub mod brain;
 pub mod chick;
 pub mod flipper;
+pub mod flashes;
 pub mod float;
 pub mod flyer;
 pub mod gladiator;
