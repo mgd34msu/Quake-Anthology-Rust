@@ -6,7 +6,7 @@ use qa_core::math::{add3, cross3, dot3, normalize3, normalize3_or_zero, perpendi
 use qa_core::numeric::{q_crandom, qvm_float_to_int};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_sim::*;
+use crate::q3::base::game::entities::SimRandom;
 
 // ---------------------------------------------------------------------------
 // Ballistics (ballistics-math.ts).

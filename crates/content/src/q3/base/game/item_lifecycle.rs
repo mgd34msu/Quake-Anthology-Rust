@@ -9,12 +9,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::combat::SourceTime;
 use crate::q3::base::game::death::*;
 use crate::q3::base::game::entities::*;
 use crate::q3::base::game::format::*;
 use crate::q3::base::game::ground::*;
 use crate::q3::base::game::hitscan::*;
-use crate::q3::base::game::mirrors_game_sim::*;
+use crate::q3::base::game::spawn::SpawnVariables;
+use crate::q3::base::game::state::GameFlags;
+use crate::q3::base::shared::definitions::{EntityEvent, EntityType, GameType, Holdable, ItemType, Product, Weapon};
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::ENTITYNUM_NONE;
+use crate::q3::base::world::{ActorTraceQuery, ServerTraceQuery, TraceShape, TraceSolidity};
+use crate::q3::foundation::arsenal::q3_weapon_item;
 
 // ---------------------------------------------------------------------------
 // Item lifecycle (item-lifecycle.ts).
@@ -50,7 +57,7 @@ pub(crate) const RESPAWN_POWERUP: i32 = 120;
 /// Per-level item registration (`ItemRegistry`).
 pub struct ItemRegistry {
     /// Product.
-    pub product: Q3Product,
+    pub product: Product,
     /// Product table.
     pub table: Rc<Q3ItemTable>,
     /// Registration flags.
@@ -60,7 +67,7 @@ pub struct ItemRegistry {
 impl ItemRegistry {
     /// Empty registry for a product table (`new ItemRegistry(product)`).
     #[must_use]
-    pub fn new(product: Q3Product, table: Rc<Q3ItemTable>) -> Self {
+    pub fn new(product: Product, table: Rc<Q3ItemTable>) -> Self {
         let len = table.len();
         Self {
             product,
@@ -103,11 +110,11 @@ impl ItemRegistry {
     /// Clear and register always-present items (`clear`).
     pub fn clear(&mut self, game_type: i32) {
         self.registered.fill(0);
-        let machinegun = self.table.find_item_for_weapon(Weapon::Machinegun as i32).clone();
+        let machinegun = self.table.find_item_for_weapon(Weapon::WpMachinegun as i32).clone();
         self.register(&machinegun);
-        let gauntlet = self.table.find_item_for_weapon(Weapon::Gauntlet as i32).clone();
+        let gauntlet = self.table.find_item_for_weapon(Weapon::WpGauntlet as i32).clone();
         self.register(&gauntlet);
-        if self.product != Q3Product::Missionpack || game_type != GameType::Harvester as i32 {
+        if self.product != Product::Missionpack || game_type != GameType::GtHarvester as i32 {
             return;
         }
         for pickup_name in ["Red Cube", "Blue Cube"] {
@@ -392,7 +399,7 @@ pub struct WeaponPickupContext {
 /// Weapon respawn seconds (`q3WeaponRespawnSeconds`, item-pickup.ts).
 #[must_use]
 pub fn q3_weapon_respawn_seconds(context: &WeaponPickupContext) -> i32 {
-    if context.game_type == GameType::Team as i32 {
+    if context.game_type == GameType::GtTeam as i32 {
         context.team_weapon_respawn_seconds
     } else {
         context.weapon_respawn_seconds
@@ -403,23 +410,23 @@ pub fn q3_weapon_respawn_seconds(context: &WeaponPickupContext) -> i32 {
 #[must_use]
 pub fn q3_item_respawn_seconds(item: &ItemDefinition, context: &WeaponPickupContext) -> i32 {
     match item.item_type {
-        ItemType::Weapon => q3_weapon_respawn_seconds(context),
-        ItemType::Ammo => RESPAWN_AMMO,
-        ItemType::Armor => RESPAWN_ARMOR,
-        ItemType::Health => {
+        ItemType::ItWeapon => q3_weapon_respawn_seconds(context),
+        ItemType::ItAmmo => RESPAWN_AMMO,
+        ItemType::ItArmor => RESPAWN_ARMOR,
+        ItemType::ItHealth => {
             if item.quantity == 100 {
                 RESPAWN_MEGAHEALTH
             } else {
                 RESPAWN_HEALTH
             }
         }
-        ItemType::Holdable => RESPAWN_HOLDABLE,
-        ItemType::Powerup => RESPAWN_POWERUP,
-        ItemType::PersistantPowerup => -1,
-        ItemType::Team => {
+        ItemType::ItHoldable => RESPAWN_HOLDABLE,
+        ItemType::ItPowerup => RESPAWN_POWERUP,
+        ItemType::ItPersistantPowerup => -1,
+        ItemType::ItTeam => {
             panic!("Team objective lifecycle requires its original pickup handler");
         }
-        ItemType::Bad => panic!("Invalid item has no pickup lifecycle"),
+        ItemType::ItBad => panic!("Invalid item has no pickup lifecycle"),
     }
 }
 
@@ -459,7 +466,7 @@ pub struct ItemLifecycleContext {
     /// Server world.
     pub world: ServerWorldMirror,
     /// Product.
-    pub product: Q3Product,
+    pub product: Product,
     /// Game type.
     pub game_type: i32,
     /// Weapon respawn seconds.
@@ -623,14 +630,14 @@ pub(crate) fn lifecycle_team_member(context: &ItemLifecycleContext, entity: &Ent
 /// Respawn sound event (`spawnRespawnSound`).
 pub(crate) fn lifecycle_spawn_respawn_sound(context: &ItemLifecycleContext, entity: &EntityRef, path: &str) {
     let event = if entity.borrow().speed != 0.0 {
-        EntityEvent::GeneralSound as i32
+        EntityEvent::EvGeneralSound as i32
     } else {
-        EntityEvent::GlobalSound as i32
+        EntityEvent::EvGlobalSound as i32
     };
     let origin = entity.borrow().s.pos.base;
     let temporary = context.entities.borrow_mut().temp_entity(origin, event);
     temporary.borrow_mut().s.event_parm = (context.sound_index)(path);
-    temporary.borrow_mut().r.sv_flags |= server_entity_flags::BROADCAST;
+    temporary.borrow_mut().r.sv_flags |= ServerEntityFlags::Broadcast as i32;
 }
 
 /// Respawn an item (`respawnItem`, `RespawnItem`).
@@ -643,19 +650,19 @@ pub fn respawn_item(entity: &EntityRef, context: &ItemLifecycleContext) {
         let mut borrowed = selected.borrow_mut();
         borrowed.r.contents = CONTENTS_TRIGGER;
         borrowed.s.e_flags &= !EF_NODRAW;
-        borrowed.r.sv_flags &= !server_entity_flags::NOCLIENT;
+        borrowed.r.sv_flags &= !(ServerEntityFlags::Noclient as i32);
     }
     (context.entities.borrow().options.link)(selected.clone());
-    if item.item_type == ItemType::Powerup {
+    if item.item_type == ItemType::ItPowerup {
         lifecycle_spawn_respawn_sound(context, &selected, "sound/items/poweruprespawn.wav");
     }
-    if item.item_type == ItemType::Holdable && item.tag == Holdable::Kamikaze as i32 {
+    if item.item_type == ItemType::ItHoldable && item.tag == Holdable::HiKamikaze as i32 {
         lifecycle_spawn_respawn_sound(context, &selected, "sound/items/kamikazerespawn.wav");
     }
     context
         .entities
         .borrow()
-        .add_event(&selected, EntityEvent::ItemRespawn as i32, 0);
+        .add_event(&selected, EntityEvent::EvItemRespawn as i32, 0);
     selected.borrow_mut().nextthink = 0;
 }
 
@@ -673,7 +680,7 @@ pub(crate) fn pickup_descriptor(
         item: item.clone(),
         count: borrowed.count,
         generic1: borrowed.s.generic1,
-        dropped: (borrowed.flags & game_flags::DROPPED_ITEM) != 0,
+        dropped: (borrowed.flags & GameFlags::DROPPED_ITEM) != 0,
         game_type: context.game_type,
         weapon_respawn_seconds: context.weapon_respawn_seconds,
         team_weapon_respawn_seconds: context.team_weapon_respawn_seconds,
@@ -702,7 +709,7 @@ pub fn observe_q3_supply(
             .is_some_and(|known| Rc::ptr_eq(&known, record))
     };
     let callbacks = context.callbacks.as_ref()?;
-    if context.product != Q3Product::Baseq3
+    if context.product != Product::Baseq3
         || !entity.borrow().inuse
         || !recipient.borrow().inuse
         || !owned(entity)
@@ -719,7 +726,7 @@ pub fn observe_q3_supply(
         return None;
     }
     let item_type = entity.borrow().item.as_ref().map(|item| item.item_type);
-    if !matches!(item_type, Some(ItemType::Weapon | ItemType::Ammo)) {
+    if !matches!(item_type, Some(ItemType::ItWeapon | ItemType::ItAmmo)) {
         return None;
     }
     drop(pool);
@@ -734,7 +741,7 @@ pub fn observe_q3_supply(
     let borrowed = entity.borrow();
     let ready = (borrowed.r.contents & CONTENTS_TRIGGER) != 0
         && (borrowed.s.e_flags & EF_NODRAW) == 0
-        && (borrowed.r.sv_flags & server_entity_flags::NOCLIENT) == 0
+        && (borrowed.r.sv_flags & (ServerEntityFlags::Noclient as i32)) == 0
         && !borrowed.free_after_event
         && !borrowed.unlink_after_event;
     let respawn_matches = match (borrowed.think.clone(), Some(callbacks.respawn.clone())) {
@@ -744,7 +751,7 @@ pub fn observe_q3_supply(
     let respawning = borrowed.team.is_none()
         && borrowed.teammaster.is_none()
         && borrowed.teamchain.is_none()
-        && (borrowed.flags & (game_flags::DROPPED_ITEM | game_flags::TEAMSLAVE)) == 0
+        && (borrowed.flags & (GameFlags::DROPPED_ITEM | GameFlags::TEAMSLAVE)) == 0
         && !borrowed.free_after_event
         && !borrowed.unlink_after_event
         && respawn_matches
@@ -888,13 +895,13 @@ pub fn touch_item(
                     attempt.borrow_mut().respawn = *respawn_seconds;
                 }
                 SourcePickupAdmission::Native | SourcePickupAdmission::Rejected => {
-                    if item.item_type == ItemType::Team {
+                    if item.item_type == ItemType::ItTeam {
                         attempt.borrow_mut().respawn = (context.team_pickup)(entity.clone(), other_entity.clone());
                     } else {
                         let pickup = lifecycle_pickup_context(&context, now);
                         attempt.borrow_mut().respawn =
                             (context.pickup_item)(entity.clone(), other_entity.clone(), &pickup);
-                        if item.item_type == ItemType::Powerup {
+                        if item.item_type == ItemType::ItPowerup {
                             attempt.borrow_mut().predict = false;
                         }
                     }
@@ -911,14 +918,14 @@ pub fn touch_item(
                 };
                 let slot = other_entity.borrow().slot as i32;
                 let entities = context.entities.borrow();
-                let mut rankings = entities.rankings.borrow_mut();
+                let rankings = entities.rankings.borrow();
                 match item.item_type {
-                    ItemType::Weapon => rankings.pickup_weapon(slot, item.tag),
-                    ItemType::Ammo => rankings.pickup_ammo(slot, item.tag, quantity),
-                    ItemType::Health => rankings.pickup_health(slot, quantity),
-                    ItemType::Armor => rankings.pickup_armor(slot, item.quantity),
-                    ItemType::Powerup => rankings.pickup_powerup(slot, item.tag),
-                    ItemType::Holdable => rankings.pickup_holdable(slot, item.tag),
+                    ItemType::ItWeapon => rankings.pickup_weapon(slot, item.tag),
+                    ItemType::ItAmmo => rankings.pickup_ammo(slot, item.tag, quantity),
+                    ItemType::ItHealth => rankings.pickup_health(slot, quantity),
+                    ItemType::ItArmor => rankings.pickup_armor(slot, item.quantity),
+                    ItemType::ItPowerup => rankings.pickup_powerup(slot, item.tag),
+                    ItemType::ItHoldable => rankings.pickup_holdable(slot, item.tag),
                     _ => {}
                 }
             }
@@ -950,7 +957,7 @@ pub fn touch_item(
                     return;
                 }
                 attempt.borrow_mut().respawn = respawn;
-                if item.item_type == ItemType::Powerup {
+                if item.item_type == ItemType::ItPowerup {
                     attempt.borrow_mut().predict = false;
                 }
                 (context.log)(format!("Item: {} {class_name}\n", other_entity.borrow().s.number));
@@ -962,34 +969,34 @@ pub fn touch_item(
             if attempt.borrow().predict {
                 context.entities.borrow().add_predictable_event(
                     &other_entity,
-                    EntityEvent::ItemPickup as i32,
+                    EntityEvent::EvItemPickup as i32,
                     modelindex,
                 );
             } else {
                 context
                     .entities
                     .borrow()
-                    .add_event(&other_entity, EntityEvent::ItemPickup as i32, modelindex);
+                    .add_event(&other_entity, EntityEvent::EvItemPickup as i32, modelindex);
             }
             if !live() {
                 return;
             }
-            if item.item_type == ItemType::Powerup || item.item_type == ItemType::Team {
+            if item.item_type == ItemType::ItPowerup || item.item_type == ItemType::ItTeam {
                 let origin = entity.borrow().s.pos.base;
                 let temporary = context
                     .entities
                     .borrow_mut()
-                    .temp_entity(origin, EntityEvent::GlobalItemPickup as i32);
+                    .temp_entity(origin, EntityEvent::EvGlobalItemPickup as i32);
                 if !live() {
                     return;
                 }
                 temporary.borrow_mut().s.event_parm = modelindex;
                 if entity.borrow().speed == 0.0 {
-                    temporary.borrow_mut().r.sv_flags |= server_entity_flags::BROADCAST;
+                    temporary.borrow_mut().r.sv_flags |= ServerEntityFlags::Broadcast as i32;
                 } else {
                     let number = other_entity.borrow().s.number;
                     let mut borrowed = temporary.borrow_mut();
-                    borrowed.r.sv_flags |= server_entity_flags::SINGLECLIENT;
+                    borrowed.r.sv_flags |= ServerEntityFlags::Singleclient as i32;
                     borrowed.r.single_client = number;
                 }
             }
@@ -999,7 +1006,7 @@ pub fn touch_item(
             }
             if entity.borrow().wait == -1.0 {
                 let mut borrowed = entity.borrow_mut();
-                borrowed.r.sv_flags |= server_entity_flags::NOCLIENT;
+                borrowed.r.sv_flags |= ServerEntityFlags::Noclient as i32;
                 borrowed.s.e_flags |= EF_NODRAW;
                 borrowed.r.contents = 0;
                 borrowed.unlink_after_event = true;
@@ -1020,12 +1027,12 @@ pub fn touch_item(
                     attempt.borrow_mut().respawn = 1;
                 }
             }
-            if (entity.borrow().flags & game_flags::DROPPED_ITEM) != 0 {
+            if (entity.borrow().flags & GameFlags::DROPPED_ITEM) != 0 {
                 entity.borrow_mut().free_after_event = true;
             }
             {
                 let mut borrowed = entity.borrow_mut();
-                borrowed.r.sv_flags |= server_entity_flags::NOCLIENT;
+                borrowed.r.sv_flags |= ServerEntityFlags::Noclient as i32;
                 borrowed.s.e_flags |= EF_NODRAW;
                 borrowed.r.contents = 0;
             }
@@ -1060,21 +1067,23 @@ pub fn touch_item(
         complete(taken);
         return;
     }
-    let weapon = if matches!(item.item_type, ItemType::Weapon | ItemType::Ammo) {
+    let weapon = if matches!(item.item_type, ItemType::ItWeapon | ItemType::ItAmmo) {
         q3_weapon_item(item.tag)
     } else {
         None
     };
     let offered: ItemId = match item.item_type {
-        ItemType::Weapon => weapon.map_or(format!("q3:{class_name}"), |entry| entry.item.to_string()),
-        ItemType::Ammo => weapon.map_or(format!("q3:{class_name}"), |entry| entry.ammo.unwrap_or("").to_string()),
+        ItemType::ItWeapon => weapon.map_or(format!("q3:{class_name}"), |entry| entry.item.to_string()),
+        ItemType::ItAmmo => weapon.map_or(format!("q3:{class_name}"), |entry| {
+            entry.ammo.as_deref().unwrap_or("").to_string()
+        }),
         _ => format!("q3:{class_name}"),
     };
     let default_resource = match item.item_type {
-        ItemType::Armor => Some(PickupResource::Protection {
+        ItemType::ItArmor => Some(PickupResource::Protection {
             channel: ProtectionChannel::Regular,
         }),
-        ItemType::Weapon | ItemType::Ammo => Some(PickupResource::Inventory { item: offered.clone() }),
+        ItemType::ItWeapon | ItemType::ItAmmo => Some(PickupResource::Inventory { item: offered.clone() }),
         _ => None,
     };
     let admission = context
@@ -1097,9 +1106,9 @@ pub fn touch_item(
                     amount: entity.borrow().count,
                 }
             },
-            dropped: (entity.borrow().flags & game_flags::DROPPED_ITEM) != 0,
+            dropped: (entity.borrow().flags & GameFlags::DROPPED_ITEM) != 0,
             time: SourceTime::Milliseconds { value: now },
-            grant: if item.item_type == ItemType::Team {
+            grant: if item.item_type == ItemType::ItTeam {
                 Some(PickupGrant::MapCoupled)
             } else {
                 None
@@ -1128,7 +1137,7 @@ pub fn finish_spawning_item(entity: &EntityRef, context: &ItemLifecycleContext) 
         let mut borrowed = entity.borrow_mut();
         borrowed.r.mins = vec3(-ITEM_RADIUS, -ITEM_RADIUS, -ITEM_RADIUS);
         borrowed.r.maxs = vec3(ITEM_RADIUS, ITEM_RADIUS, ITEM_RADIUS);
-        borrowed.s.e_type = EntityType::Item as i32;
+        borrowed.s.e_type = EntityType::EtItem as i32;
         borrowed.s.modelindex = lifecycle_table_index(context, &item);
         borrowed.s.modelindex2 = 0;
         borrowed.r.contents = CONTENTS_TRIGGER;
@@ -1192,13 +1201,13 @@ pub fn finish_spawning_item(entity: &EntityRef, context: &ItemLifecycleContext) 
         trace_ground(entity, &trace.hit, &context.entities.borrow());
         set_origin(entity, trace.end);
     }
-    if (entity.borrow().flags & game_flags::TEAMSLAVE) != 0 || entity.borrow().targetname.is_some() {
+    if (entity.borrow().flags & GameFlags::TEAMSLAVE) != 0 || entity.borrow().targetname.is_some() {
         let mut borrowed = entity.borrow_mut();
         borrowed.s.e_flags |= EF_NODRAW;
         borrowed.r.contents = 0;
         return;
     }
-    if item.item_type == ItemType::Powerup {
+    if item.item_type == ItemType::ItPowerup {
         let delay = 45.0 + lifecycle_crandom(&context.random) * 15.0;
         let think = match context.callbacks.as_ref() {
             Some(callbacks) => callbacks.respawn.clone(),
@@ -1233,8 +1242,8 @@ pub fn spawn_item(
     check_lifecycle_context(context);
     require_lifecycle_owned(context, entity);
     lifecycle_table_index(context, item);
-    entity.borrow_mut().random = variables.float("random", "0").value;
-    entity.borrow_mut().wait = variables.float("wait", "0").value;
+    entity.borrow_mut().random = variables.float("random", "0").expect("spawn random parses").value;
+    entity.borrow_mut().wait = variables.float("wait", "0").expect("spawn wait parses").value;
     context.registry.borrow_mut().register(item);
     if is_disabled() {
         return;
@@ -1252,11 +1261,14 @@ pub fn spawn_item(
             .resolve(Some("q3.base.game.item-lifecycle.spawnItem.think"));
         borrowed.physics_bounce = 0.5;
     }
-    if item.item_type == ItemType::Powerup {
+    if item.item_type == ItemType::ItPowerup {
         (context.sound_index)("sound/items/poweruprespawn.wav");
-        entity.borrow_mut().speed = variables.float("noglobalsound", "0").value;
+        entity.borrow_mut().speed = variables
+            .float("noglobalsound", "0")
+            .expect("spawn noglobalsound parses")
+            .value;
     }
-    if context.product == Q3Product::Missionpack && item.item_type == ItemType::PersistantPowerup {
+    if context.product == Product::Missionpack && item.item_type == ItemType::ItPersistantPowerup {
         let spawnflags = entity.borrow().spawnflags;
         entity.borrow_mut().s.generic1 = spawnflags;
     }
