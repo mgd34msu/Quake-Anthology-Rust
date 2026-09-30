@@ -3,20 +3,29 @@
 //! Donor provenance: `src/content/q3/team-arena` (behavioral coverage for the
 //! team rules, arenas, match, client, command, and session modules).
 
+use qa_core::cmd::Dialect;
+use qa_core::cvar::{set_info_value, InfoOptions, InfoTarget};
 use qa_core::math::{vec3, Bounds, Vec3};
 
+use crate::q3::base::game::combat::DamageFlags;
+use crate::q3::base::game::entities::ItemDefinition;
 use crate::q3::base::game::format::{game_format, game_format_bounded, GameFormatArgument};
 use crate::q3::base::game::numeric::{game_atof, game_atoi};
+use crate::q3::base::game::save_module_values::Q3CvarSnapshot;
 use crate::q3::base::game::spawn::SpawnVariables;
 use crate::q3::base::game::state::{ClientSession, ConnectionState, GameFlags, MAX_CLIENTS, MAX_GENTITIES};
 use crate::q3::base::game::state::{SpectatorState, TeamState};
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::entity_state::EntityState;
 use crate::q3::base::shared::items::{player_touches_item, Trajectory as ItemsTrajectory};
 use crate::q3::base::shared::player_state::{
     CommandButtons, MoveFlags, PlayerAnimation, UserCommand, ENTITYNUM_NONE, ENTITYNUM_WORLD,
 };
 use crate::q3::base::shared::trajectory::{evaluate_trajectory, Trajectory, TrajectoryType};
+use crate::q3::base::world::{
+    ActorTraceHit, ActorTraceQuery, ActorTraceResult, LinkState, TraceContact, TraceSolidity,
+};
 use crate::q3::team_arena::client_admission::*;
 use crate::q3::team_arena::client_policy::*;
 use crate::q3::team_arena::client_spawn::*;
@@ -116,9 +125,13 @@ impl StubWorld {
             states: RefCell::new(HashMap::new()),
             contents: Cell::new(0),
             trace: RefCell::new(ActorTraceResult {
+                fraction: 1.0,
                 end: vec3(0.0, 0.0, 0.0),
+                hit: ActorTraceHit::None,
+                contact: TraceContact::None,
                 solidity: TraceSolidity::Clear,
-                hit: TraceHit::None,
+                contents: 0,
+                surface_flags: 0,
             }),
             area: RefCell::new(Vec::new()),
             contact: Cell::new(false),
@@ -136,7 +149,7 @@ impl Q3World for StubWorld {
     }
 
     fn link_state(&self, number: i32) -> Option<LinkState> {
-        self.states.borrow().get(&number).copied()
+        self.states.borrow().get(&number).cloned()
     }
 
     fn point_contents(&self, _point: Vec3, _pass_entity: i32) -> i32 {
@@ -225,9 +238,11 @@ impl StubItems {
 impl ItemHost for StubItems {
     fn item_at(&self, _product: Product, index: usize) -> ItemDefinition {
         ItemDefinition {
-            tag: self.tags.borrow().get(&index).copied().unwrap_or(index as i32),
-            class_name: format!("item{index}"),
+            class_name: Some(format!("item{index}")),
             pickup_name: None,
+            quantity: 0,
+            item_type: ItemType::ItBad,
+            tag: self.tags.borrow().get(&index).copied().unwrap_or(index as i32),
         }
     }
 
@@ -314,9 +329,16 @@ struct StubCvars {
 }
 
 impl CvarRegistry for StubCvars {
-    fn get(&self, name: &str) -> Option<CvarValue> {
-        self.values.borrow().get(name).map(|(value, integer)| CvarValue {
+    fn get(&self, name: &str) -> Option<Q3CvarSnapshot> {
+        self.values.borrow().get(name).map(|(value, integer)| Q3CvarSnapshot {
+            name: name.to_string(),
             value: value.clone(),
+            reset_value: String::new(),
+            latched_value: None,
+            flags: 0,
+            modified: false,
+            modification_count: 0,
+            numeric_value: f64::from(*integer),
             integer_value: *integer,
         })
     }
@@ -347,7 +369,7 @@ fn codes_match_donor_values() {
     assert_eq!(TeamState::Active as i32, 1);
     assert_eq!(GameFlags::FORCE_GESTURE, 0x8000);
     assert_eq!(ServerEntityFlags::Notsingleclient as i32, 2048);
-    assert_eq!(damage_flags::NO_TEAM_PROTECTION, 0x10);
+    assert_eq!(DamageFlags::NO_TEAM_PROTECTION, 0x10);
     assert_eq!(ENTITYNUM_WORLD, 1022);
     assert_eq!(ENTITYNUM_NONE, 1023);
     assert_eq!(MAX_CLIENTS, 64);
@@ -475,18 +497,29 @@ fn trajectories_evaluate() {
 #[test]
 fn info_values_round_trip() {
     let printed = Rc::new(RefCell::new(Vec::new()));
-    let print = {
+    let mut print = {
         let printed = printed.clone();
         move |text: &str| printed.borrow_mut().push(text.to_string())
     };
-    let info = set_info_value("", "name", "bob", 1024, &print);
+    let options = InfoOptions {
+        dialect: Dialect::Q3,
+        maximum_length: 1024,
+        target: InfoTarget::ClientUserinfo,
+        server_high_characters: false,
+    };
+    let info = set_info_value("", "name", "bob", options, &mut print).unwrap();
     assert_eq!(info, "\\name\\bob");
-    let info = set_info_value(&info, "name", "al", 1024, &print);
+    let info = set_info_value(&info, "name", "al", options, &mut print).unwrap();
     assert_eq!(info, "\\name\\al");
-    let info = set_info_value(&info, "name", "", 1024, &print);
+    let ordered = set_info_value("\\a\\b", "c", "d", options, &mut print).unwrap();
+    assert_eq!(ordered, "\\c\\d\\a\\b");
+    let info = set_info_value(&info, "name", "", options, &mut print).unwrap();
     assert_eq!(info, "");
     let before = "\\a\\b".to_string();
-    assert_eq!(set_info_value(&before, "k;ey", "v", 1024, &print), before);
+    assert_eq!(
+        set_info_value(&before, "k;ey", "v", options, &mut print).unwrap(),
+        before
+    );
     assert!(!printed.borrow().is_empty());
 }
 
@@ -874,7 +907,7 @@ fn admission_names_and_configs() {
 }
 
 struct StubServerHost {
-    cvars: RefCell<HashMap<String, CvarSnapshot>>,
+    cvars: RefCell<HashMap<String, Q3CvarSnapshot>>,
     prints: RefCell<Vec<String>>,
     commands: RefCell<Vec<(i32, String)>>,
     console: RefCell<Vec<String>>,
@@ -882,12 +915,22 @@ struct StubServerHost {
 }
 
 impl GameServerCommandHost for StubServerHost {
-    fn read_vm_cvar(&self, name: ServerCommandCvar) -> CvarSnapshot {
-        self.cvars.borrow().get(name.as_str()).cloned().unwrap_or(CvarSnapshot {
-            value: String::new(),
-            integer_value: 0,
-            modification_count: 0,
-        })
+    fn read_vm_cvar(&self, name: ServerCommandCvar) -> Q3CvarSnapshot {
+        self.cvars
+            .borrow()
+            .get(name.as_str())
+            .cloned()
+            .unwrap_or(Q3CvarSnapshot {
+                name: String::new(),
+                value: String::new(),
+                reset_value: String::new(),
+                latched_value: None,
+                flags: 0,
+                modified: false,
+                modification_count: 0,
+                numeric_value: 0.0,
+                integer_value: 0,
+            })
     }
 
     fn print(&self, text: &str) {
@@ -959,10 +1002,16 @@ fn server_ip_filters_round_trip() {
     );
     host.cvars.borrow_mut().insert(
         "g_filterBan".to_string(),
-        CvarSnapshot {
+        Q3CvarSnapshot {
+            name: "g_filterBan".to_string(),
             value: "1".to_string(),
-            integer_value: 1,
+            reset_value: String::new(),
+            latched_value: None,
+            flags: 0,
+            modified: false,
             modification_count: 0,
+            numeric_value: 1.0,
+            integer_value: 1,
         },
     );
     assert!(runtime.filter_packet("192.168.1.7"));
@@ -979,18 +1028,30 @@ fn server_bans_reload_and_list() {
     let (runtime, host, _, _) = server_fixture();
     host.cvars.borrow_mut().insert(
         "g_banIPs".to_string(),
-        CvarSnapshot {
+        Q3CvarSnapshot {
+            name: "g_banIPs".to_string(),
             value: "10.1.1.1  ".to_string(),
-            integer_value: 0,
+            reset_value: String::new(),
+            latched_value: None,
+            flags: 0,
+            modified: false,
             modification_count: 3,
+            numeric_value: 0.0,
+            integer_value: 0,
         },
     );
     host.cvars.borrow_mut().insert(
         "g_filterBan".to_string(),
-        CvarSnapshot {
+        Q3CvarSnapshot {
+            name: "g_filterBan".to_string(),
             value: "1".to_string(),
-            integer_value: 1,
+            reset_value: String::new(),
+            latched_value: None,
+            flags: 0,
+            modified: false,
             modification_count: 0,
+            numeric_value: 1.0,
+            integer_value: 1,
         },
     );
     runtime.process_ip_bans();
@@ -1018,10 +1079,16 @@ fn server_console_lists_forces_and_chats() {
     assert_eq!(host.teams.borrow().as_slice(), [(0, "red".to_string())]);
     host.cvars.borrow_mut().insert(
         "dedicated".to_string(),
-        CvarSnapshot {
+        Q3CvarSnapshot {
+            name: "dedicated".to_string(),
             value: "1".to_string(),
-            integer_value: 1,
+            reset_value: String::new(),
+            latched_value: None,
+            flags: 0,
+            modified: false,
             modification_count: 0,
+            numeric_value: 1.0,
+            integer_value: 1,
         },
     );
     assert!(runtime.console_command(&argv(&["say", "hello", "there"])));
@@ -1431,13 +1498,15 @@ fn flag_base(host: &StubTeamHost, classname: &str) -> EntityRef {
     let entity = host.pool.spawn();
     entity.borrow_mut().set_classname(Some(classname.to_string()));
     entity.borrow_mut().item = Some(ItemDefinition {
+        class_name: Some(classname.to_string()),
+        pickup_name: None,
+        quantity: 0,
+        item_type: ItemType::ItTeam,
         tag: if classname.contains("red") {
             Powerup::PwRedflag as i32
         } else {
             Powerup::PwBlueflag as i32
         },
-        class_name: classname.to_string(),
-        pickup_name: None,
     });
     entity
 }
@@ -1518,9 +1587,11 @@ fn team_flag_return_and_frag_bonus() {
     dropped.borrow_mut().set_classname(Some("team_CTF_redflag".to_string()));
     dropped.borrow_mut().flags |= GameFlags::DROPPED_ITEM;
     dropped.borrow_mut().item = Some(ItemDefinition {
-        tag: Powerup::PwRedflag as i32,
-        class_name: "team_CTF_redflag".to_string(),
+        class_name: Some("team_CTF_redflag".to_string()),
         pickup_name: None,
+        quantity: 0,
+        item_type: ItemType::ItTeam,
+        tag: Powerup::PwRedflag as i32,
     });
     runtime.check_dropped_item(&dropped);
     runtime.return_flag(Team::TeamRed as i32);
@@ -1791,9 +1862,11 @@ fn client_events_dispatch() {
     items.by_powerup.borrow_mut().insert(
         Powerup::PwRedflag as i32,
         ItemDefinition {
-            tag: Powerup::PwRedflag as i32,
-            class_name: "team_CTF_redflag".to_string(),
+            class_name: Some("team_CTF_redflag".to_string()),
             pickup_name: None,
+            quantity: 0,
+            item_type: ItemType::ItTeam,
+            tag: Powerup::PwRedflag as i32,
         },
     );
     client.borrow_mut().ps.powerups.set(Powerup::PwRedflag as usize, 10_000);
