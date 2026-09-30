@@ -5,7 +5,8 @@
 use qa_core::math::{vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_items::*;
+use crate::q3::base::game::items_core::*;
+use crate::q3::base::game::state::MAX_CLIENTS;
 
 // ---------------------------------------------------------------------------
 // level.ts: GameLevel
@@ -159,5 +160,21 @@ impl GameLevel {
 impl Default for GameLevel {
     fn default() -> Self {
         GameLevel::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_level_clear_resets() {
+        let mut level = GameLevel::new();
+        level.frame_num = 42;
+        level.base.time = 99;
+        level.team_scores.set(0, 7).unwrap();
+        level.base.vote.yes = 3;
+        level.clear();
+        assert_eq!(level, GameLevel::new());
     }
 }

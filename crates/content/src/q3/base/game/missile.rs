@@ -7,8 +7,16 @@ use qa_core::numeric::qvm_float_to_int;
 use std::collections::HashMap;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::combat::DamageFlags;
 use crate::q3::base::game::item_motion::*;
-use crate::q3::base::game::mirrors_game_items::*;
+use crate::q3::base::game::items_core::*;
+use crate::q3::base::game::state::MAX_GENTITIES;
+use crate::q3::base::shared::definitions::{EntityEvent, EntityType, GameType, Product, Weapon};
+use crate::q3::base::shared::direction_byte::direction_to_byte;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::{MoveFlags, ENTITYNUM_WORLD};
+use crate::q3::base::shared::trajectory::{Trajectory, TrajectoryType};
+use crate::q3::base::world::{TraceShape, TraceSolidity};
 
 // ---------------------------------------------------------------------------
 // missile.ts: g_missile.c and g_weapon.c grapple helpers
@@ -103,7 +111,7 @@ pub struct MissileParameters {
 /// Missile parameters per weapon (`q3MissileParameters`).
 pub fn q3_missile_parameters(weapon: Weapon) -> Q3GameItemsResult<MissileParameters> {
     match weapon {
-        Weapon::GrenadeLauncher => Ok(MissileParameters {
+        Weapon::WpGrenadeLauncher => Ok(MissileParameters {
             speed: 700.0,
             duration: 2500,
             gravity: true,
@@ -113,7 +121,7 @@ pub fn q3_missile_parameters(weapon: Weapon) -> Q3GameItemsResult<MissileParamet
             method: 4,
             splash_method: 5,
         }),
-        Weapon::RocketLauncher => Ok(MissileParameters {
+        Weapon::WpRocketLauncher => Ok(MissileParameters {
             speed: 900.0,
             duration: 15000,
             gravity: false,
@@ -123,7 +131,7 @@ pub fn q3_missile_parameters(weapon: Weapon) -> Q3GameItemsResult<MissileParamet
             method: 6,
             splash_method: 7,
         }),
-        Weapon::Plasmagun => Ok(MissileParameters {
+        Weapon::WpPlasmagun => Ok(MissileParameters {
             speed: 2000.0,
             duration: 10000,
             gravity: false,
@@ -133,7 +141,7 @@ pub fn q3_missile_parameters(weapon: Weapon) -> Q3GameItemsResult<MissileParamet
             method: 8,
             splash_method: 9,
         }),
-        Weapon::Bfg => Ok(MissileParameters {
+        Weapon::WpBfg => Ok(MissileParameters {
             speed: 2000.0,
             duration: 10000,
             gravity: false,
@@ -436,7 +444,7 @@ impl ProjectileContext<'_> {
         let entity = &self.pool.entities[self.slot];
         Ok(if entity.free_after_event {
             ProjectilePhase::Event
-        } else if entity.s.e_type == EntityType::Missile as i32 {
+        } else if entity.s.e_type == EntityType::EtMissile as i32 {
             ProjectilePhase::Flight
         } else {
             ProjectilePhase::Attached
@@ -524,7 +532,7 @@ impl ProjectileContext<'_> {
     /// World actor.
     #[must_use]
     pub fn world_actor(&self) -> ActorId {
-        ActorId::from_slot(ENTITYNUM_WORLD)
+        ActorId::from_slot(ENTITYNUM_WORLD as usize)
     }
 
     /// Target record for an actor.
@@ -556,7 +564,7 @@ impl ProjectileContext<'_> {
         let accuracy_eligible =
             self.host
                 .combat()
-                .accuracy_hit(game_type >= GameType::Team as i32, &target, &attacker_target);
+                .accuracy_hit(game_type >= GameType::GtTeam as i32, &target, &attacker_target);
         let invulnerable = native.is_some_and(|slot| {
             self.pool.get(slot).is_some_and(|entity| {
                 entity
@@ -580,7 +588,7 @@ impl ProjectileContext<'_> {
             ImpactEmit::Bounce { .. } => self
                 .host
                 .combat()
-                .add_event(self.pool, slot, EntityEvent::GrenadeBounce, 0),
+                .add_event(self.pool, slot, EntityEvent::EvGrenadeBounce, 0),
             ImpactEmit::Impact {
                 normal,
                 target,
@@ -598,21 +606,21 @@ impl ProjectileContext<'_> {
                     self.host.combat().add_event(
                         self.pool,
                         slot,
-                        EntityEvent::MissileHit,
-                        direction_to_byte(Some(normal)),
+                        EntityEvent::EvMissileHit,
+                        direction_to_byte(Some(normal)) as i32,
                     )?;
                     let number = self.pool.at(target_slot)?.s.number;
                     self.pool.at_mut(slot)?.s.other_entity_num = number;
                     Ok(())
                 } else {
                     let event = if surface_flags & SURF_METALSTEPS != 0 {
-                        EntityEvent::MissileMissMetal
+                        EntityEvent::EvMissileMissMetal
                     } else {
-                        EntityEvent::MissileMiss
+                        EntityEvent::EvMissileMiss
                     };
                     self.host
                         .combat()
-                        .add_event(self.pool, slot, event, direction_to_byte(Some(normal)))
+                        .add_event(self.pool, slot, event, direction_to_byte(Some(normal)) as i32)
                 }
             }
         }
@@ -623,7 +631,7 @@ impl ProjectileContext<'_> {
         self.pool.require_owned(self.slot)?;
         let entity = &mut self.pool.entities[self.slot];
         entity.free_after_event = true;
-        entity.s.e_type = EntityType::General as i32;
+        entity.s.e_type = EntityType::EtGeneral as i32;
         Ok(())
     }
 
@@ -710,7 +718,7 @@ impl ProjectileContext<'_> {
     pub fn has_special(&mut self) -> Q3GameItemsResult<bool> {
         self.pool.require_owned(self.slot)?;
         let entity = &self.pool.entities[self.slot];
-        Ok(entity.classname.as_deref() == Some("hook") || entity.s.weapon == Weapon::ProxLauncher)
+        Ok(entity.classname.as_deref() == Some("hook") || entity.s.weapon == Weapon::WpProxLauncher)
     }
 
     /// Special hook/prox impact; returns true when handled.
@@ -995,18 +1003,18 @@ impl MissileRuntime {
             if projectile.actor == actor {
                 self.projectiles.remove(&slot);
                 let weapon = pool.at(slot)?.s.weapon;
-                if weapon == Weapon::GrapplingHook {
+                if weapon == Weapon::WpGrapplingHook {
                     if let Some(owner) = self.owner_slot(pool, &projectile) {
                         let hook = pool.at(owner)?.client.as_ref().and_then(|client| client.hook);
                         if hook == Some(slot) {
                             let client = pool.at_mut(owner)?.client_mut()?;
                             client.hook = None;
-                            client.ps.pm_flags &= !MoveFlags::GRAPPLE_PULL;
+                            client.ps.pm_flags &= !(MoveFlags::GrapplePull as i32);
                         }
                     }
                 }
                 if let ProjectileAttachment::Player(attached) = projectile.attachment {
-                    if weapon == Weapon::ProxLauncher {
+                    if weapon == Weapon::WpProxLauncher {
                         if let Some(target) = pool.native_by_actor(attached) {
                             let activator = pool.at(target)?.activator;
                             if pool.at(target)?.client.is_some() && activator == Some(slot) {
@@ -1024,7 +1032,7 @@ impl MissileRuntime {
                         pool.free(trigger_slot)?;
                     }
                 }
-            } else if (pool.at(slot)?.s.weapon == Weapon::GrapplingHook && projectile.owner == actor)
+            } else if (pool.at(slot)?.s.weapon == Weapon::WpGrapplingHook && projectile.owner == actor)
                 || matches!(projectile.attachment, ProjectileAttachment::Player(a) if a == actor)
             {
                 self.release_projectile(pool, &projectile)?;
@@ -1200,7 +1208,7 @@ impl MissileRuntime {
     ) -> Q3GameItemsResult<()> {
         self.projectile(pool, slot)?;
         let entity = pool.at(slot)?;
-        if entity.s.e_type == EntityType::Missile as i32 && !entity.free_after_event {
+        if entity.s.e_type == EntityType::EtMissile as i32 && !entity.free_after_event {
             let actor = self.projectiles.get(&slot).expect("projectile checked").actor;
             if let Some(body) = host.bodies().read(actor) {
                 if host.has_weapon_behavior() {
@@ -1237,13 +1245,13 @@ impl MissileRuntime {
             return Err(invalid("admitted Q3 map player has no native client behavior record"));
         }
         let normal = trace_normal(trace);
-        if host.is_missionpack() && pool.at(slot)?.s.weapon == Weapon::ProxLauncher {
-            if pool.at(slot)?.s.pos.ty != TrajectoryType::Gravity {
+        if host.is_missionpack() && pool.at(slot)?.s.weapon == Weapon::WpProxLauncher {
+            if pool.at(slot)?.s.pos.trajectory_type != TrajectoryType::TrGravity {
                 return Ok(true);
             }
             if let Some(other) = other {
                 let record = pool.at(other)?;
-                if record.s.e_type == EntityType::Player as i32 && record.health > 0 {
+                if record.s.e_type == EntityType::EtPlayer as i32 && record.health > 0 {
                     self.proximity_player(pool, host, slot, other)?;
                     return Ok(true);
                 }
@@ -1252,7 +1260,7 @@ impl MissileRuntime {
             let stopped = snap_vector_towards(trace.end, base);
             set_origin(pool, slot, stopped)?;
             host.combat()
-                .add_event(pool, slot, EntityEvent::ProximityMineStick, trace.surface_flags)?;
+                .add_event(pool, slot, EntityEvent::EvProximityMineStick, trace.surface_flags)?;
             let think = pool.think_cbs.resolve(MISSILE_SPECIAL_THINK)?;
             let time = host.combat().time();
             let die = pool.die_cbs.resolve(MISSILE_SPECIAL_DIE)?;
@@ -1273,8 +1281,12 @@ impl MissileRuntime {
             let event = pool.spawn()?;
             let position = match other {
                 Some(other) if pool.at(other)?.takedamage && pool.at(other)?.client.is_some() => {
-                    host.combat()
-                        .add_event(pool, event, EntityEvent::MissileHit, direction_to_byte(Some(normal)))?;
+                    host.combat().add_event(
+                        pool,
+                        event,
+                        EntityEvent::EvMissileHit,
+                        direction_to_byte(Some(normal)) as i32,
+                    )?;
                     let number = pool.at(other)?.s.number;
                     pool.at_mut(event)?.s.other_entity_num = number;
                     if let Some(record) = self.projectiles.get_mut(&slot) {
@@ -1284,8 +1296,12 @@ impl MissileRuntime {
                     snap_vector_towards(center, pool.at(slot)?.s.pos.base)
                 }
                 _ => {
-                    host.combat()
-                        .add_event(pool, event, EntityEvent::MissileMiss, direction_to_byte(Some(normal)))?;
+                    host.combat().add_event(
+                        pool,
+                        event,
+                        EntityEvent::EvMissileMiss,
+                        direction_to_byte(Some(normal)) as i32,
+                    )?;
                     pool.at_mut(slot)?.enemy = None;
                     trace.end
                 }
@@ -1293,8 +1309,8 @@ impl MissileRuntime {
             let base = pool.at(slot)?.s.pos.base;
             let position = snap_vector_towards(position, base);
             pool.at_mut(event)?.free_after_event = true;
-            pool.at_mut(event)?.s.e_type = EntityType::General as i32;
-            pool.at_mut(slot)?.s.e_type = EntityType::Grapple as i32;
+            pool.at_mut(event)?.s.e_type = EntityType::EtGeneral as i32;
+            pool.at_mut(slot)?.s.e_type = EntityType::EtGrapple as i32;
             set_origin(pool, slot, position)?;
             set_origin(pool, event, position)?;
             let think = pool.think_cbs.resolve(MISSILE_HOOK_THINK)?;
@@ -1312,7 +1328,7 @@ impl MissileRuntime {
                 pool.free(event)?;
                 return Ok(true);
             }
-            pool.at_mut(owner)?.client_mut()?.ps.pm_flags |= MoveFlags::GRAPPLE_PULL;
+            pool.at_mut(owner)?.client_mut()?.ps.pm_flags |= MoveFlags::GrapplePull as i32;
             let current = pool.at(slot)?.r.current_origin;
             pool.at_mut(owner)?.client_mut()?.ps.grapple_point = current;
             host.world().link(pool, slot)?;
@@ -1408,7 +1424,7 @@ impl MissileRuntime {
             .expect("client checked")
             .sess
             .session_team;
-        if game_type >= GameType::Team as i32 && pool.at(mine)?.s.generic1 == team as i32 {
+        if game_type >= GameType::GtTeam as i32 && pool.at(mine)?.s.generic1 == team as i32 {
             return Ok(());
         }
         let base = pool.at(trigger)?.s.pos.base;
@@ -1417,7 +1433,7 @@ impl MissileRuntime {
         }
         pool.at_mut(mine)?.s.loop_sound = 0;
         host.combat()
-            .add_event(pool, mine, EntityEvent::ProximityMineTrigger, 0)?;
+            .add_event(pool, mine, EntityEvent::EvProximityMineTrigger, 0)?;
         let time = host.combat().time();
         pool.at_mut(mine)?.nextthink = time.wrapping_add(500);
         pool.free(trigger)?;
@@ -1508,11 +1524,11 @@ impl MissileRuntime {
             pool.at_mut(player)?.client_mut()?.invulnerability_time = 0;
             let origin = pool.at(player)?.client.as_ref().expect("client checked").ps.origin;
             let (combat, world) = host.combat_and_world();
-            combat.temp_entity(pool, world, origin, EntityEvent::Juiced)?;
+            combat.temp_entity(pool, world, origin, EntityEvent::EvJuiced)?;
         } else {
             let base = pool.at(player)?.s.pos.base;
             set_origin(pool, mine, base)?;
-            pool.at_mut(mine)?.r.sv_flags &= !ServerEntityFlags::NOCLIENT;
+            pool.at_mut(mine)?.r.sv_flags &= !(ServerEntityFlags::Noclient as i32);
             pool.at_mut(mine)?.splash_method_of_death = 25;
             self.explode(pool, host, driver, mine)?;
         }
@@ -1530,7 +1546,7 @@ impl MissileRuntime {
             return Ok(());
         }
         host.combat()
-            .add_event(pool, mine, EntityEvent::ProximityMineStick, 0)?;
+            .add_event(pool, mine, EntityEvent::EvProximityMineStick, 0)?;
         if pool.at(player)?.s.e_flags & EF_TICKING != 0 {
             let activator = pool
                 .at(player)?
@@ -1553,8 +1569,8 @@ impl MissileRuntime {
         pool.at_mut(player)?.client_mut()?.ps.e_flags |= EF_TICKING;
         pool.at_mut(player)?.activator = Some(mine);
         pool.at_mut(mine)?.s.e_flags |= EF_NODRAW;
-        pool.at_mut(mine)?.r.sv_flags |= ServerEntityFlags::NOCLIENT;
-        pool.at_mut(mine)?.s.pos.ty = TrajectoryType::Linear;
+        pool.at_mut(mine)?.r.sv_flags |= ServerEntityFlags::Noclient as i32;
+        pool.at_mut(mine)?.s.pos.trajectory_type = TrajectoryType::TrLinear;
         pool.at_mut(mine)?.s.pos.delta = vec3(0.0, 0.0, 0.0);
         if let Some(record) = self.projectiles.get_mut(&mine) {
             record.attachment = ProjectileAttachment::Player(ActorId::from_slot(player));
@@ -1604,11 +1620,11 @@ impl MissileRuntime {
         pool.at_mut(bolt)?.classname = Some(classname.to_string());
         pool.at_mut(bolt)?.nextthink = fired.expires;
         pool.at_mut(bolt)?.think = Some(think);
-        pool.at_mut(bolt)?.s.e_type = EntityType::Missile as i32;
-        pool.at_mut(bolt)?.r.sv_flags = ServerEntityFlags::USE_CURRENT_ORIGIN;
+        pool.at_mut(bolt)?.s.e_type = EntityType::EtMissile as i32;
+        pool.at_mut(bolt)?.r.sv_flags = ServerEntityFlags::UseCurrentOrigin as i32;
         pool.at_mut(bolt)?.s.weapon = weapon;
         pool.at_mut(bolt)?.r.owner_num = number;
-        pool.at_mut(bolt)?.parent = if weapon == Weapon::GrapplingHook || weapon == Weapon::ProxLauncher {
+        pool.at_mut(bolt)?.parent = if weapon == Weapon::WpGrapplingHook || weapon == Weapon::WpProxLauncher {
             Some(owner_slot)
         } else {
             None
@@ -1641,7 +1657,7 @@ impl MissileRuntime {
                 velocity: fired.trajectory.delta,
             },
         );
-        if weapon != Weapon::Nailgun {
+        if weapon != Weapon::WpNailgun {
             self.apply_behavior_launch(pool, host, bolt, owner)?;
         }
         Ok(bolt)
@@ -1686,7 +1702,7 @@ impl MissileRuntime {
         start: Vec3,
         direction: &mut MissileDirection,
     ) -> Q3GameItemsResult<Slot> {
-        let spec = q3_missile_parameters(Weapon::Plasmagun)?;
+        let spec = q3_missile_parameters(Weapon::WpPlasmagun)?;
         let direction = normalize_direction(direction);
         self.launch(
             pool,
@@ -1695,7 +1711,7 @@ impl MissileRuntime {
             owner,
             start,
             direction,
-            Weapon::Plasmagun,
+            Weapon::WpPlasmagun,
             "plasma",
             spec.speed,
             spec.duration,
@@ -1718,7 +1734,7 @@ impl MissileRuntime {
         start: Vec3,
         direction: &mut MissileDirection,
     ) -> Q3GameItemsResult<Slot> {
-        let spec = q3_missile_parameters(Weapon::GrenadeLauncher)?;
+        let spec = q3_missile_parameters(Weapon::WpGrenadeLauncher)?;
         let direction = normalize_direction(direction);
         let bolt = self.launch(
             pool,
@@ -1727,7 +1743,7 @@ impl MissileRuntime {
             owner,
             start,
             direction,
-            Weapon::GrenadeLauncher,
+            Weapon::WpGrenadeLauncher,
             "grenade",
             spec.speed,
             spec.duration,
@@ -1752,7 +1768,7 @@ impl MissileRuntime {
         start: Vec3,
         direction: &mut MissileDirection,
     ) -> Q3GameItemsResult<Slot> {
-        let spec = q3_missile_parameters(Weapon::RocketLauncher)?;
+        let spec = q3_missile_parameters(Weapon::WpRocketLauncher)?;
         let direction = normalize_direction(direction);
         self.launch(
             pool,
@@ -1761,7 +1777,7 @@ impl MissileRuntime {
             owner,
             start,
             direction,
-            Weapon::RocketLauncher,
+            Weapon::WpRocketLauncher,
             "rocket",
             spec.speed,
             spec.duration,
@@ -1784,7 +1800,7 @@ impl MissileRuntime {
         start: Vec3,
         direction: &mut MissileDirection,
     ) -> Q3GameItemsResult<Slot> {
-        let spec = q3_missile_parameters(Weapon::Bfg)?;
+        let spec = q3_missile_parameters(Weapon::WpBfg)?;
         let direction = normalize_direction(direction);
         self.launch(
             pool,
@@ -1793,7 +1809,7 @@ impl MissileRuntime {
             owner,
             start,
             direction,
-            Weapon::Bfg,
+            Weapon::WpBfg,
             "bfg",
             spec.speed,
             spec.duration,
@@ -1825,7 +1841,7 @@ impl MissileRuntime {
             owner,
             start,
             direction,
-            Weapon::GrapplingHook,
+            Weapon::WpGrapplingHook,
             "hook",
             Q3_GRAPPLE_SPEED,
             Q3_GRAPPLE_LIFETIME,
@@ -1866,7 +1882,7 @@ impl MissileRuntime {
             owner,
             start,
             direction,
-            Weapon::ProxLauncher,
+            Weapon::WpProxLauncher,
             "prox mine",
             700.0,
             3000,
@@ -1912,7 +1928,7 @@ impl MissileRuntime {
             owner,
             start,
             vec3(0.0, 0.0, 0.0),
-            Weapon::Nailgun,
+            Weapon::WpNailgun,
             "nail",
             0.0,
             10000,
@@ -1936,7 +1952,7 @@ impl MissileRuntime {
             return Ok(());
         }
         let entity = pool.at(slot)?;
-        if entity.s.weapon != Weapon::ProxLauncher || entity.count != 0 {
+        if entity.s.weapon != Weapon::WpProxLauncher || entity.count != 0 {
             return Ok(());
         }
         let query = ActorTraceQuery {
@@ -2099,5 +2115,833 @@ impl MissileFire for MissileRuntime {
         direction: &mut MissileDirection,
     ) -> Q3GameItemsResult<Slot> {
         MissileRuntime::fire_plasma(self, pool, host, driver, entity, start, direction)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use qa_core::math::Vec3;
+
+    use super::*;
+    use crate::q3::base::game::items_core::test_support::{TestCombat, TestRandom, TestWorld};
+    use crate::q3::base::game::items_core::{
+        ActorId, ActorTraceResult, CombatOps, EntityPool, GameRandom, Q3GameItemsResult, Slot, WorldOps,
+    };
+    use crate::q3::base::shared::definitions::{Product, Weapon};
+    use crate::q3::base::shared::trajectory::{Trajectory, TrajectoryType};
+
+    pub(crate) struct TestDriver {
+        pub(crate) launches: Vec<ProjectileLaunch>,
+        pub(crate) bounces: usize,
+        pub(crate) explodes: usize,
+        pub(crate) impacts: usize,
+        pub(crate) steps: usize,
+    }
+
+    impl TestDriver {
+        pub(crate) fn new() -> TestDriver {
+            TestDriver {
+                launches: Vec::new(),
+                bounces: 0,
+                explodes: 0,
+                impacts: 0,
+                steps: 0,
+            }
+        }
+    }
+
+    impl ProjectileDriver for TestDriver {
+        fn launch(
+            &mut self,
+            start: Vec3,
+            direction: Vec3,
+            speed: f32,
+            gravity: bool,
+            duration: i32,
+            time: i32,
+        ) -> ProjectileLaunch {
+            let fired = ProjectileLaunch {
+                expires: time.wrapping_add(duration),
+                trajectory: Trajectory {
+                    trajectory_type: if gravity {
+                        TrajectoryType::TrGravity
+                    } else {
+                        TrajectoryType::TrLinear
+                    },
+                    time: time.wrapping_sub(50),
+                    duration: 0,
+                    base: start,
+                    delta: snap_vector(scale3(direction, speed)),
+                },
+            };
+            self.launches.push(fired);
+            fired
+        }
+
+        fn bounce(&mut self, context: &mut ProjectileContext<'_>, _trace: &ActorTraceResult) -> Q3GameItemsResult<()> {
+            self.bounces += 1;
+            context.state.trajectory.delta = vec3(1.0, 2.0, 3.0);
+            Ok(())
+        }
+
+        fn explode(&mut self, context: &mut ProjectileContext<'_>) -> Q3GameItemsResult<()> {
+            self.explodes += 1;
+            context.emit(&ImpactEmit::Impact {
+                normal: vec3(0.0, 0.0, 1.0),
+                target: None,
+                flesh: false,
+                surface_flags: 0,
+            })?;
+            context.retain()
+        }
+
+        fn impact(&mut self, context: &mut ProjectileContext<'_>, trace: &ActorTraceResult) -> Q3GameItemsResult<()> {
+            self.impacts += 1;
+            context.emit(&ImpactEmit::Impact {
+                normal: trace_normal(trace),
+                target: None,
+                flesh: false,
+                surface_flags: trace.surface_flags,
+            })
+        }
+
+        fn step(&mut self, context: &mut ProjectileContext<'_>) -> Q3GameItemsResult<()> {
+            self.steps += 1;
+            context.think(self)
+        }
+    }
+
+    pub(crate) struct TestMissileHost {
+        pub(crate) combat: TestCombat,
+        pub(crate) world: TestWorld,
+        pub(crate) bodies: BodyTable,
+        pub(crate) random: TestRandom,
+        pub(crate) missionpack: bool,
+        pub(crate) prox_timeout: i32,
+        pub(crate) sounds: Vec<String>,
+        pub(crate) invuln_outcome: InvulnerabilityOutcome,
+        pub(crate) behavior_launch: Option<BodyState>,
+        pub(crate) behavior_step: Option<BodyState>,
+    }
+
+    impl TestMissileHost {
+        pub(crate) fn base() -> TestMissileHost {
+            TestMissileHost {
+                combat: TestCombat::new(),
+                world: TestWorld::new(),
+                bodies: BodyTable::default(),
+                random: TestRandom {
+                    int_value: 0,
+                    random_value: 0.5,
+                    crandom_value: 0.0,
+                },
+                missionpack: false,
+                prox_timeout: 30000,
+                sounds: Vec::new(),
+                invuln_outcome: InvulnerabilityOutcome::Miss,
+                behavior_launch: None,
+                behavior_step: None,
+            }
+        }
+
+        pub(crate) fn missionpack() -> TestMissileHost {
+            let mut host = TestMissileHost::base();
+            host.missionpack = true;
+            host.combat.product = Product::Missionpack;
+            host
+        }
+    }
+
+    impl MissileHost for TestMissileHost {
+        fn combat(&mut self) -> &mut dyn CombatOps {
+            &mut self.combat
+        }
+
+        fn world(&mut self) -> &mut dyn WorldOps {
+            &mut self.world
+        }
+
+        fn combat_and_world(&mut self) -> (&mut dyn CombatOps, &mut dyn WorldOps) {
+            (&mut self.combat, &mut self.world)
+        }
+
+        fn bodies(&mut self) -> &mut BodyTable {
+            &mut self.bodies
+        }
+
+        fn random(&mut self) -> &mut dyn GameRandom {
+            &mut self.random
+        }
+
+        fn has_weapon_behavior(&self) -> bool {
+            self.behavior_launch.is_some() || self.behavior_step.is_some()
+        }
+
+        fn weapon_behavior_launch(
+            &mut self,
+            _projectile: ActorId,
+            _shooter: ActorId,
+            _weapon: Weapon,
+            _time_seconds: f64,
+            _origin: Vec3,
+            _velocity: Vec3,
+        ) -> Option<BodyState> {
+            self.behavior_launch
+        }
+
+        fn weapon_behavior_step(
+            &mut self,
+            _projectile: ActorId,
+            _origin: Vec3,
+            _velocity: Vec3,
+            _time_seconds: f64,
+        ) -> Option<BodyState> {
+            self.behavior_step
+        }
+
+        fn is_missionpack(&self) -> bool {
+            self.missionpack
+        }
+
+        fn prox_mine_timeout(&self) -> i32 {
+            self.prox_timeout
+        }
+
+        fn missionpack_sound_index(&mut self, path: &str) -> i32 {
+            self.sounds.push(path.to_string());
+            self.sounds.len() as i32
+        }
+
+        fn invulnerability_impact(
+            &mut self,
+            _pool: &mut EntityPool,
+            _target: Slot,
+            _direction: Vec3,
+            _point: Vec3,
+        ) -> InvulnerabilityOutcome {
+            self.invuln_outcome
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::math::vec3;
+
+    use super::test_support::*;
+    use super::*;
+    use crate::q3::base::game::items_core::test_support::*;
+    use crate::q3::base::game::misc_spawn::*;
+    use crate::q3::base::shared::definitions::*;
+    use crate::q3::base::shared::player_state::{MoveFlags, ENTITYNUM_WORLD};
+    use crate::q3::base::world::TraceSolidity;
+
+    #[test]
+    fn missile_parameters_and_snapping() {
+        let rocket = q3_missile_parameters(Weapon::WpRocketLauncher).unwrap();
+        assert_eq!((rocket.speed, rocket.duration, rocket.direct), (900.0, 15000, 100));
+        assert!(q3_missile_parameters(Weapon::WpShotgun).is_err());
+        assert_eq!(snap_vector(vec3(1.9, -2.1, 0.5)), vec3(1.0, -2.0, 0.0));
+        assert_eq!(
+            snap_vector_towards(vec3(1.9, 2.1, 3.0), vec3(0.0, 9.0, 3.0)),
+            vec3(1.0, 3.0, 3.0)
+        );
+        let mut random = TestRandom {
+            int_value: 0,
+            random_value: 0.5,
+            crandom_value: 0.0,
+        };
+        let nail = q3_nail_velocity(
+            vec3(0.0, 0.0, 0.0),
+            vec3(1.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            &mut random,
+        );
+        assert!(nail.x > 1000.0 && nail.y == 0.0 && nail.z == 0.0, "{nail:?}");
+    }
+
+    #[test]
+    fn missile_fire_paths() {
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut host = TestMissileHost::base();
+        let mut driver = TestDriver::new();
+        let owner = player_slot(&mut pool, Product::Baseq3);
+        let mut dir = MissileDirection { x: 3.0, y: 0.0, z: 0.0 };
+        let rocket = runtime
+            .fire_rocket(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        assert_eq!((dir.x, dir.y, dir.z), (1.0, 0.0, 0.0));
+        assert_eq!(pool.at(rocket).unwrap().s.e_type, EntityType::EtMissile as i32);
+        assert_eq!(pool.at(rocket).unwrap().think, Some(CallbackName(MISSILE_LAUNCH_THINK)));
+        assert_eq!(pool.at(rocket).unwrap().damage, 100);
+        let mut dir = MissileDirection { x: 0.0, y: 1.0, z: 0.0 };
+        let grenade = runtime
+            .fire_grenade(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        assert_eq!(pool.at(grenade).unwrap().s.e_flags, 0x20);
+        let mut dir = MissileDirection { x: 0.0, y: 0.0, z: 1.0 };
+        let hook = runtime
+            .fire_grapple(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        assert_eq!(pool.at(hook).unwrap().classname.as_deref(), Some("hook"));
+        assert_eq!(pool.at(owner).unwrap().client.as_ref().unwrap().hook, Some(hook));
+        assert_eq!(
+            runtime.owner_of(&pool, ActorId::from_slot(hook)),
+            Some(ActorId::from_slot(owner))
+        );
+        // Proximity requires missionpack.
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        assert!(runtime
+            .fire_prox(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .is_err());
+        // Bounce writes driver state back.
+        let trace = ServerTraceResult {
+            fraction: 0.5,
+            end: vec3(1.0, 1.0, 1.0),
+            entity_num: ENTITYNUM_WORLD,
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::Plane {
+                normal: vec3(0.0, 0.0, 1.0),
+            },
+            contents: 1,
+            surface_flags: 0,
+        };
+        runtime
+            .bounce(&mut pool, &mut host, &mut driver, rocket, &trace)
+            .unwrap();
+        assert_eq!(pool.at(rocket).unwrap().s.pos.delta, vec3(1.0, 2.0, 3.0));
+        // Owned-actor stepping dispatches the driver.
+        assert!(runtime
+            .run_owned(
+                &mut pool,
+                &mut host,
+                &mut driver,
+                OwnedActor {
+                    id: ActorId::from_slot(rocket)
+                }
+            )
+            .unwrap());
+        assert!(!runtime
+            .run_owned(&mut pool, &mut host, &mut driver, OwnedActor { id: ActorId(999) })
+            .unwrap());
+        assert_eq!(driver.steps, 1);
+    }
+
+    #[test]
+    fn proximity_mine_end_to_end() {
+        let mut pool = EntityPool::new(Product::Missionpack);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut host = TestMissileHost::missionpack();
+        let mut driver = TestDriver::new();
+        let owner = player_slot(&mut pool, Product::Missionpack);
+        let mut dir = MissileDirection {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        };
+        let mine = runtime
+            .fire_prox(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 50.0), &mut dir)
+            .unwrap();
+        // Stick to the world through the projectile context.
+        let trace = ActorTraceResult {
+            fraction: 0.5,
+            end: vec3(0.0, 0.0, 0.0),
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::Plane {
+                normal: vec3(0.0, 0.0, 1.0),
+            },
+            contents: 1,
+            surface_flags: 0,
+            hit: TraceHit::World,
+        };
+        let entity = pool.at(mine).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: mine,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert!(ctx
+            .special_impact(&trace, ActorId::from_slot(ENTITYNUM_WORLD as usize))
+            .unwrap());
+        assert!(ctx.has_special().unwrap());
+        assert!(ctx.has_reflection());
+        assert_eq!(pool.at(mine).unwrap().think, Some(CallbackName(MISSILE_SPECIAL_THINK)));
+        // Arm the mine; a trigger entity appears.
+        assert!(runtime
+            .dispatch_think(
+                &mut pool,
+                &mut host,
+                &mut driver,
+                mine,
+                CallbackName(MISSILE_SPECIAL_THINK)
+            )
+            .unwrap());
+        let trigger = pool.at(mine).unwrap().activator.unwrap();
+        assert!(runtime.is_proximity_trigger(&pool, trigger).unwrap());
+        assert_eq!(pool.at(trigger).unwrap().classname.as_deref(), Some("proxmine_trigger"));
+        // An enemy in radius trips the trigger.
+        let victim = player_slot(&mut pool, Product::Missionpack);
+        pool.at_mut(victim).unwrap().s.pos.base = vec3(1.0, 0.0, 0.0);
+        pool.at_mut(trigger).unwrap().s.pos.base = vec3(0.0, 0.0, 0.0);
+        assert!(runtime
+            .dispatch_touch(&mut pool, &mut host, trigger, DamageParticipant::Entity(victim))
+            .unwrap());
+        assert!(pool.get(trigger).is_none());
+        assert_eq!(pool.at(mine).unwrap().nextthink, host.combat.time + 500);
+        // The armed think explodes through the driver.
+        assert!(runtime
+            .dispatch_think(
+                &mut pool,
+                &mut host,
+                &mut driver,
+                mine,
+                CallbackName(MISSILE_PROXIMITY_DIE_THINK)
+            )
+            .unwrap());
+        assert_eq!(driver.explodes, 1);
+        assert!(pool.at(mine).unwrap().free_after_event);
+    }
+
+    #[test]
+    fn hook_attach_think_and_release() {
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut host = TestMissileHost::base();
+        let mut driver = TestDriver::new();
+        let owner = player_slot(&mut pool, Product::Baseq3);
+        let victim = player_slot(&mut pool, Product::Baseq3);
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        let hook = runtime
+            .fire_grapple(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        let trace = ActorTraceResult {
+            fraction: 0.5,
+            end: vec3(5.0, 0.0, 0.0),
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::Plane {
+                normal: vec3(-1.0, 0.0, 0.0),
+            },
+            contents: 1,
+            surface_flags: 0,
+            hit: TraceHit::Actor(ActorId::from_slot(victim)),
+        };
+        let entity = pool.at(hook).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: hook,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert!(ctx.special_impact(&trace, ActorId::from_slot(victim)).unwrap());
+        assert_eq!(pool.at(hook).unwrap().s.e_type, EntityType::EtGrapple as i32);
+        runtime.hook_think(&mut pool, hook).unwrap();
+        assert_eq!(
+            pool.at(owner).unwrap().client.as_ref().unwrap().ps.grapple_point,
+            pool.at(hook).unwrap().r.current_origin
+        );
+        // Releasing the hook actor clears the owner hook.
+        runtime.released(&mut pool, ActorId::from_slot(hook)).unwrap();
+        assert!(pool.at(owner).unwrap().client.as_ref().unwrap().hook.is_none());
+        // Save round trip preserves owners.
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        let _rocket = runtime
+            .fire_rocket(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        let save = runtime.capture_save_state();
+        let mut fresh = MissileRuntime::new();
+        let resolve = |id: u32| -> Q3GameItemsResult<ActorId> { Ok(ActorId(id)) };
+        fresh.restore_save_state(&pool, &save, &resolve).unwrap();
+        assert_eq!(fresh.capture_save_state(), save);
+        let mut duplicated = save.clone();
+        duplicated.push(save[0]);
+        assert!(fresh.restore_save_state(&pool, &duplicated, &resolve).is_err());
+    }
+
+    #[test]
+    fn projectile_context_surface() {
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut host = TestMissileHost::base();
+        let mut driver = TestDriver::new();
+        let owner = player_slot(&mut pool, Product::Baseq3);
+        let target = player_slot(&mut pool, Product::Baseq3);
+        pool.at_mut(target).unwrap().takedamage = true;
+        pool.at_mut(target).unwrap().health = 80;
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        let bolt = runtime
+            .fire_rocket(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        let entity = pool.at(bolt).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: bolt,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert!(ctx.live().unwrap());
+        assert_eq!(ctx.phase().unwrap(), ProjectilePhase::Flight);
+        assert_eq!(ctx.world_actor(), ActorId::from_slot(ENTITYNUM_WORLD as usize));
+        let record = ctx.target(ActorId::from_slot(target)).unwrap().unwrap();
+        assert!(record.damageable && record.player && record.accuracy_eligible);
+        assert!(ctx.target(ActorId(999)).unwrap().is_none());
+        ctx.emit(&ImpactEmit::Bounce {
+            normal: vec3(0.0, 0.0, 1.0),
+        })
+        .unwrap();
+        ctx.accuracy().unwrap();
+        assert!(ctx.radius(vec3(0.0, 0.0, 0.0), None).unwrap());
+        ctx.after_move().unwrap();
+        ctx.no_impact().unwrap();
+        assert_eq!(pool.at(owner).unwrap().client.as_ref().unwrap().accuracy_hits, 1);
+        assert!(pool
+            .events
+            .iter()
+            .any(|event| event.event == EntityEvent::EvGrenadeBounce));
+    }
+
+    #[test]
+    fn missile_extra_fires_and_dispatch() {
+        let mut pool = EntityPool::new(Product::Missionpack);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut host = TestMissileHost::missionpack();
+        let mut driver = TestDriver::new();
+        let owner = player_slot(&mut pool, Product::Missionpack);
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        let plasma = runtime
+            .fire_plasma(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        assert_eq!(pool.at(plasma).unwrap().damage, 20);
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        let bfg = runtime
+            .fire_bfg(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        assert_eq!(pool.at(bfg).unwrap().damage, 100);
+        let nail = runtime
+            .fire_nail(
+                &mut pool,
+                &mut host,
+                &mut driver,
+                owner,
+                vec3(0.0, 0.0, 0.0),
+                vec3(1.0, 0.0, 0.0),
+                vec3(0.0, 1.0, 0.0),
+                vec3(0.0, 0.0, 1.0),
+            )
+            .unwrap();
+        assert_eq!(pool.at(nail).unwrap().s.pos.delta, vec3(1455.0, 0.0, 0.0));
+        assert!(pool.at(nail).unwrap().parent.is_none());
+        // Unknown callbacks are unhandled; plain entities have no prox hooks.
+        assert!(!runtime
+            .dispatch_think(&mut pool, &mut host, &mut driver, plasma, CallbackName("nope"))
+            .unwrap());
+        assert!(!runtime
+            .dispatch_touch(&mut pool, &mut host, plasma, DamageParticipant::Entity(owner))
+            .unwrap());
+        assert!(!runtime.dispatch_die(&mut pool, &mut host, plasma).unwrap());
+        // Impact delegates to the driver.
+        let trace = ServerTraceResult {
+            fraction: 0.5,
+            end: vec3(1.0, 1.0, 1.0),
+            entity_num: ENTITYNUM_WORLD,
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::Plane {
+                normal: vec3(0.0, 0.0, 1.0),
+            },
+            contents: 1,
+            surface_flags: 0,
+        };
+        runtime
+            .impact(&mut pool, &mut host, &mut driver, plasma, &trace)
+            .unwrap();
+        assert_eq!(driver.impacts, 1);
+        // Context surface extras.
+        let entity = pool.at(plasma).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: plasma,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert_eq!(ctx.time(), 1000);
+        assert_eq!(ctx.previous_time(), 900);
+        assert_eq!(ctx.origin().unwrap(), vec3(0.0, 0.0, 0.0));
+        assert_eq!(ctx.event_time().unwrap(), 0);
+        ctx.clear_event().unwrap();
+        ctx.link().unwrap();
+        ctx.move_body(vec3(1.0, 1.0, 1.0), vec3(2.0, 2.0, 2.0)).unwrap();
+        let swept = ctx.trace(vec3(0.0, 0.0, 0.0), vec3(5.0, 5.0, 5.0), None).unwrap();
+        assert_eq!(swept.fraction, 1.0);
+        assert_eq!(
+            ctx.reflection_impact(ActorId::from_slot(owner), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, 0.0))
+                .unwrap(),
+            InvulnerabilityOutcome::Miss
+        );
+        ctx.set_origin_stop(vec3(9.0, 9.0, 9.0)).unwrap();
+        assert_eq!(pool.at(plasma).unwrap().r.current_origin, vec3(9.0, 9.0, 9.0));
+        // Shooter finish locks onto the named target.
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut missile_host = TestMissileHost::base();
+        let mut driver = TestDriver::new();
+        let mut registry = TestRegistry {
+            product: Product::Baseq3,
+            registered: Vec::new(),
+        };
+        let items = test_items();
+        let mut random = TestRandom {
+            int_value: 0,
+            random_value: 0.5,
+            crandom_value: 0.0,
+        };
+        let mut world = TestWorld::new();
+        let mut host = MiscSpawnHost {
+            missiles: &mut runtime,
+            missile_host: &mut missile_host,
+            missile_driver: &mut driver,
+            item_registry: &mut registry,
+            items: &items,
+            random: &mut random,
+            world: &mut world,
+            time: 1000,
+            warn: &mut |_text: &str| {},
+        };
+        let foe = pool.spawn().unwrap();
+        pool.at_mut(foe).unwrap().targetname = Some("foe".to_string());
+        let shooter_slot = pool.spawn().unwrap();
+        pool.at_mut(shooter_slot).unwrap().target = Some("foe".to_string());
+        assert!(dispatch_misc_think(&mut pool, &mut host, shooter_slot, CallbackName(MISC_SHOOTER_THINK)).unwrap());
+        assert_eq!(pool.at(shooter_slot).unwrap().enemy, Some(foe));
+        assert!(!dispatch_misc_think(&mut pool, &mut host, shooter_slot, CallbackName("nope")).unwrap());
+        assert!(!dispatch_misc_use(&mut pool, &mut host, shooter_slot, CallbackName("nope")).unwrap());
+    }
+
+    #[test]
+    fn proximity_merge_invuln_and_hook_miss() {
+        let mut pool = EntityPool::new(Product::Missionpack);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut host = TestMissileHost::missionpack();
+        let mut driver = TestDriver::new();
+        let owner = player_slot(&mut pool, Product::Missionpack);
+        let victim = player_slot(&mut pool, Product::Missionpack);
+        pool.at_mut(victim).unwrap().s.e_type = EntityType::EtPlayer as i32;
+        // First mine attaches to the victim.
+        let mut dir = MissileDirection {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        };
+        let mine = runtime
+            .fire_prox(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 50.0), &mut dir)
+            .unwrap();
+        let trace = ActorTraceResult {
+            fraction: 0.5,
+            end: vec3(0.0, 0.0, 0.0),
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::Plane {
+                normal: vec3(0.0, 0.0, 1.0),
+            },
+            contents: 1,
+            surface_flags: 0,
+            hit: TraceHit::Actor(ActorId::from_slot(victim)),
+        };
+        let entity = pool.at(mine).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: mine,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert!(ctx.special_impact(&trace, ActorId::from_slot(victim)).unwrap());
+        assert_eq!(
+            pool.at(mine).unwrap().think,
+            Some(CallbackName(MISSILE_PROXIMITY_ON_PLAYER))
+        );
+        assert_ne!(
+            pool.at(victim).unwrap().client.as_ref().unwrap().ps.e_flags & EF_TICKING,
+            0
+        );
+        // The engine copies ps.e_flags to s.e_flags each frame; the merge branch
+        // reads the snapshot copy.
+        pool.at_mut(victim).unwrap().s.e_flags |= EF_TICKING;
+        // A second mine merges into the ticking victim's activator.
+        let mut dir = MissileDirection {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        };
+        let mine2 = runtime
+            .fire_prox(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 50.0), &mut dir)
+            .unwrap();
+        let entity = pool.at(mine2).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: mine2,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert!(ctx.special_impact(&trace, ActorId::from_slot(victim)).unwrap());
+        assert_eq!(
+            pool.at(mine2).unwrap().think,
+            Some(CallbackName(MISSILE_PROXIMITY_PLAYER_THINK))
+        );
+        assert_eq!(pool.at(mine).unwrap().splash_damage, 200);
+        assert_eq!(pool.at(mine).unwrap().splash_radius, 225.0);
+        // Invulnerable victims burn the mine off with damage instead of exploding.
+        pool.at_mut(victim)
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap()
+            .invulnerability_time = 5000;
+        assert!(runtime
+            .dispatch_think(
+                &mut pool,
+                &mut host,
+                &mut driver,
+                mine,
+                CallbackName(MISSILE_PROXIMITY_ON_PLAYER)
+            )
+            .unwrap());
+        assert_eq!(host.combat.damage_calls.len(), 1);
+        assert_eq!(host.combat.damage_calls[0].method, 27);
+        assert_eq!(
+            pool.at(victim).unwrap().client.as_ref().unwrap().invulnerability_time,
+            0
+        );
+        // Hook missing the world still grapples; freeing works through dispatch.
+        let mut dir = MissileDirection { x: 1.0, y: 0.0, z: 0.0 };
+        let hook = runtime
+            .fire_grapple(&mut pool, &mut host, &mut driver, owner, vec3(0.0, 0.0, 0.0), &mut dir)
+            .unwrap();
+        let trace = ActorTraceResult {
+            hit: TraceHit::World,
+            ..trace
+        };
+        let entity = pool.at(hook).unwrap().clone();
+        let mut ctx = ProjectileContext {
+            runtime: &mut runtime,
+            pool: &mut pool,
+            host: &mut host,
+            slot: hook,
+            state: ProjectileState {
+                trajectory: entity.s.pos,
+                flags: entity.s.e_flags,
+            },
+            spec: ProjectileSpec {
+                weapon: entity.s.weapon,
+                direct: entity.damage,
+                splash: entity.splash_damage,
+                radius: entity.splash_radius,
+                method: entity.method_of_death,
+                splash_method: entity.splash_method_of_death,
+                damage_point: entity.s.origin,
+            },
+        };
+        assert!(ctx
+            .special_impact(&trace, ActorId::from_slot(ENTITYNUM_WORLD as usize))
+            .unwrap());
+        assert_eq!(pool.at(hook).unwrap().s.e_type, EntityType::EtGrapple as i32);
+        assert_ne!(
+            pool.at(owner).unwrap().client.as_ref().unwrap().ps.pm_flags & (MoveFlags::GrapplePull as i32),
+            0
+        );
+        assert!(runtime
+            .dispatch_think(
+                &mut pool,
+                &mut host,
+                &mut driver,
+                hook,
+                CallbackName(MISSILE_GRAPPLE_THINK)
+            )
+            .unwrap());
+        assert!(pool.get(hook).is_none());
     }
 }

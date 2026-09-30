@@ -5,9 +5,11 @@
 use qa_core::math::{add3, cross3, normalize3, perpendicular_vector, scale3, sub3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_items::*;
+use crate::q3::base::game::items_core::*;
 use crate::q3::base::game::misc::*;
 use crate::q3::base::game::missile::*;
+use crate::q3::base::game::utilities::move_direction;
+use crate::q3::base::shared::definitions::{EntityEvent, Weapon};
 
 // ---------------------------------------------------------------------------
 // misc-spawn.ts: g_misc.c spawn wrappers and shooters
@@ -83,9 +85,9 @@ pub fn misc_spawn_handlers() -> Vec<(&'static str, MiscSpawn)> {
         ("misc_model", MiscSpawn::Model),
         ("misc_portal_surface", MiscSpawn::PortalSurface),
         ("misc_portal_camera", MiscSpawn::PortalCamera),
-        ("shooter_rocket", MiscSpawn::Shooter(Weapon::RocketLauncher)),
-        ("shooter_plasma", MiscSpawn::Shooter(Weapon::Plasmagun)),
-        ("shooter_grenade", MiscSpawn::Shooter(Weapon::GrenadeLauncher)),
+        ("shooter_rocket", MiscSpawn::Shooter(Weapon::WpRocketLauncher)),
+        ("shooter_plasma", MiscSpawn::Shooter(Weapon::WpPlasmagun)),
+        ("shooter_grenade", MiscSpawn::Shooter(Weapon::WpGrenadeLauncher)),
     ]
 }
 
@@ -182,7 +184,7 @@ pub(crate) fn shooter_fire(
     let start = pool.at(slot)?.s.origin;
     let mut direction = direction;
     match weapon {
-        Weapon::GrenadeLauncher => {
+        Weapon::WpGrenadeLauncher => {
             host.missiles.fire_grenade(
                 pool,
                 host.missile_host,
@@ -192,7 +194,7 @@ pub(crate) fn shooter_fire(
                 &mut direction,
             )?;
         }
-        Weapon::RocketLauncher => {
+        Weapon::WpRocketLauncher => {
             host.missiles.fire_rocket(
                 pool,
                 host.missile_host,
@@ -202,7 +204,7 @@ pub(crate) fn shooter_fire(
                 &mut direction,
             )?;
         }
-        Weapon::Plasmagun => {
+        Weapon::WpPlasmagun => {
             host.missiles.fire_plasma(
                 pool,
                 host.missile_host,
@@ -232,7 +234,7 @@ pub fn shooter_use(pool: &mut EntityPool, host: &mut MiscSpawnHost<'_>, slot: Sl
     let horizontal = shooter_crandom(host)? * spread;
     let direction = normalize3(add3(with_vertical, scale3(right, horizontal)));
     shooter_fire(pool, host, slot, MissileDirection::from(direction))?;
-    pool.add_event(slot, EntityEvent::FireWeapon, 0)
+    pool.add_event(slot, EntityEvent::EvFireWeapon, 0)
 }
 
 /// Shooter finish think (target lock).
@@ -316,4 +318,72 @@ pub fn dispatch_misc_think(
     }
     shooter_finish(pool, host, slot)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::math::vec3;
+
+    use super::*;
+    use crate::q3::base::game::items_core::test_support::*;
+    use crate::q3::base::game::missile::test_support::*;
+    use crate::q3::base::shared::definitions::*;
+
+    #[test]
+    fn misc_spawns_cover_table() {
+        let handlers = misc_spawn_handlers();
+        assert_eq!(handlers.len(), 11);
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut runtime = MissileRuntime::new();
+        runtime.bind_save_callbacks(&mut pool);
+        let mut missile_host = TestMissileHost::base();
+        let mut driver = TestDriver::new();
+        let mut registry = TestRegistry {
+            product: Product::Baseq3,
+            registered: Vec::new(),
+        };
+        let items = test_items();
+        let mut random = TestRandom {
+            int_value: 0,
+            random_value: 0.5,
+            crandom_value: 0.0,
+        };
+        let mut world = TestWorld::new();
+        let mut warnings = Vec::new();
+        let mut host = MiscSpawnHost {
+            missiles: &mut runtime,
+            missile_host: &mut missile_host,
+            missile_driver: &mut driver,
+            item_registry: &mut registry,
+            items: &items,
+            random: &mut random,
+            world: &mut world,
+            time: 1000,
+            warn: &mut |text: &str| warnings.push(text.to_string()),
+        };
+        let vars = SpawnVariables::new(Vec::new());
+        let shooter_slot = pool.spawn().unwrap();
+        run_misc_spawn(
+            &mut pool,
+            &mut host,
+            &MiscSpawn::Shooter(Weapon::WpRocketLauncher),
+            shooter_slot,
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(pool.at(shooter_slot).unwrap().s.weapon, Weapon::WpRocketLauncher);
+        assert!((pool.at(shooter_slot).unwrap().random - (std::f32::consts::PI / 180.0).sin()).abs() < 1e-6);
+        shooter_use(&mut pool, &mut host, shooter_slot).unwrap();
+        assert!(pool.events.iter().any(|event| event.event == EntityEvent::EvFireWeapon));
+        let null = pool.spawn().unwrap();
+        run_misc_spawn(&mut pool, &mut host, &MiscSpawn::InfoNull, null, &vars).unwrap();
+        assert!(pool.get(null).is_none());
+        let camp = pool.spawn().unwrap();
+        pool.at_mut(camp).unwrap().s.origin = vec3(7.0, 8.0, 9.0);
+        run_misc_spawn(&mut pool, &mut host, &MiscSpawn::InfoCamp, camp, &vars).unwrap();
+        assert_eq!(pool.at(camp).unwrap().s.pos.base, vec3(7.0, 8.0, 9.0));
+        assert_eq!(driver.launches.len(), 1);
+        assert_eq!(registry.registered.len(), 1);
+        assert!(warnings.is_empty());
+    }
 }

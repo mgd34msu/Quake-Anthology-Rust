@@ -16,6 +16,16 @@ use crate::q3::base::game::mirrors_game_sim::*;
 /// Juiced means of death (`MOD_JUICED`).
 pub const MOD_JUICED: i32 = 27;
 
+/// Damage flags (`DamageFlags`).
+pub struct DamageFlags;
+
+impl DamageFlags {
+    /// No knockback.
+    pub const NO_KNOCKBACK: i32 = 0x4;
+    /// No protection.
+    pub const NO_PROTECTION: i32 = 0x8;
+}
+
 /// Damage diagnostic record (`DamageDiagnostic`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DamageDiagnostic {

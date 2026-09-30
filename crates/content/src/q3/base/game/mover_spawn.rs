@@ -7,8 +7,12 @@ use std::collections::HashSet;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::item_motion::*;
-use crate::q3::base::game::mirrors_game_items::*;
+use crate::q3::base::game::items_core::*;
 use crate::q3::base::game::misc::*;
+use crate::q3::base::game::state::{GameFlags, MoverState};
+use crate::q3::base::game::utilities::{move_direction, EntityStringField};
+use crate::q3::base::shared::definitions::Team;
+use crate::q3::base::shared::trajectory::{Trajectory, TrajectoryType};
 
 // ---------------------------------------------------------------------------
 // mover-spawn.ts: g_mover.c class spawn and trigger handlers
@@ -120,7 +124,7 @@ pub fn door_touch(
             .at(other_slot)?
             .client
             .as_ref()
-            .is_some_and(|client| client.sess.session_team == Team::Spectator);
+            .is_some_and(|client| client.sess.session_team == Team::TeamSpectator);
         if spectator {
             let state = pool.at(parent)?.mover_state;
             if state == MoverState::OneToTwo || state == MoverState::Pos2 {
@@ -406,7 +410,7 @@ pub fn reached_train(pool: &mut EntityPool, host: &mut dyn MoverSpawnHost, slot:
         pool.at_mut(slot)?.nextthink = float_int(time as f32 + pool.at(next)?.wait * 1000.0);
         let think = pool.think_cbs.resolve(MOVER_REACHED_TRAIN_THINK)?;
         pool.at_mut(slot)?.think = Some(think);
-        pool.at_mut(slot)?.s.pos.ty = TrajectoryType::Stationary;
+        pool.at_mut(slot)?.s.pos.trajectory_type = TrajectoryType::TrStationary;
     }
     Ok(())
 }
@@ -554,7 +558,7 @@ pub fn mover_rotating(
         1
     };
     let speed = pool.at(slot)?.speed;
-    pool.at_mut(slot)?.s.apos.ty = TrajectoryType::Linear;
+    pool.at_mut(slot)?.s.apos.trajectory_type = TrajectoryType::TrLinear;
     let delta = with_axis_component(pool.at(slot)?.s.apos.delta, axis, speed)?;
     pool.at_mut(slot)?.s.apos.delta = delta;
     if pool.at(slot)?.damage == 0 {
@@ -599,7 +603,7 @@ pub fn mover_bobbing(
     };
     let delta = with_axis_component(pool.at(slot)?.s.pos.delta, axis, height)?;
     pool.at_mut(slot)?.s.pos = Trajectory {
-        ty: TrajectoryType::Sine,
+        trajectory_type: TrajectoryType::TrSine,
         time: float_int(duration as f32 * phase),
         duration,
         base: origin,
@@ -633,7 +637,7 @@ pub fn mover_pendulum(
     let angles = pool.at(slot)?.s.angles;
     let delta = with_axis_component(pool.at(slot)?.s.apos.delta, 2, speed)?;
     pool.at_mut(slot)?.s.apos = Trajectory {
-        ty: TrajectoryType::Sine,
+        trajectory_type: TrajectoryType::TrSine,
         time: float_int(duration as f32 * phase),
         duration,
         base: angles,
@@ -739,7 +743,7 @@ pub fn dispatch_mover_think(
         MOVER_REACHED_TRAIN_THINK => {
             let time = host.movers().time();
             pool.at_mut(slot)?.s.pos.time = time;
-            pool.at_mut(slot)?.s.pos.ty = TrajectoryType::LinearStop;
+            pool.at_mut(slot)?.s.pos.trajectory_type = TrajectoryType::TrLinearStop;
             Ok(true)
         }
         MOVER_TRAIN_THINK => {
@@ -829,4 +833,316 @@ pub fn dispatch_mover_blocked(
     }
     host.movers().blocked_door(pool, slot, other)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::game::items_core::test_support::*;
+    use crate::q3::base::game::state::MoverState;
+    use crate::q3::base::shared::definitions::*;
+
+    struct TestMovers {
+        time: i32,
+        sounds: Vec<String>,
+        use_log: Vec<Slot>,
+        match_log: Vec<(Slot, MoverState)>,
+        init_log: Vec<Slot>,
+        state_log: Vec<(Slot, MoverState)>,
+        blocked_log: Vec<Slot>,
+    }
+
+    impl MoverCore for TestMovers {
+        fn time(&self) -> i32 {
+            self.time
+        }
+
+        fn sound_index(&mut self, path: &str) -> i32 {
+            self.sounds.push(path.to_string());
+            self.sounds.len() as i32
+        }
+
+        fn use_binary(
+            &mut self,
+            _pool: &mut EntityPool,
+            entity: Slot,
+            _other: Option<DamageParticipant>,
+            _activator: Option<DamageParticipant>,
+        ) -> Q3GameItemsResult<()> {
+            self.use_log.push(entity);
+            Ok(())
+        }
+
+        fn match_team(
+            &mut self,
+            _pool: &mut EntityPool,
+            leader: Slot,
+            state: MoverState,
+            _time: i32,
+        ) -> Q3GameItemsResult<()> {
+            self.match_log.push((leader, state));
+            Ok(())
+        }
+
+        fn blocked_door(
+            &mut self,
+            _pool: &mut EntityPool,
+            entity: Slot,
+            _other: DamageParticipant,
+        ) -> Q3GameItemsResult<()> {
+            self.blocked_log.push(entity);
+            Ok(())
+        }
+
+        fn initialize_binary(
+            &mut self,
+            _pool: &mut EntityPool,
+            entity: Slot,
+            _variables: &SpawnVariables,
+        ) -> Q3GameItemsResult<()> {
+            self.init_log.push(entity);
+            Ok(())
+        }
+
+        fn set_state(
+            &mut self,
+            pool: &mut EntityPool,
+            entity: Slot,
+            state: MoverState,
+            _time: i32,
+        ) -> Q3GameItemsResult<()> {
+            pool.at_mut(entity)?.mover_state = state;
+            self.state_log.push((entity, state));
+            Ok(())
+        }
+    }
+
+    struct TestMoverSpawnHost {
+        movers: TestMovers,
+        combat: TestCombat,
+        world: TestWorld,
+        warnings: Vec<String>,
+        used_targets: Vec<Slot>,
+        brush_models: Vec<Slot>,
+    }
+
+    impl TestMoverSpawnHost {
+        fn new() -> TestMoverSpawnHost {
+            TestMoverSpawnHost {
+                movers: TestMovers {
+                    time: 500,
+                    sounds: Vec::new(),
+                    use_log: Vec::new(),
+                    match_log: Vec::new(),
+                    init_log: Vec::new(),
+                    state_log: Vec::new(),
+                    blocked_log: Vec::new(),
+                },
+                combat: TestCombat::new(),
+                world: TestWorld::new(),
+                warnings: Vec::new(),
+                used_targets: Vec::new(),
+                brush_models: Vec::new(),
+            }
+        }
+    }
+
+    impl MoverSpawnHost for TestMoverSpawnHost {
+        fn movers(&mut self) -> &mut dyn MoverCore {
+            &mut self.movers
+        }
+
+        fn combat_and_world(&mut self) -> (&mut dyn CombatOps, &mut dyn WorldOps) {
+            (&mut self.combat, &mut self.world)
+        }
+
+        fn gravity(&self) -> f32 {
+            800.0
+        }
+
+        fn set_brush_model(&mut self, pool: &mut EntityPool, slot: Slot, _name: Option<&str>) -> Q3GameItemsResult<()> {
+            self.brush_models.push(slot);
+            pool.at_mut(slot)?.r.mins = vec3(-16.0, -16.0, -24.0);
+            pool.at_mut(slot)?.r.maxs = vec3(16.0, 16.0, 32.0);
+            pool.at_mut(slot)?.r.absmin = vec3(-16.0, -16.0, -24.0);
+            pool.at_mut(slot)?.r.absmax = vec3(16.0, 16.0, 32.0);
+            Ok(())
+        }
+
+        fn remap_shader(&mut self, _old_name: &str, _new_name: &str, _time_seconds: f32) {}
+
+        fn use_targets(
+            &mut self,
+            _pool: &mut EntityPool,
+            entity: Slot,
+            _activator: Option<DamageParticipant>,
+        ) -> Q3GameItemsResult<()> {
+            self.used_targets.push(entity);
+            Ok(())
+        }
+
+        fn warn(&mut self, message: &str) {
+            self.warnings.push(message.to_string());
+        }
+    }
+
+    #[test]
+    fn mover_spawns_cover_table() {
+        let handlers = mover_spawn_handlers();
+        assert_eq!(handlers.len(), 9);
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut host = TestMoverSpawnHost::new();
+        let vars = SpawnVariables::new(Vec::new());
+        // Door geometry and scheduling.
+        let door = pool.spawn().unwrap();
+        pool.at_mut(door).unwrap().s.angles = vec3(0.0, 90.0, 0.0);
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Door, door, &vars).unwrap();
+        assert!((pool.at(door).unwrap().pos2.y - 24.0).abs() < 0.01);
+        assert_eq!(pool.at(door).unwrap().nextthink, 600);
+        assert_eq!(
+            pool.at(door).unwrap().think,
+            Some(CallbackName(MOVER_DOOR_SPAWN_TRIGGER))
+        );
+        assert!(dispatch_mover_think(&mut pool, &mut host, door, CallbackName(MOVER_DOOR_SPAWN_TRIGGER)).unwrap());
+        assert_eq!(host.movers.match_log.len(), 1);
+        // Plat drops below its origin.
+        let plat = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Plat, plat, &vars).unwrap();
+        assert!((pool.at(plat).unwrap().pos1.z + 48.0).abs() < 0.01);
+        // Button arms touch or health.
+        let button = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Button, button, &vars).unwrap();
+        assert_eq!(pool.at(button).unwrap().touch, Some(CallbackName(MOVER_BUTTON_TOUCH)));
+        // Train without a target warns and frees.
+        let train = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Train, train, &vars).unwrap();
+        assert!(pool.get(train).is_none());
+        assert!(!host.warnings.is_empty());
+        // Rotating, bobbing, pendulum, static shapes.
+        let rotating = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Rotating, rotating, &vars).unwrap();
+        assert_eq!(pool.at(rotating).unwrap().s.apos.delta.y, 100.0);
+        let bobbing = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Bobbing, bobbing, &vars).unwrap();
+        assert_eq!(pool.at(bobbing).unwrap().s.pos.trajectory_type, TrajectoryType::TrSine);
+        assert_eq!(pool.at(bobbing).unwrap().s.pos.duration, 4000);
+        let pendulum = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Pendulum, pendulum, &vars).unwrap();
+        assert!(pool.at(pendulum).unwrap().s.pos.duration > 0);
+        let statik = pool.spawn().unwrap();
+        pool.at_mut(statik).unwrap().s.origin = vec3(3.0, 4.0, 5.0);
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Static, statik, &vars).unwrap();
+        assert_eq!(pool.at(statik).unwrap().r.current_origin, vec3(3.0, 4.0, 5.0));
+        // Path corner without a targetname warns and frees.
+        let corner = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::PathCorner, corner, &vars).unwrap();
+        assert!(pool.get(corner).is_none());
+    }
+
+    #[test]
+    fn mover_train_path_and_triggers() {
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut host = TestMoverSpawnHost::new();
+        let vars = SpawnVariables::new(Vec::new());
+        let c1 = pool.spawn().unwrap();
+        pool.at_mut(c1).unwrap().classname = Some("path_corner".to_string());
+        pool.at_mut(c1).unwrap().targetname = Some("t1".to_string());
+        pool.at_mut(c1).unwrap().target = Some("t2".to_string());
+        pool.at_mut(c1).unwrap().s.origin = vec3(0.0, 0.0, 0.0);
+        let c2 = pool.spawn().unwrap();
+        pool.at_mut(c2).unwrap().classname = Some("path_corner".to_string());
+        pool.at_mut(c2).unwrap().targetname = Some("t2".to_string());
+        pool.at_mut(c2).unwrap().target = Some("t1".to_string());
+        pool.at_mut(c2).unwrap().s.origin = vec3(100.0, 0.0, 0.0);
+        let train = pool.spawn().unwrap();
+        pool.at_mut(train).unwrap().target = Some("t1".to_string());
+        pool.at_mut(train).unwrap().speed = 100.0;
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Train, train, &vars).unwrap();
+        assert!(dispatch_mover_think(&mut pool, &mut host, train, CallbackName(MOVER_TRAIN_THINK)).unwrap());
+        assert_eq!(pool.at(train).unwrap().next_train, Some(c2));
+        assert_eq!(pool.at(train).unwrap().pos2, vec3(100.0, 0.0, 0.0));
+        assert_eq!(host.used_targets, vec![c1]);
+        assert_eq!(host.movers.state_log.last(), Some(&(train, MoverState::OneToTwo)));
+        // A cycle that never returns to the first corner is an error.
+        let loop_a = pool.spawn().unwrap();
+        pool.at_mut(loop_a).unwrap().classname = Some("path_corner".to_string());
+        pool.at_mut(loop_a).unwrap().targetname = Some("loop_a".to_string());
+        pool.at_mut(loop_a).unwrap().target = Some("loop_b".to_string());
+        let loop_b = pool.spawn().unwrap();
+        pool.at_mut(loop_b).unwrap().classname = Some("path_corner".to_string());
+        pool.at_mut(loop_b).unwrap().targetname = Some("loop_b".to_string());
+        pool.at_mut(loop_b).unwrap().target = Some("loop_b".to_string());
+        let loop_train = pool.spawn().unwrap();
+        pool.at_mut(loop_train).unwrap().target = Some("loop_a".to_string());
+        pool.at_mut(loop_train).unwrap().speed = 100.0;
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Train, loop_train, &vars).unwrap();
+        assert!(dispatch_mover_think(&mut pool, &mut host, loop_train, CallbackName(MOVER_TRAIN_THINK)).is_err());
+        // Door trigger touch teleports spectators and uses for players.
+        let door = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Door, door, &vars).unwrap();
+        spawn_door_trigger(&mut pool, &mut host, door).unwrap();
+        let trigger = (0..pool.num_entities())
+            .find(|slot| {
+                pool.at(*slot)
+                    .map(|entity| entity.classname.as_deref() == Some("door_trigger"))
+                    .unwrap_or(false)
+            })
+            .unwrap();
+        assert!(is_door_trigger(&pool, trigger).unwrap());
+        let spectator = player_slot(&mut pool, Product::Baseq3);
+        pool.at_mut(spectator)
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap()
+            .sess
+            .session_team = Team::TeamSpectator;
+        pool.at_mut(spectator).unwrap().client.as_mut().unwrap().ps.health = 100;
+        pool.at_mut(spectator).unwrap().s.origin = vec3(0.0, 0.0, 0.0);
+        door_touch(&mut pool, &mut host, trigger, DamageParticipant::Entity(spectator)).unwrap();
+        assert_ne!(
+            pool.at(spectator).unwrap().client.as_ref().unwrap().ps.origin,
+            vec3(0.0, 0.0, 0.0)
+        );
+        let player = player_slot(&mut pool, Product::Baseq3);
+        assert!(dispatch_mover_touch(&mut pool, &mut host, trigger, DamageParticipant::Entity(player)).unwrap());
+        assert_eq!(host.movers.use_log.last(), Some(&door));
+        // Plat and button touches.
+        let plat = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Plat, plat, &vars).unwrap();
+        pool.at_mut(plat).unwrap().mover_state = MoverState::Pos2;
+        pool.at_mut(player).unwrap().client.as_mut().unwrap().ps.health = 50;
+        assert!(dispatch_mover_touch(&mut pool, &mut host, plat, DamageParticipant::Entity(player)).unwrap());
+        assert_eq!(pool.at(plat).unwrap().nextthink, 1500);
+        let button = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Button, button, &vars).unwrap();
+        assert!(dispatch_mover_touch(&mut pool, &mut host, button, DamageParticipant::Entity(player)).unwrap());
+        assert_eq!(host.movers.use_log.last(), Some(&button));
+        assert!(dispatch_mover_blocked(&mut pool, &mut host, door, DamageParticipant::Entity(player)).unwrap());
+        assert!(dispatch_mover_reached(&mut pool, &mut host, train, CallbackName(MOVER_TRAIN_REACHED)).unwrap());
+    }
+
+    #[test]
+    fn mover_dispatch_extras() {
+        let mut pool = EntityPool::new(Product::Baseq3);
+        let mut host = TestMoverSpawnHost::new();
+        let vars = SpawnVariables::new(Vec::new());
+        let door = pool.spawn().unwrap();
+        run_mover_spawn(&mut pool, &mut host, &MoverSpawn::Door, door, &vars).unwrap();
+        assert!(dispatch_mover_think(&mut pool, &mut host, door, CallbackName(MOVER_DOOR_MATCH_TEAM)).unwrap());
+        assert_eq!(host.movers.match_log, vec![(door, MoverState::Pos1)]);
+        assert!(!dispatch_mover_think(&mut pool, &mut host, door, CallbackName("nope")).unwrap());
+        let train = pool.spawn().unwrap();
+        pool.at_mut(train).unwrap().s.pos.trajectory_type = TrajectoryType::TrStationary;
+        assert!(dispatch_mover_think(&mut pool, &mut host, train, CallbackName(MOVER_REACHED_TRAIN_THINK)).unwrap());
+        assert_eq!(
+            pool.at(train).unwrap().s.pos.trajectory_type,
+            TrajectoryType::TrLinearStop
+        );
+        assert_eq!(pool.at(train).unwrap().s.pos.time, 500);
+        assert!(!dispatch_mover_reached(&mut pool, &mut host, train, CallbackName("nope")).unwrap());
+        let plain = pool.spawn().unwrap();
+        assert!(!dispatch_mover_touch(&mut pool, &mut host, plain, DamageParticipant::Entity(door)).unwrap());
+        assert!(!dispatch_mover_blocked(&mut pool, &mut host, plain, DamageParticipant::Entity(door)).unwrap());
+    }
 }

@@ -3,7 +3,7 @@
 //! Donor provenance: `src/content/q3/base/game/memory.ts`.
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_items::*;
+use crate::q3::base::game::items_core::*;
 
 // ---------------------------------------------------------------------------
 // memory.ts: g_mem.c
@@ -187,5 +187,41 @@ impl GameMemory {
         self.pool.copy_from_slice(&save.pool);
         self.alloc_point = save.alloc_point;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_memory_bump_and_save() {
+        let prints = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&prints);
+        let mut memory = GameMemory::new(Box::new(|| 1), Box::new(move |text| sink.borrow_mut().push(text)));
+        let first = memory.allocate(64).unwrap();
+        assert_eq!(first.offset(), 0);
+        assert_eq!(memory.allocated_bytes(), 64);
+        first.write_string(&mut memory, "hello").unwrap();
+        assert_eq!(first.read_string(&memory).unwrap(), "hello");
+        assert!(first.write_string(&mut memory, &"x".repeat(64)).is_err());
+        let captured = memory.capture_allocation(&first).unwrap();
+        let restored = memory.restore_allocation(&captured).unwrap();
+        assert_eq!(restored.read_string(&memory).unwrap(), "hello");
+        let save = memory.capture_save_state();
+        memory.allocate(32).unwrap();
+        assert_eq!(memory.allocated_bytes(), 96);
+        memory.restore_save_state(&save).unwrap();
+        assert_eq!(memory.allocated_bytes(), 64);
+        memory.initialize();
+        assert_eq!(memory.allocated_bytes(), 0);
+        memory.status();
+        assert!(!prints.borrow().is_empty());
+        assert!(memory.allocate(usize::MAX).is_err());
+        let bad = GameMemorySave {
+            pool: vec![0; 10],
+            alloc_point: 0,
+        };
+        assert!(memory.restore_save_state(&bad).is_err());
     }
 }
