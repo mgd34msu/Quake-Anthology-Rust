@@ -6,15 +6,43 @@ use crate::contract::ResolvedResourceReference;
 use crate::md3::{parse_md3, parse_skin, SkinSurface};
 use crate::mounts::OpenedResource;
 use crate::q3scene::{to_scene_md3, SceneMd3};
+use qa_core::binary::BinaryError;
+use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::foundation::animation_config::AnimationConfigError;
 use crate::q3::foundation::animation_config::*;
-use crate::q3::foundation::mirrors::*;
 
 // ---------------------------------------------------------------------------
 // assets.ts: CG_FindClientModelFile, CG_FindClientHeadFile,
 // CG_RegisterClientModelname.
 // ---------------------------------------------------------------------------
+
+/// Character asset failure (donor `RangeError`/`Error` throws plus wrapped
+/// animation-config and model-decode failures).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum AssetsError {
+    /// Out-of-range value (donor `RangeError`).
+    #[error("{0}")]
+    Range(String),
+    /// Operation failure (donor `Error`).
+    #[error("{0}")]
+    Failed(String),
+    /// Wrapped animation config failure.
+    #[error(transparent)]
+    AnimationConfig(#[from] AnimationConfigError),
+    /// Wrapped model-decode failure.
+    #[error(transparent)]
+    Binary(#[from] BinaryError),
+}
+
+fn range(message: impl Into<String>) -> AssetsError {
+    AssetsError::Range(message.into())
+}
+
+fn failed(message: impl Into<String>) -> AssetsError {
+    AssetsError::Failed(message.into())
+}
 
 /// Character team.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,14 +115,14 @@ pub struct Q3CharacterAssets {
 /// donor async plan reader).
 pub trait Q3CharacterResources {
     /// Open a resource path.
-    fn open(&self, path: &str) -> Result<Option<OpenedResource>, Q3FoundationError>;
+    fn open(&self, path: &str) -> Result<Option<OpenedResource>, AssetsError>;
 }
 
 pub(crate) fn byte_text(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| *byte as char).collect()
 }
 
-pub(crate) fn validate_component(value: &str, name: &str, star: bool) -> Result<(), Q3FoundationError> {
+pub(crate) fn validate_component(value: &str, name: &str, star: bool) -> Result<(), AssetsError> {
     let plain = if star && value.starts_with('*') {
         &value[1..]
     } else {
@@ -109,7 +137,7 @@ pub(crate) fn validate_component(value: &str, name: &str, star: bool) -> Result<
 pub(crate) fn first_resource(
     resources: &impl Q3CharacterResources,
     paths: &[String],
-) -> Result<Option<OpenedResource>, Q3FoundationError> {
+) -> Result<Option<OpenedResource>, AssetsError> {
     for path in paths {
         let resource = resources.open(path)?;
         if resource.as_ref().is_some_and(|open| !open.bytes.is_empty()) {
@@ -122,7 +150,7 @@ pub(crate) fn first_resource(
 pub(crate) fn required_resource(
     resources: &impl Q3CharacterResources,
     paths: &[String],
-) -> Result<OpenedResource, Q3FoundationError> {
+) -> Result<OpenedResource, AssetsError> {
     first_resource(resources, paths)?
         .ok_or_else(|| failed(format!("Q3 character resource missing: {}", paths.join(", "))))
 }
@@ -215,7 +243,7 @@ pub(crate) fn head_files(
 pub fn load_q3_character(
     resources: &impl Q3CharacterResources,
     selection: &Q3CharacterSelection,
-) -> Result<Q3CharacterAssets, Q3FoundationError> {
+) -> Result<Q3CharacterAssets, AssetsError> {
     validate_component(&selection.model, "model", false)?;
     validate_component(&selection.skin, "skin", false)?;
     if !selection.head_model.is_empty() {
@@ -291,7 +319,7 @@ pub fn load_q3_character(
         )));
     };
     let [legs_skin, torso_skin, head_skin] = skins;
-    let make_part = |mesh: OpenedResource, skin: OpenedResource| -> Result<Q3CharacterPart, Q3FoundationError> {
+    let make_part = |mesh: OpenedResource, skin: OpenedResource| -> Result<Q3CharacterPart, AssetsError> {
         Ok(Q3CharacterPart {
             resource: mesh.reference.clone(),
             model: to_scene_md3(parse_md3(&mesh.bytes, &mesh.reference.requested_path)?.model),
@@ -318,4 +346,102 @@ pub fn load_q3_character(
         animation: parse_player_animation_config(&animation_text, &animation_path)?,
         icon: icon.map(|open| open.reference),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::contract::{
+        ContentDigest, ContentId, LooseMount, MountId, MountIdentity, MountPlanId, ResourceId, ResourceProvenance,
+        ResourceResolution,
+    };
+
+    use super::*;
+
+    fn dummy_reference(path: &str, len: usize) -> ResolvedResourceReference {
+        ResolvedResourceReference {
+            id: ResourceId(format!("resource:test:{path}")),
+            requested_path: path.to_string(),
+            provenance: ResourceProvenance::Loose {
+                mount: LooseMount {
+                    identity: MountIdentity {
+                        id: MountId("mount:test:loose".to_string()),
+                        content: ContentId("q3:test:pkg:1".to_string()),
+                        generation: 0,
+                    },
+                    root_path: "/test".to_string(),
+                },
+                member_path: path.to_string(),
+            },
+            digest: ContentDigest("sha256:00".to_string()),
+            byte_length: len as u64,
+            resolution: ResourceResolution::DefaultOrder {
+                plan: MountPlanId("mount-plan:test:p".to_string()),
+                rank: 0,
+            },
+        }
+    }
+
+    struct FakeResources {
+        files: HashMap<String, Vec<u8>>,
+    }
+
+    impl Q3CharacterResources for FakeResources {
+        fn open(&self, path: &str) -> Result<Option<OpenedResource>, AssetsError> {
+            Ok(self.files.get(path).map(|bytes| OpenedResource {
+                reference: dummy_reference(path, bytes.len()),
+                bytes: bytes.clone(),
+            }))
+        }
+    }
+
+    fn selection_fixture() -> Q3CharacterSelection {
+        Q3CharacterSelection {
+            model: "sarge".to_string(),
+            skin: "default".to_string(),
+            head_model: String::new(),
+            head_skin: "default".to_string(),
+            team: Some(Q3Team::Blue),
+            team_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn character_asset_search_validates_and_reports() {
+        let selection = selection_fixture();
+        let files = body_files(&selection, "lower", "");
+        assert_eq!(files[0], "models/players/sarge/lower_default_blue.skin".to_string());
+        assert_eq!(files[1], "models/players/sarge/lower_blue.skin".to_string());
+        let heads = head_files(&selection, "head", "skin", "");
+        assert!(heads[0].contains("heads/") || heads[0].contains("sarge/default"));
+
+        let empty = FakeResources { files: HashMap::new() };
+        let err = load_q3_character(&empty, &selection).unwrap_err();
+        assert!(matches!(err, AssetsError::Failed(_)));
+
+        let bad = Q3CharacterSelection {
+            model: "../evil".to_string(),
+            ..selection.clone()
+        };
+        assert!(load_q3_character(&empty, &bad).is_err());
+        let bad = Q3CharacterSelection {
+            head_model: "*".to_string(),
+            ..selection.clone()
+        };
+        assert!(load_q3_character(&empty, &bad).is_err());
+
+        let mut files = HashMap::new();
+        for path in [
+            "models/players/sarge/lower.md3",
+            "models/players/sarge/upper.md3",
+            "models/players/sarge/head.md3",
+            "models/players/sarge/animation.cfg",
+        ] {
+            files.insert(path.to_string(), vec![1, 2, 3]);
+        }
+        let partial = FakeResources { files };
+        let err = load_q3_character(&partial, &selection).unwrap_err();
+        assert!(format!("{err}").contains("skin missing"));
+    }
 }

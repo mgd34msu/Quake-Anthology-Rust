@@ -1260,11 +1260,9 @@ mod tests {
     use crate::contract::ResolvedResourceReference;
     use crate::md3::SkinSurface;
     use crate::md5::SkeletonJointPose;
-    use crate::mounts::OpenedResource;
     use crate::q3::foundation::character::*;
     use crate::q3::foundation::movement_hooks::*;
     use crate::q3anim::PlayerFootsteps;
-    use crate::q3anim::PlayerGender;
     use crate::q3scene::SceneMd3;
     use qa_core::math::Vec4;
 
@@ -1457,158 +1455,6 @@ mod tests {
             animation: parse_player_animation_config(&animation_fixture(), "<test>").unwrap(),
             icon: None,
         }
-    }
-
-    #[test]
-    fn parses_animation_config_fixture() {
-        let config = parse_player_animation_config(&animation_fixture(), "<test>").unwrap();
-        assert_eq!(config.footsteps, PlayerFootsteps::Boot);
-        assert_eq!(config.gender, PlayerGender::Female);
-        assert_eq!(config.head_offset, vec3(1.0, 2.0, 3.0));
-        assert!(config.fixed_legs);
-        assert!(config.fixed_torso);
-        assert!(config.warnings.is_empty());
-        let death = config.animations[0].as_ref().unwrap();
-        assert_eq!(death.first_frame, 0);
-        assert_eq!(death.num_frames, 6);
-        assert_eq!(death.frame_lerp, 100);
-        assert_eq!(death.initial_lerp, 100);
-        assert!(config.animations[31].is_none());
-        let walk_cr = config.animations[13].as_ref().unwrap();
-        assert_eq!(walk_cr.first_frame, 6);
-        let back_cr = config.animations[32].as_ref().unwrap();
-        assert_eq!(back_cr.first_frame, 6);
-        assert!(back_cr.reversed);
-        let back_walk = config.animations[33].as_ref().unwrap();
-        assert_eq!(
-            back_walk.first_frame,
-            config.animations[14].as_ref().unwrap().first_frame
-        );
-        assert!(back_walk.reversed);
-        assert_eq!(
-            config.animations[34].as_ref().unwrap(),
-            &Animation {
-                first_frame: 0,
-                num_frames: 16,
-                loop_frames: 16,
-                frame_lerp: 66,
-                initial_lerp: 66,
-                reversed: false,
-                flipflop: false,
-            }
-        );
-        assert_eq!(config.animations[35].as_ref().unwrap().first_frame, 16);
-        assert!(config.animations[36].as_ref().unwrap().reversed);
-    }
-
-    #[test]
-    fn animation_config_directives_warnings_and_errors() {
-        let mut text = String::from("sex n\nfootsteps squeak\nmystery\n");
-        for frame in 0..31 {
-            text.push_str(&format!("{frame} 6 0 10\n"));
-        }
-        let config = parse_player_animation_config(&text, "<test>").unwrap();
-        assert_eq!(config.gender, PlayerGender::Neuter);
-        assert_eq!(config.warnings.len(), 2);
-        assert!(config.warnings[0].message.contains("Bad footsteps"));
-        assert!(config.warnings[1].message.contains("unknown token"));
-
-        let err = parse_player_animation_config("", "<s>").unwrap_err();
-        assert!(matches!(err, Q3FoundationError::Parse { line: 1, .. }));
-
-        let long = "x".repeat(19_999);
-        assert!(parse_player_animation_config(&long, "<s>").is_err());
-
-        let mut short = String::from("sex m\n");
-        for frame in 0..20 {
-            short.push_str(&format!("{frame} 6 0 10\n"));
-        }
-        let err = parse_player_animation_config(&short, "<s>").unwrap_err();
-        assert!(matches!(err, Q3FoundationError::Parse { .. }));
-
-        let err = parse_player_animation_config("foo", "<s>").unwrap_err();
-        assert!(matches!(err, Q3FoundationError::Range(_)));
-    }
-
-    #[test]
-    fn animation_config_row_edge_cases() {
-        let mut text = String::new();
-        for frame in 0..31 {
-            if frame == 0 {
-                text.push_str("5 -4 2 0\n");
-            } else {
-                text.push_str(&format!("{frame} 6 0 10\n"));
-            }
-        }
-        let config = parse_player_animation_config(&text, "<t>").unwrap();
-        let first = config.animations[0].as_ref().unwrap();
-        assert_eq!(first.num_frames, 4);
-        assert!(first.reversed);
-        assert_eq!(first.frame_lerp, 1000);
-
-        let mut partial = String::new();
-        for frame in 0..25 {
-            partial.push_str(&format!("{frame} 6 0 10\n"));
-        }
-        let config = parse_player_animation_config(&partial, "<t>").unwrap();
-        let gesture = *config.animations[6].as_ref().unwrap();
-        for index in 25..31 {
-            let row = config.animations[index].as_ref().unwrap();
-            assert_eq!(row.first_frame, gesture.first_frame);
-            assert!(!row.reversed);
-        }
-
-        let mut target = PlayerAnimationTarget::default();
-        let mut parser = CommonParseState::new();
-        let mut printed = Vec::new();
-        let mut sink = |message: &str| printed.push(message.to_string());
-        let config = parse_player_animation_config_into(
-            &mut target,
-            &mut parser,
-            "bogus\n0 6 0 10\n1 6 0 10\n2 6 0 10\n3 6 0 10\n4 6 0 10\n5 6 0 10\n6 6 0 10\n7 6 0 10\n8 6 0 10\n9 6 0 10\n10 6 0 10\n11 6 0 10\n12 6 0 10\n13 6 0 10\n14 6 0 10\n15 6 0 10\n16 6 0 10\n17 6 0 10\n18 6 0 10\n19 6 0 10\n20 6 0 10\n21 6 0 10\n22 6 0 10\n23 6 0 10\n24 6 0 10\n25 6 0 10\n26 6 0 10\n27 6 0 10\n28 6 0 10\n29 6 0 10\n30 6 0 10\n",
-            "<t>",
-            Some(&mut sink),
-        )
-        .unwrap();
-        assert_eq!(printed.len(), 1);
-        assert!(printed[0].contains("unknown token"));
-        assert_eq!(config.warnings.len(), 1);
-        assert_eq!(target.animations[0].first_frame, 0);
-    }
-
-    #[test]
-    fn com_parse_tokens_comments_and_limits() {
-        let mut parser = CommonParseState::new();
-        let mut cursor = CommonParseCursor::new("hello // rest\n\"quoted token\" /* block */ word").unwrap();
-        assert_eq!(parser.parse(&mut cursor).unwrap(), "hello");
-        assert_eq!(parser.parse(&mut cursor).unwrap(), "quoted token");
-        assert_eq!(parser.parse(&mut cursor).unwrap(), "word");
-        assert_eq!(parser.parse(&mut cursor).unwrap(), "");
-        assert_eq!(parser.line(), 1);
-
-        let mut parser = CommonParseState::new();
-        let mut cursor = CommonParseCursor::new(&"w".repeat(2000)).unwrap();
-        assert_eq!(parser.parse(&mut cursor).unwrap(), "");
-
-        let mut parser = CommonParseState::new();
-        let mut cursor = CommonParseCursor::new(&format!("\"{}\"", "q".repeat(1024))).unwrap();
-        assert!(parser.parse(&mut cursor).is_err());
-
-        assert!(CommonParseCursor::new("héllo \u{0100}").is_err());
-    }
-
-    #[test]
-    fn game_numbers_match_bg_lib() {
-        assert_eq!(game_atof("3.5").unwrap(), 3.5);
-        assert_eq!(game_atof("  -12x").unwrap(), -12.0);
-        assert_eq!(game_atof("abc").unwrap(), 0.0);
-        assert_eq!(game_atof(".5").unwrap(), 0.5);
-        assert_eq!(game_atof("").unwrap(), 0.0);
-        assert_eq!(game_atoi("  +42 ").unwrap(), 42);
-        assert_eq!(game_atoi("-7up").unwrap(), -7);
-        assert_eq!(game_atoi("2147483648").unwrap(), i32::MIN);
-        assert_eq!(game_atoi("").unwrap(), 0);
-        assert!(game_atof("ÿ\u{0100}").is_err());
     }
 
     #[test]
@@ -2692,68 +2538,6 @@ mod tests {
         assert_eq!(Q3_WEAPON_HAND_GRIP.scale, vec3(1.0, 1.0, 1.0));
         assert_eq!(Q3_CHARACTER_VIEW_HEIGHT, 26);
         assert_eq!(Q3_CHARACTER_BOUNDS.min, vec3(-15.0, -15.0, -24.0));
-    }
-
-    struct FakeResources {
-        files: HashMap<String, Vec<u8>>,
-    }
-
-    impl Q3CharacterResources for FakeResources {
-        fn open(&self, path: &str) -> Result<Option<OpenedResource>, Q3FoundationError> {
-            Ok(self.files.get(path).map(|bytes| OpenedResource {
-                reference: dummy_reference(path, bytes.len()),
-                bytes: bytes.clone(),
-            }))
-        }
-    }
-
-    fn selection_fixture() -> Q3CharacterSelection {
-        Q3CharacterSelection {
-            model: "sarge".to_string(),
-            skin: "default".to_string(),
-            head_model: String::new(),
-            head_skin: "default".to_string(),
-            team: Some(Q3Team::Blue),
-            team_name: String::new(),
-        }
-    }
-
-    #[test]
-    fn character_asset_search_validates_and_reports() {
-        let selection = selection_fixture();
-        let files = body_files(&selection, "lower", "");
-        assert_eq!(files[0], "models/players/sarge/lower_default_blue.skin".to_string());
-        assert_eq!(files[1], "models/players/sarge/lower_blue.skin".to_string());
-        let heads = head_files(&selection, "head", "skin", "");
-        assert!(heads[0].contains("heads/") || heads[0].contains("sarge/default"));
-
-        let empty = FakeResources { files: HashMap::new() };
-        let err = load_q3_character(&empty, &selection).unwrap_err();
-        assert!(matches!(err, Q3FoundationError::Failed(_)));
-
-        let bad = Q3CharacterSelection {
-            model: "../evil".to_string(),
-            ..selection.clone()
-        };
-        assert!(load_q3_character(&empty, &bad).is_err());
-        let bad = Q3CharacterSelection {
-            head_model: "*".to_string(),
-            ..selection.clone()
-        };
-        assert!(load_q3_character(&empty, &bad).is_err());
-
-        let mut files = HashMap::new();
-        for path in [
-            "models/players/sarge/lower.md3",
-            "models/players/sarge/upper.md3",
-            "models/players/sarge/head.md3",
-            "models/players/sarge/animation.cfg",
-        ] {
-            files.insert(path.to_string(), vec![1, 2, 3]);
-        }
-        let partial = FakeResources { files };
-        let err = load_q3_character(&partial, &selection).unwrap_err();
-        assert!(format!("{err}").contains("skin missing"));
     }
 
     fn view_fixture() -> Q3CharacterView {
