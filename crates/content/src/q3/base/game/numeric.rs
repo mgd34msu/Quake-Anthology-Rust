@@ -7,7 +7,7 @@ use qa_core::math::Vec3;
 use qa_core::numeric::q_rand;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::state::{latin1_bytes, range, Q3GameError};
 
 // ---------------------------------------------------------------------------
 // numeric.ts: game numerics (donor `src/core/game-numeric.ts`, bg_lib.c)
@@ -199,5 +199,41 @@ impl GameRandom {
 impl Default for GameRandom {
     fn default() -> Self {
         Self::new(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use qa_core::math::vec3;
+
+    #[test]
+    fn game_numeric_matches_bg_lib() {
+        assert_eq!(game_atoi("  -42xyz").unwrap(), -42);
+        assert_eq!(
+            game_atoi("9999999999").unwrap(),
+            999_999_999_i32.wrapping_mul(10).wrapping_add(9)
+        );
+        assert_eq!(game_atof("  -2.5 ").unwrap(), -2.5);
+        assert_eq!(game_atof("abc").unwrap(), 0.0);
+        assert_eq!(game_atof(".5").unwrap(), 0.5);
+        let scan = scan_game_float("1.5 2.5", 0).unwrap();
+        assert_eq!(scan.value, 1.5);
+        assert_eq!(scan.next_offset, 4);
+        assert_eq!(scan_game_vector("1 2 3").unwrap(), vec3(1.0, 2.0, 3.0));
+        assert!(scan_game_float("1", 5).is_err());
+        let mut random = GameRandom::new(0);
+        assert_eq!(random.rand(), 1);
+        assert_eq!(random.rand(), 3534);
+        random.reset(0);
+        assert_eq!(random.rand(), 1);
+        let mut seeded = GameRandom::new(7);
+        assert_eq!(seeded.rand(), 24_732);
+        let mut left = GameRandom::new(7);
+        let mut right = GameRandom::new(7);
+        assert_eq!(left.rand(), right.rand());
+        assert_eq!(left.random(), right.random());
+        assert_eq!(left.crandom(), right.crandom());
     }
 }

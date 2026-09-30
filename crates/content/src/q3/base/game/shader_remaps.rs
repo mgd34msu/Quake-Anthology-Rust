@@ -11,7 +11,8 @@ use crate::value::SaveReader;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::format::{game_format, GameFormatArgument};
+use crate::q3::base::game::state::{range, Q3GameError};
 
 // ---------------------------------------------------------------------------
 // shader-remaps.ts: shader remap state (g_utils.c)
@@ -170,19 +171,19 @@ impl ShaderRemapRegistry {
             let formatted = game_format(
                 "%s=%s:%5.2f@",
                 &[
-                    GameFormatArg::Text(Some(remap.old_name.clone())),
-                    GameFormatArg::Text(Some(remap.new_name.clone())),
-                    GameFormatArg::Float(remap.time_offset),
+                    GameFormatArgument::Text(remap.old_name.clone()),
+                    GameFormatArgument::Text(remap.new_name.clone()),
+                    GameFormatArgument::Float(f64::from(remap.time_offset)),
                 ],
-            )?;
+            );
             if formatted.len() >= ENTRY_BUFFER_BYTES {
                 (self.print)(&game_format(
                     "Com_sprintf: overflow of %i in %i\n",
                     &[
-                        GameFormatArg::Int(formatted.len() as i32),
-                        GameFormatArg::Int(ENTRY_BUFFER_BYTES as i32),
+                        GameFormatArgument::Int(formatted.len() as i32),
+                        GameFormatArgument::Int(ENTRY_BUFFER_BYTES as i32),
                     ],
-                )?);
+                ));
             }
             let entry = formatted[..formatted.len().min(ENTRY_BUFFER_BYTES - 1)].to_string();
             let writable = STATE_BUFFER_BYTES.saturating_sub(state.len()).saturating_sub(1);
@@ -191,5 +192,48 @@ impl ShaderRemapRegistry {
             }
         }
         Ok(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::value::arr;
+
+    use crate::value::num;
+    use crate::value::obj;
+    use crate::value::str;
+
+    use std::rc::Rc;
+
+    #[test]
+    fn shader_remaps_build_and_round_trip() {
+        let mut registry = ShaderRemapRegistry::new(Rc::new(|_| {}));
+        registry.add("old", "new", 1.5).unwrap();
+        registry.add("OLD", "newer", 2.0).unwrap();
+        assert_eq!(registry.remaps().len(), 1);
+        assert_eq!(registry.remaps()[0].new_name, "newer");
+        assert!(registry.add("bad\0x", "b", 0.0).is_ok());
+        assert!(registry.add(&"a".repeat(64), "b", 0.0).is_err());
+        let config = registry.build_shader_state_config().unwrap();
+        assert!(config.starts_with("old=newer:    2.00@"));
+        let saved = registry.capture_save_state();
+        let mut restored = ShaderRemapRegistry::new(Rc::new(|_| {}));
+        restored.restore_save_state(&saved).unwrap();
+        assert_eq!(restored.remaps(), registry.remaps());
+        let dup = arr(vec![
+            obj(vec![
+                ("oldName", str("a")),
+                ("newName", str("b")),
+                ("timeOffset", num(0.0)),
+            ]),
+            obj(vec![
+                ("oldName", str("A")),
+                ("newName", str("c")),
+                ("timeOffset", num(0.0)),
+            ]),
+        ]);
+        assert!(restored.restore_save_state(&dup).is_err());
     }
 }

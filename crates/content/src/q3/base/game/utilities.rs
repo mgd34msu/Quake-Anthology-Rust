@@ -15,8 +15,12 @@ use qa_core::numeric::qvm_float_to_int;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::format::{game_format, GameFormatArgument};
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{
+    ascii_lower, failure, latin1_bytes, latin1_string, range, EntityPool, Q3Driver, Q3GameError,
+};
+use crate::q3::base::shared::definitions::Team;
 
 // ---------------------------------------------------------------------------
 // utilities.ts: scratch rings, configstrings, target dispatch
@@ -122,16 +126,16 @@ impl GameUtilityScratch {
         let value = game_format(
             "(%i %i %i)",
             &[
-                GameFormatArg::Int(qvm_float_to_int(vector.x)),
-                GameFormatArg::Int(qvm_float_to_int(vector.y)),
-                GameFormatArg::Int(qvm_float_to_int(vector.z)),
+                GameFormatArgument::Int(qvm_float_to_int(vector.x)),
+                GameFormatArgument::Int(qvm_float_to_int(vector.y)),
+                GameFormatArgument::Int(qvm_float_to_int(vector.z)),
             ],
-        )?;
+        );
         if value.len() >= 32 {
             (self.print)(&game_format(
                 "Com_sprintf: overflow of %i in %i\n",
-                &[GameFormatArg::Int(value.len() as i32), GameFormatArg::Int(32)],
-            )?);
+                &[GameFormatArgument::Int(value.len() as i32), GameFormatArgument::Int(32)],
+            ));
         }
         let mut string = Q3RingString::new();
         string.write_string(&value[..value.len().min(31)])?;
@@ -371,7 +375,7 @@ pub fn use_targets(driver: &mut dyn Q3Driver, slot: usize, activator: Option<Par
 }
 
 /// Send a command to a team (`teamCommand`).
-pub fn team_command(driver: &mut dyn Q3Driver, team: Q3Team, command: &str) {
+pub fn team_command(driver: &mut dyn Q3Driver, team: Team, command: &str) {
     let max = driver.pool().max_clients();
     for index in 0..max {
         let send = driver.pool().client(index).is_some_and(|client| {
@@ -395,4 +399,92 @@ pub fn move_direction(angles: Vec3) -> (Vec3, Vec3) {
         angle_vectors(angles).forward
     };
     (direction, vec3(0.0, 0.0, 0.0))
+}
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Debug polygon allocation (`BotDebugPolygons`).
+pub trait DebugPolygons {
+    /// Create a polygon (`create`).
+    fn create(&mut self, color: i32, count: usize, points: &[Vec3]) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use qa_core::math::vec3;
+
+    use crate::q3::base::shared::definitions::Product;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    #[test]
+    fn utilities_scratch_config_and_dispatch() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        let vector = driver.scratch.tv(1.0, 2.0, 3.0);
+        assert_eq!(vector, TempVector { x: 1.0, y: 2.0, z: 3.0 });
+        let text = driver.scratch.vtos(vec3(1.0, 2.0, 3.0)).unwrap().read_string();
+        assert_eq!(text, "(1 2 3)");
+        struct Store {
+            values: HashMap<usize, String>,
+        }
+        impl ConfigStringStore for Store {
+            fn get(&self, index: usize) -> String {
+                self.values.get(&index).cloned().unwrap_or_default()
+            }
+            fn set(&mut self, index: usize, value: &str) {
+                self.values.insert(index, value.to_string());
+            }
+        }
+        let mut registry = ConfigStringRegistry::new(Store { values: HashMap::new() });
+        assert_eq!(registry.model_index(Some("models/a")).unwrap(), 1);
+        assert_eq!(registry.model_index(Some("models/a")).unwrap(), 1);
+        assert_eq!(registry.model_index(None).unwrap(), 0);
+        driver.pool.use_slot(10);
+        driver.pool.entities[10].set_classname(Some("Target_Thing".to_string()));
+        assert_eq!(
+            find_entity(&driver.pool, None, EntityStringField::Classname, Some("target_thing")),
+            Some(10)
+        );
+        assert_eq!(
+            find_entity(
+                &driver.pool,
+                Some(10),
+                EntityStringField::Classname,
+                Some("target_thing")
+            ),
+            None
+        );
+        driver.pool.use_slot(11);
+        driver.pool.entities[11].set_classname(Some("user".to_string()));
+        driver.pool.entities[11].target = Some("Target_Thing".to_string());
+        driver.pool.entities[10].targetname = Some("Target_Thing".to_string());
+        let fired = Rc::new(RefCell::new(false));
+        let fired_clone = Rc::clone(&fired);
+        driver
+            .pool
+            .callbacks_mut()
+            .use_callbacks
+            .register(
+                "test.use",
+                Rc::new(move |_, _, _, _| {
+                    *fired_clone.borrow_mut() = true;
+                }),
+            )
+            .unwrap();
+        let callback = driver.pool.callbacks().use_callbacks.resolve(Some("test.use")).unwrap();
+        driver.pool.entities[10].use_callback = callback;
+        use_targets(&mut driver, 11, None).unwrap();
+        assert!(*fired.borrow());
+        let (direction, zero) = move_direction(vec3(0.0, -1.0, 0.0));
+        assert_eq!(direction, vec3(0.0, 0.0, 1.0));
+        assert_eq!(zero, vec3(0.0, 0.0, 0.0));
+    }
 }

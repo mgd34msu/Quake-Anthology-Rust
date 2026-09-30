@@ -1293,3 +1293,33 @@ pub fn q3_radius_damage(host: &Q3RadiusHost, origin: Vec3, amount: f32, radius: 
     }
     hit_client
 }
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Accuracy subject (`Q3AccuracySubject`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccuracySubject {
+    /// Actor.
+    pub actor: ActorId,
+    /// Damageable.
+    pub damageable: bool,
+    /// Player.
+    pub player: bool,
+    /// Health.
+    pub health: i32,
+    /// Team number, when teamed.
+    pub team: Option<i32>,
+}
+
+/// Accuracy-hit test (`q3AccuracyHit`).
+#[must_use]
+pub fn q3_accuracy_hit(team_game: bool, target: &AccuracySubject, attacker: &AccuracySubject) -> bool {
+    target.damageable
+        && target.actor != attacker.actor
+        && target.player
+        && attacker.player
+        && target.health > 0
+        && (!team_game || target.team != attacker.team)
+}

@@ -364,3 +364,53 @@ pub fn game_format_bounded(format: &str, args: &[GameFormatArgument], max_bytes:
 pub fn game_format(format: &str, args: &[GameFormatArgument]) -> String {
     game_format_bounded(format, args, BIG_BUFFER_BYTES)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_format_matches_bg_lib() {
+        assert_eq!(game_format("hi %d", &[GameFormatArgument::Int(42)]), "hi 42");
+        assert_eq!(game_format("%5d", &[GameFormatArgument::Int(42)]), "   42");
+        assert_eq!(game_format("%-5d|", &[GameFormatArgument::Int(42)]), "42   |");
+        assert_eq!(game_format("%05d", &[GameFormatArgument::Int(42)]), "00042");
+        assert_eq!(game_format("%f", &[GameFormatArgument::Float(1.5)]), "1.500000");
+        assert_eq!(game_format("%.2f", &[GameFormatArgument::Float(1.5)]), "1.50");
+        assert_eq!(game_format("%s", &[GameFormatArgument::Null]), "(null)");
+        assert_eq!(game_format("100%%", &[]), "100%");
+        assert_eq!(game_format("%c", &[GameFormatArgument::Int(65)]), "A");
+        assert_eq!(game_format("%i", &[GameFormatArgument::Int(-7)]), "-7");
+        // The donor accepts integral floats for %d (`Number.isSafeInteger`).
+        assert_eq!(game_format("%d", &[GameFormatArgument::Float(1.0)]), "1");
+        assert_eq!(
+            game_format_bounded("%s", &[GameFormatArgument::Text("abcdef".to_string())], 4),
+            "abc"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "missing argument 0 for %d")]
+    fn game_format_missing_argument_panics() {
+        let _ = game_format("%d", &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "argument 0 for %s must be a string or null")]
+    fn game_format_string_type_mismatch_panics() {
+        let _ = game_format("%s", &[GameFormatArgument::Int(1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "game format destination capacity must be a positive safe integer")]
+    fn game_format_bounded_zero_capacity_panics() {
+        let _ = game_format_bounded("%d", &[GameFormatArgument::Int(1)], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "game format exceeds the 32000-byte Com_sprintf buffer")]
+    fn game_format_overflow_panics() {
+        let big = "a".repeat(40_000);
+        let _ = game_format("%s", &[GameFormatArgument::Text(big)]);
+    }
+}

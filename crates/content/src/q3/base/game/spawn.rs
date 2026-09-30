@@ -8,9 +8,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::memory::GameMemory;
 use crate::q3::base::game::numeric::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{ascii_lower, failure, latin1_bytes, latin1_string, range, Q3Driver, Q3GameError};
+use crate::q3::base::shared::definitions::{GameType, Product};
+use crate::q3::base::shared::player_state::ENTITYNUM_WORLD;
 
 // ---------------------------------------------------------------------------
 // spawn.ts: spawn variables and entity dispatch (g_spawn.c)
@@ -51,25 +54,22 @@ pub(crate) fn spawn_lower(value: &str) -> Vec<u8> {
 pub fn new_spawn_string(value: &str, memory: &mut GameMemory) -> Result<String, Q3GameError> {
     let bytes = latin1_bytes(value)?;
     let allocation = memory.allocate(bytes.len() + 1)?;
-    {
-        let out = memory.alloc_bytes_mut(&allocation);
-        let mut output = 0usize;
-        let mut index = 0usize;
-        while index <= bytes.len() {
-            let character = if index == bytes.len() { 0u8 } else { bytes[index] };
-            if character == 92 && index < bytes.len() {
-                index += 1;
-                let next = if index < bytes.len() { bytes[index] } else { 0 };
-                out[output] = if next == b'n' { 10 } else { 92 };
-                output += 1;
-            } else {
-                out[output] = character;
-                output += 1;
-            }
+    let mut processed = Vec::with_capacity(bytes.len() + 1);
+    let mut index = 0usize;
+    while index <= bytes.len() {
+        let character = if index == bytes.len() { 0u8 } else { bytes[index] };
+        if character == 92 && index < bytes.len() {
             index += 1;
+            let next = if index < bytes.len() { bytes[index] } else { 0 };
+            processed.push(if next == b'n' { 10 } else { 92 });
+        } else {
+            processed.push(character);
         }
+        index += 1;
     }
-    memory.read_string(&allocation)
+    let end = processed.len().saturating_sub(1);
+    allocation.write_string(memory, &latin1_string(&processed[..end]))?;
+    Ok(allocation.read_string(memory)?)
 }
 
 /// Ordered spawn variables (`SpawnVariables`).
@@ -390,7 +390,7 @@ pub trait SpawnServices {
     /// Game memory.
     fn memory(&mut self) -> &mut GameMemory;
     /// Product.
-    fn product(&self) -> Q3Product;
+    fn product(&self) -> Product;
     /// Game type number.
     fn game_type(&self) -> i32;
     /// Handler table.
@@ -481,10 +481,10 @@ pub(crate) fn spawn_excluded(
     services: &mut dyn SpawnServices,
 ) -> Result<Option<SpawnFilter>, Q3GameError> {
     let game_type = services.game_type();
-    if game_type == Q3GameType::SinglePlayer as i32 && variables.int("notsingle", "0")?.value != 0 {
+    if game_type == GameType::GtSinglePlayer as i32 && variables.int("notsingle", "0")?.value != 0 {
         return Ok(Some(SpawnFilter::Notsingle));
     }
-    let team_key = if game_type >= Q3GameType::Team as i32 {
+    let team_key = if game_type >= GameType::GtTeam as i32 {
         "notteam"
     } else {
         "notfree"
@@ -496,7 +496,7 @@ pub(crate) fn spawn_excluded(
             SpawnFilter::Notfree
         }));
     }
-    let product_key = if services.product() == Q3Product::Missionpack {
+    let product_key = if services.product() == Product::Missionpack {
         "notta"
     } else {
         "notq3a"
@@ -509,7 +509,7 @@ pub(crate) fn spawn_excluded(
         }));
     }
     let gametype = variables.string("gametype", "");
-    if gametype.present && (Q3GameType::Ffa as i32..Q3GameType::MaxGameType as i32).contains(&game_type) {
+    if gametype.present && (GameType::GtFfa as i32..GameType::GtMaxGameType as i32).contains(&game_type) {
         let names = [
             "ffa",
             "tournament",
@@ -661,9 +661,9 @@ pub fn spawn_world(
     driver.set_cvar("g_enableBreath", &variables.string("enableBreath", "0").value);
     let world_entity = driver
         .pool()
-        .entity_mut(ENTITYNUM_WORLD)
+        .entity_mut(ENTITYNUM_WORLD as usize)
         .ok_or_else(|| failure("SP_worldspawn: missing world entity"))?;
-    world_entity.s.number = ENTITYNUM_WORLD as i32;
+    world_entity.s.number = ENTITYNUM_WORLD;
     world_entity.set_classname(Some("worldspawn".to_string()));
     driver.set_configstring(WORLDSPAWN_CS_WARMUP, "");
     if world.restarted != 0 {
@@ -707,4 +707,178 @@ pub fn spawn_entities(
         world_variables,
         outcomes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::save_level::*;
+
+    use crate::q3::base::game::save_state::*;
+    use crate::q3::base::game::save_values::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use crate::value::arr;
+
+    use crate::value::obj;
+    use crate::value::str;
+
+    use crate::q3::base::game::memory::{GameMemory, GAME_MEMORY_BYTES};
+    use crate::q3::base::shared::definitions::{GameType, Product};
+    use crate::q3::base::shared::player_state::ENTITYNUM_WORLD;
+    use std::rc::Rc;
+
+    #[test]
+    fn memory_and_spawn_strings() {
+        let memory = GameMemory::new(Box::new(|| 0), Box::new(|_| {}));
+        let mut services = StubSpawnServices {
+            memory,
+            product: Product::Baseq3,
+            game_type: 0,
+            handlers: SpawnHandlerTable::new(),
+            spawned_items: Vec::new(),
+            warns: Vec::new(),
+        };
+        assert_eq!(new_spawn_string("a\\nb\\\\c", services.memory()).unwrap(), "a\nb\\c");
+        assert_eq!(new_spawn_string("plain", services.memory()).unwrap(), "plain");
+        assert!(new_spawn_string("trailing\\", services.memory()).is_ok());
+        let mut big = GameMemory::new(Box::new(|| 0), Box::new(|_| {}));
+        assert!(big.allocate(GAME_MEMORY_BYTES + 1).is_err());
+        let allocation = big.allocate(8).unwrap();
+        allocation.write_string(&mut big, "hi").unwrap();
+        assert_eq!(allocation.read_string(&big).unwrap(), "hi");
+        assert!(allocation.write_string(&mut big, "way too long for eight").is_err());
+    }
+    #[test]
+    fn spawn_parser_and_dispatch() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        let mut services = StubSpawnServices {
+            memory: GameMemory::new(Box::new(|| 0), Box::new(|_| {})),
+            product: Product::Baseq3,
+            game_type: GameType::GtSinglePlayer as i32,
+            handlers: SpawnHandlerTable::new(),
+            spawned_items: Vec::new(),
+            warns: Vec::new(),
+        };
+        services
+            .handlers
+            .insert("test_thing", Rc::new(|_driver, _services, _slot, _vars| Ok(())));
+        let mut parser =
+            SpawnParser::new("// comment\n{\n\"classname\" \"test_thing\"\n/* block */\n}", "test").unwrap();
+        let variables = parser.next().unwrap().unwrap();
+        assert_eq!(variables.entries.len(), 1);
+        assert!(parser.next().unwrap().is_none());
+        let outcome = spawn_entity(&variables, &mut driver, &mut services).unwrap();
+        assert!(matches!(
+            outcome,
+            SpawnOutcome::Dispatched {
+                route: SpawnRoute::Handler,
+                ..
+            }
+        ));
+        let filtered = SpawnVariables::new(vec![
+            SpawnPair {
+                key: "classname".to_string(),
+                value: "test_thing".to_string(),
+            },
+            SpawnPair {
+                key: "notsingle".to_string(),
+                value: "1".to_string(),
+            },
+        ])
+        .unwrap();
+        let outcome = spawn_entity(&filtered, &mut driver, &mut services).unwrap();
+        assert!(matches!(
+            outcome,
+            SpawnOutcome::Filtered {
+                reason: SpawnFilter::Notsingle,
+                ..
+            }
+        ));
+        let unknown = SpawnVariables::new(vec![SpawnPair {
+            key: "classname".to_string(),
+            value: "nope".to_string(),
+        }])
+        .unwrap();
+        let outcome = spawn_entity(&unknown, &mut driver, &mut services).unwrap();
+        assert!(matches!(outcome, SpawnOutcome::Unknown { .. }));
+        assert_eq!(services.warns.len(), 1);
+        let mut bad = SpawnParser::new("{ \"a\" ", "bad").unwrap();
+        assert!(bad.next().is_err());
+    }
+    #[test]
+    fn spawn_world_and_level_errors() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        driver.pool.use_slot(ENTITYNUM_WORLD as usize);
+        let mut services = StubSpawnServices {
+            memory: GameMemory::new(Box::new(|| 0), Box::new(|_| {})),
+            product: Product::Baseq3,
+            game_type: 0,
+            handlers: SpawnHandlerTable::new(),
+            spawned_items: Vec::new(),
+            warns: Vec::new(),
+        };
+        let mut world = WorldspawnState {
+            start_time: 7,
+            motd: "hi".to_string(),
+            restarted: 0,
+            do_warmup: 1,
+            warmup_time: 0,
+        };
+        let report = spawn_entities(
+            "{ \"classname\" \"worldspawn\" \"music\" \"m\" }",
+            &mut driver,
+            &mut services,
+            &mut world,
+            "test",
+        )
+        .unwrap();
+        assert_eq!(report.outcomes.len(), 0);
+        assert_eq!(world.warmup_time, -1);
+        assert_eq!(driver.configstrings.get(&WORLDSPAWN_CS_MOTD), Some(&"hi".to_string()));
+        assert_eq!(
+            driver.configstrings.get(&WORLDSPAWN_CS_START_TIME),
+            Some(&"7".to_string())
+        );
+        let mut level = Q3GameLevel::default();
+        let bad = obj(vec![
+            ("values", level_values_to_json(&capture_level_values(&level))),
+            ("teamScores", numbers_to_json(&[1, 2])),
+            ("numTeamVotingClients", numbers_to_json(&[0, 0])),
+            ("sortedClients", numbers_to_json(&level.sorted_clients)),
+            (
+                "vote",
+                obj(vec![
+                    ("time", num_i32(0)),
+                    ("yes", num_i32(0)),
+                    ("no", num_i32(0)),
+                    ("string", str("")),
+                    ("displayString", str("")),
+                    ("executeTime", num_i32(0)),
+                ]),
+            ),
+            (
+                "teamVotes",
+                arr(vec![
+                    obj(vec![
+                        ("time", num_i32(0)),
+                        ("yes", num_i32(0)),
+                        ("no", num_i32(0)),
+                        ("string", str("")),
+                    ]),
+                    obj(vec![
+                        ("time", num_i32(0)),
+                        ("yes", num_i32(0)),
+                        ("no", num_i32(0)),
+                        ("string", str("")),
+                    ]),
+                ]),
+            ),
+        ]);
+        assert!(restore_q3_level(&mut level, &bad).is_err());
+    }
 }

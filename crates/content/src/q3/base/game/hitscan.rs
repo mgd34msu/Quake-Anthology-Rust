@@ -728,3 +728,46 @@ pub fn q3_rail_statistics(state: &Q3RailStatistics, hits: i32, time: i32) -> Q3R
         awarded,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Rail shot trail (`Q3RailTrail`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RailShot {
+    /// Start.
+    pub start: Vec3,
+    /// End.
+    pub end: Vec3,
+    /// Impact normal, when the shot hit.
+    pub impact_normal: Option<Vec3>,
+}
+
+/// Rail statistics (`Q3RailStatistics`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailStatistics {
+    /// Streak.
+    pub streak: i32,
+    /// Hits.
+    pub hits: i32,
+    /// Impressive count.
+    pub impressive_count: i32,
+    /// Reward until.
+    pub reward_until: i32,
+}
+
+/// Rail statistics outcome (`q3RailStatistics` return).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailStatisticsOutcome {
+    /// Streak.
+    pub streak: i32,
+    /// Hits.
+    pub hits: i32,
+    /// Impressive count.
+    pub impressive_count: i32,
+    /// Reward until.
+    pub reward_until: i32,
+    /// Awarded.
+    pub awarded: bool,
+}

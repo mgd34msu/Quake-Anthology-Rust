@@ -10,11 +10,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::combat::DamageFlags;
+use crate::q3::base::game::missile::snap_vector;
 use crate::q3::base::game::mover::*;
 use crate::q3::base::game::save_values::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, set_origin, Q3Driver, Q3GameError};
 use crate::q3::base::game::utilities::*;
+use crate::q3::base::shared::definitions::{stat_schema, Powerup, Product, StatSchema};
 
 // ---------------------------------------------------------------------------
 // personal-portal.ts: missionpack personal portals (g_misc.c)
@@ -84,7 +87,7 @@ impl PersonalPortalRuntime {
     }
 
     fn check_host(&self, driver: &mut dyn Q3Driver) -> Result<(), Q3GameError> {
-        if driver.combat().product() != Q3Product::Missionpack {
+        if driver.combat().product() != Product::Missionpack {
             return Err(failure("Personal portals require a missionpack entity pool"));
         }
         Ok(())
@@ -153,17 +156,17 @@ impl PersonalPortalRuntime {
                 .pool()
                 .client(client)
                 .ok_or_else(|| failure("Portal touch requires a client entity"))?;
-            if client.ps.powerups.get(Q3Powerup::Neutralflag as usize) != 0 {
-                Q3Powerup::Neutralflag as i32
-            } else if client.ps.powerups.get(Q3Powerup::Redflag as usize) != 0 {
-                Q3Powerup::Redflag as i32
-            } else if client.ps.powerups.get(Q3Powerup::Blueflag as usize) != 0 {
-                Q3Powerup::Blueflag as i32
+            if client.ps.powerups.get(Powerup::PwNeutralflag as usize) != 0 {
+                Powerup::PwNeutralflag as i32
+            } else if client.ps.powerups.get(Powerup::PwRedflag as usize) != 0 {
+                Powerup::PwRedflag as i32
+            } else if client.ps.powerups.get(Powerup::PwBlueflag as usize) != 0 {
+                Powerup::PwBlueflag as i32
             } else {
-                Q3Powerup::None as i32
+                Powerup::PwNone as i32
             }
         };
-        if powerup == Q3Powerup::None as i32 {
+        if powerup == Powerup::PwNone as i32 {
             return Ok(());
         }
         let Some(item) = driver.find_item_for_powerup(powerup) else {
@@ -315,7 +318,10 @@ impl PersonalPortalRuntime {
             return Err(failure("Portal holdable has no missionpack item index"));
         }
         if let Some(client) = driver.pool().client_mut(client) {
-            let slot = stat_schema(Q3Product::Missionpack).holdable_item;
+            let slot = match stat_schema(Product::Missionpack) {
+                StatSchema::Base(layout) => layout.holdable_item,
+                StatSchema::Missionpack(layout) => layout.holdable_item,
+            } as usize;
             client.ps.stats.set(slot, item as i32);
         }
         Ok(())
@@ -429,5 +435,55 @@ impl PersonalPortalRuntime {
 impl Default for PersonalPortalRuntime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use std::cell::RefCell;
+
+    use crate::q3::base::game::entities::ItemDefinition;
+    use crate::q3::base::shared::definitions::{ItemType, Product};
+    use std::rc::Rc;
+
+    #[test]
+    fn personal_portals_drop_touch_and_save() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Missionpack);
+        driver.combat.product = Product::Missionpack;
+        driver.items.push(ItemDefinition {
+            class_name: None,
+            pickup_name: None,
+            quantity: 0,
+            item_type: ItemType::ItBad,
+            tag: 0,
+        });
+        driver.items.push(ItemDefinition {
+            class_name: Some("item_portal".to_string()),
+            pickup_name: Some("Portal".to_string()),
+            quantity: 1,
+            item_type: ItemType::ItHoldable,
+            tag: 4,
+        });
+        let player = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[player].client = Some(0);
+        driver.pool.entities[player].health = 100;
+        driver.pool.entities[player].takedamage = true;
+        let rt = Rc::new(RefCell::new(PersonalPortalRuntime::new()));
+        PersonalPortalRuntime::bind_save_callbacks(&rt, &mut driver).unwrap();
+        rt.borrow_mut().drop_portal_destination(&mut driver, player).unwrap();
+        assert_eq!(driver.pool.clients[0].portal_id, 1);
+        rt.borrow_mut().drop_portal_source(&mut driver, player).unwrap();
+        assert_eq!(driver.pool.clients[0].portal_id, 0);
+        let saved = rt.borrow().capture_save_state();
+        let mut restored = PersonalPortalRuntime::new();
+        restored.restore_save_state(&saved).unwrap();
+        assert_eq!(restored.portal_sequence(), 1);
+        driver.combat.product = Product::Baseq3;
+        assert!(rt.borrow_mut().drop_portal_destination(&mut driver, player).is_err());
     }
 }

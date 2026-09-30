@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, Q3Driver, Q3GameError, TouchContact};
 
 // ---------------------------------------------------------------------------
 // save-callbacks.ts: callback families and catalog

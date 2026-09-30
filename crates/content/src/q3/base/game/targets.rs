@@ -17,16 +17,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::combat::DamageFlags;
+use crate::q3::base::game::format::{game_format, game_format_bounded, GameFormatArgument};
 use crate::q3::base::game::mover::*;
 use crate::q3::base::game::personal_portal::*;
 use crate::q3::base::game::save_module_values::*;
 use crate::q3::base::game::save_state::*;
 use crate::q3::base::game::spawn::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, range, set_origin, EntityPool, Q3Driver, Q3GameError, TouchContact};
 use crate::q3::base::game::triggers::*;
 use crate::q3::base::game::use_participant::*;
 use crate::q3::base::game::utilities::*;
+use crate::q3::base::shared::definitions::{EntityEvent, EntityType, MoveType, Powerup, Team};
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::world::{ActorTraceHit, ActorTraceQuery, TraceShape};
 
 // ---------------------------------------------------------------------------
 // targets.ts: target entities (g_target.c)
@@ -123,7 +128,7 @@ pub(crate) fn target_sound(driver: &mut dyn Q3Driver, slot: usize, sound_index: 
         .entity(slot)
         .map(|entity| entity.r.current_origin)
         .unwrap_or_else(|| vec3(0.0, 0.0, 0.0));
-    let sound = driver.pool().temp_entity(origin, Q3EntityEvent::GeneralSound);
+    let sound = driver.pool().temp_entity(origin, EntityEvent::EvGeneralSound);
     if let Some(sound) = driver.pool().entity_mut(sound) {
         sound.s.event_parm = sound_index;
     }
@@ -208,18 +213,18 @@ pub fn use_target_remove_powerups(
             .client(client)
             .ok_or_else(|| failure("Target entity does not belong to its entity pool or was replaced"))?;
         (
-            client.ps.powerups.get(Q3Powerup::Redflag as usize),
-            client.ps.powerups.get(Q3Powerup::Blueflag as usize),
-            client.ps.powerups.get(Q3Powerup::Neutralflag as usize),
+            client.ps.powerups.get(Powerup::PwRedflag as usize),
+            client.ps.powerups.get(Powerup::PwBlueflag as usize),
+            client.ps.powerups.get(Powerup::PwNeutralflag as usize),
             client.ps.powerups.len(),
         )
     };
     if red != 0 {
-        driver.return_flag(Q3Team::Red);
+        driver.return_flag(Team::TeamRed);
     } else if blue != 0 {
-        driver.return_flag(Q3Team::Blue);
+        driver.return_flag(Team::TeamBlue);
     } else if neutral != 0 {
-        driver.return_flag(Q3Team::Free);
+        driver.return_flag(Team::TeamFree);
     }
     if let Some(client) = driver.pool().client_mut(client) {
         for index in 0..length {
@@ -306,17 +311,20 @@ pub fn use_target_print(
             .ok_or_else(|| failure("Target entity does not belong to its entity pool or was replaced"))?;
         (entity.message.clone(), entity.spawnflags)
     };
-    let command = game_format("cp \"%s\"", &[GameFormatArg::Text(message)])?;
+    let command = game_format(
+        "cp \"%s\"",
+        &[message.map_or(GameFormatArgument::Null, GameFormatArgument::Text)],
+    );
     if player.is_some() && spawnflags & 4 != 0 {
         driver.send_server_command(player.unwrap_or(0) as i32, &command);
         return Ok(());
     }
     if spawnflags & 3 != 0 {
         if spawnflags & 1 != 0 {
-            team_command(driver, Q3Team::Red, &command);
+            team_command(driver, Team::TeamRed, &command);
         }
         if spawnflags & 2 != 0 {
-            team_command(driver, Q3Team::Blue, &command);
+            team_command(driver, Team::TeamBlue, &command);
         }
         return Ok(());
     }
@@ -350,17 +358,17 @@ pub fn use_target_speaker(
             Participant::Entity(native) => {
                 driver
                     .pool()
-                    .add_event(*native, Q3EntityEvent::GeneralSound, noise_index);
+                    .add_event(*native, EntityEvent::EvGeneralSound, noise_index);
             }
             Participant::SharedActor(actor) => {
                 let actor = actor.clone();
-                driver.actor_event(&actor, Q3EntityEvent::GeneralSound, noise_index);
+                driver.actor_event(&actor, EntityEvent::EvGeneralSound, noise_index);
             }
         }
     } else if spawnflags & 4 != 0 {
-        driver.pool().add_event(slot, Q3EntityEvent::GlobalSound, noise_index);
+        driver.pool().add_event(slot, EntityEvent::EvGlobalSound, noise_index);
     } else {
-        driver.pool().add_event(slot, Q3EntityEvent::GeneralSound, noise_index);
+        driver.pool().add_event(slot, EntityEvent::EvGeneralSound, noise_index);
     }
     Ok(())
 }
@@ -383,9 +391,9 @@ pub fn use_target_push(
             .pool()
             .client(client)
             .ok_or_else(|| failure("Target entity does not belong to its entity pool or was replaced"))?;
-        (client.ps.pm_type, client.ps.powerups.get(Q3Powerup::Flight as usize))
+        (client.ps.pm_type, client.ps.powerups.get(Powerup::PwFlight as usize))
     };
-    if pm_type != Q3MoveType::Normal as i32 || flight != 0 {
+    if pm_type != MoveType::PmNormal as i32 || flight != 0 {
         return Ok(());
     }
     let origin2 = driver
@@ -446,14 +454,14 @@ pub(crate) fn laser_think(driver: &mut dyn Q3Driver, slot: usize) -> Result<(), 
         )
     };
     let end = add3(origin, scale3(movedir, 2048.0));
-    let trace = driver.spatial().trace_actor(&Q3TraceQuery {
+    let trace = driver.spatial().trace_actor(&ActorTraceQuery {
         start: origin,
         end,
-        shape: Q3TraceShape::Point,
+        shape: TraceShape::Point,
         pass_actor: Some(actor),
         mask: MASK_TARGET_LASER,
     });
-    if let Q3TraceHit::Actor(hit) = &trace.hit {
+    if let ActorTraceHit::Actor { actor: hit } = &trace.hit {
         let target = driver.participant(hit);
         if !matches!(target, Participant::Entity(0)) {
             let host = Participant::Entity(slot);
@@ -526,7 +534,7 @@ pub(crate) fn start_target_laser(
 ) -> Result<(), Q3GameError> {
     bind_target_save_callbacks(driver, locations)?;
     if let Some(entity) = driver.pool().entity_mut(slot) {
-        entity.s.e_type = Q3EntityType::Beam as i32;
+        entity.s.e_type = EntityType::EtBeam as i32;
     }
     let target = driver.pool().entity(slot).and_then(|entity| entity.target.clone());
     if let Some(target) = target {
@@ -543,11 +551,11 @@ pub(crate) fn start_target_laser(
             driver.warn(&game_format(
                 "%s at %s: %s is a bad target\n",
                 &[
-                    GameFormatArg::Text(classname),
-                    GameFormatArg::Text(Some(at)),
-                    GameFormatArg::Text(Some(target)),
+                    classname.map_or(GameFormatArgument::Null, GameFormatArgument::Text),
+                    GameFormatArgument::Text(at),
+                    GameFormatArgument::Text(target),
                 ],
-            )?);
+            ));
         }
         if let Some(entity) = driver.pool().entity_mut(slot) {
             entity.enemy = found;
@@ -662,10 +670,10 @@ pub fn use_target_relay(
             .and_then(|client| driver.pool().client(client).map(|client| client.sess.session_team)),
         None => None,
     };
-    if spawnflags & 1 != 0 && player.is_some() && team.is_some() && team != Some(Q3Team::Red as i32) {
+    if spawnflags & 1 != 0 && player.is_some() && team.is_some() && team != Some(Team::TeamRed as i32) {
         return Ok(());
     }
-    if spawnflags & 2 != 0 && player.is_some() && team.is_some() && team != Some(Q3Team::Blue as i32) {
+    if spawnflags & 2 != 0 && player.is_some() && team.is_some() && team != Some(Team::TeamBlue as i32) {
         return Ok(());
     }
     if spawnflags & 4 != 0 {
@@ -729,9 +737,17 @@ pub fn link_target_locations(
 
 pub(crate) fn speaker_sound_path(noise: &str) -> Result<String, Q3GameError> {
     if noise.contains(".wav") {
-        game_format_sized("%s", &[GameFormatArg::Text(Some(noise.to_string()))], 64)
+        Ok(game_format_bounded(
+            "%s",
+            &[GameFormatArgument::Text(noise.to_string())],
+            64,
+        ))
     } else {
-        game_format_sized("%s.wav", &[GameFormatArg::Text(Some(noise.to_string()))], 64)
+        Ok(game_format_bounded(
+            "%s.wav",
+            &[GameFormatArgument::Text(noise.to_string())],
+            64,
+        ))
     }
 }
 
@@ -860,8 +876,8 @@ pub fn spawn_target_speaker(
         let at = driver.scratch().vtos(origin)?.read_string();
         let message = game_format(
             "target_speaker without a noise key at %s",
-            &[GameFormatArg::Text(Some(at))],
-        )?;
+            &[GameFormatArgument::Text(at)],
+        );
         return Err(failure(message));
     }
     if noise.value.starts_with('*') {
@@ -888,7 +904,7 @@ pub fn spawn_target_speaker(
             .entity_mut(slot)
             .ok_or_else(|| failure("Target entity does not belong to its entity pool or was replaced"))?;
         entity.noise_index = index;
-        entity.s.e_type = Q3EntityType::Speaker as i32;
+        entity.s.e_type = EntityType::EtSpeaker as i32;
         entity.s.event_parm = index;
         entity.s.frame = qvm_float_to_int(wait * 10.0);
         entity.s.client_num = qvm_float_to_int(random * 10.0);
@@ -897,7 +913,7 @@ pub fn spawn_target_speaker(
         }
         entity.use_callback = use_callback;
         if spawnflags & 4 != 0 {
-            entity.r.sv_flags |= ServerEntityFlags::BROADCAST;
+            entity.r.sv_flags |= ServerEntityFlags::Broadcast as i32;
         }
         entity.s.pos.base = entity.s.origin;
     }
@@ -1014,8 +1030,11 @@ pub fn spawn_target_teleporter(
         let at = driver.scratch().vtos(origin)?.read_string();
         driver.warn(&game_format(
             "untargeted %s at %s\n",
-            &[GameFormatArg::Text(classname), GameFormatArg::Text(Some(at))],
-        )?);
+            &[
+                classname.map_or(GameFormatArgument::Null, GameFormatArgument::Text),
+                GameFormatArgument::Text(at),
+            ],
+        ));
     }
     let use_callback = driver
         .pool()
@@ -1311,4 +1330,75 @@ pub fn bind_target_save_callbacks(
         }),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use std::cell::RefCell;
+
+    use crate::q3::base::shared::definitions::Product;
+    use std::rc::Rc;
+
+    #[test]
+    fn targets_dispatch_and_link() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        let locations = Rc::new(RefCell::new(TargetLocationState::new()));
+        bind_target_save_callbacks(&mut driver, &locations).unwrap();
+        let table = target_spawn_handlers(&locations);
+        assert!(table.get("target_delay").is_some());
+        assert!(table.get("target_push").is_some());
+        assert!(table.get("target_location").is_some());
+        let delay = driver.pool.spawn_entity().unwrap();
+        let variables = SpawnVariables::new(Vec::new()).unwrap();
+        spawn_target_delay(&mut driver, &locations, delay, &variables).unwrap();
+        assert_eq!(driver.pool.entities[delay].wait, 1.0);
+        let player = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[player].client = Some(0);
+        driver.pool.entities[player].takedamage = true;
+        let activator = Participant::Entity(player);
+        use_target_delay(&mut driver, &locations, delay, None, Some(&activator)).unwrap();
+        assert!(driver.pool.entities[delay].nextthink > 1000);
+        think_target_delay(&mut driver, delay).unwrap();
+        assert_eq!(driver.use_targets_calls.len(), 1);
+        let score = driver.pool.spawn_entity().unwrap();
+        spawn_target_score(&mut driver, &locations, score).unwrap();
+        assert_eq!(driver.pool.entities[score].count, 1);
+        use_target_score(&mut driver, score, None, Some(&activator)).unwrap();
+        assert_eq!(driver.scores, vec![(player, 1)]);
+        let print = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[print].message = Some("hello".to_string());
+        use_target_print(&mut driver, print, None, Some(&activator)).unwrap();
+        assert_eq!(
+            driver.commands,
+            vec![(SERVER_COMMAND_BROADCAST, "cp \"hello\"".to_string())]
+        );
+        let speaker = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[speaker].spawnflags = 1;
+        driver.pool.entities[speaker].noise_index = 7;
+        use_target_speaker(&mut driver, speaker, None, None).unwrap();
+        assert_eq!(driver.pool.entities[speaker].s.loop_sound, 7);
+        let kill = driver.pool.spawn_entity().unwrap();
+        use_target_kill(&mut driver, kill, None, Some(&activator)).unwrap();
+        assert_eq!(driver.combat.calls.len(), 1);
+        assert_eq!(driver.combat.calls[0].amount, 100_000);
+        let relay = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[relay].spawnflags = 1;
+        assert!(use_target_relay(&mut driver, relay, None, None).is_err());
+        let location = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[location].set_classname(Some("target_location".to_string()));
+        driver.pool.entities[location].message = Some("base".to_string());
+        link_target_locations(&mut driver, &locations).unwrap();
+        assert!(locations.borrow().linked);
+        assert_eq!(driver.pool.entities[location].health, 1);
+        assert_eq!(driver.configstrings.get(&CS_LOCATIONS), Some(&"unknown".to_string()));
+        let saved = locations.borrow().capture_save_state();
+        let mut restored = TargetLocationState::new();
+        restored.restore_save_state(&saved, &driver.pool).unwrap();
+        assert_eq!(restored.head, Some(location));
+    }
 }

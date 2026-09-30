@@ -148,3 +148,45 @@ pub fn evaluate_trajectory_delta(tr: &Trajectory, at_time: i32) -> Vec3 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use qa_core::math::vec3;
+
+    #[test]
+    fn trajectories_evaluate() {
+        let linear = Trajectory {
+            trajectory_type: TrajectoryType::TrLinear,
+            time: 0,
+            duration: 0,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(1000.0, 0.0, 0.0),
+        };
+        assert_eq!(evaluate_trajectory(&linear, 1000), vec3(1000.0, 0.0, 0.0));
+        assert_eq!(evaluate_trajectory_delta(&linear, 500), vec3(1000.0, 0.0, 0.0));
+        let gravity = Trajectory {
+            trajectory_type: TrajectoryType::TrGravity,
+            ..linear
+        };
+        assert_eq!(evaluate_trajectory(&gravity, 1000), vec3(1000.0, 0.0, -400.0));
+        let sine = Trajectory {
+            trajectory_type: TrajectoryType::TrSine,
+            time: 0,
+            duration: 1000,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(10.0, 0.0, 0.0),
+        };
+        let at_quarter = evaluate_trajectory(&sine, 250);
+        assert!((at_quarter.x - 10.0).abs() < 0.001);
+        let stop = Trajectory {
+            trajectory_type: TrajectoryType::TrLinearStop,
+            duration: 500,
+            ..linear
+        };
+        assert_eq!(evaluate_trajectory(&stop, 1000), vec3(500.0, 0.0, 0.0));
+        assert_eq!(evaluate_trajectory_delta(&stop, 1000), vec3(0.0, 0.0, 0.0));
+        assert!(TrajectoryType::from_i32(9).is_err());
+    }
+}

@@ -14,9 +14,12 @@ use qa_core::math::Bounds;
 use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::save_values::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, EntityPool, Q3BodyState, Q3GameError, Q3LinkedBody, Q3UserCommand};
+use crate::q3::base::shared::definitions::Product;
+use crate::q3::base::shared::entity_shared::EntityCollisionModel;
+use crate::q3::base::shared::trajectory::{Trajectory, TrajectoryType};
 
 // ---------------------------------------------------------------------------
 // save-state.ts / save-reader.ts: graph capture, restore, and reads
@@ -45,7 +48,7 @@ pub struct ClientBacking {
 /// Entity records surface (`Q3EntityRecords`).
 pub trait Q3EntityRecords {
     /// Product.
-    fn product(&self) -> Q3Product;
+    fn product(&self) -> Product;
     /// Item table length.
     fn item_count(&self) -> usize;
     /// Capture ownership.
@@ -114,7 +117,7 @@ pub struct SavedShared {
     /// Owner number.
     pub owner_num: i32,
     /// Collision model.
-    pub model: Q3CollisionModel,
+    pub model: EntityCollisionModel,
 }
 
 /// Saved body state (`SavedBodyState`).
@@ -156,7 +159,7 @@ pub struct SavedSharedPrivate {
     pub abs_max_override: Option<Vec3>,
 }
 
-/// Saved classname (`Q3EntityState["classname"]`).
+/// Saved classname (`EntityState["classname"]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedClassname {
     /// Plain value.
@@ -165,7 +168,7 @@ pub enum SavedClassname {
     ClientName(usize),
 }
 
-/// Saved activation (`Q3EntityState["activation"]`).
+/// Saved activation (`EntityState["activation"]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedActivation {
     /// Entity slot.
@@ -174,7 +177,7 @@ pub enum SavedActivation {
     Actor(SavedActorId),
 }
 
-/// Saved entity (`Q3EntityState`).
+/// Saved entity (`EntityState`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q3GraphEntity {
     /// Values.
@@ -302,11 +305,11 @@ pub(crate) fn opt_callback_to_json(id: Option<&str>) -> SaveJson {
     id.map_or(SaveJson::Null, str)
 }
 
-pub(crate) fn collision_model_to_json(model: &Q3CollisionModel) -> SaveJson {
+pub(crate) fn collision_model_to_json(model: &EntityCollisionModel) -> SaveJson {
     match model {
-        Q3CollisionModel::Inline { index } => obj(vec![("kind", str("inline")), ("index", num_i32(*index))]),
-        Q3CollisionModel::Box => obj(vec![("kind", str("box"))]),
-        Q3CollisionModel::Capsule => obj(vec![("kind", str("capsule"))]),
+        EntityCollisionModel::Inline { index } => obj(vec![("kind", str("inline")), ("index", num_i32(*index))]),
+        EntityCollisionModel::Box => obj(vec![("kind", str("box"))]),
+        EntityCollisionModel::Capsule => obj(vec![("kind", str("capsule"))]),
     }
 }
 
@@ -504,7 +507,7 @@ pub fn graph_to_json(graph: &Q3Graph) -> SaveJson {
     ])
 }
 
-pub(crate) fn saved_trajectory(trajectory: &Q3Trajectory) -> SavedTrajectory {
+pub(crate) fn saved_trajectory(trajectory: &Trajectory) -> SavedTrajectory {
     SavedTrajectory {
         trajectory_type: trajectory.trajectory_type as i32,
         time: trajectory.time,
@@ -708,14 +711,14 @@ pub fn restore_q3_graph(
             .ok_or_else(|| failure(format!("Q3 graph restore is missing entity slot {slot}")))?;
         restore_entity_values(target, &saved.values);
         restore_network_values(&mut target.s, &saved.network);
-        target.s.pos = Q3Trajectory {
+        target.s.pos = Trajectory {
             trajectory_type: TrajectoryType::from_i32(saved.pos.trajectory_type)?,
             time: saved.pos.time,
             duration: saved.pos.duration,
             base: saved.pos.base,
             delta: saved.pos.delta,
         };
-        target.s.apos = Q3Trajectory {
+        target.s.apos = Trajectory {
             trajectory_type: TrajectoryType::from_i32(saved.apos.trajectory_type)?,
             time: saved.apos.time,
             duration: saved.apos.duration,
@@ -840,4 +843,91 @@ pub fn restore_q3_graph(
     }
     pool.restore_counts(state.num_entities, state.max_clients);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::save_module_values::*;
+    use crate::q3::base::game::save_reader::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use crate::value::int;
+
+    use crate::value::SaveReader;
+
+    use qa_core::identity::SavedActorId;
+
+    use crate::q3::base::shared::definitions::Product;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    #[test]
+    fn graph_capture_prepare_restore_round_trip() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        driver.pool.use_slot(0);
+        driver.pool.use_slot(1);
+        driver.pool.use_slot(MAX_CLIENTS - 1);
+        driver.pool.entities[0].set_classname(Some("worldspawn".to_string()));
+        driver.pool.entities[1].set_classname(Some("thing".to_string()));
+        driver.pool.entities[1].parent = Some(0);
+        driver.pool.entities[1].client = Some(0);
+        driver.pool.clients[0].ps.persistant.set(0, 66);
+        let think: EntityThink = Rc::new(|_, _| {});
+        driver
+            .pool
+            .callbacks_mut()
+            .think
+            .register("test.think", Rc::clone(&think))
+            .unwrap();
+        driver.pool.entities[1].think = Some(think);
+        let mut records = StubRecords {
+            product: Product::Baseq3,
+            items: 4,
+            ownership: (0..MAX_GENTITIES)
+                .map(|slot| OwnershipEntry {
+                    actor: Some(owner.actor(slot as u32, 1)),
+                    active: slot < 2,
+                    borrowed: false,
+                })
+                .collect(),
+            backing: HashMap::new(),
+            callbacks_restored: false,
+        };
+        let graph = capture_q3_graph(&records, &driver.pool).unwrap();
+        assert_eq!(graph.entities.len(), MAX_GENTITIES);
+        assert_eq!(graph.clients.len(), MAX_CLIENTS);
+        let json = graph_to_json(&graph);
+        let parsed = read_q3_graph(&json).unwrap();
+        assert_eq!(
+            parsed.entities[1].values.spawnflags,
+            graph.entities[1].values.spawnflags
+        );
+        assert_eq!(parsed.entities[1].think, Some("test.think".to_string()));
+        let mut registry_map = HashMap::new();
+        for slot in 0..MAX_GENTITIES {
+            let actor = owner.actor(slot as u32, 1);
+            registry_map.insert(SavedActorId::from(&actor), actor);
+        }
+        let registry = StubRegistry { map: registry_map };
+        prepare_q3_graph(&mut records, &parsed, &registry).unwrap();
+        let mut fresh = StubDriver::new(&owner, Product::Baseq3);
+        fresh
+            .pool
+            .callbacks_mut()
+            .think
+            .register("test.think", Rc::new(|_, _| {}))
+            .unwrap();
+        restore_q3_graph(&records, &mut fresh.pool, &parsed, &registry).unwrap();
+        assert_eq!(fresh.pool.entities[1].parent, Some(0));
+        assert!(fresh.pool.entities[1].think.is_some());
+        assert_eq!(fresh.pool.clients[0].ps.persistant.get(0), 66);
+        assert_eq!(fresh.pool.num_entities(), MAX_CLIENTS);
+        let bad_value = int(5000);
+        let bad_reader = SaveReader::at(&bad_value, "test");
+        assert!(read_module_entity(&bad_reader, &driver.pool).is_err());
+    }
 }

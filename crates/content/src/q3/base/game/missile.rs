@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use crate::q3::base::game::combat::DamageFlags;
 use crate::q3::base::game::item_motion::*;
 use crate::q3::base::game::items_core::*;
+use crate::q3::base::game::state::Q3Driver;
 use crate::q3::base::game::state::MAX_GENTITIES;
 use crate::q3::base::shared::definitions::{EntityEvent, EntityType, GameType, Product, Weapon};
 use crate::q3::base::shared::direction_byte::direction_to_byte;
@@ -2944,4 +2945,34 @@ mod tests {
             .unwrap());
         assert!(pool.get(hook).is_none());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Missile launcher surface (`MissileRuntime` fire methods).
+pub trait MissileLauncher {
+    /// Fire a grenade.
+    fn fire_grenade(&mut self, driver: &mut dyn Q3Driver, entity: usize, muzzle: Vec3, direction: Vec3) -> usize;
+    /// Fire a rocket.
+    fn fire_rocket(&mut self, driver: &mut dyn Q3Driver, entity: usize, muzzle: Vec3, direction: Vec3) -> usize;
+    /// Fire plasma.
+    fn fire_plasma(&mut self, driver: &mut dyn Q3Driver, entity: usize, muzzle: Vec3, direction: Vec3) -> usize;
+    /// Fire the BFG.
+    fn fire_bfg(&mut self, driver: &mut dyn Q3Driver, entity: usize, muzzle: Vec3, direction: Vec3) -> usize;
+    /// Fire the grapple.
+    fn fire_grapple(&mut self, driver: &mut dyn Q3Driver, entity: usize, muzzle: Vec3, direction: Vec3) -> usize;
+    /// Fire a nail.
+    fn fire_nail(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        entity: usize,
+        muzzle: Vec3,
+        forward: Vec3,
+        right: Vec3,
+        up: Vec3,
+    ) -> usize;
+    /// Fire a proximity mine.
+    fn fire_prox(&mut self, driver: &mut dyn Q3Driver, entity: usize, muzzle: Vec3, direction: Vec3) -> usize;
 }

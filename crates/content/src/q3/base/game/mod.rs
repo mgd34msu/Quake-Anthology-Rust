@@ -14,7 +14,6 @@ pub mod item_pickup;
 pub mod items_core;
 pub mod level;
 pub mod memory;
-pub mod mirrors_game_state;
 pub mod misc;
 pub mod misc_spawn;
 pub mod missile;

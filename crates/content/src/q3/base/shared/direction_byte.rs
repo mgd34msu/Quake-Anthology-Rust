@@ -860,3 +860,20 @@ pub fn byte_to_direction(byte: i32) -> Vec3 {
     }
     BYTE_DIRECTIONS.get(byte as usize).copied().unwrap_or(ZERO_DIRECTION)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use qa_core::math::vec3;
+
+    #[test]
+    fn direction_byte_round_trip() {
+        assert_eq!(direction_to_byte(None), 0);
+        assert_eq!(direction_to_byte(Some(vec3(0.0, 0.0, 0.0))), 0);
+        assert_eq!(direction_to_byte(Some(vec3(0.0, 0.0, 1.0))), 5);
+        assert_eq!(byte_to_direction(5), vec3(0.0, 0.0, 1.0));
+        assert_eq!(byte_to_direction(999), vec3(0.0, 0.0, 0.0));
+        assert_eq!(byte_to_direction(-1), vec3(0.0, 0.0, 0.0));
+    }
+}

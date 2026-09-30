@@ -6,7 +6,8 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::state::{failure, Q3GameError};
+use crate::q3::base::shared::definitions::{Holdable, Powerup, Weapon};
 
 // ---------------------------------------------------------------------------
 // rankings.ts: ranking reports (g_rankings.c)
@@ -131,20 +132,20 @@ impl Q3RankingReports {
 
     /// Fire-weapon reports.
     pub fn fire_weapon(&self, slf: i32, weapon: i32) {
-        if self.is_warmup() || weapon == Q3Weapon::Gauntlet as i32 {
+        if self.is_warmup() || weapon == Weapon::WpGauntlet as i32 {
             return;
         }
         self.integer(slf, -1, 1111020002, 1, true);
         match weapon {
-            x if x == Q3Weapon::Machinegun as i32 => self.integer(slf, -1, 1111020202, 1, true),
-            x if x == Q3Weapon::Shotgun as i32 => self.integer(slf, -1, 1111020302, 1, true),
-            x if x == Q3Weapon::GrenadeLauncher as i32 => self.integer(slf, -1, 1111020402, 1, true),
-            x if x == Q3Weapon::RocketLauncher as i32 => self.integer(slf, -1, 1111020502, 1, true),
-            x if x == Q3Weapon::Lightning as i32 => self.integer(slf, -1, 1111020802, 1, true),
-            x if x == Q3Weapon::Railgun as i32 => self.integer(slf, -1, 1111020702, 1, true),
-            x if x == Q3Weapon::Plasmagun as i32 => self.integer(slf, -1, 1111020602, 1, true),
-            x if x == Q3Weapon::Bfg as i32 => self.integer(slf, -1, 1111020902, 1, true),
-            x if x == Q3Weapon::GrapplingHook as i32 => self.integer(slf, -1, 1111021002, 1, true),
+            x if x == Weapon::WpMachinegun as i32 => self.integer(slf, -1, 1111020202, 1, true),
+            x if x == Weapon::WpShotgun as i32 => self.integer(slf, -1, 1111020302, 1, true),
+            x if x == Weapon::WpGrenadeLauncher as i32 => self.integer(slf, -1, 1111020402, 1, true),
+            x if x == Weapon::WpRocketLauncher as i32 => self.integer(slf, -1, 1111020502, 1, true),
+            x if x == Weapon::WpLightning as i32 => self.integer(slf, -1, 1111020802, 1, true),
+            x if x == Weapon::WpRailgun as i32 => self.integer(slf, -1, 1111020702, 1, true),
+            x if x == Weapon::WpPlasmagun as i32 => self.integer(slf, -1, 1111020602, 1, true),
+            x if x == Weapon::WpBfg as i32 => self.integer(slf, -1, 1111020902, 1, true),
+            x if x == Weapon::WpGrapplingHook as i32 => self.integer(slf, -1, 1111021002, 1, true),
             _ => {}
         }
     }
@@ -156,16 +157,16 @@ impl Q3RankingReports {
         }
         self.integer(slf, -1, 1111020009, 1, true);
         match weapon {
-            x if x == Q3Weapon::Gauntlet as i32 => self.integer(slf, -1, 1111020109, 1, true),
-            x if x == Q3Weapon::Machinegun as i32 => self.integer(slf, -1, 1111020209, 1, true),
-            x if x == Q3Weapon::Shotgun as i32 => self.integer(slf, -1, 1111020309, 1, true),
-            x if x == Q3Weapon::GrenadeLauncher as i32 => self.integer(slf, -1, 1111020409, 1, true),
-            x if x == Q3Weapon::RocketLauncher as i32 => self.integer(slf, -1, 1111020509, 1, true),
-            x if x == Q3Weapon::Lightning as i32 => self.integer(slf, -1, 1111020809, 1, true),
-            x if x == Q3Weapon::Railgun as i32 => self.integer(slf, -1, 1111020709, 1, true),
-            x if x == Q3Weapon::Plasmagun as i32 => self.integer(slf, -1, 1111020609, 1, true),
-            x if x == Q3Weapon::Bfg as i32 => self.integer(slf, -1, 1111020909, 1, true),
-            x if x == Q3Weapon::GrapplingHook as i32 => self.integer(slf, -1, 1111021009, 1, true),
+            x if x == Weapon::WpGauntlet as i32 => self.integer(slf, -1, 1111020109, 1, true),
+            x if x == Weapon::WpMachinegun as i32 => self.integer(slf, -1, 1111020209, 1, true),
+            x if x == Weapon::WpShotgun as i32 => self.integer(slf, -1, 1111020309, 1, true),
+            x if x == Weapon::WpGrenadeLauncher as i32 => self.integer(slf, -1, 1111020409, 1, true),
+            x if x == Weapon::WpRocketLauncher as i32 => self.integer(slf, -1, 1111020509, 1, true),
+            x if x == Weapon::WpLightning as i32 => self.integer(slf, -1, 1111020809, 1, true),
+            x if x == Weapon::WpRailgun as i32 => self.integer(slf, -1, 1111020709, 1, true),
+            x if x == Weapon::WpPlasmagun as i32 => self.integer(slf, -1, 1111020609, 1, true),
+            x if x == Weapon::WpBfg as i32 => self.integer(slf, -1, 1111020909, 1, true),
+            x if x == Weapon::WpGrapplingHook as i32 => self.integer(slf, -1, 1111021009, 1, true),
             _ => {}
         }
     }
@@ -178,35 +179,35 @@ impl Q3RankingReports {
         self.integer(slf, -1, 1111030000, 1, true);
         self.integer(slf, -1, 1111030001, quantity, true);
         match weapon {
-            x if x == Q3Weapon::Machinegun as i32 => {
+            x if x == Weapon::WpMachinegun as i32 => {
                 self.integer(slf, -1, 1111030100, 1, true);
                 self.integer(slf, -1, 1111030101, quantity, true);
             }
-            x if x == Q3Weapon::Shotgun as i32 => {
+            x if x == Weapon::WpShotgun as i32 => {
                 self.integer(slf, -1, 1111030200, 1, true);
                 self.integer(slf, -1, 1111030201, quantity, true);
             }
-            x if x == Q3Weapon::GrenadeLauncher as i32 => {
+            x if x == Weapon::WpGrenadeLauncher as i32 => {
                 self.integer(slf, -1, 1111030300, 1, true);
                 self.integer(slf, -1, 1111030301, quantity, true);
             }
-            x if x == Q3Weapon::RocketLauncher as i32 => {
+            x if x == Weapon::WpRocketLauncher as i32 => {
                 self.integer(slf, -1, 1111030400, 1, true);
                 self.integer(slf, -1, 1111030401, quantity, true);
             }
-            x if x == Q3Weapon::Lightning as i32 => {
+            x if x == Weapon::WpLightning as i32 => {
                 self.integer(slf, -1, 1111030700, 1, true);
                 self.integer(slf, -1, 1111030701, quantity, true);
             }
-            x if x == Q3Weapon::Railgun as i32 => {
+            x if x == Weapon::WpRailgun as i32 => {
                 self.integer(slf, -1, 1111030600, 1, true);
                 self.integer(slf, -1, 1111030601, quantity, true);
             }
-            x if x == Q3Weapon::Plasmagun as i32 => {
+            x if x == Weapon::WpPlasmagun as i32 => {
                 self.integer(slf, -1, 1111030500, 1, true);
                 self.integer(slf, -1, 1111030501, quantity, true);
             }
-            x if x == Q3Weapon::Bfg as i32 => {
+            x if x == Weapon::WpBfg as i32 => {
                 self.integer(slf, -1, 1111030800, 1, true);
                 self.integer(slf, -1, 1111030801, quantity, true);
             }
@@ -250,18 +251,18 @@ impl Q3RankingReports {
         if self.is_warmup() {
             return;
         }
-        if powerup == Q3Powerup::Redflag as i32 || powerup == Q3Powerup::Blueflag as i32 {
+        if powerup == Powerup::PwRedflag as i32 || powerup == Powerup::PwBlueflag as i32 {
             self.integer(slf, -1, 1111110000, 1, true);
             return;
         }
         self.integer(slf, -1, 1111060000, 1, true);
         match powerup {
-            x if x == Q3Powerup::Quad as i32 => self.integer(slf, -1, 1111060100, 1, true),
-            x if x == Q3Powerup::Battlesuit as i32 => self.integer(slf, -1, 1111060200, 1, true),
-            x if x == Q3Powerup::Haste as i32 => self.integer(slf, -1, 1111060300, 1, true),
-            x if x == Q3Powerup::Invis as i32 => self.integer(slf, -1, 1111060400, 1, true),
-            x if x == Q3Powerup::Regen as i32 => self.integer(slf, -1, 1111060500, 1, true),
-            x if x == Q3Powerup::Flight as i32 => self.integer(slf, -1, 1111060600, 1, true),
+            x if x == Powerup::PwQuad as i32 => self.integer(slf, -1, 1111060100, 1, true),
+            x if x == Powerup::PwBattlesuit as i32 => self.integer(slf, -1, 1111060200, 1, true),
+            x if x == Powerup::PwHaste as i32 => self.integer(slf, -1, 1111060300, 1, true),
+            x if x == Powerup::PwInvis as i32 => self.integer(slf, -1, 1111060400, 1, true),
+            x if x == Powerup::PwRegen as i32 => self.integer(slf, -1, 1111060500, 1, true),
+            x if x == Powerup::PwFlight as i32 => self.integer(slf, -1, 1111060600, 1, true),
             _ => {}
         }
     }
@@ -272,8 +273,8 @@ impl Q3RankingReports {
             return;
         }
         match holdable {
-            x if x == Q3Holdable::Medkit as i32 => self.integer(slf, -1, 1111070000, 1, true),
-            x if x == Q3Holdable::Teleporter as i32 => self.integer(slf, -1, 1111070100, 1, true),
+            x if x == Holdable::HiMedkit as i32 => self.integer(slf, -1, 1111070000, 1, true),
+            x if x == Holdable::HiTeleporter as i32 => self.integer(slf, -1, 1111070100, 1, true),
             _ => {}
         }
     }
@@ -284,8 +285,8 @@ impl Q3RankingReports {
             return;
         }
         match holdable {
-            x if x == Q3Holdable::Medkit as i32 => self.integer(slf, -1, 1111070001, 1, true),
-            x if x == Q3Holdable::Teleporter as i32 => self.integer(slf, -1, 1111070101, 1, true),
+            x if x == Holdable::HiMedkit as i32 => self.integer(slf, -1, 1111070001, 1, true),
+            x if x == Holdable::HiTeleporter as i32 => self.integer(slf, -1, 1111070101, 1, true),
             _ => {}
         }
     }
@@ -464,16 +465,16 @@ impl Q3RankingReports {
         }
         self.integer(slf, -1, 1111020010, time, true);
         match weapon {
-            x if x == Q3Weapon::Gauntlet as i32 => self.integer(slf, -1, 1111020110, time, true),
-            x if x == Q3Weapon::Machinegun as i32 => self.integer(slf, -1, 1111020210, time, true),
-            x if x == Q3Weapon::Shotgun as i32 => self.integer(slf, -1, 1111020310, time, true),
-            x if x == Q3Weapon::GrenadeLauncher as i32 => self.integer(slf, -1, 1111020410, time, true),
-            x if x == Q3Weapon::RocketLauncher as i32 => self.integer(slf, -1, 1111020510, time, true),
-            x if x == Q3Weapon::Lightning as i32 => self.integer(slf, -1, 1111020810, time, true),
-            x if x == Q3Weapon::Railgun as i32 => self.integer(slf, -1, 1111020710, time, true),
-            x if x == Q3Weapon::Plasmagun as i32 => self.integer(slf, -1, 1111020610, time, true),
-            x if x == Q3Weapon::Bfg as i32 => self.integer(slf, -1, 1111020910, time, true),
-            x if x == Q3Weapon::GrapplingHook as i32 => self.integer(slf, -1, 1111021010, time, true),
+            x if x == Weapon::WpGauntlet as i32 => self.integer(slf, -1, 1111020110, time, true),
+            x if x == Weapon::WpMachinegun as i32 => self.integer(slf, -1, 1111020210, time, true),
+            x if x == Weapon::WpShotgun as i32 => self.integer(slf, -1, 1111020310, time, true),
+            x if x == Weapon::WpGrenadeLauncher as i32 => self.integer(slf, -1, 1111020410, time, true),
+            x if x == Weapon::WpRocketLauncher as i32 => self.integer(slf, -1, 1111020510, time, true),
+            x if x == Weapon::WpLightning as i32 => self.integer(slf, -1, 1111020810, time, true),
+            x if x == Weapon::WpRailgun as i32 => self.integer(slf, -1, 1111020710, time, true),
+            x if x == Weapon::WpPlasmagun as i32 => self.integer(slf, -1, 1111020610, time, true),
+            x if x == Weapon::WpBfg as i32 => self.integer(slf, -1, 1111020910, time, true),
+            x if x == Weapon::WpGrapplingHook as i32 => self.integer(slf, -1, 1111021010, time, true),
             _ => {}
         }
     }
@@ -487,5 +488,42 @@ impl Q3RankingReports {
 impl Default for Q3RankingReports {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::cell::RefCell;
+
+    use crate::q3::base::shared::definitions::Weapon;
+    use std::rc::Rc;
+
+    #[test]
+    fn rankings_gate_accumulate_and_deduplicate() {
+        let reports = Q3RankingReports::new();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen_clone = Rc::clone(&seen);
+        let detach = reports
+            .attach(
+                Rc::new(move |report| seen_clone.borrow_mut().push(report)),
+                Rc::new(|| false),
+            )
+            .unwrap();
+        assert!(reports.attach(Rc::new(|_| {}), Rc::new(|| false)).is_err());
+        reports.fire_weapon(0, Weapon::WpMachinegun as i32);
+        assert_eq!(seen.borrow().len(), 2);
+        reports.damage(1, 2, 10, 3, 99, true, false);
+        let after_first = seen.borrow().len();
+        reports.damage(1, 2, 10, 3, 99, true, false);
+        let after_second = seen.borrow().len();
+        assert!(after_second > after_first);
+        reports.player_die(1, 1022, 14);
+        reports.team_name(0, "red");
+        detach();
+        let before = seen.borrow().len();
+        reports.capture(0);
+        assert_eq!(seen.borrow().len(), before);
     }
 }
