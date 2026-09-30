@@ -1288,7 +1288,7 @@ mod tests {
 
     const ENTITIES: usize = 4096;
     const CLIENTS: usize = 8192;
-    const ENTITY_STRIDE: usize = 256;
+    const ENTITY_STRIDE: usize = 516;
     const CLIENT_STRIDE: usize = 512;
     const CLIENT_POINTER: usize = 16;
     const SLOTS: usize = 4;

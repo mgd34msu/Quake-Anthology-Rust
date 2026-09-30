@@ -499,7 +499,7 @@ mod tests {
 
     const ENTITIES: usize = 4096;
     const CLIENTS: usize = 8192;
-    const STRIDE: usize = 512;
+    const STRIDE: usize = 516;
     const SCRATCH: usize = 32768;
 
     struct FixtureBridge {

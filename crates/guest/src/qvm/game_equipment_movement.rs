@@ -668,9 +668,11 @@ mod tests {
             (QvmOpcode::OpEnter, 0),
             (QvmOpcode::OpEnter, 0),
             (QvmOpcode::OpEnter, 0),
+            (QvmOpcode::OpEnter, 0),
+            (QvmOpcode::OpIgnore, 0),
+            (QvmOpcode::OpIgnore, 0),
         ]
         .into_iter()
-        .chain([(QvmOpcode::OpConst, 0), (QvmOpcode::OpPop, 0), (QvmOpcode::OpIgnore, 0)])
         .enumerate()
         .map(|(index, (opcode, operand))| QvmInstruction::word(opcode, operand, index * 8))
         .collect()
@@ -710,7 +712,7 @@ mod tests {
         };
         let module = QvmModule::new(artifact.clone(), None, None).unwrap();
         let data = QvmGameData::new(module.memory(), AbiProfile::Modern);
-        data.locate(4096, 4, 256, CLIENTS as i32, CLIENT_STRIDE).unwrap();
+        data.locate(4096, 4, 516, CLIENTS as i32, CLIENT_STRIDE).unwrap();
         data.set_client_count(4).unwrap();
         module.memory().write_i32(MOVEMENT, CLIENTS as i32).unwrap();
         module.memory().write_i32(CLIENTS + 52, 100).unwrap();
@@ -726,10 +728,10 @@ mod tests {
             &artifact,
             QvmEquipmentMovementProfile {
                 move_entry: 0,
-                slice: 1,
+                slice: 3,
                 duck: 2,
                 movement_global: 1024,
-                locomotion: QvmLocomotion { entry: 3, join: 5 },
+                locomotion: QvmLocomotion { entry: 4, join: 5 },
                 mins: 64,
                 maxs: 76,
                 body_trace: None,

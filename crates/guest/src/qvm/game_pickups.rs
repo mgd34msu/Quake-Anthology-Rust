@@ -1614,7 +1614,7 @@ mod tests {
 
     const ENTITIES: usize = 4096;
     const CLIENTS: usize = 8192;
-    const ENTITY_STRIDE: usize = 256;
+    const ENTITY_STRIDE: usize = 516;
     const CLIENT_STRIDE: usize = 512;
     const ITEM_SLOT: usize = 2;
     const RECIPIENT_SLOT: usize = 0;
