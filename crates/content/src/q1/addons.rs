@@ -13,6 +13,7 @@ pub mod corpses;
 pub mod effects;
 pub mod field_triggers;
 pub mod lights;
+pub mod monsters;
 pub mod rope;
 pub mod travel;
 pub mod triggers;

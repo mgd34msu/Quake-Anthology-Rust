@@ -481,6 +481,30 @@ pub fn addon_alpha(game: &mut Q1EntityServices, id: &ActorId, alpha: f64) -> Res
     addon_emit(game, Q1AddonEvent::Alpha { actor, alpha })
 }
 
+/// Retarget an actor's combat team, preserving the remaining traits
+/// (`setTraits` with `team`).
+pub fn set_combat_team(
+    game: &mut Q1EntityServices,
+    actor: &qa_core::identity::OwnedActor,
+    team: Option<&str>,
+) -> Result<(), Q1Error> {
+    use crate::q1::foundation::gameplay::CombatTraits;
+
+    let Some(combat) = game.host.combat.read(actor.id()) else {
+        return Ok(());
+    };
+    game.host.combat.set_traits(
+        actor,
+        CombatTraits {
+            can_take_damage: combat.can_take_damage,
+            mass: combat.mass,
+            invulnerable: combat.invulnerable,
+            team: team.map(str::to_string),
+            no_knockback: combat.no_knockback,
+        },
+    )
+}
+
 /// Print a message to every player (`broadcast`).
 pub fn addon_broadcast(game: &mut Q1EntityServices, text: &str) {
     for player in (game.host.players)() {
