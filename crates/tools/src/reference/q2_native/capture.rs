@@ -8,7 +8,7 @@
 //! corpus archives, and Xvfb; the parsing, settings, output-inspection, and
 //! check helpers are pure and tested.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::error::ToolsError;

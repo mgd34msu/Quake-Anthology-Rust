@@ -596,3 +596,142 @@ pub fn run_q1_oracle(value: &Json) -> Result<Q1Output, ToolsError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::json::{deep_strict_equal, parse_json};
+    use crate::reference::q1::cases::q1_cases;
+
+    use super::*;
+
+    #[test]
+    fn pinned_cases_agree_with_the_oracle() {
+        for item in q1_cases() {
+            let observed = run_q1_oracle(&item.input.to_json()).expect(&format!("evaluate {}", item.id));
+            assert!(deep_strict_equal(&observed.to_json(), &item.expected.to_json()), "{}", item.id);
+        }
+    }
+
+    #[test]
+    fn mg1_exhausts_five_required_bits() {
+        for flags in 0..128 {
+            let input =
+                parse_json(&format!(r#"{{"kind": "mg1-hub", "serverFlags": {flags}}}"#)).expect("input");
+            let Q1Output::Mg1Hub { calls, .. } = run_q1_oracle(&input).expect("evaluate") else {
+                panic!("wrong oracle result kind for flags {flags}");
+            };
+            let expected = if flags % 32 == 31 { "trigger_changelevel()" } else { "remove(self)" };
+            assert_eq!(calls, vec![expected.to_owned()], "flags {flags}");
+        }
+    }
+
+    #[test]
+    fn mg3_exhausts_rune_masks_and_thresholds() {
+        let rune_counts = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
+        for flags in 0..64 {
+            let runes = rune_counts[flags % 16];
+            for threshold in [-1.0, 0.0, 1.0, 2.0, 2.5, 3.0, 4.0, 5.0] {
+                let input = parse_json(&format!(
+                    r#"{{"kind": "mg3-counter", "serverFlags": {flags}, "count": {threshold}, "coop": false, "spawnFlags": 0, "entity": 40, "activator": 2}}"#,
+                ))
+                .expect("input");
+                let Q1Output::Mg3Counter { runes: observed, callback, .. } =
+                    run_q1_oracle(&input).expect("evaluate")
+                else {
+                    panic!("wrong oracle result kind for flags {flags}");
+                };
+                assert_eq!(observed, Some(runes), "flags {flags} threshold {threshold}");
+                let count = if threshold == 0.0 { 2.0 } else { threshold };
+                assert_eq!(callback.is_some(), f64::from(runes) >= count, "flags {flags} threshold {threshold}");
+            }
+        }
+    }
+
+    #[test]
+    fn mg3_permits_matching_spawn_flags() {
+        for (coop, spawn_flags) in [(true, 32768), (false, 131072)] {
+            let input = parse_json(&format!(
+                r#"{{"kind": "mg3-counter", "serverFlags": 3, "count": 0, "coop": {coop}, "spawnFlags": {spawn_flags}, "entity": 40, "activator": 2}}"#,
+            ))
+            .expect("input");
+            let observed = run_q1_oracle(&input).expect("evaluate");
+            let expected = parse_json(
+                r#"{"kind": "mg3-counter", "removed": false, "count": 2, "use": "rune_counter_use", "runes": 2, "callback": {"name": "SUB_UseTargets", "self": 40, "activator": 2}}"#,
+            )
+            .expect("expected");
+            assert!(deep_strict_equal(&observed.to_json(), &expected), "coop {coop}");
+        }
+    }
+
+    #[test]
+    fn numeric_records_distinguish_signed_zero() {
+        let input = parse_json(
+            r#"{"kind": "scalar-program", "initial": -0, "operations": [{"operator": "multiply", "operand": 2}]}"#,
+        )
+        .expect("input");
+        let observed = run_q1_oracle(&input).expect("evaluate");
+        let expected = parse_json(
+            r#"{"kind": "scalar-program", "values": [-0, -0], "bits": ["80000000", "80000000"]}"#,
+        )
+        .expect("expected");
+        assert!(deep_strict_equal(&observed.to_json(), &expected), "{}", observed.to_json().render());
+    }
+
+    #[test]
+    fn signed_int_conversion_truncates_toward_zero() {
+        let input = parse_json(
+            r#"{"kind": "scalar-program", "initial": -1.75, "operations": [{"operator": "bit-and", "operand": 15}]}"#,
+        )
+        .expect("input");
+        let observed = run_q1_oracle(&input).expect("evaluate");
+        let expected = parse_json(
+            r#"{"kind": "scalar-program", "values": [-1.75, 15], "bits": ["bfe00000", "41700000"]}"#,
+        )
+        .expect("expected");
+        assert!(deep_strict_equal(&observed.to_json(), &expected), "{}", observed.to_json().render());
+    }
+
+    #[test]
+    fn malformed_inputs_fail_at_the_boundary() {
+        let documents = [
+            "null",
+            "[]",
+            "\"mg1-hub\"",
+            "{}",
+            r#"{"kind": "other"}"#,
+            r#"{"kind": "mg1-hub"}"#,
+            r#"{"kind": "mg1-hub", "serverFlags": "31"}"#,
+            r#"{"kind": "mg1-hub", "serverFlags": 2147483648}"#,
+            r#"{"kind": "mg1-hub", "serverFlags": -2147483904}"#,
+            r#"{"kind": "mg1-hub", "serverFlags": 31, "ignored": true}"#,
+            r#"{"kind": "scalar-program", "initial": 1e100, "operations": []}"#,
+            r#"{"kind": "scalar-program", "initial": 1, "operations": "add"}"#,
+            r#"{"kind": "scalar-program", "initial": 1, "operations": [null]}"#,
+            r#"{"kind": "scalar-program", "initial": 1, "operations": [{"operator": "power", "operand": 2}]}"#,
+            r#"{"kind": "scalar-program", "initial": 1, "operations": [{"operator": "divide", "operand": 0}]}"#,
+            r#"{"kind": "scalar-program", "initial": 3e38, "operations": [{"operator": "multiply", "operand": 2}]}"#,
+            r#"{"kind": "scalar-program", "initial": 2147483648, "operations": [{"operator": "bit-or", "operand": 1}]}"#,
+            r#"{"kind": "run-think", "serverTime": 10, "frameTime": -1, "nextThink": 10, "entity": 3, "globals": {"time": 7, "self": 99, "other": 98}, "effect": {"kind": "retain"}}"#,
+            r#"{"kind": "run-think", "serverTime": 10, "frameTime": 1, "nextThink": 10, "entity": 0.5, "globals": {"time": 7, "self": 99, "other": 98}, "effect": {"kind": "retain"}}"#,
+            r#"{"kind": "run-think", "serverTime": 10, "frameTime": 1, "nextThink": 10, "entity": 3, "globals": {"time": 7, "self": 99, "other": 98}, "effect": {"kind": "arbitrary-code"}}"#,
+            r#"{"kind": "mg3-counter", "serverFlags": 3, "count": 2, "coop": 1, "spawnFlags": 0, "entity": 40, "activator": 2}"#,
+        ];
+        for document in documents {
+            let value = parse_json(document).expect("test input parses");
+            assert!(run_q1_oracle(&value).is_err(), "{document}");
+        }
+        for value in [
+            Json::object(vec![
+                ("kind".to_owned(), Json::string("mg1-hub")),
+                ("serverFlags".to_owned(), Json::float(f64::NAN)),
+            ]),
+            Json::object(vec![
+                ("kind".to_owned(), Json::string("scalar-program")),
+                ("initial".to_owned(), Json::float(f64::INFINITY)),
+                ("operations".to_owned(), Json::array(Vec::new())),
+            ]),
+        ] {
+            assert!(run_q1_oracle(&value).is_err(), "{}", value.render());
+        }
+    }
+}

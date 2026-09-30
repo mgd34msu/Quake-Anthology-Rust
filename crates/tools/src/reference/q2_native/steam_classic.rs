@@ -15,7 +15,7 @@ use crate::json::Json;
 use crate::reference::environment::{identify_file, quake_typescript_root};
 use crate::reference::q2_native::capture::private_display;
 use crate::reference::q2_native::content::stage_content;
-use crate::reference::q2_native::process::{start_observed, ProcessObservation};
+use crate::reference::q2_native::process::start_observed;
 use crate::reference::q2_native::udp::{query, unused_port, UdpQuery};
 use crate::reference::schema::FileIdentity;
 use crate::time::now_iso;
