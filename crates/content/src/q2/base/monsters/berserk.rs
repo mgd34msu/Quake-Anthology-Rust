@@ -17,7 +17,7 @@ use crate::q2::foundation::monsters::types::{
 use crate::q2::support::contracts::{DeathReaction, PainReaction};
 
 /// Run (`run`).
-fn berserk_run(context: &mut MonsterContext) {
+pub fn berserk_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
         context.set_move("berserk_move_stand", false);
     } else {
