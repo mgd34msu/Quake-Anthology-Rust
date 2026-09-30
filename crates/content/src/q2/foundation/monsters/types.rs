@@ -237,6 +237,17 @@ pub enum MonsterAttackState {
     Blind,
 }
 
+/// Flyer follow-up move (`nextMoves` value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MonsterFlyerNext {
+    /// Start melee.
+    Melee,
+    /// Ranged attack.
+    Attack,
+    /// Run.
+    Run,
+}
+
 /// Monster sound target (`MonsterState["soundTarget"]`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonsterSoundTarget {
@@ -449,6 +460,71 @@ pub struct Q2MonsterDefinition {
     pub blocked: Option<MonsterBlocked>,
     /// Check-attack handler.
     pub check_attack: Option<MonsterCheckAttack>,
+}
+
+impl Q2MonsterDefinition {
+    /// Species definition with donor defaults for every optional slot.
+    ///
+    /// Species set `sight`, `idle`, `search`, `melee`, `pain`, `ai` and
+    /// the rest explicitly after construction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        classname: &str,
+        kind: &str,
+        model: &str,
+        health: f64,
+        gib_health: f64,
+        mass: f64,
+        bounds: Bounds,
+        scale: f64,
+        initial_move: &str,
+        moves: Vec<MonsterMove>,
+        stand: MonsterHandler,
+        walk: MonsterHandler,
+        run: MonsterHandler,
+        attack: MonsterHandler,
+        die: MonsterDie,
+    ) -> Self {
+        Self {
+            classname: classname.to_string(),
+            kind: kind.to_string(),
+            model: model.to_string(),
+            health,
+            gib_health,
+            mass,
+            bounds,
+            scale,
+            view_height: None,
+            yaw_speed: None,
+            locomotion: None,
+            initial_move: initial_move.to_string(),
+            moves,
+            callbacks: HashMap::new(),
+            stand,
+            walk,
+            run,
+            attack,
+            sight: None,
+            idle: None,
+            search: None,
+            melee: None,
+            has_ranged_attack: false,
+            blind_fire: false,
+            pain: None,
+            die,
+            ai: HashMap::new(),
+            source_callbacks: None,
+            initialize: None,
+            after_spawn: None,
+            start_mode: None,
+            restore: None,
+            duck: None,
+            sidestep: None,
+            dodge: None,
+            blocked: None,
+            check_attack: None,
+        }
+    }
 }
 
 /// Monster state (`MonsterState`, alternate-fly fields flattened).

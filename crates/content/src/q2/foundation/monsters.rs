@@ -109,6 +109,10 @@ pub struct MonsterRuntime {
     pub external_path_follower: Option<Box<dyn FnMut(&ActorId) -> Option<Box<dyn Q2PathFollower>>>>,
     /// External combat follower factory.
     pub external_combat_follower: Option<Box<dyn FnMut(&ActorId) -> Option<Box<dyn Q2CombatFollower>>>>,
+    /// Flyer follow-up move (one shared slot per game, like the donor).
+    pub flyer_next: Option<self::types::MonsterFlyerNext>,
+    /// Shared power-armor cell stores by actor (`bindPowerArmorCells`).
+    pub power_cells: HashMap<ActorId, std::rc::Rc<std::cell::RefCell<f64>>>,
 }
 
 impl Default for MonsterRuntime {
@@ -137,6 +141,8 @@ impl Default for MonsterRuntime {
             },
             external_path_follower: None,
             external_combat_follower: None,
+            flyer_next: None,
+            power_cells: HashMap::new(),
         }
     }
 }
