@@ -455,14 +455,14 @@ mod tests {
     /// ENTER 8; ARG-publish `args` at words 1..; CONST target; CALL; LEAVE 8.
     fn trap_program(trap: i32, args: &[i32]) -> Vec<(QvmOpcode, QvmOperand)> {
         use QvmOpcode as O;
-        let mut program = vec![(O::OpEnter, QvmOperand::Word(8))];
+        let mut program = vec![(O::OpEnter, QvmOperand::Word(16))];
         for (index, value) in args.iter().enumerate() {
             program.push((O::OpConst, QvmOperand::Word(*value)));
             program.push((O::OpArg, QvmOperand::Byte((8 + index * 4) as u8)));
         }
         program.push((O::OpConst, QvmOperand::Word(-1 - trap)));
         program.push((O::OpCall, QvmOperand::None));
-        program.push((O::OpLeave, QvmOperand::Word(8)));
+        program.push((O::OpLeave, QvmOperand::Word(16)));
         program
     }
 

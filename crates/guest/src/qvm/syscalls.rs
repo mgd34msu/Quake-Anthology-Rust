@@ -538,7 +538,7 @@ mod tests {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
             &image(vec![
-                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpEnter, QvmOperand::Word(16)),
                 (O::OpConst, QvmOperand::Word(64)),
                 (O::OpArg, QvmOperand::Byte(8)),
                 (O::OpConst, QvmOperand::Word(0x41)),
@@ -547,7 +547,7 @@ mod tests {
                 (O::OpArg, QvmOperand::Byte(16)),
                 (O::OpConst, QvmOperand::Word(-101)),
                 (O::OpCall, QvmOperand::None),
-                (O::OpLeave, QvmOperand::Word(8)),
+                (O::OpLeave, QvmOperand::Word(16)),
             ]),
             QvmAllocationProfile::Unaccounted,
             None,
@@ -575,12 +575,12 @@ mod tests {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
             &image(vec![
-                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpEnter, QvmOperand::Word(16)),
                 (O::OpConst, QvmOperand::Word(64)),
                 (O::OpArg, QvmOperand::Byte(8)),
                 (O::OpConst, QvmOperand::Word(-1)),
                 (O::OpCall, QvmOperand::None),
-                (O::OpLeave, QvmOperand::Word(8)),
+                (O::OpLeave, QvmOperand::Word(16)),
             ]),
             QvmAllocationProfile::Unaccounted,
             None,
@@ -610,10 +610,10 @@ mod tests {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
             &image(vec![
-                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpEnter, QvmOperand::Word(16)),
                 (O::OpConst, QvmOperand::Word(-1000)),
                 (O::OpCall, QvmOperand::None),
-                (O::OpLeave, QvmOperand::Word(8)),
+                (O::OpLeave, QvmOperand::Word(16)),
             ]),
             QvmAllocationProfile::Unaccounted,
             None,
@@ -638,10 +638,10 @@ mod tests {
         use QvmOpcode as O;
         let mut vm = QvmInterpreter::new(
             &image(vec![
-                (O::OpEnter, QvmOperand::Word(8)),
+                (O::OpEnter, QvmOperand::Word(16)),
                 (O::OpConst, QvmOperand::Word(-100)),
                 (O::OpCall, QvmOperand::None),
-                (O::OpLeave, QvmOperand::Word(8)),
+                (O::OpLeave, QvmOperand::Word(16)),
             ]),
             QvmAllocationProfile::Unaccounted,
             None,
