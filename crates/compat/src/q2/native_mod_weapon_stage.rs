@@ -935,7 +935,8 @@ mod tests {
             .write(actor(1), &field("player", 0), 3.0)
             .unwrap();
         // An address that names no record base runs guest-direct, frameless.
-        let field_address = stage.operations_mut().pointer(actor(1), &pointer("player", 0)).unwrap();
+        let base_address = stage.operations_mut().pointer(actor(1), &pointer("player", 0)).unwrap();
+        let field_address = GuestAddress::new(base_address.space, base_address.offset + 4);
         let direct = stage
             .dispatch("player", Some(field_address), |_| Ok::<_, WeaponError>(0u32))
             .unwrap();

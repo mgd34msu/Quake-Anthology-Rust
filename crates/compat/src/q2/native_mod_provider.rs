@@ -1792,7 +1792,8 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
     fn seed(&mut self, slot: usize) -> Result<(), ProviderError> {
         for record in self.declaration.actor_records.clone() {
             for field in record.fields {
-                let address = self.record_address(&record.id, slot)?;
+                let base = self.record_address(&record.id, slot)?;
+                let address = self.host.memory().offset(base, field.offset as i64)?;
                 match field.binding {
                     ModFieldBinding::Constant(value) => {
                         self.scalar_write(address, value, field.encoding)?;
@@ -1864,7 +1865,8 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
             };
             let _ = is_capacity;
             for (actor, slot) in self.projections.clone() {
-                let address = self.record_address(&record_id, slot)?;
+                let base = self.record_address(&record_id, slot)?;
+                let address = self.host.memory().offset(base, field.offset as i64)?;
                 let value = self.scalar_read(address, field.encoding)?;
                 if self.services.inventory_owns(actor, &item) {
                     self.services.inventory_set(actor, &item, value);
@@ -1879,7 +1881,8 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
         let mut snapshot = HashMap::new();
         for (record_id, field) in self.shared_fields() {
             for slot in self.projections.values().copied().collect::<Vec<_>>() {
-                let address = self.record_address(&record_id, slot)?;
+                let base = self.record_address(&record_id, slot)?;
+                let address = self.host.memory().offset(base, field.offset as i64)?;
                 let value = self.scalar_read(address, field.encoding)?;
                 snapshot.insert((slot, record_id.clone(), field.offset), value);
             }
@@ -2553,7 +2556,8 @@ impl<H: ProviderHost, S: ProviderServices> NativeModProvider<H, S> {
                     .ok_or_else(|| ProviderError::BadRestore("saved field differs".to_string()))?
                     .encoding
             };
-            let address = self.record_address(record_id, *slot)?;
+            let base = self.record_address(record_id, *slot)?;
+            let address = self.host.memory().offset(base, *offset as i64)?;
             self.scalar_write(address, *value, encoding)?;
         }
         self.refresh()

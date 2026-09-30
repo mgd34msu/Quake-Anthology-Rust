@@ -923,6 +923,7 @@ mod tests {
     #[test]
     fn nonzero_rejection_drops_and_blocks_checkpoint() {
         let mut binding = fixture();
+        binding.operations_mut().directory.actors.remove(&actor(2));
         binding.operations_mut().results.insert("admit".to_string(), Some(0));
         binding
             .operations_mut()
