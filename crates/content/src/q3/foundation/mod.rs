@@ -3,7 +3,6 @@
 pub mod animation;
 pub mod animation_config;
 pub mod arsenal;
-pub mod arsenal_mirror;
 pub mod assets;
 pub mod character;
 pub mod events;

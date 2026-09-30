@@ -4,9 +4,15 @@
 
 use qa_core::identity::OwnedActor;
 use qa_core::time::{FrameContext, SourceTime};
+use qa_world::movement::types::{
+    ActorAnimationState as WorldActorAnimationState, AnimationState, ArsenalState as WorldArsenalState, InventoryEntry,
+    MovementEffect as WorldMovementEffect, MovementEnvironment as WorldMovementEnvironment, UserCommand,
+    WeaponState as FamilyWeaponState,
+};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::foundation::arsenal_mirror::*;
+use crate::q3::foundation::arsenal::ArsenalError;
+use crate::q3::foundation::arsenal::*;
 use crate::q3::foundation::mirrors::*;
 
 // ---------------------------------------------------------------------------
@@ -51,8 +57,10 @@ pub struct Q3HookInput {
     pub actor: OwnedActor,
     /// Execution mode.
     pub execution: Q3Execution,
+    /// User command, threaded into the arsenal step like the donor.
+    pub command: UserCommand,
     /// Environment.
-    pub environment: MovementEnvironment,
+    pub environment: WorldMovementEnvironment,
 }
 
 /// Movement hook context (`Q3HookContext`, foundation-read fields).
@@ -69,7 +77,7 @@ pub struct Q3HookContext {
     /// Arsenal.
     pub arsenal: ArsenalState,
     /// Animation.
-    pub animation: ActorAnimationState,
+    pub animation: WorldActorAnimationState,
 }
 
 /// Arsenal runtime storage (`Q3ArsenalRuntimeAccess`).
@@ -96,11 +104,11 @@ pub fn q3_source_arsenal_controls(context: &Q3HookContext) -> Q3ArsenalControls 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q3WeaponPhaseResult {
     /// Arsenal.
-    pub arsenal: ArsenalState,
+    pub arsenal: WorldArsenalState,
     /// Animation.
-    pub animation: ActorAnimationState,
+    pub animation: WorldActorAnimationState,
     /// Effects.
-    pub effects: Vec<MovementEffect>,
+    pub effects: Vec<WorldMovementEffect>,
     /// Movement flags.
     pub movement_flags: i32,
 }
@@ -117,13 +125,59 @@ pub trait Q3MovementHooks {
     fn torso(&self, context: &Q3HookContext) -> AnimationStepResult;
 }
 
+/// Project merged animation state into the hook-owned shape the mirrors
+/// animation operations read. The merged timers are integers, so the widening
+/// is exact.
+fn hook_animation(animation: &WorldActorAnimationState) -> ActorAnimationState {
+    let AnimationState::Q3 {
+        legs,
+        torso,
+        legs_timer_milliseconds,
+        torso_timer_milliseconds,
+    } = animation.state
+    else {
+        panic!("Q3 source hooks require Q3 animation");
+    };
+    ActorAnimationState {
+        provider: animation.provider.clone(),
+        state: Q3AnimationState {
+            legs,
+            torso,
+            legs_timer_ms: f64::from(legs_timer_milliseconds),
+            torso_timer_ms: f64::from(torso_timer_milliseconds),
+        },
+    }
+}
+
+/// Project a hook arsenal into the merged shape the canonical step reads. The
+/// step reads counts only, so dropping capacities is behavior-preserving.
+fn world_arsenal(arsenal: &ArsenalState) -> WorldArsenalState {
+    WorldArsenalState {
+        provider: arsenal.provider.clone(),
+        active_weapon: arsenal.active_weapon.clone(),
+        state: FamilyWeaponState::Q3 {
+            source_weapon: arsenal.state.source_weapon,
+            state: arsenal.state.state,
+            time_milliseconds: arsenal.state.time_milliseconds,
+        },
+        ammo: arsenal
+            .ammo
+            .iter()
+            .map(|entry| InventoryEntry {
+                item: entry.item.clone(),
+                count: entry.count,
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn hook_animation_context(context: &Q3HookContext) -> Q3AnimationContext {
     let elapsed_ms = match context.frame.elapsed {
         SourceTime::Milliseconds(value) => f64::from(value),
         SourceTime::Seconds(value) => f64::from(value),
     };
     Q3AnimationContext {
-        animation: context.animation.clone(),
+        animation: hook_animation(&context.animation),
         dead: context.motion.pm_type >= Q3MoveType::DEAD,
         elapsed_ms,
         buttons: context.command.buttons,
@@ -155,7 +209,7 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
         let Some(item) = q3_weapon_item(context.arsenal.state.source_weapon) else {
             return false;
         };
-        match item.ammo {
+        match item.ammo.as_deref() {
             None => true,
             Some(ammo) => {
                 context
@@ -182,10 +236,11 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
             ..previous
         };
         let result = step_q3_arsenal(
-            &WeaponStepInput {
+            &crate::q3::foundation::arsenal::WeaponStepInput {
                 actor: context.input.actor.clone(),
+                command: context.input.command,
                 frame: context.frame,
-                arsenal: context.arsenal.clone(),
+                arsenal: world_arsenal(&context.arsenal),
                 animation: context.animation.clone(),
                 environment: context.input.environment,
                 gauntlet_hit: self.runtime.gauntlet_hit(context),
@@ -193,7 +248,12 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
             &state,
             &q3_source_arsenal_controls(context),
             None,
-        )?;
+        )
+        .map_err(|error| match error {
+            ArsenalError::BadClock => range(error.to_string()),
+            ArsenalError::NotQ3Arsenal => type_error(error.to_string()),
+            _ => failed(error.to_string()),
+        })?;
         self.runtime
             .write(&context.input.actor, context.input.execution, result.runtime.clone());
         let movement_flags = (context.motion.pm_flags & !(Q3MoveFlags::RESPAWNED | Q3MoveFlags::USE_ITEM_HELD))
@@ -218,7 +278,7 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
     fn torso(&self, context: &Q3HookContext) -> AnimationStepResult {
         if context.arsenal.state.state != Q3WeaponPhase::READY {
             return AnimationStepResult {
-                animation: context.animation.clone(),
+                animation: hook_animation(&context.animation),
                 effects: Vec::new(),
             };
         }

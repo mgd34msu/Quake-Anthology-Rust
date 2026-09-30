@@ -5,7 +5,7 @@
 use crate::contract::{ItemId, ProjectileRole};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::foundation::arsenal_mirror::*;
+use crate::q3::foundation::arsenal::*;
 use crate::q3::foundation::mirrors::*;
 
 // ---------------------------------------------------------------------------

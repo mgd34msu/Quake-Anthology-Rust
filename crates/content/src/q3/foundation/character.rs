@@ -6,12 +6,13 @@ use crate::contract::{ArmorState, InventoryEntry, PoweredProtectionState, Regula
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::time::SourceTime;
+use qa_world::movement::types::AnimationState;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation::*;
-use crate::q3::foundation::arsenal_mirror::*;
+use crate::q3::foundation::arsenal::*;
 use crate::q3::foundation::mirrors::*;
 
 // ---------------------------------------------------------------------------
@@ -328,6 +329,26 @@ pub struct Q3CharacterActor<S> {
     inner: Rc<RefCell<Q3CharacterInner>>,
 }
 
+/// Spawn animation in the hook-owned shape. The merged timers are integers,
+/// so the widening is exact.
+fn spawn_animation_state() -> Q3AnimationState {
+    let AnimationState::Q3 {
+        legs,
+        torso,
+        legs_timer_milliseconds,
+        torso_timer_milliseconds,
+    } = q3_spawn_animation()
+    else {
+        panic!("Q3 spawn animation is always Q3");
+    };
+    Q3AnimationState {
+        legs,
+        torso,
+        legs_timer_ms: f64::from(legs_timer_milliseconds),
+        torso_timer_ms: f64::from(torso_timer_milliseconds),
+    }
+}
+
 impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     /// Bind a character to its services.
     pub fn new(
@@ -344,7 +365,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
             services,
             death_animations,
             inner: Rc::new(RefCell::new(Q3CharacterInner {
-                animation: q3_spawn_animation(),
+                animation: spawn_animation_state(),
                 flags: 0,
                 sequence: 0,
                 respawn_time: 0,
@@ -521,7 +542,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
         }
         {
             let mut inner = self.inner.borrow_mut();
-            inner.animation = q3_spawn_animation();
+            inner.animation = spawn_animation_state();
             inner.flags = (inner.flags & (4 | 0x4000 | 0x80000)) ^ 4;
             inner.dead = false;
             inner.gibbed = false;

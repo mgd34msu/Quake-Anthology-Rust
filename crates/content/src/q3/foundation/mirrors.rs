@@ -14,7 +14,6 @@ use qa_core::time::FrameContext;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation::*;
-use crate::q3::foundation::arsenal_mirror::*;
 
 /// Foundation failure (donor `TextParseError`, `RangeError`, `TypeError`,
 /// `Error`, and `CommonError` throws).
@@ -1249,318 +1248,6 @@ pub enum Q3ExternalWeaponSlot {
     ResumeRequested,
 }
 
-pub(crate) fn q3_weapon_delay(milliseconds: i32, persistent: i32, haste: bool) -> i32 {
-    if persistent == Q3Powerup::SCOUT {
-        return (f64::from(milliseconds) / 1.5).trunc() as i32;
-    }
-    if persistent == Q3Powerup::AMMOREGEN || haste {
-        return (f64::from(milliseconds) / 1.3).trunc() as i32;
-    }
-    milliseconds
-}
-
-pub(crate) struct WeaponStepWork {
-    pub(crate) product: Q3Product,
-    pub(crate) pm_flags: i32,
-    pub(crate) weapon: i32,
-    pub(crate) weapon_state: i32,
-    pub(crate) weapon_time: i32,
-    pub(crate) owned_weapons: i32,
-    pub(crate) health: i32,
-    pub(crate) max_health: i32,
-    pub(crate) spectator: bool,
-    pub(crate) haste: bool,
-    pub(crate) persistent_powerup_tag: i32,
-    pub(crate) holdable_item: i32,
-    pub(crate) holdable_tag: i32,
-    pub(crate) entries: Vec<InventoryEntry>,
-    pub(crate) provider: ProviderId,
-    pub(crate) effects: Vec<MovementEffect>,
-    pub(crate) event_sequence: i32,
-    pub(crate) torso_requests: Vec<i32>,
-    pub(crate) external_slot: Q3ExternalWeaponSlot,
-    pub(crate) buttons: i32,
-    pub(crate) requested_command_weapon: i32,
-    pub(crate) msec: i32,
-    pub(crate) gauntlet_hit: bool,
-}
-
-impl WeaponStepWork {
-    pub(crate) fn snapshot(&self) -> Q3WeaponState {
-        Q3WeaponState {
-            source_weapon: self.weapon,
-            state: self.weapon_state,
-            time_milliseconds: self.weapon_time,
-        }
-    }
-
-    fn changed(&mut self, before: &Q3WeaponState) {
-        let after = self.snapshot();
-        if before.source_weapon != after.source_weapon
-            || before.state != after.state
-            || before.time_milliseconds != after.time_milliseconds
-        {
-            self.effects.push(MovementEffect::Weapon {
-                provider: self.provider.clone(),
-                before: before.clone(),
-                after,
-            });
-        }
-    }
-
-    fn set_weapon(&mut self, value: i32) {
-        let before = self.snapshot();
-        self.weapon = value;
-        self.changed(&before);
-        if before.source_weapon != value {
-            self.effects.push(MovementEffect::WeaponSelection {
-                provider: self.provider.clone(),
-                before: q3_weapon_item(before.source_weapon).map(|item| item.item.to_string()),
-                after: q3_weapon_item(value).map(|item| item.item.to_string()),
-            });
-        }
-    }
-
-    fn set_weapon_state(&mut self, value: i32) {
-        let before = self.snapshot();
-        self.weapon_state = value;
-        self.changed(&before);
-    }
-
-    fn set_weapon_time(&mut self, value: i32) {
-        let before = self.snapshot();
-        self.weapon_time = value;
-        self.changed(&before);
-    }
-
-    fn emit(&mut self, event: i32) {
-        let sequence = self.event_sequence;
-        self.event_sequence = self.event_sequence.wrapping_add(1);
-        self.effects.push(MovementEffect::Event(PredictableMovementEvent {
-            provider: self.provider.clone(),
-            sequence,
-            event,
-            parameter: 0,
-        }));
-    }
-
-    fn start_torso(&mut self, animation: i32) {
-        self.torso_requests.push(animation);
-    }
-
-    fn ammo_get(&self, weapon: i32) -> f64 {
-        let Some(item) = q3_weapon_item(weapon) else {
-            return 0.0;
-        };
-        let Some(ammo) = item.ammo else {
-            return -1.0;
-        };
-        self.entries
-            .iter()
-            .find(|entry| entry.item == ammo)
-            .map_or(0.0, |entry| entry.count)
-    }
-
-    fn ammo_set(&mut self, weapon: i32, count: f64) -> Result<(), Q3FoundationError> {
-        let item = q3_weapon_item(weapon).filter(|item| item.ammo.is_some());
-        let Some(item) = item else {
-            return Err(failed(format!("Q3 weapon has no consumable ammo slot: {weapon}")));
-        };
-        let ammo = item.ammo.unwrap_or("");
-        let Some(entry) = self.entries.iter_mut().find(|entry| entry.item == ammo) else {
-            return Err(failed(format!("Missing Q3 ammo inventory entry: {ammo}")));
-        };
-        let before = entry.count;
-        entry.count = count;
-        self.effects.push(MovementEffect::Ammo {
-            item: ammo.to_string(),
-            before,
-            after: count,
-        });
-        Ok(())
-    }
-
-    fn step_holdable(&mut self, pressed: bool) -> bool {
-        if pressed {
-            if self.pm_flags & Q3MoveFlags::USE_ITEM_HELD == 0 {
-                let tag = self.holdable_tag;
-                if tag != Q3Holdable::MEDKIT || self.health < self.max_health + 25 {
-                    self.pm_flags |= Q3MoveFlags::USE_ITEM_HELD;
-                    self.emit(Q3EntityEvent::USE_ITEM0.wrapping_add(tag));
-                    self.holdable_item = 0;
-                    self.holdable_tag = 0;
-                }
-                return true;
-            }
-        } else {
-            self.pm_flags &= !Q3MoveFlags::USE_ITEM_HELD;
-        }
-        false
-    }
-
-    fn begin_drop(&mut self) {
-        self.emit(Q3EntityEvent::CHANGE_WEAPON);
-        self.set_weapon_state(Q3WeaponPhase::DROPPING);
-        self.set_weapon_time(self.weapon_time.wrapping_add(200));
-        self.start_torso(Q3PlayerAnimation::TORSO_DROP);
-    }
-
-    fn begin_weapon_change(&mut self, weapon: i32) {
-        if weapon <= Q3Weapon::NONE
-            || weapon >= self.product.weapon_limit()
-            || self.owned_weapons & (1 << weapon) == 0
-            || self.weapon_state == Q3WeaponPhase::DROPPING
-        {
-            return;
-        }
-        self.begin_drop();
-    }
-
-    fn finish_weapon_change(&mut self) {
-        let requested = self.requested_command_weapon;
-        let mut weapon = match requested {
-            0..=13 => requested,
-            _ => Q3Weapon::NONE,
-        };
-        if weapon >= self.product.weapon_limit() {
-            weapon = Q3Weapon::NONE;
-        }
-        if self.owned_weapons & (1 << weapon) == 0 {
-            weapon = Q3Weapon::NONE;
-        }
-        self.set_weapon(weapon);
-        self.set_weapon_state(Q3WeaponPhase::RAISING);
-        self.set_weapon_time(self.weapon_time.wrapping_add(250));
-        self.start_torso(Q3PlayerAnimation::TORSO_RAISE);
-    }
-
-    pub(crate) fn run(&mut self, firing_delay: Option<&mut dyn FnMut(i32) -> i32>) -> Result<(), Q3FoundationError> {
-        if self.pm_flags & Q3MoveFlags::RESPAWNED != 0 || self.spectator {
-            return Ok(());
-        }
-        if self.health <= 0 {
-            self.set_weapon(Q3Weapon::NONE);
-            return Ok(());
-        }
-        if self.step_holdable(self.buttons & Q3CommandButtons::USE_HOLDABLE != 0) {
-            return Ok(());
-        }
-        if self.weapon_time > 0 {
-            let time = self.weapon_time.wrapping_sub(self.msec);
-            self.set_weapon_time(time);
-        }
-        if self.external_slot == Q3ExternalWeaponSlot::Holstered {
-            return Ok(());
-        }
-        if self.external_slot == Q3ExternalWeaponSlot::Dropping {
-            if self.weapon_time <= 0 {
-                self.external_slot = Q3ExternalWeaponSlot::Holstered;
-            }
-            return Ok(());
-        }
-        if self.external_slot == Q3ExternalWeaponSlot::ResumeRequested {
-            if self.weapon_time > 0 {
-                return Ok(());
-            }
-            self.finish_weapon_change();
-            self.external_slot = Q3ExternalWeaponSlot::Active;
-            return Ok(());
-        }
-        if self.external_slot == Q3ExternalWeaponSlot::HolsterRequested
-            && self.weapon_time <= 0
-            && (self.weapon_state == Q3WeaponPhase::READY || self.weapon_state == Q3WeaponPhase::FIRING)
-        {
-            let requested = self.requested_command_weapon;
-            let native_switch = requested != self.weapon
-                && requested > Q3Weapon::NONE
-                && requested < self.product.weapon_limit()
-                && self.owned_weapons & (1 << requested) != 0;
-            if !native_switch {
-                self.begin_drop();
-                self.external_slot = Q3ExternalWeaponSlot::Dropping;
-                return Ok(());
-            }
-        }
-        if (self.weapon_time <= 0 || self.weapon_state != Q3WeaponPhase::FIRING)
-            && self.weapon != self.requested_command_weapon
-        {
-            self.begin_weapon_change(self.requested_command_weapon);
-        }
-        if self.weapon_time > 0 {
-            return Ok(());
-        }
-        if self.weapon_state == Q3WeaponPhase::DROPPING {
-            self.finish_weapon_change();
-            return Ok(());
-        }
-        if self.weapon_state == Q3WeaponPhase::RAISING {
-            self.set_weapon_state(Q3WeaponPhase::READY);
-            self.start_torso(if self.weapon == Q3Weapon::GAUNTLET {
-                Q3PlayerAnimation::TORSO_STAND2
-            } else {
-                Q3PlayerAnimation::TORSO_STAND
-            });
-            return Ok(());
-        }
-        if self.buttons & Q3CommandButtons::ATTACK == 0 || (self.weapon == Q3Weapon::GAUNTLET && !self.gauntlet_hit) {
-            self.set_weapon_time(0);
-            self.set_weapon_state(Q3WeaponPhase::READY);
-            return Ok(());
-        }
-        self.start_torso(if self.weapon == Q3Weapon::GAUNTLET {
-            Q3PlayerAnimation::TORSO_ATTACK2
-        } else {
-            Q3PlayerAnimation::TORSO_ATTACK
-        });
-        self.set_weapon_state(Q3WeaponPhase::FIRING);
-        let ammo = self.ammo_get(self.weapon);
-        if ammo == 0.0 {
-            self.emit(Q3EntityEvent::NOAMMO);
-            self.set_weapon_time(self.weapon_time.wrapping_add(500));
-            return Ok(());
-        }
-        if ammo != -1.0 {
-            self.ammo_set(self.weapon, ammo - 1.0)?;
-        }
-        self.emit(Q3EntityEvent::FIRE_WEAPON);
-        let add_time = match self.weapon {
-            x if x == Q3Weapon::LIGHTNING => 50,
-            x if x == Q3Weapon::SHOTGUN => 1000,
-            x if x == Q3Weapon::MACHINEGUN || x == Q3Weapon::PLASMAGUN => 100,
-            x if x == Q3Weapon::GRENADE_LAUNCHER || x == Q3Weapon::ROCKET_LAUNCHER => 800,
-            x if x == Q3Weapon::RAILGUN => 1500,
-            x if x == Q3Weapon::BFG => 200,
-            x if x == Q3Weapon::NAILGUN => {
-                if self.product == Q3Product::MissionPack {
-                    1000
-                } else {
-                    400
-                }
-            }
-            x if x == Q3Weapon::PROX_LAUNCHER => {
-                if self.product == Q3Product::MissionPack {
-                    800
-                } else {
-                    400
-                }
-            }
-            x if x == Q3Weapon::CHAINGUN && self.product == Q3Product::MissionPack => 30,
-            _ => 400,
-        };
-        let persistent = if self.product == Q3Product::MissionPack {
-            self.persistent_powerup_tag
-        } else {
-            0
-        };
-        let delay = match firing_delay {
-            Some(delay) => delay(add_time),
-            None => q3_weapon_delay(add_time, persistent, self.haste),
-        };
-        self.set_weapon_time(self.weapon_time.wrapping_add(delay));
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1607,9 +1294,17 @@ mod tests {
         ResourceResolution,
     };
     use crate::md3::Md3Model;
+    use crate::q3::base::shared::definitions::Product;
+    use crate::q3::foundation::arsenal::WeaponStepInput as ArsenalStepInput;
+    use crate::q3::foundation::arsenal::*;
     use crate::q3scene::{SceneMd3Frame, SceneMd3Tag};
     use qa_core::identity::{IdentityOwner, SavedActorId};
     use qa_core::time::FramePhase;
+    use qa_world::movement::q3::weapon::Q3ExternalWeaponSlot as WorldExternalWeaponSlot;
+    use qa_world::movement::types::{
+        ActorAnimationState as WorldActorAnimationState, AnimationState, MovementEffect as WorldMovementEffect,
+        MovementEnvironment as WorldMovementEnvironment, Q3UserCommand, UserCommand, WeaponState as FamilyWeaponState,
+    };
 
     fn animation_fixture() -> String {
         let mut text = String::from("sex f\nfootsteps boot\nheadoffset 1 2 3\nfixedlegs\nfixedtorso\n");
@@ -1633,6 +1328,59 @@ mod tests {
         let provider = ProviderId::new("q3", "test");
         let owned = owner.owned_actor(&owner.actor(3, 1), provider.clone()).unwrap();
         (owned, provider)
+    }
+
+    fn test_command() -> UserCommand {
+        UserCommand::Q3(Q3UserCommand {
+            server_time_milliseconds: 0,
+            angle_words: [0, 0, 0],
+            buttons: 0,
+            weapon: Q3Weapon::MACHINEGUN,
+            forward_move: 0,
+            right_move: 0,
+            up_move: 0,
+        })
+    }
+
+    fn test_environment(health: f64) -> WorldMovementEnvironment {
+        WorldMovementEnvironment {
+            client_outputs: None,
+            speed_multiplier: None,
+            pose: None,
+            health,
+            flight: false,
+            haste: false,
+            invulnerable: false,
+            gravity_multiplier: 1.0,
+        }
+    }
+
+    fn q3_weapon(state: &FamilyWeaponState) -> (i32, i32, i32) {
+        let FamilyWeaponState::Q3 {
+            source_weapon,
+            state,
+            time_milliseconds,
+        } = state
+        else {
+            panic!("q3 step keeps q3 weapon state");
+        };
+        (*source_weapon, *state, *time_milliseconds)
+    }
+
+    fn q3_torso(state: &AnimationState) -> i32 {
+        let AnimationState::Q3 { torso, .. } = state else {
+            panic!("q3 step keeps q3 animation");
+        };
+        *torso
+    }
+
+    fn spawn_q3_animation() -> Q3AnimationState {
+        Q3AnimationState {
+            legs: Q3PlayerAnimation::LEGS_IDLE,
+            torso: Q3PlayerAnimation::TORSO_STAND,
+            legs_timer_ms: 0.0,
+            torso_timer_ms: 0.0,
+        }
     }
 
     fn actor_key(actor: &ActorId) -> SavedActorId {
@@ -2149,9 +1897,9 @@ mod tests {
     #[test]
     fn spawn_loadout_and_weapon_requests() {
         let (_, provider) = test_actor();
-        let base = q3_spawn_loadout(provider.clone(), Q3Product::BaseQ3, false);
+        let base = q3_spawn_loadout(provider.clone(), Product::Baseq3, false);
         assert_eq!(base.active_weapon.as_deref(), Some("q3:weapon/machinegun"));
-        assert_eq!(base.state.source_weapon, Q3Weapon::MACHINEGUN);
+        assert_eq!(q3_weapon(&base.state).0, Q3Weapon::MACHINEGUN);
         let mg_ammo = base
             .ammo
             .iter()
@@ -2159,7 +1907,7 @@ mod tests {
             .unwrap();
         assert_eq!(mg_ammo.count, 100.0);
         assert!(base.ammo.iter().all(|entry| !entry.item.contains("nailgun")));
-        let tdm = q3_spawn_loadout(provider.clone(), Q3Product::BaseQ3, true);
+        let tdm = q3_spawn_loadout(provider.clone(), Product::Baseq3, true);
         assert_eq!(
             tdm.ammo
                 .iter()
@@ -2168,47 +1916,45 @@ mod tests {
                 .count,
             50.0
         );
-        let pack = q3_spawn_loadout(provider, Q3Product::MissionPack, false);
+        let pack = q3_spawn_loadout(provider, Product::Missionpack, false);
         assert!(pack.ammo.iter().any(|entry| entry.item == "q3:weapon/nailgun"));
 
-        let runtime = q3_spawn_arsenal_runtime(Q3Product::BaseQ3, 100, 0);
+        let runtime = q3_spawn_arsenal_runtime(Product::Baseq3, 100.0, 0);
         assert!(runtime.respawned);
         assert!(q3_request_weapon(&runtime, Q3Weapon::SHOTGUN).is_ok());
         assert!(q3_request_weapon(&runtime, Q3Weapon::NAILGUN).is_err());
-        let pack_runtime = q3_spawn_arsenal_runtime(Q3Product::MissionPack, 100, 0);
+        let pack_runtime = q3_spawn_arsenal_runtime(Product::Missionpack, 100.0, 0);
         assert!(q3_request_weapon(&pack_runtime, Q3Weapon::NAILGUN).is_ok());
 
         let holstered = q3_request_weapon_holster(&runtime);
-        assert_eq!(holstered.external_slot, Q3ExternalWeaponSlot::HolsterRequested);
+        assert_eq!(holstered.external_slot, WorldExternalWeaponSlot::HolsterRequested);
         let mut dropping = holstered.clone();
-        dropping.external_slot = Q3ExternalWeaponSlot::Dropping;
+        dropping.external_slot = WorldExternalWeaponSlot::Dropping;
         assert!(q3_request_weapon_resume(&dropping).is_err());
         let mut parked = runtime.clone();
-        parked.external_slot = Q3ExternalWeaponSlot::Holstered;
+        parked.external_slot = WorldExternalWeaponSlot::Holstered;
         let resumed = q3_request_weapon_resume(&parked).unwrap();
-        assert_eq!(resumed.external_slot, Q3ExternalWeaponSlot::ResumeRequested);
+        assert_eq!(resumed.external_slot, WorldExternalWeaponSlot::ResumeRequested);
         let back = q3_request_weapon_holster(&resumed);
-        assert_eq!(back.external_slot, Q3ExternalWeaponSlot::Holstered);
+        assert_eq!(back.external_slot, WorldExternalWeaponSlot::Holstered);
     }
 
-    fn arsenal_fixture() -> (WeaponStepInput, Q3ArsenalRuntimeState) {
+    fn arsenal_fixture() -> (ArsenalStepInput, Q3ArsenalRuntimeState) {
         let (actor, provider) = test_actor();
-        let arsenal = q3_spawn_loadout(provider.clone(), Q3Product::BaseQ3, false);
-        let input = WeaponStepInput {
+        let arsenal = q3_spawn_loadout(provider.clone(), Product::Baseq3, false);
+        let input = ArsenalStepInput {
             actor,
+            command: test_command(),
             frame: test_frame(SourceTime::Milliseconds(8)),
             arsenal,
-            animation: ActorAnimationState {
+            animation: WorldActorAnimationState {
                 provider: provider.clone(),
                 state: q3_spawn_animation(),
             },
-            environment: MovementEnvironment {
-                health: 100,
-                haste: false,
-            },
+            environment: test_environment(100.0),
             gauntlet_hit: false,
         };
-        let runtime = q3_spawn_arsenal_runtime(Q3Product::BaseQ3, 100, 0);
+        let runtime = q3_spawn_arsenal_runtime(Product::Baseq3, 100.0, 0);
         (input, runtime)
     }
 
@@ -2225,7 +1971,7 @@ mod tests {
             requested_weapon: Q3Weapon::MACHINEGUN,
         };
         let step = step_q3_arsenal(&input, &ready, &controls, None).unwrap();
-        assert_eq!(step.arsenal.state.state, Q3WeaponPhase::FIRING);
+        assert_eq!(q3_weapon(&step.arsenal.state).1, Q3WeaponPhase::FIRING);
         assert_eq!(
             step.arsenal
                 .ammo
@@ -2237,10 +1983,10 @@ mod tests {
         );
         assert!(step.effects.iter().any(|effect| matches!(
             effect,
-            MovementEffect::Event(event) if event.event == Q3EntityEvent::FIRE_WEAPON
+            WorldMovementEffect::Event(event) if event.event == Q3EntityEvent::FIRE_WEAPON
         )));
         assert_eq!(step.torso_animations, vec![Q3PlayerAnimation::TORSO_ATTACK]);
-        assert_ne!(step.animation.state.torso, input.animation.state.torso);
+        assert_ne!(q3_torso(&step.animation.state), q3_torso(&input.animation.state));
 
         let mut dry = input.clone();
         for entry in dry.arsenal.ammo.iter_mut() {
@@ -2251,9 +1997,9 @@ mod tests {
         let step = step_q3_arsenal(&dry, &ready, &controls, None).unwrap();
         assert!(step.effects.iter().any(|effect| matches!(
             effect,
-            MovementEffect::Event(event) if event.event == Q3EntityEvent::NOAMMO
+            WorldMovementEffect::Event(event) if event.event == Q3EntityEvent::NOAMMO
         )));
-        assert_eq!(step.arsenal.state.time_milliseconds, 500);
+        assert_eq!(q3_weapon(&step.arsenal.state).2, 500);
 
         let mut stocked = input.clone();
         for entry in stocked.arsenal.ammo.iter_mut() {
@@ -2267,13 +2013,13 @@ mod tests {
             requested_weapon: Q3Weapon::SHOTGUN,
         };
         let step = step_q3_arsenal(&stocked, &ready, &switch, None).unwrap();
-        assert_eq!(step.arsenal.state.state, Q3WeaponPhase::DROPPING);
+        assert_eq!(q3_weapon(&step.arsenal.state).1, Q3WeaponPhase::DROPPING);
         assert_eq!(step.torso_animations, vec![Q3PlayerAnimation::TORSO_DROP]);
 
         let mut dead = input.clone();
-        dead.environment.health = 0;
+        dead.environment.health = 0.0;
         let step = step_q3_arsenal(&dead, &ready, &controls, None).unwrap();
-        assert_eq!(step.arsenal.state.source_weapon, Q3Weapon::NONE);
+        assert_eq!(q3_weapon(&step.arsenal.state).0, Q3Weapon::NONE);
         assert!(step.torso_animations.is_empty());
 
         let idle = Q3ArsenalControls {
@@ -2299,7 +2045,7 @@ mod tests {
         assert_eq!(step.runtime.holdable_tag, 0);
         assert!(step.effects.iter().any(|effect| matches!(
             effect,
-            MovementEffect::Event(event) if event.event == Q3EntityEvent::USE_ITEM0 + Q3Holdable::MEDKIT
+            WorldMovementEffect::Event(event) if event.event == Q3EntityEvent::USE_ITEM0 + Q3Holdable::MEDKIT
         )));
     }
 
@@ -2316,9 +2062,9 @@ mod tests {
             use_holdable: false,
             requested_weapon: Q3Weapon::MACHINEGUN,
         };
-        let mut delay = |milliseconds: i32| milliseconds * 2;
-        let step = step_q3_arsenal(&input, &ready, &controls, Some(&mut delay)).unwrap();
-        assert_eq!(step.arsenal.state.time_milliseconds, 200);
+        let delay = |milliseconds: i32| milliseconds * 2;
+        let step = step_q3_arsenal(&input, &ready, &controls, Some(&delay)).unwrap();
+        assert_eq!(q3_weapon(&step.arsenal.state).2, 200);
     }
 
     struct FakeRuntime {
@@ -2342,15 +2088,13 @@ mod tests {
 
     fn hook_fixture() -> (Q3HookContext, Q3ArsenalRuntimeState) {
         let (actor, provider) = test_actor();
-        let runtime = q3_spawn_arsenal_runtime(Q3Product::BaseQ3, 100, 7);
+        let runtime = q3_spawn_arsenal_runtime(Product::Baseq3, 100.0, 7);
         let context = Q3HookContext {
             input: Q3HookInput {
                 actor,
                 execution: Q3Execution::Authoritative,
-                environment: MovementEnvironment {
-                    health: 100,
-                    haste: false,
-                },
+                command: test_command(),
+                environment: test_environment(100.0),
             },
             motion: Q3MotionWork {
                 pm_type: Q3MoveType::NORMAL,
@@ -2363,8 +2107,36 @@ mod tests {
                 weapon: Q3Weapon::MACHINEGUN,
             },
             frame: test_frame(SourceTime::Milliseconds(8)),
-            arsenal: q3_spawn_loadout(provider.clone(), Q3Product::BaseQ3, false),
-            animation: ActorAnimationState {
+            arsenal: ArsenalState {
+                provider: provider.clone(),
+                active_weapon: Some("q3:weapon/machinegun".to_string()),
+                state: Q3WeaponState {
+                    source_weapon: Q3Weapon::MACHINEGUN,
+                    state: Q3WeaponPhase::READY,
+                    time_milliseconds: 0,
+                },
+                ammo: vec![
+                    InventoryEntry {
+                        item: "q3:weapon/gauntlet".to_string(),
+                        count: 1.0,
+                        capacity: 1.0,
+                        count_policy: None,
+                    },
+                    InventoryEntry {
+                        item: "q3:weapon/machinegun".to_string(),
+                        count: 1.0,
+                        capacity: 1.0,
+                        count_policy: None,
+                    },
+                    InventoryEntry {
+                        item: "q3:ammo/machinegun".to_string(),
+                        count: 100.0,
+                        capacity: 200.0,
+                        count_policy: None,
+                    },
+                ],
+            },
+            animation: WorldActorAnimationState {
                 provider,
                 state: q3_spawn_animation(),
             },
@@ -2388,12 +2160,15 @@ mod tests {
         context.arsenal.state.source_weapon = Q3Weapon::MACHINEGUN;
 
         let phase = hooks.weapon(&context).unwrap();
-        assert_eq!(phase.arsenal.state.state, Q3WeaponPhase::FIRING);
+        assert_eq!(q3_weapon(&phase.arsenal.state).1, Q3WeaponPhase::FIRING);
         assert_eq!(phase.movement_flags, Q3MoveFlags::DUCKED);
 
-        context.animation.state.torso = Q3PlayerAnimation::TORSO_ATTACK;
+        let AnimationState::Q3 { torso, .. } = &mut context.animation.state else {
+            panic!("hook animation stays q3");
+        };
+        *torso = Q3PlayerAnimation::TORSO_ATTACK;
         let torso = hooks.torso(&context);
-        assert_ne!(torso.animation.state.torso, context.animation.state.torso);
+        assert_ne!(torso.animation.state.torso, q3_torso(&context.animation.state));
         context.arsenal.state.state = Q3WeaponPhase::DROPPING;
         let held = hooks.torso(&context);
         assert!(held.effects.is_empty());
@@ -2721,14 +2496,14 @@ mod tests {
 
         let wrong = ActorAnimationState {
             provider: ProviderId::new("q3", "other"),
-            state: q3_spawn_animation(),
+            state: spawn_q3_animation(),
         };
         assert!(character.commit_animation(&wrong).is_err());
         let own = ActorAnimationState {
             provider,
             state: Q3AnimationState {
                 legs: 5,
-                ..q3_spawn_animation()
+                ..spawn_q3_animation()
             },
         };
         character.commit_animation(&own).unwrap();
@@ -2746,7 +2521,7 @@ mod tests {
                 provider,
                 state: Q3AnimationState {
                     legs_timer_ms: 100.0,
-                    ..q3_spawn_animation()
+                    ..spawn_q3_animation()
                 },
             },
             locomotion: LocomotionAnimation::Run,
@@ -2989,7 +2764,7 @@ mod tests {
             angles: vec3(0.0, 45.0, 0.0),
             velocity: vec3(0.0, 0.0, 0.0),
             movement_direction: 0.0,
-            animation: q3_spawn_animation(),
+            animation: spawn_q3_animation(),
             source_flags: 0,
             powerups: 0,
             team: None,
