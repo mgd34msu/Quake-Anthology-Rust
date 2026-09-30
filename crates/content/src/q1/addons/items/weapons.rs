@@ -568,32 +568,9 @@ mod tests {
     use crate::q1::base::provider::{Q1BaseGuard, Q1BaseOptions};
     use crate::q1::missionpacks::types::test_game;
 
-    fn stub_fire(_game: &mut Q1EntityServices, _player: &ActorId) -> Result<bool, Q1Error> {
-        Ok(false)
-    }
-
     fn setup(game: &mut Q1EntityServices) -> Q1BaseGuard {
         let guard = Q1BaseGuard::register(game, Q1BaseOptions::default()).expect("base");
         register_test_addons(game, Q1AddonProgram::Mg3);
-        for (id, model) in [
-            (Q1Weapon::Shotgun, "progs/v_shot.mdl"),
-            (Q1Weapon::Supershotgun, "progs/v_shot2.mdl"),
-        ] {
-            game.register_weapon(Q1WeaponDefinition {
-                id,
-                item: None,
-                ammo: Some(String::from("q1:ammo/shells")),
-                ammo_per_shot: Some(1.0),
-                model: String::from(model),
-                rank: 1,
-                model_for: None,
-                available: None,
-                best_available: None,
-                fire: stub_fire,
-                animate: None,
-            })
-            .expect("base arsenal");
-        }
         register_mg3_weapons(game).expect("weapons");
         guard
     }

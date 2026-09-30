@@ -14,10 +14,11 @@ use crate::contract::ItemId;
 
 use super::entity::Q1ProjectileKind;
 use super::entity_services::{ammo_item, Q1DamageParams, Q1EntityServices, Q1WeaponPurpose};
+use super::extensions::Q1WeaponDefinition;
 use super::gameplay::TouchSurface;
 use super::types::{
     dot, is_q1_base_weapon, length, normalize, vadd, vscale, vsub, Q1CharacterAttack, Q1Effect, Q1Event, Q1MoveType,
-    Q1Solid, Q1SoundChannel, Q1TraceRequest, Q1Weapon, POINT, ZERO,
+    Q1Solid, Q1SoundChannel, Q1TraceRequest, Q1Weapon, POINT, WEAPONS, ZERO,
 };
 use crate::q1::{q1_error, Q1Error};
 
@@ -1008,5 +1009,38 @@ pub fn register_weapon_callbacks(game: &mut Q1EntityServices) -> Result<(), Q1Er
             ..Default::default()
         },
     )?;
+    Ok(())
+}
+
+/// Register base weapon definitions (`WEAPONS`). Base content owns the
+/// initial table: MG3 replaces the shotgun entries, and `fire_weapon`
+/// routes registered base weapons through these definitions. Rank is the
+/// donor impulse number; per-shot ammunition matches the `ammunition`
+/// minimum (super shotgun and super nailgun spend two rounds).
+pub fn register_base_weapon_definitions(game: &mut Q1EntityServices) -> Result<(), Q1Error> {
+    for (index, base) in WEAPONS.iter().enumerate() {
+        let weapon = Q1Weapon::from(*base);
+        let ammo = ammo_item(weapon);
+        let ammo_per_shot = ammo.as_ref().map(|_| {
+            if weapon == Q1Weapon::Supershotgun || weapon == Q1Weapon::Supernailgun {
+                2.0
+            } else {
+                1.0
+            }
+        });
+        game.register_weapon(Q1WeaponDefinition {
+            id: weapon,
+            item: None,
+            ammo,
+            ammo_per_shot,
+            model: weapon_model(weapon)?,
+            rank: index as i32 + 1,
+            model_for: None,
+            available: None,
+            best_available: None,
+            fire: fire_base_weapon,
+            animate: None,
+        })?;
+    }
     Ok(())
 }

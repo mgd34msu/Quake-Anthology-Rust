@@ -1983,43 +1983,9 @@ mod tests {
         rogue_comp.pre_frame(&mut *rogue_game, 0.016).expect("frame");
     }
 
-    /// Stub base weapons so mg3 replacements apply. The donor
-    /// allows replacing unregistered base weapons; `replace_weapon`
-    /// currently requires prior registration, so the test seeds the
-    /// table exactly like the items tests. MG3 replaces these entries
-    /// immediately, leaving the donor end state.
-    fn stub_base_weapons(game: &mut Q1EntityServices) {
-        use crate::q1::foundation::extensions::Q1WeaponDefinition;
-
-        fn stub_fire(_game: &mut Q1EntityServices, _player: &ActorId) -> Result<bool, Q1Error> {
-            Ok(false)
-        }
-
-        for (id, model) in [
-            (Q1Weapon::Shotgun, "progs/v_shot.mdl"),
-            (Q1Weapon::Supershotgun, "progs/v_shot2.mdl"),
-        ] {
-            game.register_weapon(Q1WeaponDefinition {
-                id,
-                item: None,
-                ammo: Some(String::from("q1:ammo/shells")),
-                ammo_per_shot: Some(1.0),
-                model: String::from(model),
-                rank: 1,
-                model_for: None,
-                available: None,
-                best_available: None,
-                fire: stub_fire,
-                animate: None,
-            })
-            .expect("stub");
-        }
-    }
-
     #[test]
     fn campaign_program_registers() {
         let game: &'static mut Q1EntityServices = Box::leak(Box::new(test_game()));
-        stub_base_weapons(game);
         let mut services = FakeCompositionServices::new();
         services.sink = Some(Arc::new(Mutex::new(FakeSink::default())));
         let composition =

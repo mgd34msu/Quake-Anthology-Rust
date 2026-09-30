@@ -286,6 +286,7 @@ pub fn register_q1_base(game: &mut Q1EntityServices, options: Q1BaseOptions) -> 
     crate::q1::base::creatures::register_creature_callbacks(game)?;
     crate::q1::base::map_entities::register_map_callbacks(game)?;
     crate::q1::base::player::register_character_callbacks(game)?;
+    crate::q1::foundation::weapons::register_base_weapon_definitions(game)?;
     game.named.register(
         "base:lightning_use",
         Q1CallbackHandlers {

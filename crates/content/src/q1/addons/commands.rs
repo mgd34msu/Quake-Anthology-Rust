@@ -1,6 +1,6 @@
 //! Q1 addon impulses and debug commands.
 //!
-//! Provenance: `content/q1/addons/commands.ts`.
+//! Provenance: `src/content/q1/addons/commands.ts`.
 
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
