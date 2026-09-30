@@ -275,7 +275,7 @@ pub struct CallbackEntry {
 }
 
 impl CallbackEntry {
-    fn to_json(&self) -> Json {
+    fn to_json(self) -> Json {
         Json::object(vec![
             ("time".to_owned(), Json::float(self.time)),
             ("self".to_owned(), Json::int(self.self_entity)),
@@ -295,7 +295,7 @@ pub struct TargetCallback {
 }
 
 impl TargetCallback {
-    fn to_json(&self) -> Json {
+    fn to_json(self) -> Json {
         Json::object(vec![
             ("name".to_owned(), Json::string("SUB_UseTargets")),
             ("self".to_owned(), Json::int(self.self_entity)),
@@ -333,7 +333,7 @@ impl Q1Output {
                 ("globals".to_owned(), globals.to_json()),
                 (
                     "callbackEntry".to_owned(),
-                    callback_entry.as_ref().map_or(Json::Null, CallbackEntry::to_json),
+                    callback_entry.as_ref().map_or(Json::Null, |entry| entry.to_json()),
                 ),
             ]),
             Self::Mg1Hub { present_mask, calls } => Json::object(vec![
@@ -362,7 +362,7 @@ impl Q1Output {
                 ),
                 (
                     "callback".to_owned(),
-                    callback.as_ref().map_or(Json::Null, TargetCallback::to_json),
+                    callback.as_ref().map_or(Json::Null, |callback| callback.to_json()),
                 ),
             ]),
         }
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn pinned_cases_agree_with_the_oracle() {
         for item in q1_cases() {
-            let observed = run_q1_oracle(&item.input.to_json()).expect(&format!("evaluate {}", item.id));
+            let observed = run_q1_oracle(&item.input.to_json()).unwrap_or_else(|_| panic!("evaluate {}", item.id));
             assert!(
                 deep_strict_equal(&observed.to_json(), &item.expected.to_json()),
                 "{}",

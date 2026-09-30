@@ -8,9 +8,15 @@ use std::path::PathBuf;
 
 use crate::error::ToolsError;
 use crate::reference::schema::{
-    CommandObservation, CompatibilityRuntime, FileIdentity, QuakeFamily, ReadObservation, SteamObservation,
-    SteamTitleObservation, TitleAvailability,
+    CommandObservation, CompatibilityRuntime, FileIdentity, PresentRuntime, QuakeFamily, ReadObservation,
+    SteamObservation, SteamTitleObservation, TitleAvailability,
 };
+
+/// File identity probe (donor `identifyFile`).
+pub type IdentifyFile = dyn Fn(&str) -> Result<FileIdentity, ToolsError>;
+
+/// Command observation probe (donor `observeCommand`).
+pub type ObserveCommand = dyn Fn(&[String], &str, Option<u64>) -> Result<CommandObservation, ToolsError>;
 
 /// An installed Steam title.
 #[derive(Debug, Clone)]
@@ -121,11 +127,7 @@ fn read_version(path: &str) -> ReadObservation {
 /// Observe installed titles and the Proton compatibility runtime.
 ///
 /// Any failure inside the runtime branch degrades to `unavailable`.
-pub fn observe_steam(
-    identify_file: &dyn Fn(&str) -> Result<FileIdentity, ToolsError>,
-    observe_command: &dyn Fn(&[String], &str, Option<u64>) -> Result<CommandObservation, ToolsError>,
-    cwd: &str,
-) -> SteamObservation {
+pub fn observe_steam(identify_file: &IdentifyFile, observe_command: &ObserveCommand, cwd: &str) -> SteamObservation {
     let titles = steam_titles().iter().map(steam_title_availability).collect();
     let path = steam_common_path()
         .join("Proton - Experimental")
@@ -145,8 +147,8 @@ pub fn observe_steam(
 }
 
 fn observe_compatibility_runtime(
-    identify_file: &dyn Fn(&str) -> Result<FileIdentity, ToolsError>,
-    observe_command: &dyn Fn(&[String], &str, Option<u64>) -> Result<CommandObservation, ToolsError>,
+    identify_file: &IdentifyFile,
+    observe_command: &ObserveCommand,
     cwd: &str,
     path: &str,
 ) -> Result<CompatibilityRuntime, ToolsError> {
@@ -181,7 +183,7 @@ fn observe_compatibility_runtime(
             .into_owned();
         steam_runtime_versions.push(read_version(&joined));
     }
-    Ok(CompatibilityRuntime::Present {
+    Ok(CompatibilityRuntime::Present(Box::new(PresentRuntime {
         path: path.to_owned(),
         files,
         version,
@@ -197,7 +199,7 @@ fn observe_compatibility_runtime(
         .into_iter()
         .map(str::to_owned)
         .collect(),
-    })
+    })))
 }
 
 #[cfg(test)]

@@ -253,9 +253,7 @@ fn render_exponential(value: f64) -> String {
             loop {
                 if index == 0 {
                     kept = vec![b'1'];
-                    for _ in 1..precision {
-                        kept.push(b'0');
-                    }
+                    kept.extend(std::iter::repeat_n(b'0', precision.saturating_sub(1)));
                     exponent += 1;
                     break;
                 }

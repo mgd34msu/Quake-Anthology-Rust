@@ -590,20 +590,24 @@ pub enum CompatibilityRuntime {
         reason: String,
     },
     /// Runtime directory was inventoried.
-    Present {
-        /// Runtime path.
-        path: String,
-        /// Identities of selected runtime files.
-        files: Vec<FileIdentity>,
-        /// Runtime version file.
-        version: ReadObservation,
-        /// `wine --version` probe.
-        wine_version: CommandObservation,
-        /// Steam runtime version files.
-        steam_runtime_versions: Vec<ReadObservation>,
-        /// Launch policy statements.
-        launch_policy: Vec<String>,
-    },
+    Present(Box<PresentRuntime>),
+}
+
+/// Inventoried runtime directory (boxed: the enum's other variant is small).
+#[derive(Debug, Clone)]
+pub struct PresentRuntime {
+    /// Runtime path.
+    pub path: String,
+    /// Identities of selected runtime files.
+    pub files: Vec<FileIdentity>,
+    /// Runtime version file.
+    pub version: ReadObservation,
+    /// `wine --version` probe.
+    pub wine_version: CommandObservation,
+    /// Steam runtime version files.
+    pub steam_runtime_versions: Vec<ReadObservation>,
+    /// Launch policy statements.
+    pub launch_policy: Vec<String>,
 }
 
 impl CompatibilityRuntime {
@@ -616,29 +620,28 @@ impl CompatibilityRuntime {
                 ("path".to_owned(), Json::string(path)),
                 ("reason".to_owned(), Json::string(reason)),
             ]),
-            Self::Present {
-                path,
-                files,
-                version,
-                wine_version,
-                steam_runtime_versions,
-                launch_policy,
-            } => Json::object(vec![
+            Self::Present(present) => Json::object(vec![
                 ("kind".to_owned(), Json::string("present")),
-                ("path".to_owned(), Json::string(path)),
+                ("path".to_owned(), Json::string(&present.path)),
                 (
                     "files".to_owned(),
-                    Json::array(files.iter().map(FileIdentity::to_json).collect()),
+                    Json::array(present.files.iter().map(FileIdentity::to_json).collect()),
                 ),
-                ("version".to_owned(), version.to_json()),
-                ("wineVersion".to_owned(), wine_version.to_json()),
+                ("version".to_owned(), present.version.to_json()),
+                ("wineVersion".to_owned(), present.wine_version.to_json()),
                 (
                     "steamRuntimeVersions".to_owned(),
-                    Json::array(steam_runtime_versions.iter().map(ReadObservation::to_json).collect()),
+                    Json::array(
+                        present
+                            .steam_runtime_versions
+                            .iter()
+                            .map(ReadObservation::to_json)
+                            .collect(),
+                    ),
                 ),
                 (
                     "launchPolicy".to_owned(),
-                    Json::array(launch_policy.iter().map(Json::string).collect()),
+                    Json::array(present.launch_policy.iter().map(Json::string).collect()),
                 ),
             ]),
         }

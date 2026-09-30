@@ -231,7 +231,7 @@ fn identify_source(project_root: &Path, spec: &RepositorySpec) -> Result<SourceI
     }
     let mut changes = Vec::with_capacity(changed_paths.len());
     for relative in changed_paths {
-        changes.push(observe_path(&path.join(relative).to_string_lossy().into_owned())?);
+        changes.push(observe_path(&path.join(relative).to_string_lossy())?);
     }
     let final_status = probe(&["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
     if successful_output(&final_status)? != successful_output(&status)? {

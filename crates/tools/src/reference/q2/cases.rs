@@ -296,15 +296,17 @@ const PICKUP_PRECONDITIONS: [&str; 1] = ["Alive client; ordinary supported ammo;
 const COMMAND_PRECONDITIONS: [&str; 1] = ["Only command predicates are evaluated. Alive grounded client; landing timer and jump-held clear; no ladder; standing transition trace clear. Full movement is outside this case."];
 
 // Each entry: id, contract, sources, preconditions, input JSON, expected JSON.
-#[allow(clippy::too_many_lines)]
-fn raw_cases() -> Vec<(
+type RawCase = (
     &'static str,
     &'static str,
     &'static [SourceLocation],
     &'static [&'static str],
     &'static str,
     &'static str,
-)> {
+);
+
+#[allow(clippy::too_many_lines)]
+fn raw_cases() -> Vec<RawCase> {
     vec![
         (
             "q2.clock.classic10hz-rerelease40hz",

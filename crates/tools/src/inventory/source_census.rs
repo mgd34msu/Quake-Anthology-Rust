@@ -343,7 +343,7 @@ pub fn census_functions_from_scan(
             has_body: decl.body.is_some(),
         });
     }
-    functions.sort_by(|left, right| left.start_offset.cmp(&right.start_offset));
+    functions.sort_by_key(|function| function.start_offset);
     functions
 }
 
@@ -740,7 +740,7 @@ pub fn inventory_arguments(args: &[String], default_root: &Path) -> Result<Inven
                 }
                 root = lexical_absolute(
                     &std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                    &value.expect("root value"),
+                    value.expect("root value"),
                 );
                 index += 2;
             }

@@ -493,14 +493,14 @@ fn pak_directory(file: &mut File, path: &str, size: u64) -> Result<Vec<Entry>, T
     }
     let offset = read_u32_le(&header, 4) as u64;
     let length = read_u32_le(&header, 8) as usize;
-    if length % 64 != 0 || length > LIMITS.directory_bytes || length / 64 > LIMITS.archive_entries {
+    if !length.is_multiple_of(64) || length > LIMITS.directory_bytes || length / 64 > LIMITS.archive_entries {
         return Err(ToolsError::invalid(
             "PAK directory exceeds bounds or has partial records",
         ));
     }
     let directory = read_range(file, path, offset, length, size)?;
     let mut entries = Vec::new();
-    for (ordinal, chunk) in directory.chunks_exact(64).enumerate() {
+    for (ordinal, chunk) in directory.as_chunks::<64>().0.iter().enumerate() {
         let end = chunk[..56].iter().position(|byte| *byte == 0).unwrap_or(56);
         let entry = Entry {
             ordinal,
@@ -900,13 +900,7 @@ fn inspect_archive(path: &str, absolute: &str) -> Result<Archive, ToolsError> {
         .metadata()
         .map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
     let size = before_meta.len();
-    let magic = ascii(&read_range(
-        &mut file,
-        absolute,
-        0,
-        (4 as u64).min(size) as usize,
-        size,
-    )?);
+    let magic = ascii(&read_range(&mut file, absolute, 0, 4_u64.min(size) as usize, size)?);
     let container = if magic == "PACK" {
         Container::Pak
     } else {
@@ -1165,8 +1159,10 @@ fn product_json(
             missing.push(format!("archive:{path}"));
         }
     }
-    if product.map_witness.is_some() && map_evidence.is_empty() {
-        missing.push(format!("map:{}", product.map_witness.as_ref().expect("witness")));
+    if let Some(witness) = product.map_witness.as_ref() {
+        if map_evidence.is_empty() {
+            missing.push(format!("map:{witness}"));
+        }
     }
     let missing_programs: Vec<&str> = product
         .required_programs
@@ -1270,7 +1266,7 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
                     ("path".to_owned(), Json::string(path)),
                     ("bytes".to_owned(), Json::uint(size)),
                     ("sha256".to_owned(), Json::string(hash_file(&mut file, &absolute, size)?)),
-                    ("headerHex".to_owned(), Json::string(to_hex(&read_range(&mut file, &absolute, 0, (16 as u64).min(size) as usize, size)?))),
+                    ("headerHex".to_owned(), Json::string(to_hex(&read_range(&mut file, &absolute, 0, 16_u64.min(size) as usize, size)?))),
                     (
                         "reason".to_owned(),
                         Json::string("Quake Live web resource bundle; observed header is neither PACK nor ZIP. Opaque provenance only; no game archive directory claimed."),
@@ -1297,7 +1293,7 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
                             &mut file,
                             &absolute,
                             0,
-                            (65_536 as u64).min(before.len()) as usize,
+                            65_536_u64.min(before.len()) as usize,
                             before.len(),
                         )?,
                     ),

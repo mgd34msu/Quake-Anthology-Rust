@@ -778,7 +778,7 @@ mod tests {
         let cases = q2_cases().expect("cases");
         assert_eq!(cases.len(), 32);
         for reference in &cases {
-            let actual = evaluate(&reference.input, &sources).expect(&format!("evaluate {}", reference.id));
+            let actual = evaluate(&reference.input, &sources).unwrap_or_else(|_| panic!("evaluate {}", reference.id));
             assert!(deep_strict_equal(&actual, &reference.expected), "{}", reference.id);
             assert!(!reference.sources.is_empty(), "{}", reference.id);
             for location in &reference.sources {

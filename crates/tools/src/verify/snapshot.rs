@@ -261,7 +261,7 @@ fn visit(
         .map_err(|error| ToolsError::io(format!("reading {}", directory.display()), error))?
         .collect::<Result<_, _>>()
         .map_err(|error| ToolsError::io(format!("reading {}", directory.display()), error))?;
-    names.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    names.sort_by_key(|entry| entry.file_name());
     for child in names {
         let name = child.file_name().to_string_lossy().into_owned();
         let path = if prefix.is_empty() {

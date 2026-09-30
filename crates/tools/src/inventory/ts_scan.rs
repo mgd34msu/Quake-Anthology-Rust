@@ -495,11 +495,11 @@ impl<'a> Tokenizer<'a> {
             ">>>=", "...", "===", "!==", ">>>", "<<=", ">>=", "**=", "??=", "||=", "&&=", "=>", "==", "!=", "<=", ">=",
             "&&", "||", "??", "?.", "++", "--", "<<", ">>", "**", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
         ] {
-            if rest.starts_with(candidate) {
+            if let Some(after) = rest.strip_prefix(candidate) {
                 // A `>=`-family token immediately followed by `>` never occurs in valid
                 // TS; prefer the shorter token so `>=>` lexes as `>` + `=>` (this is the
                 // tokenizer-side half of TypeScript's `reScanGreaterToken` behavior).
-                if matches!(candidate, ">=" | ">>=" | ">>>=") && rest[candidate.len()..].starts_with('>') {
+                if matches!(candidate, ">=" | ">>=" | ">>>=") && after.starts_with('>') {
                     continue;
                 }
                 // `?.` followed by a digit is `?` + a fractional literal, not optional access.
@@ -740,6 +740,7 @@ impl<'a> Walker<'a> {
         exports
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record(
         &mut self,
         kind: &'static str,
@@ -834,13 +835,10 @@ impl<'a> Walker<'a> {
                         }
                         return None;
                     }
-                    "[" | "{" => match self.match_paren(index) {
-                        Some(close) => {
-                            index = close + 1;
-                            continue;
-                        }
-                        None => return None,
-                    },
+                    "[" | "{" => {
+                        index = self.match_paren(index)? + 1;
+                        continue;
+                    }
                     ";" | "}" => return None,
                     _ => {}
                 }
@@ -877,11 +875,9 @@ impl<'a> Walker<'a> {
                         }
                         depth -= 1;
                     }
-                    ";" => {
-                        if depth == 0 {
-                            self.bump();
-                            return;
-                        }
+                    ";" if depth == 0 => {
+                        self.bump();
+                        return;
                     }
                     _ => {}
                 }
@@ -892,8 +888,7 @@ impl<'a> Walker<'a> {
 
     fn collect_modifiers(&mut self) -> Vec<String> {
         let mut own = Vec::new();
-        loop {
-            let Some(token) = self.peek() else { break };
+        while let Some(token) = self.peek() {
             if token.kind != TokKind::Ident {
                 break;
             }
@@ -1234,8 +1229,7 @@ impl<'a> Walker<'a> {
         let mut expect_operand = true;
         let mut extends_seen = false;
         let mut question_seen = false;
-        loop {
-            let Some(token) = self.peek() else { break };
+        while let Some(token) = self.peek() {
             let text = self.text(token).to_owned();
             if expect_operand {
                 match token.kind {
@@ -1512,11 +1506,7 @@ impl<'a> Walker<'a> {
                     }
                 }
                 _ => {
-                    if token.kind == TokKind::Punct && self.text(token) == "}" && depth > 0 {
-                        self.bump();
-                    } else {
-                        self.bump();
-                    }
+                    self.bump();
                 }
             }
         }
@@ -2907,8 +2897,7 @@ impl<'a> Walker<'a> {
                 exports: own_exports.to_vec(),
             });
         }
-        loop {
-            let Some(token) = self.peek() else { break };
+        while let Some(token) = self.peek() {
             if token.kind == TokKind::Punct && (self.text(token) == "{" || self.text(token) == "[") {
                 let pattern_start = token.start;
                 let pattern_end = self
@@ -3853,9 +3842,7 @@ impl<'a> Walker<'a> {
     fn arrow_ahead_at(&self, offset: usize) -> Option<usize> {
         let saved = self.pos;
         let _ = saved;
-        if self.peek_at(offset).is_none() {
-            return None;
-        }
+        self.peek_at(offset)?;
         if offset == 1 && self.at_ident(0, "async") {
             if self.peek_at(1).is_some_and(|token| token.kind == TokKind::Ident) && self.at_punct(2, "=>") {
                 return Some(self.pos + 2);
@@ -3925,8 +3912,7 @@ impl<'a> Walker<'a> {
     }
 
     fn scan_expression_rest(&mut self, context: &mut Option<String>, mut first: bool) {
-        loop {
-            let Some(token) = self.peek() else { break };
+        while let Some(token) = self.peek() {
             if token.kind == TokKind::Punct {
                 match self.text(token) {
                     "," | ";" | ")" | "]" | "}" | ":" => break,
@@ -4241,6 +4227,24 @@ impl<'a> Walker<'a> {
                 walker.error_here("Unbalanced object literal");
             }
         });
+    }
+}
+
+/// Scan declarations, imports, and diagnostics from TypeScript source.
+#[must_use]
+pub fn scan_declarations(source: &str) -> ScanDeclarations {
+    let scan = tokenize(source);
+    let mut walker = Walker::new(source, scan.tokens, scan.diagnostics);
+    while !walker.at_eof() {
+        walker.parse_statement();
+    }
+    walker
+        .decls
+        .sort_by(|left, right| left.start.cmp(&right.start).then_with(|| right.end.cmp(&left.end)));
+    ScanDeclarations {
+        declarations: walker.decls,
+        imports: walker.imports,
+        diagnostics: walker.diagnostics,
     }
 }
 
@@ -4595,23 +4599,5 @@ mod tests {
                 ("anonymous".to_owned(), 232),
             ]
         );
-    }
-}
-
-/// Scan declarations, imports, and diagnostics from TypeScript source.
-#[must_use]
-pub fn scan_declarations(source: &str) -> ScanDeclarations {
-    let scan = tokenize(source);
-    let mut walker = Walker::new(source, scan.tokens, scan.diagnostics);
-    while !walker.at_eof() {
-        walker.parse_statement();
-    }
-    walker
-        .decls
-        .sort_by(|left, right| left.start.cmp(&right.start).then_with(|| right.end.cmp(&left.end)));
-    ScanDeclarations {
-        declarations: walker.decls,
-        imports: walker.imports,
-        diagnostics: walker.diagnostics,
     }
 }

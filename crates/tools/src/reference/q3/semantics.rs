@@ -130,12 +130,7 @@ impl ClockOutput {
 /// Advance one pmove clock (`PmoveSingle` clock writes).
 #[must_use]
 pub fn single_clock(command_time: f64, server_time: f64) -> ClockOutput {
-    let mut msec = server_time - command_time;
-    if msec < 1.0 {
-        msec = 1.0;
-    } else if msec > 200.0 {
-        msec = 200.0;
-    }
+    let msec = (server_time - command_time).clamp(1.0, 200.0);
     ClockOutput {
         command_time: server_time,
         msec,
@@ -655,23 +650,24 @@ pub fn weapon_sequence(input: &WeaponInput) -> WeaponSequence {
         if weapon_time > 0.0 {
             weapon_time -= step.msec;
         }
-        if weapon_time <= 0.0 || weapon_state != WeaponState::Firing {
-            if weapon != step.weapon && weapon_state != WeaponState::Dropping {
-                let slot = to_int32(event_sequence) & 1;
-                ring[slot as usize] = 22.0;
-                events.push(WeaponEvent {
-                    event: 22.0,
-                    parm: 0.0,
-                    index: f64::from(slot),
-                    state: observe(weapon, weapon_state, weapon_time, torso_anim, ammo, event_sequence),
-                });
-                trace.push(format!("event:22:sequence:{event_sequence}"));
-                event_sequence += 1.0;
-                weapon_state = WeaponState::Dropping;
-                weapon_time += 200.0;
-                torso_anim = f64::from((to_int32(torso_anim) & 128) ^ 128 | 9);
-                trace.push(format!("animation:{torso_anim}"));
-            }
+        if (weapon_time <= 0.0 || weapon_state != WeaponState::Firing)
+            && weapon != step.weapon
+            && weapon_state != WeaponState::Dropping
+        {
+            let slot = to_int32(event_sequence) & 1;
+            ring[slot as usize] = 22.0;
+            events.push(WeaponEvent {
+                event: 22.0,
+                parm: 0.0,
+                index: f64::from(slot),
+                state: observe(weapon, weapon_state, weapon_time, torso_anim, ammo, event_sequence),
+            });
+            trace.push(format!("event:22:sequence:{event_sequence}"));
+            event_sequence += 1.0;
+            weapon_state = WeaponState::Dropping;
+            weapon_time += 200.0;
+            torso_anim = f64::from((to_int32(torso_anim) & 128) ^ 128 | 9);
+            trace.push(format!("animation:{torso_anim}"));
         }
         if weapon_time > 0.0 {
             states.push(observe(

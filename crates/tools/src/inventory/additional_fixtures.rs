@@ -318,7 +318,7 @@ fn parse_directory(file: &mut File, path: &str, size: u64, magic: &str) -> Resul
         let offset = read_u32_le(&header, 4) as u64;
         let length = read_u32_le(&header, 8) as usize;
         if length > LIMITS.directory_bytes
-            || length % 64 != 0
+            || !length.is_multiple_of(64)
             || length / 64 > LIMITS.archive_members
             || offset.saturating_add(length as u64) > size
         {
@@ -326,7 +326,7 @@ fn parse_directory(file: &mut File, path: &str, size: u64, magic: &str) -> Resul
         }
         let data = read_range(file, path, offset, length, size)?;
         let mut members = Vec::new();
-        for (ordinal, chunk) in data.chunks_exact(64).enumerate() {
+        for (ordinal, chunk) in data.as_chunks::<64>().0.iter().enumerate() {
             let end = chunk[..56].iter().position(|byte| *byte == 0).unwrap_or(56);
             let position = read_u32_le(chunk, 56) as u64;
             let bytes = read_u32_le(chunk, 60) as u64;
@@ -793,7 +793,7 @@ fn inspect(path: &str, known: &HashMap<String, Vec<String>>) -> Result<FileEvide
     if bytes > LIMITS.archive_bytes {
         return Err(ToolsError::invalid("File exceeds hashing limit"));
     }
-    let header = read_range(&mut file, path, 0, (64 as u64).min(bytes) as usize, bytes)?;
+    let header = read_range(&mut file, path, 0, 64_u64.min(bytes) as usize, bytes)?;
     let sha256 = hash_file(&mut file, path, bytes)?;
     let magic = String::from_utf8_lossy(&header[..4.min(header.len())]).into_owned();
     let mut metadata_manifests = Vec::new();

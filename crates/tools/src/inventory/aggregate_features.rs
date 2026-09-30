@@ -201,7 +201,7 @@ fn nonempty_strings(value: &Json, location: &str) -> Result<Vec<String>, ToolsEr
 
 fn safe_integer(value: f64) -> Option<u64> {
     const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
-    if value.is_finite() && value.fract() == 0.0 && value >= 0.0 && value <= MAX_SAFE {
+    if value.is_finite() && value.fract() == 0.0 && (0.0..=MAX_SAFE).contains(&value) {
         Some(value as u64)
     } else {
         None
@@ -962,7 +962,7 @@ mod tests {
         outcome
     }
 
-    fn write(directory: &PathBuf, path: &str, text: &str) {
+    fn write(directory: &Path, path: &str, text: &str) {
         std::fs::write(directory.join(path), text).expect("rewrite");
     }
 

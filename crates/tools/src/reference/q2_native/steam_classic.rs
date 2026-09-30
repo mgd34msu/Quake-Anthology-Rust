@@ -379,7 +379,7 @@ mod tests {
         let console = "SpawnServer: q2dm1\nSpawnServer: base1\nRETAIL_READY\n";
         let checks = steam_classic_checks(console, &queries, port);
         assert!(checks.all(), "{:?}", checks.to_json().render());
-        let missing = steam_classic_checks("SpawnServer: q2dm1\n", &queries[..2].to_vec(), port);
+        let missing = steam_classic_checks("SpawnServer: q2dm1\n", &queries[..2], port);
         assert!(!missing.all());
         assert!(!missing.loaded_base1);
         assert!(!missing.classic_challenge);

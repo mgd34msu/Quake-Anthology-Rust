@@ -309,7 +309,7 @@ fn execute_case(
     outcome
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn execute_case_inner(
     item: &ExpectedCase,
     command: &CommandContract,

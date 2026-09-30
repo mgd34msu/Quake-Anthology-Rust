@@ -104,11 +104,11 @@ pub fn stage_content(archives: &[String], directory: &str, maps: &[String]) -> R
         }
         let offset = read_u32_le(&bytes, 4) as usize;
         let size = read_u32_le(&bytes, 8) as usize;
-        if size % 64 != 0 || offset.saturating_add(size) > bytes.len() {
+        if !size.is_multiple_of(64) || offset.saturating_add(size) > bytes.len() {
             return Err(ToolsError::invalid(format!("Invalid PAK directory: {archive}")));
         }
         let entries = &bytes[offset..offset + size];
-        for chunk in entries.chunks_exact(64) {
+        for chunk in entries.as_chunks::<64>().0.iter() {
             let end = chunk[..56].iter().position(|byte| *byte == 0).unwrap_or(56);
             let name = String::from_utf8_lossy(&chunk[..end]).into_owned();
             if !maps.iter().any(|map| map == &name) {
@@ -185,7 +185,8 @@ mod tests {
         fsutil::write_bytes(&pak, &bytes).expect("write pak");
         let pak_text = pak.to_string_lossy().into_owned();
         let mount = directory.join("mount").to_string_lossy().into_owned();
-        let staged = stage_content(&[pak_text.clone()], &mount, &["maps/q2dm1.bsp".to_owned()]).expect("stage");
+        let staged =
+            stage_content(std::slice::from_ref(&pak_text), &mount, &["maps/q2dm1.bsp".to_owned()]).expect("stage");
         assert_eq!(staged.entries.len(), 1);
         assert_eq!(staged.entries[0].name, "maps/q2dm1.bsp");
         assert_eq!(staged.entries[0].archive, pak_text);

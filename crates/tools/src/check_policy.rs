@@ -650,33 +650,27 @@ pub fn audit_source(project_root: &Path, file: &Path, source_text: &str) -> Vec<
                         );
                     }
                 }
-                "import" => {
-                    if !matches!(previous, Some("." | "?.")) {
-                        audit_import(&mut audit, source_text, &tokens, index);
-                    }
+                "import" if !matches!(previous, Some("." | "?.")) => {
+                    audit_import(&mut audit, source_text, &tokens, index);
                 }
-                "export" => {
-                    if !matches!(previous, Some("." | "?.")) {
-                        audit_export(&mut audit, source_text, &tokens, index);
-                    }
+                "export" if !matches!(previous, Some("." | "?.")) => {
+                    audit_export(&mut audit, source_text, &tokens, index);
                 }
                 _ => {}
             },
-            TokKind::Punct if word == "!" => {
-                if postfix_bang_target(source_text, &tokens, index) {
-                    if next == Some(":") {
-                        audit.report(
-                            token.start,
-                            "definite-assignment",
-                            "Definite-assignment assertions are forbidden; initialize owned state.",
-                        );
-                    } else {
-                        audit.report(
-                            token.start,
-                            "non-null",
-                            "Non-null assertions are forbidden; check the value.",
-                        );
-                    }
+            TokKind::Punct if word == "!" && postfix_bang_target(source_text, &tokens, index) => {
+                if next == Some(":") {
+                    audit.report(
+                        token.start,
+                        "definite-assignment",
+                        "Definite-assignment assertions are forbidden; initialize owned state.",
+                    );
+                } else {
+                    audit.report(
+                        token.start,
+                        "non-null",
+                        "Non-null assertions are forbidden; check the value.",
+                    );
                 }
             }
             _ => {}
@@ -771,9 +765,9 @@ fn audit_import(audit: &mut FileAudit<'_>, source: &str, tokens: &[Token], index
     }
     let bindings_start = cursor;
     let mut depth: usize = 0;
-    let mut cursor = cursor;
-    while cursor < tokens.len() {
-        let word = text(source, &tokens[cursor]);
+    let mut scan = cursor;
+    while scan < tokens.len() {
+        let word = text(source, &tokens[scan]);
         if word == "{" {
             depth += 1;
         } else if word == "}" {
@@ -781,10 +775,10 @@ fn audit_import(audit: &mut FileAudit<'_>, source: &str, tokens: &[Token], index
         } else if word == ";" {
             break;
         } else if word == "from" && depth == 0 {
-            let specifier = tokens.get(cursor + 1).filter(|token| token.kind == TokKind::Str);
+            let specifier = tokens.get(scan + 1).filter(|token| token.kind == TokKind::Str);
             if let Some(specifier) = specifier {
                 let module = unescape_string(text(source, specifier));
-                let attribute = has_file_attribute(source, tokens, cursor + 2);
+                let attribute = has_file_attribute(source, tokens, scan + 2);
                 audit.module_boundary(&module, offset, attribute);
                 if module == "bun:ffi" {
                     if bindings_start >= tokens.len() || text(source, &tokens[bindings_start]) != "{" {
@@ -799,7 +793,7 @@ fn audit_import(audit: &mut FileAudit<'_>, source: &str, tokens: &[Token], index
             }
             break;
         }
-        cursor += 1;
+        scan += 1;
     }
 }
 
@@ -879,20 +873,17 @@ fn audit_cc_bindings(audit: &mut FileAudit<'_>, source: &str, tokens: &[Token], 
     for (index, token) in tokens.iter().enumerate().skip(bindings_start) {
         match text(source, token) {
             "{" => depth += 1,
-            "}" => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            "cc" if token.kind == TokKind::Ident && depth == 1 => {
-                if index == 0 || text(source, &tokens[index - 1]) != "as" {
-                    audit.report(
-                        token.start,
-                        "native-implementation",
-                        "Bun's C compiler cannot implement project behavior.",
-                    );
-                }
+            "}" if depth == 1 => break,
+            "}" => depth -= 1,
+            "cc" if token.kind == TokKind::Ident
+                && depth == 1
+                && (index == 0 || text(source, &tokens[index - 1]) != "as") =>
+            {
+                audit.report(
+                    token.start,
+                    "native-implementation",
+                    "Bun's C compiler cannot implement project behavior.",
+                );
             }
             _ => {}
         }
