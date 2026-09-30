@@ -16,25 +16,21 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::q3::base::game::entities::ItemDefinition;
 use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument, BIG_BUFFER_BYTES};
+use crate::q3::base::game::save_module_values::Q3CvarSnapshot;
 use crate::q3::base::game::spawn::SpawnVariables;
 use crate::q3::base::game::state::{ClientSession, ConnectionState, MAX_CLIENTS, MAX_GENTITIES};
 use crate::q3::base::shared::definitions::{
     stat_schema, weapon_count, EntityType, MoveType, Product, StatSchema, Weapon, WeaponState, EV_EVENT_BIT1,
     EV_EVENT_BITS, GIB_HEALTH,
 };
+use crate::q3::base::shared::entity_state::EntityState;
 use crate::q3::base::shared::player_state::{UserCommand, ENTITYNUM_NONE, ENTITYNUM_WORLD};
 use crate::q3::base::shared::trajectory::{Trajectory, TrajectoryType};
+use crate::q3::base::world::{ActorTraceHit, ActorTraceQuery, ActorTraceResult, LinkState};
 
-/// Damage flag bits (`DamageFlags`).
-pub mod damage_flags {
-    pub const RADIUS: i32 = 0x1;
-    pub const NO_ARMOR: i32 = 0x2;
-    pub const NO_KNOCKBACK: i32 = 0x4;
-    pub const NO_PROTECTION: i32 = 0x8;
-    pub const NO_TEAM_PROTECTION: i32 = 0x10;
-}
-
+// Team keep: donor player-state.ts mutates slots through shared refs; team scoreboards write via Rc without &mut, which the &mut canonical mirror cannot do.
 /// Fixed source arrays with checked access (`PlayerStateSlots`).
 #[derive(Debug, Clone)]
 pub struct SlotArray {
@@ -87,9 +83,11 @@ impl SlotArray {
     }
 }
 
+// Team keep: Rc-shared match score handle; donor match/score state is shared across runtimes.
 /// Team scores and other stores shared across modules by reference.
 pub type SharedSlots = Rc<SlotArray>;
 
+// Team keep: donor team-arena runtimes hold numeric.ts GameRandom as shared object properties; &self+Cell preserves that call shape where the &mut canonical cannot.
 /// Instance-owned `bg_lib` rand/srand and game random (`GameRandom`).
 #[derive(Debug)]
 pub struct GameRandom {
@@ -131,6 +129,7 @@ impl GameRandom {
     }
 }
 
+// Team keep: donor persistence/value.ts payload shape with throw-on-bad-format reads; the Result-based value.rs canonical changes restore error semantics.
 /// Checkpoint value (`unknown` JSON-ish save payloads).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SaveValue {
@@ -155,6 +154,7 @@ impl SaveValue {
     }
 }
 
+// Team keep: donor persistence/value.ts throw-semantics reader; team restore paths panic like the donor instead of threading Results.
 /// Checkpoint reader (`SaveReader`).
 #[derive(Debug, Clone)]
 pub struct SaveReader<'a> {
@@ -253,84 +253,14 @@ impl<'a> SaveReader<'a> {
     }
 }
 
-/// Item definition subset used by team rules (`ItemDefinition`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ItemDefinition {
-    /// Item tag (powerup/weapon code).
-    pub tag: i32,
-    /// Entity class name.
-    pub class_name: String,
-    /// Pickup display name.
-    pub pickup_name: Option<String>,
-}
-
-/// Set a `key\value` info pair, Q3 dialect (`setInfoValue`).
-pub fn set_info_value(
-    input: &str,
-    key_input: &str,
-    value_input: &str,
-    maximum_length: usize,
-    print: &dyn Fn(&str),
-) -> String {
-    let info = input.to_string();
-    let key = key_input.to_string();
-    let value = value_input.to_string();
-    if info.len() >= maximum_length {
-        panic!("Info_SetValueForKey: oversize infostring");
-    }
-    if key.contains('\\') || value.contains('\\') {
-        print("Can't use keys or values with a \\\n");
-        return info;
-    }
-    if key.contains(';') || value.contains(';') {
-        print("Can't use keys or values with a semicolon\n");
-        return info;
-    }
-    if key.contains('"') || value.contains('"') {
-        print("Can't use keys or values with a \"\n");
-        return info;
-    }
-    let mut result = info.clone();
-    let mut cursor = 0;
-    while cursor < info.len() {
-        let start = cursor;
-        if info.as_bytes().get(cursor) == Some(&b'\\') {
-            cursor += 1;
-        }
-        let rest = &info[cursor..];
-        let Some(separator) = rest.find('\\') else { break };
-        let separator = cursor + separator;
-        let after = &info[separator + 1..];
-        let end = match after.find('\\') {
-            Some(next) => separator + 1 + next,
-            None => info.len(),
-        };
-        if info[cursor..separator] == key {
-            result = format!("{}{}", &info[..start], &info[end..]);
-            break;
-        }
-        cursor = end;
-    }
-    if value.is_empty() {
-        return result;
-    }
-    let mut pair = format!("\\{key}\\{value}");
-    if pair.len() >= maximum_length {
-        pair = pair.chars().take(maximum_length - 1).collect();
-    }
-    if pair.len() + result.len() > maximum_length {
-        print("Info string length exceeded\n");
-        return result;
-    }
-    format!("{result}{pair}")
-}
-
+// Team keep: handle types over the team pool records below; distinct from the base sim records.
 /// Shared entity handle (aliases its pool slot).
 pub type EntityRef = Rc<RefCell<GameEntity>>;
 
 /// Shared client handle (aliases its entity record).
 pub type ClientRef = Rc<RefCell<GameClient>>;
 
+// Team keep: donor state.ts DamageParticipant (entity or shared actor) bound to the team pool EntityRef.
 /// Damage participant: an entity or a foreign shared actor
 /// (`DamageParticipant`).
 #[derive(Clone)]
@@ -352,100 +282,28 @@ impl DamageParticipant {
     }
 }
 
+// Team keep: donor contracts/world.ts TouchContact is world-trace data team rules never read; unit placeholder at team call sites.
 /// Touch contact placeholder (unused by team rules).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TouchContact;
 
 /// Think callback (`EntityThink`).
-pub type ThinkCallback = Rc<dyn Fn(&EntityRef)>;
+// Team keep: donor state.ts passes the entity handle by value; bound to team EntityRef.
+pub type ThinkCallback = Rc<dyn Fn(EntityRef)>;
 
 /// Pain callback (`EntityPain`).
-pub type PainCallback = Rc<dyn Fn(&EntityRef, &DamageParticipant, f32)>;
+// Team keep: donor damage is int-plumbed (C int via Math.trunc consumers); bound to team EntityRef.
+pub type PainCallback = Rc<dyn Fn(EntityRef, DamageParticipant, i32)>;
 
 /// Touch callback (`EntityTouch`).
-pub type TouchCallback = Rc<dyn Fn(&EntityRef, &DamageParticipant, &TouchContact)>;
+// Team keep: donor state.ts passes handles by value; contact is the unread team placeholder.
+pub type TouchCallback = Rc<dyn Fn(EntityRef, DamageParticipant, TouchContact)>;
 
 /// Death callback (`EntityDie`).
-pub type DieCallback = Rc<dyn Fn(&EntityRef, &DamageParticipant, &DamageParticipant, i32, i32)>;
+// Team keep: donor EntityDie inflictor/attacker are non-null (unlike the base canonical Options); bound to team EntityRef.
+pub type DieCallback = Rc<dyn Fn(EntityRef, DamageParticipant, DamageParticipant, i32, i32)>;
 
-/// Entity state (`EntityState`; fields touched by team rules).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EntityState {
-    /// Entity number.
-    pub number: i32,
-    /// Entity type code.
-    pub e_type: i32,
-    /// Entity flag bits.
-    pub e_flags: i32,
-    /// Position trajectory.
-    pub pos: Trajectory,
-    /// Angle trajectory.
-    pub apos: Trajectory,
-    /// Current origin.
-    pub origin: Vec3,
-    /// Current angles.
-    pub angles: Vec3,
-    /// Secondary angles.
-    pub angles2: Vec3,
-    /// Other entity number.
-    pub other_entity_num: i32,
-    /// Ground entity number.
-    pub ground_entity_num: i32,
-    /// Looping sound index.
-    pub loop_sound: i32,
-    /// Model index.
-    pub modelindex: i32,
-    /// Secondary model index.
-    pub modelindex2: i32,
-    /// Client number.
-    pub client_num: i32,
-    /// Animation frame.
-    pub frame: i32,
-    /// Current event.
-    pub event: i32,
-    /// Event parameter.
-    pub event_parm: i32,
-    /// Active powerup bits.
-    pub powerups: i32,
-    /// Current weapon.
-    pub weapon: i32,
-    /// Legs animation.
-    pub legs_anim: i32,
-    /// Torso animation.
-    pub torso_anim: i32,
-    /// Generic counter.
-    pub generic1: i32,
-}
-
-impl Default for EntityState {
-    fn default() -> Self {
-        Self {
-            number: 0,
-            e_type: EntityType::EtGeneral as i32,
-            e_flags: 0,
-            pos: Trajectory::zero(TrajectoryType::TrStationary),
-            apos: Trajectory::zero(TrajectoryType::TrStationary),
-            origin: vec3(0.0, 0.0, 0.0),
-            angles: vec3(0.0, 0.0, 0.0),
-            angles2: vec3(0.0, 0.0, 0.0),
-            other_entity_num: 0,
-            ground_entity_num: 0,
-            loop_sound: 0,
-            modelindex: 0,
-            modelindex2: 0,
-            client_num: 0,
-            frame: 0,
-            event: 0,
-            event_parm: 0,
-            powerups: 0,
-            weapon: Weapon::WpNone as i32,
-            legs_anim: 0,
-            torso_anim: 0,
-            generic1: 0,
-        }
-    }
-}
-
+// Team keep: donor entity-shared.ts EntityCollisionModel (box/capsule); the base sim EntityShared canonical drops this field.
 /// Collision model selector (`EntityCollisionModel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollisionModel {
@@ -455,6 +313,7 @@ pub enum CollisionModel {
     Capsule,
 }
 
+// Team keep: donor entity-shared.ts subset keeping model + temporary origin view for team client-think; the base sim canonical keeps angles/linkage instead.
 /// Server-side shared entity data (`EntityShared`).
 #[derive(Debug, Clone)]
 pub struct EntityShared {
@@ -501,10 +360,9 @@ impl EntityShared {
 
     /// Store the current origin.
     pub fn set_current_origin(&mut self, origin: Vec3) {
+        self.stored_origin = origin;
         if self.origin_view.borrow().is_some() {
             *self.origin_view.borrow_mut() = Some(origin);
-        } else {
-            self.stored_origin = origin;
         }
     }
 }
@@ -515,6 +373,7 @@ impl Default for EntityShared {
     }
 }
 
+// Team keep: donor EntityShared.withCurrentOrigin bound to team EntityRef/EntityShared.
 /// Run a closure with a temporary current origin (`withCurrentOrigin`).
 pub fn with_entity_origin(entity: &EntityRef, origin: Vec3, run: impl FnOnce()) {
     let view = entity.borrow().r.origin_view.clone();
@@ -523,6 +382,7 @@ pub fn with_entity_origin(entity: &EntityRef, origin: Vec3, run: impl FnOnce()) 
     *view.borrow_mut() = None;
 }
 
+// Team keep: donor state.ts classname value-or-client-name binding; the base sim canonical stores a plain Option<String>.
 /// Classname storage, including client-name borrowing (`GameEntity`).
 #[derive(Clone)]
 pub enum Classname {
@@ -532,6 +392,7 @@ pub enum Classname {
     ClientName(ClientRef),
 }
 
+// Team keep: donor state.ts GameEntity team-rules subset (timestamp/pain debounce/enemy/message/ground/client refs); the base sim subset keeps mover/teamchain fields instead.
 /// Game entity (`GameEntity`; fields touched by team rules).
 #[derive(Clone)]
 pub struct GameEntity {
@@ -675,6 +536,7 @@ impl GameEntity {
     }
 }
 
+// Team keep: donor player-state.ts copyFrom authority mode; no base/game canonical names these modes.
 /// Authority-copy mode for `copy_from` (no bindings exist in this mirror,
 /// so both modes copy every field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,6 +547,7 @@ pub enum AuthorityCopy {
     ReplaceAuthority,
 }
 
+// Team keep: donor player-state.ts team subset with interior-mutable slots shared across team hosts; base canonicals need &mut or live in fenced shared/.
 /// Player state (`PlayerState`).
 #[derive(Debug, Clone)]
 pub struct PlayerState {
@@ -911,6 +774,7 @@ fn copy_slots(target: &SlotArray, source: &SlotArray) {
     }
 }
 
+// Team keep: donor team.ts assigns Math.fround(time) into these fields; f32 preserves donor float comparison semantics where the i32 canonical cannot.
 /// Persistent team state (`PlayerTeamState`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PlayerTeamState {
@@ -940,6 +804,7 @@ pub struct PlayerTeamState {
     pub last_fragged_carrier: f32,
 }
 
+// Team keep: donor state.ts ClientPersistant with shared UserCommand + f32 team state; base canonicals use Q3UserCommand/i32 team state.
 /// Persistent client record (`ClientPersistant`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientPersistant {
@@ -999,6 +864,7 @@ impl Default for ClientPersistant {
     }
 }
 
+// Team keep: donor state.ts GameClient team subset (buttons/old_origin/switch_team_time/portal_id); the base sim subset keeps accurate/lastKill instead.
 /// Game client (`GameClient`; fields touched by team rules).
 #[derive(Clone)]
 pub struct GameClient {
@@ -1105,6 +971,7 @@ impl GameClient {
     }
 }
 
+// Team keep: team pool engine hooks; donor entities.ts options bind provider records the team pool owns inline.
 /// Pool engine hooks (`EntityPoolOptions` subset).
 pub struct PoolHooks {
     /// Current game time.
@@ -1119,6 +986,7 @@ pub struct PoolHooks {
     pub print: Rc<dyn Fn(&str)>,
 }
 
+// Team keep: donor save-callbacks.ts intern/resolve registries bound to the team callback aliases.
 /// Save-callback registries (`pool.callbacks`).
 #[derive(Default)]
 pub struct CallbackRegistries {
@@ -1190,6 +1058,7 @@ impl CallbackRegistries {
     }
 }
 
+// Team keep: donor rankings.ts reporting surface used by team rules (holdable/capture/powerup).
 /// Rankings reporting (`pool.rankings`).
 pub trait RankingsHost {
     /// Report a holdable use.
@@ -1200,6 +1069,7 @@ pub trait RankingsHost {
     fn pickup_powerup(&self, slot: usize, powerup: i32);
 }
 
+// Team keep: pool handle plus donor entities.ts pool semantics (spawn/free/temp/addEvent/client slots) over team records; the base pool binds sim records.
 /// Shared entity pool.
 pub type PoolRef = Rc<EntityPool>;
 
@@ -1481,6 +1351,7 @@ impl EntityPool {
     }
 }
 
+// Team keep: donor entities.ts four-field init bound to team EntityRef (classname/number/owner).
 /// Reset per-spawn entity fields (`initGameEntity`).
 pub fn init_game_entity(entity: &EntityRef) {
     let mut body = entity.borrow_mut();
@@ -1489,6 +1360,7 @@ pub fn init_game_entity(entity: &EntityRef) {
     body.r.owner_num = ENTITYNUM_NONE;
 }
 
+// Team keep: donor entities.ts stationary-origin store bound to team EntityRef.
 /// Store a fixed origin trajectory (`setOrigin`).
 pub fn set_origin(entity: &EntityRef, origin: Vec3) {
     let mut body = entity.borrow_mut();
@@ -1502,6 +1374,7 @@ pub fn set_origin(entity: &EntityRef, origin: Vec3) {
     body.r.set_current_origin(vec3(origin.x, origin.y, origin.z));
 }
 
+// Team keep: donor utilities.ts derives every string key; team selectors use classname/targetname only and the base canonical binds its own pool.
 /// Entity string fields searchable by [`find_entity`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityStringField {
@@ -1511,6 +1384,7 @@ pub enum EntityStringField {
     Targetname,
 }
 
+// Team keep: donor utilities.ts findEntity incl. null-match short-circuit; the base entities.rs port drops the null case and binds its own pool.
 /// Case-insensitive entity search (`findEntity`).
 #[must_use]
 pub fn find_entity(
@@ -1540,6 +1414,7 @@ pub fn find_entity(
     None
 }
 
+// Team keep: donor utilities.ts pickTarget incl. messages/range checks with flattened context args; the base port binds the slot-driver model.
 /// Pick a random target by name (`pickTarget`).
 pub fn pick_target(
     pool: &EntityPool,
@@ -1575,6 +1450,7 @@ pub fn pick_target(
     }
 }
 
+// Team keep: donor ground.ts logic bound to team pool records (ground lives on team GameEntity, r.ground on the base sim record).
 /// Resolve an actor ground reference to an entity number.
 #[must_use]
 pub fn ground_number(ground: Option<&ActorId>, pool: &EntityPool) -> i32 {
@@ -1586,6 +1462,7 @@ pub fn ground_number(ground: Option<&ActorId>, pool: &EntityPool) -> i32 {
     }
 }
 
+// Team keep: donor ground.ts writeGround bound to team pool records (see ground_number).
 /// Write an entity's ground reference (`writeGround`).
 pub fn write_ground(entity: &EntityRef, ground: Option<ActorId>, pool: &EntityPool) {
     let number = ground_number(ground.as_ref(), pool);
@@ -1594,16 +1471,18 @@ pub fn write_ground(entity: &EntityRef, ground: Option<ActorId>, pool: &EntityPo
     body.s.ground_entity_num = number;
 }
 
+// Team keep: donor ground.ts traceGround bound to team pool records (see ground_number).
 /// Trace-hit ground reference (`traceGround`).
-pub fn trace_ground(entity: &EntityRef, hit: &TraceHit, pool: &EntityPool) {
+pub fn trace_ground(entity: &EntityRef, hit: &ActorTraceHit, pool: &EntityPool) {
     let ground = match hit {
-        TraceHit::Actor(actor) => Some(actor.clone()),
-        TraceHit::World => Some(pool.at(ENTITYNUM_WORLD as usize).borrow().actor.clone()),
-        TraceHit::None => None,
+        ActorTraceHit::Actor { actor } => Some(actor.clone()),
+        ActorTraceHit::World => Some(pool.at(ENTITYNUM_WORLD as usize).borrow().actor.clone()),
+        ActorTraceHit::None => None,
     };
     write_ground(entity, ground, pool);
 }
 
+// Team keep: donor save-module-values.ts logic incl. fail messages; the base port returns slot-model Results.
 /// Resolve a checkpoint entity reference (`readModuleEntity`).
 #[must_use]
 pub fn read_module_entity(reader: &SaveReader, pool: &EntityPool) -> EntityRef {
@@ -1699,96 +1578,19 @@ pub(crate) fn convert_player_state(
     state.generic1 = ps.generic1;
 }
 
+// Team keep: donor shared/snapshot-state.ts logic over team PlayerState; the shared/ canonical needs shared record types (fenced).
 /// Map a player state onto an entity state (`playerStateToEntityState`).
 pub fn player_state_to_entity_state(ps: &mut PlayerState, state: &mut EntityState, snap: bool) {
     convert_player_state(ps, state, snap, None);
 }
 
+// Team keep: donor shared/snapshot-state.ts extrapolating variant over team PlayerState (see player_state_to_entity_state).
 /// Map with linear extrapolation (`playerStateToEntityStateExtraPolate`).
 pub fn player_state_to_entity_state_extrapolate(ps: &mut PlayerState, state: &mut EntityState, time: i32, snap: bool) {
     convert_player_state(ps, state, snap, Some(time));
 }
 
-/// Trace shape (`TraceShape`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TraceShape {
-    /// Point trace.
-    Point,
-    /// Box trace.
-    Box {
-        /// Minimums.
-        mins: Vec3,
-        /// Maximums.
-        maxs: Vec3,
-    },
-    /// Capsule trace.
-    Capsule {
-        /// Minimums.
-        mins: Vec3,
-        /// Maximums.
-        maxs: Vec3,
-    },
-}
-
-/// Trace solidity (`solidity`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraceSolidity {
-    /// Clear path.
-    Clear,
-    /// Starts inside solid.
-    StartSolid,
-    /// Entirely inside solid.
-    AllSolid,
-}
-
-/// Trace hit record (`hit`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TraceHit {
-    /// No hit.
-    None,
-    /// World hit.
-    World,
-    /// Actor hit.
-    Actor(ActorId),
-}
-
-/// Actor trace query (`ActorTraceQuery`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ActorTraceQuery {
-    /// Start point.
-    pub start: Vec3,
-    /// End point.
-    pub end: Vec3,
-    /// Trace shape.
-    pub shape: TraceShape,
-    /// Actor to ignore.
-    pub pass_actor: Option<ActorId>,
-    /// Contents mask.
-    pub mask: i32,
-}
-
-/// Actor trace result (`ActorTraceResult`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ActorTraceResult {
-    /// Stopped end point.
-    pub end: Vec3,
-    /// Path solidity.
-    pub solidity: TraceSolidity,
-    /// Hit record.
-    pub hit: TraceHit,
-}
-
-/// Link state (`LinkState`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LinkState {
-    /// Absolute bounds.
-    pub absbounds: Bounds,
-    /// Whether linked.
-    pub linked: bool,
-    /// Link count.
-    pub linkcount: i32,
-}
-
+// Team keep: donor base/world.ts ServerWorld+ActorSpatialQueries team intersection; link() binds team EntityRef where the canonical binds slot-model records.
 /// Server world plus spatial queries (`ServerWorld` + `ActorSpatialQueries`).
 pub trait Q3World {
     /// Link an entity.
@@ -1807,9 +1609,11 @@ pub trait Q3World {
     fn contact_actor(&self, bounds: &Bounds, actor: &ActorId) -> bool;
 }
 
+// Team keep: handle over the team Q3World above.
 /// Shared world handle.
 pub type WorldRef = Rc<dyn Q3World>;
 
+// Team keep: donor combat.ts damage() plus context reads as a team host trait; the base CombatContext struct binds sim records.
 /// Combat services used by team rules (`CombatContext` subset).
 pub trait Combat {
     /// Product.
@@ -1837,9 +1641,11 @@ pub trait Combat {
     );
 }
 
+// Team keep: handle over the team Combat above.
 /// Shared combat handle.
 pub type CombatRef = Rc<dyn Combat>;
 
+// Team keep: donor weapon.ts WeaponRuntime surface (fire/start_kamikaze) as a team host trait over team records.
 /// Weapon services (`WeaponRuntime` subset).
 pub trait WeaponHost {
     /// Fire the current weapon.
@@ -1848,6 +1654,7 @@ pub trait WeaponHost {
     fn start_kamikaze(&self, entity: &EntityRef);
 }
 
+// Team keep: donor personal-portal.ts PersonalPortalRuntime surface as a team host trait over team records.
 /// Personal-portal services (`PersonalPortalRuntime` subset).
 pub trait PortalHost {
     /// Drop a portal source.
@@ -1856,12 +1663,14 @@ pub trait PortalHost {
     fn drop_portal_destination(&self, entity: &EntityRef);
 }
 
+// Team keep: donor item-motion.ts DropItemContext surface as a team host trait over team records.
 /// Item-drop services (`DropItemContext`).
 pub trait DropHost {
     /// Drop an item near an entity.
     fn drop_item(&self, entity: &EntityRef, item: &ItemDefinition, angle: i32) -> EntityRef;
 }
 
+// Team keep: donor death.ts DeathRuntime surface as a team host trait over team records.
 /// Death services (`DeathRuntime` subset).
 pub trait DeathHost {
     /// Kill a player.
@@ -1881,6 +1690,7 @@ pub trait DeathHost {
     fn toss_client_cubes(&self, entity: &EntityRef);
 }
 
+// Team keep: donor shared items.ts lookups plus item-lifecycle.ts spawn/touch surface as a team host trait over team records.
 /// Item services (`items.ts` + `ItemLifecycleContext` subsets).
 pub trait ItemHost {
     /// Item by product and index.
@@ -1897,52 +1707,37 @@ pub trait ItemHost {
     fn touch_item(&self, entity: &EntityRef, other: &DamageParticipant, contact: &TouchContact);
 }
 
+// Team keep: donor utilities.ts TargetUseContext.useTargets surface as a team host trait over team records.
 /// Target services (`TargetUseContext` subset).
 pub trait TargetsHost {
     /// Fire an entity's targets (`useTargets`).
     fn use_targets(&self, used: Option<&EntityRef>, activator: Option<&DamageParticipant>);
 }
 
+// Team keep: donor misc.ts TeleportContext.teleportPlayer surface as a team host trait over team records.
 /// Teleport services (`TeleportContext`).
 pub trait TeleportHost {
     /// Teleport a player (`teleportPlayer`).
     fn teleport_player(&self, entity: &EntityRef, origin: Vec3, angles: Vec3);
 }
 
-/// Cvar value snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CvarValue {
-    /// String value.
-    pub value: String,
-    /// Integer value.
-    pub integer_value: i32,
-}
-
-/// VM cvar snapshot (`CvarSnapshot` subset).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CvarSnapshot {
-    /// String value.
-    pub value: String,
-    /// Integer value.
-    pub integer_value: i32,
-    /// Modification count.
-    pub modification_count: i32,
-}
-
+// Team keep: donor core/cvars CvarRegistry get/set as a narrow team host surface returning full CvarRead snapshots.
 /// Cvar registry (`CvarRegistry` subset).
 pub trait CvarRegistry {
     /// Read a cvar.
-    fn get(&self, name: &str) -> Option<CvarValue>;
+    fn get(&self, name: &str) -> Option<Q3CvarSnapshot>;
     /// Write a cvar.
     fn set(&self, name: &str, value: &str, force: bool);
 }
 
+// Team keep: donor utilities.ts ConfigStringRegistry.modelIndex as a narrow team surface; the base struct binds a &mut store with Results.
 /// Config-string services (`ConfigStringRegistry` subset).
 pub trait ConfigStrings {
     /// Model index for a path.
     fn model_index(&self, name: &str) -> i32;
 }
 
+// Team keep: team-arena/session.ts-local donor type; no base canonical exists.
 /// Session cvar name (`SessionCvarName`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionCvarName {
@@ -1963,6 +1758,7 @@ impl SessionCvarName {
     }
 }
 
+// Team keep: team-arena/session.ts-local donor type; no base canonical exists.
 /// Session cvar storage (`SessionCvarService`).
 pub trait SessionCvarService {
     /// Read a session cvar.
@@ -1971,6 +1767,7 @@ pub trait SessionCvarService {
     fn set(&self, name: &SessionCvarName, value: &str);
 }
 
+// Team keep: team-arena/session.ts-local donor type; no base canonical exists.
 /// Session services (`SessionServices`).
 pub trait SessionServices {
     /// Engine print.
