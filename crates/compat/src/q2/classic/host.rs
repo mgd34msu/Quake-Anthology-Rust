@@ -31,12 +31,12 @@ use super::layout::{
 };
 use super::pickup_profile::{classic_pickup_profile, ClassicPickupProfile};
 use super::pmove::{run_classic_guest_pmove, ClassicGuestPmoveOptions, ClassicMovementBody, PmoveEntities, PmoveTrace};
-use qa_world::movement::q2::types::{MovementEntity, SrcVec3};
 use super::printf::{classic_printf, classic_printf_layouts};
 use super::records::{
     allocate_classic_string, classic_string_allocation_bytes, read_classic_string, read_classic_vector,
     write_classic_string, write_classic_vector, ClassicQ2Edicts,
 };
+use qa_world::movement::q2::types::{MovementEntity, SrcVec3};
 
 /// Synthetic guest function answering one invocation.
 pub type GuestHandler = Box<dyn FnMut(&mut SparseGuestMemory, &[GuestCallValue]) -> ClassicResult<GuestCallResult>>;
@@ -1977,9 +1977,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(layouts, vec![]);
-        assert!(
-            host.variadic_layouts("bprintf", &[GuestCallValue::Int32(0), GuestCallValue::Pointer(None)])
-                .is_err()
-        );
+        assert!(host
+            .variadic_layouts("bprintf", &[GuestCallValue::Int32(0), GuestCallValue::Pointer(None)])
+            .is_err());
     }
 }

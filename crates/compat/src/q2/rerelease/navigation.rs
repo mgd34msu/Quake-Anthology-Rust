@@ -468,13 +468,16 @@ impl<S: NavigationServices> RereleaseNavigationImports<S> {
                 })
         };
         let finite = |memory: &mut SparseGuestMemory, address: GuestAddress| {
-            memory.read_f32(address).map_err(NavigationError::from).and_then(|value| {
-                if value.is_finite() {
-                    Ok(value)
-                } else {
-                    Err(NavigationError::NonFiniteParameter)
-                }
-            })
+            memory
+                .read_f32(address)
+                .map_err(NavigationError::from)
+                .and_then(|value| {
+                    if value.is_finite() {
+                        Ok(value)
+                    } else {
+                        Err(NavigationError::NonFiniteParameter)
+                    }
+                })
         };
         if name == "Bot_FollowActor" {
             let actor = actor_of(required(0)?);

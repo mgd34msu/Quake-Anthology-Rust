@@ -2927,7 +2927,11 @@ mod tests {
         );
         let mut memory = SparseGuestMemory::new(module, 4, 0x100000).unwrap();
         let image_base = memory
-            .map(&GuestMapOptions::new(0x10000, 0x4000, GuestPermissions::ReadWriteExecute))
+            .map(&GuestMapOptions::new(
+                0x10000,
+                0x4000,
+                GuestPermissions::ReadWriteExecute,
+            ))
             .unwrap();
         let table_base = memory
             .map(&GuestMapOptions::new(0x20000, 256 * 16, GuestPermissions::ReadWrite))
@@ -2939,7 +2943,7 @@ mod tests {
             capacity: 16,
         };
         let mut host = SyntheticProviderHost::new(memory, image_base, entities);
-        host.register_handler(0x1000, |_, _| GuestCallResult::Void);
+        host.register_handler(image_base.offset + 0x1000, |_, _| GuestCallResult::Void);
         let mut services = SyntheticProviderServices::new(1.0);
         services.connect(actor(1), client(1), "\\name\\a\\");
         services.inventory.insert((actor(1), "q2:shells".to_string()), 0.0);
@@ -3027,7 +3031,8 @@ mod tests {
         provider.scalar_write(address, 11.0, GuestStorage::Int32).unwrap();
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let probe = seen.clone();
-        provider.host.register_handler(0x1000, move |host, values| {
+        let code = provider.host.image_base().offset + 0x1000;
+        provider.host.register_handler(code, move |host, values| {
             probe.borrow_mut().push(values.len());
             let current = host.memory.copy(address, 4).unwrap();
             assert_eq!(current, 42i32.to_le_bytes());

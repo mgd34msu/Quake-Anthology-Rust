@@ -607,7 +607,10 @@ impl RereleaseDeferredDamage {
                 request.attack.attacker,
                 request.attack.inflictor,
                 request.attack.originating_projectile,
-            ].into_iter().flatten() {
+            ]
+            .into_iter()
+            .flatten()
+            {
                 references.push((
                     SavedActorId {
                         slot: party,

@@ -6,9 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use qa_core::math::{Bounds, Vec3};
-use qa_guest::core::contracts::{
-    GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestLayout,
-};
+use qa_guest::core::contracts::{GuestAddress, GuestAllocationOptions, GuestCallResult, GuestCallValue, GuestLayout};
 use qa_guest::core::memory::SparseGuestMemory;
 use qa_guest::GuestError;
 use thiserror::Error;
@@ -672,7 +670,9 @@ impl RereleaseQ2GuestHost {
             native,
             deferred: Vec::new(),
             projections: if kind == "level" {
-                self.foreign.keys().map(|actor| ProjectionSave { slot: 0, actor: *actor })
+                self.foreign
+                    .keys()
+                    .map(|actor| ProjectionSave { slot: 0, actor: *actor })
                     .collect()
             } else {
                 vec![]

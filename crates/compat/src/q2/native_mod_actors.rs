@@ -1179,13 +1179,18 @@ mod tests {
         );
         let mut memory = SparseGuestMemory::new(module, 4, 0xB0000).unwrap();
         let image_base = memory
-            .map(&GuestMapOptions::new(0x10000, 0x8000, GuestPermissions::ReadWriteExecute))
+            .map(&GuestMapOptions::new(
+                0x10000,
+                0x8000,
+                GuestPermissions::ReadWriteExecute,
+            ))
             .unwrap();
         let table_base = memory
             .map(&GuestMapOptions::new(0x20000, STRIDE * 8, GuestPermissions::ReadWrite))
             .unwrap();
         let mut host = SyntheticActorHost::new(memory, image_base, table_base, STRIDE, 8);
-        host.register_body(ALLOC, |host, _| {
+        let code = image_base.offset;
+        host.register_body(code + ALLOC, |host, _| {
             for slot in 1..8 {
                 if !host.is_active(slot) {
                     host.set_active(slot, true);
@@ -1195,7 +1200,7 @@ mod tests {
             }
             GuestCallResult::Value(GuestCallValue::Pointer(None))
         });
-        host.register_body(RELEASE, |host, values| {
+        host.register_body(code + RELEASE, |host, values| {
             if let Some(GuestCallValue::Pointer(Some(address))) = values.first() {
                 if let Ok(slot) = host.slot_of(*address) {
                     host.set_active(slot, false);
@@ -1205,7 +1210,7 @@ mod tests {
         });
         let updates = Rc::new(RefCell::new(Vec::new()));
         let seen = updates.clone();
-        host.register_body(UPDATE, move |host, values| {
+        host.register_body(code + UPDATE, move |host, values| {
             if let Some(GuestCallValue::Pointer(Some(address))) = values.first() {
                 seen.borrow_mut().push(host.slot_of(*address).unwrap() as u64);
             }
@@ -1382,7 +1387,8 @@ mod tests {
             .drain_intercepts(&mut fixture.host, &mut fixture.store, &mut fixture.bodies)
             .unwrap();
         // Stubborn release body keeps the slot active.
-        fixture.host.register_body(RELEASE, |_, _| GuestCallResult::Void);
+        let release = fixture.host.image_base.offset + RELEASE;
+        fixture.host.register_body(release, |_, _| GuestCallResult::Void);
         fixture.store.released.push(actor(3));
         let refused = fixture
             .actors

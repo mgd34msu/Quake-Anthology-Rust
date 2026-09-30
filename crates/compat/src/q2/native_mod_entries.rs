@@ -57,7 +57,6 @@ pub struct SyntheticEntryHost {
     inner: Rc<RefCell<Inner>>,
 }
 
-
 impl SyntheticEntryHost {
     /// Build an empty host.
     #[must_use]

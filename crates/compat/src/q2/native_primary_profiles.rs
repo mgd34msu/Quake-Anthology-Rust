@@ -3,6 +3,10 @@
 
 use qa_guest::core::contracts::NativeAbi;
 
+use super::native_pickups::{
+    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
+    PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
+};
 use super::native_primary_commands::{
     AmmoGrant, CommandClient, CommandItems, DropCommand, GiveProfile, GrantKind, ItemAmmo, NativePrimaryCommandProfile,
 };
@@ -10,10 +14,6 @@ use super::native_primary_drop::{DropClient, InventoryDrop, NativePrimaryDropPro
 use super::native_primary_inventory::{
     InventoryPrototypes, NamedUseProfile, NativePrimaryInventoryProfile, NextProfile, PreviousProfile, SelectionWrite,
     UseProfile, ValidateProfile,
-};
-use super::native_pickups::{
-    AmmoSupply, NativePickupGrant, NativePickupProfile, PickupConsumer, PickupEntity, PickupItems, PickupResource,
-    PickupSupply, PickupSupplyProfile, PickupTime, ProtectionChannel, TimeStorage,
 };
 use super::native_primary_player::{NativePrimaryPlayerProfile, PlayerObjectives, SourcePrimaryMatch, SourceTeam};
 use super::native_primary_reader::{
