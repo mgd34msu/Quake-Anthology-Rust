@@ -11,6 +11,7 @@ pub mod campaign;
 pub mod commands;
 pub mod context;
 pub mod corpses;
+pub mod ctf;
 pub mod effects;
 pub mod field_triggers;
 pub mod items;
