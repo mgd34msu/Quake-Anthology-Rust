@@ -407,7 +407,8 @@ pub fn qualify_qvm_region(
             } else if matches!(
                 opcode,
                 QvmOpcode::OpStore1 | QvmOpcode::OpStore2 | QvmOpcode::OpStore4 | QvmOpcode::OpBlockCopy
-            ) || opcode.is_branch() {
+            ) || opcode.is_branch()
+            {
                 (2, -2)
             } else if matches!(opcode as u8, 38..=52) || matches!(opcode as u8, 54..=57) {
                 // OP_ADD..OP_RSHU and OP_ADDF..OP_MULF; BCOM keeps its operand.

@@ -428,9 +428,7 @@ pub fn validate_qvm_weapon_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::super::mod_provider::{
-        ModuleId, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole,
-    };
+    use super::super::mod_provider::{ModuleId, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole};
     use super::*;
 
     fn module() -> ModuleId {

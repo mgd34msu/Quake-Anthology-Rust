@@ -486,7 +486,9 @@ pub fn read_qvm_primary_inventory_profile(
     let offset = |name: &str| -> Result<usize, GuestError> {
         let at = reader.field(name)?;
         let result = at.integer(0)? as usize;
-        if !result.is_multiple_of(4) || result + if name == "ammoOffset" { 64 } else { 4 } > qvm_player_state_bytes(abi_profile) {
+        if !result.is_multiple_of(4)
+            || result + if name == "ammoOffset" { 64 } else { 4 } > qvm_player_state_bytes(abi_profile)
+        {
             return at.fail("inventory field exceeds its aligned public player record");
         }
         Ok(result)

@@ -688,9 +688,7 @@ pub enum QvmItemFieldUsage {
 
 fn capacity_constant(image: &QvmImage, instruction: usize) -> Result<i32, GuestError> {
     let value = image.instruction(instruction);
-    if value.is_none_or(|instruction| {
-        instruction.opcode != QvmOpcode::OpConst || instruction.operand < 0
-    }) {
+    if value.is_none_or(|instruction| instruction.opcode != QvmOpcode::OpConst || instruction.operand < 0) {
         return Err(GuestError::invalid(
             "QVM item capacity is not its declared original constant",
         ));

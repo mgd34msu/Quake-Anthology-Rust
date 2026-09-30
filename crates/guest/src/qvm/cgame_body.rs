@@ -164,9 +164,8 @@ impl QvmBodySubmissions {
         let mut seen = HashSet::new();
         for declaration in &declarations {
             let instruction = artifact.image.instruction(declaration.entry);
-            if instruction.is_none_or(|instruction| {
-                instruction.opcode != QvmOpcode::OpEnter || instruction.operand < 8
-            }) || !seen.insert(declaration.entry)
+            if instruction.is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter || instruction.operand < 8)
+                || !seen.insert(declaration.entry)
             {
                 return Err(GuestError::invalid(
                     "Cgame body declaration requires a unique source function entry",

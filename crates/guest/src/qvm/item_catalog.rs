@@ -126,7 +126,11 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
         QvmItemCount::Direct(_) => true,
         QvmItemCount::Global { global, .. } => global % 4 == 0,
     };
-    if !address_word.is_multiple_of(4) || !count_aligned || !stride.is_multiple_of(4) || layout.weapon_type == layout.ammo_type {
+    if !address_word.is_multiple_of(4)
+        || !count_aligned
+        || !stride.is_multiple_of(4)
+        || layout.weapon_type == layout.ammo_type
+    {
         return reader.fail("invalid item table layout");
     }
     if !live_source
