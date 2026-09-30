@@ -713,9 +713,45 @@ pub fn parse_jsonc(text: &str) -> Result<Json, ToolsError> {
     Ok(value)
 }
 
+/// Order-insensitive deep equality over JSON data (donor `isDeepStrictEqual`
+/// / `toEqual` semantics as used by the reference captures: object key order
+/// is ignored, arrays stay ordered, and numbers compare by bit pattern, so
+/// `-0` differs from `0` while identical NaN bit patterns compare equal).
+#[must_use]
+pub fn deep_strict_equal(left: &Json, right: &Json) -> bool {
+    match (left, right) {
+        (Json::Null, Json::Null) => true,
+        (Json::Bool(a), Json::Bool(b)) => a == b,
+        (Json::Number(a), Json::Number(b)) => a == b,
+        (Json::String(a), Json::String(b)) => a == b,
+        (Json::Array(a), Json::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(one, other)| deep_strict_equal(one, other))
+        }
+        (Json::Object(a), Json::Object(b)) => {
+            a.len() == b.len()
+                && a.iter().all(|(key, value)| {
+                    b.iter().find(|(other, _)| other == key).is_some_and(|(_, other)| deep_strict_equal(value, other))
+                })
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_equality_ignores_object_key_order() {
+        let left = parse_json(r#"{"b": [1, {"x": true}], "a": -0.0}"#).unwrap();
+        let right = parse_json(r#"{"a": -0.0, "b": [1, {"x": true}]}"#).unwrap();
+        assert!(deep_strict_equal(&left, &right));
+        let reordered_array = parse_json(r#"{"a": -0.0, "b": [{"x": true}, 1]}"#).unwrap();
+        assert!(!deep_strict_equal(&left, &reordered_array));
+        let positive_zero = parse_json(r#"{"a": 0.0, "b": [1, {"x": true}]}"#).unwrap();
+        assert!(!deep_strict_equal(&left, &positive_zero));
+        assert!(!deep_strict_equal(&left, &Json::Null));
+    }
 
     #[test]
     fn parses_multibyte_strings() {

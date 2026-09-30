@@ -322,7 +322,7 @@ impl BinaryPurpose {
 }
 
 /// Quake family of a Steam title.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuakeFamily {
     /// Quake.
     Q1,

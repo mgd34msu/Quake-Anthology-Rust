@@ -9,7 +9,13 @@ fn probe_single_file() {
     let captured = census::capture_repository(root, &spec).unwrap();
     let actual = captured.to_json();
     let golden = repos.iter().find(|r| r.get("id").unwrap().as_str() == Some("q3-ts")).unwrap();
-    let target = std::env::var("PROBE_FILE").unwrap();
+    let target = match std::env::var("PROBE_FILE") {
+        Ok(target) => target,
+        Err(_) => {
+            println!("PROBE_FILE unset; interactive probe skipped");
+            return;
+        }
+    };
     let a_files = actual.get("files").unwrap().as_array().unwrap();
     let g_files = golden.get("files").unwrap().as_array().unwrap();
     let a = a_files.iter().find(|f| f.get("path").unwrap().as_str() == Some(&target)).unwrap();
