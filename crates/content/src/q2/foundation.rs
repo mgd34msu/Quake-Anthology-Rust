@@ -9,6 +9,7 @@ pub mod checkpoint;
 pub mod effect_resources;
 pub mod entity_services;
 pub mod fields;
+pub mod held_weapons;
 pub mod host;
 pub mod items;
 pub mod monsters;

@@ -3,3 +3,4 @@
 pub mod items;
 pub mod modes;
 pub mod monsters;
+pub mod weapons;
