@@ -20,11 +20,9 @@ use crate::reference::environment::{corpus_root, identify_file, quake_typescript
 use crate::reference::q2_native::capture::settings;
 use crate::reference::q2_native::udp::{query, unused_port, UdpQuery};
 use crate::reference::schema::FileIdentity;
+use crate::reference::steam::steam_common_path;
 use crate::sys::{kill_process, SIGKILL, SIGTERM};
 use crate::time::now_iso;
-
-/// Steam `steamapps/common` directory (donor verbatim machine-local path).
-const STEAM_COMMON: &str = "/home/buzzkill/.local/share/Steam/steamapps/common";
 
 /// Retail edition under test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,7 +449,10 @@ fn capture_case(
         ("XDG_CACHE_HOME".to_owned(), cache),
     ];
     std::fs::create_dir_all(&home_dir).map_err(|error| ToolsError::io("creating the wine home", error))?;
-    let wine = format!("{STEAM_COMMON}/Proton - Experimental/files/bin/wine");
+    let wine = steam_common_path()
+        .join("Proton - Experimental/files/bin/wine")
+        .to_string_lossy()
+        .into_owned();
     let fs_basepath = windows(content);
     let fs_homepath = windows(&home);
     let fs_game = if edition == Edition::Baseq3 {
@@ -615,8 +616,12 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         ));
     }
     let project = quake_typescript_root();
-    let retail = format!("{STEAM_COMMON}/Quake 3 Arena/quake3.exe");
-    let runtime = format!("{STEAM_COMMON}/Proton - Experimental/files");
+    let common = steam_common_path();
+    let retail = common.join("Quake 3 Arena/quake3.exe").to_string_lossy().into_owned();
+    let runtime = common
+        .join("Proton - Experimental/files")
+        .to_string_lossy()
+        .into_owned();
     let wine = format!("{runtime}/bin/wine");
     let corpus = format!("{}/q3a", corpus_root());
     let original_source = format!("{}/quake-iii-arena", source_root());

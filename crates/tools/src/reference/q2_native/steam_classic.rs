@@ -18,10 +18,8 @@ use crate::reference::q2_native::content::stage_content;
 use crate::reference::q2_native::process::start_observed;
 use crate::reference::q2_native::udp::{query, unused_port, UdpQuery};
 use crate::reference::schema::FileIdentity;
+use crate::reference::steam::steam_common_path;
 use crate::time::now_iso;
-
-/// Steam `steamapps/common` directory (donor verbatim machine-local path).
-const STEAM_COMMON: &str = "/home/buzzkill/.local/share/Steam/steamapps/common";
 
 /// Retail classic dedicated-server checks.
 #[derive(Debug, Clone)]
@@ -98,8 +96,9 @@ fn staged_binary(original: &FileIdentity, staged: &FileIdentity) -> Json {
 /// Capture the retail classic dedicated server (donor `captureSteamClassic`).
 pub fn capture_steam_classic() -> Result<i32, ToolsError> {
     let project = quake_typescript_root();
-    let retail = Path::new(STEAM_COMMON).join("Quake 2");
-    let runtime = Path::new(STEAM_COMMON).join("Proton - Experimental/files/bin");
+    let common = steam_common_path();
+    let retail = common.join("Quake 2");
+    let runtime = common.join("Proton - Experimental/files/bin");
     let run_id = now_iso().replace([':', '.'], "-");
     let directory = project.join(".artifacts/q2-retail").join(run_id);
     let stage = directory.join("game");
