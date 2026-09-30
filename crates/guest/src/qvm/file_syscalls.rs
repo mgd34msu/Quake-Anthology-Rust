@@ -239,7 +239,7 @@ impl QvmFiles {
 
     fn handle(&mut self, slot: i32) -> Result<&mut FileHandle, GuestError> {
         self.assert_current()?;
-        if slot < 1 || slot > QVM_FILE_SLOT_MAX {
+        if !(1..=QVM_FILE_SLOT_MAX).contains(&slot) {
             return Err(GuestError::runtime("FS_FileForHandle: out of range"));
         }
         self.handles
@@ -356,7 +356,7 @@ impl QvmFiles {
         if slot == 0 {
             return Ok(());
         }
-        if slot < 1 || slot > QVM_FILE_SLOT_MAX {
+        if !(1..=QVM_FILE_SLOT_MAX).contains(&slot) {
             return Err(GuestError::runtime("FS_FileForHandle: out of range"));
         }
         self.handles.remove(&slot);
@@ -452,7 +452,7 @@ pub fn file_syscall(
         let path_word = call.int(1)?;
         let destination = call.int(2)?;
         let mode = call.int(3)?;
-        if mode < 0 || mode > 3 {
+        if !(0..=3).contains(&mode) {
             return Err(GuestError::runtime("FSH_FOpenFile: bad mode"));
         }
         let game = call.role == QvmRole::Qagame;

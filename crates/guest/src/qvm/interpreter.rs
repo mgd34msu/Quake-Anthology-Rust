@@ -424,10 +424,9 @@ impl<'a, 'c> HostControl<'a, 'c> {
             current = self.ctx.core.calls[position].parent;
         }
         self.check_cancellation()?;
-        self.ctx.core.calls[position]
-            .cancellation
-            .as_mut()
-            .map(|cancellation| cancellation.requested = true);
+        if let Some(cancellation) = self.ctx.core.calls[position].cancellation.as_mut() {
+            cancellation.requested = true;
+        }
         Ok(cancel_signal(target))
     }
 
@@ -828,7 +827,7 @@ impl<'a, 'c> QvmRegionControl<'a, 'c> {
 
     /// Read an aligned word in the original function's local frame.
     pub fn local_word(&mut self, offset: usize) -> Result<i32, GuestError> {
-        if offset < 8 || offset % 4 != 0 || offset + 4 > self.frame_size {
+        if offset < 8 || !offset.is_multiple_of(4) || offset + 4 > self.frame_size {
             return Err(GuestError::invalid("QVM region local is outside its original frame"));
         }
         let address = self.region_stack + offset;
@@ -1656,7 +1655,7 @@ impl QvmInterpreter {
     ) -> Result<i32, GuestError> {
         self.core.live()?;
         self.core.memory.data_view(address, 4)?;
-        if address % 4 != 0 || address + 4 > self.core.source_data_end || self.core.counter.is_some() {
+        if !address.is_multiple_of(4) || address + 4 > self.core.source_data_end || self.core.counter.is_some() {
             return Err(GuestError::invalid(
                 "QVM counter evaluation requires one live aligned source word and a fresh scope",
             ));
@@ -2028,7 +2027,7 @@ fn drive_loop(drive: &mut Drive<'_, '_, '_>) -> Result<i32, GuestError> {
             if drive.sp <= drive.ctx.core.memory.len().saturating_sub(0x20000) {
                 return Err(qvm_drop_error("VM stack overflow"));
             }
-            if drive.sp % 4 != 0 {
+            if !drive.sp.is_multiple_of(4) {
                 return Err(qvm_drop_error("VM program stack misaligned"));
             }
         }
@@ -2042,7 +2041,7 @@ fn drive_loop(drive: &mut Drive<'_, '_, '_>) -> Result<i32, GuestError> {
                 let Some(opcode) = opcode else {
                     return Err(qvm_drop_error("Bad VM instruction"));
                 };
-                let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
+                let indent = "  ".repeat(drive.ctx.core.call_level.clamp(0, 20) as usize);
                 let text = format!("{indent}{} {}\n", drive.ops.count(), opcode.name());
                 if let Some(registration) = drive.ctx.core.registration.as_ref() {
                     registration.print(&text);
@@ -2304,7 +2303,7 @@ fn op_enter(drive: &mut Drive<'_, '_, '_>) -> Result<(), GuestError> {
         write_word(drive.ctx.core, sp, sp + 4, (sp as i32).wrapping_add(size))?;
         if drive.trace != 0 {
             let symbol = drive.ctx.core.symbols.value_to_symbol(drive.pc - 5)?;
-            let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
+            let indent = "  ".repeat(drive.ctx.core.call_level.clamp(0, 20) as usize);
             if let Some(registration) = drive.ctx.core.registration.as_ref() {
                 registration.print(&format!("{indent}---> {symbol}\n"));
             }
@@ -2344,7 +2343,7 @@ fn op_leave(drive: &mut Drive<'_, '_, '_>) -> Result<Option<i32>, GuestError> {
         if drive.trace != 0 {
             drive.ctx.core.call_level = drive.ctx.core.call_level.wrapping_sub(1);
             let symbol = drive.ctx.core.symbols.value_to_symbol(target)?;
-            let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
+            let indent = "  ".repeat(drive.ctx.core.call_level.clamp(0, 20) as usize);
             if let Some(registration) = drive.ctx.core.registration.as_ref() {
                 registration.print(&format!("{indent}<--- {symbol}\n"));
             }
@@ -2445,7 +2444,7 @@ fn op_call(drive: &mut Drive<'_, '_, '_>, in_counter: bool) -> Result<(), GuestE
         ));
     }
     if drive.trace != 0 {
-        let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
+        let indent = "  ".repeat(drive.ctx.core.call_level.clamp(0, 20) as usize);
         if let Some(registration) = drive.ctx.core.registration.as_ref() {
             registration.print(&format!("{indent}---> systemcall({})\n", -1 - target));
         }
@@ -2471,7 +2470,7 @@ fn op_call(drive: &mut Drive<'_, '_, '_>, in_counter: bool) -> Result<(), GuestE
     drive.ctx.core.call_level = saved_call_level;
     if drive.trace != 0 {
         let symbol = drive.ctx.core.symbols.value_to_symbol(drive.pc)?;
-        let indent = "  ".repeat(drive.ctx.core.call_level.max(0).min(20) as usize);
+        let indent = "  ".repeat(drive.ctx.core.call_level.clamp(0, 20) as usize);
         if let Some(registration) = drive.ctx.core.registration.as_ref() {
             registration.print(&format!("{indent}<--- {symbol}\n"));
         }
@@ -2607,8 +2606,6 @@ fn op_branch(drive: &mut Drive<'_, '_, '_>, opcode: QvmOpcode, owner: Option<u64
     };
     let mut cancel = |scope: &QvmCancellationScope| control.cancel_function(scope);
     let chosen = decide(taken, &mut cancel);
-    drop(cancel);
-    drop(control);
     drive.ctx.core.program_stack = previous_stack;
     check_chain(&drive.ctx.core.calls, drive.scope)?;
     drive.ctx.core.live()?;
@@ -2712,7 +2709,6 @@ fn region_callback(
             QvmRegionDecision::Skip => Ok(false),
         }
     };
-    drop(control);
     drive.ctx.core.program_stack = previous_stack;
     result
 }

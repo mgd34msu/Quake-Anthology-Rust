@@ -138,7 +138,7 @@ impl QvmGrappleProvider {
         }
         let scratch = bridge.scratch();
         let source_end = artifact.image.data_length + artifact.image.literal_length + artifact.image.bss_length;
-        if scratch.word % 4 != 0
+        if !scratch.word.is_multiple_of(4)
             || scratch.word < source_end
             || scratch.byte_length < 16.max(profile.movement.byte_length)
         {
@@ -239,8 +239,8 @@ impl QvmGrappleProvider {
         let entity = self.game.data.entity_from_pointer(hook as i32)?;
         Ok(Some(QvmGrappleProjection {
             hook,
-            origin: entity.r.current_origin.clone(),
-            velocity: entity.s.pos.delta.clone(),
+            origin: entity.r.current_origin,
+            velocity: entity.s.pos.delta,
             target: self.bridge.actor(self.word(hook, self.profile.fields.target)?),
             mover: match self.profile.fields.mover {
                 Some(mover) => self.bridge.actor(self.word(hook, mover)?),
@@ -533,7 +533,7 @@ mod tests {
         }
 
         fn velocity(&self, owner: &ActorId, velocity: &Vec3) {
-            self.velocities.borrow_mut().push((owner.clone(), velocity.clone()));
+            self.velocities.borrow_mut().push((owner.clone(), *velocity));
         }
 
         fn scratch(&self) -> QvmGrappleScratch {
@@ -688,12 +688,14 @@ mod tests {
         let owner = IdentityOwner::create("grapple-test").unwrap();
         let actor = owner.actor(0, 1);
         let hook_actor = owner.actor(1, 1);
-        let mut image = QvmImage::default();
-        image.instructions = (0..32)
-            .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
-            .collect();
-        image.data_length = 4096;
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            instructions: (0..32)
+                .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
+                .collect(),
+            data_length: 4096,
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),

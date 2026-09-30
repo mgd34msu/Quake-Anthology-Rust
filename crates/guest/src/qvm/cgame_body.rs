@@ -164,7 +164,7 @@ impl QvmBodySubmissions {
         let mut seen = HashSet::new();
         for declaration in &declarations {
             let instruction = artifact.image.instruction(declaration.entry);
-            if instruction.map_or(true, |instruction| {
+            if instruction.is_none_or(|instruction| {
                 instruction.opcode != QvmOpcode::OpEnter || instruction.operand < 8
             }) || !seen.insert(declaration.entry)
             {
@@ -196,7 +196,7 @@ impl QvmBodySubmissions {
                     let parts: Vec<(usize, QvmBodyPart)> = mesh
                         .parts
                         .as_ref()
-                        .map(|parts| parts.iter().map(|row| (row.call, row.part.clone())).collect())
+                        .map(|parts| parts.iter().map(|row| (row.call, row.part)).collect())
                         .unwrap_or_default();
                     let explicit = mesh.parts.is_some();
                     qualify_qvm_body_calls(
@@ -255,7 +255,7 @@ impl QvmBodySubmissions {
         }
         for declaration in &self.declarations {
             let instruction = self.artifact.image.instruction(declaration.entry);
-            if instruction.map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter) {
+            if instruction.is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter) {
                 return Err(GuestError::invalid("Cgame body entry changed"));
             }
             if !self.calls.contains_key(&declaration.entry) {
@@ -374,7 +374,7 @@ impl QvmBodySubmissions {
             let shared = self.shared.borrow();
             let range = shared.ranges.last()?;
             let caller = call.caller_instruction?;
-            let part = range.calls.iter().find(|(site, _)| *site == caller)?.1.clone();
+            let part = range.calls.iter().find(|(site, _)| *site == caller)?.1;
             if self.declarations.get(range.declaration)?.mesh.as_ref()?.entry != mesh.entry {
                 return None;
             }
@@ -482,21 +482,23 @@ mod tests {
 
         fn submit(&self, entity: i32, part: &QvmBodyPart, source: &QvmRefEntity, base: bool) -> bool {
             assert_eq!(source.kind, QvmRefEntityKind::Model);
-            self.submitted.borrow_mut().push((entity, part.clone(), base));
+            self.submitted.borrow_mut().push((entity, *part, base));
             true
         }
     }
 
     fn image() -> QvmImage {
-        let mut image = QvmImage::default();
-        image.instructions = vec![
-            QvmInstruction::word(QvmOpcode::OpEnter, 64, 0),
-            QvmInstruction::word(QvmOpcode::OpConst, 4, 5),
-            QvmInstruction::single(QvmOpcode::OpCall, 10),
-            QvmInstruction::single(QvmOpcode::OpLeave, 11),
-            QvmInstruction::word(QvmOpcode::OpEnter, 16, 12),
-        ];
-        image.allocated_data_length = 4096;
+        let image = QvmImage {
+            instructions: vec![
+                QvmInstruction::word(QvmOpcode::OpEnter, 64, 0),
+                QvmInstruction::word(QvmOpcode::OpConst, 4, 5),
+                QvmInstruction::single(QvmOpcode::OpCall, 10),
+                QvmInstruction::single(QvmOpcode::OpLeave, 11),
+                QvmInstruction::word(QvmOpcode::OpEnter, 16, 12),
+            ],
+            allocated_data_length: 4096,
+            ..Default::default()
+        };
         image
     }
 

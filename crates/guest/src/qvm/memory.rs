@@ -18,6 +18,11 @@ use crate::error::GuestError;
 
 use super::memory_writes::{QvmCommittedWrite, QvmMemoryWrites, QvmWriteRange};
 
+/// Deferred-effect hook routing `after_publication` callbacks.
+type QvmEffectHook = Option<Box<dyn FnMut(&mut dyn FnMut())>>;
+/// Per-write publication hook.
+type QvmPublishHook = Box<dyn FnMut(&QvmCommittedWrite) -> Result<(), GuestError>>;
+
 /// Largest QVM allocation: 2^30 bytes.
 pub const QVM_MAX_MEMORY_BYTES: usize = 0x4000_0000;
 

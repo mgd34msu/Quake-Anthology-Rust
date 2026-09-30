@@ -229,7 +229,7 @@ impl QvmPublicInventory {
         self.module.memory().assert_live()?;
         self.refresh()?;
         let record = self.data.public_player_bytes((self.client)())?;
-        let exceeds = |offset: usize, len: usize| offset.checked_add(len).map_or(true, |end| end > record.len);
+        let exceeds = |offset: usize, len: usize| offset.checked_add(len).is_none_or(|end| end > record.len);
         if exceeds(self.profile.weapons_offset, 4) || exceeds(self.profile.ammo_offset, 64) {
             return Err(GuestError::invalid(
                 "QVM inventory fields exceed the public player record",
@@ -369,7 +369,7 @@ impl QvmPrivateInventory {
                 "Private QVM inventory field exceeds its source record",
             ));
         };
-        if field.offset % 4 != 0 || field.offset.checked_add(4).map_or(true, |end| end > record.len) {
+        if !field.offset.is_multiple_of(4) || field.offset.checked_add(4).is_none_or(|end| end > record.len) {
             return Err(GuestError::invalid(
                 "Private QVM inventory field exceeds its source record",
             ));
@@ -579,7 +579,7 @@ pub fn qvm_inventory_projection(
                         "Projected QVM item field exceeds its original record",
                     ));
                 };
-                if field.offset.checked_add(4).map_or(true, |end| end > record.len) {
+                if field.offset.checked_add(4).is_none_or(|end| end > record.len) {
                     return Err(GuestError::invalid(
                         "Projected QVM item field exceeds its original record",
                     ));
@@ -686,14 +686,18 @@ mod tests {
     const ENTITY_STRIDE: usize = 516;
     const CLIENT_STRIDE: usize = 512;
 
+    type CapacityLog = Rc<RefCell<Vec<(i32, usize, usize, usize)>>>;
+
     struct Fixture {
         options: QvmInventoryOptions,
-        capacities: Rc<RefCell<Vec<(i32, usize, usize, usize)>>>,
+        capacities: CapacityLog,
     }
 
     fn module() -> (QvmModule, QvmGameData) {
-        let mut image = QvmImage::default();
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),
@@ -755,13 +759,15 @@ mod tests {
 
     fn private_fixture() -> Fixture {
         let (module, data) = module();
-        let mut image = QvmImage::default();
-        image.instructions = vec![super::super::game_data::QvmInstruction::word(
-            super::super::game_data::QvmOpcode::OpConst,
-            200,
-            0,
-        )];
-        image.initialized_data = vec![0u8; 64];
+        let image = QvmImage {
+            instructions: vec![super::super::game_data::QvmInstruction::word(
+                super::super::game_data::QvmOpcode::OpConst,
+                200,
+                0,
+            )],
+            initialized_data: vec![0u8; 64],
+            ..Default::default()
+        };
         let profile = QvmPrivateInventoryProfile {
             module: module.module_id(),
             abi_profile: AbiProfile::Modern,
