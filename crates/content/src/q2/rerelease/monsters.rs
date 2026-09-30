@@ -2,5 +2,8 @@
 //!
 //! Gameplay logic adapted from the ZeniMax rerelease game DLL (GPL-2.0-or-later).
 
+pub mod beam;
+pub mod boss;
 pub mod common;
+pub mod spawn_placement;
 pub mod tables;
