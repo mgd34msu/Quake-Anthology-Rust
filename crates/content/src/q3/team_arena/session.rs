@@ -6,9 +6,16 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
+use crate::q3::base::game::numeric::game_atoi;
+use crate::q3::base::game::state::{ConnectionState, SpectatorState};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
+// Pattern-position alias for a GameType discriminant (`as` casts are not patterns).
+const GT_TOURNAMENT: i32 = GameType::GtTournament as i32;
+
 // session.ts
 // ---------------------------------------------------------------------------
 
@@ -70,7 +77,7 @@ pub(crate) fn scan_integer(buffer: &str, offset: usize) -> (i32, usize) {
     if offset > bytes.len() {
         panic!("truncated session data scans beyond its terminating NUL");
     }
-    let value = game_atoi(&buffer[offset..]);
+    let value = game_atoi(&buffer[offset..]).unwrap();
     let mut cursor = offset;
     while cursor < bytes.len() && signed_byte(&bytes, cursor) <= 32 {
         cursor += 1;
@@ -117,7 +124,7 @@ pub fn team_count(clients: &[ClientRef], max_clients: usize, ignore_client_num: 
             None => panic!("session client {index} has no backing state"),
         };
         let record = client.borrow();
-        if record.pers.connected == connection_state::DISCONNECTED {
+        if record.pers.connected == ConnectionState::Disconnected as i32 {
             continue;
         }
         if record.sess.session_team == team_code {
@@ -130,18 +137,18 @@ pub fn team_count(clients: &[ClientRef], max_clients: usize, ignore_client_num: 
 /// Pick the smaller team (`pickTeam`).
 #[must_use]
 pub fn pick_team(clients: &[ClientRef], max_clients: usize, team_scores: &SlotArray, ignore_client_num: i32) -> i32 {
-    let blue = team_count(clients, max_clients, ignore_client_num, team::BLUE);
-    let red = team_count(clients, max_clients, ignore_client_num, team::RED);
+    let blue = team_count(clients, max_clients, ignore_client_num, Team::TeamBlue as i32);
+    let red = team_count(clients, max_clients, ignore_client_num, Team::TeamRed as i32);
     if blue > red {
-        return team::RED;
+        return Team::TeamRed as i32;
     }
     if red > blue {
-        return team::BLUE;
+        return Team::TeamBlue as i32;
     }
-    if team_scores.get(team::BLUE as usize) > team_scores.get(team::RED as usize) {
-        return team::RED;
+    if team_scores.get(Team::TeamBlue as usize) > team_scores.get(Team::TeamRed as usize) {
+        return Team::TeamRed as i32;
     }
-    team::BLUE
+    Team::TeamBlue as i32
 }
 
 /// Session persistence manager (`GameSessionManager`).
@@ -159,7 +166,7 @@ impl GameSessionManager {
         if world.max_clients > world.clients.len() {
             panic!("session maxClients exceeds its client storage");
         }
-        if world.team_scores.len() != team::NUM_TEAMS as usize {
+        if world.team_scores.len() != Team::TeamNumTeams as usize {
             panic!("session team scores require TEAM_NUM_TEAMS slots");
         }
         Self { world, services, cvars }
@@ -169,16 +176,16 @@ impl GameSessionManager {
     pub fn write_client(&self, client_num: i32) {
         let client = session_client_at(&self.world, client_num);
         let record = client.borrow();
-        let value = game_format(
+        let value = game_format_bounded(
             "%i %i %i %i %i %i %i",
             &[
-                FormatArg::Int(record.sess.session_team),
-                FormatArg::Int(record.sess.spectator_time),
-                FormatArg::Int(record.sess.spectator_state),
-                FormatArg::Int(record.sess.spectator_client),
-                FormatArg::Int(record.sess.wins),
-                FormatArg::Int(record.sess.losses),
-                FormatArg::Int(record.sess.team_leader),
+                GameFormatArgument::Int(record.sess.session_team),
+                GameFormatArgument::Int(record.sess.spectator_time),
+                GameFormatArgument::Int(record.sess.spectator_state),
+                GameFormatArgument::Int(record.sess.spectator_client),
+                GameFormatArgument::Int(record.sess.wins),
+                GameFormatArgument::Int(record.sess.losses),
+                GameFormatArgument::Int(record.sess.team_leader),
             ],
             SESSION_MAX_STRING_CHARS,
         );
@@ -210,38 +217,38 @@ impl GameSessionManager {
     pub fn initialize_client(&self, client_num: i32, userinfo: &dyn SessionUserinfo) {
         let client = session_client_at(&self.world, client_num);
         let game_type = self.world.game_type.get();
-        if game_type >= game_type::TEAM {
+        if game_type >= GameType::GtTeam as i32 {
             if self.world.team_auto_join.get() {
                 let team_code = pick_team(&self.world.clients, self.world.max_clients, &self.world.team_scores, -1);
                 client.borrow_mut().sess.session_team = team_code;
                 self.services.broadcast_team_change(client_num as usize, -1);
             } else {
-                client.borrow_mut().sess.session_team = team::SPECTATOR;
+                client.borrow_mut().sess.session_team = Team::TeamSpectator as i32;
             }
         } else if userinfo.value_for_key("team").starts_with('s') {
-            client.borrow_mut().sess.session_team = team::SPECTATOR;
+            client.borrow_mut().sess.session_team = Team::TeamSpectator as i32;
         } else {
             let team_code = match game_type {
-                game_type::TOURNAMENT => {
+                GT_TOURNAMENT => {
                     if self.world.num_non_spectator_clients.get() >= 2 {
-                        team::SPECTATOR
+                        Team::TeamSpectator as i32
                     } else {
-                        team::FREE
+                        Team::TeamFree as i32
                     }
                 }
                 _ => {
                     if self.world.max_game_clients.get() > 0
                         && self.world.num_non_spectator_clients.get() >= self.world.max_game_clients.get()
                     {
-                        team::SPECTATOR
+                        Team::TeamSpectator as i32
                     } else {
-                        team::FREE
+                        Team::TeamFree as i32
                     }
                 }
             };
             client.borrow_mut().sess.session_team = team_code;
         }
-        client.borrow_mut().sess.spectator_state = spectator_state::FREE;
+        client.borrow_mut().sess.spectator_state = SpectatorState::Free as i32;
         let time = self.world.time.get();
         client.borrow_mut().sess.spectator_time = time;
         self.write_client(client_num);
@@ -249,7 +256,7 @@ impl GameSessionManager {
 
     /// Detect gametype changes (`initializeWorld`).
     pub fn initialize_world(&self) {
-        let previous = game_atoi(&cvar_buffer(&self.cvars.get(&SessionCvarName::Session)));
+        let previous = game_atoi(&cvar_buffer(&self.cvars.get(&SessionCvarName::Session))).unwrap();
         if self.world.game_type.get() != previous {
             self.world.new_session.set(true);
             self.services.print("Gametype changed, clearing session data.\n");
@@ -260,15 +267,15 @@ impl GameSessionManager {
     pub fn write_world(&self) {
         self.cvars.set(
             &SessionCvarName::Session,
-            &game_format(
+            &game_format_bounded(
                 "%i",
-                &[FormatArg::Int(self.world.game_type.get())],
+                &[GameFormatArgument::Int(self.world.game_type.get())],
                 SESSION_MAX_STRING_CHARS,
             ),
         );
         for index in 0..self.world.max_clients {
             let client = session_client_at(&self.world, index as i32);
-            if client.borrow().pers.connected == connection_state::CONNECTED {
+            if client.borrow().pers.connected == ConnectionState::Connected as i32 {
                 self.write_client(index as i32);
             }
         }

@@ -7,9 +7,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::{PlayerAnimation, ENTITYNUM_WORLD};
+use crate::q3::base::shared::trajectory::TrajectoryType;
 use crate::q3::team_arena::commands::*;
-use crate::q3::team_arena::mirrors::*;
 use crate::q3::team_arena::r#match::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // arenas.ts
@@ -142,7 +147,7 @@ impl ArenaRuntime {
             .borrow()
             .ps
             .persistant
-            .get(persistent_index::SCORE as usize)
+            .get(PersistentIndex::PersScore as usize)
     }
 
     fn cvar_integer(&self, name: &str) -> i32 {
@@ -160,7 +165,7 @@ impl ArenaRuntime {
         let mut player_client_num = 0;
         while player_client_num < pool.max_clients() {
             let entity = pool.at(player_client_num);
-            if entity.borrow().inuse && entity.borrow().r.sv_flags & server_entity_flags::BOT == 0 {
+            if entity.borrow().inuse && entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0 {
                 player = Some(entity);
                 break;
             }
@@ -173,14 +178,17 @@ impl ArenaRuntime {
         let ranked = pool.client_at(player_client_num);
         let non_spectators = runtime.host.state().borrow().num_non_spectator_clients;
         let mut message: String;
-        if ranked.borrow().sess.session_team == team::SPECTATOR {
-            message = game_format(
-                if runtime.host.product() == Product::MissionPack {
+        if ranked.borrow().sess.session_team == Team::TeamSpectator as i32 {
+            message = game_format_bounded(
+                if runtime.host.product() == Product::Missionpack {
                     "postgame %i %i 0 0 0 0 0 0 0 0 0 0 0"
                 } else {
                     "postgame %i %i 0 0 0 0 0 0"
                 },
-                &[FormatArg::Int(non_spectators), FormatArg::Int(player_client_num as i32)],
+                &[
+                    GameFormatArgument::Int(non_spectators),
+                    GameFormatArgument::Int(player_client_num as i32),
+                ],
                 MAX_STRING_CHARS,
             );
         } else {
@@ -190,11 +198,11 @@ impl ArenaRuntime {
             } else {
                 0
             };
-            if runtime.host.product() == Product::MissionPack {
-                let (won, score1, score2) = if runtime.host.settings().game_type >= game_type::CTF {
-                    let score1 = runtime.host.team_scores().get(team::RED as usize);
-                    let score2 = runtime.host.team_scores().get(team::BLUE as usize);
-                    let won = if ranked.borrow().sess.session_team == team::RED {
+            if runtime.host.product() == Product::Missionpack {
+                let (won, score1, score2) = if runtime.host.settings().game_type >= GameType::GtCtf as i32 {
+                    let score1 = runtime.host.team_scores().get(Team::TeamRed as usize);
+                    let score2 = runtime.host.team_scores().get(Team::TeamBlue as usize);
+                    let won = if ranked.borrow().sess.session_team == Team::TeamRed as i32 {
                         score1 > score2
                     } else {
                         score2 > score1
@@ -206,52 +214,66 @@ impl ArenaRuntime {
                     (false, self.score(self.sorted(1)), self.score(self.sorted(0)))
                 };
                 let record = client.borrow();
-                let perfect = if won && record.ps.persistant.get(persistent_index::KILLED as usize) == 0 {
+                let perfect = if won && record.ps.persistant.get(PersistentIndex::PersKilled as usize) == 0 {
                     1
                 } else {
                     0
                 };
                 let time = runtime.host.state().borrow().time;
-                message = game_format(
+                message = game_format_bounded(
                     "postgame %i %i %i %i %i %i %i %i %i %i %i %i %i %i",
                     &[
-                        FormatArg::Int(non_spectators),
-                        FormatArg::Int(player_client_num as i32),
-                        FormatArg::Int(accuracy),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::IMPRESSIVE_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::EXCELLENT_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::DEFEND_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::ASSIST_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::GAUNTLET_FRAG_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::SCORE as usize)),
-                        FormatArg::Int(perfect),
-                        FormatArg::Int(score1),
-                        FormatArg::Int(score2),
-                        FormatArg::Int(time),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::CAPTURES as usize)),
+                        GameFormatArgument::Int(non_spectators),
+                        GameFormatArgument::Int(player_client_num as i32),
+                        GameFormatArgument::Int(accuracy),
+                        GameFormatArgument::Int(
+                            record.ps.persistant.get(PersistentIndex::PersImpressiveCount as usize),
+                        ),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersExcellentCount as usize)),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersDefendCount as usize)),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersAssistCount as usize)),
+                        GameFormatArgument::Int(
+                            record
+                                .ps
+                                .persistant
+                                .get(PersistentIndex::PersGauntletFragCount as usize),
+                        ),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersScore as usize)),
+                        GameFormatArgument::Int(perfect),
+                        GameFormatArgument::Int(score1),
+                        GameFormatArgument::Int(score2),
+                        GameFormatArgument::Int(time),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersCaptures as usize)),
                     ],
                     MAX_STRING_CHARS,
                 );
             } else {
                 let record = client.borrow();
-                let perfect = if ranked.borrow().ps.persistant.get(persistent_index::RANK as usize) == 0
-                    && record.ps.persistant.get(persistent_index::KILLED as usize) == 0
+                let perfect = if ranked.borrow().ps.persistant.get(PersistentIndex::PersRank as usize) == 0
+                    && record.ps.persistant.get(PersistentIndex::PersKilled as usize) == 0
                 {
                     1
                 } else {
                     0
                 };
-                message = game_format(
+                message = game_format_bounded(
                     "postgame %i %i %i %i %i %i %i %i",
                     &[
-                        FormatArg::Int(non_spectators),
-                        FormatArg::Int(player_client_num as i32),
-                        FormatArg::Int(accuracy),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::IMPRESSIVE_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::EXCELLENT_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::GAUNTLET_FRAG_COUNT as usize)),
-                        FormatArg::Int(record.ps.persistant.get(persistent_index::SCORE as usize)),
-                        FormatArg::Int(perfect),
+                        GameFormatArgument::Int(non_spectators),
+                        GameFormatArgument::Int(player_client_num as i32),
+                        GameFormatArgument::Int(accuracy),
+                        GameFormatArgument::Int(
+                            record.ps.persistant.get(PersistentIndex::PersImpressiveCount as usize),
+                        ),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersExcellentCount as usize)),
+                        GameFormatArgument::Int(
+                            record
+                                .ps
+                                .persistant
+                                .get(PersistentIndex::PersGauntletFragCount as usize),
+                        ),
+                        GameFormatArgument::Int(record.ps.persistant.get(PersistentIndex::PersScore as usize)),
+                        GameFormatArgument::Int(perfect),
                     ],
                     MAX_STRING_CHARS,
                 );
@@ -260,23 +282,23 @@ impl ArenaRuntime {
         let message_length = message.len();
         for index in 0..non_spectators {
             let number = self.sorted(index as usize);
-            let row = game_format(
+            let row = game_format_bounded(
                 " %i %i %i",
                 &[
-                    FormatArg::Int(number),
-                    FormatArg::Int(
+                    GameFormatArgument::Int(number),
+                    GameFormatArgument::Int(
                         pool.client_at(number as usize)
                             .borrow()
                             .ps
                             .persistant
-                            .get(persistent_index::RANK as usize),
+                            .get(PersistentIndex::PersRank as usize),
                     ),
-                    FormatArg::Int(
+                    GameFormatArgument::Int(
                         pool.client_at(number as usize)
                             .borrow()
                             .ps
                             .persistant
-                            .get(persistent_index::SCORE as usize),
+                            .get(PersistentIndex::PersScore as usize),
                     ),
                 ],
                 32,
@@ -319,7 +341,7 @@ impl ArenaRuntime {
         body.borrow_mut().bind_client_name(&client);
         body.borrow_mut().client = Some(client);
         body.borrow_mut().s = entity.borrow().s.clone();
-        body.borrow_mut().s.e_type = entity_type::PLAYER;
+        body.borrow_mut().s.e_type = EntityType::EtPlayer as i32;
         body.borrow_mut().s.e_flags = 0;
         body.borrow_mut().s.powerups = 0;
         body.borrow_mut().s.loop_sound = 0;
@@ -329,15 +351,19 @@ impl ArenaRuntime {
         body.borrow_mut().physics_object = true;
         body.borrow_mut().physics_bounce = 0;
         body.borrow_mut().s.event = 0;
-        body.borrow_mut().s.pos.traj_type = trajectory_type::STATIONARY;
-        write_ground(&body, Some(pool.at(ENTITYNUM_WORLD).borrow().actor.clone()), &pool);
-        body.borrow_mut().s.legs_anim = player_animation::LEGS_IDLE;
-        body.borrow_mut().s.torso_anim = player_animation::TORSO_STAND;
-        if body.borrow().s.weapon == weapon::NONE {
-            body.borrow_mut().s.weapon = weapon::MACHINEGUN;
+        body.borrow_mut().s.pos.trajectory_type = TrajectoryType::TrStationary;
+        write_ground(
+            &body,
+            Some(pool.at(ENTITYNUM_WORLD as usize).borrow().actor.clone()),
+            &pool,
+        );
+        body.borrow_mut().s.legs_anim = PlayerAnimation::LegsIdle as i32;
+        body.borrow_mut().s.torso_anim = PlayerAnimation::TorsoStand as i32;
+        if body.borrow().s.weapon == Weapon::WpNone as i32 {
+            body.borrow_mut().s.weapon = Weapon::WpMachinegun as i32;
         }
-        if body.borrow().s.weapon == weapon::GAUNTLET {
-            body.borrow_mut().s.torso_anim = player_animation::TORSO_STAND2;
+        if body.borrow().s.weapon == Weapon::WpGauntlet as i32 {
+            body.borrow_mut().s.torso_anim = PlayerAnimation::TorsoStand2 as i32;
         }
         body.borrow_mut().s.event = 0;
         body.borrow_mut().r.sv_flags = entity.borrow().r.sv_flags;
@@ -357,10 +383,10 @@ impl ArenaRuntime {
     }
 
     fn celebrate_stop(&self, player: &EntityRef) {
-        let animation = if player.borrow().s.weapon == weapon::GAUNTLET {
-            player_animation::TORSO_STAND2
+        let animation = if player.borrow().s.weapon == Weapon::WpGauntlet as i32 {
+            PlayerAnimation::TorsoStand2 as i32
         } else {
-            player_animation::TORSO_STAND
+            PlayerAnimation::TorsoStand as i32
         };
         let mut body = player.borrow_mut();
         body.s.torso_anim = ((body.s.torso_anim & ANIM_TOGGLEBIT) ^ ANIM_TOGGLEBIT) | animation;
@@ -370,7 +396,7 @@ impl ArenaRuntime {
         {
             let mut body = player.borrow_mut();
             body.s.torso_anim =
-                ((body.s.torso_anim & ANIM_TOGGLEBIT) ^ ANIM_TOGGLEBIT) | player_animation::TORSO_GESTURE;
+                ((body.s.torso_anim & ANIM_TOGGLEBIT) ^ ANIM_TOGGLEBIT) | PlayerAnimation::TorsoGesture as i32;
         }
         let runtime = self.inner.host.match_runtime();
         player.borrow_mut().nextthink = runtime.host.state().borrow().time.wrapping_add(TIMER_GESTURE);
@@ -380,7 +406,7 @@ impl ArenaRuntime {
             .callbacks
             .resolve_think("q3.team-arena.arenas.celebrateStart.think");
         player.borrow_mut().think = Some(think);
-        runtime.host.pool().add_event(player, entity_event::TAUNT, 0);
+        runtime.host.pool().add_event(player, EntityEvent::EvTaunt as i32, 0);
     }
 
     fn podium_origin(&self) -> Vec3 {
@@ -422,7 +448,7 @@ impl ArenaRuntime {
         let pool = runtime.host.pool();
         let podium = pool.spawn();
         podium.borrow_mut().set_classname(Some("podium".to_string()));
-        podium.borrow_mut().s.e_type = entity_type::GENERAL;
+        podium.borrow_mut().s.e_type = EntityType::EtGeneral as i32;
         let slot = podium.borrow().slot as i32;
         podium.borrow_mut().s.number = slot;
         podium.borrow_mut().clipmask = ARENA_CONTENTS_SOLID;
@@ -460,7 +486,7 @@ impl ArenaRuntime {
                 .borrow()
                 .ps
                 .persistant
-                .get(persistent_index::RANK as usize)
+                .get(PersistentIndex::PersRank as usize)
                 & !RANK_TIED_FLAG,
         );
         player.borrow_mut().nextthink = runtime.host.state().borrow().time.wrapping_add(2000);
@@ -478,7 +504,7 @@ impl ArenaRuntime {
                 .borrow()
                 .ps
                 .persistant
-                .get(persistent_index::RANK as usize)
+                .get(PersistentIndex::PersRank as usize)
                 & !RANK_TIED_FLAG,
         );
         *self.inner.podium2.borrow_mut() = Some(player);
@@ -492,7 +518,7 @@ impl ArenaRuntime {
                     .borrow()
                     .ps
                     .persistant
-                    .get(persistent_index::RANK as usize)
+                    .get(PersistentIndex::PersRank as usize)
                     & !RANK_TIED_FLAG,
             );
             *self.inner.podium3.borrow_mut() = Some(player);
@@ -502,7 +528,7 @@ impl ArenaRuntime {
     /// Abort the podium (`abortPodium`).
     pub fn abort_podium(&self) {
         let runtime = self.inner.host.match_runtime();
-        if runtime.host.settings().game_type != game_type::SINGLE_PLAYER {
+        if runtime.host.settings().game_type != GameType::GtSinglePlayer as i32 {
             return;
         }
         if let Some(first) = self.inner.podium1.borrow().clone() {

@@ -7,9 +7,14 @@ use qa_core::math::{add3, sub3, vec3, Bounds, Vec3};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::state::{ConnectionState, GameFlags, SpectatorState, MAX_CLIENTS, MAX_GENTITIES};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::items::{player_touches_item, Trajectory as ItemsTrajectory};
+use crate::q3::base::shared::player_state::{CommandButtons, MoveFlags, UserCommand};
 use crate::q3::team_arena::client_effects::*;
-use crate::q3::team_arena::mirrors::*;
 use crate::q3::team_arena::movement_host::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // client-think.ts
@@ -151,7 +156,7 @@ impl ClientThinkRuntime {
         let client = think_client_of(&entity);
         client.borrow_mut().pers.cmd = *command;
         client.borrow_mut().last_cmd_time = self.host.frame().time;
-        let bot = entity.borrow().r.sv_flags & server_entity_flags::BOT != 0;
+        let bot = entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 != 0;
         if !bot && !self.host.settings().synchronous_clients {
             self.client_think_real(&entity);
         }
@@ -159,7 +164,7 @@ impl ClientThinkRuntime {
 
     /// Run a bot/synchronous client (`runClient`).
     pub fn run_client(&self, entity: &EntityRef) {
-        let bot = entity.borrow().r.sv_flags & server_entity_flags::BOT != 0;
+        let bot = entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 != 0;
         if !bot && !self.host.settings().synchronous_clients {
             return;
         }
@@ -179,7 +184,10 @@ impl ClientThinkRuntime {
             seen.push(actor.clone());
             let (bot, touched) = {
                 let body = entity.borrow();
-                (body.r.sv_flags & server_entity_flags::BOT != 0, body.touch.is_some())
+                (
+                    body.r.sv_flags & ServerEntityFlags::Bot as i32 != 0,
+                    body.touch.is_some(),
+                )
             };
             if bot && touched {
                 self.host.touches().touch(&this, actor);
@@ -229,10 +237,10 @@ impl ClientThinkRuntime {
             if !trigger {
                 continue;
             }
-            if client.borrow().sess.session_team == team::SPECTATOR {
+            if client.borrow().sess.session_team == Team::TeamSpectator as i32 {
                 let allowed = match &hit {
                     Some(hit) => {
-                        hit.borrow().s.e_type == entity_type::TELEPORT_TRIGGER || self.host.is_door_trigger(hit)
+                        hit.borrow().s.e_type == EntityType::EtTeleportTrigger as i32 || self.host.is_door_trigger(hit)
                     }
                     None => false,
                 };
@@ -241,9 +249,16 @@ impl ClientThinkRuntime {
                 }
             }
             match &hit {
-                Some(hit) if hit.borrow().s.e_type == entity_type::ITEM => {
+                Some(hit) if hit.borrow().s.e_type == EntityType::EtItem as i32 => {
                     let pos = hit.borrow().s.pos;
-                    if !player_touches_item(origin, &pos, self.host.frame().time) {
+                    let touch = ItemsTrajectory {
+                        trajectory_type: pos.trajectory_type as i32,
+                        time: pos.time,
+                        duration: pos.duration,
+                        base: pos.base,
+                        delta: pos.delta,
+                    };
+                    if !player_touches_item(origin, &touch, self.host.frame().time).unwrap() {
                         continue;
                     }
                 }
@@ -254,7 +269,7 @@ impl ClientThinkRuntime {
                 }
             }
             self.host.touches().touch(actor, &this);
-            let bot = entity.borrow().r.sv_flags & server_entity_flags::BOT != 0;
+            let bot = entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 != 0;
             if bot && entity.borrow().touch.is_some() {
                 self.host.touches().touch(&this, actor);
             }
@@ -273,7 +288,7 @@ impl ClientThinkRuntime {
     /// Run one client think (`clientThinkReal`).
     pub fn client_think_real(&self, entity: &EntityRef) {
         let client = think_client_of(entity);
-        if client.borrow().pers.connected != connection_state::CONNECTED {
+        if client.borrow().pers.connected != ConnectionState::Connected as i32 {
             return;
         }
         let frame = self.host.frame();
@@ -293,7 +308,7 @@ impl ClientThinkRuntime {
             .cmd
             .server_time
             .wrapping_sub(client.borrow().ps.command_time);
-        if msec < 1 && client.borrow().sess.spectator_state != spectator_state::FOLLOW {
+        if msec < 1 && client.borrow().sess.spectator_state != SpectatorState::Follow as i32 {
             return;
         }
         if msec > 200 {
@@ -325,8 +340,8 @@ impl ClientThinkRuntime {
             self.host.intermission_think(&client);
             return;
         }
-        if client.borrow().sess.session_team == team::SPECTATOR {
-            if client.borrow().sess.spectator_state != spectator_state::SCOREBOARD {
+        if client.borrow().sess.session_team == Team::TeamSpectator as i32 {
+            if client.borrow().sess.spectator_state != SpectatorState::Scoreboard as i32 {
                 let command = client.borrow().pers.cmd;
                 self.host.spectator_think(entity, &command);
             }
@@ -341,11 +356,11 @@ impl ClientThinkRuntime {
         {
             let mut record = client.borrow_mut();
             record.ps.pm_type = if record.noclip {
-                move_type::NOCLIP
+                MoveType::PmNoclip as i32
             } else if record.ps.health() <= 0 {
-                move_type::DEAD
+                MoveType::PmDead as i32
             } else {
-                move_type::NORMAL
+                MoveType::PmNormal as i32
             };
             record.ps.gravity = settings.gravity.trunc() as i32;
             record.ps.speed = settings.speed.trunc() as i32;
@@ -364,7 +379,7 @@ impl ClientThinkRuntime {
             (record.ps.weapon, record.hook.clone())
         };
         let buttons = client.borrow().pers.cmd.buttons;
-        if weapon == weapon::GRAPPLING_HOOK && hook.is_some() && buttons & command_buttons::ATTACK == 0 {
+        if weapon == Weapon::WpGrapplingHook as i32 && hook.is_some() && buttons & CommandButtons::Attack as i32 == 0 {
             if let Some(hook) = hook {
                 self.host.free_hook(&hook);
             }
@@ -374,21 +389,21 @@ impl ClientThinkRuntime {
             let record = client.borrow();
             (record.ps.weapon_time, record.ps.weapon)
         };
-        let gauntlet_hit = weapon_now == weapon::GAUNTLET
-            && buttons & command_buttons::TALK == 0
-            && buttons & command_buttons::ATTACK != 0
+        let gauntlet_hit = weapon_now == Weapon::WpGauntlet as i32
+            && buttons & CommandButtons::Talk as i32 == 0
+            && buttons & CommandButtons::Attack as i32 != 0
             && weapon_time <= 0
             && self.host.check_gauntlet_attack(entity);
-        if entity.borrow().flags & game_flags::FORCE_GESTURE != 0 {
-            entity.borrow_mut().flags &= !game_flags::FORCE_GESTURE;
-            client.borrow_mut().pers.cmd.buttons |= command_buttons::GESTURE;
+        if entity.borrow().flags & GameFlags::FORCE_GESTURE != 0 {
+            entity.borrow_mut().flags &= !GameFlags::FORCE_GESTURE;
+            client.borrow_mut().pers.cmd.buttons |= CommandButtons::Gesture as i32;
         }
         expand_q3_invulnerability(&self.host.pool(), self.host.world().as_ref(), entity);
         let trace_mask = {
             let body = entity.borrow();
-            if client.borrow().ps.pm_type == move_type::DEAD {
+            if client.borrow().ps.pm_type == MoveType::PmDead as i32 {
                 MASK_PLAYERSOLID & !THINK_CONTENTS_BODY
-            } else if body.r.sv_flags & server_entity_flags::BOT != 0 {
+            } else if body.r.sv_flags & ServerEntityFlags::Bot as i32 != 0 {
                 MASK_PLAYERSOLID | CONTENTS_BOTCLIP
             } else {
                 MASK_PLAYERSOLID
@@ -397,7 +412,7 @@ impl ClientThinkRuntime {
         let origin = client.borrow().ps.origin;
         client.borrow_mut().old_origin = origin;
         let mut movement_command = client.borrow().pers.cmd;
-        if client.borrow().ps.product == Product::MissionPack
+        if client.borrow().ps.product == Product::Missionpack
             && frame.intermission_queued != 0
             && settings.single_player
         {
@@ -410,7 +425,7 @@ impl ClientThinkRuntime {
                 if (2000..=2500).contains(&elapsed) {
                     self.host.append_console_command("centerview\n");
                 }
-                client.borrow_mut().ps.pm_type = move_type::SPINTERMISSION;
+                client.borrow_mut().ps.pm_type = MoveType::PmSpintermission as i32;
             }
         }
         let movement = self.host.move_client(
@@ -473,7 +488,10 @@ impl ClientThinkRuntime {
                     self.host.respawn(entity);
                     return;
                 }
-                if client.borrow().pers.cmd.buttons & (command_buttons::ATTACK | command_buttons::USE_HOLDABLE) != 0 {
+                if client.borrow().pers.cmd.buttons
+                    & (CommandButtons::Attack as i32 | CommandButtons::UseHoldable as i32)
+                    != 0
+                {
                     self.host.respawn(entity);
                 }
             }
@@ -520,9 +538,9 @@ pub fn expand_q3_invulnerability(pool: &EntityPool, world: &dyn Q3World, entity:
     let client = think_client_of(entity);
     let expand = {
         let record = client.borrow();
-        record.ps.product == Product::MissionPack
-            && record.ps.powerups.get(powerup::INVULNERABILITY as usize) != 0
-            && record.ps.pm_flags & move_flags::INVULEXPAND == 0
+        record.ps.product == Product::Missionpack
+            && record.ps.powerups.get(Powerup::PwInvulnerability as usize) != 0
+            && record.ps.pm_flags & MoveFlags::InvulExpand as i32 == 0
     };
     if !expand {
         return;
@@ -535,7 +553,7 @@ pub fn expand_q3_invulnerability(pool: &EntityPool, world: &dyn Q3World, entity:
     entity.borrow_mut().r.maxs = vec3(42.0, 42.0, 42.0);
     world.link(entity);
     if !stuck_in_other_client(pool, world, entity) {
-        client.borrow_mut().ps.pm_flags |= move_flags::INVULEXPAND;
+        client.borrow_mut().ps.pm_flags |= MoveFlags::InvulExpand as i32;
     }
     entity.borrow_mut().r.mins = old_mins;
     entity.borrow_mut().r.maxs = old_maxs;

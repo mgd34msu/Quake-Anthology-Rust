@@ -7,9 +7,19 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::game::format::{game_format, game_format_bounded, GameFormatArgument};
+use crate::q3::base::game::state::{ConnectionState, GameFlags, MAX_CLIENTS};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
+// Pattern-position aliases for Team discriminants (`as` casts are not patterns).
+const TEAM_FREE: i32 = Team::TeamFree as i32;
+const TEAM_RED: i32 = Team::TeamRed as i32;
+const TEAM_BLUE: i32 = Team::TeamBlue as i32;
+const TEAM_SPECTATOR: i32 = Team::TeamSpectator as i32;
+
 // team.ts
 // ---------------------------------------------------------------------------
 
@@ -136,10 +146,10 @@ impl Default for TeamGameState {
 /// Opposing team (`otherTeam`).
 #[must_use]
 pub fn other_team(team_code: i32) -> i32 {
-    if team_code == team::RED {
-        team::BLUE
-    } else if team_code == team::BLUE {
-        team::RED
+    if team_code == Team::TeamRed as i32 {
+        Team::TeamBlue as i32
+    } else if team_code == Team::TeamBlue as i32 {
+        Team::TeamRed as i32
     } else {
         team_code
     }
@@ -148,11 +158,11 @@ pub fn other_team(team_code: i32) -> i32 {
 /// Team display name (`teamName`).
 #[must_use]
 pub fn team_name(team_code: i32) -> &'static str {
-    if team_code == team::RED {
+    if team_code == Team::TeamRed as i32 {
         "RED"
-    } else if team_code == team::BLUE {
+    } else if team_code == Team::TeamBlue as i32 {
         "BLUE"
-    } else if team_code == team::SPECTATOR {
+    } else if team_code == Team::TeamSpectator as i32 {
         "SPECTATOR"
     } else {
         "FREE"
@@ -168,11 +178,11 @@ pub fn other_team_name(team_code: i32) -> &'static str {
 /// Team color string (`teamColorString`).
 #[must_use]
 pub fn team_color_string(team_code: i32) -> &'static str {
-    if team_code == team::RED {
+    if team_code == Team::TeamRed as i32 {
         "^1"
-    } else if team_code == team::BLUE {
+    } else if team_code == Team::TeamBlue as i32 {
         "^4"
-    } else if team_code == team::SPECTATOR {
+    } else if team_code == Team::TeamSpectator as i32 {
         "^3"
     } else {
         "^7"
@@ -186,7 +196,7 @@ pub fn on_same_team(game_type: i32, first: &EntityRef, second: &EntityRef) -> bo
     let b = second.borrow().client.clone();
     match (a, b) {
         (Some(a), Some(b)) => {
-            game_type >= game_type::TEAM && a.borrow().sess.session_team == b.borrow().sess.session_team
+            game_type >= GameType::GtTeam as i32 && a.borrow().sess.session_team == b.borrow().sess.session_team
         }
         _ => false,
     }
@@ -209,12 +219,12 @@ pub(crate) fn flag_team(entity: &EntityRef) -> Option<i32> {
         Some(item) => item,
         None => panic!("Team item operation requires an item"),
     };
-    if item.tag == powerup::REDFLAG {
-        Some(team::RED)
-    } else if item.tag == powerup::BLUEFLAG {
-        Some(team::BLUE)
-    } else if item.tag == powerup::NEUTRALFLAG {
-        Some(team::FREE)
+    if item.tag == Powerup::PwRedflag as i32 {
+        Some(Team::TeamRed as i32)
+    } else if item.tag == Powerup::PwBlueflag as i32 {
+        Some(Team::TeamBlue as i32)
+    } else if item.tag == Powerup::PwNeutralflag as i32 {
+        Some(Team::TeamFree as i32)
     } else {
         None
     }
@@ -400,16 +410,16 @@ impl TeamRuntime {
     /// Reset match state (`initGame`).
     pub fn init_game(&self) {
         *self.inner.state.borrow_mut() = TeamGameState::default();
-        if self.inner.host.game_type() == game_type::CTF {
+        if self.inner.host.game_type() == GameType::GtCtf as i32 {
             self.inner.state.borrow_mut().red_status = -1;
             self.inner.state.borrow_mut().blue_status = -1;
-            self.set_flag_status(team::RED, flag_status::AT_BASE);
-            self.set_flag_status(team::BLUE, flag_status::AT_BASE);
-        } else if self.inner.host.product() == Product::MissionPack
-            && self.inner.host.game_type() == game_type::ONE_FLAG_CTF
+            self.set_flag_status(Team::TeamRed as i32, flag_status::AT_BASE);
+            self.set_flag_status(Team::TeamBlue as i32, flag_status::AT_BASE);
+        } else if self.inner.host.product() == Product::Missionpack
+            && self.inner.host.game_type() == GameType::Gt1fctf as i32
         {
             self.inner.state.borrow_mut().flag_status = -1;
-            self.set_flag_status(team::FREE, flag_status::AT_BASE);
+            self.set_flag_status(Team::TeamFree as i32, flag_status::AT_BASE);
         }
     }
 
@@ -436,11 +446,11 @@ impl TeamRuntime {
             .inner
             .host
             .pool()
-            .temp_entity(origin, entity_event::GLOBAL_TEAM_SOUND);
-        event.borrow_mut().r.sv_flags |= server_entity_flags::BROADCAST;
-        let red = self.inner.host.team_scores().get(team::RED as usize);
-        let blue = self.inner.host.team_scores().get(team::BLUE as usize);
-        let parm = if team_code == team::RED {
+            .temp_entity(origin, EntityEvent::EvGlobalTeamSound as i32);
+        event.borrow_mut().r.sv_flags |= ServerEntityFlags::Broadcast as i32;
+        let red = self.inner.host.team_scores().get(Team::TeamRed as usize);
+        let blue = self.inner.host.team_scores().get(Team::TeamBlue as usize);
+        let parm = if team_code == Team::TeamRed as i32 {
             if red.wrapping_add(score) == blue {
                 global_team_sound::TIED
             } else if red <= blue && red.wrapping_add(score) > blue {
@@ -465,11 +475,11 @@ impl TeamRuntime {
 
     /// Publish a flag status (`setFlagStatus`).
     pub fn set_flag_status(&self, team_code: i32, status: i32) {
-        let current = if team_code == team::RED {
+        let current = if team_code == Team::TeamRed as i32 {
             self.inner.state.borrow().red_status
-        } else if team_code == team::BLUE {
+        } else if team_code == Team::TeamBlue as i32 {
             self.inner.state.borrow().blue_status
-        } else if team_code == team::FREE {
+        } else if team_code == Team::TeamFree as i32 {
             self.inner.state.borrow().flag_status
         } else {
             return;
@@ -479,15 +489,15 @@ impl TeamRuntime {
         }
         {
             let mut state = self.inner.state.borrow_mut();
-            if team_code == team::RED {
+            if team_code == Team::TeamRed as i32 {
                 state.red_status = status;
-            } else if team_code == team::BLUE {
+            } else if team_code == Team::TeamBlue as i32 {
                 state.blue_status = status;
             } else {
                 state.flag_status = status;
             }
         }
-        let value = if self.inner.host.game_type() == game_type::CTF {
+        let value = if self.inner.host.game_type() == GameType::GtCtf as i32 {
             let state = self.inner.state.borrow();
             format!("{}{}", ctf_status(state.red_status), ctf_status(state.blue_status))
         } else {
@@ -519,7 +529,7 @@ impl TeamRuntime {
             let live = body.inuse;
             drop(body);
             if live && same {
-                entity.borrow_mut().flags |= game_flags::FORCE_GESTURE;
+                entity.borrow_mut().flags |= GameFlags::FORCE_GESTURE;
             }
         }
     }
@@ -537,10 +547,10 @@ impl TeamRuntime {
         let (Some(target_client), Some(attacker_client)) = (target_client, attacker_client) else {
             return;
         };
-        let flag = if target_client.borrow().sess.session_team == team::RED {
-            powerup::BLUEFLAG
+        let flag = if target_client.borrow().sess.session_team == Team::TeamRed as i32 {
+            Powerup::PwBlueflag as i32
         } else {
-            powerup::REDFLAG
+            Powerup::PwRedflag as i32
         };
         let target_record = target_client.borrow();
         if (target_record.ps.powerups.get(flag as usize) != 0 || target_record.ps.generic1 != 0)
@@ -569,20 +579,20 @@ impl TeamRuntime {
         let killer = team_client_of(attacker);
         let team_code = victim.borrow().sess.session_team;
         let opposing = other_team(team_code);
-        let flag = if team_code == team::RED {
-            powerup::REDFLAG
+        let flag = if team_code == Team::TeamRed as i32 {
+            Powerup::PwRedflag as i32
         } else {
-            powerup::BLUEFLAG
+            Powerup::PwBlueflag as i32
         };
-        let mission = self.inner.host.product() == Product::MissionPack;
-        let enemy_flag = if mission && self.inner.host.game_type() == game_type::ONE_FLAG_CTF {
-            powerup::NEUTRALFLAG
-        } else if team_code == team::RED {
-            powerup::BLUEFLAG
+        let mission = self.inner.host.product() == Product::Missionpack;
+        let enemy_flag = if mission && self.inner.host.game_type() == GameType::Gt1fctf as i32 {
+            Powerup::PwNeutralflag as i32
+        } else if team_code == Team::TeamRed as i32 {
+            Powerup::PwBlueflag as i32
         } else {
-            powerup::REDFLAG
+            Powerup::PwRedflag as i32
         };
-        let tokens = if mission && self.inner.host.game_type() == game_type::HARVESTER {
+        let tokens = if mission && self.inner.host.game_type() == GameType::GtHarvester as i32 {
             victim.borrow().ps.generic1
         } else {
             0
@@ -625,35 +635,35 @@ impl TeamRuntime {
             killer.borrow_mut().pers.team_state.carrier_defense = carrier_defense.wrapping_add(1);
             victim.borrow_mut().pers.team_state.last_hurt_carrier = 0.0;
             let record = killer.borrow_mut();
-            let defends = record.ps.persistant.get(persistent_index::DEFEND_COUNT as usize);
+            let defends = record.ps.persistant.get(PersistentIndex::PersDefendCount as usize);
             record
                 .ps
                 .persistant
-                .set(persistent_index::DEFEND_COUNT as usize, defends + 1);
+                .set(PersistentIndex::PersDefendCount as usize, defends + 1);
             drop(record);
             self.award(attacker, 0x10000);
             return;
         }
         let classname: String;
         let mut carrier: Option<EntityRef> = None;
-        if mission && self.inner.host.game_type() == game_type::OBELISK {
+        if mission && self.inner.host.game_type() == GameType::GtObelisk as i32 {
             let killer_team = killer.borrow().sess.session_team;
-            if killer_team != team::RED && killer_team != team::BLUE {
+            if killer_team != Team::TeamRed as i32 && killer_team != Team::TeamBlue as i32 {
                 return;
             }
-            classname = if killer_team == team::RED {
+            classname = if killer_team == Team::TeamRed as i32 {
                 "team_redobelisk".to_string()
             } else {
                 "team_blueobelisk".to_string()
             };
-        } else if mission && self.inner.host.game_type() == game_type::HARVESTER {
+        } else if mission && self.inner.host.game_type() == GameType::GtHarvester as i32 {
             classname = "team_neutralobelisk".to_string();
         } else {
             let killer_team = killer.borrow().sess.session_team;
-            if killer_team != team::RED && killer_team != team::BLUE {
+            if killer_team != Team::TeamRed as i32 && killer_team != Team::TeamBlue as i32 {
                 return;
             }
-            classname = if killer_team == team::RED {
+            classname = if killer_team == Team::TeamRed as i32 {
                 "team_CTF_redflag".to_string()
             } else {
                 "team_CTF_blueflag".to_string()
@@ -675,7 +685,7 @@ impl TeamRuntime {
                 Some(&classname),
             );
             match base.clone() {
-                Some(entity) if entity.borrow().flags & game_flags::DROPPED_ITEM == 0 => {
+                Some(entity) if entity.borrow().flags & GameFlags::DROPPED_ITEM == 0 => {
                     base = Some(entity);
                     break;
                 }
@@ -702,11 +712,11 @@ impl TeamRuntime {
             let base_defense = killer.borrow().pers.team_state.base_defense;
             killer.borrow_mut().pers.team_state.base_defense = base_defense.wrapping_add(1);
             let record = killer.borrow_mut();
-            let defends = record.ps.persistant.get(persistent_index::DEFEND_COUNT as usize);
+            let defends = record.ps.persistant.get(PersistentIndex::PersDefendCount as usize);
             record
                 .ps
                 .persistant
-                .set(persistent_index::DEFEND_COUNT as usize, defends + 1);
+                .set(PersistentIndex::PersDefendCount as usize, defends + 1);
             drop(record);
             self.award(attacker, 0x10000);
             return;
@@ -725,11 +735,11 @@ impl TeamRuntime {
                     let carrier_defense = killer.borrow().pers.team_state.carrier_defense;
                     killer.borrow_mut().pers.team_state.carrier_defense = carrier_defense.wrapping_add(1);
                     let record = killer.borrow_mut();
-                    let defends = record.ps.persistant.get(persistent_index::DEFEND_COUNT as usize);
+                    let defends = record.ps.persistant.get(PersistentIndex::PersDefendCount as usize);
                     record
                         .ps
                         .persistant
-                        .set(persistent_index::DEFEND_COUNT as usize, defends + 1);
+                        .set(PersistentIndex::PersDefendCount as usize, defends + 1);
                     drop(record);
                     self.award(attacker, 0x10000);
                 }
@@ -739,11 +749,11 @@ impl TeamRuntime {
 
     /// Reset one flag (`resetFlag`).
     pub fn reset_flag(&self, team_code: i32) -> Option<EntityRef> {
-        let classname = if team_code == team::RED {
+        let classname = if team_code == Team::TeamRed as i32 {
             "team_CTF_redflag"
-        } else if team_code == team::BLUE {
+        } else if team_code == Team::TeamBlue as i32 {
             "team_CTF_blueflag"
-        } else if team_code == team::FREE {
+        } else if team_code == Team::TeamFree as i32 {
             "team_CTF_neutralflag"
         } else {
             return None;
@@ -759,7 +769,7 @@ impl TeamRuntime {
             );
             match entity.clone() {
                 Some(found) => {
-                    if found.borrow().flags & game_flags::DROPPED_ITEM != 0 {
+                    if found.borrow().flags & GameFlags::DROPPED_ITEM != 0 {
                         self.inner.host.pool().free(&found);
                     } else {
                         base = Some(found.clone());
@@ -775,13 +785,13 @@ impl TeamRuntime {
 
     /// Reset the mode's flags (`resetFlags`).
     pub fn reset_flags(&self) {
-        if self.inner.host.game_type() == game_type::CTF {
-            self.reset_flag(team::RED);
-            self.reset_flag(team::BLUE);
-        } else if self.inner.host.product() == Product::MissionPack
-            && self.inner.host.game_type() == game_type::ONE_FLAG_CTF
+        if self.inner.host.game_type() == GameType::GtCtf as i32 {
+            self.reset_flag(Team::TeamRed as i32);
+            self.reset_flag(Team::TeamBlue as i32);
+        } else if self.inner.host.product() == Product::Missionpack
+            && self.inner.host.game_type() == GameType::Gt1fctf as i32
         {
-            self.reset_flag(team::FREE);
+            self.reset_flag(Team::TeamFree as i32);
         }
     }
 
@@ -791,9 +801,9 @@ impl TeamRuntime {
             .inner
             .host
             .pool()
-            .temp_entity(origin, entity_event::GLOBAL_TEAM_SOUND);
+            .temp_entity(origin, EntityEvent::EvGlobalTeamSound as i32);
         event.borrow_mut().s.event_parm = sound;
-        event.borrow_mut().r.sv_flags |= server_entity_flags::BROADCAST;
+        event.borrow_mut().r.sv_flags |= ServerEntityFlags::Broadcast as i32;
     }
 
     /// Flag-return sound (`returnFlagSound`).
@@ -801,7 +811,7 @@ impl TeamRuntime {
         match entity {
             Some(entity) => self.flag_sound(
                 entity,
-                if team_code == team::BLUE {
+                if team_code == Team::TeamBlue as i32 {
                     global_team_sound::RED_RETURN
                 } else {
                     global_team_sound::BLUE_RETURN
@@ -817,14 +827,14 @@ impl TeamRuntime {
             self.inner.host.warn("Warning:  NULL passed to Team_TakeFlagSound\n");
             return;
         };
-        if team_code == team::RED {
+        if team_code == Team::TeamRed as i32 {
             if self.inner.state.borrow().blue_status != flag_status::AT_BASE
                 && self.inner.state.borrow().blue_taken_time > self.inner.host.time().wrapping_sub(10_000)
             {
                 return;
             }
             self.inner.state.borrow_mut().blue_taken_time = self.inner.host.time();
-        } else if team_code == team::BLUE {
+        } else if team_code == Team::TeamBlue as i32 {
             if self.inner.state.borrow().red_status != flag_status::AT_BASE
                 && self.inner.state.borrow().red_taken_time > self.inner.host.time().wrapping_sub(10_000)
             {
@@ -834,7 +844,7 @@ impl TeamRuntime {
         }
         self.flag_sound(
             entity,
-            if team_code == team::BLUE {
+            if team_code == Team::TeamBlue as i32 {
                 global_team_sound::RED_TAKEN
             } else {
                 global_team_sound::BLUE_TAKEN
@@ -847,7 +857,7 @@ impl TeamRuntime {
         match entity {
             Some(entity) => self.flag_sound(
                 entity,
-                if team_code == team::BLUE {
+                if team_code == Team::TeamBlue as i32 {
                     global_team_sound::BLUE_CAPTURE
                 } else {
                     global_team_sound::RED_CAPTURE
@@ -861,7 +871,7 @@ impl TeamRuntime {
     pub fn return_flag(&self, team_code: i32) {
         let base = self.reset_flag(team_code);
         self.return_flag_sound(base.as_ref(), team_code);
-        if team_code == team::FREE {
+        if team_code == Team::TeamFree as i32 {
             self.print_message(None, "The flag has returned!\n");
         } else {
             self.print_message(None, &format!("The {} flag has returned!\n", team_name(team_code)));
@@ -877,7 +887,7 @@ impl TeamRuntime {
 
     /// Return a timed-out dropped flag (`droppedFlagThink`).
     pub fn dropped_flag_think(&self, entity: &EntityRef) {
-        let team_code = flag_team(entity).unwrap_or(team::FREE);
+        let team_code = flag_team(entity).unwrap_or(Team::TeamFree as i32);
         let base = self.reset_flag(team_code);
         self.return_flag_sound(base.as_ref(), team_code);
     }
@@ -885,17 +895,17 @@ impl TeamRuntime {
     /// Touch our own flag (`touchOurFlag`).
     pub fn touch_our_flag(&self, entity: &EntityRef, other: &EntityRef, team_code: i32) -> i32 {
         let client = team_client_of(other);
-        let mission = self.inner.host.product() == Product::MissionPack;
-        let one_flag = mission && self.inner.host.game_type() == game_type::ONE_FLAG_CTF;
+        let mission = self.inner.host.product() == Product::Missionpack;
+        let one_flag = mission && self.inner.host.game_type() == GameType::Gt1fctf as i32;
         let session_team = client.borrow().sess.session_team;
         let enemy_flag = if one_flag {
-            powerup::NEUTRALFLAG
-        } else if session_team == team::RED {
-            powerup::BLUEFLAG
+            Powerup::PwNeutralflag as i32
+        } else if session_team == Team::TeamRed as i32 {
+            Powerup::PwBlueflag as i32
         } else {
-            powerup::REDFLAG
+            Powerup::PwRedflag as i32
         };
-        if !one_flag && entity.borrow().flags & game_flags::DROPPED_ITEM != 0 {
+        if !one_flag && entity.borrow().flags & GameFlags::DROPPED_ITEM != 0 {
             let netname = client.borrow().pers.netname.clone();
             self.print_message(
                 None,
@@ -934,11 +944,11 @@ impl TeamRuntime {
         self.award(other, 0x800);
         {
             let record = client.borrow_mut();
-            let captures = record.ps.persistant.get(persistent_index::CAPTURES as usize);
+            let captures = record.ps.persistant.get(PersistentIndex::PersCaptures as usize);
             record
                 .ps
                 .persistant
-                .set(persistent_index::CAPTURES as usize, captures + 1);
+                .set(PersistentIndex::PersCaptures as usize, captures + 1);
         }
         let origin = entity.borrow().r.current_origin();
         self.inner.host.add_score(other, origin, if mission { 100 } else { 5 });
@@ -970,11 +980,11 @@ impl TeamRuntime {
                     let assists = client.borrow().pers.team_state.assists;
                     client.borrow_mut().pers.team_state.assists = assists.wrapping_add(1);
                     let record = teammate.borrow_mut();
-                    let assists = record.ps.persistant.get(persistent_index::ASSIST_COUNT as usize);
+                    let assists = record.ps.persistant.get(PersistentIndex::PersAssistCount as usize);
                     record
                         .ps
                         .persistant
-                        .set(persistent_index::ASSIST_COUNT as usize, assists + 1);
+                        .set(PersistentIndex::PersAssistCount as usize, assists + 1);
                     drop(record);
                     self.award(&player, 0x20000);
                 }
@@ -988,18 +998,18 @@ impl TeamRuntime {
     /// Touch the enemy flag (`touchEnemyFlag`).
     pub fn touch_enemy_flag(&self, entity: &EntityRef, other: &EntityRef, team_code: i32) -> i32 {
         let client = team_client_of(other);
-        let mission = self.inner.host.product() == Product::MissionPack;
+        let mission = self.inner.host.product() == Product::Missionpack;
         let netname = client.borrow().pers.netname.clone();
-        if mission && self.inner.host.game_type() == game_type::ONE_FLAG_CTF {
+        if mission && self.inner.host.game_type() == GameType::Gt1fctf as i32 {
             self.print_message(None, &format!("{netname}^7 got the flag!\n"));
             client
                 .borrow_mut()
                 .ps
                 .powerups
-                .set(powerup::NEUTRALFLAG as usize, 2_147_483_647);
+                .set(Powerup::PwNeutralflag as usize, 2_147_483_647);
             self.set_flag_status(
-                team::FREE,
-                if team_code == team::RED {
+                Team::TeamFree as i32,
+                if team_code == Team::TeamRed as i32 {
                     flag_status::TAKEN_RED
                 } else {
                     flag_status::TAKEN_BLUE
@@ -1007,10 +1017,10 @@ impl TeamRuntime {
             );
         } else {
             self.print_message(None, &format!("{netname}^7 got the {} flag!\n", team_name(team_code)));
-            let flag = if team_code == team::RED {
-                powerup::REDFLAG
+            let flag = if team_code == Team::TeamRed as i32 {
+                Powerup::PwRedflag as i32
             } else {
-                powerup::BLUEFLAG
+                Powerup::PwBlueflag as i32
             };
             client.borrow_mut().ps.powerups.set(flag as usize, 2_147_483_647);
             self.inner
@@ -1030,12 +1040,12 @@ impl TeamRuntime {
     /// Flag pickup dispatch (`pickupTeam`).
     pub fn pickup_team(&self, entity: &EntityRef, other: &EntityRef) -> i32 {
         let client = team_client_of(other);
-        if self.inner.host.product() == Product::MissionPack {
-            if self.inner.host.game_type() == game_type::OBELISK {
+        if self.inner.host.product() == Product::Missionpack {
+            if self.inner.host.game_type() == GameType::GtObelisk as i32 {
                 self.inner.host.pool().free(entity);
                 return 0;
             }
-            if self.inner.host.game_type() == game_type::HARVESTER {
+            if self.inner.host.game_type() == GameType::GtHarvester as i32 {
                 if entity.borrow().spawnflags != client.borrow().sess.session_team {
                     let generic = client.borrow().ps.generic1;
                     client.borrow_mut().ps.generic1 = generic.wrapping_add(1);
@@ -1046,13 +1056,13 @@ impl TeamRuntime {
         }
         let classname = entity.borrow().classname();
         let team_code = if classname.as_deref() == Some("team_CTF_redflag") {
-            Some(team::RED)
+            Some(Team::TeamRed as i32)
         } else if classname.as_deref() == Some("team_CTF_blueflag") {
-            Some(team::BLUE)
-        } else if self.inner.host.product() == Product::MissionPack
+            Some(Team::TeamBlue as i32)
+        } else if self.inner.host.product() == Product::Missionpack
             && classname.as_deref() == Some("team_CTF_neutralflag")
         {
-            Some(team::FREE)
+            Some(Team::TeamFree as i32)
         } else {
             None
         };
@@ -1060,8 +1070,9 @@ impl TeamRuntime {
             self.print_message(Some(other), "Don't know what team the flag is on.\n");
             return 0;
         };
-        if self.inner.host.product() == Product::MissionPack && self.inner.host.game_type() == game_type::ONE_FLAG_CTF {
-            if team_code == team::FREE {
+        if self.inner.host.product() == Product::Missionpack && self.inner.host.game_type() == GameType::Gt1fctf as i32
+        {
+            if team_code == Team::TeamFree as i32 {
                 return self.touch_enemy_flag(entity, other, client.borrow().sess.session_team);
             }
             return if team_code != client.borrow().sess.session_team {
@@ -1105,18 +1116,26 @@ impl TeamRuntime {
             let clamped = location.borrow().count.clamp(0, 7);
             location.borrow_mut().count = clamped;
             let message = location.borrow().message.clone();
-            Some(game_format(
+            let message_arg = match message {
+                Some(text) => GameFormatArgument::Text(text),
+                None => GameFormatArgument::Null,
+            };
+            Some(game_format_bounded(
                 "%c%c%s^7",
                 &[
-                    FormatArg::Int(94),
-                    FormatArg::Int(clamped + 48),
-                    FormatArg::from(message),
+                    GameFormatArgument::Int(94),
+                    GameFormatArgument::Int(clamped + 48),
+                    message_arg,
                 ],
                 capacity,
             ))
         } else {
             let message = location.borrow().message.clone();
-            Some(game_format("%s", &[FormatArg::from(message)], capacity))
+            let message_arg = match message {
+                Some(text) => GameFormatArgument::Text(text),
+                None => GameFormatArgument::Null,
+            };
+            Some(game_format_bounded("%s", &[message_arg], capacity))
         }
     }
 
@@ -1151,16 +1170,19 @@ impl TeamRuntime {
             }
             let client = team_client_of(&player);
             let info = client.borrow();
-            let schema = stat_schema(info.ps.product);
-            let entry = game_format(
+            let armor_slot = match stat_schema(info.ps.product) {
+                StatSchema::Base(layout) => layout.armor,
+                StatSchema::Missionpack(layout) => layout.armor,
+            };
+            let entry = game_format_bounded(
                 " %i %i %i %i %i %i",
                 &[
-                    FormatArg::Int(index as i32),
-                    FormatArg::Int(info.pers.team_state.location),
-                    FormatArg::Int(0.max(info.ps.health())),
-                    FormatArg::Int(0.max(info.ps.stats.get(schema.armor))),
-                    FormatArg::Int(info.ps.weapon),
-                    FormatArg::Int(player.borrow().s.powerups),
+                    GameFormatArgument::Int(index as i32),
+                    GameFormatArgument::Int(info.pers.team_state.location),
+                    GameFormatArgument::Int(0.max(info.ps.health())),
+                    GameFormatArgument::Int(0.max(info.ps.stats.get(armor_slot as usize))),
+                    GameFormatArgument::Int(info.ps.weapon),
+                    GameFormatArgument::Int(player.borrow().s.powerups),
                 ],
                 1024,
             );
@@ -1174,7 +1196,10 @@ impl TeamRuntime {
         let slot = entity.borrow().slot as i32;
         self.inner.host.send_server_command(
             slot,
-            &game_format_default("tinfo %i %s", &[FormatArg::Int(count), FormatArg::Text(message)]),
+            &game_format(
+                "tinfo %i %s",
+                &[GameFormatArgument::Int(count), GameFormatArgument::Text(message)],
+            ),
         );
     }
 
@@ -1194,13 +1219,13 @@ impl TeamRuntime {
             let entity = self.inner.host.pool().at(index);
             let client = team_client_of(&entity);
             let record = client.borrow();
-            if record.pers.connected != connection_state::CONNECTED {
+            if record.pers.connected != ConnectionState::Connected as i32 {
                 continue;
             }
             let inuse = entity.borrow().inuse;
             let team_code = record.sess.session_team;
             drop(record);
-            if inuse && (team_code == team::RED || team_code == team::BLUE) {
+            if inuse && (team_code == Team::TeamRed as i32 || team_code == Team::TeamBlue as i32) {
                 let location = self
                     .get_location(&entity)
                     .map(|marker| marker.borrow().health)
@@ -1212,13 +1237,13 @@ impl TeamRuntime {
             let entity = self.inner.host.pool().at(index);
             let client = team_client_of(&entity);
             let record = client.borrow();
-            if record.pers.connected != connection_state::CONNECTED {
+            if record.pers.connected != ConnectionState::Connected as i32 {
                 continue;
             }
             let inuse = entity.borrow().inuse;
             let team_code = record.sess.session_team;
             drop(record);
-            if inuse && (team_code == team::RED || team_code == team::BLUE) {
+            if inuse && (team_code == Team::TeamRed as i32 || team_code == Team::TeamBlue as i32) {
                 self.teamplay_info_message(&entity);
             }
         }
@@ -1248,7 +1273,10 @@ impl TeamRuntime {
         if entity.borrow().health >= settings.health {
             return;
         }
-        self.inner.host.pool().add_event(entity, entity_event::POWERUP_REGEN, 0);
+        self.inner
+            .host
+            .pool()
+            .add_event(entity, EntityEvent::EvPowerupRegen as i32, 0);
         let healed = (entity.borrow().health.wrapping_add(settings.regen_amount)).min(settings.health);
         entity.borrow_mut().health = healed;
         let model = self.obelisk_model(entity);
@@ -1307,7 +1335,7 @@ impl TeamRuntime {
         self.inner
             .host
             .pool()
-            .add_event(&model, entity_event::OBELISKEXPLODE, 0);
+            .add_event(&model, EntityEvent::EvObeliskexplode as i32, 0);
         if let DamageParticipant::Entity(attacker) = attacker {
             if attacker.borrow().client.is_some() {
                 let origin = entity.borrow().r.current_origin();
@@ -1315,11 +1343,11 @@ impl TeamRuntime {
                 self.award(attacker, 0x800);
                 let client = team_client_of(attacker);
                 let record = client.borrow_mut();
-                let captures = record.ps.persistant.get(persistent_index::CAPTURES as usize);
+                let captures = record.ps.persistant.get(PersistentIndex::PersCaptures as usize);
                 record
                     .ps
                     .persistant
-                    .set(persistent_index::CAPTURES as usize, captures + 1);
+                    .set(PersistentIndex::PersCaptures as usize, captures + 1);
             }
         }
         self.inner.state.borrow_mut().red_obelisk_attacked_time = 0;
@@ -1343,12 +1371,12 @@ impl TeamRuntime {
         let netname = other_client.borrow().pers.netname.clone();
         self.print_message(
             None,
-            &game_format_default(
+            &game_format(
                 "%s^7 brought in %i skull%s.\n",
                 &[
-                    FormatArg::Text(netname),
-                    FormatArg::Int(tokens),
-                    FormatArg::Text(if tokens != 0 { "s".to_string() } else { String::new() }),
+                    GameFormatArgument::Text(netname),
+                    GameFormatArgument::Int(tokens),
+                    GameFormatArgument::Text(if tokens != 0 { "s".to_string() } else { String::new() }),
                 ],
             ),
         );
@@ -1361,11 +1389,11 @@ impl TeamRuntime {
         self.award(other, 0x800);
         {
             let mut record = other_client.borrow_mut();
-            let captures = record.ps.persistant.get(persistent_index::CAPTURES as usize);
+            let captures = record.ps.persistant.get(PersistentIndex::PersCaptures as usize);
             record
                 .ps
                 .persistant
-                .set(persistent_index::CAPTURES as usize, captures + tokens);
+                .set(PersistentIndex::PersCaptures as usize, captures + tokens);
             record.ps.generic1 = 0;
         }
         self.inner.host.calculate_ranks();
@@ -1379,7 +1407,10 @@ impl TeamRuntime {
         model.borrow_mut().s.modelindex2 =
             obelisk_health_fraction(entity.borrow().health, self.obelisk_settings().health);
         if model.borrow().s.frame == 0 {
-            self.inner.host.pool().add_event(entity, entity_event::OBELISKPAIN, 0);
+            self.inner
+                .host
+                .pool()
+                .add_event(entity, EntityEvent::EvObeliskpain as i32, 0);
         }
         model.borrow_mut().s.frame = 1;
         if let DamageParticipant::Entity(attacker) = attacker {
@@ -1390,7 +1421,7 @@ impl TeamRuntime {
 
     fn obelisk_team(&self, entity: &EntityRef) -> i32 {
         match entity.borrow().spawnflags {
-            team::FREE | team::RED | team::BLUE | team::SPECTATOR => entity.borrow().spawnflags,
+            TEAM_FREE | TEAM_RED | TEAM_BLUE | TEAM_SPECTATOR => entity.borrow().spawnflags,
             _ => panic!("Spawned obelisk has no source team"),
         }
     }
@@ -1404,9 +1435,9 @@ impl TeamRuntime {
         entity.borrow_mut().r.set_current_origin(origin);
         entity.borrow_mut().r.mins = vec3(-15.0, -15.0, 0.0);
         entity.borrow_mut().r.maxs = vec3(15.0, 15.0, 87.0);
-        entity.borrow_mut().s.e_type = entity_type::GENERAL;
-        entity.borrow_mut().flags = game_flags::NO_KNOCKBACK;
-        if self.inner.host.game_type() == game_type::OBELISK {
+        entity.borrow_mut().s.e_type = EntityType::EtGeneral as i32;
+        entity.borrow_mut().flags = GameFlags::NO_KNOCKBACK;
+        if self.inner.host.game_type() == GameType::GtObelisk as i32 {
             entity.borrow_mut().r.contents = 1;
             entity.borrow_mut().takedamage = true;
             entity.borrow_mut().health = settings.health;
@@ -1437,7 +1468,7 @@ impl TeamRuntime {
                 .time()
                 .wrapping_add(settings.regen_period_seconds.wrapping_mul(1000));
         }
-        if self.inner.host.game_type() == game_type::HARVESTER {
+        if self.inner.host.game_type() == GameType::GtHarvester as i32 {
             entity.borrow_mut().r.contents = 0x40000000;
             let touch = self
                 .inner
@@ -1468,9 +1499,13 @@ impl TeamRuntime {
                 entity.borrow_mut().s.origin = vec3(start.x, start.y, start.z - 1.0);
                 let classname = entity.borrow().classname();
                 let origin_text = self.inner.host.pool().vtos(entity.borrow().s.origin);
-                self.inner.host.warn(&game_format_default(
+                let classname_arg = match classname {
+                    Some(text) => GameFormatArgument::Text(text),
+                    None => GameFormatArgument::Null,
+                };
+                self.inner.host.warn(&game_format(
                     "SpawnObelisk: %s startsolid at %s\n",
-                    &[FormatArg::from(classname), FormatArg::Text(origin_text)],
+                    &[classname_arg, GameFormatArgument::Text(origin_text)],
                 ));
                 let pool = self.inner.host.pool();
                 write_ground(&entity, None, &pool);
@@ -1490,17 +1525,19 @@ impl TeamRuntime {
     /// Spawn a team obelisk marker (`spawnTeamObelisk`).
     pub fn spawn_team_obelisk(&self, entity: &EntityRef, team_code: i32) {
         self.obelisk_settings();
-        if self.inner.host.game_type() <= game_type::TEAM {
+        if self.inner.host.game_type() <= GameType::GtTeam as i32 {
             self.inner.host.pool().free(entity);
             return;
         }
-        entity.borrow_mut().s.e_type = entity_type::TEAM;
-        if self.inner.host.game_type() == game_type::OBELISK || self.inner.host.game_type() == game_type::HARVESTER {
+        entity.borrow_mut().s.e_type = EntityType::EtTeam as i32;
+        if self.inner.host.game_type() == GameType::GtObelisk as i32
+            || self.inner.host.game_type() == GameType::GtHarvester as i32
+        {
             let origin = entity.borrow().s.origin;
             let spawnflags = entity.borrow().spawnflags;
             let obelisk = self.spawn_obelisk(origin, team_code, spawnflags);
             obelisk.borrow_mut().activator = Some(entity.clone());
-            if self.inner.host.game_type() == game_type::OBELISK {
+            if self.inner.host.game_type() == GameType::GtObelisk as i32 {
                 entity.borrow_mut().s.modelindex2 = 255;
                 entity.borrow_mut().s.frame = 0;
             }
@@ -1512,19 +1549,20 @@ impl TeamRuntime {
     /// Spawn a neutral obelisk marker (`spawnNeutralObelisk`).
     pub fn spawn_neutral_obelisk(&self, entity: &EntityRef) {
         self.obelisk_settings();
-        if self.inner.host.game_type() != game_type::ONE_FLAG_CTF && self.inner.host.game_type() != game_type::HARVESTER
+        if self.inner.host.game_type() != GameType::Gt1fctf as i32
+            && self.inner.host.game_type() != GameType::GtHarvester as i32
         {
             self.inner.host.pool().free(entity);
             return;
         }
-        entity.borrow_mut().s.e_type = entity_type::TEAM;
-        if self.inner.host.game_type() == game_type::HARVESTER {
+        entity.borrow_mut().s.e_type = EntityType::EtTeam as i32;
+        if self.inner.host.game_type() == GameType::GtHarvester as i32 {
             let origin = entity.borrow().s.origin;
             let spawnflags = entity.borrow().spawnflags;
-            let obelisk = self.spawn_obelisk(origin, team::FREE, spawnflags);
+            let obelisk = self.spawn_obelisk(origin, Team::TeamFree as i32, spawnflags);
             *self.inner.neutral_obelisk.borrow_mut() = Some(obelisk);
         }
-        entity.borrow_mut().s.modelindex = team::FREE;
+        entity.borrow_mut().s.modelindex = Team::TeamFree as i32;
         self.inner.host.world().link(entity);
     }
 
@@ -1541,8 +1579,8 @@ impl TeamRuntime {
         if obelisk.borrow().spawnflags == attacker_team {
             return true;
         }
-        let red = obelisk.borrow().spawnflags == team::RED;
-        let blue = obelisk.borrow().spawnflags == team::BLUE;
+        let red = obelisk.borrow().spawnflags == Team::TeamRed as i32;
+        let blue = obelisk.borrow().spawnflags == Team::TeamBlue as i32;
         let state = self.inner.state.borrow();
         if (red && state.red_obelisk_attacked_time < self.inner.host.time().wrapping_sub(20_000))
             || (blue && state.blue_obelisk_attacked_time < self.inner.host.time().wrapping_sub(20_000))

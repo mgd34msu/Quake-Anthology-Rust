@@ -7,7 +7,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::game::state::GameFlags;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // client-effects.ts
@@ -67,7 +70,7 @@ pub(crate) fn effects_client_of(entity: &EntityRef) -> ClientRef {
 /// Publish damage feedback (`damageFeedback`).
 pub fn damage_feedback<C: EffectsCore + ?Sized>(context: &C, player: &EntityRef) {
     let client = effects_client_of(player);
-    if client.borrow().ps.pm_type == move_type::DEAD {
+    if client.borrow().ps.pm_type == MoveType::PmDead as i32 {
         return;
     }
     let (blood, armor) = {
@@ -93,10 +96,13 @@ pub fn damage_feedback<C: EffectsCore + ?Sized>(context: &C, player: &EntityRef)
     let time = context.combat().time();
     let pain_at = player.borrow().pain_debounce_time;
     let flags = player.borrow().flags;
-    if time > pain_at && flags & game_flags::GODMODE == 0 {
+    if time > pain_at && flags & GameFlags::GODMODE == 0 {
         player.borrow_mut().pain_debounce_time = time.wrapping_add(700);
         let health = player.borrow().health;
-        context.combat().pool().add_event(player, entity_event::PAIN, health);
+        context
+            .combat()
+            .pool()
+            .add_event(player, EntityEvent::EvPain as i32, health);
         let mut record = client.borrow_mut();
         record.ps.damage_event = record.ps.damage_event.wrapping_add(1);
     }
@@ -118,7 +124,7 @@ pub fn world_effects(context: &dyn EffectsHost, entity: &EntityRef) {
     let waterlevel = entity.borrow().waterlevel;
     let suit = {
         let record = client.borrow();
-        record.ps.powerups.get(powerup::BATTLESUIT as usize) > time
+        record.ps.powerups.get(Powerup::PwBattlesuit as usize) > time
     };
     if waterlevel == 3 {
         if suit {
@@ -166,7 +172,7 @@ pub fn world_effects(context: &dyn EffectsHost, entity: &EntityRef) {
             context
                 .combat()
                 .pool()
-                .add_event(entity, entity_event::POWERUP_BATTLESUIT, 0);
+                .add_event(entity, EntityEvent::EvPowerupBattlesuit as i32, 0);
         } else {
             if watertype & CONTENTS_LAVA != 0 {
                 context
@@ -186,7 +192,7 @@ pub fn world_effects(context: &dyn EffectsHost, entity: &EntityRef) {
 pub fn set_client_sound(context: &dyn EffectsHost, entity: &EntityRef) {
     let client = effects_client_of(entity);
     let ticking =
-        context.combat().product() == Product::MissionPack && entity.borrow().s.e_flags & EFFECTS_EF_TICKING != 0;
+        context.combat().product() == Product::Missionpack && entity.borrow().s.e_flags & EFFECTS_EF_TICKING != 0;
     let (waterlevel, watertype) = {
         let body = entity.borrow();
         (body.waterlevel, body.watertype)
@@ -216,67 +222,67 @@ pub struct Q3AmmoRegenerationRule {
 
 pub(crate) const AMMO_REGENERATION: &[Q3AmmoRegenerationRule] = &[
     Q3AmmoRegenerationRule {
-        weapon: weapon::MACHINEGUN,
+        weapon: Weapon::WpMachinegun as i32,
         max: 50,
         increment: 4,
         time: 1000,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::SHOTGUN,
+        weapon: Weapon::WpShotgun as i32,
         max: 10,
         increment: 1,
         time: 1500,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::GRENADE_LAUNCHER,
+        weapon: Weapon::WpGrenadeLauncher as i32,
         max: 10,
         increment: 1,
         time: 2000,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::ROCKET_LAUNCHER,
+        weapon: Weapon::WpRocketLauncher as i32,
         max: 10,
         increment: 1,
         time: 1750,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::LIGHTNING,
+        weapon: Weapon::WpLightning as i32,
         max: 50,
         increment: 5,
         time: 1500,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::RAILGUN,
+        weapon: Weapon::WpRailgun as i32,
         max: 10,
         increment: 1,
         time: 1750,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::PLASMAGUN,
+        weapon: Weapon::WpPlasmagun as i32,
         max: 50,
         increment: 5,
         time: 1500,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::BFG,
+        weapon: Weapon::WpBfg as i32,
         max: 10,
         increment: 1,
         time: 4000,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::NAILGUN,
+        weapon: Weapon::WpNailgun as i32,
         max: 10,
         increment: 1,
         time: 1250,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::PROX_LAUNCHER,
+        weapon: Weapon::WpProxLauncher as i32,
         max: 5,
         increment: 1,
         time: 2000,
     },
     Q3AmmoRegenerationRule {
-        weapon: weapon::CHAINGUN,
+        weapon: Weapon::WpChaingun as i32,
         max: 100,
         increment: 5,
         time: 1000,
@@ -285,11 +291,10 @@ pub(crate) const AMMO_REGENERATION: &[Q3AmmoRegenerationRule] = &[
 
 pub(crate) fn persistent_tag(items: &dyn ItemHost, client: &ClientRef) -> i32 {
     let record = client.borrow();
-    let schema = stat_schema(record.ps.product);
-    match schema.product {
-        Product::BaseQ3 => powerup::NONE,
-        Product::MissionPack => {
-            let slot = schema.persistent_powerup.unwrap_or(0);
+    match stat_schema(record.ps.product) {
+        StatSchema::Base(_) => Powerup::PwNone as i32,
+        StatSchema::Missionpack(layout) => {
+            let slot = layout.persistent_powerup as usize;
             items.item_at(record.ps.product, record.ps.stats.get(slot) as usize).tag
         }
     }
@@ -298,19 +303,15 @@ pub(crate) fn persistent_tag(items: &dyn ItemHost, client: &ClientRef) -> i32 {
 /// Scout/haste speed multiplier (`clientSpeedMultiplier`).
 #[must_use]
 pub fn client_speed_multiplier(items: &dyn ItemHost, ps: &PlayerState) -> f32 {
-    let schema = stat_schema(ps.product);
-    if schema.product == Product::MissionPack
-        && items
-            .item_at(
-                ps.product,
-                ps.stats.get(schema.persistent_powerup.unwrap_or(0)) as usize,
-            )
-            .tag
-            == powerup::SCOUT
-    {
-        return 1.5;
+    if let StatSchema::Missionpack(layout) = stat_schema(ps.product) {
+        let tag = items
+            .item_at(ps.product, ps.stats.get(layout.persistent_powerup as usize) as usize)
+            .tag;
+        if tag == Powerup::PwScout as i32 {
+            return 1.5;
+        }
     }
-    if ps.powerups.get(powerup::HASTE as usize) != 0 {
+    if ps.powerups.get(Powerup::PwHaste as usize) != 0 {
         1.3
     } else {
         1.0
@@ -393,23 +394,26 @@ pub fn client_timer_actions<C: EffectsCore + ?Sized>(
         client.borrow_mut().time_residual -= 1000;
         let (product, maximum, regen, armor) = {
             let record = client.borrow();
-            let schema = stat_schema(record.ps.product);
+            let (max_health_slot, armor_slot) = match stat_schema(record.ps.product) {
+                StatSchema::Base(layout) => (layout.max_health, layout.armor),
+                StatSchema::Missionpack(layout) => (layout.max_health, layout.armor),
+            };
             (
                 record.ps.product,
-                record.ps.stats.get(schema.max_health),
-                record.ps.powerups.get(powerup::REGEN as usize),
-                record.ps.stats.get(schema.armor),
+                record.ps.stats.get(max_health_slot as usize),
+                record.ps.powerups.get(Powerup::PwRegen as usize),
+                record.ps.stats.get(armor_slot as usize),
             )
         };
         let tag = persistent_tag(context.items().as_ref(), &client);
-        let max_health = if product == Product::MissionPack && tag == powerup::GUARD {
+        let max_health = if product == Product::Missionpack && tag == Powerup::PwGuard as i32 {
             maximum / 2
         } else if regen != 0 {
             maximum
         } else {
             0
         };
-        if (product == Product::BaseQ3 && regen != 0) || max_health != 0 {
+        if (product == Product::Baseq3 && regen != 0) || max_health != 0 {
             let health = entity.borrow().health;
             if health < max_health {
                 let grown = health.wrapping_add(15);
@@ -418,7 +422,7 @@ pub fn client_timer_actions<C: EffectsCore + ?Sized>(
                 context
                     .combat()
                     .pool()
-                    .add_event(entity, entity_event::POWERUP_REGEN, 0);
+                    .add_event(entity, EntityEvent::EvPowerupRegen as i32, 0);
             } else if health < max_health.wrapping_mul(2) {
                 let grown = health.wrapping_add(5);
                 let cap = max_health.wrapping_mul(2);
@@ -426,19 +430,24 @@ pub fn client_timer_actions<C: EffectsCore + ?Sized>(
                 context
                     .combat()
                     .pool()
-                    .add_event(entity, entity_event::POWERUP_REGEN, 0);
+                    .add_event(entity, EntityEvent::EvPowerupRegen as i32, 0);
             }
         } else if ownership.ordinary_decay && entity.borrow().health > maximum {
             let health = entity.borrow().health;
             entity.borrow_mut().health = health.wrapping_sub(1);
         }
         if ownership.ordinary_decay && armor > maximum {
-            let schema = stat_schema(product);
-            client.borrow_mut().ps.stats.set(schema.armor, armor - 1);
+            let armor_slot = match stat_schema(product) {
+                StatSchema::Base(layout) => layout.armor,
+                StatSchema::Missionpack(layout) => layout.armor,
+            };
+            client.borrow_mut().ps.stats.set(armor_slot as usize, armor - 1);
         }
     }
     let product = client.borrow().ps.product;
-    if product == Product::MissionPack && persistent_tag(context.items().as_ref(), &client) == powerup::AMMOREGEN {
+    if product == Product::Missionpack
+        && persistent_tag(context.items().as_ref(), &client) == Powerup::PwAmmoregen as i32
+    {
         match &ownership.ammo {
             None => {
                 for rule in AMMO_REGENERATION {
@@ -489,10 +498,10 @@ pub fn send_pending_predictable_events<C: EffectsCore + ?Sized>(context: &C, ps:
         let mut body = temporary.borrow_mut();
         player_state_to_entity_state(ps, &mut body.s, true);
         body.s.number = number;
-        body.s.e_type = entity_type::EVENTS + event;
+        body.s.e_type = EntityType::EtEvents as i32 + event;
         body.s.e_flags |= EFFECTS_EF_PLAYER_EVENT;
         body.s.other_entity_num = ps.client_num;
-        body.r.sv_flags |= server_entity_flags::NOTSINGLECLIENT;
+        body.r.sv_flags |= ServerEntityFlags::Notsingleclient as i32;
         body.r.single_client = ps.client_num;
     }
     ps.external_event = external;
@@ -509,9 +518,14 @@ pub fn update_q3_client_powerups<C: EffectsCore + ?Sized>(context: &C, client: &
             }
         }
     }
-    if context.combat().product() == Product::MissionPack {
+    if context.combat().product() == Product::Missionpack {
         let tag = persistent_tag(context.items().as_ref(), client);
-        for powerup_tag in [powerup::GUARD, powerup::SCOUT, powerup::DOUBLER, powerup::AMMOREGEN] {
+        for powerup_tag in [
+            Powerup::PwGuard as i32,
+            Powerup::PwScout as i32,
+            Powerup::PwDoubler as i32,
+            Powerup::PwAmmoregen as i32,
+        ] {
             if tag == powerup_tag {
                 client.borrow_mut().ps.powerups.set(powerup_tag as usize, time);
             }
@@ -521,7 +535,7 @@ pub fn update_q3_client_powerups<C: EffectsCore + ?Sized>(context: &C, client: &
                 .borrow_mut()
                 .ps
                 .powerups
-                .set(powerup::INVULNERABILITY as usize, time);
+                .set(Powerup::PwInvulnerability as usize, time);
         }
     }
 }
@@ -529,7 +543,7 @@ pub fn update_q3_client_powerups<C: EffectsCore + ?Sized>(context: &C, client: &
 /// Finish a client frame (`clientEndFrame`).
 pub fn client_end_frame(context: &dyn EffectsHost, entity: &EntityRef) {
     let client = effects_client_of(entity);
-    if client.borrow().sess.session_team == team::SPECTATOR {
+    if client.borrow().sess.session_team == Team::TeamSpectator as i32 {
         context.spectator_end_frame(entity);
         return;
     }

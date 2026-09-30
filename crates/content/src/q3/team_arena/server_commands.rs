@@ -6,8 +6,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::format::{game_format, GameFormatArgument};
+use crate::q3::base::game::numeric::game_atoi;
+use crate::q3::base::game::state::ConnectionState;
+use crate::q3::base::shared::definitions::*;
 use crate::q3::team_arena::commands::*;
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // server-commands.ts
@@ -159,7 +163,7 @@ pub(crate) fn string_to_filter(text: &str, print: &dyn Fn(&str)) -> Option<IpFil
             panic!("IP filter component exceeds the source127-digit scratch buffer");
         }
         let digits: String = chars[start..offset].iter().collect();
-        compare |= (game_atoi(&digits) & 255) << (i * 8);
+        compare |= (game_atoi(&digits).unwrap() & 255) << (i * 8);
         mask |= 255 << (i * 8);
         if offset == chars.len() {
             break;
@@ -445,17 +449,17 @@ impl GameServerCommandRuntime {
     pub fn client_for_string(&self, value: &str) -> Option<ClientRef> {
         let text = byte_string(value);
         if is_digit(text.chars().next().unwrap_or('\0')) {
-            let slot = game_atoi(&text);
+            let slot = game_atoi(&text).unwrap();
             if slot < 0 || slot as usize >= self.pool.max_clients() {
                 self.host
-                    .print(&game_format_default("Bad client slot: %i\n", &[FormatArg::Int(slot)]));
+                    .print(&game_format("Bad client slot: %i\n", &[GameFormatArgument::Int(slot)]));
                 return None;
             }
             let client = self.pool.client_at(slot as usize);
-            if client.borrow().pers.connected == connection_state::DISCONNECTED {
-                self.host.print(&game_format_default(
+            if client.borrow().pers.connected == ConnectionState::Disconnected as i32 {
+                self.host.print(&game_format(
                     "Client %i is not connected\n",
-                    &[FormatArg::Int(slot)],
+                    &[GameFormatArgument::Int(slot)],
                 ));
                 return None;
             }
@@ -464,7 +468,7 @@ impl GameServerCommandRuntime {
         for index in 0..self.pool.max_clients() {
             let client = self.pool.client_at(index);
             let record = client.borrow();
-            if record.pers.connected != connection_state::DISCONNECTED
+            if record.pers.connected != ConnectionState::Disconnected as i32
                 && cmd_lower(&record.pers.netname) == cmd_lower(&text)
             {
                 return Some(client.clone());
@@ -476,18 +480,18 @@ impl GameServerCommandRuntime {
 
     fn entity_list(&self) {
         let labels: [(i32, &str); 12] = [
-            (entity_type::GENERAL, "ET_GENERAL"),
-            (entity_type::PLAYER, "ET_PLAYER"),
-            (entity_type::ITEM, "ET_ITEM"),
-            (entity_type::MISSILE, "ET_MISSILE"),
-            (entity_type::MOVER, "ET_MOVER"),
-            (entity_type::BEAM, "ET_BEAM"),
-            (entity_type::PORTAL, "ET_PORTAL"),
-            (entity_type::SPEAKER, "ET_SPEAKER"),
-            (entity_type::PUSH_TRIGGER, "ET_PUSH_TRIGGER"),
-            (entity_type::TELEPORT_TRIGGER, "ET_TELEPORT_TRIGGER"),
-            (entity_type::INVISIBLE, "ET_INVISIBLE"),
-            (entity_type::GRAPPLE, "ET_GRAPPLE"),
+            (EntityType::EtGeneral as i32, "ET_GENERAL"),
+            (EntityType::EtPlayer as i32, "ET_PLAYER"),
+            (EntityType::EtItem as i32, "ET_ITEM"),
+            (EntityType::EtMissile as i32, "ET_MISSILE"),
+            (EntityType::EtMover as i32, "ET_MOVER"),
+            (EntityType::EtBeam as i32, "ET_BEAM"),
+            (EntityType::EtPortal as i32, "ET_PORTAL"),
+            (EntityType::EtSpeaker as i32, "ET_SPEAKER"),
+            (EntityType::EtPushTrigger as i32, "ET_PUSH_TRIGGER"),
+            (EntityType::EtTeleportTrigger as i32, "ET_TELEPORT_TRIGGER"),
+            (EntityType::EtInvisible as i32, "ET_INVISIBLE"),
+            (EntityType::EtGrapple as i32, "ET_GRAPPLE"),
         ];
         for index in 1..self.pool.num_entities() {
             let entity = self.pool.at(index);
@@ -495,13 +499,13 @@ impl GameServerCommandRuntime {
                 continue;
             }
             self.host
-                .print(&game_format_default("%3i:", &[FormatArg::Int(index as i32)]));
+                .print(&game_format("%3i:", &[GameFormatArgument::Int(index as i32)]));
             let e_type = entity.borrow().s.e_type;
             match labels.iter().find(|label| label.0 == e_type) {
                 Some(label) => self.host.print(&format!("{:<20}", label.1)),
                 None => self
                     .host
-                    .print(&game_format_default("%3i                 ", &[FormatArg::Int(e_type)])),
+                    .print(&game_format("%3i                 ", &[GameFormatArgument::Int(e_type)])),
             }
             if let Some(classname) = entity.borrow().classname() {
                 self.host.print(&classname);
@@ -582,9 +586,9 @@ impl GameServerCommandRuntime {
         };
         self.host.send_server_command(
             -1,
-            &game_format_default(
+            &game_format(
                 "print \"server: %s\"",
-                &[FormatArg::Text(concat_command_args(argv, start))],
+                &[GameFormatArgument::Text(concat_command_args(argv, start))],
             ),
         );
         true

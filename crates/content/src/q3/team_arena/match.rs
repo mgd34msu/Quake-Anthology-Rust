@@ -2,14 +2,20 @@
 //!
 //! Donor provenance: `src/content/q3/team-arena/match.ts`.
 
+use qa_core::cmd::ascii_fold;
 use qa_core::math::{sub3, vec3, vector_to_angles, Vec3};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::format::{game_format, game_format_bounded, GameFormatArgument};
+use crate::q3::base::game::numeric::game_atoi;
+use crate::q3::base::game::state::{ConnectionState, SpectatorState, MAX_CLIENTS};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
 use crate::q3::team_arena::client_spawn::*;
-use crate::q3::team_arena::mirrors::*;
 use crate::q3::team_arena::session::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // match.ts
@@ -453,7 +459,7 @@ impl MatchRuntime {
             .borrow()
             .ps
             .persistant
-            .get(persistent_index::SCORE as usize)
+            .get(PersistentIndex::PersScore as usize)
     }
 
     /// Add a tournament player (`addTournamentPlayer`).
@@ -469,9 +475,9 @@ impl MatchRuntime {
         for index in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(index);
             let record = client.borrow();
-            if record.pers.connected != connection_state::CONNECTED
-                || record.sess.session_team != team::SPECTATOR
-                || record.sess.spectator_state == spectator_state::SCOREBOARD
+            if record.pers.connected != ConnectionState::Connected as i32
+                || record.sess.session_team != Team::TeamSpectator as i32
+                || record.sess.spectator_state == SpectatorState::Scoreboard as i32
                 || record.sess.spectator_client < 0
             {
                 continue;
@@ -497,7 +503,7 @@ impl MatchRuntime {
             return;
         }
         let number = self.sorted(rank);
-        if self.host.pool().client_at(number as usize).borrow().pers.connected == connection_state::CONNECTED {
+        if self.host.pool().client_at(number as usize).borrow().pers.connected == ConnectionState::Connected as i32 {
             self.host.set_team(&self.host.pool().at(number as usize), "s");
         }
     }
@@ -516,14 +522,14 @@ impl MatchRuntime {
     pub fn adjust_tournament_scores(&self) {
         let winner = self.sorted(0);
         let first = self.host.pool().client_at(winner as usize);
-        if first.borrow().pers.connected == connection_state::CONNECTED {
+        if first.borrow().pers.connected == ConnectionState::Connected as i32 {
             let wins = first.borrow().sess.wins;
             first.borrow_mut().sess.wins = wins.wrapping_add(1);
             self.host.client_userinfo_changed(winner as usize);
         }
         let loser = self.sorted(1);
         let second = self.host.pool().client_at(loser as usize);
-        if second.borrow().pers.connected == connection_state::CONNECTED {
+        if second.borrow().pers.connected == ConnectionState::Connected as i32 {
             let losses = second.borrow().sess.losses;
             second.borrow_mut().sess.losses = losses.wrapping_add(1);
             self.host.client_userinfo_changed(loser as usize);
@@ -553,19 +559,19 @@ impl MatchRuntime {
                 record.sess.session_team,
             )
         };
-        if a_state == spectator_state::SCOREBOARD || a_client < 0 {
+        if a_state == SpectatorState::Scoreboard as i32 || a_client < 0 {
             return 1;
         }
-        if b_state == spectator_state::SCOREBOARD || b_client < 0 {
+        if b_state == SpectatorState::Scoreboard as i32 || b_client < 0 {
             return -1;
         }
-        if a_connected == connection_state::CONNECTING {
+        if a_connected == ConnectionState::Connecting as i32 {
             return 1;
         }
-        if b_connected == connection_state::CONNECTING {
+        if b_connected == ConnectionState::Connecting as i32 {
             return -1;
         }
-        if a_team == team::SPECTATOR && b_team == team::SPECTATOR {
+        if a_team == Team::TeamSpectator as i32 && b_team == Team::TeamSpectator as i32 {
             let a_time = a.borrow().sess.spectator_time;
             let b_time = b.borrow().sess.spectator_time;
             return if a_time < b_time {
@@ -576,10 +582,10 @@ impl MatchRuntime {
                 0
             };
         }
-        if a_team == team::SPECTATOR {
+        if a_team == Team::TeamSpectator as i32 {
             return 1;
         }
-        if b_team == team::SPECTATOR {
+        if b_team == Team::TeamSpectator as i32 {
             return -1;
         }
         if self.score(first) > self.score(second) {
@@ -611,7 +617,7 @@ impl MatchRuntime {
                 let record = client.borrow();
                 (record.pers.connected, record.sess.session_team)
             };
-            if connected == connection_state::DISCONNECTED {
+            if connected == ConnectionState::Disconnected as i32 {
                 continue;
             }
             {
@@ -621,19 +627,19 @@ impl MatchRuntime {
                 record.sorted_clients[slot] = index as i32;
                 record.num_connected_clients += 1;
             }
-            if team_code == team::SPECTATOR {
+            if team_code == Team::TeamSpectator as i32 {
                 continue;
             }
             self.host.state().borrow_mut().num_non_spectator_clients += 1;
-            if connected != connection_state::CONNECTED {
+            if connected != ConnectionState::Connected as i32 {
                 continue;
             }
             self.host.state().borrow_mut().num_playing_clients += 1;
-            if self.host.pool().at(index).borrow().r.sv_flags & server_entity_flags::BOT == 0 {
+            if self.host.pool().at(index).borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0 {
                 self.host.state().borrow_mut().num_voting_clients += 1;
-                if team_code == team::RED {
+                if team_code == Team::TeamRed as i32 {
                     self.host.state().borrow_mut().num_team_voting_clients[0] += 1;
-                } else if team_code == team::BLUE {
+                } else if team_code == Team::TeamBlue as i32 {
                     self.host.state().borrow_mut().num_team_voting_clients[1] += 1;
                 }
             }
@@ -650,9 +656,9 @@ impl MatchRuntime {
             sort_rank_prefix(&mut sorted, count, &|a, b| self.sort_ranks(a as usize, b as usize));
             self.host.state().borrow_mut().sorted_clients = sorted;
         }
-        if game_type >= game_type::TEAM {
-            let red = self.host.team_scores().get(team::RED as usize);
-            let blue = self.host.team_scores().get(team::BLUE as usize);
+        if game_type >= GameType::GtTeam as i32 {
+            let red = self.host.team_scores().get(Team::TeamRed as usize);
+            let blue = self.host.team_scores().get(Team::TeamBlue as usize);
             let count = self.host.state().borrow().num_connected_clients as usize;
             for index in 0..count {
                 let slot = self.sorted(index);
@@ -663,7 +669,7 @@ impl MatchRuntime {
                     .ps
                     .persistant
                     .set(
-                        persistent_index::RANK as usize,
+                        PersistentIndex::PersRank as usize,
                         if red == blue {
                             2
                         } else if red > blue {
@@ -680,14 +686,14 @@ impl MatchRuntime {
             for index in 0..playing {
                 let slot = self.sorted(index);
                 let client = self.host.pool().client_at(slot as usize);
-                let new_score = client.borrow().ps.persistant.get(persistent_index::SCORE as usize);
+                let new_score = client.borrow().ps.persistant.get(PersistentIndex::PersScore as usize);
                 if index == 0 || new_score != score {
                     rank = index as i32;
                     client
                         .borrow_mut()
                         .ps
                         .persistant
-                        .set(persistent_index::RANK as usize, rank);
+                        .set(PersistentIndex::PersRank as usize, rank);
                 } else {
                     let previous = self.sorted(index - 1);
                     self.host
@@ -696,33 +702,40 @@ impl MatchRuntime {
                         .borrow_mut()
                         .ps
                         .persistant
-                        .set(persistent_index::RANK as usize, rank | 0x4000);
+                        .set(PersistentIndex::PersRank as usize, rank | 0x4000);
                     client
                         .borrow_mut()
                         .ps
                         .persistant
-                        .set(persistent_index::RANK as usize, rank | 0x4000);
+                        .set(PersistentIndex::PersRank as usize, rank | 0x4000);
                 }
                 score = new_score;
-                if game_type == game_type::SINGLE_PLAYER && playing == 1 {
+                if game_type == GameType::GtSinglePlayer as i32 && playing == 1 {
                     client
                         .borrow_mut()
                         .ps
                         .persistant
-                        .set(persistent_index::RANK as usize, rank | 0x4000);
+                        .set(PersistentIndex::PersRank as usize, rank | 0x4000);
                 }
             }
         }
-        if game_type >= game_type::TEAM {
+        if game_type >= GameType::GtTeam as i32 {
             self.host.set_configstring(
                 6,
-                &game_format_default("%i", &[FormatArg::Int(self.host.team_scores().get(team::RED as usize))]),
+                &game_format(
+                    "%i",
+                    &[GameFormatArgument::Int(
+                        self.host.team_scores().get(Team::TeamRed as usize),
+                    )],
+                ),
             );
             self.host.set_configstring(
                 7,
-                &game_format_default(
+                &game_format(
                     "%i",
-                    &[FormatArg::Int(self.host.team_scores().get(team::BLUE as usize))],
+                    &[GameFormatArgument::Int(
+                        self.host.team_scores().get(Team::TeamBlue as usize),
+                    )],
                 ),
             );
         } else {
@@ -738,9 +751,9 @@ impl MatchRuntime {
                 self.score(self.sorted(1) as usize)
             };
             self.host
-                .set_configstring(6, &game_format_default("%i", &[FormatArg::Int(first)]));
+                .set_configstring(6, &game_format("%i", &[GameFormatArgument::Int(first)]));
             self.host
-                .set_configstring(7, &game_format_default("%i", &[FormatArg::Int(second)]));
+                .set_configstring(7, &game_format("%i", &[GameFormatArgument::Int(second)]));
         }
         self.check_exit_rules();
         if self.host.state().borrow().intermission_time != 0 {
@@ -751,7 +764,7 @@ impl MatchRuntime {
     /// Scoreboard refresh for all clients (`sendScoreboardMessageToAllClients`).
     pub fn send_scoreboard_message_to_all_clients(&self) {
         for index in 0..self.host.pool().max_clients() {
-            if self.host.pool().client_at(index).borrow().pers.connected == connection_state::CONNECTED {
+            if self.host.pool().client_at(index).borrow().pers.connected == ConnectionState::Connected as i32 {
                 self.host.send_scoreboard(&self.host.pool().at(index));
             }
         }
@@ -760,7 +773,7 @@ impl MatchRuntime {
     /// Move a client to intermission (`moveClientToIntermission`).
     pub fn move_client_to_intermission(&self, entity: &EntityRef) {
         let client = self.client(entity);
-        if client.borrow().sess.spectator_state == spectator_state::FOLLOW {
+        if client.borrow().sess.spectator_state == SpectatorState::Follow as i32 {
             self.host.stop_following(entity);
         }
         let client = self.client(entity);
@@ -773,7 +786,7 @@ impl MatchRuntime {
             let mut record = client.borrow_mut();
             record.ps.origin = origin;
             record.ps.viewangles = angles;
-            record.ps.pm_type = move_type::INTERMISSION;
+            record.ps.pm_type = MoveType::PmIntermission as i32;
             for index in 0..record.ps.powerups.len() {
                 record.ps.powerups.set(index, 0);
             }
@@ -782,7 +795,7 @@ impl MatchRuntime {
         {
             let mut body = entity.borrow_mut();
             body.s.e_flags = 0;
-            body.s.e_type = entity_type::GENERAL;
+            body.s.e_type = EntityType::EtGeneral as i32;
             body.s.modelindex = 0;
             body.s.loop_sound = 0;
             body.s.event = 0;
@@ -849,18 +862,18 @@ impl MatchRuntime {
         if self.host.state().borrow().intermission_time != 0 {
             return;
         }
-        if self.host.settings().game_type == game_type::TOURNAMENT {
+        if self.host.settings().game_type == GameType::GtTournament as i32 {
             self.adjust_tournament_scores();
         }
         let now = self.host.state().borrow().time;
         self.host.state().borrow_mut().intermission_time = now;
         self.find_intermission_point();
-        if self.host.product() == Product::MissionPack {
+        if self.host.product() == Product::Missionpack {
             if self.host.single_player() {
                 self.host.set_cvar("ui_singlePlayerActive", "0");
                 self.host.update_tournament_info();
             }
-        } else if self.host.settings().game_type == game_type::SINGLE_PLAYER {
+        } else if self.host.settings().game_type == GameType::GtSinglePlayer as i32 {
             self.host.update_tournament_info();
             self.host.spawn_models_on_victory_pads();
         }
@@ -880,7 +893,7 @@ impl MatchRuntime {
     /// Exit the level (`exitLevel`).
     pub fn exit_level(&self) {
         self.host.bot_interbreed_end_match();
-        if self.host.settings().game_type == game_type::TOURNAMENT {
+        if self.host.settings().game_type == GameType::GtTournament as i32 {
             if !self.host.state().borrow().restarted {
                 self.remove_tournament_loser();
                 self.host.append_console_command("map_restart 0\n");
@@ -897,23 +910,23 @@ impl MatchRuntime {
             record.changemap = None;
             record.intermission_time = 0;
         }
-        self.host.team_scores().set(team::RED as usize, 0);
-        self.host.team_scores().set(team::BLUE as usize, 0);
+        self.host.team_scores().set(Team::TeamRed as usize, 0);
+        self.host.team_scores().set(Team::TeamBlue as usize, 0);
         for index in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(index);
-            if client.borrow().pers.connected == connection_state::CONNECTED {
+            if client.borrow().pers.connected == ConnectionState::Connected as i32 {
                 client
                     .borrow_mut()
                     .ps
                     .persistant
-                    .set(persistent_index::SCORE as usize, 0);
+                    .set(PersistentIndex::PersScore as usize, 0);
             }
         }
         self.host.write_session_data();
         for index in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(index);
-            if client.borrow().pers.connected == connection_state::CONNECTED {
-                client.borrow_mut().pers.connected = connection_state::CONNECTING;
+            if client.borrow().pers.connected == ConnectionState::Connected as i32 {
+                client.borrow_mut().pers.connected = ConnectionState::Connecting as i32;
             }
         }
     }
@@ -922,17 +935,20 @@ impl MatchRuntime {
     pub fn log_exit(&self, reason: &str) {
         let settings = self.host.settings();
         let mut won = true;
-        self.host
-            .log(&game_format("Exit: %s\n", &[FormatArg::Text(reason.to_string())], 1024));
+        self.host.log(&game_format_bounded(
+            "Exit: %s\n",
+            &[GameFormatArgument::Text(reason.to_string())],
+            1024,
+        ));
         let now = self.host.state().borrow().time;
         self.host.state().borrow_mut().intermission_queued = now;
         self.host.set_configstring(22, "1");
-        if settings.game_type >= game_type::TEAM {
-            self.host.log(&game_format(
+        if settings.game_type >= GameType::GtTeam as i32 {
+            self.host.log(&game_format_bounded(
                 "red:%i  blue:%i\n",
                 &[
-                    FormatArg::Int(self.host.team_scores().get(team::RED as usize)),
-                    FormatArg::Int(self.host.team_scores().get(team::BLUE as usize)),
+                    GameFormatArgument::Int(self.host.team_scores().get(Team::TeamRed as usize)),
+                    GameFormatArgument::Int(self.host.team_scores().get(Team::TeamBlue as usize)),
                 ],
                 1024,
             ));
@@ -942,37 +958,39 @@ impl MatchRuntime {
             let number = self.sorted(index as usize);
             let client = self.host.pool().client_at(number as usize);
             let record = client.borrow();
-            if record.sess.session_team == team::SPECTATOR || record.pers.connected == connection_state::CONNECTING {
+            if record.sess.session_team == Team::TeamSpectator as i32
+                || record.pers.connected == ConnectionState::Connecting as i32
+            {
                 continue;
             }
             let score = self.score(number as usize);
             let ping = record.ps.ping.min(999);
             let netname = record.pers.netname.clone();
-            let rank = record.ps.persistant.get(persistent_index::RANK as usize);
+            let rank = record.ps.persistant.get(PersistentIndex::PersRank as usize);
             drop(record);
-            self.host.log(&game_format(
+            self.host.log(&game_format_bounded(
                 "score: %i  ping: %i  client: %i %s\n",
                 &[
-                    FormatArg::Int(score),
-                    FormatArg::Int(ping),
-                    FormatArg::Int(number),
-                    FormatArg::Text(netname),
+                    GameFormatArgument::Int(score),
+                    GameFormatArgument::Int(ping),
+                    GameFormatArgument::Int(number),
+                    GameFormatArgument::Text(netname),
                 ],
                 1024,
             ));
-            if self.host.product() == Product::MissionPack
+            if self.host.product() == Product::Missionpack
                 && self.host.single_player()
-                && settings.game_type == game_type::TOURNAMENT
-                && self.host.pool().at(number as usize).borrow().r.sv_flags & server_entity_flags::BOT != 0
+                && settings.game_type == GameType::GtTournament as i32
+                && self.host.pool().at(number as usize).borrow().r.sv_flags & ServerEntityFlags::Bot as i32 != 0
                 && rank == 0
             {
                 won = false;
             }
         }
-        if self.host.product() == Product::MissionPack && self.host.single_player() {
-            if settings.game_type >= game_type::CTF {
-                won =
-                    self.host.team_scores().get(team::RED as usize) > self.host.team_scores().get(team::BLUE as usize);
+        if self.host.product() == Product::Missionpack && self.host.single_player() {
+            if settings.game_type >= GameType::GtCtf as i32 {
+                won = self.host.team_scores().get(Team::TeamRed as usize)
+                    > self.host.team_scores().get(Team::TeamBlue as usize);
             }
             self.host
                 .append_console_command(if won { "spWin\n" } else { "spLose\n" });
@@ -981,7 +999,7 @@ impl MatchRuntime {
 
     /// Intermission exit polling (`checkIntermissionExit`).
     pub fn check_intermission_exit(&self) {
-        if self.host.settings().game_type == game_type::SINGLE_PLAYER {
+        if self.host.settings().game_type == GameType::GtSinglePlayer as i32 {
             return;
         }
         let mut ready = 0;
@@ -990,8 +1008,9 @@ impl MatchRuntime {
         for index in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(index);
             let record = client.borrow();
-            if record.pers.connected != connection_state::CONNECTED
-                || self.host.pool().at(record.ps.client_num as usize).borrow().r.sv_flags & server_entity_flags::BOT
+            if record.pers.connected != ConnectionState::Connected as i32
+                || self.host.pool().at(record.ps.client_num as usize).borrow().r.sv_flags
+                    & ServerEntityFlags::Bot as i32
                     != 0
             {
                 continue;
@@ -1005,11 +1024,14 @@ impl MatchRuntime {
                 not_ready += 1;
             }
         }
-        let schema = stat_schema(self.host.product());
+        let ready_slot = match stat_schema(self.host.product()) {
+            StatSchema::Base(layout) => layout.clients_ready,
+            StatSchema::Missionpack(layout) => layout.clients_ready,
+        };
         for index in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(index);
-            if client.borrow().pers.connected == connection_state::CONNECTED {
-                client.borrow_mut().ps.stats.set(schema.clients_ready, mask);
+            if client.borrow().pers.connected == ConnectionState::Connected as i32 {
+                client.borrow_mut().ps.stats.set(ready_slot as usize, mask);
             }
         }
         let (time, intermission_time) = {
@@ -1047,8 +1069,8 @@ impl MatchRuntime {
         if self.host.state().borrow().num_playing_clients < 2 {
             return false;
         }
-        if self.host.settings().game_type >= game_type::TEAM {
-            self.host.team_scores().get(team::RED as usize) == self.host.team_scores().get(team::BLUE as usize)
+        if self.host.settings().game_type >= GameType::GtTeam as i32 {
+            self.host.team_scores().get(Team::TeamRed as usize) == self.host.team_scores().get(Team::TeamBlue as usize)
         } else {
             self.score(self.sorted(0) as usize) == self.score(self.sorted(1) as usize)
         }
@@ -1061,7 +1083,7 @@ impl MatchRuntime {
             return;
         }
         if self.host.state().borrow().intermission_queued != 0 {
-            let delay = if self.host.product() == Product::MissionPack && self.host.single_player() {
+            let delay = if self.host.product() == Product::Missionpack && self.host.single_player() {
                 5000
             } else {
                 1000
@@ -1097,8 +1119,8 @@ impl MatchRuntime {
                 return;
             }
         }
-        if settings.game_type < game_type::CTF && settings.frag_limit != 0 {
-            for (team_code, name) in [(team::RED, "Red"), (team::BLUE, "Blue")] {
+        if settings.game_type < GameType::GtCtf as i32 && settings.frag_limit != 0 {
+            for (team_code, name) in [(Team::TeamRed as i32, "Red"), (Team::TeamBlue as i32, "Blue")] {
                 if self.host.team_scores().get(team_code as usize) >= settings.frag_limit {
                     self.host
                         .send_server_command(-1, &format!("print \"{name} hit the fraglimit.\n\""));
@@ -1109,7 +1131,9 @@ impl MatchRuntime {
             for index in 0..self.host.pool().max_clients() {
                 let client = self.host.pool().client_at(index);
                 let record = client.borrow();
-                if record.pers.connected != connection_state::CONNECTED || record.sess.session_team != team::FREE {
+                if record.pers.connected != ConnectionState::Connected as i32
+                    || record.sess.session_team != Team::TeamFree as i32
+                {
                     continue;
                 }
                 let netname = record.pers.netname.clone();
@@ -1118,14 +1142,18 @@ impl MatchRuntime {
                     self.log_exit("Fraglimit hit.");
                     self.host.send_server_command(
                         -1,
-                        &game_format("print \"%s^7 hit the fraglimit.\n\"", &[FormatArg::Text(netname)], 1024),
+                        &game_format_bounded(
+                            "print \"%s^7 hit the fraglimit.\n\"",
+                            &[GameFormatArgument::Text(netname)],
+                            1024,
+                        ),
                     );
                     return;
                 }
             }
         }
-        if settings.game_type >= game_type::CTF && settings.capture_limit != 0 {
-            for (team_code, name) in [(team::RED, "Red"), (team::BLUE, "Blue")] {
+        if settings.game_type >= GameType::GtCtf as i32 && settings.capture_limit != 0 {
+            for (team_code, name) in [(Team::TeamRed as i32, "Red"), (Team::TeamBlue as i32, "Blue")] {
                 if self.host.team_scores().get(team_code as usize) >= settings.capture_limit {
                     self.host
                         .send_server_command(-1, &format!("print \"{name} hit the capturelimit.\n\""));
@@ -1142,7 +1170,7 @@ impl MatchRuntime {
             return;
         }
         let settings = self.host.settings();
-        if settings.game_type == game_type::TOURNAMENT {
+        if settings.game_type == GameType::GtTournament as i32 {
             if self.host.state().borrow().num_playing_clients < 2 {
                 self.add_tournament_player();
             }
@@ -1154,21 +1182,21 @@ impl MatchRuntime {
                 return;
             }
         } else {
-            if settings.game_type == game_type::SINGLE_PLAYER || self.host.state().borrow().warmup_time == 0 {
+            if settings.game_type == GameType::GtSinglePlayer as i32 || self.host.state().borrow().warmup_time == 0 {
                 return;
             }
-            let not_enough = if settings.game_type > game_type::TEAM {
+            let not_enough = if settings.game_type > GameType::GtTeam as i32 {
                 team_count(
                     self.host.pool().clients(),
                     self.host.pool().max_clients(),
                     -1,
-                    team::RED,
+                    Team::TeamRed as i32,
                 ) < 1
                     || team_count(
                         self.host.pool().clients(),
                         self.host.pool().max_clients(),
                         -1,
-                        team::BLUE,
+                        Team::TeamBlue as i32,
                     ) < 1
             } else {
                 self.host.state().borrow().num_playing_clients < 2
@@ -1189,7 +1217,7 @@ impl MatchRuntime {
             let warmup = time.wrapping_add(settings.warmup_seconds.wrapping_sub(1).wrapping_mul(1000));
             self.host.state().borrow_mut().warmup_time = warmup;
             self.host
-                .set_configstring(5, &game_format_default("%i", &[FormatArg::Int(warmup)]));
+                .set_configstring(5, &game_format("%i", &[GameFormatArgument::Int(warmup)]));
             return;
         }
         let (time, warmup_time) = {
@@ -1272,19 +1300,23 @@ impl MatchRuntime {
                 record.pers.netname.clone(),
             )
         };
-        if connected == connection_state::DISCONNECTED {
+        if connected == ConnectionState::Disconnected as i32 {
             self.print_team(
                 team_code,
-                &game_format("print \"%s is not connected\n\"", &[FormatArg::Text(netname)], 1024),
+                &game_format_bounded(
+                    "print \"%s is not connected\n\"",
+                    &[GameFormatArgument::Text(netname)],
+                    1024,
+                ),
             );
             return;
         }
         if team_now != team_code {
             self.print_team(
                 team_code,
-                &game_format(
+                &game_format_bounded(
                     "print \"%s is not on the team anymore\n\"",
-                    &[FormatArg::Text(netname)],
+                    &[GameFormatArgument::Text(netname)],
                     1024,
                 ),
             );
@@ -1303,9 +1335,9 @@ impl MatchRuntime {
         self.host.client_userinfo_changed(client_num);
         self.print_team(
             team_code,
-            &game_format(
+            &game_format_bounded(
                 "print \"%s is the new team leader\n\"",
-                &[FormatArg::Text(netname)],
+                &[GameFormatArgument::Text(netname)],
                 1024,
             ),
         );
@@ -1323,7 +1355,7 @@ impl MatchRuntime {
         for index in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(index);
             if client.borrow().sess.session_team == team_code
-                && self.host.pool().at(index).borrow().r.sv_flags & server_entity_flags::BOT == 0
+                && self.host.pool().at(index).borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0
             {
                 client.borrow_mut().sess.team_leader = 1;
                 break;
@@ -1342,10 +1374,10 @@ impl MatchRuntime {
 
     /// Team-vote polling (`checkTeamVote`).
     pub fn check_team_vote(&self, team_code: i32) {
-        if team_code != team::RED && team_code != team::BLUE {
+        if team_code != Team::TeamRed as i32 && team_code != Team::TeamBlue as i32 {
             return;
         }
-        let offset = if team_code == team::RED { 0 } else { 1 };
+        let offset = if team_code == Team::TeamRed as i32 { 0 } else { 1 };
         let (vote_time, yes, no, string, voters) = {
             let record = self.host.state().borrow();
             let vote = &record.team_votes[offset];
@@ -1367,7 +1399,7 @@ impl MatchRuntime {
         } else if yes > majority {
             self.host.send_server_command(-1, "print \"Team vote passed.\n\"");
             if let Some(target) = string.strip_prefix("leader") {
-                self.set_leader(team_code, game_atoi(target) as usize);
+                self.set_leader(team_code, game_atoi(target).unwrap() as usize);
             } else {
                 self.host.append_console_command(&format!("{string}\n"));
             }

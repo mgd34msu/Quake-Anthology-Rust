@@ -6,7 +6,8 @@ use qa_core::identity::ActorId;
 use qa_core::math::Bounds;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::shared::player_state::UserCommand;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // movement-host.ts

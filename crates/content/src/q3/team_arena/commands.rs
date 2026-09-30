@@ -7,9 +7,16 @@ use qa_core::math::vec3;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::game::format::{game_format, game_format_bounded, GameFormatArgument};
+use crate::q3::base::game::numeric::{game_atof, game_atoi};
+use crate::q3::base::game::spawn::SpawnVariables;
+use crate::q3::base::game::state::{ConnectionState, GameFlags, SpectatorState, TeamState, MAX_CLIENTS};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::MoveFlags;
 use crate::q3::team_arena::r#match::*;
 use crate::q3::team_arena::session::*;
+use crate::q3::team_arena::support::*;
 use crate::q3::team_arena::team::*;
 
 // ---------------------------------------------------------------------------
@@ -323,7 +330,7 @@ impl GameCommandRuntime {
     fn print(&self, entity: &EntityRef, text: &str) {
         self.host.imports().send_server_command(
             entity.borrow().slot as i32,
-            &game_format_default("print \"%s\"", &[FormatArg::Text(text.to_string())]),
+            &game_format("print \"%s\"", &[GameFormatArgument::Text(text.to_string())]),
         );
     }
 
@@ -340,7 +347,7 @@ impl GameCommandRuntime {
             };
             let client = self.host.pool().client_at(slot as usize);
             let info = client.borrow();
-            let ping = if info.pers.connected == connection_state::CONNECTING {
+            let ping = if info.pers.connected == ConnectionState::Connecting as i32 {
                 -1
             } else {
                 info.ps.ping.min(999)
@@ -350,30 +357,30 @@ impl GameCommandRuntime {
             } else {
                 info.accuracy_hits.wrapping_mul(100) / info.accuracy_shots
             };
-            let perfect = if info.ps.persistant.get(persistent_index::RANK as usize) == 0
-                && info.ps.persistant.get(persistent_index::KILLED as usize) == 0
+            let perfect = if info.ps.persistant.get(PersistentIndex::PersRank as usize) == 0
+                && info.ps.persistant.get(PersistentIndex::PersKilled as usize) == 0
             {
                 1
             } else {
                 0
             };
-            let entry = game_format(
+            let entry = game_format_bounded(
                 " %i %i %i %i %i %i %i %i %i %i %i %i %i %i",
                 &[
-                    FormatArg::Int(slot),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::SCORE as usize)),
-                    FormatArg::Int(ping),
-                    FormatArg::Int(record.time.wrapping_sub(info.pers.enter_time) / 60_000),
-                    FormatArg::Int(0),
-                    FormatArg::Int(self.host.pool().at(slot as usize).borrow().s.powerups),
-                    FormatArg::Int(accuracy),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::IMPRESSIVE_COUNT as usize)),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::EXCELLENT_COUNT as usize)),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::GAUNTLET_FRAG_COUNT as usize)),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::DEFEND_COUNT as usize)),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::ASSIST_COUNT as usize)),
-                    FormatArg::Int(perfect),
-                    FormatArg::Int(info.ps.persistant.get(persistent_index::CAPTURES as usize)),
+                    GameFormatArgument::Int(slot),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersScore as usize)),
+                    GameFormatArgument::Int(ping),
+                    GameFormatArgument::Int(record.time.wrapping_sub(info.pers.enter_time) / 60_000),
+                    GameFormatArgument::Int(0),
+                    GameFormatArgument::Int(self.host.pool().at(slot as usize).borrow().s.powerups),
+                    GameFormatArgument::Int(accuracy),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersImpressiveCount as usize)),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersExcellentCount as usize)),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersGauntletFragCount as usize)),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersDefendCount as usize)),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersAssistCount as usize)),
+                    GameFormatArgument::Int(perfect),
+                    GameFormatArgument::Int(info.ps.persistant.get(PersistentIndex::PersCaptures as usize)),
                 ],
                 1024,
             );
@@ -387,13 +394,13 @@ impl GameCommandRuntime {
         drop(record);
         self.host.imports().send_server_command(
             entity.borrow().slot as i32,
-            &game_format_default(
+            &game_format(
                 "scores %i %i %i%s",
                 &[
-                    FormatArg::Int(count),
-                    FormatArg::Int(self.host.team_scores().get(team::RED as usize)),
-                    FormatArg::Int(self.host.team_scores().get(team::BLUE as usize)),
-                    FormatArg::Text(text),
+                    GameFormatArgument::Int(count),
+                    GameFormatArgument::Int(self.host.team_scores().get(Team::TeamRed as usize)),
+                    GameFormatArgument::Int(self.host.team_scores().get(Team::TeamBlue as usize)),
+                    GameFormatArgument::Text(text),
                 ],
             ),
         );
@@ -417,18 +424,18 @@ impl GameCommandRuntime {
         let input = bounded(text, MAX_STRING_CHARS);
         let first = char_at(&input, 0);
         if first.is_ascii_digit() {
-            let slot = game_atoi(&input);
+            let slot = game_atoi(&input).unwrap();
             if slot < 0 || slot as usize >= self.host.pool().max_clients() {
                 self.print(
                     entity,
-                    &game_format_default("Bad client slot: %i\n", &[FormatArg::Int(slot)]),
+                    &game_format("Bad client slot: %i\n", &[GameFormatArgument::Int(slot)]),
                 );
                 return None;
             }
-            if self.host.pool().client_at(slot as usize).borrow().pers.connected != connection_state::CONNECTED {
+            if self.host.pool().client_at(slot as usize).borrow().pers.connected != ConnectionState::Connected as i32 {
                 self.print(
                     entity,
-                    &game_format_default("Client %i is not active\n", &[FormatArg::Int(slot)]),
+                    &game_format("Client %i is not active\n", &[GameFormatArgument::Int(slot)]),
                 );
                 return None;
             }
@@ -438,13 +445,13 @@ impl GameCommandRuntime {
         for slot in 0..self.host.pool().max_clients() {
             let client = self.host.pool().client_at(slot);
             let record = client.borrow();
-            if record.pers.connected == connection_state::CONNECTED && sanitize(&record.pers.netname) == name {
+            if record.pers.connected == ConnectionState::Connected as i32 && sanitize(&record.pers.netname) == name {
                 return Some(slot);
             }
         }
         self.print(
             entity,
-            &game_format_default("User %s is not on the server\n", &[FormatArg::Text(input)]),
+            &game_format("User %s is not on the server\n", &[GameFormatArgument::Text(input)]),
         );
         None
     }
@@ -458,9 +465,12 @@ impl GameCommandRuntime {
         let all = key == "all";
         let client = command_client_of(entity);
         let product = client.borrow().ps.product;
-        let schema = stat_schema(product);
+        let (max_health_slot, weapons_slot, armor_slot) = match stat_schema(product) {
+            StatSchema::Base(layout) => (layout.max_health, layout.weapons, layout.armor),
+            StatSchema::Missionpack(layout) => (layout.max_health, layout.weapons, layout.armor),
+        };
         if all || key == "health" {
-            let max = client.borrow().ps.stats.get(schema.max_health);
+            let max = client.borrow().ps.stats.get(max_health_slot as usize);
             entity.borrow_mut().health = max;
             if !all {
                 return;
@@ -470,8 +480,11 @@ impl GameCommandRuntime {
             let actor = entity.borrow().actor.clone();
             if !self.host.grant_selected_arsenal(&actor, ArsenalCategory::Weapons) {
                 client.borrow_mut().ps.stats.set(
-                    schema.weapons,
-                    (1i32 << weapon_count(product)) - 1 - (1 << weapon::GRAPPLING_HOOK) - (1 << weapon::NONE),
+                    weapons_slot as usize,
+                    (1i32 << weapon_count(product))
+                        - 1
+                        - (1 << Weapon::WpGrapplingHook as i32)
+                        - (1 << Weapon::WpNone as i32),
                 );
             }
             if !all {
@@ -490,21 +503,21 @@ impl GameCommandRuntime {
             }
         }
         if all || key == "armor" {
-            client.borrow_mut().ps.stats.set(schema.armor, 200);
+            client.borrow_mut().ps.stats.set(armor_slot as usize, 200);
             if !all {
                 return;
             }
         }
         let award = if key == "excellent" {
-            Some(persistent_index::EXCELLENT_COUNT)
+            Some(PersistentIndex::PersExcellentCount as i32)
         } else if key == "impressive" {
-            Some(persistent_index::IMPRESSIVE_COUNT)
+            Some(PersistentIndex::PersImpressiveCount as i32)
         } else if key == "gauntletaward" {
-            Some(persistent_index::GAUNTLET_FRAG_COUNT)
+            Some(PersistentIndex::PersGauntletFragCount as i32)
         } else if key == "defend" {
-            Some(persistent_index::DEFEND_COUNT)
+            Some(PersistentIndex::PersDefendCount as i32)
         } else if key == "assist" {
-            Some(persistent_index::ASSIST_COUNT)
+            Some(PersistentIndex::PersAssistCount as i32)
         } else {
             None
         };
@@ -529,10 +542,10 @@ impl GameCommandRuntime {
         let temporary = self.host.pool().spawn();
         temporary.borrow_mut().s.origin = entity.borrow().r.current_origin();
         temporary.borrow_mut().set_classname(Some(item.class_name.clone()));
-        let disabled = game_atoi(&self.host.imports().get_cvar(&format!("disable_{}", item.class_name))) != 0;
+        let disabled = game_atoi(&self.host.imports().get_cvar(&format!("disable_{}", item.class_name))).unwrap() != 0;
         self.host
             .items()
-            .spawn_item(&temporary, &item, &SpawnVariables::new(vec![]), disabled);
+            .spawn_item(&temporary, &item, &SpawnVariables::new(vec![]).unwrap(), disabled);
         self.host.items().finish_spawning_item(&temporary);
         let other = DamageParticipant::Entity(entity.clone());
         self.host.items().touch_item(&temporary, &other, &TouchContact);
@@ -554,9 +567,9 @@ impl GameCommandRuntime {
             }
             ToggleCommand::God | ToggleCommand::Notarget => {
                 let flag = if command == ToggleCommand::God {
-                    game_flags::GODMODE
+                    GameFlags::GODMODE
                 } else {
-                    game_flags::NOTARGET
+                    GameFlags::NOTARGET
                 };
                 entity.borrow_mut().flags ^= flag;
                 entity.borrow().flags & flag != 0
@@ -572,10 +585,10 @@ impl GameCommandRuntime {
 
     fn kill(&self, entity: &EntityRef) {
         let client = command_client_of(entity);
-        if client.borrow().sess.session_team == team::SPECTATOR || entity.borrow().health <= 0 {
+        if client.borrow().sess.session_team == Team::TeamSpectator as i32 || entity.borrow().health <= 0 {
             return;
         }
-        entity.borrow_mut().flags &= !game_flags::GODMODE;
+        entity.borrow_mut().flags &= !GameFlags::GODMODE;
         entity.borrow_mut().health = -999;
         client.borrow_mut().ps.set_health(-999);
         let participant = DamageParticipant::Entity(entity.clone());
@@ -588,7 +601,7 @@ impl GameCommandRuntime {
         if !self.cheats_ok(entity) {
             return;
         }
-        if self.host.settings().game_type != game_type::FFA {
+        if self.host.settings().game_type != GameType::GtFfa as i32 {
             self.print(entity, "Must be in g_gametype 0 for levelshot\n");
             return;
         }
@@ -606,7 +619,12 @@ impl GameCommandRuntime {
             &self.host.imports().get_userinfo(entity.borrow().slot),
             MAX_STRING_CHARS,
         );
-        let task = game_format_default("%d", &[FormatArg::Int(game_atoi(&args.at(1, MAX_STRING_CHARS)))]);
+        let task = game_format(
+            "%d",
+            &[GameFormatArgument::Int(
+                game_atoi(&args.at(1, MAX_STRING_CHARS)).unwrap(),
+            )],
+        );
         let updated = set_info_value(&userinfo, "teamtask", &task, 1024, &|text| {
             self.host.imports().print(text);
         });
@@ -619,13 +637,13 @@ impl GameCommandRuntime {
         let client = self.host.pool().client_at(client_num);
         let team_code = client.borrow().sess.session_team;
         let netname = client.borrow().pers.netname.clone();
-        let announcement = if team_code == team::RED {
+        let announcement = if team_code == Team::TeamRed as i32 {
             Some("joined the red team.")
-        } else if team_code == team::BLUE {
+        } else if team_code == Team::TeamBlue as i32 {
             Some("joined the blue team.")
-        } else if team_code == team::SPECTATOR && old_team != team::SPECTATOR {
+        } else if team_code == Team::TeamSpectator as i32 && old_team != Team::TeamSpectator as i32 {
             Some("joined the spectators.")
-        } else if team_code == team::FREE {
+        } else if team_code == Team::TeamFree as i32 {
             Some("joined the battle.")
         } else {
             None
@@ -633,9 +651,12 @@ impl GameCommandRuntime {
         if let Some(announcement) = announcement {
             self.host.imports().send_server_command(
                 -1,
-                &game_format_default(
+                &game_format(
                     "cp \"%s^7 %s\n\"",
-                    &[FormatArg::Text(netname), FormatArg::Text(announcement.to_string())],
+                    &[
+                        GameFormatArgument::Text(netname),
+                        GameFormatArgument::Text(announcement.to_string()),
+                    ],
                 ),
             );
         }
@@ -647,20 +668,20 @@ impl GameCommandRuntime {
         let key = cmd_lower(&bounded(request, MAX_STRING_CHARS));
         let settings = self.host.settings();
         let (team_code, spectator_state_code, spectator_client) = if key == "scoreboard" || key == "score" {
-            (team::SPECTATOR, spectator_state::SCOREBOARD, 0)
+            (Team::TeamSpectator as i32, SpectatorState::Scoreboard as i32, 0)
         } else if key == "follow1" || key == "follow2" {
             (
-                team::SPECTATOR,
-                spectator_state::FOLLOW,
+                Team::TeamSpectator as i32,
+                SpectatorState::Follow as i32,
                 if key == "follow1" { -1 } else { -2 },
             )
         } else if key == "spectator" || key == "s" {
-            (team::SPECTATOR, spectator_state::FREE, 0)
-        } else if settings.game_type >= game_type::TEAM {
+            (Team::TeamSpectator as i32, SpectatorState::Free as i32, 0)
+        } else if settings.game_type >= GameType::GtTeam as i32 {
             let team_code = if key == "red" || key == "r" {
-                team::RED
+                Team::TeamRed as i32
             } else if key == "blue" || key == "b" {
-                team::BLUE
+                Team::TeamBlue as i32
             } else {
                 pick_team(
                     self.host.pool().clients(),
@@ -675,21 +696,21 @@ impl GameCommandRuntime {
                     self.host.pool().clients(),
                     self.host.pool().max_clients(),
                     ignore,
-                    team::RED,
+                    Team::TeamRed as i32,
                 );
                 let blue = team_count(
                     self.host.pool().clients(),
                     self.host.pool().max_clients(),
                     ignore,
-                    team::BLUE,
+                    Team::TeamBlue as i32,
                 );
-                if team_code == team::RED && red - blue > 1 {
+                if team_code == Team::TeamRed as i32 && red - blue > 1 {
                     self.host
                         .imports()
                         .send_server_command(client.borrow().ps.client_num, "cp \"Red team has too many players.\n\"");
                     return;
                 }
-                if team_code == team::BLUE && blue - red > 1 {
+                if team_code == Team::TeamBlue as i32 && blue - red > 1 {
                     self.host.imports().send_server_command(
                         client.borrow().ps.client_num,
                         "cp \"Blue team has too many players.\n\"",
@@ -697,27 +718,27 @@ impl GameCommandRuntime {
                     return;
                 }
             }
-            (team_code, spectator_state::NOT, 0)
+            (team_code, SpectatorState::Not as i32, 0)
         } else {
-            (team::FREE, spectator_state::NOT, 0)
+            (Team::TeamFree as i32, SpectatorState::Not as i32, 0)
         };
         let mut team_code = team_code;
         let non_spectators = self.host.match_state().borrow().num_non_spectator_clients;
-        if (settings.game_type == game_type::TOURNAMENT && non_spectators >= 2)
+        if (settings.game_type == GameType::GtTournament as i32 && non_spectators >= 2)
             || (settings.max_game_clients > 0 && non_spectators >= settings.max_game_clients)
         {
-            team_code = team::SPECTATOR;
+            team_code = Team::TeamSpectator as i32;
         }
         let old_team = client.borrow().sess.session_team;
-        if team_code == old_team && team_code != team::SPECTATOR {
+        if team_code == old_team && team_code != Team::TeamSpectator as i32 {
             return;
         }
         if client.borrow().ps.health() <= 0 {
             self.host.copy_to_body_queue(entity);
         }
-        client.borrow_mut().pers.team_state.state = team_state::BEGIN;
-        if old_team != team::SPECTATOR {
-            entity.borrow_mut().flags &= !game_flags::GODMODE;
+        client.borrow_mut().pers.team_state.state = TeamState::Begin as i32;
+        if old_team != Team::TeamSpectator as i32 {
+            entity.borrow_mut().flags &= !GameFlags::GODMODE;
             entity.borrow_mut().health = 0;
             client.borrow_mut().ps.set_health(0);
             let participant = DamageParticipant::Entity(entity.clone());
@@ -725,7 +746,7 @@ impl GameCommandRuntime {
                 .death()
                 .player_die(entity, Some(&participant), Some(&participant), 100_000, MOD_SUICIDE);
         }
-        if team_code == team::SPECTATOR {
+        if team_code == Team::TeamSpectator as i32 {
             client.borrow_mut().sess.spectator_time = self.host.match_state().borrow().time;
         }
         {
@@ -735,12 +756,12 @@ impl GameCommandRuntime {
             record.sess.spectator_client = spectator_client;
             record.sess.team_leader = 0;
         }
-        if team_code == team::RED || team_code == team::BLUE {
+        if team_code == Team::TeamRed as i32 || team_code == Team::TeamBlue as i32 {
             let mut leader: Option<EntityRef> = None;
             for slot in 0..self.host.pool().max_clients() {
                 let candidate = self.host.pool().client_at(slot);
                 let record = candidate.borrow();
-                if record.pers.connected != connection_state::DISCONNECTED
+                if record.pers.connected != ConnectionState::Disconnected as i32
                     && record.sess.session_team == team_code
                     && record.sess.team_leader != 0
                 {
@@ -751,15 +772,15 @@ impl GameCommandRuntime {
             let replace = match &leader {
                 None => true,
                 Some(leader) => {
-                    entity.borrow().r.sv_flags & server_entity_flags::BOT == 0
-                        && leader.borrow().r.sv_flags & server_entity_flags::BOT != 0
+                    entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0
+                        && leader.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 != 0
                 }
             };
             if replace {
                 self.host.match_set_leader(team_code, entity.borrow().slot);
             }
         }
-        if old_team == team::RED || old_team == team::BLUE {
+        if old_team == Team::TeamRed as i32 || old_team == Team::TeamBlue as i32 {
             self.host.match_check_team_leader(old_team);
         }
         self.broadcast_team_change(entity.borrow().slot, old_team);
@@ -774,12 +795,12 @@ impl GameCommandRuntime {
         record
             .ps
             .persistant
-            .set(persistent_index::TEAM as usize, team::SPECTATOR);
-        record.sess.session_team = team::SPECTATOR;
-        record.sess.spectator_state = spectator_state::FREE;
-        record.ps.pm_flags &= !move_flags::FOLLOW;
+            .set(PersistentIndex::PersTeam as usize, Team::TeamSpectator as i32);
+        record.sess.session_team = Team::TeamSpectator as i32;
+        record.sess.spectator_state = SpectatorState::Free as i32;
+        record.ps.pm_flags &= !(MoveFlags::Follow as i32);
         drop(record);
-        entity.borrow_mut().r.sv_flags &= !server_entity_flags::BOT;
+        entity.borrow_mut().r.sv_flags &= !(ServerEntityFlags::Bot as i32);
         client.borrow_mut().ps.client_num = entity.borrow().slot as i32;
     }
 
@@ -787,11 +808,11 @@ impl GameCommandRuntime {
         let client = command_client_of(entity);
         if args.len() != 2 {
             let team_code = client.borrow().sess.session_team;
-            let label = if team_code == team::RED {
+            let label = if team_code == Team::TeamRed as i32 {
                 "Red"
-            } else if team_code == team::BLUE {
+            } else if team_code == Team::TeamBlue as i32 {
                 "Blue"
-            } else if team_code == team::FREE {
+            } else if team_code == Team::TeamFree as i32 {
                 "Free"
             } else {
                 "Spectator"
@@ -803,7 +824,9 @@ impl GameCommandRuntime {
             self.print(entity, "May not switch teams more than once per 5 seconds.\n");
             return;
         }
-        if self.host.settings().game_type == game_type::TOURNAMENT && client.borrow().sess.session_team == team::FREE {
+        if self.host.settings().game_type == GameType::GtTournament as i32
+            && client.borrow().sess.session_team == Team::TeamFree as i32
+        {
             let losses = client.borrow().sess.losses;
             client.borrow_mut().sess.losses = losses.wrapping_add(1);
         }
@@ -814,7 +837,7 @@ impl GameCommandRuntime {
     fn follow(&self, entity: &EntityRef, args: &CommandArguments) {
         let client = command_client_of(entity);
         if args.len() != 2 {
-            if client.borrow().sess.spectator_state == spectator_state::FOLLOW {
+            if client.borrow().sess.spectator_state == SpectatorState::Follow as i32 {
                 self.stop_following(entity);
             }
             return;
@@ -824,29 +847,33 @@ impl GameCommandRuntime {
             None => return,
         };
         if target == entity.borrow().slot
-            || self.host.pool().client_at(target).borrow().sess.session_team == team::SPECTATOR
+            || self.host.pool().client_at(target).borrow().sess.session_team == Team::TeamSpectator as i32
         {
             return;
         }
-        if self.host.settings().game_type == game_type::TOURNAMENT && client.borrow().sess.session_team == team::FREE {
+        if self.host.settings().game_type == GameType::GtTournament as i32
+            && client.borrow().sess.session_team == Team::TeamFree as i32
+        {
             let losses = client.borrow().sess.losses;
             client.borrow_mut().sess.losses = losses.wrapping_add(1);
         }
-        if client.borrow().sess.session_team != team::SPECTATOR {
+        if client.borrow().sess.session_team != Team::TeamSpectator as i32 {
             self.set_team(entity, "spectator");
         }
-        client.borrow_mut().sess.spectator_state = spectator_state::FOLLOW;
+        client.borrow_mut().sess.spectator_state = SpectatorState::Follow as i32;
         client.borrow_mut().sess.spectator_client = target as i32;
     }
 
     /// Cycle the follow target (`followCycle`).
     pub fn follow_cycle(&self, entity: &EntityRef, direction: i32) {
         let client = command_client_of(entity);
-        if self.host.settings().game_type == game_type::TOURNAMENT && client.borrow().sess.session_team == team::FREE {
+        if self.host.settings().game_type == GameType::GtTournament as i32
+            && client.borrow().sess.session_team == Team::TeamFree as i32
+        {
             let losses = client.borrow().sess.losses;
             client.borrow_mut().sess.losses = losses.wrapping_add(1);
         }
-        if client.borrow().sess.spectator_state == spectator_state::NOT {
+        if client.borrow().sess.spectator_state == SpectatorState::Not as i32 {
             self.set_team(entity, "spectator");
         }
         let original = client.borrow().sess.spectator_client;
@@ -861,10 +888,12 @@ impl GameCommandRuntime {
             }
             let target = self.host.pool().client_at(slot as usize);
             let record = target.borrow();
-            if record.pers.connected == connection_state::CONNECTED && record.sess.session_team != team::SPECTATOR {
+            if record.pers.connected == ConnectionState::Connected as i32
+                && record.sess.session_team != Team::TeamSpectator as i32
+            {
                 drop(record);
                 client.borrow_mut().sess.spectator_client = slot;
-                client.borrow_mut().sess.spectator_state = spectator_state::FOLLOW;
+                client.borrow_mut().sess.spectator_state = SpectatorState::Follow as i32;
                 return;
             }
             if slot == original {
@@ -882,28 +911,28 @@ impl GameCommandRuntime {
         let Some(client) = client else {
             return;
         };
-        if !live || client.borrow().pers.connected != connection_state::CONNECTED {
+        if !live || client.borrow().pers.connected != ConnectionState::Connected as i32 {
             return;
         }
         if mode == SayMode::Team && !on_same_team(self.host.settings().game_type, entity, target) {
             return;
         }
-        if self.host.settings().game_type == game_type::TOURNAMENT
-            && client.borrow().sess.session_team == team::FREE
-            && command_client_of(entity).borrow().sess.session_team != team::FREE
+        if self.host.settings().game_type == GameType::GtTournament as i32
+            && client.borrow().sess.session_team == Team::TeamFree as i32
+            && command_client_of(entity).borrow().sess.session_team != Team::TeamFree as i32
         {
             return;
         }
         self.host.imports().send_server_command(
             target.borrow().slot as i32,
-            &game_format_default(
+            &game_format(
                 "%s \"%s%c%c%s\"",
                 &[
-                    FormatArg::Text(if mode == SayMode::Team { "tchat" } else { "chat" }.to_string()),
-                    FormatArg::Text(name.to_string()),
-                    FormatArg::Int(94),
-                    FormatArg::Int(color),
-                    FormatArg::Text(text.to_string()),
+                    GameFormatArgument::Text(if mode == SayMode::Team { "tchat" } else { "chat" }.to_string()),
+                    GameFormatArgument::Text(name.to_string()),
+                    GameFormatArgument::Int(94),
+                    GameFormatArgument::Int(color),
+                    GameFormatArgument::Text(text.to_string()),
                 ],
             ),
         );
@@ -914,27 +943,36 @@ impl GameCommandRuntime {
         let client = command_client_of(entity);
         let game_type = self.host.settings().game_type;
         let mut mode = mode;
-        if game_type < game_type::TEAM && mode == SayMode::Team {
+        if game_type < GameType::GtTeam as i32 && mode == SayMode::Team {
             mode = SayMode::All;
         }
         let netname = client.borrow().pers.netname.clone();
         let (name, color) = if mode == SayMode::All {
-            self.host.imports().log(&game_format_default(
+            self.host.imports().log(&game_format(
                 "say: %s: %s\n",
-                &[FormatArg::Text(netname.clone()), FormatArg::Text(chat_text.to_string())],
+                &[
+                    GameFormatArgument::Text(netname.clone()),
+                    GameFormatArgument::Text(chat_text.to_string()),
+                ],
             ));
-            (game_format("%s^7\x19: ", &[FormatArg::Text(netname)], 64), 50)
+            (
+                game_format_bounded("%s^7\x19: ", &[GameFormatArgument::Text(netname)], 64),
+                50,
+            )
         } else if mode == SayMode::Team {
-            self.host.imports().log(&game_format_default(
+            self.host.imports().log(&game_format(
                 "sayteam: %s: %s\n",
-                &[FormatArg::Text(netname.clone()), FormatArg::Text(chat_text.to_string())],
+                &[
+                    GameFormatArgument::Text(netname.clone()),
+                    GameFormatArgument::Text(chat_text.to_string()),
+                ],
             ));
             let location = self.host.team_location_message(entity, 64);
             let name = match location {
-                None => game_format("\x19(%s^7\x19)\x19: ", &[FormatArg::Text(netname)], 64),
-                Some(location) => game_format(
+                None => game_format_bounded("\x19(%s^7\x19)\x19: ", &[GameFormatArgument::Text(netname)], 64),
+                Some(location) => game_format_bounded(
                     "\x19(%s^7\x19) (%s)\x19: ",
-                    &[FormatArg::Text(netname), FormatArg::Text(location)],
+                    &[GameFormatArgument::Text(netname), GameFormatArgument::Text(location)],
                     64,
                 ),
             };
@@ -942,7 +980,7 @@ impl GameCommandRuntime {
         } else {
             let same_team = match target {
                 Some(target) => {
-                    game_type >= game_type::TEAM
+                    game_type >= GameType::GtTeam as i32
                         && command_client_of(target).borrow().sess.session_team == client.borrow().sess.session_team
                 }
                 None => false,
@@ -953,10 +991,10 @@ impl GameCommandRuntime {
                 None
             };
             let name = match location {
-                None => game_format("\x19[%s^7\x19]\x19: ", &[FormatArg::Text(netname)], 64),
-                Some(location) => game_format(
+                None => game_format_bounded("\x19[%s^7\x19]\x19: ", &[GameFormatArgument::Text(netname)], 64),
+                Some(location) => game_format_bounded(
                     "\x19[%s^7\x19] (%s)\x19: ",
-                    &[FormatArg::Text(netname), FormatArg::Text(location)],
+                    &[GameFormatArgument::Text(netname), GameFormatArgument::Text(location)],
                     64,
                 ),
             };
@@ -968,9 +1006,12 @@ impl GameCommandRuntime {
             return;
         }
         if self.host.settings().dedicated {
-            self.host.imports().print(&game_format_default(
+            self.host.imports().print(&game_format(
                 "%s%s\n",
-                &[FormatArg::Text(name.clone()), FormatArg::Text(text.clone())],
+                &[
+                    GameFormatArgument::Text(name.clone()),
+                    GameFormatArgument::Text(text.clone()),
+                ],
             ));
         }
         for slot in 0..self.host.pool().max_clients() {
@@ -990,7 +1031,7 @@ impl GameCommandRuntime {
         if args.len() < 2 {
             return;
         }
-        let slot = game_atoi(&args.at(1, MAX_STRING_CHARS));
+        let slot = game_atoi(&args.at(1, MAX_STRING_CHARS)).unwrap();
         if slot < 0 || slot as usize >= self.host.pool().max_clients() {
             return;
         }
@@ -1001,16 +1042,16 @@ impl GameCommandRuntime {
         let text = args.concat(2);
         let from = command_client_of(entity).borrow().pers.netname.clone();
         let to = command_client_of(&target).borrow().pers.netname.clone();
-        self.host.imports().log(&game_format_default(
+        self.host.imports().log(&game_format(
             "tell: %s to %s: %s\n",
             &[
-                FormatArg::Text(from),
-                FormatArg::Text(to),
-                FormatArg::Text(text.clone()),
+                GameFormatArgument::Text(from),
+                GameFormatArgument::Text(to),
+                GameFormatArgument::Text(text.clone()),
             ],
         ));
         self.say(entity, Some(&target), SayMode::Tell, &text);
-        if !Rc::ptr_eq(entity, &target) && entity.borrow().r.sv_flags & server_entity_flags::BOT == 0 {
+        if !Rc::ptr_eq(entity, &target) && entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0 {
             self.say(entity, Some(entity), SayMode::Tell, &text);
         }
     }
@@ -1022,7 +1063,7 @@ impl GameCommandRuntime {
         if mode == SayMode::Team && !on_same_team(self.host.settings().game_type, entity, target) {
             return;
         }
-        if self.host.settings().game_type == game_type::TOURNAMENT {
+        if self.host.settings().game_type == GameType::GtTournament as i32 {
             return;
         }
         let color = if mode == SayMode::Team {
@@ -1041,14 +1082,14 @@ impl GameCommandRuntime {
         };
         self.host.imports().send_server_command(
             target.borrow().slot as i32,
-            &game_format_default(
+            &game_format(
                 "%s %d %d %d %s",
                 &[
-                    FormatArg::Text(command.to_string()),
-                    FormatArg::Int(if voice_only { 1 } else { 0 }),
-                    FormatArg::Int(entity.borrow().s.number),
-                    FormatArg::Int(color),
-                    FormatArg::Text(id.to_string()),
+                    GameFormatArgument::Text(command.to_string()),
+                    GameFormatArgument::Int(if voice_only { 1 } else { 0 }),
+                    GameFormatArgument::Int(entity.borrow().s.number),
+                    GameFormatArgument::Int(color),
+                    GameFormatArgument::Text(id.to_string()),
                 ],
             ),
         );
@@ -1057,7 +1098,7 @@ impl GameCommandRuntime {
     /// Voice dispatch (`voice`).
     pub fn voice(&self, entity: &EntityRef, target: Option<&EntityRef>, mode: SayMode, id: &str, voice_only: bool) {
         let mut mode = mode;
-        if self.host.settings().game_type < game_type::TEAM && mode == SayMode::Team {
+        if self.host.settings().game_type < GameType::GtTeam as i32 && mode == SayMode::Team {
             mode = SayMode::All;
         }
         if let Some(target) = target {
@@ -1066,9 +1107,12 @@ impl GameCommandRuntime {
         }
         if self.host.settings().dedicated {
             let netname = command_client_of(entity).borrow().pers.netname.clone();
-            self.host.imports().print(&game_format_default(
+            self.host.imports().print(&game_format(
                 "voice: %s %s\n",
-                &[FormatArg::Text(netname), FormatArg::Text(id.to_string())],
+                &[
+                    GameFormatArgument::Text(netname),
+                    GameFormatArgument::Text(id.to_string()),
+                ],
             ));
         }
         for slot in 0..self.host.pool().max_clients() {
@@ -1088,7 +1132,7 @@ impl GameCommandRuntime {
         if args.len() < 2 {
             return;
         }
-        let slot = game_atoi(&args.at(1, MAX_STRING_CHARS));
+        let slot = game_atoi(&args.at(1, MAX_STRING_CHARS)).unwrap();
         if slot < 0 || slot as usize >= self.host.pool().max_clients() {
             return;
         }
@@ -1099,12 +1143,16 @@ impl GameCommandRuntime {
         let id = args.concat(2);
         let from = command_client_of(entity).borrow().pers.netname.clone();
         let to = command_client_of(&target).borrow().pers.netname.clone();
-        self.host.imports().log(&game_format_default(
+        self.host.imports().log(&game_format(
             "vtell: %s to %s: %s\n",
-            &[FormatArg::Text(from), FormatArg::Text(to), FormatArg::Text(id.clone())],
+            &[
+                GameFormatArgument::Text(from),
+                GameFormatArgument::Text(to),
+                GameFormatArgument::Text(id.clone()),
+            ],
         ));
         self.voice(entity, Some(&target), SayMode::Tell, &id, voice_only);
-        if !Rc::ptr_eq(entity, &target) && entity.borrow().r.sv_flags & server_entity_flags::BOT == 0 {
+        if !Rc::ptr_eq(entity, &target) && entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0 {
             self.voice(entity, Some(entity), SayMode::Tell, &id, voice_only);
         }
     }
@@ -1134,7 +1182,7 @@ impl GameCommandRuntime {
                 return;
             }
         }
-        if self.host.settings().game_type >= game_type::TEAM {
+        if self.host.settings().game_type >= GameType::GtTeam as i32 {
             for slot in 0..MAX_CLIENTS {
                 let target = self.host.pool().at(slot);
                 let candidate = target.borrow().client.clone();
@@ -1155,17 +1203,17 @@ impl GameCommandRuntime {
     }
 
     fn taunt_pair(&self, entity: &EntityRef, target: &EntityRef, id: &str) {
-        if target.borrow().r.sv_flags & server_entity_flags::BOT == 0 {
+        if target.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0 {
             self.voice(entity, Some(target), SayMode::Tell, id, false);
         }
-        if entity.borrow().r.sv_flags & server_entity_flags::BOT == 0 {
+        if entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 == 0 {
             self.voice(entity, Some(entity), SayMode::Tell, id, false);
         }
     }
 
     fn game_command(&self, entity: &EntityRef, args: &CommandArguments) {
-        let slot = game_atoi(&args.at(1, MAX_STRING_CHARS));
-        let order = game_atoi(&args.at(2, MAX_STRING_CHARS));
+        let slot = game_atoi(&args.at(1, MAX_STRING_CHARS)).unwrap();
+        let order = game_atoi(&args.at(2, MAX_STRING_CHARS)).unwrap();
         if slot < 0 || slot as usize >= MAX_CLIENTS || order < 0 || order > ORDERS.len() as i32 {
             return;
         }
@@ -1192,7 +1240,7 @@ impl GameCommandRuntime {
             self.print(entity, "You have called the maximum number of votes.\n");
             return;
         }
-        if client.borrow().sess.session_team == team::SPECTATOR {
+        if client.borrow().sess.session_team == Team::TeamSpectator as i32 {
             self.print(entity, "Not allowed to call a vote as spectator.\n");
             return;
         }
@@ -1228,11 +1276,13 @@ impl GameCommandRuntime {
             let string = self.host.match_state().borrow().vote.string.clone();
             self.host
                 .imports()
-                .append_console_command(&game_format_default("%s\n", &[FormatArg::Text(string)]));
+                .append_console_command(&game_format("%s\n", &[GameFormatArgument::Text(string)]));
         }
         if key == "g_gametype" {
-            let gametype = game_atoi(&parameter);
-            if gametype == game_type::SINGLE_PLAYER || !(game_type::FFA..game_type::MAX_GAME_TYPE).contains(&gametype) {
+            let gametype = game_atoi(&parameter).unwrap();
+            if gametype == GameType::GtSinglePlayer as i32
+                || !(GameType::GtFfa as i32..GameType::GtMaxGameType as i32).contains(&gametype)
+            {
                 self.print(entity, "Invalid gametype.\n");
                 return;
             }
@@ -1241,32 +1291,38 @@ impl GameCommandRuntime {
                 None => panic!("Vote gametype has no source display name"),
             };
             let mut state = self.host.match_state().borrow_mut();
-            state.vote.string = game_format(
+            state.vote.string = game_format_bounded(
                 "%s %d",
-                &[FormatArg::Text(command.clone()), FormatArg::Int(gametype)],
+                &[
+                    GameFormatArgument::Text(command.clone()),
+                    GameFormatArgument::Int(gametype),
+                ],
                 MAX_STRING_CHARS,
             );
-            state.vote.display_string = game_format(
+            state.vote.display_string = game_format_bounded(
                 "%s %s",
-                &[FormatArg::Text(command), FormatArg::Text(name.to_string())],
+                &[
+                    GameFormatArgument::Text(command),
+                    GameFormatArgument::Text(name.to_string()),
+                ],
                 MAX_STRING_CHARS,
             );
         } else if key == "map" {
             let nextmap = bounded(&self.host.imports().get_cvar("nextmap"), MAX_STRING_CHARS);
             let mut state = self.host.match_state().borrow_mut();
             state.vote.string = if nextmap.is_empty() {
-                game_format(
+                game_format_bounded(
                     "%s %s",
-                    &[FormatArg::Text(command), FormatArg::Text(parameter)],
+                    &[GameFormatArgument::Text(command), GameFormatArgument::Text(parameter)],
                     MAX_STRING_CHARS,
                 )
             } else {
-                game_format(
+                game_format_bounded(
                     "%s %s; set nextmap \"%s\"",
                     &[
-                        FormatArg::Text(command),
-                        FormatArg::Text(parameter),
-                        FormatArg::Text(nextmap),
+                        GameFormatArgument::Text(command),
+                        GameFormatArgument::Text(parameter),
+                        GameFormatArgument::Text(nextmap),
                     ],
                     MAX_STRING_CHARS,
                 )
@@ -1282,9 +1338,9 @@ impl GameCommandRuntime {
             state.vote.display_string = state.vote.string.clone();
         } else {
             let mut state = self.host.match_state().borrow_mut();
-            state.vote.string = game_format(
+            state.vote.string = game_format_bounded(
                 "%s \"%s\"",
-                &[FormatArg::Text(command), FormatArg::Text(parameter)],
+                &[GameFormatArgument::Text(command), GameFormatArgument::Text(parameter)],
                 MAX_STRING_CHARS,
             );
             state.vote.display_string = state.vote.string.clone();
@@ -1292,7 +1348,7 @@ impl GameCommandRuntime {
         let netname = client.borrow().pers.netname.clone();
         self.host.imports().send_server_command(
             -1,
-            &game_format_default("print \"%s called a vote.\n\"", &[FormatArg::Text(netname)]),
+            &game_format("print \"%s called a vote.\n\"", &[GameFormatArgument::Text(netname)]),
         );
         {
             let mut state = self.host.match_state().borrow_mut();
@@ -1308,14 +1364,14 @@ impl GameCommandRuntime {
         let display = self.host.match_state().borrow().vote.display_string.clone();
         self.host
             .imports()
-            .set_configstring(8, &game_format_default("%i", &[FormatArg::Int(time)]));
+            .set_configstring(8, &game_format("%i", &[GameFormatArgument::Int(time)]));
         self.host.imports().set_configstring(9, &display);
         self.host
             .imports()
-            .set_configstring(10, &game_format_default("%i", &[FormatArg::Int(1)]));
+            .set_configstring(10, &game_format("%i", &[GameFormatArgument::Int(1)]));
         self.host
             .imports()
-            .set_configstring(11, &game_format_default("%i", &[FormatArg::Int(0)]));
+            .set_configstring(11, &game_format("%i", &[GameFormatArgument::Int(0)]));
     }
 
     fn vote(&self, entity: &EntityRef, args: &CommandArguments) {
@@ -1328,7 +1384,7 @@ impl GameCommandRuntime {
             self.print(entity, "Vote already cast.\n");
             return;
         }
-        if client.borrow().sess.session_team == team::SPECTATOR {
+        if client.borrow().sess.session_team == Team::TeamSpectator as i32 {
             self.print(entity, "Not allowed to vote as spectator.\n");
             return;
         }
@@ -1344,7 +1400,7 @@ impl GameCommandRuntime {
             drop(state);
             self.host
                 .imports()
-                .set_configstring(10, &game_format_default("%i", &[FormatArg::Int(yes)]));
+                .set_configstring(10, &game_format("%i", &[GameFormatArgument::Int(yes)]));
         } else {
             let mut state = self.host.match_state().borrow_mut();
             state.vote.no = state.vote.no.wrapping_add(1);
@@ -1352,16 +1408,16 @@ impl GameCommandRuntime {
             drop(state);
             self.host
                 .imports()
-                .set_configstring(11, &game_format_default("%i", &[FormatArg::Int(no)]));
+                .set_configstring(11, &game_format("%i", &[GameFormatArgument::Int(no)]));
         }
     }
 
     fn call_team_vote(&self, entity: &EntityRef, args: &CommandArguments) {
         let client = command_client_of(entity);
         let team_code = client.borrow().sess.session_team;
-        let offset = if team_code == team::RED {
+        let offset = if team_code == Team::TeamRed as i32 {
             Some(0)
-        } else if team_code == team::BLUE {
+        } else if team_code == Team::TeamBlue as i32 {
             Some(1)
         } else {
             None
@@ -1412,18 +1468,18 @@ impl GameCommandRuntime {
                 digits += 1;
             }
             if digits >= 3 || char_at(&parameter, digits) == '\0' {
-                target = game_atoi(&parameter);
+                target = game_atoi(&parameter).unwrap();
                 if target < 0 || target as usize >= self.host.pool().max_clients() {
                     self.print(
                         entity,
-                        &game_format_default("Bad client slot: %i\n", &[FormatArg::Int(target)]),
+                        &game_format("Bad client slot: %i\n", &[GameFormatArgument::Int(target)]),
                     );
                     return;
                 }
                 if !self.host.pool().at(target as usize).borrow().inuse {
                     self.print(
                         entity,
-                        &game_format_default("Client %i is not active\n", &[FormatArg::Int(target)]),
+                        &game_format("Client %i is not active\n", &[GameFormatArgument::Int(target)]),
                     );
                     return;
                 }
@@ -1433,7 +1489,7 @@ impl GameCommandRuntime {
                 for slot in 0..self.host.pool().max_clients() {
                     let candidate = self.host.pool().client_at(slot);
                     let record = candidate.borrow();
-                    if record.pers.connected != connection_state::DISCONNECTED
+                    if record.pers.connected != ConnectionState::Disconnected as i32
                         && record.sess.session_team == team_code
                         && clean_name(&record.pers.netname) == name
                     {
@@ -1445,9 +1501,9 @@ impl GameCommandRuntime {
                 if target as usize >= self.host.pool().max_clients() {
                     self.print(
                         entity,
-                        &game_format_default(
+                        &game_format(
                             "%s is not a valid player on your team.\n",
-                            &[FormatArg::Text(parameter)],
+                            &[GameFormatArgument::Text(parameter)],
                         ),
                     );
                     return;
@@ -1455,21 +1511,21 @@ impl GameCommandRuntime {
             }
         }
         let netname = client.borrow().pers.netname.clone();
-        self.host.match_state().borrow_mut().team_votes[offset].string = game_format(
+        self.host.match_state().borrow_mut().team_votes[offset].string = game_format_bounded(
             "%s %d",
-            &[FormatArg::Text(command), FormatArg::Int(target)],
+            &[GameFormatArgument::Text(command), GameFormatArgument::Int(target)],
             MAX_STRING_CHARS,
         );
         for slot in 0..self.host.pool().max_clients() {
             let candidate = self.host.pool().client_at(slot);
-            if candidate.borrow().pers.connected != connection_state::DISCONNECTED
+            if candidate.borrow().pers.connected != ConnectionState::Disconnected as i32
                 && candidate.borrow().sess.session_team == team_code
             {
                 self.host.imports().send_server_command(
                     slot as i32,
-                    &game_format_default(
+                    &game_format(
                         "print \"%s called a team vote.\n\"",
-                        &[FormatArg::Text(netname.clone())],
+                        &[GameFormatArgument::Text(netname.clone())],
                     ),
                 );
             }
@@ -1493,22 +1549,22 @@ impl GameCommandRuntime {
         };
         self.host
             .imports()
-            .set_configstring(12 + offset as i32, &game_format_default("%i", &[FormatArg::Int(time)]));
+            .set_configstring(12 + offset as i32, &game_format("%i", &[GameFormatArgument::Int(time)]));
         self.host.imports().set_configstring(14 + offset as i32, &string);
         self.host
             .imports()
-            .set_configstring(16 + offset as i32, &game_format_default("%i", &[FormatArg::Int(1)]));
+            .set_configstring(16 + offset as i32, &game_format("%i", &[GameFormatArgument::Int(1)]));
         self.host
             .imports()
-            .set_configstring(18 + offset as i32, &game_format_default("%i", &[FormatArg::Int(0)]));
+            .set_configstring(18 + offset as i32, &game_format("%i", &[GameFormatArgument::Int(0)]));
     }
 
     fn team_vote(&self, entity: &EntityRef, args: &CommandArguments) {
         let client = command_client_of(entity);
         let team_code = client.borrow().sess.session_team;
-        let offset = if team_code == team::RED {
+        let offset = if team_code == Team::TeamRed as i32 {
             Some(0)
-        } else if team_code == team::BLUE {
+        } else if team_code == Team::TeamBlue as i32 {
             Some(1)
         } else {
             None
@@ -1534,7 +1590,7 @@ impl GameCommandRuntime {
             drop(state);
             self.host
                 .imports()
-                .set_configstring(16 + offset as i32, &game_format_default("%i", &[FormatArg::Int(yes)]));
+                .set_configstring(16 + offset as i32, &game_format("%i", &[GameFormatArgument::Int(yes)]));
         } else {
             let mut state = self.host.match_state().borrow_mut();
             state.team_votes[offset].no = state.team_votes[offset].no.wrapping_add(1);
@@ -1542,7 +1598,7 @@ impl GameCommandRuntime {
             drop(state);
             self.host
                 .imports()
-                .set_configstring(18 + offset as i32, &game_format_default("%i", &[FormatArg::Int(no)]));
+                .set_configstring(18 + offset as i32, &game_format("%i", &[GameFormatArgument::Int(no)]));
         }
     }
 
@@ -1558,11 +1614,11 @@ impl GameCommandRuntime {
         self.host.teleport().teleport_player(
             entity,
             vec3(
-                game_atof(&args.at(1, MAX_STRING_CHARS)),
-                game_atof(&args.at(2, MAX_STRING_CHARS)),
-                game_atof(&args.at(3, MAX_STRING_CHARS)),
+                game_atof(&args.at(1, MAX_STRING_CHARS)).unwrap(),
+                game_atof(&args.at(2, MAX_STRING_CHARS)).unwrap(),
+                game_atof(&args.at(3, MAX_STRING_CHARS)).unwrap(),
             ),
-            vec3(0.0, game_atof(&args.at(4, MAX_STRING_CHARS)), 0.0),
+            vec3(0.0, game_atof(&args.at(4, MAX_STRING_CHARS)).unwrap(), 0.0),
         );
     }
 
@@ -1642,7 +1698,7 @@ impl GameCommandRuntime {
                 let origin = entity.borrow().s.origin;
                 self.print(
                     &entity,
-                    &game_format_default("%s\n", &[FormatArg::Text(self.host.pool().vtos(origin))]),
+                    &game_format("%s\n", &[GameFormatArgument::Text(self.host.pool().vtos(origin))]),
                 );
             }
             "callvote" => self.call_vote(&entity, &args),
@@ -1655,7 +1711,7 @@ impl GameCommandRuntime {
             "stats" => {}
             _ => self.print(
                 &entity,
-                &game_format_default("unknown cmd %s\n", &[FormatArg::Text(command)]),
+                &game_format("unknown cmd %s\n", &[GameFormatArgument::Text(command)]),
             ),
         }
     }
