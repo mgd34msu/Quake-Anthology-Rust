@@ -350,15 +350,32 @@ pub struct QvmPickupGame {
 /// Live catalog records.
 pub type QvmPickupCatalog = Rc<dyn Fn() -> Vec<QvmCatalogRecord>>;
 
+/// Ammo item for a catalog record.
+pub type QvmPickupAmmoResolver = Rc<dyn Fn(&QvmCatalogRecord) -> Option<ItemId>>;
+/// Whether an actor owns an item.
+pub type QvmPickupOwnership = Rc<dyn Fn(&OwnedActor, &ItemId) -> bool>;
+/// Projects inventory words for an actor item.
+pub type QvmPickupWordProjector =
+    Rc<dyn Fn(&OwnedActor, &ItemId, i32) -> Result<Vec<QvmInventoryWord>, GuestError>>;
+/// Whether an actor generation is current.
+pub type QvmPickupCurrency = Rc<dyn Fn(&OwnedActor, usize) -> bool>;
+/// Runs the source offer under the item lock.
+pub type QvmSourceOfferRunner = Rc<
+    dyn Fn(
+        &QvmOriginalPickupOffer,
+        &mut dyn FnMut(QvmPickupSelection) -> Result<i32, GuestError>,
+    ) -> Result<i32, GuestError>,
+>;
+
 /// Supply bridge.
 #[derive(Clone)]
 pub struct QvmPickupSupplyBridge {
     /// Ammo item for a record.
-    pub ammo: Rc<dyn Fn(&QvmCatalogRecord) -> Option<ItemId>>,
+    pub ammo: QvmPickupAmmoResolver,
     /// Whether an actor owns an item.
-    pub owns: Rc<dyn Fn(&OwnedActor, &ItemId) -> bool>,
+    pub owns: QvmPickupOwnership,
     /// Project inventory words.
-    pub project: Option<Rc<dyn Fn(&OwnedActor, &ItemId, i32) -> Result<Vec<QvmInventoryWord>, GuestError>>>,
+    pub project: Option<QvmPickupWordProjector>,
 }
 
 /// Pickup lifetime.
@@ -386,7 +403,7 @@ pub struct QvmPickupOptions {
     /// Canonical actor for a slot.
     pub actor: Rc<dyn Fn(usize) -> Option<OwnedActor>>,
     /// Whether an actor generation is current.
-    pub current: Rc<dyn Fn(&OwnedActor, usize) -> bool>,
+    pub current: QvmPickupCurrency,
     /// Resolve a catalog record.
     pub resolve_item: Rc<dyn Fn(&QvmCatalogRecord) -> QvmResolvedItem>,
     /// Current source time.
@@ -394,12 +411,7 @@ pub struct QvmPickupOptions {
     /// Supply bridge, if any.
     pub supply: Option<QvmPickupSupplyBridge>,
     /// Run the source offer under the item lock.
-    pub run_source: Rc<
-        dyn Fn(
-            &QvmOriginalPickupOffer,
-            &mut dyn FnMut(QvmPickupSelection) -> Result<i32, GuestError>,
-        ) -> Result<i32, GuestError>,
-    >,
+    pub run_source: QvmSourceOfferRunner,
     /// Pickup lifetime.
     pub lifetime: QvmPickupLifetime,
 }
@@ -423,6 +435,7 @@ struct QvmPickupFrame {
     /// Held supply, if any.
     supply: Option<QvmFrameSupply>,
     /// Cancellation token.
+    #[allow(dead_code)] // Mirrors the donor frame; retained for port fidelity.
     cancellation: QvmCancellationScope,
     /// Item actor.
     item: OwnedActor,
@@ -1229,7 +1242,7 @@ impl QvmPrimaryPickups {
             if field % 4 != 0
                 || field
                     .checked_add(4)
-                    .map_or(true, |end| end > options.profile.entity_stride)
+                    .is_none_or(|end| end > options.profile.entity_stride)
             {
                 return Err(GuestError::invalid(
                     "Original pickup field is outside its entity record",
@@ -1491,6 +1504,7 @@ impl QvmPrimaryPickups {
 
     /// Drive the touch hook with a crafted call (test seam).
     #[cfg(test)]
+    #[allow(dead_code)] // Test seam kept alongside test_gate for donor parity.
     fn test_touch(&self, call: &mut QvmFunctionCall) -> Result<i32, GuestError> {
         touch(&self.state, call)
     }

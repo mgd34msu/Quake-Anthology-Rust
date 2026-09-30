@@ -370,7 +370,7 @@ pub enum QvmModCombatAbi {
     /// Declared combat ABI.
     Declared {
         /// Combat calls.
-        calls: QvmModCombatCalls,
+        calls: Box<QvmModCombatCalls>,
         /// Damage-flag masks.
         damage_flags: QvmDamageFlags,
         /// Combat mass.
@@ -818,30 +818,52 @@ pub struct QvmDeathReaction {
     pub point: Vec3,
 }
 
+/// Runs source damage for a request.
+pub type QvmSourceDamageRunner =
+    Rc<dyn Fn(&QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>>;
+/// Validates or writes armor state.
+pub type QvmArmorStateWriter = Rc<dyn Fn(&QvmArmorState) -> Result<(), GuestError>>;
+/// Touch reaction.
+pub type QvmTouchReactionRunner = Rc<dyn Fn(&QvmTouchContact) -> Result<(), GuestError>>;
+/// Use reaction.
+pub type QvmUseReactionRunner =
+    Rc<dyn Fn(&OwnedActor, &ActorId, &ActorId) -> Result<(), GuestError>>;
+/// Pain reaction.
+pub type QvmPainReactionRunner = Rc<dyn Fn(&QvmPainReaction) -> Result<(), GuestError>>;
+/// Death reaction.
+pub type QvmDeathReactionRunner = Rc<dyn Fn(&QvmDeathReaction) -> Result<(), GuestError>>;
+/// Runs source damage under an observer.
+pub type QvmObservedDamageRunner<'a> = &'a dyn Fn(
+    Rc<dyn QvmDamageObserver>,
+    &QvmModDamageRequest,
+) -> Result<QvmDamageOutcome, GuestError>;
+/// Actor-release listener.
+pub type QvmActorReleaseListener = Rc<dyn Fn(&OwnedActor)>;
+
 /// Bound combat operations.
 pub struct QvmCombatBinding {
     /// Read combat state.
     pub read: Rc<dyn Fn() -> Result<QvmCombatState, GuestError>>,
     /// Run source damage.
-    pub damage: Rc<dyn Fn(&QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>>,
+    pub damage: QvmSourceDamageRunner,
     /// Validate an armor write.
-    pub validate_armor: Rc<dyn Fn(&QvmArmorState) -> Result<(), GuestError>>,
+    pub validate_armor: QvmArmorStateWriter,
     /// Write health.
     pub write_health: Rc<dyn Fn(i32) -> Result<(), GuestError>>,
     /// Write armor.
-    pub write_armor: Rc<dyn Fn(&QvmArmorState) -> Result<(), GuestError>>,
+    pub write_armor: QvmArmorStateWriter,
 }
 
 /// Bound actor reactions.
 pub struct QvmActorReactions {
     /// Touch reaction.
-    pub touch: Rc<dyn Fn(&QvmTouchContact) -> Result<(), GuestError>>,
+    pub touch: QvmTouchReactionRunner,
     /// Use reaction.
-    pub use_: Rc<dyn Fn(&OwnedActor, &ActorId, &ActorId) -> Result<(), GuestError>>,
+    pub use_: QvmUseReactionRunner,
     /// Pain reaction.
-    pub pain: Rc<dyn Fn(&QvmPainReaction) -> Result<(), GuestError>>,
+    pub pain: QvmPainReactionRunner,
     /// Death reaction.
-    pub die: Rc<dyn Fn(&QvmDeathReaction) -> Result<(), GuestError>>,
+    pub die: QvmDeathReactionRunner,
 }
 
 /// Host services for actor semantics.
@@ -849,7 +871,7 @@ pub trait QvmModActorServices {
     /// Whether shared actor callbacks exist.
     fn callbacks_available(&self) -> bool;
     /// Observe actor releases; returns the unsubscribe handle.
-    fn on_actor_release(&self, on_release: Rc<dyn Fn(&OwnedActor)>) -> Box<dyn FnOnce()>;
+    fn on_actor_release(&self, on_release: QvmActorReleaseListener) -> Box<dyn FnOnce()>;
     /// Apply foreign damage.
     fn combat_apply(&self, request: &QvmModDamageRequest);
     /// Apply owned damage through a composer.
@@ -862,7 +884,7 @@ pub trait QvmModActorServices {
     fn run_source_damage(
         &self,
         input: &QvmModDamageRequest,
-        run: &dyn Fn(Rc<dyn QvmDamageObserver>, &QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>,
+        run: QvmObservedDamageRunner<'_>,
     ) -> Result<QvmDamageOutcome, GuestError>;
     /// Bind combat operations for an actor.
     fn rebind_combat(&self, actor: &OwnedActor, binding: QvmCombatBinding);
@@ -1022,7 +1044,7 @@ fn require_arguments(bytes: usize, words: &[i32]) -> Result<(), GuestError> {
 
 /// Check a semantic field offset against its record.
 fn check_field(record: &QvmModActorRecord, offset: usize) -> Result<(), GuestError> {
-    if offset % 4 != 0 || offset + 4 > record.stride {
+    if !offset.is_multiple_of(4) || offset + 4 > record.stride {
         return Err(GuestError::invalid(
             "QVM actor semantic field exceeds its declared record",
         ));
@@ -1068,7 +1090,7 @@ pub fn validate_qvm_mod_actors(
     if artifact
         .image
         .instruction(combat.entry)
-        .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+        .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
     {
         return Err(GuestError::invalid("QVM damage entry is not a source function"));
     }
@@ -1242,7 +1264,7 @@ impl QvmModActors {
             Some(combat) => match &combat.abi {
                 QvmModCombatAbi::Declared {
                     calls, damage_flags, ..
-                } => (calls.clone(), *damage_flags),
+                } => (calls.as_ref().clone(), *damage_flags),
                 QvmModCombatAbi::Q3GDamage => (legacy_calls(), LEGACY_FLAGS),
             },
             None => (legacy_calls(), LEGACY_FLAGS),
@@ -1415,7 +1437,7 @@ impl QvmModActors {
         };
         if address < record.address
             || address >= record.address + record.stride * record.capacity
-            || (address - record.address) % record.stride != 0
+            || !(address - record.address).is_multiple_of(record.stride)
         {
             return Err(GuestError::invalid(
                 "QVM combat client pointer is outside its source declaration",
@@ -1578,7 +1600,7 @@ impl QvmModActors {
                         let pointer = armor_this.operations.pointer(Some(&armor_id))?;
                         let client = armor_this.client(pointer)?;
                         let definition = armor_this.declaration.combat.as_ref();
-                        let (Some(client), Some(definition), Some(client_definition)) = (
+                        let (Some(client), Some(_definition), Some(client_definition)) = (
                             client,
                             definition,
                             definition.and_then(|definition| definition.client.as_ref()),
@@ -1738,7 +1760,9 @@ impl QvmModActors {
                 } else {
                     3
                 },
-                signbits: u8::from(normal.x < 0.0) | u8::from(normal.y < 0.0) * 2 | u8::from(normal.z < 0.0) * 4,
+                signbits: u8::from(normal.x < 0.0)
+                    | (u8::from(normal.y < 0.0) * 2)
+                    | (u8::from(normal.z < 0.0) * 4),
             },
             surface_flags: 0,
             contents: 0,
@@ -2405,17 +2429,19 @@ mod tests {
         }
     }
 
+    type QvmSourceUseRoute = (ActorId, Option<ActorId>, Option<ActorId>);
+
     struct FixtureServices {
         applied: RefCell<Vec<QvmModDamageRequest>>,
         observed: RefCell<Vec<QvmModDamageRequest>>,
         bindings: RefCell<HashMap<ActorId, Rc<QvmCombatBinding>>>,
         reactions: RefCell<HashMap<ActorId, Rc<QvmActorReactions>>>,
         observers: RefCell<Vec<Rc<FixtureObserver>>>,
-        release: RefCell<Option<Rc<dyn Fn(&OwnedActor)>>>,
+        release: RefCell<Option<QvmActorReleaseListener>>,
         unsubscribed: Rc<Cell<bool>>,
         bodies: HashMap<ActorId, QvmBodySample>,
         teams: HashMap<ActorId, String>,
-        uses: RefCell<Vec<(ActorId, Option<ActorId>, Option<ActorId>)>>,
+        uses: RefCell<Vec<QvmSourceUseRoute>>,
         touches: RefCell<Vec<QvmTouchContact>>,
         pains: RefCell<Vec<QvmPainReaction>>,
         deaths: RefCell<Vec<QvmDeathReaction>>,
@@ -2426,7 +2452,7 @@ mod tests {
             true
         }
 
-        fn on_actor_release(&self, on_release: Rc<dyn Fn(&OwnedActor)>) -> Box<dyn FnOnce()> {
+        fn on_actor_release(&self, on_release: QvmActorReleaseListener) -> Box<dyn FnOnce()> {
             *self.release.borrow_mut() = Some(on_release);
             let unsubscribed = Rc::clone(&self.unsubscribed);
             Box::new(move || unsubscribed.set(true))
@@ -2449,7 +2475,7 @@ mod tests {
         fn run_source_damage(
             &self,
             input: &QvmModDamageRequest,
-            run: &dyn Fn(Rc<dyn QvmDamageObserver>, &QvmModDamageRequest) -> Result<QvmDamageOutcome, GuestError>,
+            run: QvmObservedDamageRunner<'_>,
         ) -> Result<QvmDamageOutcome, GuestError> {
             let observer = Rc::new(FixtureObserver {
                 before: RefCell::new(Vec::new()),
@@ -2541,12 +2567,14 @@ mod tests {
     }
 
     fn artifact() -> QvmArtifact {
-        let mut image = QvmImage::default();
-        image.instructions = (0..32)
-            .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
-            .collect();
-        image.data_length = 4096;
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            instructions: (0..32)
+                .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
+                .collect(),
+            data_length: 4096,
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),
@@ -2712,7 +2740,7 @@ mod tests {
 
         let mut bad = declaration();
         bad.combat.as_mut().unwrap().abi = QvmModCombatAbi::Declared {
-            calls: legacy_calls(),
+            calls: Box::new(legacy_calls()),
             damage_flags: QvmDamageFlags {
                 radius: 1,
                 no_armor: 1,
@@ -2727,7 +2755,7 @@ mod tests {
 
         let mut bad = declaration();
         bad.combat.as_mut().unwrap().abi = QvmModCombatAbi::Declared {
-            calls: legacy_calls(),
+            calls: Box::new(legacy_calls()),
             damage_flags: LEGACY_FLAGS,
             mass: QvmCombatMass::Constant { value: -1.0 },
             teams: Vec::new(),
@@ -2736,7 +2764,7 @@ mod tests {
 
         let mut bad = declaration();
         bad.combat.as_mut().unwrap().abi = QvmModCombatAbi::Declared {
-            calls: legacy_calls(),
+            calls: Box::new(legacy_calls()),
             damage_flags: LEGACY_FLAGS,
             mass: QvmCombatMass::Constant { value: 100.0 },
             teams: vec![QvmCombatTeam {
@@ -2749,7 +2777,7 @@ mod tests {
 
         let mut bad = declaration();
         bad.combat.as_mut().unwrap().abi = QvmModCombatAbi::Declared {
-            calls: legacy_calls(),
+            calls: Box::new(legacy_calls()),
             damage_flags: LEGACY_FLAGS,
             mass: QvmCombatMass::Constant { value: 100.0 },
             teams: vec![QvmCombatTeam {
