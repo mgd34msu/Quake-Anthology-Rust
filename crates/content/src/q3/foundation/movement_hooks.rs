@@ -3,21 +3,49 @@
 //! Donor provenance: `src/content/q3/foundation/movement-hooks.ts`.
 
 use qa_core::identity::OwnedActor;
-use qa_core::time::{FrameContext, SourceTime};
-use qa_world::movement::types::{
-    ActorAnimationState as WorldActorAnimationState, AnimationState, ArsenalState as WorldArsenalState, InventoryEntry,
-    MovementEffect as WorldMovementEffect, MovementEnvironment as WorldMovementEnvironment, UserCommand,
-    WeaponState as FamilyWeaponState,
+use qa_core::time::FrameContext;
+use qa_world::movement::q3::animation::{run_q3_animation_operation, run_q3_torso_operation, Q3AnimationContext};
+use qa_world::movement::q3::constants::{
+    command_buttons, move_flags, move_type, player_animation, weapon, weapon_state,
 };
+use qa_world::movement::q3::types::{q3_weapon_state, Q3AnimationRequest, Q3AnimationStepResult, Q3Product};
+use qa_world::movement::types::{ActorAnimationState, ArsenalState, MovementEffect, MovementEnvironment, UserCommand};
+use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::arsenal::ArsenalError;
 use crate::q3::foundation::arsenal::*;
-use crate::q3::foundation::mirrors::*;
 
 // ---------------------------------------------------------------------------
 // movement-hooks.ts: PM_Firing, PM_Animate, PM_Weapon, PM_TorsoAnimation.
 // ---------------------------------------------------------------------------
+
+/// Movement hook failure (donor `RangeError`, `TypeError`, and `Error`
+/// throws).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MovementHooksError {
+    /// Out-of-range value (donor `RangeError`).
+    #[error("{0}")]
+    Range(String),
+    /// Wrong provider or state kind (donor `TypeError`).
+    #[error("{0}")]
+    Type(String),
+    /// Operation failure (donor `Error`).
+    #[error("{0}")]
+    Failed(String),
+}
+
+fn range(message: impl Into<String>) -> MovementHooksError {
+    MovementHooksError::Range(message.into())
+}
+
+fn failed(message: impl Into<String>) -> MovementHooksError {
+    MovementHooksError::Failed(message.into())
+}
+
+fn type_error(message: impl Into<String>) -> MovementHooksError {
+    MovementHooksError::Type(message.into())
+}
 
 /// Hook execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +88,7 @@ pub struct Q3HookInput {
     /// User command, threaded into the arsenal step like the donor.
     pub command: UserCommand,
     /// Environment.
-    pub environment: WorldMovementEnvironment,
+    pub environment: MovementEnvironment,
 }
 
 /// Movement hook context (`Q3HookContext`, foundation-read fields).
@@ -77,7 +105,7 @@ pub struct Q3HookContext {
     /// Arsenal.
     pub arsenal: ArsenalState,
     /// Animation.
-    pub animation: WorldActorAnimationState,
+    pub animation: ActorAnimationState,
 }
 
 /// Arsenal runtime storage (`Q3ArsenalRuntimeAccess`).
@@ -94,8 +122,8 @@ pub trait Q3ArsenalRuntimeAccess {
 #[must_use]
 pub fn q3_source_arsenal_controls(context: &Q3HookContext) -> Q3ArsenalControls {
     Q3ArsenalControls {
-        attack: context.command.buttons & Q3CommandButtons::ATTACK != 0,
-        use_holdable: context.command.buttons & Q3CommandButtons::USE_HOLDABLE != 0,
+        attack: context.command.buttons & command_buttons::ATTACK != 0,
+        use_holdable: context.command.buttons & command_buttons::USE_HOLDABLE != 0,
         requested_weapon: context.command.weapon,
     }
 }
@@ -104,82 +132,38 @@ pub fn q3_source_arsenal_controls(context: &Q3HookContext) -> Q3ArsenalControls 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q3WeaponPhaseResult {
     /// Arsenal.
-    pub arsenal: WorldArsenalState,
+    pub arsenal: ArsenalState,
     /// Animation.
-    pub animation: WorldActorAnimationState,
+    pub animation: ActorAnimationState,
     /// Effects.
-    pub effects: Vec<WorldMovementEffect>,
+    pub effects: Vec<MovementEffect>,
     /// Movement flags.
     pub movement_flags: i32,
 }
 
-/// Selected movement hooks (`Q3MovementHooks`).
+/// Selected movement hooks (`Q3MovementHooks`). The animation and torso
+/// stages report the donor's non-Q3 `TypeError` throw as
+/// [`MovementHooksError::Type`].
 pub trait Q3MovementHooks {
     /// Firing test.
     fn firing(&self, context: &Q3HookContext) -> bool;
     /// Animation request.
-    fn animation(&self, request: &Q3AnimationRequest, context: &Q3HookContext) -> AnimationStepResult;
+    fn animation(
+        &self,
+        request: &Q3AnimationRequest,
+        context: &Q3HookContext,
+    ) -> Result<Q3AnimationStepResult, MovementHooksError>;
     /// Weapon stage.
-    fn weapon(&self, context: &Q3HookContext) -> Result<Q3WeaponPhaseResult, Q3FoundationError>;
+    fn weapon(&self, context: &Q3HookContext) -> Result<Q3WeaponPhaseResult, MovementHooksError>;
     /// Torso stage.
-    fn torso(&self, context: &Q3HookContext) -> AnimationStepResult;
-}
-
-/// Project merged animation state into the hook-owned shape the mirrors
-/// animation operations read. The merged timers are integers, so the widening
-/// is exact.
-fn hook_animation(animation: &WorldActorAnimationState) -> ActorAnimationState {
-    let AnimationState::Q3 {
-        legs,
-        torso,
-        legs_timer_milliseconds,
-        torso_timer_milliseconds,
-    } = animation.state
-    else {
-        panic!("Q3 source hooks require Q3 animation");
-    };
-    ActorAnimationState {
-        provider: animation.provider.clone(),
-        state: Q3AnimationState {
-            legs,
-            torso,
-            legs_timer_ms: f64::from(legs_timer_milliseconds),
-            torso_timer_ms: f64::from(torso_timer_milliseconds),
-        },
-    }
-}
-
-/// Project a hook arsenal into the merged shape the canonical step reads. The
-/// step reads counts only, so dropping capacities is behavior-preserving.
-fn world_arsenal(arsenal: &ArsenalState) -> WorldArsenalState {
-    WorldArsenalState {
-        provider: arsenal.provider.clone(),
-        active_weapon: arsenal.active_weapon.clone(),
-        state: FamilyWeaponState::Q3 {
-            source_weapon: arsenal.state.source_weapon,
-            state: arsenal.state.state,
-            time_milliseconds: arsenal.state.time_milliseconds,
-        },
-        ammo: arsenal
-            .ammo
-            .iter()
-            .map(|entry| InventoryEntry {
-                item: entry.item.clone(),
-                count: entry.count,
-            })
-            .collect(),
-    }
+    fn torso(&self, context: &Q3HookContext) -> Result<Q3AnimationStepResult, MovementHooksError>;
 }
 
 pub(crate) fn hook_animation_context(context: &Q3HookContext) -> Q3AnimationContext {
-    let elapsed_ms = match context.frame.elapsed {
-        SourceTime::Milliseconds(value) => f64::from(value),
-        SourceTime::Seconds(value) => f64::from(value),
-    };
     Q3AnimationContext {
-        animation: hook_animation(&context.animation),
-        dead: context.motion.pm_type >= Q3MoveType::DEAD,
-        elapsed_ms,
+        animation: context.animation.clone(),
+        dead: context.motion.pm_type >= move_type::DEAD,
+        elapsed_milliseconds: context.frame.elapsed.as_milliseconds_truncated(),
         buttons: context.command.buttons,
         product: context.motion.product,
         event_sequence: context.motion.event_sequence,
@@ -206,7 +190,10 @@ pub fn create_q3_source_movement_hooks<R: Q3ArsenalRuntimeAccess>(runtime: R) ->
 
 impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
     fn firing(&self, context: &Q3HookContext) -> bool {
-        let Some(item) = q3_weapon_item(context.arsenal.state.source_weapon) else {
+        let Some((source_weapon, _, _)) = q3_weapon_state(&context.arsenal) else {
+            return false;
+        };
+        let Some(item) = q3_weapon_item(source_weapon) else {
             return false;
         };
         match item.ammo.as_deref() {
@@ -223,15 +210,20 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
         }
     }
 
-    fn animation(&self, request: &Q3AnimationRequest, context: &Q3HookContext) -> AnimationStepResult {
-        run_q3_animation_operation(request, &hook_animation_context(context))
+    fn animation(
+        &self,
+        request: &Q3AnimationRequest,
+        context: &Q3HookContext,
+    ) -> Result<Q3AnimationStepResult, MovementHooksError> {
+        run_q3_animation_operation(*request, &hook_animation_context(context))
+            .map_err(|error| type_error(error.to_string()))
     }
 
-    fn weapon(&self, context: &Q3HookContext) -> Result<Q3WeaponPhaseResult, Q3FoundationError> {
+    fn weapon(&self, context: &Q3HookContext) -> Result<Q3WeaponPhaseResult, MovementHooksError> {
         let previous = self.runtime.read(&context.input.actor, context.input.execution);
         let state = Q3ArsenalRuntimeState {
-            respawned: context.motion.pm_flags & Q3MoveFlags::RESPAWNED != 0,
-            use_item_held: context.motion.pm_flags & Q3MoveFlags::USE_ITEM_HELD != 0,
+            respawned: context.motion.pm_flags & move_flags::RESPAWNED != 0,
+            use_item_held: context.motion.pm_flags & move_flags::USE_ITEM_HELD != 0,
             event_sequence: context.motion.event_sequence,
             ..previous
         };
@@ -240,7 +232,7 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
                 actor: context.input.actor.clone(),
                 command: context.input.command,
                 frame: context.frame,
-                arsenal: world_arsenal(&context.arsenal),
+                arsenal: context.arsenal.clone(),
                 animation: context.animation.clone(),
                 environment: context.input.environment,
                 gauntlet_hit: self.runtime.gauntlet_hit(context),
@@ -256,14 +248,14 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
         })?;
         self.runtime
             .write(&context.input.actor, context.input.execution, result.runtime.clone());
-        let movement_flags = (context.motion.pm_flags & !(Q3MoveFlags::RESPAWNED | Q3MoveFlags::USE_ITEM_HELD))
+        let movement_flags = (context.motion.pm_flags & !(move_flags::RESPAWNED | move_flags::USE_ITEM_HELD))
             | (if result.runtime.respawned {
-                Q3MoveFlags::RESPAWNED
+                move_flags::RESPAWNED
             } else {
                 0
             })
             | (if result.runtime.use_item_held {
-                Q3MoveFlags::USE_ITEM_HELD
+                move_flags::USE_ITEM_HELD
             } else {
                 0
             });
@@ -275,18 +267,223 @@ impl<R: Q3ArsenalRuntimeAccess> Q3MovementHooks for Q3SourceMovementHooks<R> {
         })
     }
 
-    fn torso(&self, context: &Q3HookContext) -> AnimationStepResult {
-        if context.arsenal.state.state != Q3WeaponPhase::READY {
-            return AnimationStepResult {
-                animation: hook_animation(&context.animation),
+    fn torso(&self, context: &Q3HookContext) -> Result<Q3AnimationStepResult, MovementHooksError> {
+        let Some((source_weapon, state, _)) = q3_weapon_state(&context.arsenal) else {
+            return Err(type_error("Q3 source hooks require Q3 weapon state"));
+        };
+        if state != weapon_state::READY {
+            return Ok(Q3AnimationStepResult {
+                animation: context.animation.clone(),
                 effects: Vec::new(),
-            };
+            });
         }
-        let animation = if context.arsenal.state.source_weapon == Q3Weapon::GAUNTLET {
-            Q3PlayerAnimation::TORSO_STAND2
+        let animation = if source_weapon == weapon::GAUNTLET {
+            player_animation::TORSO_STAND2
         } else {
-            Q3PlayerAnimation::TORSO_STAND
+            player_animation::TORSO_STAND
         };
         run_q3_torso_operation(animation, &hook_animation_context(context), true)
+            .map_err(|error| type_error(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use crate::q3::base::shared::definitions::Product;
+    use crate::q3::foundation::animation::ANIMATION_TOGGLE_BIT;
+    use qa_core::identity::{IdentityOwner, ProviderId};
+    use qa_core::time::{FramePhase, SourceTime};
+    use qa_world::movement::q3::types::q3_animation_state;
+    use qa_world::movement::types::{AnimationState, InventoryEntry, Q3UserCommand, WeaponState as FamilyWeaponState};
+
+    use super::*;
+
+    fn test_frame(elapsed: SourceTime) -> FrameContext {
+        FrameContext {
+            frame: 1,
+            time: SourceTime::Milliseconds(100),
+            elapsed,
+            phase: FramePhase::FrameEntry,
+        }
+    }
+
+    fn test_actor() -> (OwnedActor, ProviderId) {
+        let owner = IdentityOwner::create("test").unwrap();
+        let provider = ProviderId::new("q3", "test");
+        let owned = owner.owned_actor(&owner.actor(3, 1), provider.clone()).unwrap();
+        (owned, provider)
+    }
+
+    fn test_command() -> UserCommand {
+        UserCommand::Q3(Q3UserCommand {
+            server_time_milliseconds: 0,
+            angle_words: [0, 0, 0],
+            buttons: 0,
+            weapon: weapon::MACHINEGUN,
+            forward_move: 0,
+            right_move: 0,
+            up_move: 0,
+        })
+    }
+
+    fn test_environment(health: f64) -> MovementEnvironment {
+        MovementEnvironment {
+            client_outputs: None,
+            speed_multiplier: None,
+            pose: None,
+            health,
+            flight: false,
+            haste: false,
+            invulnerable: false,
+            gravity_multiplier: 1.0,
+        }
+    }
+
+    fn q3_weapon(state: &FamilyWeaponState) -> (i32, i32, i32) {
+        let FamilyWeaponState::Q3 {
+            source_weapon,
+            state,
+            time_milliseconds,
+        } = state
+        else {
+            panic!("q3 step keeps q3 weapon state");
+        };
+        (*source_weapon, *state, *time_milliseconds)
+    }
+
+    fn q3_torso(state: &AnimationState) -> i32 {
+        let AnimationState::Q3 { torso, .. } = state else {
+            panic!("q3 step keeps q3 animation");
+        };
+        *torso
+    }
+
+    struct FakeRuntime {
+        state: RefCell<Q3ArsenalRuntimeState>,
+        gauntlet: bool,
+    }
+
+    impl Q3ArsenalRuntimeAccess for FakeRuntime {
+        fn read(&self, _actor: &OwnedActor, _execution: Q3Execution) -> Q3ArsenalRuntimeState {
+            self.state.borrow().clone()
+        }
+
+        fn write(&self, _actor: &OwnedActor, _execution: Q3Execution, state: Q3ArsenalRuntimeState) {
+            *self.state.borrow_mut() = state;
+        }
+
+        fn gauntlet_hit(&self, _context: &Q3HookContext) -> bool {
+            self.gauntlet
+        }
+    }
+
+    fn hook_fixture() -> (Q3HookContext, Q3ArsenalRuntimeState) {
+        let (actor, provider) = test_actor();
+        let runtime = q3_spawn_arsenal_runtime(Product::Baseq3, 100.0, 7);
+        let context = Q3HookContext {
+            input: Q3HookInput {
+                actor,
+                execution: Q3Execution::Authoritative,
+                command: test_command(),
+                environment: test_environment(100.0),
+            },
+            motion: Q3MotionWork {
+                pm_type: move_type::NORMAL,
+                pm_flags: move_flags::DUCKED,
+                event_sequence: 7,
+                product: Q3Product::BaseQ3,
+            },
+            command: Q3HookCommand {
+                buttons: command_buttons::ATTACK,
+                weapon: weapon::MACHINEGUN,
+            },
+            frame: test_frame(SourceTime::Milliseconds(8)),
+            arsenal: ArsenalState {
+                provider: provider.clone(),
+                active_weapon: Some("q3:weapon/machinegun".to_string()),
+                state: FamilyWeaponState::Q3 {
+                    source_weapon: weapon::MACHINEGUN,
+                    state: weapon_state::READY,
+                    time_milliseconds: 0,
+                },
+                ammo: vec![
+                    InventoryEntry {
+                        item: "q3:weapon/gauntlet".to_string(),
+                        count: 1.0,
+                    },
+                    InventoryEntry {
+                        item: "q3:weapon/machinegun".to_string(),
+                        count: 1.0,
+                    },
+                    InventoryEntry {
+                        item: "q3:ammo/machinegun".to_string(),
+                        count: 100.0,
+                    },
+                ],
+            },
+            animation: ActorAnimationState {
+                provider,
+                state: q3_spawn_animation(),
+            },
+        };
+        (context, runtime)
+    }
+
+    #[test]
+    fn source_movement_hooks_run_firing_weapon_and_torso() {
+        let (mut context, runtime) = hook_fixture();
+        let hooks = create_q3_source_movement_hooks(FakeRuntime {
+            state: RefCell::new(Q3ArsenalRuntimeState {
+                respawned: false,
+                ..runtime
+            }),
+            gauntlet: false,
+        });
+        assert!(hooks.firing(&context));
+        context.arsenal.state = FamilyWeaponState::Q3 {
+            source_weapon: 99,
+            state: weapon_state::READY,
+            time_milliseconds: 0,
+        };
+        assert!(!hooks.firing(&context));
+        context.arsenal.state = FamilyWeaponState::Q3 {
+            source_weapon: weapon::MACHINEGUN,
+            state: weapon_state::READY,
+            time_milliseconds: 0,
+        };
+
+        let phase = hooks.weapon(&context).unwrap();
+        assert_eq!(q3_weapon(&phase.arsenal.state).1, weapon_state::FIRING);
+        assert_eq!(phase.movement_flags, move_flags::DUCKED);
+
+        let AnimationState::Q3 { torso, .. } = &mut context.animation.state else {
+            panic!("hook animation stays q3");
+        };
+        *torso = player_animation::TORSO_ATTACK;
+        let torso = hooks.torso(&context).unwrap();
+        assert_ne!(q3_torso(&torso.animation.state), q3_torso(&context.animation.state));
+        context.arsenal.state = FamilyWeaponState::Q3 {
+            source_weapon: weapon::MACHINEGUN,
+            state: weapon_state::DROPPING,
+            time_milliseconds: 0,
+        };
+        let held = hooks.torso(&context).unwrap();
+        assert!(held.effects.is_empty());
+
+        let legs = hooks
+            .animation(
+                &Q3AnimationRequest::Legs {
+                    animation: player_animation::LEGS_RUN,
+                    force: true,
+                },
+                &context,
+            )
+            .unwrap();
+        assert_eq!(
+            q3_animation_state(&legs.animation).unwrap().0 & !ANIMATION_TOGGLE_BIT,
+            player_animation::LEGS_RUN
+        );
     }
 }
