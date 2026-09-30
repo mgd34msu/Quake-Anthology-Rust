@@ -1,5 +1,5 @@
 //! Q3 source arsenal adapter: the `PM_Weapon` stage and `ClientSpawn`
-//! loadout (`foundation/arsenal.ts`, from id Software `bg_pmove.c`,
+//! loadout (`src/content/q3/foundation/arsenal.ts`, from id Software `bg_pmove.c`,
 //! GPL-2.0-or-later).
 //!
 //! The world weapon step reports post-state rather than the donor's

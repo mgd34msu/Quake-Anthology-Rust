@@ -1,4 +1,4 @@
-//! Cgame body profile (`presentation/cgame-body-profile.ts`).
+//! Cgame body profile (`src/content/q3/presentation/cgame-body-profile.ts`).
 
 use qa_guest::error::GuestError;
 use qa_guest::qvm::cgame_body::{

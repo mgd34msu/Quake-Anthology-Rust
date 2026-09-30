@@ -1,4 +1,4 @@
-//! Q3 grapple profile dispatch (`grapple-profiles.ts`).
+//! Q3 grapple profile dispatch (`src/content/q3/equipment/grapple-profiles.ts`).
 
 use qa_guest::error::GuestError;
 use qa_guest::qvm::game_data::QvmArtifact;

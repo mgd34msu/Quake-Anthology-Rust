@@ -1,4 +1,4 @@
-//! Threewave CTF grapple profile (`threewave-grapple-profile.ts`).
+//! Threewave CTF grapple profile (`src/content/q3/equipment/threewave-grapple-profile.ts`).
 
 use qa_guest::error::GuestError;
 use qa_guest::qvm::game_data::{ProfileReader, ProfileValue, QvmArtifact};

@@ -1,4 +1,4 @@
-//! Q3 native inventory profile (`inventory-profile.ts`).
+//! Q3 native inventory profile (`src/content/q3/equipment/inventory-profile.ts`).
 
 use std::collections::HashMap;
 use std::rc::Rc;

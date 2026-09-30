@@ -1,4 +1,4 @@
-//! Q3 input profile (`input-profile.ts`).
+//! Q3 input profile (`src/content/q3/input-profile.ts`).
 
 use qa_guest::qvm::game_data::QvmArtifact;
 use qa_guest::qvm::game_input::{QvmInputDefinition, QvmInputEntries, QvmMovementModes};

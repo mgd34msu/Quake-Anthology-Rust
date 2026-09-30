@@ -1,4 +1,4 @@
-//! Q3 guest weapon catalogs (`guest-items.ts`).
+//! Q3 guest weapon catalogs (`src/content/q3/guest-items.ts`).
 
 use std::collections::HashSet;
 use std::sync::LazyLock;

@@ -1,4 +1,4 @@
-//! Q3 native combat profile (`combat-profile.ts`).
+//! Q3 native combat profile (`src/content/q3/equipment/combat-profile.ts`).
 
 use qa_guest::error::GuestError;
 use qa_guest::qvm::game_combat::{
