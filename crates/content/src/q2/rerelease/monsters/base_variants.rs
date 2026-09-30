@@ -2,6 +2,8 @@
 //!
 //! Gameplay logic adapted from the ZeniMax rerelease game DLL (GPL-2.0-or-later).
 
+pub mod boss2;
+pub mod brain;
 pub mod flipper;
 pub mod floater;
 pub mod flyer;
