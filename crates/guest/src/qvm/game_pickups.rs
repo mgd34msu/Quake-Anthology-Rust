@@ -355,8 +355,7 @@ pub type QvmPickupAmmoResolver = Rc<dyn Fn(&QvmCatalogRecord) -> Option<ItemId>>
 /// Whether an actor owns an item.
 pub type QvmPickupOwnership = Rc<dyn Fn(&OwnedActor, &ItemId) -> bool>;
 /// Projects inventory words for an actor item.
-pub type QvmPickupWordProjector =
-    Rc<dyn Fn(&OwnedActor, &ItemId, i32) -> Result<Vec<QvmInventoryWord>, GuestError>>;
+pub type QvmPickupWordProjector = Rc<dyn Fn(&OwnedActor, &ItemId, i32) -> Result<Vec<QvmInventoryWord>, GuestError>>;
 /// Whether an actor generation is current.
 pub type QvmPickupCurrency = Rc<dyn Fn(&OwnedActor, usize) -> bool>;
 /// Runs the source offer under the item lock.
@@ -919,18 +918,36 @@ fn quantity(
 /// Shared grant-region outcome.
 type QvmGrantRegionOutcome = Rc<RefCell<Option<GuestError>>>;
 
+/// Shared grant-region restore.
+type QvmGrantRegionRestore = Rc<RefCell<Box<dyn FnMut() -> Result<(), GuestError>>>>;
+
+/// Grant-region entry parameters.
+struct QvmGrantRegionParams {
+    /// Region entry.
+    entry: usize,
+    /// Region join.
+    join: usize,
+    /// Quantity local offset.
+    quantity_offset: usize,
+    /// Granted weapon, if any.
+    weapon: Option<QvmGrantWeapon>,
+}
+
 /// Build the grant-region entry callback.
 fn grant_region(
     state: &Rc<RefCell<QvmPickupState>>,
     frame_id: u64,
     grant_index: usize,
-    entry: usize,
-    join: usize,
-    quantity_offset: usize,
-    weapon: Option<QvmGrantWeapon>,
-    restore: Rc<RefCell<Box<dyn FnMut() -> Result<(), GuestError>>>>,
+    params: QvmGrantRegionParams,
+    restore: QvmGrantRegionRestore,
     outcome: QvmGrantRegionOutcome,
 ) -> QvmRegionBinding {
+    let QvmGrantRegionParams {
+        entry,
+        join,
+        quantity_offset,
+        weapon,
+    } = params;
     let state = Rc::clone(state);
     QvmRegionBinding {
         entry,
@@ -1163,17 +1180,18 @@ fn grant(
                     }
                 }
             }
-            let restore: Rc<RefCell<Box<dyn FnMut() -> Result<(), GuestError>>>> =
-                Rc::new(RefCell::new(Box::new(project(state, &writes)?)));
+            let restore: QvmGrantRegionRestore = Rc::new(RefCell::new(Box::new(project(state, &writes)?)));
             let outcome: QvmGrantRegionOutcome = Rc::new(RefCell::new(None));
             call.regions(vec![grant_region(
                 state,
                 frame.id,
                 grant_index,
-                entry,
-                join,
-                quantity_offset,
-                weapon,
+                QvmGrantRegionParams {
+                    entry,
+                    join,
+                    quantity_offset,
+                    weapon,
+                },
                 Rc::clone(&restore),
                 Rc::clone(&outcome),
             )]);
@@ -1253,7 +1271,7 @@ impl QvmPrimaryPickups {
         let entry = |index: usize| -> Result<(), GuestError> {
             if instructions
                 .get(index)
-                .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
             {
                 return Err(GuestError::invalid("Original pickup requires a source function entry"));
             }
@@ -1797,10 +1815,12 @@ mod tests {
             actors.insert(id.clone());
             owned.push(owner.owned_actor(&id, provider.clone()).unwrap());
         }
-        let mut image = QvmImage::default();
-        image.instructions = instructions();
-        image.initialized_data = initialized_data();
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            instructions: instructions(),
+            initialized_data: initialized_data(),
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),

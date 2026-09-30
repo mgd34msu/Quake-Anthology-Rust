@@ -305,29 +305,44 @@ pub struct QvmGiveNamed {
     pub item: usize,
 }
 
+/// Current slot lookup for an actor.
+type QvmWeaponSlotFn = Rc<dyn Fn(&ActorId) -> Option<usize>>;
+/// Equipment motion lookup.
+type QvmWeaponEquipmentMotionFn = Rc<dyn Fn(&ActorId) -> Option<QvmEquipmentMotion>>;
+/// Observed weapon value hook.
+type QvmWeaponValueFn = Rc<dyn Fn(&ActorId, i32)>;
+/// Observed completion hook.
+type QvmWeaponCompletedFn = Rc<dyn Fn(&ActorId, bool)>;
+/// Observed give-grant hook.
+type QvmWeaponGiveFn = Rc<dyn Fn(&ActorId, QvmGiveCategory)>;
+/// Named-item grant hook.
+type QvmWeaponGiveItemFn = Rc<dyn Fn(&ActorId, &str) -> bool>;
+/// Death-drop projection hook.
+type QvmWeaponDropFn = Rc<dyn Fn(&ActorId) -> Option<QvmDeathDrop>>;
+
 /// Weapon host services.
 #[derive(Clone)]
 pub struct QvmWeaponServices {
     /// Canonical actor for a slot.
     pub actor: Rc<dyn Fn(usize) -> Option<ActorId>>,
     /// Current slot for an actor.
-    pub slot: Rc<dyn Fn(&ActorId) -> Option<usize>>,
+    pub slot: QvmWeaponSlotFn,
     /// Whether an actor is selected.
     pub selected: Rc<dyn Fn(&ActorId) -> bool>,
     /// Equipment motion, if any.
-    pub equipment_movement: Option<Rc<dyn Fn(&ActorId) -> Option<QvmEquipmentMotion>>>,
+    pub equipment_movement: Option<QvmWeaponEquipmentMotionFn>,
     /// Observe an attempted weapon value.
-    pub attempted: Rc<dyn Fn(&ActorId, i32)>,
+    pub attempted: QvmWeaponValueFn,
     /// Observe an accepted weapon value.
-    pub accepted: Rc<dyn Fn(&ActorId, i32)>,
+    pub accepted: QvmWeaponValueFn,
     /// Observe completion.
-    pub completed: Rc<dyn Fn(&ActorId, bool)>,
+    pub completed: QvmWeaponCompletedFn,
     /// Observe a give grant.
-    pub give: Rc<dyn Fn(&ActorId, QvmGiveCategory)>,
+    pub give: QvmWeaponGiveFn,
     /// Grant a named item; returns whether the source call is consumed.
-    pub give_item: Rc<dyn Fn(&ActorId, &str) -> bool>,
+    pub give_item: QvmWeaponGiveItemFn,
     /// Project a death drop.
-    pub drop: Rc<dyn Fn(&ActorId) -> Option<QvmDeathDrop>>,
+    pub drop: QvmWeaponDropFn,
 }
 
 /// Source game handles.
@@ -803,7 +818,7 @@ impl QvmPrimaryWeapons {
         let instructions = &artifact.image.instructions;
         if instructions
             .get(profile.torso_animation.entry)
-            .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
         {
             return Err(GuestError::invalid(
                 "Primary QVM torso animation entry is not an original function",
@@ -814,7 +829,7 @@ impl QvmPrimaryWeapons {
                 || match_profile
                     .score
                     .checked_add(4)
-                    .map_or(true, |end| end > profile.client_stride)
+                    .is_none_or(|end| end > profile.client_stride)
             {
                 return Err(GuestError::invalid(
                     "Original QVM score exceeds its declared client record",
@@ -851,7 +866,7 @@ impl QvmPrimaryWeapons {
             .any(|entry| {
                 instructions
                     .get(entry)
-                    .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+                    .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
             })
         {
             return Err(GuestError::invalid("Original QVM spawn selector is not a function"));
@@ -860,7 +875,7 @@ impl QvmPrimaryWeapons {
         let scratch = image.data_length + image.literal_length + image.bss_length;
         let scratch = scratch.div_ceil(16) * 16;
         let room = image.allocated_data_length.checked_sub(65536);
-        if room.map_or(true, |room| scratch.checked_add(36).map_or(true, |end| end > room)) {
+        if room.is_none_or(|room| scratch.checked_add(36).is_none_or(|end| end > room)) {
             return Err(GuestError::invalid(
                 "Source player services require scratch outside source data and stack",
             ));
@@ -879,7 +894,7 @@ impl QvmPrimaryWeapons {
         )?;
         for pc in [profile.give.weapons, profile.give.ammo] {
             let decision = instructions.get(pc);
-            if pc <= profile.give.entry || decision.map_or(true, |instruction| !instruction.opcode.is_branch()) {
+            if pc <= profile.give.entry || decision.is_none_or(|instruction| !instruction.opcode.is_branch()) {
                 return Err(GuestError::invalid(
                     "Primary QVM give grant lacks its original completion decision",
                 ));
@@ -929,9 +944,7 @@ impl QvmPrimaryWeapons {
                 }),
                 prepare: Some(Rc::new(move |actor, call| {
                     let equipment = prepare_state.borrow().equipment.clone();
-                    let Some(equipment) = equipment else {
-                        return None;
-                    };
+                    let equipment = equipment?;
                     match equipment.prepare_weapon(actor, call) {
                         Ok(finish) => finish,
                         Err(error) => {
@@ -1181,8 +1194,8 @@ impl QvmPrimaryWeapons {
         }
         pointer(&self.state, actor)?;
         let mut state = game.data.copy_player_state(slot)?;
-        state.origin = origin.clone();
-        state.velocity = velocity.clone();
+        state.origin = *origin;
+        state.velocity = *velocity;
         state.ground_entity_number = 1023;
         state.flags ^= 4;
         state.movement_flags |= 64;
@@ -1266,7 +1279,7 @@ impl QvmPrimaryWeapons {
         let memory = self.state.borrow().game.module.memory();
         let address = base + profile.stage.selection.field.offset;
         let previous = memory.read_i32(address)?;
-        memory.write_i32(address, value.value as i32)?;
+        memory.write_i32(address, value.value)?;
         let outcome = self.weapon_delay(actor, milliseconds);
         if live(&self.state, actor) && pointer(&self.state, actor).is_ok_and(|current| current == base) {
             memory.write_i32(address, previous)?;
@@ -1426,13 +1439,6 @@ impl QvmPrimaryWeapons {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use qa_core::identity::IdentityOwner;
-
-    use super::super::game_data::{ModuleIdentity, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole};
     use super::*;
 
     #[test]

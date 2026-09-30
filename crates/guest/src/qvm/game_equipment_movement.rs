@@ -102,6 +102,9 @@ pub struct QvmBodyTrace {
     pub mask: usize,
 }
 
+/// Equipment motion lookup.
+type QvmEquipmentMotionFn = Rc<dyn Fn(&ActorId) -> Option<QvmEquipmentMotion>>;
+
 /// Equipment services.
 #[derive(Clone)]
 pub struct QvmEquipmentServices {
@@ -110,7 +113,7 @@ pub struct QvmEquipmentServices {
     /// Whether an actor is live.
     pub live: Rc<dyn Fn(&ActorId) -> bool>,
     /// Equipment motion, if any.
-    pub equipment: Rc<dyn Fn(&ActorId) -> Option<QvmEquipmentMotion>>,
+    pub equipment: QvmEquipmentMotionFn,
 }
 
 /// User-command move/button layout.
@@ -300,7 +303,7 @@ fn slice(
                 join: inner.profile.locomotion.join,
                 run: Box::new(move |_| {
                     let stopped = (|| -> Result<QvmRegionDecision, GuestError> {
-                        if current(&inner_ref)?.map_or(true, |live| live.id != frame.id) {
+                        if current(&inner_ref)?.is_none_or(|live| live.id != frame.id) {
                             return Ok(QvmRegionDecision::Execute);
                         }
                         let memory = inner_ref.module.memory();
@@ -331,21 +334,19 @@ fn slice(
     result
 }
 
-/// Apply accepted bounds with optional duck restoration.
+/// Apply accepted bounds, restoring duck state from `restore` when present.
 fn apply_shape(
     inner: &Rc<QvmEquipmentInner>,
     call: &mut QvmFunctionCall,
     frame: &QvmMotionFrame,
     body: &QvmBodyShape,
     accepted: Bounds,
-    fallback: bool,
-    previous_duck: i32,
-    previous_height: i32,
+    restore: Option<(i32, i32)>,
     result: i32,
 ) -> Result<i32, GuestError> {
     (body.current_actor)();
     let memory = inner.module.memory();
-    if fallback {
+    if let Some((previous_duck, previous_height)) = restore {
         let flags = memory.read_i32(frame.player + 12)?;
         memory.write_i32(frame.player + 12, (flags & !1) | previous_duck)?;
         memory.write_i32(frame.player + 164, previous_height)?;
@@ -405,17 +406,7 @@ fn body_shape(
         || requested.max.y > previous.max.y
         || requested.max.z > previous.max.z;
     if !expands {
-        return apply_shape(
-            inner,
-            call,
-            frame,
-            &body,
-            requested,
-            false,
-            previous_duck,
-            previous_height,
-            result,
-        );
+        return apply_shape(inner, call, frame, &body, requested, None, result);
     }
     let at = inner.body_scratch;
     let saved = memory.read_bytes(at, 92)?;
@@ -448,9 +439,7 @@ fn body_shape(
         frame,
         &body,
         accepted,
-        fallback,
-        previous_duck,
-        previous_height,
+        fallback.then_some((previous_duck, previous_height)),
         result,
     );
     memory.write_bytes(at, &saved)?;
@@ -496,7 +485,7 @@ impl QvmEquipmentMovement {
             && image
                 .allocated_data_length
                 .checked_sub(65536)
-                .map_or(true, |room| scratch.checked_add(92).map_or(true, |end| end > room))
+                .is_none_or(|room| scratch.checked_add(92).is_none_or(|end| end > room))
         {
             return Err(GuestError::invalid(
                 "Original body trace requires scratch outside source data and stack",
@@ -506,7 +495,7 @@ impl QvmEquipmentMovement {
             if image
                 .instructions
                 .get(entry)
-                .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
             {
                 return Err(GuestError::invalid(
                     "Selected equipment movement requires an original function boundary",
@@ -574,7 +563,7 @@ impl QvmEquipmentMovement {
     pub fn prepare_weapon(
         &self,
         actor: &ActorId,
-        call: &mut QvmFunctionCall,
+        _call: &mut QvmFunctionCall,
     ) -> Result<Option<Box<dyn FnOnce()>>, GuestError> {
         let frame = self.inner.frames.borrow().last().cloned().flatten();
         let Some(frame) = frame else {
@@ -695,10 +684,12 @@ mod tests {
     fn fixture() -> Fixture {
         let owner = IdentityOwner::create("equipment-test").unwrap();
         let actor = owner.actor(0, 1);
-        let mut image = QvmImage::default();
-        image.instructions = instructions();
-        image.allocated_data_length = 65536;
-        image.data_length = 1024;
+        let image = QvmImage {
+            instructions: instructions(),
+            allocated_data_length: 65536,
+            data_length: 1024,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),

@@ -200,11 +200,14 @@ pub struct ArmorHit {
     pub flags: ArmorHitFlags,
 }
 
+/// Armor intercept binder; returns the intercept remover.
+type ArmorBindFn = Rc<dyn Fn(ArmorIntercept) -> Result<Box<dyn FnOnce()>, GuestError>>;
+
 /// Armor stage binding (mirror of `SourceArmorStage`).
 #[derive(Clone)]
 pub struct ArmorStage {
     /// Bind an intercept; returns its remover.
-    pub bind: Rc<dyn Fn(ArmorIntercept) -> Result<Box<dyn FnOnce()>, GuestError>>,
+    pub bind: ArmorBindFn,
 }
 
 /// Protection channel.
@@ -244,6 +247,9 @@ pub struct ProtectionBinding {
     pub stage: Option<ArmorStage>,
 }
 
+/// Armor validation hook.
+type ValidateArmorFn = Rc<dyn Fn(&ArmorState) -> Result<(), GuestError>>;
+
 /// Combat binding installed on the authority.
 #[derive(Clone)]
 pub struct CombatBinding {
@@ -256,7 +262,7 @@ pub struct CombatBinding {
     /// Powered protection.
     pub powered: ProtectionBinding,
     /// Validate armor values.
-    pub validate_armor: Rc<dyn Fn(&ArmorState) -> Result<(), GuestError>>,
+    pub validate_armor: ValidateArmorFn,
     /// Write health.
     pub write_health: Rc<dyn Fn(i32)>,
     /// Write armor.
@@ -303,6 +309,11 @@ pub trait CombatActorRegistry {
     fn remove_release_hook(&self, id: u64);
 }
 
+/// Attacker/inflictor/target provenance builder.
+type CombatProvenanceFn = Rc<dyn Fn(Option<&ActorId>, Option<&ActorId>, &ActorId) -> AuthorityProvenance>;
+/// After-free hook.
+type CombatAfterFreeFn = Rc<dyn Fn(i32, &mut QvmFunctionCall)>;
+
 /// Joined source callbacks.
 #[derive(Clone)]
 pub struct CombatSource {
@@ -311,10 +322,13 @@ pub struct CombatSource {
     /// Resolve the actor owning a slot.
     pub actor: Rc<dyn Fn(usize) -> Option<ActorId>>,
     /// Build provenance for attacker/inflictor/target.
-    pub provenance: Rc<dyn Fn(Option<&ActorId>, Option<&ActorId>, &ActorId) -> AuthorityProvenance>,
+    pub provenance: CombatProvenanceFn,
     /// After-free hook.
-    pub after_free: Option<Rc<dyn Fn(i32, &mut QvmFunctionCall)>>,
+    pub after_free: Option<CombatAfterFreeFn>,
 }
+
+/// Slot lookup for an actor.
+type CombatSlotFn = Rc<dyn Fn(&ActorId) -> Option<usize>>;
 
 /// Combat binding options.
 #[derive(Clone)]
@@ -334,7 +348,7 @@ pub struct CombatBindingOptions {
     /// Joined source, if any.
     pub source: Option<CombatSource>,
     /// Resolve the slot owning an actor.
-    pub slot: Rc<dyn Fn(&ActorId) -> Option<usize>>,
+    pub slot: CombatSlotFn,
 }
 
 /// Declared private combat fields plus the Q3 client pointer.
@@ -443,7 +457,7 @@ impl QvmPrimaryCombatProfile {
                 takedamage: self.fields.takedamage,
                 parent: self.fields.parent,
             },
-            callbacks: self.callbacks.clone(),
+            callbacks: self.callbacks,
         }
     }
 }
@@ -531,14 +545,14 @@ impl QvmCombatBindings {
             .artifact
             .image
             .instruction(armor.check_armor)
-            .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
         {
             return Err(GuestError::invalid(
                 "Source CheckArmor declaration is not a function entry",
             ));
         }
         let client = definition.fields.client;
-        if client % 4 != 0
+        if !client.is_multiple_of(4)
             || client < qvm_shared_entity_bytes(definition.abi_profile)
             || client + 4 > definition.entity_stride
         {
@@ -831,7 +845,7 @@ impl QvmCombatBindings {
         if let Some(id) = inner.remove_armor.take() {
             inner.options.module.remove_hook(id);
         }
-        let removals: Vec<u64> = inner.removals.drain(..).collect();
+        let removals: Vec<u64> = std::mem::take(&mut inner.removals);
         for id in removals {
             inner.options.module.remove_hook(id);
         }
@@ -1238,9 +1252,9 @@ impl QvmCombatBindings {
         let flags = call.argument(flags_role).unwrap_or(0);
         let originating = qvm_attack_damage_flags(&request.to_combat_request());
         let geometry = ArmorHitGeometry {
-            direction: request.direction.clone(),
-            point: request.point.clone(),
-            normal: request.normal.clone(),
+            direction: request.direction,
+            point: request.point,
+            normal: request.normal,
         };
         let valid = |saved: f64, amount: i32| saved.is_finite() && saved >= 0.0 && saved <= f64::from(amount.max(0));
         let power_saved = match power {
@@ -1324,9 +1338,7 @@ impl QvmCombatBindings {
         if slot >= 1022 {
             return None;
         }
-        if inner.source.state(slot).ok()?.is_none() {
-            return None;
-        }
+        inner.source.state(slot).ok()??;
         (source.actor)(slot)
     }
 
@@ -1564,9 +1576,7 @@ impl QvmCombatBindings {
         } else {
             match request.attack.cause {
                 AuthorityCause::Q3 { means_of_death, .. } => means_of_death,
-                AuthorityCause::Q2 { means_of_death, .. } if means_of_death == 56 => {
-                    inner.options.definition.grapple_damage_method
-                }
+                AuthorityCause::Q2 { means_of_death: 56, .. } => inner.options.definition.grapple_damage_method,
                 _ => 0,
             }
         };
@@ -1582,8 +1592,8 @@ impl QvmCombatBindings {
                 (None, Some(body)) => Some(QvmGameInflictor::Foreign { body }),
                 (None, None) => None,
             },
-            direction: request.direction.clone(),
-            point: request.point.clone(),
+            direction: request.direction,
+            point: request.point,
             amount: amount as i32,
             flags: lowered,
             method,
@@ -1744,9 +1754,12 @@ mod tests {
         }
     }
 
+    /// Release hooks by id.
+    type FixtureReleaseHooks = RefCell<Vec<(u64, Rc<dyn Fn(&ActorId)>)>>;
+
     struct FixtureRegistry {
         owned: RefCell<HashMap<ActorId, ActorId>>,
-        hooks: RefCell<Vec<(u64, Rc<dyn Fn(&ActorId)>)>>,
+        hooks: FixtureReleaseHooks,
         next: RefCell<u64>,
         released: RefCell<Vec<ActorId>>,
     }
@@ -1892,11 +1905,13 @@ mod tests {
     }
 
     fn fixture(with_source: bool) -> Fixture {
-        let mut image = QvmImage::default();
-        image.instructions = (0..4)
-            .map(|entry| QvmInstruction::word(QvmOpcode::OpEnter, 16, entry * 5))
-            .collect();
-        image.allocated_data_length = 65536 + 4096;
+        let image = QvmImage {
+            instructions: (0..4)
+                .map(|entry| QvmInstruction::word(QvmOpcode::OpEnter, 16, entry * 5))
+                .collect(),
+            allocated_data_length: 65536 + 4096,
+            ..Default::default()
+        };
         let module_id = ModuleIdentity {
             id: "q3:qagame".to_string(),
             artifact_path: "qagame.qvm".to_string(),
@@ -1997,11 +2012,13 @@ mod tests {
 
     #[test]
     fn bind_rejects_overlapping_masks() {
-        let mut image = QvmImage::default();
-        image.instructions = (0..4)
-            .map(|entry| QvmInstruction::word(QvmOpcode::OpEnter, 16, entry * 5))
-            .collect();
-        image.allocated_data_length = 65536 + 4096;
+        let image = QvmImage {
+            instructions: (0..4)
+                .map(|entry| QvmInstruction::word(QvmOpcode::OpEnter, 16, entry * 5))
+                .collect(),
+            allocated_data_length: 65536 + 4096,
+            ..Default::default()
+        };
         let module_id = ModuleIdentity {
             id: "q3:qagame".to_string(),
             artifact_path: "qagame.qvm".to_string(),
@@ -2208,7 +2225,7 @@ mod tests {
         assert!(registry.released.borrow().is_empty());
         memory.write_i32(64 + 516, 0).unwrap();
         module.call(&[64], 1).unwrap();
-        assert_eq!(registry.released.borrow().as_slice(), &[actor.clone()]);
+        assert_eq!(registry.released.borrow().as_slice(), std::slice::from_ref(&actor));
         assert!(bindings.inner.borrow().admitted.is_empty());
         bindings.close();
         bindings.close();

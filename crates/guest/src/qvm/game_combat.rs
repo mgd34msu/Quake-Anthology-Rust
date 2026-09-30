@@ -649,11 +649,7 @@ impl QvmGameCombat {
     }
 
     /// Consume damage inside the owning executable.
-    pub fn damage(
-        &self,
-        hit: &QvmGameDamage,
-        invoke: Option<DamageWordsFn<'_>>,
-    ) -> Result<(), GuestError> {
+    pub fn damage(&self, hit: &QvmGameDamage, invoke: Option<DamageWordsFn<'_>>) -> Result<(), GuestError> {
         let state = self.state(hit.target)?;
         let Some(state) = state else {
             return Ok(());
