@@ -17,10 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use super::game_data::{QvmCancellationScope, QvmFunctionCall, QvmModule};
+use super::game_data::{
+    QvmCancellationScope, QvmFunctionCall, QvmImage, QvmInstruction, QvmModule, QvmOpcode, QvmRegionEvaluation,
+};
 use super::mod_provider::{
-    InputPointerKind, ModReturns, QvmImage, QvmModInputPointer, QvmModSourceCall, QvmOpcode, QvmRegionEvaluation,
-    QVM_MAX_PRIVATE_ARGUMENT_WORDS,
+    InputPointerKind, ModReturns, QvmModInputPointer, QvmModSourceCall, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
 use crate::error::GuestError;
 
@@ -677,13 +678,7 @@ impl WeaponStageHost for QvmWeaponDispatcherOperations {
     }
 
     fn evaluate_region(&mut self, region: &QvmRegionEvaluation, inputs: &[i32]) -> Result<i32, GuestError> {
-        let region = super::game_data::QvmRegionEvaluation {
-            entry: region.entry,
-            join: region.join,
-            inputs: region.inputs.clone(),
-            result: region.result,
-        };
-        Ok(self.module.evaluate_region(&[], 0, &region, inputs))
+        Ok(self.module.evaluate_region(&[], 0, region, inputs))
     }
 
     fn call_dispatcher(&mut self, entry: usize) -> Result<i32, GuestError> {
@@ -921,6 +916,14 @@ impl<H: WeaponStageHost> QvmWeaponDispatcher<H> {
         let region = evaluation.region.clone();
         let inputs = evaluation.inputs.clone();
         Ok(Some(self.host.evaluate_region(&region, &inputs)?))
+    }
+
+    /// Release dispatcher scopes. Hook unbinding stays with the owning
+    /// caller, which holds the hook ids (donor `close`).
+    pub fn close(&mut self) {
+        self.dispatchers.clear();
+        self.evaluations.clear();
+        self.reached_attack_decision = false;
     }
 }
 
@@ -1360,22 +1363,22 @@ mod tests {
     fn stage_validation_accepts_original_layout() {
         let image = QvmImage {
             instructions: vec![
-                QvmInstruction::word(QvmOpcode::OpEnter, 64),
-                QvmInstruction::word(QvmOpcode::OpEq, 0),
-                QvmInstruction::word(QvmOpcode::OpLeave, 0),
-                QvmInstruction::word(QvmOpcode::OpEnter, 0),
-                QvmInstruction::word(QvmOpcode::OpEnter, 48),
-                QvmInstruction::word(QvmOpcode::OpNe, 0),
-                QvmInstruction::word(QvmOpcode::OpLeave, 0),
-                QvmInstruction::word(QvmOpcode::OpConst, 0),
-                QvmInstruction::word(QvmOpcode::OpCall, 0),
-                QvmInstruction::word(QvmOpcode::OpEnter, 0),
+                QvmInstruction::word(QvmOpcode::OpEnter, 64, 0),
+                QvmInstruction::word(QvmOpcode::OpEq, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpLeave, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpEnter, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpEnter, 48, 0),
+                QvmInstruction::word(QvmOpcode::OpNe, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpLeave, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpConst, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpCall, 0, 0),
+                QvmInstruction::word(QvmOpcode::OpEnter, 0, 0),
             ],
             data_length: 4096,
             literal_length: 0,
             bss_length: 0,
-            initialized_length: 4096,
             allocated_data_length: 8192,
+            ..Default::default()
         };
         let settled = || QvmItemTest {
             field: test_field(0),
@@ -1444,14 +1447,14 @@ mod tests {
     fn stage_validation_rejects_broken_edges() {
         let image = QvmImage {
             instructions: vec![
-                QvmInstruction::word(QvmOpcode::OpEnter, 8),
-                QvmInstruction::word(QvmOpcode::OpLeave, 0),
+                QvmInstruction::word(QvmOpcode::OpEnter, 8, 0),
+                QvmInstruction::word(QvmOpcode::OpLeave, 0, 0),
             ],
             data_length: 64,
             literal_length: 0,
             bss_length: 0,
-            initialized_length: 64,
             allocated_data_length: 128,
+            ..Default::default()
         };
         let mut definition = fixture_definition();
         definition.dispatcher.entry = 0;
