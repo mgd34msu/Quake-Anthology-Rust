@@ -6,6 +6,8 @@
 //! equipment QVM profiles (`equipment`), and cgame body submissions
 //! (`presentation`). Sibling-owned Q3 files land in the same layout and are
 //! united at merge; only the modules below are this lane's scope.
+//! The core-resume lane adds the remaining content-game modules in the same
+//! donor-mirrored layout.
 
 pub mod base;
 pub mod equipment;
@@ -13,6 +15,7 @@ pub mod foundation;
 pub mod guest_items;
 pub mod input_profile;
 pub mod presentation;
-
+pub mod product_restriction;
+pub mod team_arena;
 #[cfg(test)]
 pub(crate) mod test_support;
