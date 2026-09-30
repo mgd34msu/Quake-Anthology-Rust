@@ -53,7 +53,7 @@ pub fn actor_name(entity: &Q2Entity, game: &mut Q2GameServices) -> String {
 
 /// Stand (`stand`).
 fn actor_stand(context: &mut MonsterContext) {
-    context.set_move("actor_move_stand", false);
+    context.set_move("actor_move_stand", true);
     if context.game.host.now() < 1.0 {
         let span = actor_frame::STAND140 - actor_frame::STAND101 + 1;
         let frame = actor_frame::STAND101 + (context.game.random() * f64::from(span)).floor() as i32;
@@ -65,7 +65,7 @@ fn actor_stand(context: &mut MonsterContext) {
 fn actor_run(context: &mut MonsterContext) {
     if context.game.host.now() < context.state().pain_time && context.entity().enemy.is_none() {
         if context.state().move_target.is_some() {
-            context.set_move("actor_move_walk", false);
+            context.set_move("actor_move_walk", true);
         } else {
             actor_stand(context);
         }
@@ -74,7 +74,7 @@ fn actor_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
         actor_stand(context);
     } else {
-        context.set_move("actor_move_run", false);
+        context.set_move("actor_move_run", true);
     }
 }
 
@@ -107,7 +107,7 @@ fn actor_initialize(context: &mut MonsterContext) {
 
 /// Attack (`attack`).
 fn actor_attack(context: &mut MonsterContext) {
-    context.set_move("actor_move_attack", false);
+    context.set_move("actor_move_attack", true);
     let pause = context.game.host.now() + ((context.game.random() * 16.0).floor() + 10.0) * 0.1;
     context.state_mut().pause_time = pause;
 }
@@ -131,9 +131,9 @@ fn actor_pain(context: &mut MonsterContext, reaction: &PainReaction) {
             context.state_mut().ideal_yaw = f64::from(yaw);
         }
         if context.game.random() < 0.5 {
-            context.set_move("actor_move_flipoff", false);
+            context.set_move("actor_move_flipoff", true);
         } else {
-            context.set_move("actor_move_taunt", false);
+            context.set_move("actor_move_taunt", true);
         }
         let name = actor_name(&context.entity().clone(), &mut *context.game);
         // The donor samples only the first three taunts.
@@ -205,9 +205,9 @@ fn actor_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         },
     );
     if context.game.random() < 0.5 {
-        context.set_move("actor_move_death1", false);
+        context.set_move("actor_move_death1", true);
     } else {
-        context.set_move("actor_move_death2", false);
+        context.set_move("actor_move_death2", true);
     }
 }
 

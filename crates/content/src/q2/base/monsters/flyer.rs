@@ -21,9 +21,9 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction};
 /// Run (`run`).
 fn flyer_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("flyer_move_stand", false);
+        context.set_move("flyer_move_stand", true);
     } else {
-        context.set_move("flyer_move_run", false);
+        context.set_move("flyer_move_run", true);
     }
 }
 
@@ -150,16 +150,16 @@ fn flyer_slash_right(context: &mut MonsterContext) {
 /// Check melee (`flyer_check_melee`).
 fn flyer_check_melee(context: &mut MonsterContext) {
     if target_distance(context) < 80.0 && context.game.random() <= 0.8 {
-        context.set_move("flyer_move_loop_melee", false);
+        context.set_move("flyer_move_loop_melee", true);
     } else {
-        context.set_move("flyer_move_end_melee", false);
+        context.set_move("flyer_move_end_melee", true);
     }
 }
 
 /// Set start (`flyer_setstart`).
 fn flyer_set_start(context: &mut MonsterContext) {
     context.game.monsters.flyer_next = Some(MonsterFlyerNext::Run);
-    context.set_move("flyer_move_start", false);
+    context.set_move("flyer_move_start", true);
 }
 
 /// Next move (`flyer_nextmove`).

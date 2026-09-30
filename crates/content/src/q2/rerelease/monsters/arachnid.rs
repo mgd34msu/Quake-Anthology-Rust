@@ -42,7 +42,7 @@ fn arachnid_attack(context: &mut MonsterContext) {
     };
     let actor = context.actor().clone();
     if context.state().melee_time < context.game.host.now() && target_distance(context) < 80.0 {
-        context.set_move("arachnid_melee", false);
+        context.set_move("arachnid_melee", true);
         return;
     }
     let above = enemy.origin.z - context.game.body_of(actor).origin.z > 150.0;
@@ -132,7 +132,7 @@ fn arachnid_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             ..crate::q2::support::contracts::CombatTraitChanges::default()
         },
     );
-    context.set_move("arachnid_move_death", false);
+    context.set_move("arachnid_move_death", true);
 }
 
 /// Footstep (`arachnid_footstep`).

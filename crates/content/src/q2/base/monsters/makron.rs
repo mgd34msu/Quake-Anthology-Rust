@@ -26,9 +26,9 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 /// Run (`run`).
 fn makron_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("makron_move_stand", false);
+        context.set_move("makron_move_stand", true);
     } else {
-        context.set_move("makron_move_run", false);
+        context.set_move("makron_move_run", true);
     }
 }
 
@@ -124,7 +124,7 @@ fn makron_pain(context: &mut MonsterContext, reaction: &PainReaction) {
     };
     let actor = context.actor().clone();
     context.game.sound(&actor, path, 2, 1.0, 0.0);
-    context.set_move(animation, false);
+    context.set_move(animation, true);
 }
 
 /// Die (`die`).
@@ -215,7 +215,7 @@ fn makron_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         loop_owner: None,
     }));
     context.game.schedule(torso, 0.2, makron_torso_think);
-    context.set_move("makron_move_death2", false);
+    context.set_move("makron_move_death2", true);
 }
 
 /// Dead (`makron_dead`).

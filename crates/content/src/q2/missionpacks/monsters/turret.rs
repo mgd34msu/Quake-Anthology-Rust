@@ -54,7 +54,7 @@ fn target_or_world(context: &mut MonsterContext, trace: &TraceResult) -> bool {
 
 /// Ready (`ready`).
 fn turret_ready(context: &mut MonsterContext) {
-    context.set_move("turret_move_ready_gun", false);
+    context.set_move("turret_move_ready_gun", true);
 }
 
 /// Run (`run`).
@@ -62,7 +62,7 @@ fn turret_run(context: &mut MonsterContext) {
     if context.entity().frame < turret_frame::RUN01 {
         turret_ready(context);
     } else {
-        context.set_move("turret_move_run", false);
+        context.set_move("turret_move_run", true);
     }
 }
 
@@ -71,7 +71,7 @@ fn turret_walk(context: &mut MonsterContext) {
     if context.entity().frame < turret_frame::RUN01 {
         turret_ready(context);
     } else {
-        context.set_move("turret_move_seek", false);
+        context.set_move("turret_move_seek", true);
     }
 }
 
@@ -389,7 +389,7 @@ fn turret_wake(actor: ActorId, game: &mut Q2GameServices) {
     );
     game.set_motion_kind(actor.clone(), Q2MotionKind::Stationary);
     let mut context = MonsterContext::new(actor.clone(), game);
-    context.set_move("turret_move_stand", false);
+    context.set_move("turret_move_stand", true);
     let game = &mut *context.game;
     // stationarymonster_start consumes its initial random frame but must not count a second time.
     let frame = (game.random() * 2.0).floor() as i32;
@@ -607,7 +607,7 @@ fn turret_attack(context: &mut MonsterContext) {
     }
     if context.state().attack_state != MonsterAttackState::Blind {
         context.state_mut().next_frame = turret_frame::POW01;
-        context.set_move("turret_move_fire", false);
+        context.set_move("turret_move_fire", true);
         return;
     }
     let delay = context.state().blind_fire_delay;
@@ -625,7 +625,7 @@ fn turret_attack(context: &mut MonsterContext) {
         return;
     }
     context.state_mut().next_frame = turret_frame::POW01;
-    context.set_move("turret_move_fire_blind", false);
+    context.set_move("turret_move_fire_blind", true);
 }
 
 /// Check attack (`checkAttack`).

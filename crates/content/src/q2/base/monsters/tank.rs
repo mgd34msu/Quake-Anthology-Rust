@@ -27,14 +27,14 @@ fn tank_run(context: &mut MonsterContext) {
         .is_some_and(|enemy| context.game.host.is_player(enemy));
     context.state_mut().brutal = brutal;
     if context.state().stand_ground {
-        context.set_move("tank_move_stand", false);
+        context.set_move("tank_move_stand", true);
         return;
     }
     let current = context.state().current_move.name.clone();
     if current == "tank_move_walk" || current == "tank_move_start_run" {
-        context.set_move("tank_move_run", false);
+        context.set_move("tank_move_run", true);
     } else {
-        context.set_move("tank_move_start_run", false);
+        context.set_move("tank_move_start_run", true);
     }
 }
 
@@ -43,7 +43,7 @@ pub(crate) fn tank_attack(context: &mut MonsterContext) {
     let enemy = context.entity().enemy.clone();
     if health(&mut *context.game, enemy.as_ref()) < 0.0 {
         context.state_mut().brutal = false;
-        context.set_move("tank_move_attack_strike", false);
+        context.set_move("tank_move_attack_strike", true);
         return;
     }
     let range = target_distance(context);
@@ -67,13 +67,13 @@ pub(crate) fn tank_attack(context: &mut MonsterContext) {
             false,
         );
     } else if r < 0.33 {
-        context.set_move("tank_move_attack_chain", false);
+        context.set_move("tank_move_attack_chain", true);
     } else if r < 0.66 {
         let now = context.game.host.now();
         context.state_mut().pain_time = now + 5.0;
-        context.set_move("tank_move_attack_pre_rocket", false);
+        context.set_move("tank_move_attack_pre_rocket", true);
     } else {
-        context.set_move("tank_move_attack_blast", false);
+        context.set_move("tank_move_attack_blast", true);
     }
 }
 
@@ -177,7 +177,7 @@ fn tank_die(context: &mut MonsterContext, reaction: &DeathReaction) {
             ..CombatTraitChanges::default()
         },
     );
-    context.set_move("tank_move_death", false);
+    context.set_move("tank_move_death", true);
 }
 
 /// Dead (`tank_dead`).
@@ -212,9 +212,9 @@ fn tank_reattack_blaster(context: &mut MonsterContext) {
         && alive_enemy(context)
         && context.game.random() <= 0.6
     {
-        context.set_move("tank_move_reattack_blast", false);
+        context.set_move("tank_move_reattack_blast", true);
     } else {
-        context.set_move("tank_move_attack_post_blast", false);
+        context.set_move("tank_move_attack_post_blast", true);
     }
 }
 
@@ -225,9 +225,9 @@ fn tank_refire_rocket(context: &mut MonsterContext) {
         && visible(context, None)
         && context.game.random() <= 0.4
     {
-        context.set_move("tank_move_attack_fire_rocket", false);
+        context.set_move("tank_move_attack_fire_rocket", true);
     } else {
-        context.set_move("tank_move_attack_post_rocket", false);
+        context.set_move("tank_move_attack_post_rocket", true);
     }
 }
 

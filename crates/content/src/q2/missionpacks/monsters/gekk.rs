@@ -298,7 +298,7 @@ fn gekk_water_to_land(context: &mut MonsterContext) {
         max: vec3(24.0, 24.0, 24.0),
     };
     context.game.write_body(actor, &body, false);
-    context.set_move("gekk_move_leapatk2", false);
+    context.set_move("gekk_move_leapatk2", true);
 }
 
 /// Land to water (`landToWater`).
@@ -314,7 +314,7 @@ fn gekk_land_to_water(context: &mut MonsterContext) {
         max: vec3(24.0, 24.0, 16.0),
     };
     context.game.write_body(actor, &body, false);
-    context.set_move("gekk_move_swim_start", false);
+    context.set_move("gekk_move_swim_start", true);
 }
 
 /// Check jump (`checkJump`).
@@ -559,7 +559,7 @@ fn gekk_idle(context: &mut MonsterContext) {
 /// After spawn (`afterSpawn`).
 fn gekk_after_spawn(context: &mut MonsterContext) {
     if context.entity().spawnflags & 8 != 0 {
-        context.set_move("gekk_move_chant", false);
+        context.set_move("gekk_move_chant", true);
     }
 }
 
@@ -683,7 +683,7 @@ fn gekk_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         },
     );
     if gekk_wet(context, None) {
-        context.set_move("gekk_move_wdeath", false);
+        context.set_move("gekk_move_wdeath", true);
         return;
     }
     let random = context.game.random();
@@ -714,7 +714,7 @@ fn gekk_dodge(
         context.entity_mut().enemy = Some(attacker.clone());
     }
     if gekk_wet(context, None) {
-        context.set_move("gekk_move_attack", false);
+        context.set_move("gekk_move_attack", true);
         return;
     }
     if context.game.options.skill == 0 {
@@ -765,7 +765,7 @@ fn gekk_stand_callback(context: &mut MonsterContext) {
 fn gekk_swim_loop(context: &mut MonsterContext) {
     context.entity_mut().flags |= 2;
     context.state_mut().locomotion = MonsterLocomotion::Swim;
-    context.set_move("gekk_move_swim_loop", false);
+    context.set_move("gekk_move_swim_loop", true);
 }
 
 /// Swim (`gekk_swim`).
@@ -785,7 +785,7 @@ fn gekk_swim(context: &mut MonsterContext) {
     if leave {
         gekk_water_to_land(context);
     } else {
-        context.set_move("gekk_move_swim_start", false);
+        context.set_move("gekk_move_swim_start", true);
     }
 }
 
@@ -838,9 +838,9 @@ fn gekk_check_refire(context: &mut MonsterContext) {
         && target_distance(context) < 80.0
     {
         if context.entity().frame == gekk_frame::CLAWATK3_09 {
-            context.set_move("gekk_move_attack2", false);
+            context.set_move("gekk_move_attack2", true);
         } else if context.entity().frame == gekk_frame::CLAWATK5_09 {
-            context.set_move("gekk_move_attack1", false);
+            context.set_move("gekk_move_attack1", true);
         }
     }
 }
@@ -868,7 +868,7 @@ fn gekk_reloogie(context: &mut MonsterContext) {
     if context.game.random() > 0.8
         && health(&mut *context.game, Some(&actor)) < context.entity().max_health
     {
-        context.set_move("gekk_move_idle2", false);
+        context.set_move("gekk_move_idle2", true);
         return;
     }
     let distance = target_distance(context);
@@ -878,7 +878,7 @@ fn gekk_reloogie(context: &mut MonsterContext) {
         && distance >= 80.0
         && distance < 500.0
     {
-        context.set_move("gekk_move_spit", false);
+        context.set_move("gekk_move_spit", true);
     }
 }
 

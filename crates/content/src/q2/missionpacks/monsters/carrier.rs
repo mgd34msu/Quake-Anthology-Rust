@@ -240,11 +240,11 @@ fn carrier_spawn(context: &mut MonsterContext) {
     if time == 1 || time == 3 {
         child_context.state_mut().lefty = time == 3;
         child_context.state_mut().attack_state = MonsterAttackState::Sliding;
-        child_context.set_move("flyer_move_attack3", false);
+        child_context.set_move("flyer_move_attack3", true);
     } else if time == 2 {
         child_context.state_mut().lefty = false;
         child_context.state_mut().attack_state = MonsterAttackState::Straight;
-        child_context.set_move("flyer_move_kamikaze", false);
+        child_context.set_move("flyer_move_kamikaze", true);
         let owned = child_context.game.owned_of(child.clone());
         child_context.game.set_combat_traits(
             &owned,
@@ -275,7 +275,7 @@ fn carrier_run(context: &mut MonsterContext) {
 fn carrier_rail_move(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "gladiator/railgun.wav", 1, 1.0, 1.0);
-    context.set_move("carrier_move_attack_rail", false);
+    context.set_move("carrier_move_attack_rail", true);
 }
 
 /// Initialize (`initialize`).
@@ -316,23 +316,23 @@ fn carrier_attack(context: &mut MonsterContext) {
     let ready = context.game.host.now() >= context.state().attack_finished;
     if mission_services(&*context.game).bad_area(&actor) {
         if relation.back || relation.below {
-            context.set_move("carrier_move_attack_rocket", false);
+            context.set_move("carrier_move_attack_rocket", true);
             return;
         }
         if context.game.random() < 0.1 || !ready {
-            context.set_move("carrier_move_attack_pre_mg", false);
+            context.set_move("carrier_move_attack_pre_mg", true);
         } else {
             carrier_rail_move(context);
         }
         return;
     }
     if context.state().attack_state == MonsterAttackState::Blind {
-        context.set_move("carrier_move_spawn", false);
+        context.set_move("carrier_move_spawn", true);
         return;
     }
     if !relation.back && !relation.front && !relation.below {
         if context.game.random() < 0.1 || !ready {
-            context.set_move("carrier_move_attack_pre_mg", false);
+            context.set_move("carrier_move_attack_pre_mg", true);
         } else {
             carrier_rail_move(context);
         }
@@ -342,7 +342,7 @@ fn carrier_attack(context: &mut MonsterContext) {
         let distance = target_distance(context);
         if distance <= 125.0 {
             if context.game.random() < 0.8 || !ready {
-                context.set_move("carrier_move_attack_pre_mg", false);
+                context.set_move("carrier_move_attack_pre_mg", true);
             } else {
                 carrier_rail_move(context);
             }
@@ -353,49 +353,49 @@ fn carrier_attack(context: &mut MonsterContext) {
         if distance < 600.0 {
             if slots > 2 {
                 if luck <= 0.2 {
-                    context.set_move("carrier_move_attack_pre_mg", false);
+                    context.set_move("carrier_move_attack_pre_mg", true);
                 } else if luck <= 0.4 {
-                    context.set_move("carrier_move_attack_pre_gren", false);
+                    context.set_move("carrier_move_attack_pre_gren", true);
                 } else if luck <= 0.7 && ready {
                     carrier_rail_move(context);
                 } else {
-                    context.set_move("carrier_move_spawn", false);
+                    context.set_move("carrier_move_spawn", true);
                 }
                 return;
             }
             if luck <= 0.3 {
-                context.set_move("carrier_move_attack_pre_mg", false);
+                context.set_move("carrier_move_attack_pre_mg", true);
             } else if luck <= 0.65 {
-                context.set_move("carrier_move_attack_pre_gren", false);
+                context.set_move("carrier_move_attack_pre_gren", true);
             } else if ready {
                 carrier_rail_move(context);
             } else {
-                context.set_move("carrier_move_attack_pre_mg", false);
+                context.set_move("carrier_move_attack_pre_mg", true);
             }
             return;
         }
         if slots > 2 {
             if luck < 0.3 {
-                context.set_move("carrier_move_attack_pre_mg", false);
+                context.set_move("carrier_move_attack_pre_mg", true);
             } else if luck < 0.65 && ready {
                 if let Some(eye) = enemy_eye(context) {
                     context.entity_mut().pos1 = eye;
                 }
                 carrier_rail_move(context);
             } else {
-                context.set_move("carrier_move_spawn", false);
+                context.set_move("carrier_move_spawn", true);
             }
             return;
         }
         if luck < 0.45 || !ready {
-            context.set_move("carrier_move_attack_pre_mg", false);
+            context.set_move("carrier_move_attack_pre_mg", true);
         } else {
             carrier_rail_move(context);
         }
         return;
     }
     if relation.below || relation.back {
-        context.set_move("carrier_move_attack_rocket", false);
+        context.set_move("carrier_move_attack_rocket", true);
     }
 }
 
@@ -495,11 +495,11 @@ fn carrier_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         context.game.sound(&actor, "carrier/pain_md.wav", 2, 1.0, 0.0);
         if context.game.random() < 0.5 {
             changed = true;
-            context.set_move("carrier_move_pain_light", false);
+            context.set_move("carrier_move_pain_light", true);
         }
     } else {
         context.game.sound(&actor, "carrier/pain_lg.wav", 2, 1.0, 0.0);
-        context.set_move("carrier_move_pain_heavy", false);
+        context.set_move("carrier_move_pain_heavy", true);
         changed = true;
     }
     if changed {
@@ -524,7 +524,7 @@ fn carrier_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
         },
     );
     context.entity_mut().count = 0;
-    context.set_move("carrier_move_death", false);
+    context.set_move("carrier_move_death", true);
 }
 
 /// Dead (`carrier_dead`).
@@ -620,7 +620,7 @@ fn carrier_rail(context: &mut MonsterContext) {
 /// Attack MG (`carrier_attack_mg`).
 fn carrier_attack_mg(context: &mut MonsterContext) {
     carrier_coop_check(context);
-    context.set_move("carrier_move_attack_mg", false);
+    context.set_move("carrier_move_attack_mg", true);
 }
 
 /// Reattack MG (`carrier_reattack_mg`).
@@ -642,7 +642,7 @@ fn carrier_reattack_mg(context: &mut MonsterContext) {
     } else {
         "carrier_move_attack_post_mg"
     };
-    context.set_move(moves, false);
+    context.set_move(moves, true);
 }
 
 /// Attack gren (`carrier_attack_gren`).
@@ -650,7 +650,7 @@ fn carrier_attack_gren(context: &mut MonsterContext) {
     carrier_coop_check(context);
     let now = context.game.host.now();
     context.entity_mut().timestamp = now;
-    context.set_move("carrier_move_attack_gren", false);
+    context.set_move("carrier_move_attack_gren", true);
 }
 
 /// Reattack gren (`carrier_reattack_gren`).

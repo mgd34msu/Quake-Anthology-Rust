@@ -316,7 +316,7 @@ fn medic_attack(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let melee_range = target_distance(context) < 80.0;
     if rogue_state(&mut *context.game, &actor).blocked {
-        context.set_move("medic_move_callReinforcements", false);
+        context.set_move("medic_move_callReinforcements", true);
         rogue_state(&mut *context.game, &actor).blocked = false;
     }
     let random = context.game.random();
@@ -371,7 +371,7 @@ fn medic_duck_inner(context: &mut MonsterContext, eta: f64) {
     context.state_mut().duck_wait = wait;
     rogue_duck_down(context);
     context.state_mut().next_frame = medic_frame::DUCK1;
-    context.set_move("medic_move_duck", false);
+    context.set_move("medic_move_duck", true);
 }
 
 /// Sidestep (`sidestep`).
@@ -381,7 +381,7 @@ fn medic_sidestep_inner(context: &mut MonsterContext) {
         return;
     }
     if context.state().current_move.name != "medic_move_run" {
-        context.set_move("medic_move_run", false);
+        context.set_move("medic_move_run", true);
     }
 }
 
@@ -618,7 +618,7 @@ fn medic_hook_retract(context: &mut MonsterContext) {
 /// Continue (`medic_continue`).
 fn medic_continue(context: &mut MonsterContext) {
     if visible(context, None) && context.game.random() <= 0.95 {
-        context.set_move("medic_move_attackHyperBlaster", false);
+        context.set_move("medic_move_attackHyperBlaster", true);
     }
 }
 
@@ -861,10 +861,10 @@ fn medic_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         context.state_mut().hold_frame = false;
         medic_sound(context, "medpain2", "medpain2", 2, 1.0);
         let heavy = context.game.random() < (reaction.damage * 0.005).min(0.5);
-        context.set_move(if heavy { "medic_move_pain2" } else { "medic_move_pain1" }, false);
+        context.set_move(if heavy { "medic_move_pain2" } else { "medic_move_pain1" }, true);
     } else {
         let first = context.game.random() < 0.5;
-        context.set_move(if first { "medic_move_pain1" } else { "medic_move_pain2" }, false);
+        context.set_move(if first { "medic_move_pain1" } else { "medic_move_pain2" }, true);
         medic_sound(context, if first { "medpain1" } else { "medpain2" }, "medpain2", 2, 1.0);
     }
     if context.state().ducked {

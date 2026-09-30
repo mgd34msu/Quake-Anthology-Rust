@@ -20,17 +20,17 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 fn insane_stand(context: &mut MonsterContext) {
     if context.entity().spawnflags & 8 != 0 {
         context.state_mut().stand_ground = true;
-        context.set_move("insane_move_cross", false);
+        context.set_move("insane_move_cross", true);
         return;
     }
     if context.entity().spawnflags & 20 == 20 {
-        context.set_move("insane_move_down", false);
+        context.set_move("insane_move_down", true);
         return;
     }
     if context.game.random() < 0.5 {
-        context.set_move("insane_move_stand_normal", false);
+        context.set_move("insane_move_stand_normal", true);
     } else {
-        context.set_move("insane_move_stand_insane", false);
+        context.set_move("insane_move_stand_insane", true);
     }
 }
 
@@ -39,7 +39,7 @@ fn insane_walking(context: &mut MonsterContext, running: bool) {
     if context.entity().spawnflags & 16 != 0
         && context.entity().frame == insane_frame::CR_PAIN10
     {
-        context.set_move("insane_move_down", false);
+        context.set_move("insane_move_down", true);
         return;
     }
     if context.entity().spawnflags & 4 != 0 {
@@ -169,11 +169,11 @@ fn insane_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
         return;
     }
     if context.entity().spawnflags & 8 != 0 {
-        context.set_move("insane_move_struggle_cross", false);
+        context.set_move("insane_move_struggle_cross", true);
     } else if insane_crawling(context) {
-        context.set_move("insane_move_crawl_pain", false);
+        context.set_move("insane_move_crawl_pain", true);
     } else {
-        context.set_move("insane_move_stand_pain", false);
+        context.set_move("insane_move_stand_pain", true);
     }
 }
 
@@ -212,9 +212,9 @@ fn insane_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     if context.entity().spawnflags & 8 != 0 {
         insane_dead(context);
     } else if insane_crawling(context) {
-        context.set_move("insane_move_crawl_death", false);
+        context.set_move("insane_move_crawl_death", true);
     } else {
-        context.set_move("insane_move_stand_death", false);
+        context.set_move("insane_move_stand_death", true);
     }
 }
 
@@ -237,9 +237,9 @@ fn insane_scream(context: &mut MonsterContext) {
 /// Cross (`insane_cross`).
 fn insane_cross(context: &mut MonsterContext) {
     if context.game.random() < 0.8 {
-        context.set_move("insane_move_cross", false);
+        context.set_move("insane_move_cross", true);
     } else {
-        context.set_move("insane_move_struggle_cross", false);
+        context.set_move("insane_move_struggle_cross", true);
     }
 }
 
@@ -249,16 +249,16 @@ fn insane_checkdown(context: &mut MonsterContext) {
         return;
     }
     if context.game.random() < 0.5 {
-        context.set_move("insane_move_uptodown", false);
+        context.set_move("insane_move_uptodown", true);
     } else {
-        context.set_move("insane_move_jumpdown", false);
+        context.set_move("insane_move_jumpdown", true);
     }
 }
 
 /// Check up (`insane_checkup`).
 fn insane_checkup(context: &mut MonsterContext) {
     if context.entity().spawnflags & 20 != 20 && context.game.random() < 0.5 {
-        context.set_move("insane_move_downtoup", false);
+        context.set_move("insane_move_downtoup", true);
     }
 }
 

@@ -87,7 +87,7 @@ fn widow_run(context: &mut MonsterContext) {
 fn widow_rail_move(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "gladiator/railgun.wav", 1, 1.0, 1.0);
-    context.set_move("widow_move_attack_pre_rail", false);
+    context.set_move("widow_move_attack_pre_rail", true);
 }
 
 /// Blaster (`blaster`).
@@ -282,7 +282,7 @@ fn widow_attack(context: &mut MonsterContext) {
     }
     if mission_services(&*context.game).bad_area(&actor) {
         if context.game.random() < 0.1 || context.game.host.now() < context.entity().timestamp {
-            context.set_move("widow_move_attack_pre_blaster", false);
+            context.set_move("widow_move_attack_pre_blaster", true);
         } else {
             widow_rail_move(context);
         }
@@ -296,20 +296,20 @@ fn widow_attack(context: &mut MonsterContext) {
     if (context.state().attack_state == MonsterAttackState::Blind || blocked)
         && widow_slots_left(context) >= 2
     {
-        context.set_move("widow_move_spawn", false);
+        context.set_move("widow_move_spawn", true);
         return;
     }
     if target_distance(context) > 300.0 && !anger && context.game.random() < 0.5 && !blocked {
-        context.set_move("widow_move_run_attack", false);
+        context.set_move("widow_move_run_attack", true);
         return;
     }
     if blaster_frames {
         if widow_slots_left(context) >= 2 {
-            context.set_move("widow_move_spawn", false);
+            context.set_move("widow_move_spawn", true);
             return;
         }
         if context.state().pause_time + 2.0 <= context.game.host.now() {
-            context.set_move("widow_move_attack_pre_blaster", false);
+            context.set_move("widow_move_attack_pre_blaster", true);
             return;
         }
     }
@@ -323,22 +323,22 @@ fn widow_attack(context: &mut MonsterContext) {
     let luck = context.game.random();
     if widow_slots_left(context) >= 2 {
         if luck <= 0.4 && context.state().pause_time + 2.0 <= context.game.host.now() {
-            context.set_move("widow_move_attack_pre_blaster", false);
+            context.set_move("widow_move_attack_pre_blaster", true);
         } else if luck <= 0.7 && context.game.host.now() >= context.entity().timestamp {
             widow_rail_move(context);
         } else {
-            context.set_move("widow_move_spawn", false);
+            context.set_move("widow_move_spawn", true);
         }
         return;
     }
     if context.game.host.now() < context.entity().timestamp {
-        context.set_move("widow_move_attack_pre_blaster", false);
+        context.set_move("widow_move_attack_pre_blaster", true);
         return;
     }
     if luck <= 0.5 || context.game.host.now() + 2.0 >= context.state().pause_time {
         widow_rail_move(context);
     } else {
-        context.set_move("widow_move_attack_pre_blaster", false);
+        context.set_move("widow_move_attack_pre_blaster", true);
     }
 }
 
@@ -346,7 +346,7 @@ fn widow_attack(context: &mut MonsterContext) {
 fn widow_stand(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "widow/laugh.wav", 2, 1.0, 1.0);
-    context.set_move("widow_move_stand", false);
+    context.set_move("widow_move_stand", true);
 }
 
 /// Sight (`sight`).
@@ -455,7 +455,7 @@ fn widow_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
     );
     context.entity_mut().count = 0;
     widow_clear_powerups(context);
-    context.set_move("widow_move_death", false);
+    context.set_move("widow_move_death", true);
 }
 
 /// Step (`widow_step`).
@@ -473,19 +473,19 @@ fn widow_stepshoot(context: &mut MonsterContext) {
 
 /// Start run 5 (`widow_start_run_5`).
 fn widow_start_run_5(context: &mut MonsterContext) {
-    context.set_move("widow_move_run", false);
+    context.set_move("widow_move_run", true);
     context.state_mut().next_frame = widow_frame::WALK05;
 }
 
 /// Start run 10 (`widow_start_run_10`).
 fn widow_start_run_10(context: &mut MonsterContext) {
-    context.set_move("widow_move_run", false);
+    context.set_move("widow_move_run", true);
     context.state_mut().next_frame = widow_frame::WALK10;
 }
 
 /// Start run 12 (`widow_start_run_12`).
 fn widow_start_run_12(context: &mut MonsterContext) {
-    context.set_move("widow_move_run", false);
+    context.set_move("widow_move_run", true);
     context.state_mut().next_frame = widow_frame::WALK12;
 }
 
@@ -493,7 +493,7 @@ fn widow_start_run_12(context: &mut MonsterContext) {
 fn widow_attack_blaster(context: &mut MonsterContext) {
     let pause = context.game.host.now() + 1.0 + 2.0 * context.game.random();
     context.state_mut().pause_time = pause;
-    context.set_move("widow_move_attack_blaster", false);
+    context.set_move("widow_move_attack_blaster", true);
     let torso = widow_torso(context);
     context.state_mut().next_frame = torso;
 }
@@ -509,7 +509,7 @@ fn widow_reattack_blaster(context: &mut MonsterContext) {
         return;
     }
     context.state_mut().manual_steering = false;
-    context.set_move("widow_move_attack_post_blaster", false);
+    context.set_move("widow_move_attack_post_blaster", true);
 }
 
 /// Save loc (`WidowSaveLoc`).

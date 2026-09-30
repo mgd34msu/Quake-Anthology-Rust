@@ -223,7 +223,7 @@ fn rerelease_berserk_attack(context: &mut MonsterContext) {
         && context.game.random() < 0.5
         && distance > 150.0
     {
-        context.set_move("berserk_move_attack_strike", false);
+        context.set_move("berserk_move_attack_strike", true);
         let timestamp = context.game.host.now() + 5.0;
         context.entity_mut().timestamp = timestamp;
         let actor = context.actor().clone();
@@ -231,7 +231,7 @@ fn rerelease_berserk_attack(context: &mut MonsterContext) {
         return;
     }
     if context.state().current_move.name == "berserk_move_run1" && distance <= 500.0 {
-        context.set_move("berserk_move_run_attack1", false);
+        context.set_move("berserk_move_run_attack1", true);
         let next = berserk_frame::R_ATT1 + context.entity().frame - berserk_frame::RUN1 + 1;
         context.state_mut().next_frame = next;
     }
@@ -346,7 +346,7 @@ fn rerelease_berserk_duck(context: &mut MonsterContext, _eta: f64) -> bool {
     {
         return false;
     }
-    context.set_move("berserk_move_duck2", false);
+    context.set_move("berserk_move_duck2", true);
     true
 }
 
@@ -357,7 +357,7 @@ fn rerelease_berserk_sidestep(context: &mut MonsterContext) -> bool {
         return false;
     }
     if current != "berserk_move_run1" {
-        context.set_move("berserk_move_run1", false);
+        context.set_move("berserk_move_run1", true);
     }
     true
 }
@@ -390,7 +390,7 @@ fn berserk_fidget(context: &mut MonsterContext) {
     {
         return;
     }
-    context.set_move("berserk_move_stand_fidget", false);
+    context.set_move("berserk_move_stand_fidget", true);
     let actor = context.actor().clone();
     context.game.sound(&actor, "berserk/beridle1.wav", 1, 1.0, 2.0);
 }

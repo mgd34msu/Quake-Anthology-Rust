@@ -19,18 +19,18 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 /// Run (`run`).
 fn supertank_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("supertank_move_stand", false);
+        context.set_move("supertank_move_stand", true);
     } else {
-        context.set_move("supertank_move_run", false);
+        context.set_move("supertank_move_run", true);
     }
 }
 
 /// Attack (`attack`).
 fn supertank_attack(context: &mut MonsterContext) {
     if target_distance(context) <= 160.0 || context.game.random() < 0.3 {
-        context.set_move("supertank_move_attack1", false);
+        context.set_move("supertank_move_attack1", true);
     } else {
-        context.set_move("supertank_move_attack2", false);
+        context.set_move("supertank_move_attack2", true);
     }
 }
 
@@ -106,7 +106,7 @@ fn supertank_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
             ..CombatTraitChanges::default()
         },
     );
-    context.set_move("supertank_move_death", false);
+    context.set_move("supertank_move_death", true);
 }
 
 /// Dead (`supertank_dead`).
@@ -131,9 +131,9 @@ fn supertank_dead(context: &mut MonsterContext) {
 /// Reattack (`supertank_reattack1`).
 fn supertank_reattack1(context: &mut MonsterContext) {
     if visible(context, None) && context.game.random() < 0.9 {
-        context.set_move("supertank_move_attack1", false);
+        context.set_move("supertank_move_attack1", true);
     } else {
-        context.set_move("supertank_move_end_attack1", false);
+        context.set_move("supertank_move_end_attack1", true);
     }
 }
 

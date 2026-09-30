@@ -34,16 +34,16 @@ fn soldierh_stand(context: &mut MonsterContext) {
     if context.state().current_move.name == "soldierh_move_stand3"
         || context.game.random() < 0.8
     {
-        context.set_move("soldierh_move_stand1", false);
+        context.set_move("soldierh_move_stand1", true);
     } else {
-        context.set_move("soldierh_move_stand3", false);
+        context.set_move("soldierh_move_stand3", true);
     }
 }
 
 /// Run (`run`).
 fn soldierh_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("soldierh_move_stand1", false);
+        context.set_move("soldierh_move_stand1", true);
         return;
     }
     let current = context.state().current_move.name.clone();
@@ -262,7 +262,7 @@ fn soldierh_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
                 || current == "soldierh_move_pain2"
                 || current == "soldierh_move_pain3")
         {
-            context.set_move("soldierh_move_pain4", false);
+            context.set_move("soldierh_move_pain4", true);
         }
         return;
     }
@@ -270,7 +270,7 @@ fn soldierh_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
     context.state_mut().pain_time = now + 3.0;
     soldierh_pain_sound(context, false);
     if airborne {
-        context.set_move("soldierh_move_pain4", false);
+        context.set_move("soldierh_move_pain4", true);
         return;
     }
     if context.game.options.skill == 3 {
@@ -342,7 +342,7 @@ fn soldierh_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     let origin = context.game.body_of(actor).origin;
     let view_height = f64::from(context.entity().view_height);
     if (origin.z as f64 + view_height - f64::from(reaction.point.z)).abs() <= 4.0 {
-        context.set_move("soldierh_move_death3", false);
+        context.set_move("soldierh_move_death3", true);
         return;
     }
     let deaths = [
@@ -353,7 +353,7 @@ fn soldierh_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         "soldierh_move_death6",
     ];
     let pick = *record_at(&deaths, (context.game.random() * 5.0).floor() as usize);
-    context.set_move(pick, false);
+    context.set_move(pick, true);
 }
 
 /// Dodge (`dodge`).
@@ -371,7 +371,7 @@ fn soldierh_dodge(
         context.entity_mut().enemy = Some(attacker.clone());
     }
     if context.game.options.skill == 0 {
-        context.set_move("soldierh_move_duck", false);
+        context.set_move("soldierh_move_duck", true);
         return;
     }
     let pause = context.game.host.now() + eta + 0.3;

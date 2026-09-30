@@ -19,11 +19,11 @@ use crate::q2::support::contracts::PainReaction;
 /// Run (`run`).
 fn rogue_flyer_run(context: &mut MonsterContext) {
     if monster_mass(context) > 50.0 {
-        context.set_move("flyer_move_kamikaze", false);
+        context.set_move("flyer_move_kamikaze", true);
     } else if context.state().stand_ground {
-        context.set_move("flyer_move_stand", false);
+        context.set_move("flyer_move_stand", true);
     } else {
-        context.set_move("flyer_move_run", false);
+        context.set_move("flyer_move_run", true);
     }
 }
 
@@ -92,7 +92,7 @@ fn rogue_flyer_stand(context: &mut MonsterContext) {
     if monster_mass(context) > 50.0 {
         rogue_flyer_run(context);
     } else {
-        context.set_move("flyer_move_stand", false);
+        context.set_move("flyer_move_stand", true);
     }
 }
 
@@ -101,7 +101,7 @@ fn rogue_flyer_walk(context: &mut MonsterContext) {
     if monster_mass(context) > 50.0 {
         rogue_flyer_run(context);
     } else {
-        context.set_move("flyer_move_walk", false);
+        context.set_move("flyer_move_walk", true);
     }
 }
 
@@ -110,7 +110,7 @@ fn rogue_flyer_melee(context: &mut MonsterContext) {
     if monster_mass(context) > 50.0 {
         rogue_flyer_run(context);
     } else {
-        context.set_move("flyer_move_start_melee", false);
+        context.set_move("flyer_move_start_melee", true);
     }
 }
 
@@ -128,7 +128,7 @@ fn rogue_flyer_attack(context: &mut MonsterContext) {
     };
     if context.game.random() > chance {
         context.state_mut().attack_state = MonsterAttackState::Straight;
-        context.set_move("flyer_move_attack2", false);
+        context.set_move("flyer_move_attack2", true);
         return;
     }
     if context.game.random() <= 0.5 {
@@ -136,7 +136,7 @@ fn rogue_flyer_attack(context: &mut MonsterContext) {
         context.state_mut().lefty = lefty;
     }
     context.state_mut().attack_state = MonsterAttackState::Sliding;
-    context.set_move("flyer_move_attack3", false);
+    context.set_move("flyer_move_attack3", true);
 }
 
 /// Pain (`pain`).
@@ -172,13 +172,13 @@ fn rogue_flyer_blocked(context: &mut MonsterContext, _distance: f64) -> bool {
 /// Set start (`flyer_setstart`).
 fn flyer_setstart(context: &mut MonsterContext) {
     context.game.mission_monsters.flyer_next_move = RogueFlyerNext::Run;
-    context.set_move("flyer_move_start", false);
+    context.set_move("flyer_move_start", true);
 }
 
 /// Next move (`flyer_nextmove`).
 fn flyer_nextmove(context: &mut MonsterContext) {
     if context.game.mission_monsters.flyer_next_move == RogueFlyerNext::Run {
-        context.set_move("flyer_move_run", false);
+        context.set_move("flyer_move_run", true);
     }
 }
 

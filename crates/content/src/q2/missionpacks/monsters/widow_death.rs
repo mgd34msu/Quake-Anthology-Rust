@@ -429,7 +429,7 @@ pub fn widow_explode_think(actor: ActorId, game: &mut Q2GameServices) {
                 state.dead = true;
             }
             let mut context = MonsterContext::new(actor.clone(), game);
-            context.set_move("widow2_move_dead", false);
+            context.set_move("widow2_move_dead", true);
             let game = &mut *context.game;
             resume_monster(game, actor);
             return;

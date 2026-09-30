@@ -20,9 +20,9 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction};
 /// Run (`run`).
 fn gladiator_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("gladiator_move_stand", false);
+        context.set_move("gladiator_move_stand", true);
     } else {
-        context.set_move("gladiator_move_run", false);
+        context.set_move("gladiator_move_run", true);
     }
 }
 
@@ -35,7 +35,7 @@ fn gladiator_attack(context: &mut MonsterContext) {
     context.state_mut().blind_fire_target = eye;
     let actor = context.actor().clone();
     context.game.sound(&actor, "gladiator/railgun.wav", 1, 1.0, 1.0);
-    context.set_move("gladiator_move_attack_gun", false);
+    context.set_move("gladiator_move_attack_gun", true);
 }
 
 /// Pain (`pain`).
@@ -45,7 +45,7 @@ fn gladiator_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
     let airborne = context.game.body_of(actor.clone()).velocity.z > 100.0;
     if context.game.host.now() < context.state().pain_time {
         if airborne && context.state().current_move.name == "gladiator_move_pain" {
-            context.set_move("gladiator_move_pain_air", false);
+            context.set_move("gladiator_move_pain_air", true);
         }
         return;
     }

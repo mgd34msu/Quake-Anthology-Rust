@@ -90,9 +90,9 @@ fn medic_run(context: &mut MonsterContext) {
         return;
     }
     if context.state().stand_ground {
-        context.set_move("medic_move_stand", false);
+        context.set_move("medic_move_stand", true);
     } else {
-        context.set_move("medic_move_run", false);
+        context.set_move("medic_move_run", true);
     }
 }
 
@@ -106,9 +106,9 @@ fn medic_idle(context: &mut MonsterContext) {
 /// Attack (`attack`).
 fn medic_attack(context: &mut MonsterContext) {
     if context.state().medic {
-        context.set_move("medic_move_attackCable", false);
+        context.set_move("medic_move_attackCable", true);
     } else {
-        context.set_move("medic_move_attackBlaster", false);
+        context.set_move("medic_move_attackBlaster", true);
     }
 }
 
@@ -191,7 +191,7 @@ fn medic_dodge(
     if context.entity().enemy.is_none() {
         context.entity_mut().enemy = Some(attacker.clone());
     }
-    context.set_move("medic_move_duck", false);
+    context.set_move("medic_move_duck", true);
 }
 
 /// Duck down (`medic_duck_down`).
@@ -230,7 +230,7 @@ fn medic_hook_retract(context: &mut MonsterContext) {
 /// Continue (`medic_continue`).
 fn medic_continue(context: &mut MonsterContext) {
     if visible(context, None) && context.game.random() <= 0.95 {
-        context.set_move("medic_move_attackHyperBlaster", false);
+        context.set_move("medic_move_attackHyperBlaster", true);
     }
 }
 

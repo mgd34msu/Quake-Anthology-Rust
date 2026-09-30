@@ -128,7 +128,7 @@ fn rerelease_gladiator_pain(context: &mut MonsterContext, _reaction: &PainReacti
     }
     if context.game.host.now() < context.state().pain_time {
         if airborne && context.state().current_move.name == "gladiator_move_pain" {
-            context.set_move("gladiator_move_pain_air", false);
+            context.set_move("gladiator_move_pain_air", true);
         }
         return;
     }
@@ -225,7 +225,7 @@ fn rerelease_gladiator_die(context: &mut MonsterContext, reaction: &DeathReactio
             ..crate::q2::support::contracts::CombatTraitChanges::default()
         },
     );
-    context.set_move("gladiator_move_death", false);
+    context.set_move("gladiator_move_death", true);
 }
 
 /// Melee (`GladiatorMelee`).

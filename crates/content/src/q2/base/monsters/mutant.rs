@@ -34,9 +34,9 @@ pub enum MutantSource {
 /// Run (`run`).
 fn mutant_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("mutant_move_stand", false);
+        context.set_move("mutant_move_stand", true);
     } else {
-        context.set_move("mutant_move_run", false);
+        context.set_move("mutant_move_run", true);
     }
 }
 
@@ -151,7 +151,7 @@ pub fn mutant_source_callbacks(source: MutantSource) -> Q2CallbackDefinitions {
 
 /// Idle (`idle`).
 fn mutant_idle(context: &mut MonsterContext) {
-    context.set_move("mutant_move_idle", false);
+    context.set_move("mutant_move_idle", true);
     let actor = context.actor().clone();
     context.game.sound(&actor, "mutant/mutidle1.wav", 2, 1.0, 2.0);
 }

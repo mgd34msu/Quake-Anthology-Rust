@@ -169,7 +169,7 @@ fn gunner_duck(context: &mut MonsterContext, eta: f64) {
     context.state_mut().duck_wait = wait;
     gunner_duck_down(context);
     context.state_mut().next_frame = gunner_frame::DUCK01;
-    context.set_move("gunner_move_duck", false);
+    context.set_move("gunner_move_duck", true);
 }
 
 /// Sidestep (`sidestep`).
@@ -182,7 +182,7 @@ fn gunner_sidestep(context: &mut MonsterContext) {
         return;
     }
     if context.state().current_move.name != "gunner_move_run" {
-        context.set_move("gunner_move_run", false);
+        context.set_move("gunner_move_run", true);
     }
 }
 
@@ -231,7 +231,7 @@ fn rogue_gunner_attack(context: &mut MonsterContext) {
         }
         context.state_mut().manual_steering = true;
         if grenade_check(context) {
-            context.set_move("gunner_move_attack_grenade", false);
+            context.set_move("gunner_move_attack_grenade", true);
             let finished = context.game.host.now() + 2.0 * context.game.random();
             context.state_mut().attack_finished = finished;
         }
@@ -241,11 +241,11 @@ fn rogue_gunner_attack(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let bad_area = rogue_state(&mut *context.game, &actor).bad_area.is_some();
     if target_distance(context) < 80.0 || bad_area {
-        context.set_move("gunner_move_attack_chain", false);
+        context.set_move("gunner_move_attack_chain", true);
     } else if context.game.random() <= 0.5 && grenade_check(context) {
-        context.set_move("gunner_move_attack_grenade", false);
+        context.set_move("gunner_move_attack_grenade", true);
     } else {
-        context.set_move("gunner_move_attack_chain", false);
+        context.set_move("gunner_move_attack_chain", true);
     }
 }
 

@@ -58,18 +58,18 @@ fn screen(context: &mut MonsterContext, active: bool) {
 fn brain_run(context: &mut MonsterContext) {
     screen(context, true);
     if context.state().stand_ground {
-        context.set_move("brain_move_stand", false);
+        context.set_move("brain_move_stand", true);
     } else {
-        context.set_move("brain_move_run", false);
+        context.set_move("brain_move_run", true);
     }
 }
 
 /// Melee (`melee`).
 fn brain_melee(context: &mut MonsterContext) {
     if context.game.random() <= 0.5 {
-        context.set_move("brain_move_attack1", false);
+        context.set_move("brain_move_attack1", true);
     } else {
-        context.set_move("brain_move_attack2", false);
+        context.set_move("brain_move_attack2", true);
     }
 }
 
@@ -98,7 +98,7 @@ fn brain_initialize(context: &mut MonsterContext) {
 fn brain_idle(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "brain/brnlens1.wav", 0, 1.0, 2.0);
-    context.set_move("brain_move_idle", false);
+    context.set_move("brain_move_idle", true);
 }
 
 /// Pain (`pain`).
@@ -183,7 +183,7 @@ fn brain_dodge(
     }
     let now = context.game.host.now();
     context.state_mut().pause_time = now + eta + 0.5;
-    context.set_move("brain_move_duck", false);
+    context.set_move("brain_move_duck", true);
 }
 
 /// Duck down (`brain_duck_down`).
@@ -269,7 +269,7 @@ fn brain_chest_closed(context: &mut MonsterContext) {
     screen(context, true);
     if context.entity().spawnflags & 65536 != 0 {
         context.entity_mut().spawnflags &= !65536;
-        context.set_move("brain_move_attack1", false);
+        context.set_move("brain_move_attack1", true);
     }
 }
 

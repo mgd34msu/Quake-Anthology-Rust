@@ -21,18 +21,18 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 /// Run (`run`).
 fn boss2_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("boss2_move_stand", false);
+        context.set_move("boss2_move_stand", true);
     } else {
-        context.set_move("boss2_move_run", false);
+        context.set_move("boss2_move_run", true);
     }
 }
 
 /// Attack (`attack`).
 fn boss2_attack(context: &mut MonsterContext) {
     if target_distance(context) <= 125.0 || context.game.random() <= 0.6 {
-        context.set_move("boss2_move_attack_pre_mg", false);
+        context.set_move("boss2_move_attack_pre_mg", true);
     } else {
-        context.set_move("boss2_move_attack_rocket", false);
+        context.set_move("boss2_move_attack_rocket", true);
     }
 }
 
@@ -89,7 +89,7 @@ fn boss2_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
             ..CombatTraitChanges::default()
         },
     );
-    context.set_move("boss2_move_death", false);
+    context.set_move("boss2_move_death", true);
 }
 
 /// Dead (`boss2_dead`).

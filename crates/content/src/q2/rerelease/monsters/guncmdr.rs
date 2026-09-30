@@ -77,12 +77,12 @@ fn guncmdr_can_advance(context: &mut MonsterContext) -> bool {
 
 /// Fire chain (`fireChain`).
 fn guncmdr_fire_chain_inner(context: &mut MonsterContext, immediate: bool) {
+    let run = !context.state().stand_ground
+        && enemy_body(context).is_some()
+        && target_distance(context) > 400.0
+        && guncmdr_can_advance(context);
     context.set_move(
-        if !context.state().stand_ground
-            && enemy_body(context).is_some()
-            && target_distance(context) > 400.0
-            && guncmdr_can_advance(context)
-        {
+        if run {
             "guncmdr_move_fire_chain_run"
         } else {
             "guncmdr_move_fire_chain"
@@ -101,13 +101,13 @@ fn guncmdr_attack(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     let body = context.game.body_of(actor);
     if distance < 80.0 && context.state().melee_time < context.game.host.now() {
-        context.set_move("guncmdr_move_attack_kick", false);
+        context.set_move("guncmdr_move_attack_kick", true);
         return;
     }
     if (distance <= 100.0 || context.game.random() < 0.5)
         && clear_shot(context, muzzle_offset(Q2Edition::Rerelease, rerelease_flash::GUNCMDR_CHAINGUN_1 as usize))
     {
-        context.set_move("guncmdr_move_attack_chain", false);
+        context.set_move("guncmdr_move_attack_chain", true);
         return;
     }
     let aim = normalize3(sub3(enemy.origin, body.origin));
@@ -119,7 +119,7 @@ fn guncmdr_attack(context: &mut MonsterContext) {
         && clear_shot(context, mortar_offset)
         && calculate_pitch_to_fire(context, enemy.origin, mortar_start, aim, 850.0, 2.5, true, false).is_some()
     {
-        context.set_move("guncmdr_move_attack_mortar", false);
+        context.set_move("guncmdr_move_attack_mortar", true);
         set_duck(context, true);
         return;
     }
@@ -128,11 +128,11 @@ fn guncmdr_attack(context: &mut MonsterContext) {
         && !context.state().stand_ground
         && calculate_pitch_to_fire(context, enemy.origin, front_start, aim, 600.0, 2.5, false, false).is_some()
     {
-        context.set_move("guncmdr_move_attack_grenade_back", false);
+        context.set_move("guncmdr_move_attack_grenade_back", true);
         return;
     }
     if context.state().stand_ground {
-        context.set_move("guncmdr_move_attack_chain", false);
+        context.set_move("guncmdr_move_attack_chain", true);
     }
 }
 
@@ -167,7 +167,7 @@ fn guncmdr_sidestep(context: &mut MonsterContext) -> bool {
         context.entity_mut().count = context.entity().frame;
         context.set_move("guncmdr_move_attack_mortar_dodge", false);
     } else if current == "guncmdr_move_run" {
-        context.set_move("guncmdr_move_run", false);
+        context.set_move("guncmdr_move_run", true);
     } else {
         return false;
     }
@@ -238,7 +238,7 @@ fn guncmdr_duck(context: &mut MonsterContext, _eta: f64) -> bool {
         set_duck(context, false);
         return false;
     }
-    context.set_move("guncmdr_move_duck_attack", false);
+    context.set_move("guncmdr_move_duck_attack", true);
     true
 }
 
@@ -436,7 +436,7 @@ fn guncmdr_die(context: &mut MonsterContext, reaction: &DeathReaction) {
     if (f64::from(body.origin.z) + view_height - f64::from(reaction.point.z)).abs() <= 4.0
         && body.velocity.z < 65.0
     {
-        context.set_move("guncmdr_move_death5", false);
+        context.set_move("guncmdr_move_death5", true);
         let damage = reaction.pain.damage;
         let head = throw_gib(
             actor.clone(),
@@ -493,7 +493,7 @@ fn guncmdr_fidget(context: &mut MonsterContext) {
         && context.entity().enemy.is_none()
         && context.game.random() <= 0.05
     {
-        context.set_move("guncmdr_move_fidget", false);
+        context.set_move("guncmdr_move_fidget", true);
     }
 }
 
@@ -715,14 +715,14 @@ fn gunner_cmdr_grenade(context: &mut MonsterContext) {
 
 /// Mortar dodge resume (`guncmdr_grenade_mortar_resume`).
 fn guncmdr_grenade_mortar_resume(context: &mut MonsterContext) {
-    context.set_move("guncmdr_move_attack_mortar", false);
+    context.set_move("guncmdr_move_attack_mortar", true);
     context.state_mut().attack_state = MonsterAttackState::Straight;
     context.entity_mut().frame = context.entity().count;
 }
 
 /// Back dodge resume (`guncmdr_grenade_back_dodge_resume`).
 fn guncmdr_grenade_back_dodge_resume(context: &mut MonsterContext) {
-    context.set_move("guncmdr_move_attack_grenade_back", false);
+    context.set_move("guncmdr_move_attack_grenade_back", true);
     context.state_mut().attack_state = MonsterAttackState::Straight;
     context.entity_mut().frame = context.entity().count;
 }

@@ -17,9 +17,9 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 /// Run (`run`).
 fn jorg_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("jorg_move_stand", false);
+        context.set_move("jorg_move_stand", true);
     } else {
-        context.set_move("jorg_move_run", false);
+        context.set_move("jorg_move_run", true);
     }
 }
 
@@ -58,10 +58,10 @@ fn jorg_attack(context: &mut MonsterContext) {
     if context.game.random() <= 0.75 {
         context.game.sound(&actor, "boss3/bs3atck1.wav", 2, 1.0, 1.0);
         monster_loop_sound(context, "boss3/w_loop.wav");
-        context.set_move("jorg_move_start_attack1", false);
+        context.set_move("jorg_move_start_attack1", true);
     } else {
         context.game.sound(&actor, "boss3/bs3atck2.wav", 2, 1.0, 1.0);
-        context.set_move("jorg_move_attack2", false);
+        context.set_move("jorg_move_attack2", true);
     }
 }
 
@@ -143,7 +143,7 @@ fn jorg_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
             ..CombatTraitChanges::default()
         },
     );
-    context.set_move("jorg_move_death", false);
+    context.set_move("jorg_move_death", true);
 }
 
 /// Dead (`jorg_dead`).
@@ -159,11 +159,11 @@ fn jorg_makron_toss(context: &mut MonsterContext) {
 /// Reattack (`jorg_reattack1`).
 fn jorg_reattack1(context: &mut MonsterContext) {
     if visible(context, None) && context.game.random() < 0.9 {
-        context.set_move("jorg_move_attack1", false);
+        context.set_move("jorg_move_attack1", true);
         return;
     }
     stop_loop(context);
-    context.set_move("jorg_move_end_attack1", false);
+    context.set_move("jorg_move_end_attack1", true);
 }
 
 /// BFG (`jorgBFG`).

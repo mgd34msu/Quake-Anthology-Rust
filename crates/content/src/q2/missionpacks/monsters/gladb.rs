@@ -18,9 +18,9 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction};
 /// Run (`run`).
 fn gladb_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("gladb_move_stand", false);
+        context.set_move("gladb_move_stand", true);
     } else {
-        context.set_move("gladb_move_run", false);
+        context.set_move("gladb_move_run", true);
     }
 }
 
@@ -50,7 +50,7 @@ fn gladb_attack(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "weapons/plasshot.wav", 1, 1.0, 1.0);
     context.state_mut().blind_fire_target = eye;
-    context.set_move("gladb_move_attack_gun", false);
+    context.set_move("gladb_move_attack_gun", true);
 }
 
 /// Pain (`pain`).
@@ -60,7 +60,7 @@ fn gladb_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
     let airborne = context.game.body_of(actor).velocity.z > 100.0;
     if context.game.host.now() < context.state().pain_time {
         if airborne && context.state().current_move.name == "gladb_move_pain" {
-            context.set_move("gladb_move_pain_air", false);
+            context.set_move("gladb_move_pain_air", true);
         }
         return;
     }

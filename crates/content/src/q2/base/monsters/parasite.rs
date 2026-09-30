@@ -22,18 +22,18 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceHit};
 /// Run (`run`).
 fn parasite_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("parasite_move_stand", false);
+        context.set_move("parasite_move_stand", true);
     } else {
-        context.set_move("parasite_move_run", false);
+        context.set_move("parasite_move_run", true);
     }
 }
 
 /// Start run (`startRun`).
 fn parasite_start_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("parasite_move_stand", false);
+        context.set_move("parasite_move_stand", true);
     } else {
-        context.set_move("parasite_move_start_run", false);
+        context.set_move("parasite_move_start_run", true);
     }
 }
 
@@ -68,7 +68,7 @@ fn parasite_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
         "parasite/parpain2.wav"
     };
     context.game.sound(&actor, path, 2, 1.0, 1.0);
-    context.set_move("parasite_move_pain1", false);
+    context.set_move("parasite_move_pain1", true);
 }
 
 /// Die (`die`).
@@ -79,9 +79,9 @@ fn parasite_die(context: &mut MonsterContext, reaction: &DeathReaction) {
 /// Refidget (`parasite_refidget`).
 fn parasite_refidget(context: &mut MonsterContext) {
     if context.game.random() <= 0.8 {
-        context.set_move("parasite_move_fidget", false);
+        context.set_move("parasite_move_fidget", true);
     } else {
-        context.set_move("parasite_move_end_fidget", false);
+        context.set_move("parasite_move_end_fidget", true);
     }
 }
 

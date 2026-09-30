@@ -320,7 +320,7 @@ fn widow2_attack(context: &mut MonsterContext) {
     if (context.state().attack_state == MonsterAttackState::Blind || blocked)
         && widow_slots_left(context) >= 2
     {
-        context.set_move("widow2_move_spawn", false);
+        context.set_move("widow2_move_spawn", true);
         return;
     }
     let luck = context.game.random();
@@ -328,7 +328,7 @@ fn widow2_attack(context: &mut MonsterContext) {
     if target_distance(context) < 600.0 {
         if slots {
             if luck <= 0.4 {
-                context.set_move("widow2_move_attack_pre_beam", false);
+                context.set_move("widow2_move_attack_pre_beam", true);
             } else {
                 context.set_move(
                     if luck <= 0.7 && ready {
@@ -353,7 +353,7 @@ fn widow2_attack(context: &mut MonsterContext) {
     }
     if slots {
         if luck < 0.3 {
-            context.set_move("widow2_move_attack_pre_beam", false);
+            context.set_move("widow2_move_attack_pre_beam", true);
         } else {
             context.set_move(
                 if luck < 0.65 || !ready {
@@ -408,7 +408,7 @@ fn widow2_pain(context: &mut MonsterContext, reaction: &PainReaction) {
             }
     {
         context.state_mut().manual_steering = false;
-        context.set_move("widow2_move_pain", false);
+        context.set_move("widow2_move_pain", true);
     }
 }
 
@@ -555,7 +555,7 @@ fn widow2_die(context: &mut MonsterContext, reaction: &DeathReaction) {
         );
     }
     widow_clear_powerups(context);
-    context.set_move("widow2_move_death", false);
+    context.set_move("widow2_move_death", true);
 }
 
 /// Beam target remove (`Widow2BeamTargetRemove`).
@@ -582,7 +582,7 @@ fn widow2_reattack_beam(context: &mut MonsterContext) {
     } else {
         "widow2_move_attack_post_beam"
     };
-    context.set_move(moves, false);
+    context.set_move(moves, true);
 }
 
 /// Save disrupt loc (`Widow2SaveDisruptLoc`).
@@ -741,11 +741,11 @@ fn widow2_start_searching(context: &mut MonsterContext) {
 /// Keep searching (`widow2_keep_searching`).
 fn widow2_keep_searching(context: &mut MonsterContext) {
     if context.entity().count <= 2 {
-        context.set_move("widow2_move_dead", false);
+        context.set_move("widow2_move_dead", true);
         context.entity_mut().frame = widow2_frame::DTHSRH01;
         context.entity_mut().count += 1;
     } else {
-        context.set_move("widow2_move_really_dead", false);
+        context.set_move("widow2_move_really_dead", true);
     }
 }
 

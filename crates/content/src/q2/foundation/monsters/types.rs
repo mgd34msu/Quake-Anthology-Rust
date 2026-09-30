@@ -376,7 +376,7 @@ impl MonsterHandler {
     pub fn dispatch(&self, context: &mut MonsterContext) {
         match self {
             MonsterHandler::Callback(callback) => callback(context),
-            MonsterHandler::SetMove(name) => context.set_move(name, false),
+            MonsterHandler::SetMove(name) => context.set_move(name, true),
             MonsterHandler::PlaySound { path, channel, attenuation } => {
                 let actor = context.actor().clone();
                 context.game.sound(&actor, path, *channel, 1.0, *attenuation);

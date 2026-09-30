@@ -70,7 +70,7 @@ fn fixbot_leave_goal(context: &mut MonsterContext) {
     context.game.schedule(target_id, 0.1, free_q2_entity);
     context.entity_mut().goal = None;
     context.entity_mut().enemy = None;
-    context.set_move("fixbot_move_stand", false);
+    context.set_move("fixbot_move_stand", true);
 }
 
 /// Vertical goal (`verticalGoal`).
@@ -184,10 +184,10 @@ fn fixbot_attack(context: &mut MonsterContext) {
         if length3(sub3(origin, enemy_body.origin)) > 128.0 {
             return;
         }
-        context.set_move("fixbot_move_laserattack", false);
+        context.set_move("fixbot_move_laserattack", true);
         return;
     }
-    context.set_move("fixbot_move_attack2", false);
+    context.set_move("fixbot_move_attack2", true);
 }
 
 /// Walk (`walk`).
@@ -262,7 +262,7 @@ fn fixbot_ai_movetogoal(context: &mut MonsterContext, distance: f64) {
 fn fixbot_ai_facing(context: &mut MonsterContext, _distance: f64) {
     let goal = fixbot_goal(context);
     if in_front(context, goal.actor.id()) {
-        context.set_move("fixbot_move_forward", false);
+        context.set_move("fixbot_move_forward", true);
         return;
     }
     fixbot_turn(context);
@@ -273,7 +273,7 @@ fn fixbot_change_to_roam(context: &mut MonsterContext) {
     if fixbot_search(context) {
         return;
     }
-    context.set_move("fixbot_move_roamgoal", false);
+    context.set_move("fixbot_move_roamgoal", true);
     if context.entity().spawnflags & 16 != 0 {
         fixbot_vertical_goal(context, true);
         context.entity_mut().spawnflags = 32;
@@ -283,11 +283,11 @@ fn fixbot_change_to_roam(context: &mut MonsterContext) {
         context.entity_mut().spawnflags = 32;
     }
     if context.entity().spawnflags & 4 != 0 {
-        context.set_move("fixbot_move_roamgoal", false);
+        context.set_move("fixbot_move_roamgoal", true);
         context.entity_mut().spawnflags = 32;
     }
     if context.entity().spawnflags == 0 {
-        context.set_move("fixbot_move_stand2", false);
+        context.set_move("fixbot_move_stand2", true);
     }
 }
 
@@ -329,7 +329,7 @@ fn fixbot_roam_goal(context: &mut MonsterContext) {
     context.game.write_body(target.clone(), &moved, false);
     context.entity_mut().goal = Some(target.clone());
     context.entity_mut().enemy = Some(target);
-    context.set_move("fixbot_move_turn", false);
+    context.set_move("fixbot_move_turn", true);
 }
 
 /// Fly vertical 2 (`fly_vertical2`).
@@ -394,7 +394,7 @@ fn fixbot_use_scanner(context: &mut MonsterContext) {
         let origin = context.game.body_of(actor.clone()).origin;
         let candidate_body = context.game.body_of(candidate_id);
         if length3(sub3(origin, candidate_body.origin)) < 32.0 {
-            context.set_move("fixbot_move_weld_start", false);
+            context.set_move("fixbot_move_weld_start", true);
         }
         return;
     }
@@ -403,7 +403,7 @@ fn fixbot_use_scanner(context: &mut MonsterContext) {
     let target_body = context.game.body_of(target.actor.id().clone());
     if length3(sub3(origin, target_body.origin)) < 32.0 {
         if target.classname == "object_repair" {
-            context.set_move("fixbot_move_weld_start", false);
+            context.set_move("fixbot_move_weld_start", true);
         } else {
             fixbot_leave_goal(context);
         }
@@ -416,7 +416,7 @@ fn fixbot_use_scanner(context: &mut MonsterContext) {
     let origin = context.game.body_of(actor).origin;
     if length3(sub3(origin, previous)).trunc() as i32 == 0 {
         if target.classname == "object_repair" {
-            context.set_move("fixbot_move_stand", false);
+            context.set_move("fixbot_move_stand", true);
         } else {
             fixbot_leave_goal(context);
         }
@@ -426,7 +426,7 @@ fn fixbot_use_scanner(context: &mut MonsterContext) {
 /// Weld state (`weldstate`).
 fn fixbot_weldstate(context: &mut MonsterContext) {
     if context.entity().frame == fixbot_frame::WELDSTART_10 {
-        context.set_move("fixbot_move_weld", false);
+        context.set_move("fixbot_move_weld", true);
         return;
     }
     if context.entity().frame == fixbot_frame::WELDMIDDLE_07 {
@@ -438,7 +438,7 @@ fn fixbot_weldstate(context: &mut MonsterContext) {
             if let Some(enemy) = enemy {
                 context.game.require_entity_mut(&enemy).owner = None;
             }
-            context.set_move("fixbot_move_weld_end", false);
+            context.set_move("fixbot_move_weld_end", true);
             return;
         }
         let owned = context.game.require_entity(&target_id).actor.clone();
@@ -447,7 +447,7 @@ fn fixbot_weldstate(context: &mut MonsterContext) {
     }
     context.entity_mut().goal = None;
     context.entity_mut().enemy = None;
-    context.set_move("fixbot_move_stand", false);
+    context.set_move("fixbot_move_stand", true);
 }
 
 /// Fire welder (`fixbot_fire_welder`).
@@ -486,7 +486,7 @@ fn fixbot_fire_welder(context: &mut MonsterContext) {
 /// Fire blaster (`fixbot_fire_blaster`).
 fn fixbot_fire_blaster(context: &mut MonsterContext) {
     if !visible(context, None) {
-        context.set_move("fixbot_move_run", false);
+        context.set_move("fixbot_move_run", true);
     }
     let Some((start, direction)) = monster_shot(context, 58, 0.0) else {
         return;
@@ -527,7 +527,7 @@ fn fixbot_fire_laser(context: &mut MonsterContext) {
     };
     if health(&mut *context.game, Some(&enemy_id)) <= gib_health {
         context.state_mut().medic = false;
-        context.set_move("fixbot_move_stand", false);
+        context.set_move("fixbot_move_stand", true);
         return;
     }
     let actor = context.actor().clone();
@@ -602,7 +602,7 @@ fn fixbot_fire_laser(context: &mut MonsterContext) {
     moved.origin.z += 1.0;
     context.game.write_body(actor, &moved, false);
     context.state_mut().medic = false;
-    context.set_move("fixbot_move_stand", false);
+    context.set_move("fixbot_move_stand", true);
 }
 
 /// Create the fixbot definition (`createFixbotDefinition`).

@@ -24,9 +24,9 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction};
 /// Run (`run`).
 fn hover_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("hover_move_stand", false);
+        context.set_move("hover_move_stand", true);
     } else {
-        context.set_move("hover_move_run", false);
+        context.set_move("hover_move_run", true);
     }
 }
 
@@ -107,9 +107,9 @@ fn hover_die(context: &mut MonsterContext, reaction: &DeathReaction) {
 /// Reattack (`hover_reattack`).
 fn hover_reattack(context: &mut MonsterContext) {
     if alive_enemy(context) && visible(context, None) && context.game.random() <= 0.6 {
-        context.set_move("hover_move_attack1", false);
+        context.set_move("hover_move_attack1", true);
     } else {
-        context.set_move("hover_move_end_attack", false);
+        context.set_move("hover_move_end_attack", true);
     }
 }
 

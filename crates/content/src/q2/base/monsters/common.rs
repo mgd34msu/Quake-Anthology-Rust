@@ -214,7 +214,7 @@ pub fn begin_death(
             ..CombatTraitChanges::default()
         },
     );
-    context.set_move(animation, false);
+    context.set_move(animation, true);
 }
 
 /// Settle a corpse (`finishCorpse`).

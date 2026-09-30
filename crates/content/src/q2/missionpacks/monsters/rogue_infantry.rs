@@ -55,7 +55,7 @@ fn rogue_infantry_duck_inner(context: &mut MonsterContext, eta: f64) {
     context.state_mut().duck_wait = now + eta + if skill == 0 { 1.0 } else { 0.1 * f64::from(3 - skill) };
     rogue_duck_down(context);
     context.state_mut().next_frame = infantry_frame::DUCK01;
-    context.set_move("infantry_move_duck", false);
+    context.set_move("infantry_move_duck", true);
 }
 
 /// Sidestep (`sidestep`).
@@ -68,7 +68,7 @@ fn rogue_infantry_sidestep_inner(context: &mut MonsterContext) {
         return;
     }
     if context.state().current_move.name != "infantry_move_run" {
-        context.set_move("infantry_move_run", false);
+        context.set_move("infantry_move_run", true);
     }
 }
 
@@ -128,7 +128,7 @@ fn rogue_infantry_attack(context: &mut MonsterContext) {
 fn rogue_infantry_idle(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "infantry/infidle1.wav", 2, 1.0, 2.0);
-    context.set_move("infantry_move_fidget", false);
+    context.set_move("infantry_move_fidget", true);
 }
 
 /// Pain (`pain`).

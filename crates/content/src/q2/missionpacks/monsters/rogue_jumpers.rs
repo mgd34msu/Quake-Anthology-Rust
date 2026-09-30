@@ -72,7 +72,7 @@ fn jump(context: &mut MonsterContext, up: &str, down: &str, dodge: bool) {
     }
     let actor = context.actor().clone();
     let above = enemy.origin.z > context.game.body_of(actor).origin.z;
-    context.set_move(if above { up } else { down }, false);
+    context.set_move(if above { up } else { down }, true);
 }
 
 /// Berserk run (`berserkRun`).
@@ -104,7 +104,7 @@ fn rogue_berserk_sidestep(context: &mut MonsterContext) {
     {
         return;
     }
-    context.set_move("berserk_move_run1", false);
+    context.set_move("berserk_move_run1", true);
 }
 
 /// Berserk dodge (`dodge`).

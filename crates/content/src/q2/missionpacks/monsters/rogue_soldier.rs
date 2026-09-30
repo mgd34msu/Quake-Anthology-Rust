@@ -45,7 +45,7 @@ fn rogue_soldier_run(context: &mut MonsterContext) {
 /// Stand (`stand`).
 fn rogue_soldier_stand(context: &mut MonsterContext) {
     if context.entity().spawnflags & 8 != 0 {
-        context.set_move("soldier_move_blind", false);
+        context.set_move("soldier_move_blind", true);
     } else {
         soldier_stand(context);
     }
@@ -174,7 +174,7 @@ fn rogue_soldier_sidestep_inner(context: &mut MonsterContext) {
         "soldier_move_start_run"
     };
     if context.state().current_move.name != animation {
-        context.set_move(animation, false);
+        context.set_move(animation, true);
     }
 }
 
@@ -226,7 +226,7 @@ fn rogue_soldier_attack(context: &mut MonsterContext) {
             return;
         }
         context.state_mut().manual_steering = true;
-        context.set_move("soldier_move_attack1", false);
+        context.set_move("soldier_move_attack1", true);
         let finished = context.game.host.now() + 1.5 + context.game.random();
         context.state_mut().attack_finished = finished;
         return;
@@ -241,7 +241,7 @@ fn rogue_soldier_attack(context: &mut MonsterContext) {
         && random < f64::from(context.game.options.skill) * 0.25
         && skin <= 3
     {
-        context.set_move("soldier_move_attack6", false);
+        context.set_move("soldier_move_attack6", true);
         return;
     }
     let first = skin < 4 && context.game.random() < 0.5;
@@ -276,7 +276,7 @@ fn rogue_soldier_sight(context: &mut MonsterContext) {
         && context.game.random() > 0.75
         && skin <= 3
     {
-        context.set_move("soldier_move_attack6", false);
+        context.set_move("soldier_move_attack6", true);
     }
 }
 
@@ -301,7 +301,7 @@ fn rogue_soldier_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
             if context.state().ducked {
                 rogue_duck_up(context);
             }
-            context.set_move("soldier_move_pain4", false);
+            context.set_move("soldier_move_pain4", true);
         }
         return;
     }
@@ -326,7 +326,7 @@ fn rogue_soldier_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
         if context.state().ducked {
             rogue_duck_up(context);
         }
-        context.set_move("soldier_move_pain4", false);
+        context.set_move("soldier_move_pain4", true);
         return;
     }
     if context.game.options.skill == 3 {

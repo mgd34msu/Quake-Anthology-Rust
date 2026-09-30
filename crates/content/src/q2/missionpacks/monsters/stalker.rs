@@ -377,7 +377,7 @@ fn stalker_shoot(context: &mut MonsterContext) {
 /// Reactivate (`reactivate`).
 fn stalker_reactivate(context: &mut MonsterContext) {
     context.state_mut().stand_ground = false;
-    context.set_move("stalker_move_false_death_end", false);
+    context.set_move("stalker_move_false_death_end", true);
 }
 
 /// Jump impulse (`jumpImpulse`).
@@ -434,7 +434,7 @@ fn stalker_attack(context: &mut MonsterContext) {
         }
         context.state_mut().attack_state = MonsterAttackState::Sliding;
     }
-    context.set_move("stalker_move_shoot", false);
+    context.set_move("stalker_move_shoot", true);
 }
 
 /// Melee (`melee`).
@@ -486,7 +486,7 @@ fn stalker_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         let actor = context.actor().clone();
         context.game.write_body(actor, &moved, true);
         context.state_mut().stand_ground = true;
-        context.set_move("stalker_move_false_death_start", false);
+        context.set_move("stalker_move_false_death_start", true);
         return;
     }
     if context.game.host.now() < context.state().pain_time {
@@ -544,7 +544,7 @@ fn stalker_dodge(
     if eta < 0.1 || eta > 5.0 {
         return;
     }
-    context.set_move("stalker_move_jump_straightup", false);
+    context.set_move("stalker_move_jump_straightup", true);
 }
 
 /// Blocked (`blocked`).

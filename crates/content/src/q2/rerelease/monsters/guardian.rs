@@ -89,9 +89,9 @@ fn guardian_run(context: &mut MonsterContext) {
 /// Attack (`attack`).
 fn guardian_attack(context: &mut MonsterContext) {
     if target_distance(context) < 90.0 {
-        context.set_move("guardian_move_atk2_start", false);
+        context.set_move("guardian_move_atk2_start", true);
     } else {
-        context.set_move("guardian_move_atk1_start", false);
+        context.set_move("guardian_move_atk1_start", true);
     }
 }
 
@@ -119,7 +119,7 @@ fn guardian_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
 fn guardian_atk1(context: &mut MonsterContext) {
     let timestamp = context.game.host.now() + 0.65 + context.game.random() * 1.5;
     context.entity_mut().timestamp = timestamp;
-    context.set_move("guardian_move_atk1_spin", false);
+    context.set_move("guardian_move_atk1_spin", true);
 }
 
 /// Attack 1 charge (`guardian_atk1_charge`).
@@ -132,7 +132,7 @@ fn guardian_atk1_charge(context: &mut MonsterContext) {
 /// Attack 1 finish (`guardian_atk1_finish`).
 fn guardian_atk1_finish(context: &mut MonsterContext) {
     spin_sound(context, false);
-    context.set_move("guardian_atk1_out", false);
+    context.set_move("guardian_atk1_out", true);
 }
 
 /// Fire blaster (`guardian_fire_blaster`).
@@ -257,7 +257,7 @@ fn guardian_dead(context: &mut MonsterContext) {
 
 /// Stand (`stand`).
 fn guardian_stand(context: &mut MonsterContext) {
-    context.set_move("guardian_move_stand", false);
+    context.set_move("guardian_move_stand", true);
 }
 
 /// Die (`die`).
@@ -274,7 +274,7 @@ fn guardian_die(context: &mut MonsterContext, _reaction: &crate::q2::support::co
             ..crate::q2::support::contracts::CombatTraitChanges::default()
         },
     );
-    context.set_move("guardian_move_death", false);
+    context.set_move("guardian_move_death", true);
 }
 
 /// Guardian definition (`guardianDefinition`).

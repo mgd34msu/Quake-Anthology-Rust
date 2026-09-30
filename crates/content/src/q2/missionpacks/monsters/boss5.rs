@@ -22,9 +22,9 @@ use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, PainReact
 /// Run (`run`).
 fn boss5_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("boss5_move_stand", false);
+        context.set_move("boss5_move_stand", true);
     } else {
-        context.set_move("boss5_move_run", false);
+        context.set_move("boss5_move_run", true);
     }
 }
 
@@ -47,9 +47,9 @@ fn boss5_search(context: &mut MonsterContext) {
 /// Attack (`attack`).
 fn boss5_attack(context: &mut MonsterContext) {
     if target_distance(context) <= 160.0 || context.game.random() < 0.3 {
-        context.set_move("boss5_move_attack1", false);
+        context.set_move("boss5_move_attack1", true);
     } else {
-        context.set_move("boss5_move_attack2", false);
+        context.set_move("boss5_move_attack2", true);
     }
 }
 
@@ -111,7 +111,7 @@ fn boss5_die(context: &mut MonsterContext, _reaction: &DeathReaction) {
             ..CombatTraitChanges::default()
         },
     );
-    context.set_move("boss5_move_death", false);
+    context.set_move("boss5_move_death", true);
 }
 
 /// Dead (`boss5_dead`).
@@ -128,9 +128,9 @@ fn boss5_dead(context: &mut MonsterContext) {
 /// Reattack (`boss5_reattack1`).
 fn boss5_reattack1(context: &mut MonsterContext) {
     if visible(context, None) && context.game.random() < 0.9 {
-        context.set_move("boss5_move_attack1", false);
+        context.set_move("boss5_move_attack1", true);
     } else {
-        context.set_move("boss5_move_end_attack1", false);
+        context.set_move("boss5_move_end_attack1", true);
     }
 }
 

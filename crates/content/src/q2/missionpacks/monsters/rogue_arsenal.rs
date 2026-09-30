@@ -195,7 +195,7 @@ fn rogue_tank_attack(context: &mut MonsterContext) {
     }
     if health(&mut *context.game, Some(&enemy)) < 0.0 {
         context.state_mut().brutal = false;
-        context.set_move("tank_move_attack_strike", false);
+        context.set_move("tank_move_attack_strike", true);
         return;
     }
     if context.state().attack_state != MonsterAttackState::Blind {
@@ -210,7 +210,7 @@ fn rogue_tank_attack(context: &mut MonsterContext) {
         return;
     }
     context.state_mut().manual_steering = true;
-    context.set_move("tank_move_attack_fire_rocket", false);
+    context.set_move("tank_move_attack_fire_rocket", true);
     let now = context.game.host.now();
     let attack_finished = now + 3.0 + 2.0 * context.game.random();
     context.state_mut().attack_finished = attack_finished;
@@ -243,7 +243,7 @@ fn rogue_tank_machine_gun(context: &mut MonsterContext) {
 fn rogue_tank_refire_rocket(context: &mut MonsterContext) {
     if context.state().manual_steering {
         context.state_mut().manual_steering = false;
-        context.set_move("tank_move_attack_post_rocket", false);
+        context.set_move("tank_move_attack_post_rocket", true);
         return;
     }
     let elite = context.game.options.skill >= 2;
@@ -296,7 +296,7 @@ fn rogue_chick_duck_inner(context: &mut MonsterContext, eta: f64) {
         now + eta + if skill == 0 { 1.0 } else { 0.1 * f64::from(3 - skill) };
     rogue_duck_down(context);
     context.state_mut().next_frame = chick_frame::DUCK01;
-    context.set_move("chick_move_duck", false);
+    context.set_move("chick_move_duck", true);
 }
 
 /// Rogue chick sidestep (`sidestep`).
@@ -306,7 +306,7 @@ fn rogue_chick_sidestep_inner(context: &mut MonsterContext) {
         return;
     }
     if context.state().current_move.name != "chick_move_run" {
-        context.set_move("chick_move_run", false);
+        context.set_move("chick_move_run", true);
     }
 }
 
@@ -322,13 +322,13 @@ fn rogue_chick_attack(context: &mut MonsterContext) {
             return;
         }
         context.state_mut().manual_steering = true;
-        context.set_move("chick_move_start_attack1", false);
+        context.set_move("chick_move_start_attack1", true);
         let now = context.game.host.now();
         let attack_finished = now + 2.0 * context.game.random();
         context.state_mut().attack_finished = attack_finished;
         return;
     }
-    context.set_move("chick_move_start_attack1", false);
+    context.set_move("chick_move_start_attack1", true);
 }
 
 /// Rogue chick pain (`pain`).
@@ -413,7 +413,7 @@ fn rogue_chick_rocket(context: &mut MonsterContext) {
 fn rogue_chick_rerocket(context: &mut MonsterContext) {
     if context.state().manual_steering {
         context.state_mut().manual_steering = false;
-        context.set_move("chick_move_end_attack1", false);
+        context.set_move("chick_move_end_attack1", true);
         return;
     }
     let skill = context.game.options.skill;

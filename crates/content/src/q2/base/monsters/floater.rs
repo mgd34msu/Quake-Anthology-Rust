@@ -22,27 +22,27 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction};
 /// Stand (`stand`).
 fn floater_stand(context: &mut MonsterContext) {
     if context.game.random() <= 0.5 {
-        context.set_move("floater_move_stand1", false);
+        context.set_move("floater_move_stand1", true);
     } else {
-        context.set_move("floater_move_stand2", false);
+        context.set_move("floater_move_stand2", true);
     }
 }
 
 /// Run (`run`).
 fn floater_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("floater_move_stand1", false);
+        context.set_move("floater_move_stand1", true);
     } else {
-        context.set_move("floater_move_run", false);
+        context.set_move("floater_move_run", true);
     }
 }
 
 /// Melee (`melee`).
 fn floater_melee(context: &mut MonsterContext) {
     if context.game.random() < 0.5 {
-        context.set_move("floater_move_attack3", false);
+        context.set_move("floater_move_attack3", true);
     } else {
-        context.set_move("floater_move_attack2", false);
+        context.set_move("floater_move_attack2", true);
     }
 }
 

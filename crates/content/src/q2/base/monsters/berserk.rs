@@ -19,18 +19,18 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction};
 /// Run (`run`).
 pub fn berserk_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("berserk_move_stand", false);
+        context.set_move("berserk_move_stand", true);
     } else {
-        context.set_move("berserk_move_run1", false);
+        context.set_move("berserk_move_run1", true);
     }
 }
 
 /// Melee (`melee`).
 fn berserk_melee(context: &mut MonsterContext) {
     if context.game.random() < 0.5 {
-        context.set_move("berserk_move_attack_spike", false);
+        context.set_move("berserk_move_attack_spike", true);
     } else {
-        context.set_move("berserk_move_attack_club", false);
+        context.set_move("berserk_move_attack_club", true);
     }
 }
 
@@ -48,9 +48,9 @@ fn berserk_pain(context: &mut MonsterContext, reaction: &PainReaction) {
         return;
     }
     if reaction.damage < 20.0 || context.game.random() < 0.5 {
-        context.set_move("berserk_move_pain1", false);
+        context.set_move("berserk_move_pain1", true);
     } else {
-        context.set_move("berserk_move_pain2", false);
+        context.set_move("berserk_move_pain2", true);
     }
 }
 
@@ -69,7 +69,7 @@ fn berserk_fidget(context: &mut MonsterContext) {
     if context.state().stand_ground || context.game.random() > 0.15 {
         return;
     }
-    context.set_move("berserk_move_stand_fidget", false);
+    context.set_move("berserk_move_stand_fidget", true);
     let actor = context.actor().clone();
     context.game.sound(&actor, "berserk/beridle1.wav", 1, 1.0, 2.0);
 }

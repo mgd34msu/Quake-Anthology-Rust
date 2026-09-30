@@ -18,9 +18,9 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 /// Run (`run`).
 pub fn gunner_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("gunner_move_stand", false);
+        context.set_move("gunner_move_stand", true);
     } else {
-        context.set_move("gunner_move_run", false);
+        context.set_move("gunner_move_run", true);
     }
 }
 
@@ -59,11 +59,11 @@ fn gunner_grenade(context: &mut MonsterContext) {
 /// Attack (`attack`).
 fn gunner_attack(context: &mut MonsterContext) {
     if target_distance(context) < 80.0 {
-        context.set_move("gunner_move_attack_chain", false);
+        context.set_move("gunner_move_attack_chain", true);
     } else if context.game.random() <= 0.5 {
-        context.set_move("gunner_move_attack_grenade", false);
+        context.set_move("gunner_move_attack_grenade", true);
     } else {
-        context.set_move("gunner_move_attack_chain", false);
+        context.set_move("gunner_move_attack_chain", true);
     }
 }
 
@@ -116,13 +116,13 @@ fn gunner_dodge(
     if context.entity().enemy.is_none() {
         context.entity_mut().enemy = Some(attacker.clone());
     }
-    context.set_move("gunner_move_duck", false);
+    context.set_move("gunner_move_duck", true);
 }
 
 /// Fidget (`gunner_fidget`).
 fn gunner_fidget(context: &mut MonsterContext) {
     if !context.state().stand_ground && context.game.random() <= 0.05 {
-        context.set_move("gunner_move_fidget", false);
+        context.set_move("gunner_move_fidget", true);
     }
 }
 
@@ -175,9 +175,9 @@ fn gunner_fire(context: &mut MonsterContext) {
 /// Refire chain (`gunner_refire_chain`).
 fn gunner_refire_chain(context: &mut MonsterContext) {
     if alive_enemy(context) && visible(context, None) && context.game.random() <= 0.5 {
-        context.set_move("gunner_move_fire_chain", false);
+        context.set_move("gunner_move_fire_chain", true);
     } else {
-        context.set_move("gunner_move_endfire_chain", false);
+        context.set_move("gunner_move_endfire_chain", true);
     }
 }
 

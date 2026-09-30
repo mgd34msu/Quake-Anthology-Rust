@@ -19,14 +19,14 @@ use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 /// Run (`run`).
 pub(crate) fn chick_run(context: &mut MonsterContext) {
     if context.state().stand_ground {
-        context.set_move("chick_move_stand", false);
+        context.set_move("chick_move_stand", true);
         return;
     }
     let current = context.state().current_move.name.clone();
     if current == "chick_move_walk" || current == "chick_move_start_run" {
-        context.set_move("chick_move_run", false);
+        context.set_move("chick_move_run", true);
     } else {
-        context.set_move("chick_move_start_run", false);
+        context.set_move("chick_move_start_run", true);
     }
 }
 
@@ -114,7 +114,7 @@ fn chick_dodge(
     if context.entity().enemy.is_none() {
         context.entity_mut().enemy = Some(attacker.clone());
     }
-    context.set_move("chick_move_duck", false);
+    context.set_move("chick_move_duck", true);
 }
 
 /// Moan (`ChickMoan`).
@@ -131,7 +131,7 @@ fn chick_moan(context: &mut MonsterContext) {
 /// Fidget (`chick_fidget`).
 fn chick_fidget(context: &mut MonsterContext) {
     if !context.state().stand_ground && context.game.random() <= 0.3 {
-        context.set_move("chick_move_fidget", false);
+        context.set_move("chick_move_fidget", true);
     }
 }
 
@@ -199,18 +199,18 @@ fn chick_rerocket(context: &mut MonsterContext) {
         && visible(context, None)
         && context.game.random() <= 0.6
     {
-        context.set_move("chick_move_attack1", false);
+        context.set_move("chick_move_attack1", true);
     } else {
-        context.set_move("chick_move_end_attack1", false);
+        context.set_move("chick_move_end_attack1", true);
     }
 }
 
 /// Reslash (`chick_reslash`).
 fn chick_reslash(context: &mut MonsterContext) {
     if alive_enemy(context) && target_distance(context) < 80.0 && context.game.random() <= 0.9 {
-        context.set_move("chick_move_slash", false);
+        context.set_move("chick_move_slash", true);
     } else {
-        context.set_move("chick_move_end_slash", false);
+        context.set_move("chick_move_end_slash", true);
     }
 }
 

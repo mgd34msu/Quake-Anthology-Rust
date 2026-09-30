@@ -56,7 +56,7 @@ fn rogue_brain_duck_inner(context: &mut MonsterContext, eta: f64) {
             0.1 * f64::from(3 - skill)
         };
     context.state_mut().next_frame = brain_frame::DUCK01;
-    context.set_move("brain_move_duck", false);
+    context.set_move("brain_move_duck", true);
 }
 
 /// Brain pain (`pain`).
@@ -132,7 +132,7 @@ fn rogue_floater_attack(context: &mut MonsterContext) {
     };
     if context.game.random() > chance {
         context.state_mut().attack_state = MonsterAttackState::Straight;
-        context.set_move("floater_move_attack1", false);
+        context.set_move("floater_move_attack1", true);
         return;
     }
     if context.game.random() <= 0.5 {
@@ -140,7 +140,7 @@ fn rogue_floater_attack(context: &mut MonsterContext) {
         context.state_mut().lefty = !lefty;
     }
     context.state_mut().attack_state = MonsterAttackState::Sliding;
-    context.set_move("floater_move_attack1a", false);
+    context.set_move("floater_move_attack1a", true);
 }
 
 /// Floater fire blaster (`floater_fire_blaster`).

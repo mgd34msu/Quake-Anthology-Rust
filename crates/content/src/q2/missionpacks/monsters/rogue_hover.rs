@@ -131,7 +131,7 @@ fn hover_attack(context: &mut MonsterContext) {
     }
     if context.game.random() > chance {
         context.state_mut().attack_state = MonsterAttackState::Straight;
-        context.set_move("hover_move_attack1", false);
+        context.set_move("hover_move_attack1", true);
         return;
     }
     if context.game.random() <= 0.5 {
@@ -139,7 +139,7 @@ fn hover_attack(context: &mut MonsterContext) {
         context.state_mut().lefty = lefty;
     }
     context.state_mut().attack_state = MonsterAttackState::Sliding;
-    context.set_move("hover_move_attack2", false);
+    context.set_move("hover_move_attack2", true);
 }
 
 /// Reattack (`hover_reattack`).
@@ -147,11 +147,11 @@ fn hover_reattack(context: &mut MonsterContext) {
     if alive_enemy(context) && visible(context, None) && context.game.random() <= 0.6 {
         match context.state().attack_state {
             MonsterAttackState::Straight => {
-                context.set_move("hover_move_attack1", false);
+                context.set_move("hover_move_attack1", true);
                 return;
             }
             MonsterAttackState::Sliding => {
-                context.set_move("hover_move_attack2", false);
+                context.set_move("hover_move_attack2", true);
                 return;
             }
             other => {
@@ -161,7 +161,7 @@ fn hover_reattack(context: &mut MonsterContext) {
             }
         }
     }
-    context.set_move("hover_move_end_attack", false);
+    context.set_move("hover_move_end_attack", true);
 }
 
 /// Fire blaster (`hover_fire_blaster`).

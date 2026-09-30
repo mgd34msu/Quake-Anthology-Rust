@@ -80,12 +80,12 @@ fn xatrix_brain_attack(context: &mut MonsterContext) {
     let distance = target_distance(context);
     if distance >= 80.0 && distance < 500.0 {
         if context.game.random() < 0.5 {
-            context.set_move("brain_move_attack3", false);
+            context.set_move("brain_move_attack3", true);
         } else {
-            context.set_move("brain_move_attack4", false);
+            context.set_move("brain_move_attack4", true);
         }
     } else if distance >= 500.0 {
-        context.set_move("brain_move_attack4", false);
+        context.set_move("brain_move_attack4", true);
     }
 }
 
@@ -302,7 +302,7 @@ fn xatrix_infantry_fire(context: &mut MonsterContext) {
 fn xatrix_infantry_idle(context: &mut MonsterContext) {
     let actor = context.actor().clone();
     context.game.sound(&actor, "infantry/infidle1.wav", 2, 1.0, 2.0);
-    context.set_move("infantry_move_fidget", false);
+    context.set_move("infantry_move_fidget", true);
 }
 
 /// Xatrix infantry dodge (`dodge`).
@@ -319,7 +319,7 @@ fn xatrix_infantry_dodge(
     if context.entity().enemy.is_none() {
         context.entity_mut().enemy = Some(attacker.clone());
     }
-    context.set_move("infantry_move_duck", false);
+    context.set_move("infantry_move_duck", true);
 }
 
 /// Xatrix infantry set firetime (`infantry_set_firetime`).
