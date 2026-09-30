@@ -8,6 +8,7 @@
 pub mod base_triggers;
 pub mod brushes;
 pub mod campaign;
+pub mod commands;
 pub mod context;
 pub mod corpses;
 pub mod effects;
