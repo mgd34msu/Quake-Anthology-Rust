@@ -66,6 +66,12 @@ pub struct Trajectory {
     pub delta: Vec3,
 }
 
+impl Default for Trajectory {
+    fn default() -> Self {
+        Self::zero(TrajectoryType::TrStationary)
+    }
+}
+
 impl Trajectory {
     /// Zero trajectory of one type.
     #[must_use]
@@ -146,5 +152,42 @@ pub fn evaluate_trajectory_delta(tr: &Trajectory, at_time: i32) -> Vec3 {
                 tr.delta.z - (DEFAULT_GRAVITY as f32) * delta_time,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::math::vec3;
+
+    #[test]
+    fn trajectory_evaluation() {
+        let linear = Trajectory {
+            trajectory_type: TrajectoryType::TrLinear,
+            time: 0,
+            duration: 0,
+            base: vec3(1.0, 2.0, 3.0),
+            delta: vec3(10.0, 0.0, 0.0),
+        };
+        assert_eq!(evaluate_trajectory(&linear, 1000), vec3(11.0, 2.0, 3.0));
+        assert_eq!(evaluate_trajectory_delta(&linear, 500), vec3(10.0, 0.0, 0.0));
+        let gravity = Trajectory {
+            trajectory_type: TrajectoryType::TrGravity,
+            time: 0,
+            duration: 0,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(0.0, 0.0, 0.0),
+        };
+        let fallen = evaluate_trajectory(&gravity, 1000);
+        assert!((fallen.z + 400.0).abs() < 0.01);
+        let stop = Trajectory {
+            trajectory_type: TrajectoryType::TrLinearStop,
+            time: 0,
+            duration: 500,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(10.0, 0.0, 0.0),
+        };
+        assert_eq!(evaluate_trajectory(&stop, 5000).x, 5.0);
+        assert_eq!(evaluate_trajectory_delta(&stop, 5000), vec3(0.0, 0.0, 0.0));
     }
 }

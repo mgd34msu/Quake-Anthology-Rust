@@ -5,8 +5,9 @@
 use qa_core::math::{Bounds, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::player_state::PlayerState;
+use crate::q3::base::shared::player_state::UserCommand;
 use crate::q3::presentation::collision_host::TraceResult;
-use crate::q3::presentation::mirrors_present_scene::*;
 
 // ---------------------------------------------------------------------------
 // movement-host.ts
@@ -64,10 +65,10 @@ pub trait PresentationMovementHost {
     /// Move the player.
     fn move_player(
         &mut self,
-        state: &mut SourcePlayerState,
+        state: &mut PlayerState,
         command: &UserCommand,
         options: &dyn PresentationMovementOptions,
     ) -> MoveBounds;
     /// Update view angles from the command.
-    fn update_view_angles(&mut self, state: &mut SourcePlayerState, command: &UserCommand);
+    fn update_view_angles(&mut self, state: &mut PlayerState, command: &UserCommand);
 }

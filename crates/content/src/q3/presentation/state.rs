@@ -14,6 +14,8 @@ use crate::q3::base::shared::entity_state::*;
 use crate::q3::base::shared::items::ItemsError;
 use crate::q3::base::shared::player_state::*;
 use crate::q3::presentation::client_info::*;
+use crate::q3::presentation::ref_entity::{create_model_entity, RefModelEntity};
+use crate::q3::presentation::refdef::{create_refdef, Refdef};
 use crate::q3::presentation::retail_snapshot::*;
 
 // ---------------------------------------------------------------------------
@@ -937,7 +939,7 @@ impl ClientGameState {
             zoom_sensitivity: 0.0,
             next_orbit_time: 0,
             test_model_name: String::new(),
-            test_model_entity: create_model_entity(),
+            test_model_entity: create_model_entity(crate::q3::presentation::ref_entity::default_model()),
             predictable_events: PlayerStateSlots::new(16, None, None, None),
         })
     }

@@ -537,3 +537,31 @@ mod tests {
         assert_eq!(restored.registrations().len(), 1);
     }
 }
+
+/// Decoded sound handle (`PcmSound`, minimal mirror: handle by path).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PresentSound {
+    /// Source path.
+    pub path: String,
+}
+
+impl PresentSound {
+    /// New handle.
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+/// Sound start options (`StartSoundOptions`, minimal mirror).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundOptions {
+    /// Entity.
+    pub entity: i32,
+    /// Channel.
+    pub channel: i32,
+    /// Origin.
+    pub origin: SoundOrigin,
+    /// Volume.
+    pub volume: i32,
+}

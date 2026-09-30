@@ -8,7 +8,7 @@ use qa_core::math::{vec3, vec4, Vec3, Vec4};
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
 use crate::q3::base::shared::definitions::*;
-use crate::q3::base::shared::direction_byte::*;
+use crate::q3::base::shared::direction_byte::byte_to_direction;
 use crate::q3::base::shared::entity_state::*;
 use crate::q3::base::shared::items::{find_item_for_holdable, item_at, item_list, ItemKind};
 use crate::q3::base::shared::player_state::*;

@@ -8,12 +8,20 @@ use qa_core::math::{
 use qa_core::numeric::qvm_float_to_int;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Product;
+use crate::q3::base::shared::player_state::ENTITYNUM_WORLD;
+use crate::q3::base::shared::trajectory::{evaluate_trajectory, evaluate_trajectory_delta, Trajectory, TrajectoryType};
 use crate::q3::base::world::{TraceContact, TraceSolidity};
+use crate::q3::presentation::audio::SoundOrigin;
+use crate::q3::presentation::audio::{PresentSound, SoundOptions};
 use crate::q3::presentation::collision_host::TraceResult;
+use crate::q3::presentation::effects::EffectFrame;
 use crate::q3::presentation::effects::*;
 use crate::q3::presentation::marks::*;
-use crate::q3::presentation::mirrors_present_scene::*;
+use crate::q3::presentation::movement_host::MovementTrace;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
+use crate::q3::presentation::retail_snapshot::DynamicLight;
 
 // ---------------------------------------------------------------------------
 // local-entities.ts
@@ -320,7 +328,7 @@ impl LocalEntityPool {
 
     /// Allocate a record (`allocate`).
     pub fn allocate(&mut self, le_type: LocalEntityType, ref_entity: RefEntity) -> PresentResult<LocalEntityHandle> {
-        if self.product == Product::BaseQ3
+        if self.product == Product::Baseq3
             && matches!(
                 le_type,
                 LocalEntityType::Kamikaze
@@ -374,8 +382,8 @@ impl LocalEntityPool {
             end_time: 0,
             fade_in_time: 0,
             life_rate: 0.0,
-            pos: Trajectory::default(),
-            angles: Trajectory::default(),
+            pos: Trajectory::zero(TrajectoryType::TrStationary),
+            angles: Trajectory::zero(TrajectoryType::TrStationary),
             bounce_factor: 0.0,
             color: vec4(0.0, 0.0, 0.0, 0.0),
             radius: 0.0,
@@ -710,7 +718,7 @@ impl LocalEntitySystem {
         scene: &mut dyn LocalEntitySceneSink,
     ) -> PresentResult<()> {
         let Some(live) = pool.get(handle) else { return Ok(()) };
-        if live.pos.type_ == TrajectoryType::Stationary {
+        if live.pos.trajectory_type == TrajectoryType::TrStationary {
             let t = live.end_time - frame.time;
             if t < 1000 {
                 let Some(live) = pool.get_mut(handle) else {
@@ -801,7 +809,7 @@ impl LocalEntitySystem {
         live.pos.time = frame.time;
         live.pos.delta = delta;
         if stationary {
-            live.pos.type_ = TrajectoryType::Stationary;
+            live.pos.trajectory_type = TrajectoryType::TrStationary;
         }
     }
 
@@ -1009,7 +1017,7 @@ impl LocalEntitySystem {
         frame: &LocalEntityFrame,
         scene: &mut dyn LocalEntitySceneSink,
     ) -> PresentResult<()> {
-        if host.product != Product::MissionPack {
+        if host.product != Product::Missionpack {
             return Err(PresentError::state("Kamikaze requires missionpack media"));
         }
         let Some(live) = pool.get(handle) else { return Ok(()) };
@@ -1200,5 +1208,101 @@ pub(crate) fn set_shading_rgba(entity: &mut RefEntity, rgba: Vec4) {
         RefEntity::RailRings(re) => re.shading.shader_rgba = rgba,
         RefEntity::Lightning(re) => re.shading.shader_rgba = rgba,
         RefEntity::Portal(_) => {}
+    }
+}
+
+/// Cgame random stream (`GameRandom`, minimal mirror).
+pub trait PresentRandom {
+    /// 15-bit integer.
+    fn rand(&mut self) -> i32;
+    /// Unit fraction.
+    fn random(&mut self) -> f32;
+    /// Centered fraction.
+    fn crandom(&mut self) -> f32;
+}
+
+/// Prediction trace service (`PredictionRuntime`, minimal mirror).
+pub trait PresentPrediction {
+    /// Trace with entity skipping.
+    fn trace_mover(&self, start: Vec3, end: Vec3, bounds: Bounds, skip_number: i32, mask: i32) -> MovementTrace;
+    /// Point contents with entity passing.
+    fn point_contents_pred(&self, point: Vec3, pass_entity: i32) -> i32;
+}
+
+/// Raw collision service.
+pub trait PresentCollision {
+    /// Shape trace.
+    fn collision_trace(&self, start: Vec3, end: Vec3, mask: i32) -> TraceResult;
+    /// Raw point contents.
+    fn collision_contents(&self, point: Vec3) -> i32;
+}
+
+/// Mark projection service.
+pub trait PresentMarks {
+    /// Project an impact mark.
+    fn impact_mark(&mut self, request: &ImpactMarkRequest) -> Vec<RefPoly>;
+}
+
+/// Particle explosion request (`ParticleExplosionRequest`, minimal mirror).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParticleExplosion {
+    /// Animation name.
+    pub animation: String,
+    /// Origin.
+    pub origin: Vec3,
+    /// Velocity.
+    pub velocity: Vec3,
+    /// Duration.
+    pub duration: i32,
+    /// Start size.
+    pub size_start: f32,
+    /// End size.
+    pub size_end: f32,
+}
+
+/// Particle service (`ParticleSystem`, minimal mirror).
+pub trait PresentParticles {
+    /// Spawn an explosion.
+    fn particle_explosion(&mut self, request: &ParticleExplosion);
+}
+
+/// Audio service.
+pub trait PresentAudio {
+    /// Start a positioned sound.
+    fn start_sound(&mut self, sound: Option<PresentSound>, options: &SoundOptions);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_pool_lifecycle() {
+        let mut pool = LocalEntityPool::new(Product::Baseq3);
+        let sprite = RefEntity::Sprite(create_sprite_entity());
+        let handle = pool.allocate(LocalEntityType::MoveScaleFade, sprite).unwrap();
+        assert!(pool.is_active(handle));
+        assert_eq!(pool.active_count(), 1);
+        assert!(pool.get(handle).is_some());
+        pool.free(handle).unwrap();
+        assert!(!pool.is_active(handle));
+        assert!(pool.free(handle).is_err());
+        let model = RefEntity::Model(create_model_entity(default_model()));
+        assert!(pool.allocate(LocalEntityType::Kamikaze, model).is_err());
+        let sprite = RefEntity::Sprite(create_sprite_entity());
+        assert!(pool.allocate(LocalEntityType::Fragment, sprite).is_err());
+    }
+
+    #[test]
+    fn local_pool_evicts_oldest() {
+        let mut pool = LocalEntityPool::new(Product::Missionpack);
+        for _ in 0..MAX_LOCAL_ENTITIES {
+            pool.allocate(LocalEntityType::Mark, RefEntity::Sprite(create_sprite_entity()))
+                .unwrap();
+        }
+        assert_eq!(pool.active_count(), MAX_LOCAL_ENTITIES);
+        pool.allocate(LocalEntityType::Mark, RefEntity::Sprite(create_sprite_entity()))
+            .unwrap();
+        assert_eq!(pool.active_count(), MAX_LOCAL_ENTITIES);
     }
 }

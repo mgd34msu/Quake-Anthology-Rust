@@ -9,9 +9,19 @@ use qa_core::math::{
 use qa_core::numeric::qvm_float_to_int;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
+use crate::q3::base::shared::definitions::{EntityType, GameType, Holdable, ItemType, Product, Team, Weapon};
+use crate::q3::base::shared::direction_byte::byte_to_direction;
+use crate::q3::base::shared::entity_state::EntityState;
+use crate::q3::base::shared::items::{item_at, item_list};
+use crate::q3::base::shared::player_state::ENTITYNUM_WORLD;
+use crate::q3::base::shared::snapshot_state::player_state_to_entity_state;
+use crate::q3::base::shared::trajectory::{evaluate_trajectory, evaluate_trajectory_delta, TrajectoryType};
+use crate::q3::presentation::audio::PresentSound;
 use crate::q3::presentation::model_access::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
+use crate::q3::presentation::retail_snapshot::DynamicLight;
+use crate::q3::presentation::state::{ClientEntity, ClientGameState};
 
 // ---------------------------------------------------------------------------
 // entities.ts
@@ -155,8 +165,8 @@ impl PacketEntityMedia {
     #[must_use]
     pub fn product(&self) -> Product {
         match &self.variant {
-            PacketEntityMediaVariant::Base => Product::BaseQ3,
-            PacketEntityMediaVariant::Mission(_) => Product::MissionPack,
+            PacketEntityMediaVariant::Base => Product::Baseq3,
+            PacketEntityMediaVariant::Mission(_) => Product::Missionpack,
         }
     }
 }
@@ -287,11 +297,11 @@ pub fn adjust_position_for_mover(
     if mover_num <= 0 || mover_num >= ENTITYNUM_WORLD {
         return input;
     }
-    let Some(mover) = state.entity_ref(mover_num as usize) else {
+    let Ok(mover) = state.entity_at(mover_num) else {
         return input;
     };
     let current = mover.current_state.clone();
-    if current.e_type != EntityType::Mover as i32 {
+    if current.e_type != EntityType::EtMover as i32 {
         return input;
     }
     let old_origin = evaluate_trajectory(&current.pos, from_time);
@@ -338,8 +348,6 @@ pub struct PacketEntityPresenter {
     pub media: PacketEntityMedia,
     /// Imports.
     pub imports: Box<dyn PacketEntityImports>,
-    /// Item table.
-    pub items: Box<dyn PresentItemTable>,
 }
 
 impl PacketEntityPresenter {
@@ -348,14 +356,13 @@ impl PacketEntityPresenter {
         product: Product,
         media: PacketEntityMedia,
         imports: Box<dyn PacketEntityImports>,
-        items: Box<dyn PresentItemTable>,
     ) -> PresentResult<Self> {
         if product != media.product() {
             return Err(PresentError::state(
                 "packet entity media product differs from cgame state",
             ));
         }
-        Ok(Self { media, imports, items })
+        Ok(Self { media, imports })
     }
 
     fn body(&mut self, number: i32, reference: RefEntity) {
@@ -381,7 +388,7 @@ impl PacketEntityPresenter {
                 )
             }
             PresentEntityTarget::Indexed(index) => {
-                let entity = state.entity_at(index);
+                let entity = state.entity_at_mut(index as i32)?;
                 (
                     entity.current_state.number,
                     entity.lerp_origin,
@@ -420,20 +427,20 @@ impl PacketEntityPresenter {
         let (number, interpolate, pos_type) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             if !smooth_clients && entity.current_state.number < 64 {
-                entity.current_state.pos.type_ = TrajectoryType::Interpolate;
-                entity.next_state.pos.type_ = TrajectoryType::Interpolate;
+                entity.current_state.pos.trajectory_type = TrajectoryType::TrInterpolate;
+                entity.next_state.pos.trajectory_type = TrajectoryType::TrInterpolate;
             }
             (
                 entity.current_state.number,
                 entity.interpolate,
-                entity.current_state.pos.type_,
+                entity.current_state.pos.trajectory_type,
             )
         };
         if interpolate
-            && (pos_type == TrajectoryType::Interpolate || (pos_type == TrajectoryType::LinearStop && number < 64))
+            && (pos_type == TrajectoryType::TrInterpolate || (pos_type == TrajectoryType::TrLinearStop && number < 64))
         {
             let next_time = state
                 .next_snap
@@ -442,7 +449,7 @@ impl PacketEntityPresenter {
                 .server_time;
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             let from_pos = evaluate_trajectory(&entity.current_state.pos, snap_time);
             let to_pos = evaluate_trajectory(&entity.next_state.pos, next_time);
@@ -459,7 +466,7 @@ impl PacketEntityPresenter {
         let (pos, apos, ground) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (
                 entity.current_state.pos,
@@ -474,7 +481,7 @@ impl PacketEntityPresenter {
         }
         let entity = match target {
             PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index),
+            PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
         };
         entity.lerp_origin = lerp_origin;
         entity.lerp_angles = lerp_angles;
@@ -486,7 +493,7 @@ impl PacketEntityPresenter {
         let (number, loop_sound, e_type, lerp_origin, constant_light) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (
                 entity.current_state.number,
@@ -503,7 +510,7 @@ impl PacketEntityPresenter {
                 lerp_origin,
                 zero_vec3(),
                 sound,
-                e_type == EntityType::Speaker as i32,
+                e_type == EntityType::EtSpeaker as i32,
             );
         }
         if constant_light != 0 {
@@ -526,7 +533,7 @@ impl PacketEntityPresenter {
         let (modelindex, frame, lerp_origin, lerp_angles, number) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (
                 entity.current_state.modelindex,
@@ -560,7 +567,7 @@ impl PacketEntityPresenter {
         let (client_num, number, event_parm, frame, misc_time) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (
                 entity.current_state.client_num,
@@ -582,7 +589,7 @@ impl PacketEntityPresenter {
         );
         let entity = match target {
             PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index),
+            PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
         };
         entity.misc_time = misc;
         Ok(())
@@ -597,7 +604,7 @@ impl PacketEntityPresenter {
         let (modelindex, number, e_flags, misc_time) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (
                 entity.current_state.modelindex,
@@ -606,21 +613,20 @@ impl PacketEntityPresenter {
                 entity.misc_time,
             )
         };
-        if modelindex as usize >= self.items.item_count(state.product) {
+        if modelindex as usize >= item_list(state.product).len() {
             return Err(PresentError::drop(format!("Bad item index {modelindex} on entity")));
         }
         if modelindex == 0 || e_flags & 0x80 != 0 {
             return Ok(());
         }
-        let item = self
-            .items
-            .item_at(state.product, modelindex as usize)
+        let item = item_at(state.product, modelindex)
+            .ok()
             .ok_or_else(|| PresentError::drop(format!("Bad item index {modelindex} on entity")))?;
         let visual = indexed(&self.media.items, modelindex, "item visual")?;
-        if options.simple_items && item.item_type != ItemType::Team {
+        if options.simple_items && item.kind.item_type() != ItemType::ItTeam {
             let lerp_origin = match target {
                 PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_origin,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_origin,
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_origin,
             };
             let mut re = create_sprite_entity();
             re.origin = lerp_origin;
@@ -632,14 +638,14 @@ impl PacketEntityPresenter {
         }
         let scale = 0.005 + number as f32 * 0.00001;
         let bob = 4.0 + (((state.time + 1000) as f32) * scale).cos() * 4.0;
-        let fast = item.item_type == ItemType::Health;
+        let fast = item.kind.item_type() == ItemType::ItHealth;
         let (angles, axis) = if fast {
             (state.auto_angles_fast, state.auto_axis_fast)
         } else {
             (state.auto_angles, state.auto_axis)
         };
-        let weapon = if item.item_type == ItemType::Weapon {
-            Some(indexed(&self.media.weapons, item.tag, "weapon")?)
+        let weapon = if item.kind.item_type() == ItemType::ItWeapon {
+            Some(indexed(&self.media.weapons, item.kind.tag(), "weapon")?)
         } else {
             None
         };
@@ -647,7 +653,7 @@ impl PacketEntityPresenter {
         {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.lerp_origin = add3(entity.lerp_origin, vec3(0.0, 0.0, bob));
             entity.lerp_angles = angles;
@@ -670,16 +676,16 @@ impl PacketEntityPresenter {
             re.axis = scale_axis_full(&re.axis, fraction);
             re.non_normalized_axes = true;
         }
-        if item.item_type == ItemType::Weapon || item.item_type == ItemType::Armor {
+        if item.kind.item_type() == ItemType::ItWeapon || item.kind.item_type() == ItemType::ItArmor {
             re.shading.render_flags |= RF_MINLIGHT;
         }
-        if item.item_type == ItemType::Weapon {
+        if item.kind.item_type() == ItemType::ItWeapon {
             re.axis = scale_axis_full(&re.axis, 1.5);
             re.non_normalized_axes = true;
             if let PacketEntityMediaVariant::Mission(media) = &self.media.variant {
                 let lerp_origin = match target {
                     PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_origin,
-                    PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_origin,
+                    PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_origin,
                 };
                 self.imports.add_loop_sound(
                     number,
@@ -690,15 +696,15 @@ impl PacketEntityPresenter {
                 );
             }
         }
-        if self.media.product() == Product::MissionPack
-            && item.item_type == ItemType::Holdable
-            && item.tag == Holdable::Kamikaze as i32
+        if self.media.product() == Product::Missionpack
+            && item.kind.item_type() == ItemType::ItHoldable
+            && item.kind.tag() == Holdable::HiKamikaze as i32
         {
             re.axis = scale_axis_full(&re.axis, 2.0);
             re.non_normalized_axes = true;
         }
         self.body(number, RefEntity::Model(re.clone()));
-        if self.media.product() == Product::MissionPack {
+        if self.media.product() == Product::Missionpack {
             if let Some(weapon) = &weapon {
                 if let Some(barrel_model) = &weapon.barrel_model {
                     if !barrel_model.is_default() {
@@ -715,13 +721,13 @@ impl PacketEntityPresenter {
             }
         }
         if !options.simple_items
-            && (item.item_type == ItemType::Health || item.item_type == ItemType::Powerup)
+            && (item.kind.item_type() == ItemType::ItHealth || item.kind.item_type() == ItemType::ItPowerup)
             && visual.has_second
             && !visual.models[1].is_default()
         {
             re.model = visual.models[1].clone();
             let mut yaw = 0.0;
-            if item.item_type == ItemType::Powerup {
+            if item.kind.item_type() == ItemType::ItPowerup {
                 re.origin = add3(re.origin, vec3(0.0, 0.0, 12.0));
                 yaw = ((state.time & 1023) * 360) as f32 / -1024.0;
             }
@@ -741,14 +747,14 @@ impl PacketEntityPresenter {
         target: PresentEntityTarget,
     ) -> PresentResult<PacketWeaponInfo> {
         // Source intentionally uses > rather than >= WP_NUM_WEAPONS.
-        let count = if state.product == Product::MissionPack { 14 } else { 11 };
+        let count = if state.product == Product::Missionpack { 14 } else { 11 };
         let weapon = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             if entity.current_state.weapon > count {
-                entity.current_state.weapon = Weapon::None as i32;
+                entity.current_state.weapon = Weapon::WpNone as i32;
             }
             entity.current_state.weapon
         };
@@ -759,23 +765,23 @@ impl PacketEntityPresenter {
         let weapon = self.weapon_info(state, target)?;
         let current = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.clone(),
         };
         let lerp_origin = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_origin,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_origin,
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_origin,
         };
         {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.lerp_angles = vec3(current.angles.x, current.angles.y, current.angles.z);
         }
         if let Some(kind) = weapon.missile_trail {
             let entity = match target {
                 PresentEntityTarget::Predicted => state.predicted_player_entity.clone(),
-                PresentEntityTarget::Indexed(index) => state.entity_at(index).clone(),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.clone(),
             };
             self.imports.missile_trail(kind, &entity, &weapon);
         }
@@ -797,7 +803,7 @@ impl PacketEntityPresenter {
                 false,
             );
         }
-        if current.weapon == Weapon::Plasmagun as i32 {
+        if current.weapon == Weapon::WpPlasmagun as i32 {
             let mut re = create_sprite_entity();
             re.origin = lerp_origin;
             re.radius = 16.0;
@@ -810,28 +816,28 @@ impl PacketEntityPresenter {
         re.old_origin = lerp_origin;
         re.skin_num = state.client_frame & 1;
         re.shading.render_flags = weapon.missile_renderfx | RF_NOSHADOW;
-        if self.media.product() == Product::MissionPack
-            && current.weapon == Weapon::ProxLauncher as i32
-            && current.generic1 == Team::Blue as i32
+        if self.media.product() == Product::Missionpack
+            && current.weapon == Weapon::WpProxLauncher as i32
+            && current.generic1 == Team::TeamBlue as i32
         {
             if let PacketEntityMediaVariant::Mission(media) = &self.media.variant {
                 re.model = media.blue_prox_mine.clone();
             }
         }
         let direction = missile_direction(current.pos.delta);
-        if current.pos.type_ != TrajectoryType::Stationary {
+        if current.pos.trajectory_type != TrajectoryType::TrStationary {
             re.axis = direction_axis(direction, (state.time / 4) as f32);
-        } else if state.product == Product::MissionPack && current.weapon == Weapon::ProxLauncher as i32 {
+        } else if state.product == Product::Missionpack && current.weapon == Weapon::WpProxLauncher as i32 {
             let lerp_angles = match target {
                 PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_angles,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_angles,
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_angles,
             };
             re.axis = angles_to_axis(lerp_angles);
         } else {
             re.axis = direction_axis(direction, current.time as f32);
         }
         if !self.imports.body_hidden(current.number) {
-            self.imports.add_entity_with_powerups(re, &current, Team::Free);
+            self.imports.add_entity_with_powerups(re, &current, Team::TeamFree);
         }
         Ok(())
     }
@@ -840,22 +846,22 @@ impl PacketEntityPresenter {
         let weapon = self.weapon_info(state, target)?;
         let current = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.clone(),
         };
         let lerp_origin = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_origin,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_origin,
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_origin,
         };
         {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.lerp_angles = vec3(current.angles.x, current.angles.y, current.angles.z);
         }
         let entity = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.clone(),
         };
         self.imports.grapple_trail(&entity, &weapon);
         let mut re = create_model_entity(weapon.missile_model.clone());
@@ -873,7 +879,7 @@ impl PacketEntityPresenter {
         let (solid, modelindex, modelindex2, number, lerp_origin, lerp_angles) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (
                 entity.current_state.solid,
@@ -905,7 +911,7 @@ impl PacketEntityPresenter {
     }
 
     /// Beam entity (`beam`).
-    pub fn beam(&mut self, state: &mut ClientGameState, target: PresentEntityTarget) {
+    pub fn beam(&mut self, state: &mut ClientGameState, target: PresentEntityTarget) -> PresentResult<()> {
         let (number, base, origin2) = match target {
             PresentEntityTarget::Predicted => {
                 let entity = &state.predicted_player_entity;
@@ -916,7 +922,7 @@ impl PacketEntityPresenter {
                 )
             }
             PresentEntityTarget::Indexed(index) => {
-                let entity = state.entity_at(index);
+                let entity = state.entity_at(index as i32)?;
                 (
                     entity.current_state.number,
                     entity.current_state.pos.base,
@@ -930,16 +936,17 @@ impl PacketEntityPresenter {
         re.shading.render_flags = RF_NOSHADOW;
         re.axis = [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)];
         self.body(number, RefEntity::Beam(re));
+        Ok(())
     }
 
-    fn portal(&mut self, state: &mut ClientGameState, target: PresentEntityTarget) {
+    fn portal(&mut self, state: &mut ClientGameState, target: PresentEntityTarget) -> PresentResult<()> {
         let current = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.clone(),
         };
         let lerp_origin = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_origin,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_origin,
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_origin,
         };
         let mut re = create_portal_entity();
         re.origin = lerp_origin;
@@ -951,6 +958,7 @@ impl PacketEntityPresenter {
         re.frame = current.frame;
         re.skin_num = qvm_float_to_int(current.client_num as f32 / 256.0 * 360.0);
         self.body(current.number, RefEntity::Portal(re));
+        Ok(())
     }
 
     fn team(
@@ -961,22 +969,22 @@ impl PacketEntityPresenter {
     ) -> PresentResult<()> {
         let current = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.clone(),
         };
         let lerp_origin = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.lerp_origin,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).lerp_origin,
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.lerp_origin,
         };
         let mut re = create_model_entity(default_model());
         re.origin = lerp_origin;
         re.lighting_origin = lerp_origin;
         re.axis = angles_to_axis(current.angles);
-        if options.game_type == GameType::Ctf
-            || (state.product == Product::MissionPack && options.game_type == GameType::OneFlagCtf)
+        if options.game_type == GameType::GtCtf
+            || (state.product == Product::Missionpack && options.game_type == GameType::Gt1fctf)
         {
-            re.model = if current.modelindex == Team::Red as i32 {
+            re.model = if current.modelindex == Team::TeamRed as i32 {
                 self.media.red_flag_base_model.clone()
-            } else if current.modelindex == Team::Blue as i32 {
+            } else if current.modelindex == Team::TeamBlue as i32 {
                 self.media.blue_flag_base_model.clone()
             } else {
                 self.media.neutral_flag_base_model.clone()
@@ -987,15 +995,15 @@ impl PacketEntityPresenter {
         let PacketEntityMediaVariant::Mission(media) = self.media.variant.clone() else {
             return Ok(());
         };
-        if options.game_type == GameType::Harvester {
-            re.model = if current.modelindex == Team::Red as i32 || current.modelindex == Team::Blue as i32 {
+        if options.game_type == GameType::GtHarvester {
+            re.model = if current.modelindex == Team::TeamRed as i32 || current.modelindex == Team::TeamBlue as i32 {
                 media.harvester_model.clone()
             } else {
                 media.harvester_neutral_model.clone()
             };
-            re.custom_skin = if current.modelindex == Team::Red as i32 {
+            re.custom_skin = if current.modelindex == Team::TeamRed as i32 {
                 media.harvester_red_skin.clone()
-            } else if current.modelindex == Team::Blue as i32 {
+            } else if current.modelindex == Team::TeamBlue as i32 {
                 media.harvester_blue_skin.clone()
             } else {
                 None
@@ -1003,7 +1011,7 @@ impl PacketEntityPresenter {
             self.body(current.number, RefEntity::Model(re));
             return Ok(());
         }
-        if options.game_type != GameType::Obelisk {
+        if options.game_type != GameType::GtObelisk {
             return Ok(());
         }
         re.model = media.overload_base_model.clone();
@@ -1018,7 +1026,7 @@ impl PacketEntityPresenter {
             {
                 let entity = match target {
                     PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                    PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                    PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
                 };
                 entity.misc_time = 0;
                 entity.muzzle_flash_time = 0;
@@ -1035,7 +1043,7 @@ impl PacketEntityPresenter {
         let misc_time = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             if entity.misc_time == 0 {
                 entity.misc_time = time;
@@ -1056,14 +1064,14 @@ impl PacketEntityPresenter {
         if elapsed > threshold {
             let muzzle = match target {
                 PresentEntityTarget::Predicted => state.predicted_player_entity.muzzle_flash_time,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index).muzzle_flash_time,
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.muzzle_flash_time,
             };
             if muzzle == 0 {
                 self.imports
                     .start_sound(Some(lerp_origin), 1023, CHAN_BODY, media.obelisk_respawn_sound.clone());
                 let entity = match target {
                     PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                    PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                    PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
                 };
                 entity.muzzle_flash_time = 1;
             }
@@ -1090,9 +1098,9 @@ impl PacketEntityPresenter {
     ) -> PresentResult<()> {
         let type_ = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.e_type,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.e_type,
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.e_type,
         };
-        if type_ >= EntityType::Events as i32 {
+        if type_ >= EntityType::EtEvents as i32 {
             return Ok(());
         }
         self.calculate_lerp_positions(state, target, options.smooth_clients)?;
@@ -1105,38 +1113,34 @@ impl PacketEntityPresenter {
                 state.predicted_player_entity = entity;
             }
             PresentEntityTarget::Indexed(index) => {
-                let mut entity = state.entity_at(index).clone();
+                let mut entity = state.entity_at_mut(index as i32)?.clone();
                 self.imports.pose_entity(&mut entity);
-                *state.entity_at(index) = entity;
+                *state.entity_at_mut(index as i32)? = entity;
             }
         }
         self.effects(state, target)?;
         match EntityType::from_i32(type_) {
-            Some(EntityType::Invisible) | Some(EntityType::PushTrigger) | Some(EntityType::TeleportTrigger) => Ok(()),
-            Some(EntityType::General) => self.general(state, target),
-            Some(EntityType::Player) => {
+            Some(EntityType::EtInvisible) | Some(EntityType::EtPushTrigger) | Some(EntityType::EtTeleportTrigger) => {
+                Ok(())
+            }
+            Some(EntityType::EtGeneral) => self.general(state, target),
+            Some(EntityType::EtPlayer) => {
                 let entity = match target {
                     PresentEntityTarget::Predicted => state.predicted_player_entity.clone(),
-                    PresentEntityTarget::Indexed(index) => state.entity_at(index).clone(),
+                    PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.clone(),
                 };
                 self.imports.present_player(&entity);
                 Ok(())
             }
-            Some(EntityType::Item) => self.item(state, target, options),
-            Some(EntityType::Missile) => self.missile(state, target),
-            Some(EntityType::Mover) => self.mover(state, target),
-            Some(EntityType::Beam) => {
-                self.beam(state, target);
-                Ok(())
-            }
-            Some(EntityType::Portal) => {
-                self.portal(state, target);
-                Ok(())
-            }
-            Some(EntityType::Speaker) => self.speaker(state, target),
-            Some(EntityType::Grapple) => self.grapple(state, target),
-            Some(EntityType::Team) => self.team(state, target, options),
-            Some(EntityType::Events) | None => Err(PresentError::drop(format!("Bad entity type: {type_}\n"))),
+            Some(EntityType::EtItem) => self.item(state, target, options),
+            Some(EntityType::EtMissile) => self.missile(state, target),
+            Some(EntityType::EtMover) => self.mover(state, target),
+            Some(EntityType::EtBeam) => self.beam(state, target),
+            Some(EntityType::EtPortal) => self.portal(state, target),
+            Some(EntityType::EtSpeaker) => self.speaker(state, target),
+            Some(EntityType::EtGrapple) => self.grapple(state, target),
+            Some(EntityType::EtTeam) => self.team(state, target, options),
+            Some(EntityType::EtEvents) | None => Err(PresentError::drop(format!("Bad entity type: {type_}\n"))),
         }
     }
 
@@ -1164,8 +1168,11 @@ impl PacketEntityPresenter {
         state.auto_angles_fast = vec3(0.0, ((state.time & 1023) * 360) as f32 / 1024.0, 0.0);
         state.auto_axis = angles_to_axis(state.auto_angles);
         state.auto_axis_fast = angles_to_axis(state.auto_angles_fast);
-        let predicted = state.predicted_player_state.clone();
-        player_state_to_entity_state(&predicted, &mut state.predicted_player_entity.current_state);
+        player_state_to_entity_state(
+            &mut state.predicted_player_state,
+            &mut state.predicted_player_entity.current_state,
+            false,
+        );
         self.add_entity(state, PresentEntityTarget::Predicted, options)?;
         let client_num = state
             .snap
@@ -1186,5 +1193,34 @@ impl PacketEntityPresenter {
             self.add_entity(state, PresentEntityTarget::Indexed(number.max(0) as usize), options)?;
         }
         Ok(())
+    }
+}
+
+/// Entity selection: predicted player or indexed entity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentEntityTarget {
+    /// Predicted player entity.
+    Predicted,
+    /// Indexed entity.
+    Indexed(usize),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_placement_identity() {
+        let parent = create_model_entity(default_model());
+        let mut entity = create_model_entity(default_model());
+        position_entity_on_tag(&mut entity, &parent, &default_model(), "tag_missing");
+        assert_eq!(entity.origin, zero_vec3());
+        position_rotated_entity_on_tag(&mut entity, &parent, &default_model(), "tag_missing");
+        assert_eq!(entity.origin, zero_vec3());
+        let state = ClientGameState::new(Product::Baseq3, 0, 0).unwrap();
+        assert_eq!(
+            adjust_position_for_mover(&state, vec3(1.0, 2.0, 3.0), 0, 0, 100),
+            vec3(1.0, 2.0, 3.0)
+        );
     }
 }

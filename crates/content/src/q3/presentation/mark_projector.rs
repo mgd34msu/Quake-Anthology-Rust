@@ -9,8 +9,8 @@ use qa_core::math::{
 use std::collections::HashSet;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 
 // ---------------------------------------------------------------------------
 // mark-projector.ts
@@ -696,4 +696,54 @@ pub fn world_mark_projector(world: &PresentMarkWorld) -> PresentResult<BspMarkPr
         },
         surfaces,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_projection_empty() {
+        let projector = BspMarkProjector::new(MarkGeometry {
+            map: MarkMap {
+                nodes: Vec::new(),
+                planes: Vec::new(),
+                leaves: Vec::new(),
+                leaf_surfaces: Vec::new(),
+                surface_count: 0,
+            },
+            surfaces: Vec::new(),
+        })
+        .unwrap();
+        let fragments = projector
+            .mark_fragments(&MarkProjection {
+                points: vec![zero_vec3()],
+                projection: vec3(0.0, 0.0, -1.0),
+                max_points: 10,
+                max_fragments: 10,
+            })
+            .unwrap();
+        assert!(fragments.fragments.is_empty());
+        struct Zero;
+        impl SourceMarkProjection for Zero {
+            fn point_count(&self) -> usize {
+                1
+            }
+            fn max_points(&self) -> usize {
+                0
+            }
+            fn max_fragments(&self) -> usize {
+                0
+            }
+            fn read_point(&self, _index: usize) -> PresentResult<Vec3> {
+                Ok(zero_vec3())
+            }
+            fn read_projection(&self) -> Vec3 {
+                vec3(0.0, 0.0, -1.0)
+            }
+            fn write_fragment(&mut self, _index: usize, _fragment: MarkFragment) {}
+            fn write_points(&mut self, _first_point: usize, _points: &[Vec3]) {}
+        }
+        assert_eq!(projector.mark_fragments_record(&mut Zero).unwrap(), 0);
+    }
 }

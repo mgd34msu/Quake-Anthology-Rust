@@ -5,8 +5,8 @@
 use qa_core::math::{Axis, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 
 // ---------------------------------------------------------------------------
 // refdef.ts
@@ -95,4 +95,24 @@ pub fn create_refdef() -> Refdef {
 #[must_use]
 pub fn copy_refdef(source: &Refdef) -> Refdef {
     source.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_text_bounds() {
+        let text: RenderText = ["a", "b", "c", "d", "e", "f", "g", "h"].map(str::to_string);
+        assert_eq!(copy_render_text(&text).unwrap(), text);
+        let mut bad = text.clone();
+        bad[0] = "x".repeat(33);
+        assert!(copy_render_text(&bad).is_err());
+        let mut bad = text.clone();
+        bad[1] = "\u{e9}".to_string();
+        assert!(copy_render_text(&bad).is_err());
+        let refdef = create_refdef();
+        assert_eq!(refdef.area_mask.len(), 32);
+        assert_eq!(copy_refdef(&refdef), refdef);
+    }
 }

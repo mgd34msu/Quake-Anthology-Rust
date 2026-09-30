@@ -3,7 +3,7 @@
 //! Donor provenance: `src/content/q3/presentation/character-resources.ts`.
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
+use crate::q3::base::shared::definitions::Product;
 
 // ---------------------------------------------------------------------------
 // character-resources.ts
@@ -102,7 +102,27 @@ impl CustomSoundFallback {
 #[must_use]
 pub const fn q3_custom_sound_fallback(product: Product, team_game: bool) -> CustomSoundFallback {
     match (product, team_game) {
-        (Product::MissionPack, true) => CustomSoundFallback::James,
+        (Product::Missionpack, true) => CustomSoundFallback::James,
         _ => CustomSoundFallback::Sarge,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn character_resources() {
+        assert_eq!(Q3_CHARACTER_SOUNDS.select_sound, "sound/weapons/change.wav");
+        assert_eq!(Q3_FOOTSTEP_PATHS.len(), 7);
+        assert_eq!(
+            q3_custom_sound_fallback(Product::Missionpack, true),
+            CustomSoundFallback::James
+        );
+        assert_eq!(
+            q3_custom_sound_fallback(Product::Baseq3, true),
+            CustomSoundFallback::Sarge
+        );
+        assert_eq!(CustomSoundFallback::Sarge.name(), "sarge");
     }
 }

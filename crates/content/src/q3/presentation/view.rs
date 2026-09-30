@@ -5,9 +5,13 @@
 use qa_core::math::{add3, angle_vectors, angles_to_axis, dot3, scale3, sub3, vec3, vec4, Bounds, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
+use crate::q3::base::shared::definitions::{stat_schema, MoveType};
+use crate::q3::base::shared::player_state::MoveFlags;
+use crate::q3::presentation::local_entities::PresentPrediction;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 use crate::q3::presentation::refdef::*;
+use crate::q3::presentation::state::ClientGameState;
 
 // ---------------------------------------------------------------------------
 // view.ts
@@ -112,7 +116,7 @@ impl ViewRuntime {
         let mut size = if state
             .snap
             .as_ref()
-            .is_some_and(|snap| snap.player_state.pm_type == MoveType::Intermission)
+            .is_some_and(|snap| snap.player_state.pm_type == MoveType::PmIntermission as i32)
         {
             100
         } else {
@@ -133,10 +137,10 @@ impl ViewRuntime {
             return Err(PresentError::range("Camera view requires a positive viewport"));
         }
         state.rendering_third_person =
-            settings.third_person || state.snap.as_ref().is_some_and(|snap| snap.player_state.health <= 0);
-        state.refdef.view_origin = ps.origin;
+            settings.third_person || state.snap.as_ref().is_some_and(|snap| snap.player_state.health() <= 0);
+        state.refdef.view_origin = ps.origin();
         state.refdef_view_angles = ps.viewangles;
-        if ps.pm_type == MoveType::Intermission {
+        if ps.pm_type == MoveType::PmIntermission as i32 {
             state.refdef.view_axis = angles_to_axis(state.refdef_view_angles);
             return self.calculate_fov(state, prediction, &settings);
         }
@@ -144,7 +148,7 @@ impl ViewRuntime {
         state.bob_frac_sin = (((ps.bob_cycle & 127) as f32) / 127.0 * std::f32::consts::PI)
             .sin()
             .abs();
-        state.xyspeed = (ps.velocity.x * ps.velocity.x + ps.velocity.y * ps.velocity.y).sqrt();
+        state.xyspeed = (ps.velocity().x * ps.velocity().x + ps.velocity().y * ps.velocity().y).sqrt();
         let mut third_person_angle = settings.third_person_angle;
         if settings.camera_orbit_integer != 0 && state.time > state.next_orbit_time {
             state.next_orbit_time = state.time.wrapping_add(settings.camera_orbit_delay);
@@ -180,8 +184,7 @@ impl ViewRuntime {
         state.refdef.time = state.time;
         let mut mask = [0u8; 32];
         if let Some(snap) = &state.snap {
-            let length = snap.area_mask.len().min(32);
-            mask[..length].copy_from_slice(&snap.area_mask[..length]);
+            mask.copy_from_slice(&snap.area_mask);
         }
         state.refdef.area_mask = mask;
         Ok(copy_refdef(&state.refdef))
@@ -216,11 +219,11 @@ impl ViewRuntime {
         state.refdef.view_origin = vec3(
             state.refdef.view_origin.x,
             state.refdef.view_origin.y,
-            state.refdef.view_origin.z + ps.viewheight,
+            state.refdef.view_origin.z + ps.viewheight as f32,
         );
         let mut focus_angles = state.refdef_view_angles;
-        if ps.health <= 0 {
-            let yaw = ps.stats.get(stat_schema(ps.product).dead_yaw) as f32;
+        if ps.health() <= 0 {
+            let yaw = ps.stats.get(stat_schema(ps.product()).dead_yaw()) as f32;
             focus_angles = vec3(focus_angles.x, yaw, focus_angles.z);
             state.refdef_view_angles = vec3(state.refdef_view_angles.x, yaw, state.refdef_view_angles.z);
         }
@@ -279,22 +282,22 @@ impl ViewRuntime {
         if state
             .snap
             .as_ref()
-            .is_some_and(|snap| snap.player_state.pm_type == MoveType::Intermission)
+            .is_some_and(|snap| snap.player_state.pm_type == MoveType::PmIntermission as i32)
         {
             return Ok(());
         }
         let ps = state.predicted_player_state.clone();
-        if state.snap.as_ref().is_some_and(|snap| snap.player_state.health <= 0) {
+        if state.snap.as_ref().is_some_and(|snap| snap.player_state.health() <= 0) {
             let yaw = state
                 .snap
                 .as_ref()
-                .map(|snap| snap.player_state.stats.get(stat_schema(ps.product).dead_yaw) as f32)
+                .map(|snap| snap.player_state.stats.get(stat_schema(ps.product()).dead_yaw()) as f32)
                 .unwrap_or(0.0);
             state.refdef_view_angles = vec3(-15.0, yaw, 40.0);
             state.refdef.view_origin = vec3(
                 state.refdef.view_origin.x,
                 state.refdef.view_origin.y,
-                state.refdef.view_origin.z + ps.viewheight,
+                state.refdef.view_origin.z + ps.viewheight as f32,
             );
             return Ok(());
         }
@@ -315,14 +318,14 @@ impl ViewRuntime {
             }
         }
         angles = vec3(
-            angles.x + dot3(ps.velocity, state.refdef.view_axis[0]) * settings.run_pitch,
+            angles.x + dot3(ps.velocity(), state.refdef.view_axis[0]) * settings.run_pitch,
             angles.y,
-            angles.z - dot3(ps.velocity, state.refdef.view_axis[1]) * settings.run_roll,
+            angles.z - dot3(ps.velocity(), state.refdef.view_axis[1]) * settings.run_roll,
         );
         let speed = state.xyspeed.max(200.0);
         let mut pitch = state.bob_frac_sin * settings.bob_pitch * speed;
         let mut roll = state.bob_frac_sin * settings.bob_roll * speed;
-        if ps.pm_flags & MoveFlags::DUCKED != 0 {
+        if ps.pm_flags & MoveFlags::Ducked as i32 != 0 {
             pitch *= 3.0;
             roll *= 3.0;
         }
@@ -330,7 +333,7 @@ impl ViewRuntime {
             roll = -roll;
         }
         state.refdef_view_angles = vec3(angles.x + pitch, angles.y, angles.z + roll);
-        let mut height = state.refdef.view_origin.z + ps.viewheight;
+        let mut height = state.refdef.view_origin.z + ps.viewheight as f32;
         let duck_delta = state.time.wrapping_sub(state.duck_time);
         if duck_delta < 100 {
             height -= state.duck_change * (100 - duck_delta) as f32 / 100.0;
@@ -360,7 +363,7 @@ impl ViewRuntime {
         settings: &ViewSettings,
     ) -> PresentResult<bool> {
         let mut fov = 90.0f32;
-        if state.predicted_player_state.pm_type != MoveType::Intermission {
+        if state.predicted_player_state.pm_type != MoveType::PmIntermission as i32 {
             fov = if settings.dm_flags & 16 != 0 {
                 90.0
             } else {
@@ -403,7 +406,7 @@ impl ViewRuntime {
         rage_pro: bool,
     ) -> Option<RefSpriteEntity> {
         let elapsed = (state.time as f32 - state.damage_time).trunc() as i32;
-        if state.damage_value == 0 || rage_pro || elapsed <= 0 || elapsed >= 500 {
+        if state.damage_value == 0.0 || rage_pro || elapsed <= 0 || elapsed >= 500 {
             return None;
         }
         let mut entity = create_sprite_entity();
@@ -411,7 +414,7 @@ impl ViewRuntime {
         entity.origin = view_multiply_add(state.refdef.view_origin, 8.0, state.refdef.view_axis[0]);
         entity.origin = view_multiply_add(entity.origin, state.damage_x * -8.0, state.refdef.view_axis[1]);
         entity.origin = view_multiply_add(entity.origin, state.damage_y * 8.0, state.refdef.view_axis[2]);
-        entity.radius = state.damage_value as f32 * 3.0;
+        entity.radius = state.damage_value * 3.0;
         entity.shading.custom_shader = shader;
         entity.shading.shader_rgba = vec4(
             255.0,

@@ -9,7 +9,8 @@ use std::rc::Rc;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::presentation::hud::ClientMedia;
 use crate::q3::presentation::hud::Shared;
-use crate::q3::presentation::retail_snapshot::{Refdef, SceneShader};
+use crate::q3::presentation::refdef::Refdef;
+use crate::q3::presentation::retail_snapshot::SceneShader;
 use crate::q3::presentation::state::*;
 
 /// Visible length without color escapes (`drawStrlen`).

@@ -207,6 +207,30 @@ pub enum EntityType {
     EtEvents = 13,
 }
 
+impl EntityType {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::EtGeneral),
+            1 => Some(Self::EtPlayer),
+            2 => Some(Self::EtItem),
+            3 => Some(Self::EtMissile),
+            4 => Some(Self::EtMover),
+            5 => Some(Self::EtBeam),
+            6 => Some(Self::EtPortal),
+            7 => Some(Self::EtSpeaker),
+            8 => Some(Self::EtPushTrigger),
+            9 => Some(Self::EtTeleportTrigger),
+            10 => Some(Self::EtInvisible),
+            11 => Some(Self::EtGrapple),
+            12 => Some(Self::EtTeam),
+            13 => Some(Self::EtEvents),
+            _ => None,
+        }
+    }
+}
+
 /// Persistent player-state index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
@@ -394,6 +418,24 @@ impl StatSchema {
         }
     }
 
+    /// Weapons stat slot.
+    #[must_use]
+    pub fn weapons(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.weapons as usize,
+            Self::Missionpack(layout) => layout.weapons as usize,
+        }
+    }
+
+    /// Dead-yaw stat slot.
+    #[must_use]
+    pub fn dead_yaw(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.dead_yaw as usize,
+            Self::Missionpack(layout) => layout.dead_yaw as usize,
+        }
+    }
+
     /// Clients-ready stat slot.
     #[must_use]
     pub fn clients_ready(self) -> usize {
@@ -543,6 +585,30 @@ pub enum Weapon {
     WpProxLauncher = weapon::PROX_LAUNCHER,
     /// Chaingun.
     WpChaingun = weapon::CHAINGUN,
+}
+
+impl Weapon {
+    /// Raw source value lookup.
+    #[must_use]
+    pub const fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(Self::WpNone),
+            1 => Some(Self::WpGauntlet),
+            2 => Some(Self::WpMachinegun),
+            3 => Some(Self::WpShotgun),
+            4 => Some(Self::WpGrenadeLauncher),
+            5 => Some(Self::WpRocketLauncher),
+            6 => Some(Self::WpLightning),
+            7 => Some(Self::WpRailgun),
+            8 => Some(Self::WpPlasmagun),
+            9 => Some(Self::WpBfg),
+            10 => Some(Self::WpGrapplingHook),
+            11 => Some(Self::WpNailgun),
+            12 => Some(Self::WpProxLauncher),
+            13 => Some(Self::WpChaingun),
+            _ => None,
+        }
+    }
 }
 
 /// Entity event.
@@ -833,5 +899,15 @@ mod tests {
         assert_eq!(mission.health(), MissionpackStatIndex::StatHealth as usize);
         assert_eq!(mission.armor(), MissionpackStatIndex::StatArmor as usize);
         assert!((ARMOR_PROTECTION - 0.66).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stat_schema_and_counts() {
+        assert_eq!(stat_schema(Product::Baseq3).weapons(), 2);
+        assert_eq!(stat_schema(Product::Missionpack).weapons(), 3);
+        assert_eq!(weapon_count(Product::Baseq3), 11);
+        assert_eq!(weapon_count(Product::Missionpack), 14);
+        assert_eq!(EntityType::from_i32(13), Some(EntityType::EtEvents));
+        assert_eq!(Weapon::from_i32(7), Some(Weapon::WpRailgun));
     }
 }
