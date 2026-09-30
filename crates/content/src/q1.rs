@@ -40,3 +40,5 @@ pub mod base;
 pub mod equipment;
 pub mod foundation;
 pub mod missionpacks;
+pub mod mods_callbacks;
+pub mod quakec;

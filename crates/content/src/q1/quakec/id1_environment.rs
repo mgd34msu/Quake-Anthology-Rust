@@ -12,9 +12,9 @@ use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 use qa_core::numeric::{Arithmetic, NumericOps};
 
+use super::super::foundation::gameplay::AttackCause;
 use super::id1_damage::Id1DamageCall;
 use super::id1_program::{id1_damage_multiplier, id1_program_snapshot, EnvContext, Id1ProgramBinding, NativeEnv};
-use super::qc_gameplay::DamageCause;
 use super::qc_view::{MachineFn, QcHostSource, QcOpcode};
 use super::QcError;
 
@@ -45,7 +45,7 @@ pub enum EnvCallbackKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Id1EnvironmentalDamage {
     /// Damage cause.
-    pub cause: DamageCause,
+    pub cause: AttackCause,
     /// Damage time.
     pub time: f64,
     /// Hit direction.
@@ -151,7 +151,7 @@ impl<'a> Id1Environment<'a> {
         let text = |reference: i32, name: &str| -> Result<String, QcError> {
             vm.strings_get(vm.entity_int(vm.entity_slot(reference)?, field(name)?)?)
         };
-        let mut cause = DamageCause::Environment { hazard: site.hazard };
+        let mut cause = AttackCause::Environment { hazard: site.hazard };
         if let Some(native) = site.native {
             if vm.arg_int(0)? != target || vm.arg_int(1)? != inflictor || vm.arg_int(2)? != attacker {
                 return Err(QcError::program(
@@ -227,7 +227,7 @@ impl<'a> Id1Environment<'a> {
                             self.source.program.source,
                         ));
                     }
-                    cause = DamageCause::Q1 {
+                    cause = AttackCause::Q1 {
                         death_type: classname,
                         armor_effect: None,
                     };
@@ -269,14 +269,14 @@ impl<'a> Id1Environment<'a> {
                             self.source.program.source,
                         ));
                     }
-                    cause = DamageCause::Q1 {
+                    cause = AttackCause::Q1 {
                         death_type: text(target, "deathtype")?,
                         armor_effect: None,
                     };
                 }
             }
             if native == NativeEnv::Barrel {
-                cause = DamageCause::Q1 {
+                cause = AttackCause::Q1 {
                     death_type: text(target, "deathtype")?,
                     armor_effect: None,
                 };

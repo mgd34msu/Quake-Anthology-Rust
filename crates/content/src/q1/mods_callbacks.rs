@@ -879,3 +879,15 @@ pub fn read_mod_callbacks(bytes: &[u8]) -> Result<ModCallbackDeclaration, ModCal
         },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_non_utf8_and_malformed_declarations() {
+        assert!(read_mod_callbacks(&[0xFF, 0xFE]).is_err());
+        assert!(read_mod_callbacks(b"{}").is_err());
+        assert!(read_mod_callbacks(b"{\"program\": 1}").is_err());
+    }
+}

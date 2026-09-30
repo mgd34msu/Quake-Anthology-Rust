@@ -16,13 +16,14 @@ use crate::contract::{
     RegularArmorState,
 };
 
+use super::super::foundation::gameplay::{DamageOutcome, DamageReaction, DamageRequest};
 use super::armor_stage::{qc_armor_stage, QcArmorStage};
 use super::damage_call::{project_qc_damage_call, read_qc_damage_call, QcDamageCallValues};
 use super::damage_scale::{evaluate_qc_damage_amount, evaluate_qc_damage_scale, qc_damage_scale, QcDamageScale};
 use super::id1_program::{id1_program_binding, Id1Attribution, Id1DamageKind, Id1ProgramBinding, Id1ProgramCache};
 use super::qc_gameplay::{
-    attack_damage_flags, ActorSource, ArmorDamageFlags, ArmorStageInput, DamageGeometry, DamageOutcome, DamageReaction,
-    DamageRequest, QcActorRegistry, SourceDamageObserver, SourceDamageResult, SourceStoredMutation,
+    attack_damage_flags, ActorSource, ArmorDamageFlags, ArmorStageInput, DamageGeometry, QcActorRegistry,
+    SourceDamageObserver, SourceDamageResult, SourceStoredMutation,
 };
 use super::qc_view::{
     ArmorIntercept, GameplayAuthority, MachineFn, QcCallSite, QcEntityStoreObservation, QcFunctionBoundary,

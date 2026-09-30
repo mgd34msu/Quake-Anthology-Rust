@@ -24,10 +24,8 @@ use qa_core::numeric::NumericOps;
 
 use crate::contract::{ModCallbackInput, ModCallbackValue, ModClientInput, ModRuntimeValue, ModSourceCall};
 
-use super::qc_gameplay::{
-    ArmorStageInput, DamageOutcome, DamageRequest, QcActorRegistry, QcActorSlots, SourceDamageObserver,
-    SourceDamageResult,
-};
+use super::super::foundation::gameplay::{DamageOutcome, DamageRequest};
+use super::qc_gameplay::{ArmorStageInput, QcActorRegistry, QcActorSlots, SourceDamageObserver, SourceDamageResult};
 use super::{fround, QcError};
 
 /// QuakeC opcode (donor `QcOpcode`; discriminants are the file encoding).
