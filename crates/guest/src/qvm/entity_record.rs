@@ -462,7 +462,6 @@ mod tests {
                 base: vec3(40.0, 41.0, 42.0),
                 delta: vec3(43.0, 44.0, 45.0),
             },
-            ..QvmEntityState::default()
         }
     }
 

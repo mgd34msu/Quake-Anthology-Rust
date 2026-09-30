@@ -752,7 +752,7 @@ mod tests {
             area_info()
         }
         fn entity_info(&mut self, number: i32) -> Option<AasEntityInfo> {
-            (number == 1).then(|| AasEntityInfo {
+            (number == 1).then_some(AasEntityInfo {
                 valid: true,
                 number: 1,
                 update: BotEntityUpdate {

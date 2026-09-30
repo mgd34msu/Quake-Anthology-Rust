@@ -12,7 +12,7 @@
 //! interpreter hooks, and engine traps integrate through [`PresentationHost`];
 //! body-mesh and event-check hook points are explicit methods the host calls.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
 use qa_core::math::{vec3, Vec3};
@@ -1710,7 +1710,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(None);
         };
         let entities = &declaration.storage.centities;
-        if centity < entities.address || (centity - entities.address) % entities.stride != 0 {
+        if centity < entities.address
+            || !(centity - entities.address).is_multiple_of(entities.stride)
+        {
             return Ok(None);
         }
         let slot = (centity - entities.address) / entities.stride;
@@ -1852,7 +1854,9 @@ impl<H: PresentationHost> QvmModPresentation<H> {
             return Ok(());
         };
         let entities = &declaration.storage.centities;
-        if centity < entities.address || (centity - entities.address) % entities.stride != 0 {
+        if centity < entities.address
+            || !(centity - entities.address).is_multiple_of(entities.stride)
+        {
             return Ok(());
         }
         let entity = super::mod_presentation_checkpoint::SourceEntityState::from_bytes(

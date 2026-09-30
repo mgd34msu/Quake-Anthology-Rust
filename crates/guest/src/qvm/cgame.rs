@@ -353,8 +353,10 @@ mod tests {
     }
 
     fn cgame(generation: i32, message: i32) -> (QvmCgame, Rc<FixtureLifetime>) {
-        let mut image = QvmImage::default();
-        image.allocated_data_length = 4096;
+        let image = QvmImage {
+            allocated_data_length: 4096,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: super::super::game_data::ModuleIdentity {
                 id: "q3:cgame".to_string(),
@@ -383,8 +385,10 @@ mod tests {
         let (game, _) = cgame(1, 10);
         assert_eq!(game.api.version, 4);
         assert!(game.supports_input_events());
-        let mut image = QvmImage::default();
-        image.allocated_data_length = 64;
+        let image = QvmImage {
+            allocated_data_length: 64,
+            ..Default::default()
+        };
         let artifact = QvmArtifact {
             module: super::super::game_data::ModuleIdentity::default(),
             role: QvmRole::Qagame,

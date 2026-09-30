@@ -132,9 +132,9 @@ mod tests {
     fn read_matrix(memory: &QvmMemory, at: i32) -> [[f32; 3]; 3] {
         let view = memory.view(at, 36, 0).unwrap();
         let mut rows = [[0.0; 3]; 3];
-        for row in 0..3 {
-            for column in 0..3 {
-                rows[row][column] = view.get_f32(row * 12 + column * 4).unwrap();
+        for (row, values) in rows.iter_mut().enumerate() {
+            for (column, value) in values.iter_mut().enumerate() {
+                *value = view.get_f32(row * 12 + column * 4).unwrap();
             }
         }
         rows
@@ -168,7 +168,7 @@ mod tests {
         );
         let forward = memory.view(128, 12, 0).unwrap();
         assert!((forward.get_f32(0).unwrap() - 0.0).abs() < 1e-5);
-        assert!((forward.get_f32(1 * 4).unwrap() - 1.0).abs() < 1e-5);
+        assert!((forward.get_f32(4).unwrap() - 1.0).abs() < 1e-5);
         let up = memory.view(192, 12, 0).unwrap();
         assert!((up.get_f32(8).unwrap() - 1.0).abs() < 1e-5);
     }

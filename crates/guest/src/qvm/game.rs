@@ -239,8 +239,10 @@ mod tests {
     use super::*;
 
     fn artifact() -> QvmArtifact {
-        let mut image = QvmImage::default();
-        image.allocated_data_length = 4096;
+        let image = QvmImage {
+            allocated_data_length: 4096,
+            ..Default::default()
+        };
         QvmArtifact {
             module: super::super::game_data::ModuleIdentity {
                 id: "q3:qagame".to_string(),
@@ -341,10 +343,10 @@ mod tests {
         let game = game();
         block_on(game.initialize_async(10, 3, false)).unwrap();
         block_on(game.run_frame_async(10)).unwrap();
-        assert_eq!(block_on(game.console_command_async(&[])).unwrap(), false);
+        assert!(!block_on(game.console_command_async(&[])).unwrap());
         assert_eq!(game.module.calls().len(), 2);
         game.module.set_default_return(1);
-        assert_eq!(block_on(game.console_command_async(&[])).unwrap(), true);
+        assert!(block_on(game.console_command_async(&[])).unwrap());
     }
 
     #[test]

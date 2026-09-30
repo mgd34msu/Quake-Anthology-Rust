@@ -652,7 +652,7 @@ mod tests {
     fn header(instruction_count: i32, code: &[u8], data: &[u8]) -> Vec<u8> {
         let code_offset = QVM_HEADER_LENGTH as i32;
         let mut code_padded = code.to_vec();
-        while code_padded.len() % 4 != 0 {
+        while !code_padded.len().is_multiple_of(4) {
             code_padded.push(0);
         }
         let data_offset = code_offset + code_padded.len() as i32;
