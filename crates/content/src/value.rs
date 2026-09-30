@@ -334,6 +334,249 @@ pub fn read_vector(reader: SaveReader) -> Result<Vec3, ValueError> {
     })
 }
 
+/// Strict JSON text parser (`JSON.parse` semantics) producing [`SaveJson`].
+///
+/// Used for authored declaration files (mod declarations, `mapdb.json`),
+/// not for tagged checkpoint envelopes. Duplicate object keys keep the
+/// last value, matching `JSON.parse`.
+pub fn parse_save_json(text: &str) -> Result<SaveJson, ValueError> {
+    let mut parser = JsonParser {
+        bytes: text.as_bytes(),
+        index: 0,
+    };
+    parser.skip_whitespace();
+    let value = parser.value()?;
+    parser.skip_whitespace();
+    if parser.index != parser.bytes.len() {
+        return Err(save_error("json", "unexpected trailing text"));
+    }
+    Ok(value)
+}
+
+struct JsonParser<'a> {
+    bytes: &'a [u8],
+    index: usize,
+}
+
+impl JsonParser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.index).copied()
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let byte = self.peek()?;
+        self.index += 1;
+        Some(byte)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.index += 1;
+        }
+    }
+
+    fn fail(&self, message: &str) -> ValueError {
+        save_error(&format!("json@{}", self.index), message)
+    }
+
+    fn expect(&mut self, byte: u8, what: &str) -> Result<(), ValueError> {
+        if self.next() == Some(byte) {
+            Ok(())
+        } else {
+            Err(self.fail(&format!("expected {what}")))
+        }
+    }
+
+    fn value(&mut self) -> Result<SaveJson, ValueError> {
+        match self.peek() {
+            Some(b'{') => self.object(),
+            Some(b'[') => self.array(),
+            Some(b'"') => Ok(SaveJson::String(self.string()?)),
+            Some(b't') => self.keyword("true", SaveJson::Bool(true)),
+            Some(b'f') => self.keyword("false", SaveJson::Bool(false)),
+            Some(b'n') => self.keyword("null", SaveJson::Null),
+            Some(byte) if byte == b'-' || byte.is_ascii_digit() => self.number(),
+            _ => Err(self.fail("expected a value")),
+        }
+    }
+
+    fn keyword(&mut self, word: &str, value: SaveJson) -> Result<SaveJson, ValueError> {
+        if self.bytes[self.index..].starts_with(word.as_bytes()) {
+            self.index += word.len();
+            Ok(value)
+        } else {
+            Err(self.fail("expected a value"))
+        }
+    }
+
+    fn object(&mut self) -> Result<SaveJson, ValueError> {
+        self.expect(b'{', "'{'")?;
+        let mut members = Vec::new();
+        self.skip_whitespace();
+        if self.peek() == Some(b'}') {
+            self.index += 1;
+            return Ok(SaveJson::Object(members));
+        }
+        loop {
+            self.skip_whitespace();
+            if self.peek() != Some(b'"') {
+                return Err(self.fail("expected a string key"));
+            }
+            let key = self.string()?;
+            self.skip_whitespace();
+            self.expect(b':', "':'")?;
+            self.skip_whitespace();
+            let value = self.value()?;
+            members.push((key, value));
+            self.skip_whitespace();
+            match self.next() {
+                Some(b',') => continue,
+                Some(b'}') => return Ok(SaveJson::Object(members)),
+                _ => return Err(self.fail("expected ',' or '}'")),
+            }
+        }
+    }
+
+    fn array(&mut self) -> Result<SaveJson, ValueError> {
+        self.expect(b'[', "'['")?;
+        let mut items = Vec::new();
+        self.skip_whitespace();
+        if self.peek() == Some(b']') {
+            self.index += 1;
+            return Ok(SaveJson::Array(items));
+        }
+        loop {
+            self.skip_whitespace();
+            items.push(self.value()?);
+            self.skip_whitespace();
+            match self.next() {
+                Some(b',') => continue,
+                Some(b']') => return Ok(SaveJson::Array(items)),
+                _ => return Err(self.fail("expected ',' or ']'")),
+            }
+        }
+    }
+
+    fn string(&mut self) -> Result<String, ValueError> {
+        self.expect(b'"', "'\"'")?;
+        let mut out = String::new();
+        loop {
+            match self.next() {
+                None => return Err(self.fail("unterminated string")),
+                Some(b'"') => return Ok(out),
+                Some(b'\\') => match self.next() {
+                    Some(b'"') => out.push('"'),
+                    Some(b'\\') => out.push('\\'),
+                    Some(b'/') => out.push('/'),
+                    Some(b'b') => out.push('\u{0008}'),
+                    Some(b'f') => out.push('\u{000C}'),
+                    Some(b'n') => out.push('\n'),
+                    Some(b'r') => out.push('\r'),
+                    Some(b't') => out.push('\t'),
+                    Some(b'u') => {
+                        let high = self.hex4()?;
+                        if (0xD800..0xDC00).contains(&high) {
+                            if self.next() == Some(b'\\') && self.next() == Some(b'u') {
+                                let low = self.hex4()?;
+                                if (0xDC00..0xE000).contains(&low) {
+                                    let code = 0x1_0000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+                                    out.push(char::from_u32(code).ok_or_else(|| self.fail("invalid escape"))?);
+                                } else {
+                                    return Err(self.fail("invalid escape"));
+                                }
+                            } else {
+                                return Err(self.fail("invalid escape"));
+                            }
+                        } else if (0xDC00..0xE000).contains(&high) {
+                            return Err(self.fail("invalid escape"));
+                        } else {
+                            out.push(char::from_u32(high).ok_or_else(|| self.fail("invalid escape"))?);
+                        }
+                    }
+                    _ => return Err(self.fail("invalid escape")),
+                },
+                Some(byte) if byte < 0x20 => return Err(self.fail("unescaped control character")),
+                Some(_) => {
+                    // Collect a run of non-special bytes, then decode UTF-8.
+                    let start = self.index - 1;
+                    loop {
+                        match self.peek() {
+                            Some(next) if next != b'"' && next != b'\\' && next >= 0x20 => {
+                                self.index += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    let run = &self.bytes[start..self.index];
+                    out.push_str(std::str::from_utf8(run).map_err(|_| self.fail("invalid UTF-8"))?);
+                }
+            }
+        }
+    }
+
+    fn hex4(&mut self) -> Result<u32, ValueError> {
+        if self.index + 4 > self.bytes.len() {
+            return Err(self.fail("invalid escape"));
+        }
+        let digits = &self.bytes[self.index..self.index + 4];
+        let mut value = 0u32;
+        for digit in digits {
+            value = value * 16
+                + match digit {
+                    b'0'..=b'9' => u32::from(digit - b'0'),
+                    b'a'..=b'f' => u32::from(digit - b'a') + 10,
+                    b'A'..=b'F' => u32::from(digit - b'A') + 10,
+                    _ => return Err(self.fail("invalid escape")),
+                };
+        }
+        self.index += 4;
+        Ok(value)
+    }
+
+    fn number(&mut self) -> Result<SaveJson, ValueError> {
+        let start = self.index;
+        if self.peek() == Some(b'-') {
+            self.index += 1;
+        }
+        match self.peek() {
+            Some(b'0') => {
+                self.index += 1;
+            }
+            Some(byte) if byte.is_ascii_digit() => {
+                while self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                    self.index += 1;
+                }
+            }
+            _ => return Err(self.fail("expected a number")),
+        }
+        if self.peek() == Some(b'.') {
+            self.index += 1;
+            if !self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                return Err(self.fail("expected a number"));
+            }
+            while self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                self.index += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.index += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.index += 1;
+            }
+            if !self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                return Err(self.fail("expected a number"));
+            }
+            while self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                self.index += 1;
+            }
+        }
+        let text = std::str::from_utf8(&self.bytes[start..self.index]).map_err(|_| self.fail("expected a number"))?;
+        text.parse::<f64>()
+            .map(SaveJson::Number)
+            .map_err(|_| self.fail("expected a number"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +614,26 @@ mod tests {
         assert_eq!(read_digest(reader.field("digest")).unwrap().as_str(), digest);
         let vector = read_vector(reader.field("offset")).unwrap();
         assert_eq!((vector.x, vector.y, vector.z), (1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn parses_json_text() {
+        let value = parse_save_json(
+            r#"{"name": "q1:shells", "count": -12.5e2, "tags": ["a", "b\nc", "𝄞"], "nil": null, "ok": true, "esc": "A\u0041\ud834\udd1e"}"#,
+        )
+        .unwrap();
+        let reader = SaveReader::new(&value);
+        assert_eq!(reader.field("name").string().unwrap(), "q1:shells");
+        assert_eq!(reader.field("count").number().unwrap(), -1250.0);
+        assert_eq!(
+            reader.field("tags").list(|item| item.string()).unwrap(),
+            vec!["a".to_string(), "b\nc".to_string(), "𝄞".to_string()]
+        );
+        assert_eq!(reader.field("esc").string().unwrap(), "AA𝄞");
+        assert!(reader.field("ok").boolean().unwrap());
+        assert!(parse_save_json(r#"{"a": 01}"#).is_err());
+        assert!(parse_save_json(r#"{"a": }"#).is_err());
+        assert!(parse_save_json(r"[1, 2] trailing").is_err());
+        assert!(parse_save_json("\"\\ud800\"").is_err());
     }
 }
