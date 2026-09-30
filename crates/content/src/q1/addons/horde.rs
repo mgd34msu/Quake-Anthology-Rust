@@ -667,7 +667,7 @@ fn horde_get_key(game: &mut Q1EntityServices, manager: &ActorId) -> Result<(), Q
 }
 
 /// Restore horde keys on admission (`restoreKeys`).
-fn horde_restore_keys(game: &mut Q1EntityServices, player: &ActorId) -> Result<(), Q1Error> {
+pub(crate) fn horde_restore_keys(game: &mut Q1EntityServices, player: &ActorId) -> Result<(), Q1Error> {
     let (Some(manager), Some(actor)) = (horde_manager(game), game.host.actors.resolve_owned(player)) else {
         return Ok(());
     };

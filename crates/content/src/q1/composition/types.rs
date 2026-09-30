@@ -268,10 +268,11 @@ pub trait Q1CompositionServices: Send {
     /// Teleport the actor.
     fn teleport(&mut self, actor: &ActorId, origin: Vec3, angles: Vec3, velocity: Vec3, until: f64);
 
-    /// Foreign weapon game for the actor, or a null pointer when the
-    /// selected session owns the arsenal. A non-null pointer must stay
-    /// valid for the duration of the calling composition entry point.
-    fn weapon_services(&mut self, actor: &ActorId) -> *mut Q1EntityServices;
+    /// Foreign weapon game for the actor. `None` selects the main
+    /// game; `Some` null pointer skips weapon logic; otherwise the
+    /// pointer must be disjoint from the calling game and stay valid
+    /// for the duration of the calling composition entry point.
+    fn weapon_services(&mut self, actor: &ActorId) -> Option<*mut Q1EntityServices>;
 
     /// Grant a cheat arsenal through a foreign selected arsenal.
     /// Defaults to refusing, like the donor's optional hook.
@@ -306,6 +307,20 @@ pub trait Q1CompositionServices: Send {
 
     /// Finish the campaign.
     fn finish_campaign(&mut self);
+}
+
+/// Shared sink for runtime tests, which cannot reach the boxed fake.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct FakeSink {
+    /// Emitted events.
+    pub events: Vec<Q1CompositionEvent>,
+    /// Session restarts as `(map, flags)`.
+    pub restarts: Vec<(String, i32)>,
+    /// Disconnected actors.
+    pub disconnected: Vec<ActorId>,
+    /// Placed players as `(actor, spot)`.
+    pub placed: Vec<(ActorId, ActorId)>,
 }
 
 /// Recording services shared by every composition test module.
@@ -343,6 +358,10 @@ pub(crate) struct FakeCompositionServices {
     pub arsenals: Vec<(ActorId, Option<Q1CompositionCheatCategory>)>,
     /// Foreign item grants; true entries consume the grant.
     pub foreign_items: std::collections::HashMap<ActorId, bool>,
+    /// Shared sink mirror.
+    pub sink: Option<std::sync::Arc<std::sync::Mutex<FakeSink>>>,
+    /// Report a foreign arsenal without a game.
+    pub foreign_absent: bool,
 }
 
 #[cfg(test)]
@@ -366,6 +385,8 @@ impl FakeCompositionServices {
             finishes: 0,
             arsenals: Vec::new(),
             foreign_items: std::collections::HashMap::new(),
+            sink: None,
+            foreign_absent: false,
         }
     }
 
@@ -395,7 +416,10 @@ impl Q1CompositionServices for FakeCompositionServices {
     }
 
     fn emit(&mut self, event: Q1CompositionEvent) {
-        self.events.push(event);
+        self.events.push(event.clone());
+        if let Some(sink) = &self.sink {
+            sink.lock().unwrap().events.push(event);
+        }
     }
 
     fn selected_player(&mut self, actor: &ActorId) -> Q1SelectedPlayer {
@@ -408,18 +432,31 @@ impl Q1CompositionServices for FakeCompositionServices {
 
     fn place_player(&mut self, actor: &OwnedActor, spot: &Q1Actor, _travel: &Q1TravelState) {
         self.placed.push((actor.id().clone(), spot.actor.id().clone(), true));
+        if let Some(sink) = &self.sink {
+            sink.lock()
+                .unwrap()
+                .placed
+                .push((actor.id().clone(), spot.actor.id().clone()));
+        }
     }
 
     fn disconnect(&mut self, actor: &ActorId) {
         self.disconnected.push(actor.clone());
+        if let Some(sink) = &self.sink {
+            sink.lock().unwrap().disconnected.push(actor.clone());
+        }
     }
 
     fn teleport(&mut self, actor: &ActorId, origin: Vec3, angles: Vec3, velocity: Vec3, until: f64) {
         self.teleports.push((actor.clone(), origin, angles, velocity, until));
     }
 
-    fn weapon_services(&mut self, _actor: &ActorId) -> *mut Q1EntityServices {
-        std::ptr::null_mut()
+    fn weapon_services(&mut self, _actor: &ActorId) -> Option<*mut Q1EntityServices> {
+        if self.foreign_absent {
+            Some(std::ptr::null_mut())
+        } else {
+            None
+        }
     }
 
     fn cheat_arsenal(&mut self, actor: &ActorId, category: Option<Q1CompositionCheatCategory>) -> bool {
@@ -454,6 +491,12 @@ impl Q1CompositionServices for FakeCompositionServices {
 
     fn restart_session(&mut self, map: &str, starting_server_flags: i32) {
         self.restarts.push((map.to_string(), starting_server_flags));
+        if let Some(sink) = &self.sink {
+            sink.lock()
+                .unwrap()
+                .restarts
+                .push((map.to_string(), starting_server_flags));
+        }
     }
 
     fn finish_campaign(&mut self) {

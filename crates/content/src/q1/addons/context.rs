@@ -250,8 +250,9 @@ pub trait Q1AddonServices: Send {
     /// Present an addon event.
     fn emit(&mut self, event: Q1AddonEvent);
 
-    /// Whether an actor is a monster.
-    fn is_monster(&mut self, actor: &ActorId) -> bool;
+    /// Whether an actor is a monster. The game is threaded through
+    /// so session services can read live entity flags.
+    fn is_monster(&mut self, game: &Q1EntityServices, actor: &ActorId) -> bool;
 
     /// Read an engine variable.
     fn cvar(&mut self, name: &str) -> f64;
@@ -306,7 +307,7 @@ fn registry() -> &'static Mutex<HashMap<usize, Q1AddonState>> {
     STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn addon_key(game: &Q1EntityServices) -> usize {
+pub(crate) fn addon_key(game: &Q1EntityServices) -> usize {
     std::ptr::from_ref(game) as usize
 }
 
@@ -329,6 +330,26 @@ pub(crate) fn update_addons<T>(game: &Q1EntityServices, op: impl FnOnce(&mut Q1A
 #[must_use]
 pub fn addons_registered(game: &Q1EntityServices) -> bool {
     lock_registry().contains_key(&addon_key(game))
+}
+
+/// Run a state operation by registry key for callbacks that cannot
+/// borrow the game (damage stages).
+pub(crate) fn addons_by_key<T>(key: usize, op: impl FnOnce(&mut Q1AddonState) -> T) -> Option<T> {
+    lock_registry().get_mut(&key).map(op)
+}
+
+/// Read an addon player word by registry key. Live actors resolve to
+/// their own id, so the raw id matches the owned key for every actor
+/// a damage stage can observe.
+pub(crate) fn addon_player_number_by_key(key: usize, actor: &ActorId, name: &str) -> f64 {
+    addons_by_key(key, |state| {
+        state
+            .player_words
+            .get(actor)
+            .and_then(|words| words.get(name).copied())
+            .unwrap_or(0.0)
+    })
+    .unwrap_or(0.0)
 }
 
 /// Addon program registered on a game.
@@ -462,7 +483,7 @@ pub fn addon_set_cvar(game: &Q1EntityServices, name: &str, value: &str) -> Resul
 
 /// Whether an actor is a monster.
 pub fn addon_is_monster(game: &Q1EntityServices, actor: &ActorId) -> Result<bool, Q1Error> {
-    update_addons(game, |state| state.services.is_monster(actor))
+    update_addons(game, |state| state.services.is_monster(game, actor))
 }
 
 /// Grant a cheat arsenal.
@@ -846,7 +867,7 @@ impl Q1AddonServices for TestAddonServices {
         self.events.push(event);
     }
 
-    fn is_monster(&mut self, actor: &ActorId) -> bool {
+    fn is_monster(&mut self, _game: &Q1EntityServices, actor: &ActorId) -> bool {
         self.monsters.contains(actor)
     }
 
