@@ -78,9 +78,10 @@ pub enum QvmSyscallRole {
 }
 
 /// QVM ABI profile: modern 1.32b or legacy 1.16n-base.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum QvmAbiProfile {
     /// Modern 1.32b ABI.
+    #[default]
     Modern,
     /// Legacy 1.16n-base ABI.
     Legacy116n,
@@ -103,12 +104,6 @@ impl QvmAbiProfile {
             "q3-1.16n-base" => Ok(Self::Legacy116n),
             other => Err(GuestError::invalid(format!("Unknown QVM ABI profile {other}"))),
         }
-    }
-}
-
-impl Default for QvmAbiProfile {
-    fn default() -> Self {
-        Self::Modern
     }
 }
 

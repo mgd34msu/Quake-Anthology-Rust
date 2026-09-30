@@ -73,7 +73,7 @@ pub struct QvmMemoryWrites {
     publishing: bool,
     closed: bool,
     sequence: u64,
-    effect: Option<Box<dyn FnMut(&mut dyn FnMut())>>,
+    effect: Option<EffectCallback>,
 }
 
 impl std::fmt::Debug for QvmMemoryWrites {
@@ -108,7 +108,7 @@ impl QvmMemoryWrites {
     }
 
     /// Route `after_publication` hooks through `effect` (default: run inline).
-    pub fn set_effect(&mut self, effect: Option<Box<dyn FnMut(&mut dyn FnMut())>>) {
+    pub fn set_effect(&mut self, effect: Option<EffectCallback>) {
         self.effect = effect;
     }
 

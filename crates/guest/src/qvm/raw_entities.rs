@@ -199,7 +199,7 @@ impl RawEntityTable {
             return Err(GuestError::invalid("QVM pointer is outside the entity table"));
         }
         let displacement = address.byte_offset - self.base.byte_offset;
-        if displacement % self.stride_bytes as u64 != 0 {
+        if !displacement.is_multiple_of(self.stride_bytes as u64) {
             return Err(GuestError::invalid("QVM pointer is not an entity record boundary"));
         }
         self.at_slot((displacement / self.stride_bytes as u64) as usize)

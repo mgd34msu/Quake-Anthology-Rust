@@ -158,21 +158,12 @@ impl Default for QvmEntityShared {
 }
 
 /// Owned `sharedEntity_t` record.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct QvmSharedEntity {
     /// Entity state.
     pub s: QvmEntityState,
     /// Server-side prefix.
     pub r: QvmEntityShared,
-}
-
-impl Default for QvmSharedEntity {
-    fn default() -> Self {
-        Self {
-            s: QvmEntityState::default(),
-            r: QvmEntityShared::default(),
-        }
-    }
 }
 
 fn check_record(bytes: &[u8], profile: AbiProfile) -> Result<(), GuestError> {

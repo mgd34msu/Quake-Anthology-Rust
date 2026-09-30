@@ -370,7 +370,7 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
     };
     let minimum = qvm_shared_entity_bytes(artifact.abi());
     let entity_stride = reader.field("entityStride")?.integer(minimum as i64)? as usize;
-    if entity_stride % 4 != 0 || entity_stride > artifact.image.allocated_data_length {
+    if !entity_stride.is_multiple_of(4) || entity_stride > artifact.image.allocated_data_length {
         return reader.field("entityStride")?.fail("invalid entity stride");
     }
     let mut occupied = HashSet::new();
@@ -378,13 +378,13 @@ pub fn read_qvm_weapon_profile(value: &ProfileValue, artifact: &QvmArtifact) -> 
     let mut field = |name: &str| -> Result<usize, GuestError> {
         let source = fields.field(name)?;
         let offset = source.integer(minimum as i64)? as usize;
-        if offset % 4 != 0 || offset > entity_stride - 4 || !occupied.insert(offset) {
+        if !offset.is_multiple_of(4) || offset > entity_stride - 4 || !occupied.insert(offset) {
             return source.fail("private field is overlapping, unaligned or outside the entity");
         }
         Ok(offset)
     };
     let level_time = reader.field("levelTime")?.integer(4)? as usize;
-    if level_time % 4 != 0
+    if !level_time.is_multiple_of(4)
         || level_time > artifact.image.data_length + artifact.image.literal_length + artifact.image.bss_length - 4
     {
         return reader
@@ -429,7 +429,7 @@ pub fn validate_qvm_weapon_profile(
 #[cfg(test)]
 mod tests {
     use super::super::mod_provider::{
-        ModuleId, ProfileValue, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole,
+        ModuleId, QvmAbi, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole,
     };
     use super::*;
 

@@ -29,7 +29,7 @@ fn capacity(size: i32, operation: &str) -> Result<(), GuestError> {
 }
 
 fn config_index(index: i32, operation: &str) -> Result<(), GuestError> {
-    if index < 0 || index >= 1024 {
+    if !(0..1024).contains(&index) {
         return Err(GuestError::runtime(format!("{operation}: bad index {index}\n")));
     }
     Ok(())

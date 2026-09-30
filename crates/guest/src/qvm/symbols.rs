@@ -195,9 +195,9 @@ pub struct QvmSymbols {
     records: Vec<SymbolRecord>,
     null_symbol: QvmFunctionSymbol,
     parsed_count: usize,
-    print: RefCell<Box<dyn FnMut(&str)>>,
+    print: RefCell<QvmSymbolPrint>,
     instruction_pointers: Vec<i32>,
-    allocate: Box<dyn FnMut(usize, &str) -> Result<Vec<u8>, GuestError>>,
+    allocate: QvmSymbolAllocate,
     assert_live: Box<dyn Fn() -> Result<(), GuestError>>,
 }
 
@@ -217,7 +217,7 @@ impl QvmSymbols {
     /// rejects use after the owning interpreter retires.
     pub fn new(
         instruction_pointers: Vec<i32>,
-        allocate: Box<dyn FnMut(usize, &str) -> Result<Vec<u8>, GuestError>>,
+        allocate: QvmSymbolAllocate,
         assert_live: Box<dyn Fn() -> Result<(), GuestError>>,
     ) -> Self {
         Self {
