@@ -743,7 +743,7 @@ pub fn qualify_qvm_region_evaluation(
         if read_only && matches!(opcode, QvmOpcode::OpCall | QvmOpcode::OpArg | QvmOpcode::OpBlockCopy | QvmOpcode::OpBreak) {
             return Err(fail("read-only region cannot call, publish arguments, copy memory or break".to_string()));
         }
-        let mut pop = |stack: &mut Vec<RegionOperand>| stack.pop().ok_or_else(|| fail("invalid operand proof".to_string()));
+        let pop = |stack: &mut Vec<RegionOperand>| stack.pop().ok_or_else(|| fail("invalid operand proof".to_string()));
         if opcode == QvmOpcode::OpLocal {
             if instruction.operand < 8 || instruction.operand % 4 != 0 || instruction.operand as usize + 4 > frame + 48 {
                 return Err(fail("local address exceeds its source frame and arguments".to_string()));
@@ -2165,7 +2165,8 @@ fn check_value(
             };
             if let ModCallbackValue::Input(name) = inner {
                 if !available.contains(name) {
-                    return Err(GuestError::invalid(format!("Unavailable QVM callback input {}", name.name())));
+                    let name = name.name();
+                    return Err(GuestError::invalid(format!("Unavailable QVM callback input {name}")));
                 }
             }
             let expected = match value {
@@ -2880,15 +2881,9 @@ pub fn validate_qvm_mod(artifact: &QvmArtifact, declaration: &QvmModCallbackDecl
         }
     }
     for objective in &declaration.objectives {
-        for address in [&objective.storage.address, &objective.carrier, &objective.target] {
-            match address {
-                MaybeAddress::Storage(word) => validate_qvm_objective_address(end, word)?,
-                MaybeAddress::Reference(reference) => {
-                    if let Some(word) = reference {
-                        validate_qvm_objective_address(end, word)?;
-                    }
-                }
-            }
+        validate_qvm_objective_address(end, &objective.storage.address)?;
+        for reference in [&objective.carrier, &objective.target].into_iter().flatten() {
+            validate_qvm_objective_address(end, reference)?;
         }
         if let ObjectiveRole::Owned { change: Some(change), .. } = &objective.role {
             check_call(
@@ -3047,9 +3042,2175 @@ pub fn validate_qvm_mod(artifact: &QvmArtifact, declaration: &QvmModCallbackDecl
     Ok(())
 }
 
-enum MaybeAddress<'a> {
-    Storage(&'a QvmModObjectiveAddress),
-    Reference(&'a Option<QvmModObjectiveAddress>),
+// ---------------------------------------------------------------------------
+// Checkpoint validation.
+// ---------------------------------------------------------------------------
+
+/// Checkpoint view for mod checkpoint validation (mirror of `QvmCheckpoint`).
+#[derive(Debug, Clone)]
+pub struct QvmModCheckpointView<'a> {
+    /// Module identity.
+    pub module: &'a ModuleId,
+    /// Data image bytes.
+    pub data: &'a [u8],
+    /// API kind.
+    pub api_kind: &'a str,
+    /// API version.
+    pub api_version: u32,
+    /// ABI profile.
+    pub abi: QvmAbi,
+    /// Saved instruction index.
+    pub instruction_index: usize,
+    /// Saved operand stack length.
+    pub operand_stack_len: usize,
+    /// Saved program stack pointer.
+    pub program_stack: usize,
+    /// Host module identity.
+    pub host_module: &'a ModuleId,
+    /// Host state format.
+    pub host_format: &'a str,
+    /// Decoded host state.
+    pub host: &'a ProfileValue,
+    /// Saved random states.
+    pub random_len: usize,
+    /// Saved callback bindings.
+    pub callbacks_len: usize,
 }
+
+/// Saved actor projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedProjection {
+    /// Actor.
+    pub actor: SavedActorId,
+    /// Slot.
+    pub slot: usize,
+    /// Owned flag.
+    pub owned: bool,
+}
+
+/// Saved client slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedClientSlot {
+    /// Actor.
+    pub actor: SavedActorId,
+    /// Slot.
+    pub slot: usize,
+    /// Admitted flag.
+    pub admitted: bool,
+}
+
+/// Validated host image.
+#[derive(Debug, Clone)]
+pub struct ModHostImage {
+    /// Projections.
+    pub projections: Vec<SavedProjection>,
+    /// Client slots.
+    pub client_slots: Vec<SavedClientSlot>,
+    /// Allocation cursor.
+    pub next_slot: usize,
+    /// Actor templates.
+    pub defaults: Vec<(String, Vec<u8>)>,
+    /// Configstrings.
+    pub configstrings: Vec<(u32, String)>,
+}
+
+fn read_saved_actor(reader: &ProfileReader<'_>) -> Result<SavedActorId, GuestError> {
+    Ok(SavedActorId { slot: reader.field("slot")?.integer(0)? as u32, generation: reader.field("generation")?.integer(0)? as u32 })
+}
+
+/// Validate the host half of a mod checkpoint (mirror of `hostImage`).
+pub fn read_mod_host_image(host: &ProfileValue, declaration: &QvmModCallbackDeclaration, data: &[u8]) -> Result<ModHostImage, GuestError> {
+    let reader = ProfileReader::new(host);
+    reader.field("version")?.literal_int(1)?;
+    if let Some(spawn) = declaration.spawn_entities.as_deref() {
+        let tokens = reader.field("entityTokens")?;
+        if !tokens.is_undefined() {
+            tokens.field("source")?.literal_str(spawn)?;
+            tokens.field("cursor")?.nullable(|cursor| cursor.integer(0))?;
+        }
+    }
+    let common: Vec<&QvmModActorRecord> =
+        declaration.actor_records.iter().filter(|record| !is_client_record(declaration, record)).collect();
+    let capacity = common.iter().map(|record| record.capacity).min().unwrap_or(0);
+    let next_slot = reader.field("nextSlot")?.integer(0)? as usize;
+    if next_slot > capacity {
+        return Err(GuestError::invalid("Invalid QVM projection allocation cursor"));
+    }
+    let entity_capacity = declaration.entity_record.as_deref().and_then(|id| declaration.actor_records.iter().find(|record| record.id == *id)).map_or(0, |record| record.capacity);
+    let mut slots = HashSet::new();
+    let mut actors = HashSet::new();
+    let projections = reader.field("projections")?.list(|entry| {
+        let actor = read_saved_actor(&entry.field("actor")?)?;
+        let slot = entry.field("slot")?.integer(0)? as usize;
+        let owned = entry.field("owned")?.boolean()?;
+        let key = (actor.slot, actor.generation);
+        let bad = if owned {
+            declaration.source_actors.is_none() || slot >= entity_capacity
+        } else {
+            slot >= next_slot
+        };
+        if bad || !slots.insert(slot) || !actors.insert(key) {
+            return entry.fail("Invalid saved QVM actor projection");
+        }
+        entry.field("event")?.nullable(|event| event.string())?;
+        Ok(SavedProjection { actor, slot, owned })
+    })?;
+    let client_slots = if reader.field("clientSlots")?.is_undefined() {
+        Vec::new()
+    } else {
+        reader.field("clientSlots")?.list(|entry| {
+            Ok(SavedClientSlot {
+                actor: read_saved_actor(&entry.field("actor")?)?,
+                slot: entry.field("slot")?.integer(0)? as usize,
+                admitted: entry.field("admitted")?.boolean()?,
+            })
+        })?
+    };
+    let reserved = declaration.clients.as_ref().map_or(0, |clients| clients.maximum);
+    let mut occupied = HashSet::new();
+    for entry in &client_slots {
+        let matches = projections.iter().any(|projection| {
+            !projection.owned && projection.slot == entry.slot && projection.actor == entry.actor
+        });
+        if entry.slot >= reserved || !occupied.insert(entry.slot) || !matches {
+            return Err(GuestError::invalid("Invalid QVM saved source client mapping"));
+        }
+    }
+    if projections.iter().any(|entry| entry.slot < reserved && !occupied.contains(&entry.slot)) {
+        return Err(GuestError::invalid("QVM saved actor occupies a reserved client row"));
+    }
+    let events = reader.field("playerEvents")?;
+    if !events.is_undefined() && !matches!(events.value(), ProfileValue::Null) {
+        let cursors = super::mod_player_events::read_qvm_player_events(&events)?;
+        if let Some(cursors) = cursors {
+            let record = declaration
+                .clients
+                .as_ref()
+                .and_then(|clients| declaration.actor_records.iter().find(|record| record.id == clients.player_state_record));
+            if cursors.clients.len() != client_slots.len() {
+                return Err(GuestError::invalid("Saved QVM player event cursors differ from source clients"));
+            }
+            for cursor in &cursors.clients {
+                let client = client_slots.iter().find(|entry| entry.actor == cursor.actor);
+                let Some(client) = client else {
+                    return Err(GuestError::invalid("Saved QVM player event cursor differs from its source client"));
+                };
+                let Some(record) = record else {
+                    return Err(GuestError::invalid("Saved QVM player event cursor differs from its source client"));
+                };
+                let at = record.address + client.slot * record.stride + 108;
+                let bytes = data.get(at..at + 4).ok_or_else(|| GuestError::invalid("Saved QVM player event cursor differs from its source client"))?;
+                if i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) != cursor.observed_sequence {
+                    return Err(GuestError::invalid("Saved QVM player event cursor differs from its source client"));
+                }
+            }
+        }
+    }
+    let defaults = reader.field("defaults")?.list(|entry| {
+        let id = entry.field("id")?.string()?;
+        let bytes = entry.field("bytes")?.bytes()?;
+        let record = declaration.actor_records.iter().find(|record| record.id == id);
+        if record.is_none_or(|record| bytes.len() != record.stride * record.capacity) {
+            return entry.fail("QVM actor template differs from its source layout");
+        }
+        Ok((id, bytes))
+    })?;
+    if defaults.len() != declaration.actor_records.len() {
+        return Err(GuestError::invalid("Missing QVM actor templates"));
+    }
+    let configstrings = reader.field("configstrings")?.list(|entry| {
+        Ok((entry.field("index")?.integer(0)? as u32, entry.field("value")?.string()?))
+    })?;
+    if configstrings.iter().map(|(index, _)| index).collect::<HashSet<_>>().len() != configstrings.len()
+        || configstrings.iter().any(|(index, _)| *index >= 1024)
+    {
+        return Err(GuestError::invalid("Invalid QVM configstrings"));
+    }
+    Ok(ModHostImage { projections, client_slots, next_slot, defaults, configstrings })
+}
+
+/// Validate a full mod checkpoint (mirror of `validateQvmModCheckpoint`).
+pub fn validate_qvm_mod_checkpoint(
+    artifact: &QvmArtifact,
+    declaration: &QvmModCallbackDeclaration,
+    checkpoint: &QvmModCheckpointView<'_>,
+) -> Result<ModHostImage, GuestError> {
+    let expected_api = qvm_api(QvmRole::Qagame, declaration.abi_profile);
+    if !checkpoint.module.same_module(&artifact.module)
+        || checkpoint.data.len() != artifact.image.allocated_data_length
+        || checkpoint.api_kind != expected_api.0
+        || checkpoint.api_version != expected_api.1
+        || checkpoint.abi != declaration.abi_profile
+        || checkpoint.instruction_index != 0
+        || checkpoint.operand_stack_len != 0
+        || checkpoint.program_stack != checkpoint.data.len()
+        || !checkpoint.host_module.same_module(&artifact.module)
+        || checkpoint.host_format != "qvm:mod-host-v1"
+        || checkpoint.random_len != 0
+        || checkpoint.callbacks_len != 0
+    {
+        return Err(GuestError::invalid("Incompatible QVM gameplay mod checkpoint"));
+    }
+    read_mod_host_image(checkpoint.host, declaration, checkpoint.data)
+}
+
+// ---------------------------------------------------------------------------
+// Provider runtime core.
+// ---------------------------------------------------------------------------
+
+/// Canonical field value exchanged with host services.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CanonicalField {
+    /// Scalar word.
+    Word(f64),
+    /// Vector.
+    Vec(Vec3),
+}
+
+/// Owned entity view for event publication.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityPublishView {
+    /// Actor.
+    pub actor: ActorId,
+    /// Slot.
+    pub slot: usize,
+    /// Linked flag.
+    pub linked: bool,
+    /// Current event.
+    pub event: i32,
+    /// Entity type.
+    pub etype: i32,
+    /// Current origin.
+    pub origin: Vec3,
+    /// Entity-state bytes.
+    pub state: Vec<u8>,
+    /// Model index.
+    pub model_index: i32,
+    /// Inline model flag.
+    pub inline_model: bool,
+    /// Frame.
+    pub frame: i32,
+    /// Current angles.
+    pub angles: Vec3,
+    /// Server flags.
+    pub sv_flags: i32,
+}
+
+/// Entity link view for scene publication.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityLinkView {
+    /// Linked flag.
+    pub linked: bool,
+    /// Server flags.
+    pub sv_flags: i32,
+    /// Single client.
+    pub single_client: i32,
+    /// Absolute minimums.
+    pub abs_min: Vec3,
+    /// Absolute maximums.
+    pub abs_max: Vec3,
+}
+
+/// Presentation record published for one owned entity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModPresentation {
+    /// Actor.
+    pub actor: ActorId,
+    /// Model path.
+    pub path: String,
+    /// Frame.
+    pub frame: i32,
+    /// Origin.
+    pub origin: Vec3,
+    /// Angles.
+    pub angles: Vec3,
+    /// Source-client render ownership (scene runtime only).
+    pub render_owner_source_client: bool,
+}
+
+/// Event emitted by the provider.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderEmit {
+    /// Server command.
+    ServerCommand {
+        /// Client number.
+        client: i32,
+        /// Text.
+        text: String,
+    },
+    /// Entity event.
+    EntityEvent {
+        /// Actor.
+        actor: ActorId,
+        /// Entity-state bytes.
+        state: Vec<u8>,
+        /// Origin.
+        origin: Vec3,
+        /// Time in milliseconds.
+        time_ms: i32,
+    },
+}
+
+/// Presentation context resolved for one viewer.
+#[derive(Debug, Clone)]
+pub struct ProviderViewerContext {
+    /// Source client slot.
+    pub client_number: usize,
+    /// Game-state revision.
+    pub game_state_revision: u64,
+    /// Server time in milliseconds.
+    pub server_time: i32,
+    /// Viewer player state.
+    pub player_state: super::mod_presentation_checkpoint::SourcePlayerState,
+}
+
+/// Pickup offer context (mirror of `OriginalPickupOffer`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickupOffer {
+    /// Recipient actor.
+    pub recipient: ActorId,
+    /// Pickup actor.
+    pub pickup: ActorId,
+    /// Item identity.
+    pub item: String,
+}
+
+/// Host services integrating the provider (interpreter, memory, world).
+pub trait ModProviderHost {
+    /// Assert the provider runs on its owner thread and is open.
+    fn current(&self) -> Result<(), GuestError>;
+    /// Whether an actor is live.
+    fn is_live(&self, actor: &ActorId) -> bool;
+    /// Whether an actor resolves to an owned actor.
+    fn is_owned(&self, actor: &ActorId) -> bool;
+    /// Caller time in seconds.
+    fn time_seconds(&self) -> f64;
+    /// Call a source function.
+    fn call_module(&mut self, words: &[i32], entry: usize) -> Result<i32, GuestError>;
+    /// Run a source command entry.
+    fn command_module(&mut self, words: &[i32], argv: &[String]) -> Result<i32, GuestError>;
+    /// Read one source word.
+    fn read_i32(&self, address: usize) -> Result<i32, GuestError>;
+    /// Write one source word.
+    fn write_i32(&mut self, address: usize, value: i32) -> Result<(), GuestError>;
+    /// Read source bytes.
+    fn read_bytes(&self, address: usize, len: usize) -> Result<Vec<u8>, GuestError>;
+    /// Write source bytes.
+    fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> Result<(), GuestError>;
+    /// Copy source bytes.
+    fn copy_bytes(&mut self, dest: usize, src: usize, len: usize) -> Result<(), GuestError>;
+    /// Current interpreter stack pointer.
+    fn stack_pointer(&self) -> usize;
+    /// Read a canonical field value.
+    fn canonical_field(&self, actor: &ActorId, field: &QvmModActorField) -> Result<CanonicalField, GuestError>;
+    /// Commit a source write to canonical state.
+    fn commit_field(&mut self, actor: &ActorId, field: &QvmModActorField, value: CanonicalField) -> Result<(), GuestError>;
+    /// Whether a field is a published body-shape output.
+    fn is_body_output(&self, actor: &ActorId, record: &str, offset: usize) -> bool {
+        let _ = (actor, record, offset);
+        false
+    }
+    /// Whether an actor has a client binding.
+    fn has_client(&self, actor: &ActorId) -> bool;
+    /// Client slot of an actor, if bound.
+    fn client_slot(&self, actor: &ActorId) -> Option<usize>;
+    /// Whether an actor is an admitted live client.
+    fn admitted_client(&self, actor: &ActorId) -> bool;
+    /// Bound players as `(actor, slot, admitted)`.
+    fn players(&self) -> Vec<(ActorId, usize, bool)>;
+    /// Start client bindings after initialization or restore.
+    fn start_clients(&mut self) -> Result<(), GuestError>;
+    /// Actors receiving client frame calls.
+    fn frame_actors(&self) -> Vec<ActorId>;
+    /// Release an actor from sub-components.
+    fn release_actor_components(&mut self, actor: &ActorId);
+    /// Reserve protection channels.
+    fn reserve_protection(&mut self) -> Result<(), GuestError>;
+    /// Activate protection, pickups, and match bindings.
+    fn activate_protection(&mut self) -> Result<(), GuestError>;
+    /// Assert protection and pickup runtimes are idle.
+    fn assert_subcomponents_idle(&self) -> Result<(), GuestError>;
+    /// Close sub-component runtimes, collecting failures.
+    fn close_subcomponents(&mut self) -> Vec<GuestError>;
+    /// Publish pending player events.
+    fn publish_player_events(&mut self);
+    /// Discard pending player events.
+    fn discard_player_events(&mut self);
+    /// Guard one pickup write against the current resource binding.
+    fn check_pickup_write(&self, actor: &ActorId, field: &QvmModActorField) -> Result<(), GuestError>;
+    /// Adopt an allocated source slot.
+    fn adopt_source(&mut self, slot: usize) -> Result<ActorId, GuestError>;
+    /// Retire a released source slot.
+    fn retire_source(&mut self, slot: usize) -> Result<(), GuestError>;
+    /// Run pre-release actor semantics.
+    fn before_release(&mut self, actor: &ActorId) -> Result<(), GuestError>;
+    /// Release an owned actor.
+    fn release_owned(&mut self, actor: &ActorId) -> Result<(), GuestError>;
+    /// Begin an original actor-frame run.
+    fn begin_actor_frame(&mut self) -> Result<(), GuestError>;
+    /// End an original actor-frame run, reporting completion.
+    fn end_actor_frame(&mut self) -> Result<bool, GuestError>;
+    /// Server info and system info strings.
+    fn server_info(&self) -> (String, String);
+    /// Build a game-state record from configstrings.
+    fn build_game_state(&self, entries: &[(u32, String)]) -> Result<super::mod_presentation_checkpoint::SourceGameState, GuestError>;
+    /// Owned entity views for publication.
+    fn owned_entity_views(&self) -> Vec<EntityPublishView>;
+    /// Player-state bytes of an actor.
+    fn player_state_bytes(&self, actor: &ActorId) -> Result<Vec<u8>, GuestError>;
+    /// Entity-link view of a slot.
+    fn entity_link(&self, slot: usize) -> Result<EntityLinkView, GuestError>;
+    /// Emit a provider event.
+    fn emit(&mut self, event: ProviderEmit) -> Result<(), GuestError>;
+    /// Read a script resource.
+    fn read_script(&self, name: &str) -> Option<String>;
+    /// Whether commands are bound.
+    fn has_commands(&self) -> bool {
+        false
+    }
+}
+
+/// Maximum nested source calls.
+pub const MOD_MAX_CALL_DEPTH: usize = 64;
+
+/// Source callbacks over declared actor records.
+pub struct QvmModProvider<H: ModProviderHost> {
+    host: H,
+    artifact: QvmArtifact,
+    declaration: QvmModCallbackDeclaration,
+    records: HashMap<String, QvmModActorRecord>,
+    projections: HashMap<ActorId, usize>,
+    retired: HashSet<ActorId>,
+    owned: HashSet<ActorId>,
+    next_slot: usize,
+    scratch_start: usize,
+    scratch: usize,
+    configstrings: BTreeMap<u32, String>,
+    presentation_revision: u64,
+    presentation_state: Option<super::mod_presentation_checkpoint::SourceGameState>,
+    scene_revision: u64,
+    scene_dirty: bool,
+    scene_command_sequence: u64,
+    scene_commands: VecDeque<(u64, Option<ActorId>, String)>,
+    scene_state: Option<super::mod_presentation_checkpoint::ModScenePublication>,
+    scene_baseline: Option<super::mod_presentation_checkpoint::ModScenePublication>,
+    event_keys: HashMap<ActorId, String>,
+    defaults: HashMap<String, Vec<u8>>,
+    frames: Vec<ModCallFrame>,
+    pickup_depth: usize,
+    weapon_inputs: Vec<(ActorId, Option<usize>)>,
+    pickup_scopes: Vec<PickupOffer>,
+    projection_writes: usize,
+    commands_bound: bool,
+    closed: bool,
+}
+
+struct ModCallFrame {
+    observations: Vec<FieldObservation>,
+    pending: Vec<PendingCommit>,
+    cursor: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FieldObservation {
+    actor: ActorId,
+    address: usize,
+    field: QvmModActorField,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingCommit {
+    actor: ActorId,
+    address: usize,
+    field: QvmModActorField,
+    value: CanonicalField,
+}
+
+/// Lowered call ready for execution.
+pub struct LoweredCall {
+    /// Argument words.
+    pub words: Vec<i32>,
+    saved_globals: Vec<(usize, Vec<u8>)>,
+    saved_scratch: usize,
+}
+
+impl<H: ModProviderHost> QvmModProvider<H> {
+    /// Open a provider over a validated declaration.
+    pub fn open(artifact: QvmArtifact, declaration: QvmModCallbackDeclaration, host: H) -> Result<Self, GuestError> {
+        validate_qvm_mod(&artifact, &declaration)?;
+        let scratch_start = artifact.image.data_end().div_ceil(16) * 16;
+        let records = declaration.actor_records.iter().map(|record| (record.id.clone(), record.clone())).collect();
+        Ok(Self {
+            host,
+            artifact,
+            declaration,
+            records,
+            projections: HashMap::new(),
+            retired: HashSet::new(),
+            owned: HashSet::new(),
+            next_slot: 0,
+            scratch_start,
+            scratch: scratch_start,
+            configstrings: BTreeMap::new(),
+            presentation_revision: 0,
+            presentation_state: None,
+            scene_revision: 0,
+            scene_dirty: true,
+            scene_command_sequence: 0,
+            scene_commands: VecDeque::new(),
+            scene_state: None,
+            scene_baseline: None,
+            event_keys: HashMap::new(),
+            defaults: HashMap::new(),
+            frames: Vec::new(),
+            pickup_depth: 0,
+            weapon_inputs: Vec::new(),
+            pickup_scopes: Vec::new(),
+            projection_writes: 0,
+            commands_bound: false,
+            closed: false,
+        })
+    }
+
+    /// Borrow the host.
+    pub fn host(&self) -> &H {
+        &self.host
+    }
+
+    /// Mutably borrow the host.
+    pub fn host_mut(&mut self) -> &mut H {
+        &mut self.host
+    }
+
+    /// Borrow the declaration.
+    pub fn declaration(&self) -> &QvmModCallbackDeclaration {
+        &self.declaration
+    }
+
+    fn current(&self) -> Result<(), GuestError> {
+        self.host.current()?;
+        if self.closed {
+            return Err(GuestError::invalid("QVM gameplay mod is closed"));
+        }
+        Ok(())
+    }
+
+    /// Projection slot of an actor, if projected.
+    #[must_use]
+    pub fn projection_slot(&self, actor: &ActorId) -> Option<usize> {
+        self.projections.get(actor).copied()
+    }
+
+    /// Actor projected at a slot, if any.
+    #[must_use]
+    pub fn actor_at(&self, slot: usize) -> Option<ActorId> {
+        self.projections.iter().find(|(_, index)| **index == slot).map(|(actor, _)| actor.clone())
+    }
+
+    /// Whether an actor is owned by this source.
+    #[must_use]
+    pub fn is_source_owned(&self, actor: &ActorId) -> bool {
+        self.owned.contains(actor)
+    }
+
+    fn actor_records(&self, actor: &ActorId) -> Vec<QvmModActorRecord> {
+        self.records.values().filter(|record| !is_client_record(&self.declaration, record) || self.host.has_client(actor)).cloned().collect()
+    }
+
+    /// Resolve a record pointer for an actor, projecting on first use.
+    pub fn pointer(&mut self, actor: Option<&ActorId>, record_id: &str) -> Result<usize, GuestError> {
+        let Some(actor) = actor else { return Ok(0) };
+        if !self.host.is_live(actor) {
+            return Err(GuestError::invalid("QVM mod cannot project a stale actor"));
+        }
+        let record = self.records.get(record_id).ok_or_else(|| GuestError::invalid("Missing validated QVM actor record"))?.clone();
+        if let Some(slot) = self.projections.get(actor).copied() {
+            if slot >= record.capacity || (is_client_record(&self.declaration, &record) && !self.host.has_client(actor)) {
+                return Err(GuestError::invalid("Source actor has no declared auxiliary record"));
+            }
+            return Ok(record.address + slot * record.stride);
+        }
+        let client = self.host.client_slot(actor);
+        let mut next = client.unwrap_or_else(|| self.declaration.clients.as_ref().map_or(0, |clients| clients.maximum));
+        let used: HashSet<usize> = self.projections.values().copied().collect();
+        if client.is_none() {
+            while used.contains(&next) {
+                next += 1;
+            }
+        } else if used.contains(&next) {
+            return Err(GuestError::invalid("QVM source client row is already occupied"));
+        }
+        if self.actor_records(actor).iter().any(|record| next >= record.capacity) {
+            return Err(GuestError::invalid("QVM mod actor projection capacity exceeded"));
+        }
+        let slot = next;
+        self.next_slot = self.next_slot.max(slot + 1);
+        self.projections.insert(actor.clone(), slot);
+        for record in self.actor_records(actor) {
+            let address = record.address + slot * record.stride;
+            let defaults = self.defaults.get(&record.id).ok_or_else(|| GuestError::invalid("Missing source actor defaults"))?.clone();
+            let start = slot * record.stride;
+            self.host.write_bytes(address, &defaults[start..start + record.stride])?;
+            for field in &record.fields {
+                match &field.binding {
+                    ModActorBinding::Constant { encoding, value } => {
+                        self.host.write_i32(address + field.offset, encode_mod_scalar(*value, *encoding)?)?;
+                    }
+                    ModActorBinding::ConstantVector(vector) => self.write_vector(address + field.offset, *vector)?,
+                    ModActorBinding::Record { record: linked } => {
+                        let linked_ptr = if self.declaration.clients.as_ref().is_some_and(|clients| clients.records.contains(linked)) && !self.host.has_client(actor) {
+                            0
+                        } else {
+                            self.pointer(Some(actor), linked)? as i32
+                        };
+                        self.host.write_i32(address + field.offset, linked_ptr)?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(lifecycle) = self.declaration.source_actors.clone() {
+            let entity = self.entity_address(slot)?;
+            self.host.write_i32(entity + lifecycle.inuse, 1)?;
+            self.host.write_i32(entity, slot as i32)?;
+        }
+        Ok(record.address + slot * record.stride)
+    }
+
+    fn write_vector(&mut self, address: usize, value: Vec3) -> Result<(), GuestError> {
+        for (index, component) in [value.x as f64, value.y as f64, value.z as f64].into_iter().enumerate() {
+            self.host.write_i32(address + index * 4, encode_mod_scalar(component, ModScalar::Float32)?)?;
+        }
+        Ok(())
+    }
+
+    fn read_vector(&self, address: usize) -> Result<Vec3, GuestError> {
+        let bytes = self.host.read_bytes(address, 12)?;
+        Ok(vec3(
+            f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+        ))
+    }
+
+    /// Player-state address of an actor.
+    pub fn player_address(&mut self, actor: &ActorId) -> Result<usize, GuestError> {
+        let record = self.declaration.clients.as_ref().map(|clients| clients.player_state_record.clone());
+        let Some(record) = record else {
+            return Err(GuestError::invalid("Missing QVM client player state"));
+        };
+        self.pointer(Some(actor), &record)
+    }
+
+    /// Release one actor projection, restoring source defaults.
+    pub fn release_projection(&mut self, actor: &ActorId) -> Result<(), GuestError> {
+        self.host.release_actor_components(actor);
+        let Some(slot) = self.projections.get(actor).copied() else { return Ok(()) };
+        if !self.frames.is_empty() || self.pickup_depth != 0 {
+            self.retired.insert(actor.clone());
+            return Ok(());
+        }
+        for record in self.records.values() {
+            if slot < record.capacity {
+                let defaults = self.defaults.get(&record.id).ok_or_else(|| GuestError::invalid("Missing QVM source client defaults"))?.clone();
+                let start = slot * record.stride;
+                self.host.write_bytes(record.address + slot * record.stride, &defaults[start..start + record.stride])?;
+            }
+        }
+        self.projections.remove(actor);
+        self.event_keys.remove(actor);
+        Ok(())
+    }
+
+    /// Finish projections retired during source calls.
+    pub fn finish_retired_projections(&mut self) -> Result<(), GuestError> {
+        if !self.frames.is_empty() || self.pickup_depth != 0 {
+            return Ok(());
+        }
+        for actor in std::mem::take(&mut self.retired) {
+            self.release_projection(&actor)?;
+        }
+        Ok(())
+    }
+
+    /// Allocate scratch words above source data.
+    pub fn allocate_scratch(&mut self, size: usize) -> Result<usize, GuestError> {
+        let address = self.scratch;
+        self.scratch += size.div_ceil(4) * 4;
+        if self.scratch > self.host.stack_pointer().saturating_sub(65536) {
+            return Err(GuestError::invalid("QVM mod argument scratch exceeds its reserved space"));
+        }
+        Ok(address)
+    }
+
+    /// Lower one value to a source word.
+    pub fn lower(&mut self, value: &QvmModValue, inputs: &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Result<i32, GuestError> {
+        match value {
+            QvmModValue::Address(word) => Ok(*word),
+            QvmModValue::Actor { record, input } => {
+                let Some(ModRuntimeValue::Actor(Some(actor))) = inputs.get(&input.callback()).cloned() else {
+                    return Err(GuestError::invalid("Missing QVM actor input"));
+                };
+                Ok(self.pointer(Some(&actor), record)? as i32)
+            }
+            QvmModValue::Client { input } => {
+                let Some(ModRuntimeValue::Actor(Some(actor))) = inputs.get(&input.callback()).cloned() else {
+                    return Err(GuestError::invalid("QVM source call requires an admitted destination client"));
+                };
+                let Some(slot) = self.host.client_slot(&actor) else {
+                    return Err(GuestError::invalid("QVM source call requires an admitted destination client"));
+                };
+                let Some(entity) = self.declaration.entity_record.clone() else {
+                    return Err(GuestError::invalid("QVM source call requires an admitted destination client"));
+                };
+                self.pointer(Some(&actor), &entity)?;
+                Ok(slot as i32)
+            }
+            QvmModValue::Time { input, units, encoding } => {
+                let Some(ModRuntimeValue::Float(value)) = inputs.get(&input.callback()).copied() else {
+                    return Err(GuestError::invalid("Missing QVM time input"));
+                };
+                encode_mod_scalar(value * if *units == TimeUnits::Milliseconds { 1000.0 } else { 1.0 }, *encoding)
+            }
+            QvmModValue::Int32(inner) | QvmModValue::Float32(inner) | QvmModValue::Vector(inner) | QvmModValue::Str(inner) => {
+                let resolved = match inner {
+                    ModCallbackValue::Input(name) => inputs.get(name).cloned(),
+                    ModCallbackValue::Float(value) => Some(ModRuntimeValue::Float(*value)),
+                    ModCallbackValue::Str(value) => Some(ModRuntimeValue::Str(value.clone())),
+                    ModCallbackValue::Vec(value) => Some(ModRuntimeValue::Vec(*value)),
+                };
+                match value {
+                    QvmModValue::Int32(_) => {
+                        let Some(ModRuntimeValue::Float(number)) = resolved else {
+                            return Err(GuestError::invalid("Missing scalar QVM input"));
+                        };
+                        encode_mod_scalar(number, ModScalar::Int32)
+                    }
+                    QvmModValue::Float32(_) => {
+                        let Some(ModRuntimeValue::Float(number)) = resolved else {
+                            return Err(GuestError::invalid("Missing scalar QVM input"));
+                        };
+                        encode_mod_scalar(number, ModScalar::Float32)
+                    }
+                    QvmModValue::Vector(_) => {
+                        let Some(ModRuntimeValue::Vec(vector)) = resolved else {
+                            return Err(GuestError::invalid("Missing vector QVM input"));
+                        };
+                        let address = self.allocate_scratch(12)?;
+                        self.write_vector(address, vector)?;
+                        Ok(address as i32)
+                    }
+                    _ => {
+                        let Some(ModRuntimeValue::Str(text)) = resolved else {
+                            return Err(GuestError::invalid("Invalid QVM string input"));
+                        };
+                        if text.contains('\0') {
+                            return Err(GuestError::invalid("Invalid QVM string input"));
+                        }
+                        let address = self.allocate_scratch(text.len() + 1)?;
+                        let mut bytes = text.into_bytes();
+                        bytes.push(0);
+                        self.host.write_bytes(address, &bytes)?;
+                        Ok(address as i32)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Project canonical state into source words before a call.
+    pub fn refresh(&mut self) -> Result<(), GuestError> {
+        self.projection_writes += 1;
+        let result = self.refresh_inner();
+        self.projection_writes -= 1;
+        result
+    }
+
+    fn refresh_inner(&mut self) -> Result<(), GuestError> {
+        let projections: Vec<(ActorId, usize)> = self.projections.iter().map(|(actor, slot)| (actor.clone(), *slot)).collect();
+        for (actor, slot) in &projections {
+            if self.owned.contains(actor) || self.retired.contains(actor) {
+                continue;
+            }
+            for record in self.actor_records(actor) {
+                for field in &record.fields {
+                    if !mod_field_is_shared(field) || self.host.is_body_output(actor, &record.id, field.offset) {
+                        continue;
+                    }
+                    let address = record.address + slot * record.stride + field.offset;
+                    match self.host.canonical_field(actor, field)? {
+                        CanonicalField::Word(number) => {
+                            let encoding = match &field.binding {
+                                ModActorBinding::Team { encoding, .. }
+                                | ModActorBinding::Score { encoding }
+                                | ModActorBinding::Health { encoding }
+                                | ModActorBinding::Inventory { encoding, .. } => *encoding,
+                                _ => ModScalar::Int32,
+                            };
+                            self.host.write_i32(address, encode_mod_scalar(number, encoding)?)?;
+                        }
+                        CanonicalField::Vec(vector) => self.write_vector(address, vector)?,
+                    }
+                }
+            }
+        }
+        let observations = self.observe()?;
+        for frame in &mut self.frames {
+            frame.observations = observations.clone();
+        }
+        Ok(())
+    }
+
+    fn observe(&self) -> Result<Vec<FieldObservation>, GuestError> {
+        let mut result = Vec::new();
+        for (actor, slot) in &self.projections {
+            if self.owned.contains(actor) || self.retired.contains(actor) {
+                continue;
+            }
+            for record in self.actor_records(actor) {
+                for field in &record.fields {
+                    if !mod_field_is_shared(field) || field.access == Some(FieldAccess::ReadOnly) || self.host.is_body_output(actor, &record.id, field.offset) {
+                        continue;
+                    }
+                    let address = record.address + slot * record.stride + field.offset;
+                    result.push(FieldObservation { actor: actor.clone(), address, field: field.clone(), bytes: self.host.read_bytes(address, mod_field_size(field))? });
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Capture source writes into pending canonical commits.
+    pub fn capture_writes(&mut self) -> Result<(), GuestError> {
+        let Some(frame_index) = self.frames.len().checked_sub(1) else { return Ok(()) };
+        let scope = self.weapon_inputs.last().cloned();
+        let mut changed = Vec::new();
+        for entry in &self.frames[frame_index].observations {
+            let skip = scope.as_ref().is_some_and(|(actor, frame)| {
+                *frame == Some(frame_index) && actor == &entry.actor && !matches!(entry.field.binding, ModActorBinding::Health { .. } | ModActorBinding::Inventory { .. })
+            });
+            if skip {
+                continue;
+            }
+            let current = self.host.read_bytes(entry.address, entry.bytes.len())?;
+            if current != entry.bytes {
+                changed.push((entry.actor.clone(), entry.address, entry.field.clone()));
+            }
+        }
+        for (actor, field) in changed.iter().map(|(actor, _, field)| (actor, field)) {
+            if self.pickup_scopes.last().is_some() && self.projection_writes == 0 {
+                self.host.check_pickup_write(actor, field)?;
+            }
+        }
+        let observations = self.observe()?;
+        for frame in &mut self.frames {
+            frame.observations = observations.clone();
+        }
+        for (actor, address, field) in changed {
+            if self.retired.contains(&actor) {
+                continue;
+            }
+            let value = match &field.binding {
+                ModActorBinding::Team { encoding, .. } | ModActorBinding::Score { encoding } | ModActorBinding::Health { encoding } | ModActorBinding::Inventory { encoding, .. } => {
+                    let word = self.host.read_i32(address)?;
+                    if *encoding == ModScalar::Float32 {
+                        let number = f64::from(f32::from_bits(word as u32));
+                        encode_mod_scalar(number, *encoding)?;
+                        CanonicalField::Word(number)
+                    } else {
+                        encode_mod_scalar(f64::from(word), *encoding)?;
+                        CanonicalField::Word(f64::from(word))
+                    }
+                }
+                _ => {
+                    let vector = self.read_vector(address)?;
+                    for component in [vector.x as f64, vector.y as f64, vector.z as f64] {
+                        encode_mod_scalar(component, ModScalar::Float32)?;
+                    }
+                    CanonicalField::Vec(vector)
+                }
+            };
+            self.frames[frame_index].pending.push(PendingCommit { actor, address, field, value });
+        }
+        Ok(())
+    }
+
+    /// Flush pending canonical commits.
+    pub fn flush(&mut self) -> Result<(), GuestError> {
+        self.capture_writes()?;
+        let Some(frame_index) = self.frames.len().checked_sub(1) else { return Ok(()) };
+        while self.frames[frame_index].cursor < self.frames[frame_index].pending.len() {
+            let commit = self.frames[frame_index].cursor;
+            self.frames[frame_index].cursor += 1;
+            let pending = self.frames[frame_index].pending[commit].clone();
+            if !self.host.is_live(&pending.actor) || !self.host.is_owned(&pending.actor) {
+                return Err(GuestError::invalid("QVM mod wrote an expired actor"));
+            }
+            self.host.commit_field(&pending.actor, &pending.field, pending.value)?;
+            if !self.retired.contains(&pending.actor) && self.host.is_live(&pending.actor) {
+                self.projection_writes += 1;
+                let refreshed = self.host.canonical_field(&pending.actor, &pending.field);
+                match refreshed {
+                    Ok(CanonicalField::Word(number)) => {
+                        let encoding = match &pending.field.binding {
+                            ModActorBinding::Team { encoding, .. }
+                            | ModActorBinding::Score { encoding }
+                            | ModActorBinding::Health { encoding }
+                            | ModActorBinding::Inventory { encoding, .. } => *encoding,
+                            _ => ModScalar::Int32,
+                        };
+                        let written = self.host.write_i32(pending.address, encode_mod_scalar(number, encoding)?);
+                        self.projection_writes -= 1;
+                        written?;
+                    }
+                    Ok(CanonicalField::Vec(vector)) => {
+                        let written = self.write_vector(pending.address, vector);
+                        self.projection_writes -= 1;
+                        written?;
+                    }
+                    Err(error) => {
+                        self.projection_writes -= 1;
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        self.frames[frame_index].pending.clear();
+        self.frames[frame_index].cursor = 0;
+        Ok(())
+    }
+
+    /// Lower a call and open a projection frame.
+    pub fn begin_call(&mut self, call: &QvmModSourceCall, inputs: &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Result<LoweredCall, GuestError> {
+        self.current()?;
+        if self.frames.len() >= MOD_MAX_CALL_DEPTH {
+            return Err(GuestError::invalid("QVM mod callback recursion exceeds 64 calls"));
+        }
+        if !self.frames.is_empty() {
+            self.flush()?;
+            self.host.publish_player_events();
+        }
+        let saved_scratch = self.scratch;
+        let mut saved_globals = Vec::new();
+        for global in &call.globals {
+            let size = if matches!(global.value, QvmModValue::Vector(_)) { 12 } else { 4 };
+            saved_globals.push((global.address, self.host.read_bytes(global.address, size)?));
+        }
+        let lowered = self.lower_call(call, inputs);
+        match lowered {
+            Ok(words) => {
+                if let Some(lifecycle) = self.declaration.source_actors.clone() {
+                    if call.entry == lifecycle.release.entry {
+                        let pointer = words.get(lifecycle.release.argument).copied().ok_or_else(|| GuestError::invalid("Missing source release argument"))?;
+                        let slot = self.pointer_slot(pointer.max(0) as usize)?;
+                        let actor = self.actor_at(slot);
+                        if actor.as_ref().is_some_and(|actor| !self.owned.contains(actor)) {
+                            return Err(GuestError::invalid("QVM source removal of a foreign actor requires its owner continuation"));
+                        }
+                        if let Some(actor) = actor {
+                            self.host.before_release(&actor)?;
+                        }
+                    }
+                }
+                self.refresh()?;
+                let observations = self.observe()?;
+                self.frames.push(ModCallFrame { observations, pending: Vec::new(), cursor: 0 });
+                Ok(LoweredCall { words, saved_globals, saved_scratch })
+            }
+            Err(error) => {
+                for (address, bytes) in &saved_globals {
+                    self.host.write_bytes(*address, bytes)?;
+                }
+                self.host.discard_player_events();
+                self.scratch = saved_scratch;
+                Err(error)
+            }
+        }
+    }
+
+    fn lower_call(&mut self, call: &QvmModSourceCall, inputs: &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Result<Vec<i32>, GuestError> {
+        let words = call.arguments.iter().map(|value| self.lower(value, inputs)).collect::<Result<Vec<_>, _>>()?;
+        for global in &call.globals {
+            let word = self.lower(&global.value, inputs)?;
+            if matches!(global.value, QvmModValue::Vector(_)) {
+                self.host.copy_bytes(global.address, word.max(0) as usize, 12)?;
+            } else {
+                self.host.write_i32(global.address, word)?;
+            }
+        }
+        Ok(words)
+    }
+
+    /// Close a projection frame after execution.
+    pub fn finish_call(&mut self, lowered: LoweredCall, succeeded: bool) -> Result<(), GuestError> {
+        if !self.closed {
+            self.current()?;
+            if succeeded {
+                self.flush()?;
+            } else if let Some(frame) = self.frames.last_mut() {
+                frame.pending.clear();
+                frame.cursor = 0;
+            }
+            if succeeded {
+                self.host.publish_player_events();
+            } else {
+                self.host.discard_player_events();
+            }
+        }
+        self.frames.pop();
+        if !self.closed {
+            for (address, bytes) in &lowered.saved_globals {
+                self.host.write_bytes(*address, bytes)?;
+            }
+            self.host.discard_player_events();
+        }
+        self.scratch = lowered.saved_scratch;
+        Ok(())
+    }
+
+    /// Invoke a source call with projection tracking.
+    pub fn invoke(&mut self, call: &QvmModSourceCall, inputs: &BTreeMap<ModCallbackInput, ModRuntimeValue>) -> Result<f64, GuestError> {
+        let lowered = self.begin_call(call, inputs)?;
+        let mut succeeded = false;
+        let outcome = (|| -> Result<f64, GuestError> {
+            let result = self.host.call_module(&lowered.words, call.entry)?;
+            self.complete_direct_lifecycle(call, &lowered.words, result)?;
+            match call.returns {
+                ModReturns::Void => Ok(0.0),
+                ModReturns::Int32 => Ok(f64::from(result)),
+                ModReturns::Float32 => {
+                    let value = f64::from(f32::from_bits(result as u32));
+                    if !value.is_finite() {
+                        return Err(GuestError::invalid("QVM mod returned a nonfinite scalar"));
+                    }
+                    Ok(value)
+                }
+            }
+        })();
+        if outcome.is_ok() {
+            succeeded = true;
+        }
+        let finished = self.finish_call(lowered, succeeded);
+        self.finish_retired_projections()?;
+        finished?;
+        let value = outcome?;
+        if succeeded && !self.closed && self.frames.is_empty() {
+            self.publish()?;
+        }
+        Ok(value)
+    }
+
+    fn complete_direct_lifecycle(&mut self, call: &QvmModSourceCall, words: &[i32], result: i32) -> Result<(), GuestError> {
+        let Some(lifecycle) = self.declaration.source_actors.clone() else { return Ok(()) };
+        if call.entry == lifecycle.allocate {
+            let slot = self.pointer_slot(result.max(0) as usize)?;
+            self.adopt_source(slot)?;
+        } else if call.entry == lifecycle.release.entry {
+            let pointer = words.get(lifecycle.release.argument).copied().ok_or_else(|| GuestError::invalid("Missing source release argument"))?;
+            self.retire_source_slot(self.pointer_slot(pointer.max(0) as usize)?)?;
+        }
+        Ok(())
+    }
+
+    /// Adopt an allocated source slot.
+    pub fn adopt_source(&mut self, slot: usize) -> Result<(), GuestError> {
+        let lifecycle = self.declaration.source_actors.clone().ok_or_else(|| GuestError::invalid("Missing QVM source actor declaration"))?;
+        if slot < self.declaration.clients.as_ref().map_or(0, |clients| clients.maximum) {
+            return Err(GuestError::invalid("QVM allocator returned a reserved client row"));
+        }
+        if self.actor_at(slot).is_some() {
+            return Err(GuestError::invalid("Authored QVM allocator returned an occupied or inactive entity"));
+        }
+        let entity = self.entity_address(slot)?;
+        if self.host.read_i32(entity + lifecycle.inuse)? == 0 {
+            return Err(GuestError::invalid("Authored QVM allocator returned an occupied or inactive entity"));
+        }
+        let actor = self.host.adopt_source(slot)?;
+        self.projections.insert(actor.clone(), slot);
+        self.owned.insert(actor);
+        Ok(())
+    }
+
+    /// Retire a released source slot.
+    pub fn retire_source_slot(&mut self, slot: usize) -> Result<(), GuestError> {
+        let Some(lifecycle) = self.declaration.source_actors.clone() else { return Ok(()) };
+        let Some(actor) = self.actor_at(slot) else { return Ok(()) };
+        if self.host.read_i32(self.entity_address(slot)? + lifecycle.inuse)? != 0 {
+            return Ok(());
+        }
+        if !self.owned.contains(&actor) {
+            return Err(GuestError::invalid("QVM source removed a foreign actor without its owner continuation"));
+        }
+        self.host.retire_source(slot)?;
+        self.owned.remove(&actor);
+        self.projections.remove(&actor);
+        self.event_keys.remove(&actor);
+        Ok(())
+    }
+
+    /// Run a pickup rule with borrowed context words.
+    pub fn pickup_context<R>(
+        &mut self,
+        definition: &QvmModPickup,
+        offer: &PickupOffer,
+        inputs: &BTreeMap<ModCallbackInput, ModRuntimeValue>,
+        execute: impl FnOnce(&mut Self) -> Result<R, GuestError>,
+    ) -> Result<R, GuestError> {
+        self.current()?;
+        if offer.pickup == offer.recipient || self.host.has_client(&offer.pickup) || self.owned.contains(&offer.pickup) {
+            return Err(GuestError::invalid("QVM pickup context requires a foreign non-player pickup actor"));
+        }
+        let record = self.declaration.entity_record.clone().ok_or_else(|| GuestError::invalid("QVM pickup requires an actor projection"))?;
+        self.pickup_depth += 1;
+        let saved_scratch = self.scratch;
+        self.pointer(Some(&offer.recipient), &record)?;
+        self.pointer(Some(&offer.pickup), &record)?;
+        let mut restore = Vec::new();
+        for field in &definition.context {
+            let address = self.pointer(Some(&offer.pickup), &field.record)? + field.offset;
+            let word = self.lower(&field.value, inputs)?;
+            restore.push((address, self.host.read_bytes(address, 4)?));
+            self.host.write_i32(address, word)?;
+        }
+        self.pickup_scopes.push(offer.clone());
+        let outcome = execute(self);
+        self.pickup_scopes.pop();
+        if !self.closed {
+            for (address, bytes) in &restore {
+                self.host.write_bytes(*address, bytes)?;
+            }
+        }
+        self.scratch = saved_scratch;
+        self.pickup_depth -= 1;
+        self.finish_retired_projections()?;
+        outcome
+    }
+
+    fn entity_record(&self) -> Result<QvmModActorRecord, GuestError> {
+        let record = self.declaration.entity_record.as_deref().and_then(|id| self.records.get(id)).cloned();
+        if record.is_none_or(|record| record.stride < qvm_shared_entity_bytes(self.declaration.abi_profile)) {
+            return Err(GuestError::invalid("QVM engine service requires its declared sharedEntity_t array"));
+        }
+        Ok(record.expect("checked record"))
+    }
+
+    /// Entity address of a slot.
+    pub fn entity_address(&self, slot: usize) -> Result<usize, GuestError> {
+        let record = self.entity_record()?;
+        if slot >= record.capacity {
+            return Err(GuestError::invalid("QVM entity exceeds its declared source array"));
+        }
+        Ok(record.address + slot * record.stride)
+    }
+
+    /// Slot of an entity pointer.
+    pub fn pointer_slot(&self, pointer: usize) -> Result<usize, GuestError> {
+        let record = self.entity_record()?;
+        if pointer < record.address || (pointer - record.address) % record.stride != 0 {
+            return Err(GuestError::invalid("QVM entity exceeds its declared source array"));
+        }
+        let slot = (pointer - record.address) / record.stride;
+        self.entity_address(slot)?;
+        Ok(slot)
+    }
+
+    /// Entity slot of an actor, projecting on first use.
+    pub fn entity_slot(&mut self, actor: &ActorId) -> Result<usize, GuestError> {
+        let id = self.declaration.entity_record.clone().ok_or_else(|| GuestError::invalid("QVM mod has no engine entity record"))?;
+        self.pointer(Some(actor), &id)?;
+        self.projections.get(actor).copied().ok_or_else(|| GuestError::invalid("Missing QVM actor slot"))
+    }
+
+    /// Set a configstring, bumping the presentation revision on change.
+    pub fn set_configstring(&mut self, index: u32, value: String) {
+        if self.configstrings.get(&index).is_some_and(|current| *current == value) {
+            return;
+        }
+        self.configstrings.insert(index, value.clone());
+        self.presentation_revision += 1;
+        self.presentation_state = None;
+        self.scene_command(format!("cs {index} {value:?}"), None);
+    }
+
+    /// Queue a scene server command (scene runtime only).
+    pub fn scene_command(&mut self, text: String, recipient: Option<ActorId>) {
+        if !self.declaration.presentation.as_ref().is_some_and(|presentation| presentation.is_scene()) {
+            return;
+        }
+        self.scene_command_sequence += 1;
+        self.scene_commands.push_back((self.scene_command_sequence, recipient, text));
+        while self.scene_commands.len() > 64 {
+            self.scene_commands.pop_front();
+        }
+        self.scene_dirty = true;
+    }
+
+    /// Current game-state record, rebuilding after configstring changes.
+    pub fn game_state(&mut self) -> Result<super::mod_presentation_checkpoint::SourceGameState, GuestError> {
+        let (server, system) = self.host.server_info();
+        let server_changed = self.configstrings.get(&0).is_none_or(|current| *current != server);
+        let system_changed = self.configstrings.get(&1).is_none_or(|current| *current != system);
+        if server_changed {
+            self.set_configstring(0, server);
+        }
+        if system_changed {
+            self.set_configstring(1, system);
+        }
+        if self.presentation_state.is_none() {
+            let entries: Vec<(u32, String)> =
+                self.configstrings.iter().filter(|(_, value)| !value.is_empty()).map(|(index, value)| (*index, value.clone())).collect();
+            self.presentation_state = Some(self.host.build_game_state(&entries)?);
+        }
+        Ok(self.presentation_state.clone().expect("built game state"))
+    }
+
+    /// Publish entity events and player events after a call settles.
+    pub fn publish(&mut self) -> Result<(), GuestError> {
+        self.scene_dirty = true;
+        self.host.publish_player_events();
+        if self.declaration.presentation.as_ref().is_some_and(|presentation| presentation.is_scene()) {
+            return Ok(());
+        }
+        let boundary = self.declaration.source_actors.as_ref().map_or(u32::MAX, |actors| actors.event_entity_type);
+        let time_ms = (self.host.time_seconds() * 1000.0).trunc() as i32;
+        for view in self.host.owned_entity_views() {
+            if !view.linked {
+                continue;
+            }
+            if view.event == 0 && (view.etype as u32) < boundary {
+                self.event_keys.remove(&view.actor);
+                continue;
+            }
+            let key = format!("{}:{}", view.event, view.etype);
+            if self.event_keys.get(&view.actor).is_some_and(|current| *current == key) {
+                continue;
+            }
+            self.event_keys.insert(view.actor.clone(), key);
+            self.host.emit(ProviderEmit::EntityEvent { actor: view.actor, state: view.state, origin: view.origin, time_ms })?;
+        }
+        Ok(())
+    }
+
+    /// Advance source actors and client frames.
+    pub fn advance(&mut self, time_seconds: f64, elapsed_seconds: f64) -> Result<(), GuestError> {
+        self.current()?;
+        let lifecycle = self.declaration.source_actors.clone();
+        if let Some(update) = lifecycle.as_ref().and_then(|actors| actors.update.clone()) {
+            let mut owned: Vec<(ActorId, usize)> =
+                self.owned.iter().map(|actor| (actor.clone(), self.projections.get(actor).copied().unwrap_or(0))).collect();
+            owned.sort_by_key(|(_, slot)| *slot);
+            for (actor, _) in owned {
+                if self.closed {
+                    return Ok(());
+                }
+                if self.host.is_live(&actor) {
+                    let inputs = BTreeMap::from([
+                        (ModCallbackInput::Own, ModRuntimeValue::Actor(Some(actor.clone()))),
+                        (ModCallbackInput::Time, ModRuntimeValue::Float(time_seconds)),
+                        (ModCallbackInput::Elapsed, ModRuntimeValue::Float(elapsed_seconds)),
+                    ]);
+                    self.invoke(&update, &inputs)?;
+                }
+            }
+        }
+        let run_frame = lifecycle.as_ref().and_then(|actors| actors.frame.clone());
+        let mut clients = true;
+        if let Some(frame) = run_frame {
+            self.host.begin_actor_frame()?;
+            let inputs = BTreeMap::from([
+                (ModCallbackInput::Time, ModRuntimeValue::Float(time_seconds)),
+                (ModCallbackInput::Elapsed, ModRuntimeValue::Float(elapsed_seconds)),
+            ]);
+            let outcome = self.invoke(&frame.call, &inputs);
+            clients = self.host.end_actor_frame()? && outcome.is_ok();
+            outcome?;
+        }
+        if !self.closed && clients {
+            let frame_calls = self.declaration.clients.as_ref().map_or(Vec::new(), |clients| clients.frame.clone());
+            for actor in self.host.frame_actors() {
+                for call in &frame_calls {
+                    let inputs = BTreeMap::from([
+                        (ModCallbackInput::Own, ModRuntimeValue::Actor(Some(actor.clone()))),
+                        (ModCallbackInput::Time, ModRuntimeValue::Float(time_seconds)),
+                        (ModCallbackInput::Elapsed, ModRuntimeValue::Float(elapsed_seconds)),
+                    ]);
+                    self.invoke(call, &inputs)?;
+                }
+            }
+        }
+        if !self.closed {
+            self.publish()?;
+        }
+        Ok(())
+    }
+
+    /// Presentation records for owned linked entities.
+    pub fn presentations(&self) -> Vec<ModPresentation> {
+        let scene = self.declaration.presentation.as_ref().is_some_and(|presentation| presentation.is_scene());
+        self.host
+            .owned_entity_views()
+            .into_iter()
+            .filter(|view| {
+                view.linked
+                    && view.sv_flags & 1 == 0
+                    && view.model_index != 0
+                    && (view.inline_model || self.configstrings.get(&(32 + view.model_index.max(0) as u32)).is_some_and(|path| !path.is_empty()))
+            })
+            .map(|view| {
+                let path = if view.inline_model {
+                    format!("*{}", view.model_index)
+                } else {
+                    self.configstrings.get(&(32 + view.model_index.max(0) as u32)).cloned().unwrap_or_default()
+                };
+                ModPresentation { actor: view.actor, path, frame: view.frame, origin: view.origin, angles: view.angles, render_owner_source_client: scene }
+            })
+            .collect()
+    }
+
+    /// Bind the command port.
+    pub fn bind_commands(&mut self) -> Result<(), GuestError> {
+        self.current()?;
+        if self.commands_bound {
+            return Err(GuestError::invalid("QVM mod commands are already bound"));
+        }
+        self.commands_bound = true;
+        Ok(())
+    }
+
+    /// Run a console command through the source.
+    pub fn console_command(&mut self, argv: &[String]) -> Result<bool, GuestError> {
+        self.current()?;
+        let call = QvmModSourceCall { entry: 0, arguments: vec![QvmModValue::Int32(ModCallbackValue::Float(9.0))], globals: Vec::new(), returns: ModReturns::Int32 };
+        let lowered = self.begin_call(&call, &BTreeMap::new())?;
+        let mut succeeded = false;
+        let outcome = self.host.command_module(&lowered.words, argv).map(|result| result != 0);
+        if outcome.is_ok() {
+            succeeded = true;
+        }
+        let finished = self.finish_call(lowered, succeeded);
+        self.finish_retired_projections()?;
+        finished?;
+        let result = outcome?;
+        if succeeded && !self.closed && self.frames.is_empty() {
+            self.publish()?;
+        }
+        Ok(result)
+    }
+
+    /// Run a client command through the source.
+    pub fn presentation_client_command(&mut self, actor: &ActorId, argv: &[String]) -> Result<(), GuestError> {
+        self.current()?;
+        if !self.host.admitted_client(actor) {
+            return Err(GuestError::invalid("Component client command requires an admitted live source client"));
+        }
+        let slot = self.projections.get(actor).copied();
+        if slot.is_none_or(|slot| !self.host.players().iter().any(|(player, bound, admitted)| player == actor && *bound == slot && *admitted)) {
+            return Err(GuestError::invalid("Component client command has no current source projection"));
+        }
+        let call = QvmModSourceCall {
+            entry: 0,
+            arguments: vec![
+                QvmModValue::Int32(ModCallbackValue::Float(6.0)),
+                QvmModValue::Int32(ModCallbackValue::Float(slot.expect("checked slot") as f64)),
+            ],
+            globals: Vec::new(),
+            returns: ModReturns::Void,
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(ModCallbackInput::Own, ModRuntimeValue::Actor(Some(actor.clone())));
+        inputs.insert(ModCallbackInput::Time, ModRuntimeValue::Float(self.host.time_seconds()));
+        let lowered = self.begin_call(&call, &inputs)?;
+        let mut succeeded = false;
+        let outcome = self.host.command_module(&lowered.words, argv);
+        if outcome.is_ok() {
+            succeeded = true;
+        }
+        let finished = self.finish_call(lowered, succeeded);
+        self.finish_retired_projections()?;
+        finished?;
+        outcome?;
+        if succeeded && !self.closed && self.frames.is_empty() {
+            self.publish()?;
+        }
+        Ok(())
+    }
+
+    /// Read a script resource.
+    pub fn read_script(&self, name: &str) -> Result<Option<String>, GuestError> {
+        self.current()?;
+        Ok(self.host.read_script(name))
+    }
+
+    /// Run initialization calls and remember source defaults.
+    pub fn initialize(&mut self) -> Result<(), GuestError> {
+        self.host.reserve_protection()?;
+        let lifecycle = self.declaration.source_actors.clone();
+        for (address, value) in qvm_actor_bootstrap(
+            &lifecycle.as_ref().map_or(Vec::new(), |actors| actors.initial_stores.clone()),
+            &self.artifact.image,
+            &self.declaration.actor_records,
+        )? {
+            self.host.write_i32(address, value)?;
+        }
+        for call in self.declaration.initialize.clone() {
+            let inputs = BTreeMap::from([(ModCallbackInput::Time, ModRuntimeValue::Float(self.host.time_seconds()))]);
+            let lowered = self.begin_call(&call, &inputs)?;
+            let mut succeeded = false;
+            let outcome = self.host.call_module(&lowered.words, call.entry).and_then(|result| {
+                self.complete_direct_lifecycle(&call, &lowered.words, result)?;
+                Ok(())
+            });
+            if outcome.is_ok() {
+                succeeded = true;
+            }
+            self.finish_call(lowered, succeeded)?;
+            outcome?;
+        }
+        self.remember_defaults()?;
+        self.host.start_clients()?;
+        self.publish()?;
+        Ok(())
+    }
+
+    fn remember_defaults(&mut self) -> Result<(), GuestError> {
+        for record in self.records.values() {
+            let bytes = self.host.read_bytes(record.address, record.stride * record.capacity)?;
+            self.defaults.insert(record.id.clone(), bytes);
+        }
+        Ok(())
+    }
+
+    /// Reserve protection channels.
+    pub fn reserve_protection(&mut self) -> Result<(), GuestError> {
+        self.host.reserve_protection()
+    }
+
+    /// Activate protection, pickups, and match bindings.
+    pub fn activate_protection(&mut self) -> Result<(), GuestError> {
+        self.host.activate_protection()
+    }
+
+    /// Current scene publication, rebuilding after scene changes.
+    pub fn scene_publication(&mut self) -> Result<super::mod_presentation_checkpoint::ModScenePublication, GuestError> {
+        self.current()?;
+        if !self.frames.is_empty() {
+            return Err(GuestError::invalid("Cannot read presentation during an original source call"));
+        }
+        let game_state = self.game_state()?;
+        let server_time = (self.host.time_seconds() * 1000.0).trunc() as i32;
+        if !self.scene_dirty {
+            if let Some(state) = self.scene_state.clone() {
+                if state.server_time == server_time {
+                    return Ok(state);
+                }
+            }
+        }
+        let mut entities = Vec::new();
+        for (actor, slot) in self.projections.clone() {
+            if !self.host.is_live(&actor) || self.retired.contains(&actor) {
+                continue;
+            }
+            let link = self.host.entity_link(slot)?;
+            let state = super::mod_presentation_checkpoint::SourceEntityState::from_bytes(
+                &self.host.read_bytes(self.entity_address(slot)?, super::mod_presentation_checkpoint::entity_state_len(self.declaration.abi_profile))?,
+                self.declaration.abi_profile,
+            )?;
+            entities.push(super::mod_presentation_checkpoint::SceneEntity {
+                actor,
+                owned: self.owned.contains(&actor),
+                linked: link.linked,
+                server_flags: link.sv_flags,
+                single_client: link.single_client,
+                bounds_min: link.abs_min,
+                bounds_max: link.abs_max,
+                state,
+            });
+        }
+        let mut clients = Vec::new();
+        for (actor, slot, admitted) in self.host.players() {
+            if !admitted || !self.host.is_live(&actor) {
+                continue;
+            }
+            let state = super::mod_presentation_checkpoint::SourcePlayerState::from_bytes(&self.host.player_state_bytes(&actor)?, self.declaration.abi_profile)?;
+            clients.push(super::mod_presentation_checkpoint::SceneClient { actor, slot, state });
+        }
+        self.scene_revision += 1;
+        let commands = self.scene_commands.iter().map(|(sequence, recipient, text)| super::mod_presentation_checkpoint::SceneCommand {
+            sequence: *sequence,
+            recipient: recipient.clone(),
+            text: text.clone(),
+        }).collect();
+        let state = super::mod_presentation_checkpoint::ModScenePublication {
+            revision: self.scene_revision,
+            server_time,
+            game_state_revision: self.presentation_revision,
+            game_state,
+            entities,
+            clients,
+            commands,
+        };
+        self.scene_state = Some(state.clone());
+        self.scene_dirty = false;
+        Ok(state)
+    }
+
+    /// Presentation context for one viewer, if admitted.
+    pub fn context_for(&mut self, viewer: &ActorId) -> Result<Option<ProviderViewerContext>, GuestError> {
+        self.current()?;
+        if !self.frames.is_empty() {
+            return Err(GuestError::invalid("Cannot read presentation during an original source call"));
+        }
+        if !self.host.admitted_client(viewer) {
+            return Ok(None);
+        }
+        let Some(client_number) = self.host.client_slot(viewer) else {
+            return Err(GuestError::invalid("Presentation viewer has no admitted source client slot"));
+        };
+        if self.declaration.presentation.as_ref().is_some_and(|presentation| presentation.is_scene()) {
+            let state = self.scene_publication()?;
+            if !state.clients.iter().any(|row| row.actor == *viewer) {
+                return Ok(None);
+            }
+            let player = state.clients.iter().find(|row| row.actor == *viewer).expect("checked player").state.clone();
+            return Ok(Some(ProviderViewerContext {
+                client_number,
+                game_state_revision: state.game_state_revision,
+                server_time: state.server_time,
+                player_state: player,
+            }));
+        }
+        let game_state_revision = self.presentation_revision;
+        let state = super::mod_presentation_checkpoint::SourcePlayerState::from_bytes(&self.host.player_state_bytes(viewer)?, self.declaration.abi_profile)?;
+        Ok(Some(ProviderViewerContext {
+            client_number,
+            game_state_revision,
+            server_time: (self.host.time_seconds() * 1000.0).trunc() as i32,
+            player_state: state,
+        }))
+    }
+
+    /// Live projection bindings as `(actor, slot, owned)`.
+    pub fn bindings(&self) -> Vec<(ActorId, usize, bool)> {
+        self.projections
+            .iter()
+            .filter(|(actor, _)| self.host.is_live(actor) && !self.retired.contains(*actor))
+            .map(|(actor, slot)| (actor.clone(), *slot, self.owned.contains(actor)))
+            .collect()
+    }
+
+    /// Current and baseline scene publications (scene runtime only).
+    pub fn scene(
+        &mut self,
+    ) -> Result<(super::mod_presentation_checkpoint::ModScenePublication, Option<super::mod_presentation_checkpoint::ModScenePublication>), GuestError> {
+        if !self.declaration.presentation.as_ref().is_some_and(|presentation| presentation.is_scene()) {
+            return Err(GuestError::invalid("Event-only component has no source scene publication"));
+        }
+        let current = self.scene_publication()?;
+        Ok((current, self.scene_baseline.clone()))
+    }
+
+    /// Capture the host half of a checkpoint.
+    pub fn capture_host_state(&mut self) -> Result<ProfileValue, GuestError> {
+        self.current()?;
+        self.host.assert_subcomponents_idle()?;
+        let projections = self
+            .projections
+            .iter()
+            .map(|(actor, slot)| {
+                let saved = SavedActorId::from(actor);
+                ProfileValue::record(vec![
+                    ("actor", ProfileValue::record(vec![("slot", ProfileValue::Int(i64::from(saved.slot))), ("generation", ProfileValue::Int(i64::from(saved.generation)))])),
+                    ("slot", ProfileValue::Int(*slot as i64)),
+                    ("owned", ProfileValue::Bool(self.owned.contains(actor))),
+                ])
+            })
+            .collect();
+        let client_slots = self
+            .host
+            .players()
+            .into_iter()
+            .map(|(actor, slot, admitted)| {
+                let saved = SavedActorId::from(&actor);
+                ProfileValue::record(vec![
+                    ("actor", ProfileValue::record(vec![("slot", ProfileValue::Int(i64::from(saved.slot))), ("generation", ProfileValue::Int(i64::from(saved.generation)))])),
+                    ("slot", ProfileValue::Int(slot as i64)),
+                    ("admitted", ProfileValue::Bool(admitted)),
+                ])
+            })
+            .collect();
+        let defaults = self
+            .defaults
+            .iter()
+            .map(|(id, bytes)| ProfileValue::record(vec![("id", ProfileValue::Str(id.clone())), ("bytes", ProfileValue::Bytes(bytes.clone()))]))
+            .collect();
+        let configstrings = self
+            .configstrings
+            .iter()
+            .map(|(index, value)| ProfileValue::record(vec![("index", ProfileValue::Int(i64::from(*index))), ("value", ProfileValue::Str(value.clone()))]))
+            .collect();
+        Ok(ProfileValue::record(vec![
+            ("version", ProfileValue::Int(1)),
+            ("projections", ProfileValue::Array(projections)),
+            ("nextSlot", ProfileValue::Int(self.next_slot as i64)),
+            ("clientSlots", ProfileValue::Array(client_slots)),
+            ("defaults", ProfileValue::Array(defaults)),
+            ("configstrings", ProfileValue::Array(configstrings)),
+            ("presentationRevision", ProfileValue::Int(self.presentation_revision as i64)),
+            ("sceneRevision", ProfileValue::Int(self.scene_revision as i64)),
+            ("sceneDirty", ProfileValue::Bool(self.scene_dirty)),
+            ("sceneCommandSequence", ProfileValue::Int(self.scene_command_sequence as i64)),
+        ]))
+    }
+
+    /// Restore host state captured by [`QvmModProvider::capture_host_state`].
+    pub fn restore_host_state(
+        &mut self,
+        host: &ProfileValue,
+        data: &[u8],
+        resolve: &dyn Fn(SavedActorId) -> Option<ActorId>,
+    ) -> Result<(), GuestError> {
+        self.current()?;
+        self.host.assert_subcomponents_idle()?;
+        let saved = read_mod_host_image(host, &self.declaration, data)?;
+        self.projections.clear();
+        self.owned.clear();
+        self.event_keys.clear();
+        for entry in &saved.projections {
+            let actor = resolve(entry.actor).ok_or_else(|| GuestError::invalid("Saved QVM mod actor is unavailable or has the wrong owner"))?;
+            self.projections.insert(actor.clone(), entry.slot);
+            if entry.owned {
+                if !self.host.is_owned(&actor) {
+                    return Err(GuestError::invalid("Saved QVM mod actor is unavailable or has the wrong owner"));
+                }
+                self.owned.insert(actor);
+            }
+        }
+        self.next_slot = saved.next_slot;
+        self.defaults.clear();
+        for (id, bytes) in saved.defaults {
+            self.defaults.insert(id, bytes);
+        }
+        self.configstrings.clear();
+        for (index, value) in saved.configstrings {
+            self.configstrings.insert(index, value);
+        }
+        let reader = ProfileReader::new(host);
+        if !reader.field("presentationRevision")?.is_undefined() {
+            self.presentation_revision = reader.field("presentationRevision")?.integer(0)? as u64;
+        }
+        if !reader.field("sceneRevision")?.is_undefined() {
+            self.scene_revision = reader.field("sceneRevision")?.integer(0)? as u64;
+        }
+        if !reader.field("sceneDirty")?.is_undefined() {
+            self.scene_dirty = reader.field("sceneDirty")?.boolean()?;
+        }
+        if !reader.field("sceneCommandSequence")?.is_undefined() {
+            self.scene_command_sequence = reader.field("sceneCommandSequence")?.integer(0)? as u64;
+        }
+        self.presentation_state = None;
+        self.scene_state = None;
+        self.scene_baseline = None;
+        self.frames.clear();
+        self.retired.clear();
+        self.scratch = self.scratch_start;
+        Ok(())
+    }
+
+    /// Push a weapon-input scope for the current frame, if any.
+    pub fn push_weapon_input(&mut self, actor: ActorId) {
+        let frame = if self.frames.is_empty() { None } else { Some(self.frames.len() - 1) };
+        self.weapon_inputs.push((actor, frame));
+    }
+
+    /// Pop a weapon-input scope.
+    pub fn pop_weapon_input(&mut self) {
+        self.weapon_inputs.pop();
+    }
+
+    /// Close the provider, aggregating cleanup failures.
+    pub fn close(&mut self) -> Result<(), GuestError> {
+        let mut errors = self.host.close_subcomponents();
+        self.closed = true;
+        self.host.discard_player_events();
+        for actor in std::mem::take(&mut self.owned) {
+            if self.host.is_live(&actor) {
+                if let Err(error) = self.host.release_owned(&actor) {
+                    errors.push(error);
+                }
+            }
+        }
+        self.projections.clear();
+        self.retired.clear();
+        self.event_keys.clear();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(GuestError::callback(format!("QVM mod cleanup failed: {}", errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::identity::IdentityOwner;
+
+    struct FakeHost {
+        memory: Vec<u8>,
+        live: HashSet<ActorId>,
+        owned: HashSet<ActorId>,
+        canonical: HashMap<ActorId, f64>,
+        calls: Vec<(Vec<i32>, usize)>,
+        return_value: i32,
+        published: usize,
+        discarded: usize,
+    }
+
+    impl FakeHost {
+        fn new() -> Self {
+            Self {
+                memory: vec![0; 65536],
+                live: HashSet::new(),
+                owned: HashSet::new(),
+                canonical: HashMap::new(),
+                calls: Vec::new(),
+                return_value: 0,
+                published: 0,
+                discarded: 0,
+            }
+        }
+    }
+
+    impl ModProviderHost for FakeHost {
+        fn current(&self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn is_live(&self, actor: &ActorId) -> bool {
+            self.live.contains(actor)
+        }
+        fn is_owned(&self, actor: &ActorId) -> bool {
+            self.owned.contains(actor)
+        }
+        fn time_seconds(&self) -> f64 {
+            1.5
+        }
+        fn call_module(&mut self, words: &[i32], entry: usize) -> Result<i32, GuestError> {
+            self.calls.push((words.to_vec(), entry));
+            Ok(self.return_value)
+        }
+        fn command_module(&mut self, words: &[i32], _argv: &[String]) -> Result<i32, GuestError> {
+            self.calls.push((words.to_vec(), usize::MAX));
+            Ok(1)
+        }
+        fn read_i32(&self, address: usize) -> Result<i32, GuestError> {
+            Ok(i32::from_le_bytes(self.memory[address..address + 4].try_into().map_err(|_| GuestError::invalid("oob"))?))
+        }
+        fn write_i32(&mut self, address: usize, value: i32) -> Result<(), GuestError> {
+            self.memory[address..address + 4].copy_from_slice(&value.to_le_bytes());
+            Ok(())
+        }
+        fn read_bytes(&self, address: usize, len: usize) -> Result<Vec<u8>, GuestError> {
+            Ok(self.memory[address..address + len].to_vec())
+        }
+        fn write_bytes(&mut self, address: usize, bytes: &[u8]) -> Result<(), GuestError> {
+            self.memory[address..address + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+        fn copy_bytes(&mut self, dest: usize, src: usize, len: usize) -> Result<(), GuestError> {
+            self.memory.copy_within(src..src + len, dest);
+            Ok(())
+        }
+        fn stack_pointer(&self) -> usize {
+            65536 + 65536
+        }
+        fn canonical_field(&self, actor: &ActorId, field: &QvmModActorField) -> Result<CanonicalField, GuestError> {
+            match &field.binding {
+                ModActorBinding::Origin | ModActorBinding::Velocity | ModActorBinding::Angles | ModActorBinding::BoundsMin | ModActorBinding::BoundsMax => {
+                    Ok(CanonicalField::Vec(vec3(1.0, 2.0, 3.0)))
+                }
+                _ => Ok(CanonicalField::Word(self.canonical.get(actor).copied().unwrap_or(0.0))),
+            }
+        }
+        fn commit_field(&mut self, actor: &ActorId, _field: &QvmModActorField, value: CanonicalField) -> Result<(), GuestError> {
+            if let CanonicalField::Word(number) = value {
+                self.canonical.insert(actor.clone(), number);
+            }
+            Ok(())
+        }
+        fn has_client(&self, _actor: &ActorId) -> bool {
+            false
+        }
+        fn client_slot(&self, _actor: &ActorId) -> Option<usize> {
+            None
+        }
+        fn admitted_client(&self, _actor: &ActorId) -> bool {
+            false
+        }
+        fn players(&self) -> Vec<(ActorId, usize, bool)> {
+            Vec::new()
+        }
+        fn start_clients(&mut self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn frame_actors(&self) -> Vec<ActorId> {
+            Vec::new()
+        }
+        fn release_actor_components(&mut self, _actor: &ActorId) {}
+        fn reserve_protection(&mut self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn activate_protection(&mut self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn assert_subcomponents_idle(&self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn close_subcomponents(&mut self) -> Vec<GuestError> {
+            Vec::new()
+        }
+        fn publish_player_events(&mut self) {
+            self.published += 1;
+        }
+        fn discard_player_events(&mut self) {
+            self.discarded += 1;
+        }
+        fn check_pickup_write(&self, _actor: &ActorId, _field: &QvmModActorField) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn adopt_source(&mut self, _slot: usize) -> Result<ActorId, GuestError> {
+            Err(GuestError::invalid("no source actors in fixture"))
+        }
+        fn retire_source(&mut self, _slot: usize) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn before_release(&mut self, _actor: &ActorId) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn release_owned(&mut self, actor: &ActorId) -> Result<(), GuestError> {
+            self.owned.remove(actor);
+            Ok(())
+        }
+        fn begin_actor_frame(&mut self) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn end_actor_frame(&mut self) -> Result<bool, GuestError> {
+            Ok(true)
+        }
+        fn server_info(&self) -> (String, String) {
+            (String::new(), String::new())
+        }
+        fn build_game_state(&self, entries: &[(u32, String)]) -> Result<super::super::mod_presentation_checkpoint::SourceGameState, GuestError> {
+            super::super::mod_presentation_checkpoint::SourceGameState::from_entries(entries.iter().map(|(index, value)| (*index, value.clone())))
+        }
+        fn owned_entity_views(&self) -> Vec<EntityPublishView> {
+            Vec::new()
+        }
+        fn player_state_bytes(&self, _actor: &ActorId) -> Result<Vec<u8>, GuestError> {
+            Ok(vec![0; qvm_player_state_bytes(QvmAbi::Modern)])
+        }
+        fn entity_link(&self, _slot: usize) -> Result<EntityLinkView, GuestError> {
+            Ok(EntityLinkView { linked: false, sv_flags: 0, single_client: 0, abs_min: vec3(0.0, 0.0, 0.0), abs_max: vec3(0.0, 0.0, 0.0) })
+        }
+        fn emit(&mut self, _event: ProviderEmit) -> Result<(), GuestError> {
+            Ok(())
+        }
+        fn read_script(&self, _name: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn fixture_module() -> ModuleId {
+        ModuleId { id: "test:mod".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:abc".to_string(), revision: "1".to_string() }
+    }
+
+    fn fixture_artifact() -> QvmArtifact {
+        QvmArtifact {
+            module: fixture_module(),
+            role: QvmRole::Qagame,
+            abi_profile: None,
+            image: QvmImage {
+                instructions: vec![QvmInstruction::word(QvmOpcode::OpEnter, 64), QvmInstruction::word(QvmOpcode::OpLeave, 0)],
+                data_length: 4096,
+                literal_length: 0,
+                bss_length: 0,
+                initialized_length: 4096,
+                allocated_data_length: 8192,
+            },
+        }
+    }
+
+    fn fixture_declaration() -> QvmModCallbackDeclaration {
+        QvmModCallbackDeclaration {
+            version: 1,
+            program_path: "vm/qagame.qvm".to_string(),
+            program_digest: "sha256:abc".to_string(),
+            abi_profile: QvmAbi::Modern,
+            presentation: None,
+            spawn_entities: None,
+            clients: None,
+            actor_records: vec![QvmModActorRecord {
+                id: "entity".to_string(),
+                address: 64,
+                stride: 520,
+                capacity: 4,
+                fields: vec![QvmModActorField { offset: 0, access: None, binding: ModActorBinding::Private { byte_length: 520 } }],
+            }],
+            entity_record: Some("entity".to_string()),
+            source_actors: None,
+            combat: None,
+            protection: Vec::new(),
+            pickups: Vec::new(),
+            items: None,
+            initialize: Vec::new(),
+            callbacks: Vec::new(),
+            objectives: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scalar_encoding_matches_source_words() {
+        assert_eq!(encode_mod_scalar(7.9, ModScalar::Int32).unwrap(), 7);
+        assert_eq!(encode_mod_scalar(-3.0, ModScalar::Int32).unwrap(), -3);
+        assert!(encode_mod_scalar(1e10, ModScalar::Int32).is_err());
+        assert!(encode_mod_scalar(f64::NAN, ModScalar::Float32).is_err());
+        assert_eq!(encode_mod_scalar(1.5, ModScalar::Float32).unwrap(), (1.5f32).to_bits() as i32);
+    }
+
+    #[test]
+    fn profile_reader_reports_paths() {
+        let value = ProfileValue::record(vec![("items", ProfileValue::Array(vec![ProfileValue::Int(2)]))]);
+        let reader = ProfileReader::new(&value);
+        assert_eq!(reader.field("items").unwrap().list(|entry| entry.integer(0)).unwrap(), vec![2]);
+        assert!(reader.field("missing").unwrap().is_undefined());
+        assert!(reader.field("items").unwrap().field("nope").is_err());
+    }
+
+    #[test]
+    fn region_qualification_accepts_balanced_paths() {
+        let instructions = vec![
+            QvmInstruction::word(QvmOpcode::OpEnter, 64),
+            QvmInstruction::word(QvmOpcode::OpConst, 5),
+            QvmInstruction::word(QvmOpcode::OpPop, 0),
+            QvmInstruction::word(QvmOpcode::OpLeave, 0),
+            QvmInstruction::word(QvmOpcode::OpEnter, 0),
+        ];
+        assert_eq!(qualify_qvm_region(&instructions, 0, 1, 3).unwrap(), 64);
+        let region = QvmRegionEvaluation { entry: 1, join: 3, inputs: vec![8], result: None };
+        assert_eq!(qualify_qvm_region_evaluation(&instructions, 0, &region, false).unwrap(), 64);
+        assert!(qualify_qvm_region(&instructions, 0, 1, 4).is_err());
+    }
+
+    #[test]
+    fn minimal_declaration_validates() {
+        validate_qvm_mod(&fixture_artifact(), &fixture_declaration()).unwrap();
+    }
+
+    #[test]
+    fn declaration_rejects_overlapping_arrays() {
+        let mut declaration = fixture_declaration();
+        declaration.actor_records.push(QvmModActorRecord {
+            id: "other".to_string(),
+            address: 100,
+            stride: 520,
+            capacity: 4,
+            fields: Vec::new(),
+        });
+        assert!(validate_qvm_mod(&fixture_artifact(), &declaration).is_err());
+    }
+
+    #[test]
+    fn declaration_rejects_wrong_role() {
+        let mut artifact = fixture_artifact();
+        artifact.role = QvmRole::Cgame;
+        assert!(validate_qvm_mod(&artifact, &fixture_declaration()).is_err());
+    }
+
+    #[test]
+    fn declaration_rejects_duplicate_callbacks() {
+        let call = QvmModSourceCall { entry: 0, arguments: Vec::new(), globals: Vec::new(), returns: ModReturns::Int32 };
+        let binding = |id: &str| ModCallbackBinding { id: id.to_string(), operation: ModCallbackOperation::Damage, stage: CallbackStage::Observe, result: None };
+        let mut declaration = fixture_declaration();
+        declaration.callbacks.push(QvmModCallback { binding: binding("test:hit"), call: call.clone() });
+        declaration.callbacks.push(QvmModCallback { binding: binding("test:hit"), call });
+        assert!(validate_qvm_mod(&fixture_artifact(), &declaration).is_err());
+    }
+
+    #[test]
+    fn projection_assigns_slots_and_restores_defaults() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut host = FakeHost::new();
+        host.live.insert(actor.clone());
+        let mut provider = QvmModProvider::open(fixture_artifact(), fixture_declaration(), host).unwrap();
+        provider.initialize().unwrap();
+        let address = provider.pointer(Some(&actor), "entity").unwrap();
+        assert_eq!(address, 64);
+        assert_eq!(provider.actor_at(0).unwrap(), actor);
+        provider.host_mut().write_i32(64, 41).unwrap();
+        provider.release_projection(&actor).unwrap();
+        assert_eq!(provider.host().read_i32(64).unwrap(), 0);
+        assert!(provider.projection_slot(&actor).is_none());
+    }
+
+    #[test]
+    fn invoke_lowers_values_and_calls_source() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut host = FakeHost::new();
+        host.live.insert(actor.clone());
+        host.return_value = 9;
+        let mut provider = QvmModProvider::open(fixture_artifact(), fixture_declaration(), host).unwrap();
+        provider.initialize().unwrap();
+        let call = QvmModSourceCall {
+            entry: 0,
+            arguments: vec![
+                QvmModValue::Int32(ModCallbackValue::Float(3.0)),
+                QvmModValue::Actor { record: "entity".to_string(), input: ActorInput::Own },
+            ],
+            globals: Vec::new(),
+            returns: ModReturns::Int32,
+        };
+        let inputs = BTreeMap::from([(ModCallbackInput::Own, ModRuntimeValue::Actor(Some(actor.clone())))]);
+        assert_eq!(provider.invoke(&call, &inputs).unwrap(), 9.0);
+        assert_eq!(provider.host().calls, vec![(vec![3, 64], 0)]);
+    }
+
+    #[test]
+    fn canonical_health_round_trips_through_source() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(2, 1);
+        let mut declaration = fixture_declaration();
+        declaration.actor_records[0].fields = vec![
+            QvmModActorField { offset: 0, access: None, binding: ModActorBinding::Private { byte_length: 512 } },
+            QvmModActorField { offset: 516, access: None, binding: ModActorBinding::Health { encoding: ModScalar::Int32 } },
+        ];
+        let mut host = FakeHost::new();
+        host.live.insert(actor.clone());
+        host.canonical.insert(actor.clone(), 100.0);
+        let mut provider = QvmModProvider::open(fixture_artifact(), declaration, host).unwrap();
+        provider.initialize().unwrap();
+        let address = provider.pointer(Some(&actor), "entity").unwrap();
+        provider.refresh().unwrap();
+        assert_eq!(provider.host().read_i32(address + 516).unwrap(), 100);
+        provider.host_mut().write_i32(address + 516, 80).unwrap();
+        let call = QvmModSourceCall { entry: 0, arguments: Vec::new(), globals: Vec::new(), returns: ModReturns::Void };
+        let lowered = provider.begin_call(&call, &BTreeMap::new()).unwrap();
+        provider.host_mut().write_i32(address + 516, 80).unwrap();
+        provider.finish_call(lowered, true).unwrap();
+        assert_eq!(provider.host().canonical.get(&actor), Some(&80.0));
+    }
+
+    #[test]
+    fn pickup_context_restores_borrowed_words() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let recipient = owner.actor(1, 1);
+        let pickup = owner.actor(2, 1);
+        let mut host = FakeHost::new();
+        host.live.insert(recipient.clone());
+        host.live.insert(pickup.clone());
+        let mut provider = QvmModProvider::open(fixture_artifact(), fixture_declaration(), host).unwrap();
+        provider.initialize().unwrap();
+        let rule = QvmModPickup {
+            id: "rule".to_string(),
+            writes: vec![PickupWrite::Inventory { item: "test:ammo".to_string(), fields: InventoryWriteFields::Count }],
+            offered: vec!["test:ammo".to_string()],
+            operation: OriginalPickupOperation::BooleanGrant {
+                grant: QvmModSourceCall { entry: 0, arguments: Vec::new(), globals: Vec::new(), returns: ModReturns::Int32 },
+            },
+            context: vec![PickupContextField { record: "entity".to_string(), offset: 8, value: QvmModValue::Int32(ModCallbackValue::Float(7.0)) }],
+        };
+        let offer = PickupOffer { recipient: recipient.clone(), pickup: pickup.clone(), item: "test:ammo".to_string() };
+        let address = provider.pointer(Some(&pickup), "entity").unwrap() + 8;
+        provider
+            .pickup_context(&rule, &offer, &BTreeMap::new(), |provider| {
+                assert_eq!(provider.host().read_i32(address).unwrap(), 7);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(provider.host().read_i32(address).unwrap(), 0);
+    }
+
+    #[test]
+    fn host_state_round_trips() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut host = FakeHost::new();
+        host.live.insert(actor.clone());
+        let mut provider = QvmModProvider::open(fixture_artifact(), fixture_declaration(), host).unwrap();
+        provider.initialize().unwrap();
+        provider.pointer(Some(&actor), "entity").unwrap();
+        let saved = provider.capture_host_state().unwrap();
+        let mut host = FakeHost::new();
+        host.live.insert(actor.clone());
+        let mut restored = QvmModProvider::open(fixture_artifact(), fixture_declaration(), host).unwrap();
+        restored.initialize().unwrap();
+        restored.restore_host_state(&saved, &vec![0u8; 8192], &|saved| (saved.slot == 1).then(|| actor.clone())).unwrap();
+        assert_eq!(restored.projection_slot(&actor), Some(0));
+    }
+
+    #[test]
+    fn checkpoint_validation_checks_api_identity() {
+        let owner = IdentityOwner::create("test").unwrap();
+        let actor = owner.actor(1, 1);
+        let mut host = FakeHost::new();
+        host.live.insert(actor.clone());
+        let mut provider = QvmModProvider::open(fixture_artifact(), fixture_declaration(), host).unwrap();
+        provider.initialize().unwrap();
+        provider.pointer(Some(&actor), "entity").unwrap();
+        let saved = provider.capture_host_state().unwrap();
+        let data = vec![0u8; 8192];
+        let artifact = fixture_artifact();
+        let declaration = fixture_declaration();
+        let view = QvmModCheckpointView {
+            module: &artifact.module,
+            data: &data,
+            api_kind: "q3-qagame",
+            api_version: 8,
+            abi: QvmAbi::Modern,
+            instruction_index: 0,
+            operand_stack_len: 0,
+            program_stack: 8192,
+            host_module: &artifact.module,
+            host_format: "qvm:mod-host-v1",
+            host: &saved,
+            random_len: 0,
+            callbacks_len: 0,
+        };
+        validate_qvm_mod_checkpoint(&artifact, &declaration, &view).unwrap();
+        let bad = QvmModCheckpointView { api_version: 7, ..view };
+        assert!(validate_qvm_mod_checkpoint(&artifact, &declaration, &bad).is_err());
+    }
+
+    #[test]
+    fn objective_addresses_validate_and_resolve() {
+        validate_qvm_objective_address(4096, &QvmModObjectiveAddress::Direct(64)).unwrap();
+        assert!(validate_qvm_objective_address(4096, &QvmModObjectiveAddress::Direct(65)).is_err());
+        let resolved = resolve_qvm_objective_address(&|address| Ok(address as i32 + 4), 4096, &QvmModObjectiveAddress::Direct(64)).unwrap();
+        assert_eq!(resolved, 64);
+        let chained = QvmModObjectiveAddress::Pointer { address: 64, indirections: Vec::new(), offset: 8 };
+        assert_eq!(resolve_qvm_objective_address(&|_| Ok(100), 4096, &chained).unwrap(), 108);
+    }
+
+    #[test]
+    fn bootstrap_resolves_constant_stores() {
+        let image = QvmImage {
+            instructions: vec![
+                QvmInstruction::word(QvmOpcode::OpConst, 128),
+                QvmInstruction::word(QvmOpcode::OpConst, 5),
+                QvmInstruction::word(QvmOpcode::OpStore4, 0),
+            ],
+            data_length: 4096,
+            literal_length: 0,
+            bss_length: 0,
+            initialized_length: 4096,
+            allocated_data_length: 8192,
+        };
+        assert_eq!(qvm_actor_bootstrap(&[2], &image, &[]).unwrap(), vec![(128, 5)]);
+        assert!(qvm_actor_bootstrap(&[1], &image, &[]).is_err());
+    }
+}
+
+
 
 
