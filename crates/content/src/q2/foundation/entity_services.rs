@@ -519,6 +519,7 @@ impl Q2GameServices {
         self.entities.remove(id);
         self.authored_targets.remove(id);
         self.monsters.on_actor_released(id);
+        self.weapons.on_actor_released(id);
     }
 
     /// Resolve a weapon target (`weaponTarget`).
