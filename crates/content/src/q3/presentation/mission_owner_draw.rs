@@ -6,12 +6,21 @@ use qa_core::math::{vec3, vec4, Vec4};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::numeric::GameRandom;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::items::{find_item_for_powerup, item_list, ItemKind};
+use crate::q3::base::shared::player_state::*;
 use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::config::*;
 use crate::q3::presentation::draw_icons::*;
 use crate::q3::presentation::draw_tools::*;
+use crate::q3::presentation::events::place_string;
+use crate::q3::presentation::hud::ClientMedia;
+use crate::q3::presentation::hud::{same, Shared};
 use crate::q3::presentation::hud_corners::*;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::player_state::{WeaponHudAmmo, WeaponHudReader};
+use crate::q3::presentation::retail_snapshot::SceneShader;
+use crate::q3::presentation::state::*;
 
 /// Mission owner-draw id (`MissionOwnerDrawId`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -337,7 +346,7 @@ impl MissionOwnerDraw {
     }
 
     /// Client slot.
-    fn client(&self, index: i32) -> Shared<ClientInfo> {
+    fn client(&self, index: i32) -> ClientInfo {
         self.static_state
             .borrow()
             .client_info
@@ -362,14 +371,14 @@ impl MissionOwnerDraw {
     }
 
     /// Selected client.
-    fn selected(&self) -> Shared<ClientInfo> {
+    fn selected(&self) -> ClientInfo {
         let index = self.selected_index();
         self.client(index)
     }
 
     /// Current team.
     fn team(&self) -> i32 {
-        self.ps().persistant.get(PersistentIndex::Team as i32)
+        self.ps().persistant.get(PersistentIndex::PersTeam as usize)
     }
 
     /// Location name.
@@ -465,27 +474,32 @@ impl MissionOwnerDraw {
         let ps = self.ps();
         let schema = stat_schema(Product::Missionpack);
         match MissionOwnerDrawId::from_i32(id) {
-            Some(MissionOwnerDrawId::SelectedPlayerArmor) => self.selected().borrow().armor,
-            Some(MissionOwnerDrawId::SelectedPlayerHealth) => self.selected().borrow().health,
-            Some(MissionOwnerDrawId::PlayerArmorValue) => ps.stats.get(schema.armor),
+            Some(MissionOwnerDrawId::SelectedPlayerArmor) => self.selected().armor,
+            Some(MissionOwnerDrawId::SelectedPlayerHealth) => self.selected().health,
+            Some(MissionOwnerDrawId::PlayerArmorValue) => ps.stats.get(schema.armor()),
             Some(MissionOwnerDrawId::PlayerAmmoValue) => {
                 if let Some(weapon_hud) = &self.host.weapon_hud {
-                    let status = weapon_hud.borrow().read_weapon_hud().status;
+                    let status = weapon_hud.borrow_mut().read().0;
                     match status.map(|status| status.ammo) {
-                        Some(WeaponHudAmmo::Finite { count }) => count,
+                        Some(WeaponHudAmmo::Finite { count, .. }) => count,
                         _ => -1,
                     }
                 } else {
-                    let weapon = self.state.borrow().entity_at(ps.client_num).current_state.weapon;
+                    let weapon = self
+                        .state
+                        .borrow()
+                        .entity_at(ps.client_num)
+                        .map(|entity| entity.current_state.weapon)
+                        .unwrap_or(0);
                     if weapon != 0 {
-                        ps.ammo.get(weapon)
+                        ps.ammo.get(weapon as usize)
                     } else {
                         -1
                     }
                 }
             }
-            Some(MissionOwnerDrawId::PlayerScore) => ps.persistant.get(PersistentIndex::Score as i32),
-            Some(MissionOwnerDrawId::PlayerHealth) => ps.stats.get(schema.health),
+            Some(MissionOwnerDrawId::PlayerScore) => ps.persistant.get(PersistentIndex::PersScore as usize),
+            Some(MissionOwnerDrawId::PlayerHealth) => ps.stats.get(schema.health()),
             Some(MissionOwnerDrawId::RedScore) => self.static_state.borrow().scores1,
             Some(MissionOwnerDrawId::BlueScore) => self.static_state.borrow().scores2,
             _ => -1,
@@ -496,16 +510,17 @@ impl MissionOwnerDraw {
     #[must_use]
     pub fn other_team_has_flag(&self) -> bool {
         let cgs = self.static_state.borrow();
-        if cgs.game_type != GameType::OneFlagCtf && cgs.game_type != GameType::Ctf {
+        if cgs.game_type != GameType::Gt1fctf && cgs.game_type != GameType::GtCtf {
             return false;
         }
         let team = self.team();
-        if cgs.game_type == GameType::OneFlagCtf {
-            return team == Team::Red as i32 && cgs.flag_status == 3
-                || team == Team::Blue as i32 && cgs.flag_status == 2;
+        if cgs.game_type == GameType::Gt1fctf {
+            return team == Team::TeamRed as i32 && cgs.flag_status == 3
+                || team == Team::TeamBlue as i32 && cgs.flag_status == 2;
         }
-        if cgs.game_type == GameType::Ctf {
-            return team == Team::Red as i32 && cgs.redflag == 1 || team == Team::Blue as i32 && cgs.blueflag == 1;
+        if cgs.game_type == GameType::GtCtf {
+            return team == Team::TeamRed as i32 && cgs.redflag == 1
+                || team == Team::TeamBlue as i32 && cgs.blueflag == 1;
         }
         false
     }
@@ -514,16 +529,17 @@ impl MissionOwnerDraw {
     #[must_use]
     pub fn your_team_has_flag(&self) -> bool {
         let cgs = self.static_state.borrow();
-        if cgs.game_type != GameType::OneFlagCtf && cgs.game_type != GameType::Ctf {
+        if cgs.game_type != GameType::Gt1fctf && cgs.game_type != GameType::GtCtf {
             return false;
         }
         let team = self.team();
-        if cgs.game_type == GameType::OneFlagCtf {
-            return team == Team::Red as i32 && cgs.flag_status == 2
-                || team == Team::Blue as i32 && cgs.flag_status == 3;
+        if cgs.game_type == GameType::Gt1fctf {
+            return team == Team::TeamRed as i32 && cgs.flag_status == 2
+                || team == Team::TeamBlue as i32 && cgs.flag_status == 3;
         }
-        if cgs.game_type == GameType::Ctf {
-            return team == Team::Red as i32 && cgs.blueflag == 1 || team == Team::Blue as i32 && cgs.redflag == 1;
+        if cgs.game_type == GameType::GtCtf {
+            return team == Team::TeamRed as i32 && cgs.blueflag == 1
+                || team == Team::TeamBlue as i32 && cgs.redflag == 1;
         }
         false
     }
@@ -550,42 +566,43 @@ impl MissionOwnerDraw {
             return flags & SHOW::SHOW_BLUE_TEAM_HAS_REDFLAG != 0 && (cgs.redflag == 1 || cgs.flag_status == 2)
                 || flags & SHOW::SHOW_RED_TEAM_HAS_BLUEFLAG != 0 && (cgs.blueflag == 1 || cgs.flag_status == 3);
         }
-        if flags & SHOW::SHOW_ANYTEAMGAME != 0 && game_type >= GameType::Team {
+        if flags & SHOW::SHOW_ANYTEAMGAME != 0 && (game_type as i32) >= (GameType::GtTeam as i32) {
             return true;
         }
-        if flags & SHOW::SHOW_ANYNONTEAMGAME != 0 && game_type < GameType::Team {
+        if flags & SHOW::SHOW_ANYNONTEAMGAME != 0 && (game_type as i32) < (GameType::GtTeam as i32) {
             return true;
         }
         if flags & SHOW::SHOW_HARVESTER != 0 {
-            return game_type == GameType::Harvester;
+            return game_type == GameType::GtHarvester;
         }
         if flags & SHOW::SHOW_ONEFLAG != 0 {
-            return game_type == GameType::OneFlagCtf;
+            return game_type == GameType::Gt1fctf;
         }
-        if flags & SHOW::SHOW_CTF != 0 && game_type == GameType::Ctf {
+        if flags & SHOW::SHOW_CTF != 0 && game_type == GameType::GtCtf {
             return true;
         }
         if flags & SHOW::SHOW_OBELISK != 0 {
-            return game_type == GameType::Obelisk;
+            return game_type == GameType::GtObelisk;
         }
-        if flags & SHOW::SHOW_HEALTHCRITICAL != 0 && self.ps().stats.get(stat_schema(Product::Missionpack).health) < 25
+        if flags & SHOW::SHOW_HEALTHCRITICAL != 0
+            && self.ps().stats.get(stat_schema(Product::Missionpack).health()) < 25
         {
             return true;
         }
-        if flags & SHOW::SHOW_HEALTHOK != 0 && self.ps().stats.get(stat_schema(Product::Missionpack).health) >= 25 {
+        if flags & SHOW::SHOW_HEALTHOK != 0 && self.ps().stats.get(stat_schema(Product::Missionpack).health()) >= 25 {
             return true;
         }
-        if flags & SHOW::SHOW_SINGLEPLAYER != 0 && game_type == GameType::SinglePlayer {
+        if flags & SHOW::SHOW_SINGLEPLAYER != 0 && game_type == GameType::GtSinglePlayer {
             return true;
         }
-        if flags & SHOW::SHOW_TOURNAMENT != 0 && game_type == GameType::Tournament {
+        if flags & SHOW::SHOW_TOURNAMENT != 0 && game_type == GameType::GtTournament {
             return true;
         }
         if flags & SHOW::SHOW_IF_PLAYER_HAS_FLAG != 0 {
             let ps = self.ps();
-            return ps.powerups.get(Powerup::RedFlag as i32) != 0
-                || ps.powerups.get(Powerup::BlueFlag as i32) != 0
-                || ps.powerups.get(Powerup::NeutralFlag as i32) != 0;
+            return ps.powerups.get(Powerup::PwRedflag as usize) != 0
+                || ps.powerups.get(Powerup::PwBlueflag as usize) != 0
+                || ps.powerups.get(Powerup::PwNeutralflag as usize) != 0;
         }
         false
     }
@@ -593,27 +610,27 @@ impl MissionOwnerDraw {
     /// Game type text.
     fn game_type_text(&self) -> String {
         match self.static_state.borrow().game_type {
-            GameType::Ffa => "Free For All".to_string(),
-            GameType::Team => "Team Deathmatch".to_string(),
-            GameType::Ctf => "Capture the Flag".to_string(),
-            GameType::OneFlagCtf => "One Flag CTF".to_string(),
-            GameType::Obelisk => "Overload".to_string(),
-            GameType::Harvester => "Harvester".to_string(),
+            GameType::GtFfa => "Free For All".to_string(),
+            GameType::GtTeam => "Team Deathmatch".to_string(),
+            GameType::GtCtf => "Capture the Flag".to_string(),
+            GameType::Gt1fctf => "One Flag CTF".to_string(),
+            GameType::GtObelisk => "Overload".to_string(),
+            GameType::GtHarvester => "Harvester".to_string(),
             _ => String::new(),
         }
     }
 
     /// Game status text.
     fn game_status_text(&self) -> String {
-        if self.static_state.borrow().game_type < GameType::Team {
-            if self.team() == Team::Spectator as i32 {
+        if (self.static_state.borrow().game_type as i32) < (GameType::GtTeam as i32) {
+            if self.team() == Team::TeamSpectator as i32 {
                 return String::new();
             }
             let ps = self.ps();
             return format!(
                 "{} place with {}",
-                place_string(ps.persistant.get(PersistentIndex::Rank as i32).wrapping_add(1)),
-                ps.persistant.get(PersistentIndex::Score as i32)
+                place_string(ps.persistant.get(PersistentIndex::PersRank as usize).wrapping_add(1)),
+                ps.persistant.get(PersistentIndex::PersScore as usize)
             );
         }
         let team_scores = self.state.borrow().team_scores;
@@ -694,7 +711,12 @@ impl MissionOwnerDraw {
             }
         } else if self.cvar("cg_draw3dIcons") != 0 {
             let ps = self.ps();
-            let weapon = self.state.borrow().entity_at(ps.client_num).current_state.weapon;
+            let weapon = self
+                .state
+                .borrow()
+                .entity_at(ps.client_num)
+                .map(|entity| entity.current_state.weapon)
+                .unwrap_or_default();
             let model = self.media.borrow().weapon_registry.borrow().weapon(weapon).ammo_model;
             if weapon != 0 && !model.is_default() {
                 let time = self.state.borrow().time;
@@ -714,8 +736,8 @@ impl MissionOwnerDraw {
         let time = self.state.borrow().time;
         let damage_time = self.state.borrow().damage_time;
         let mut x = rect.x;
-        if damage_time != 0 && (time as f32 - damage_time as f32) < 500.0 {
-            let frac = (time as f32 - damage_time as f32) / 500.0;
+        if damage_time != 0.0 && (time as f32 - damage_time) < 500.0 {
+            let frac = (time as f32 - damage_time) / 500.0;
             let size = rect.width * 1.25 * (1.5 - frac * 0.5);
             let stretch = size - rect.width * 1.25;
             let damage_x = self.state.borrow().damage_x;
@@ -772,7 +794,7 @@ impl MissionOwnerDraw {
 
     /// Selected status.
     fn selected_status(&self, rect: Rect2d) {
-        let team_task = self.selected().borrow().team_task;
+        let team_task = self.selected().team_task;
         let (order_pending, order_time, current_order, time) = {
             let cgs = self.static_state.borrow();
             (
@@ -793,9 +815,8 @@ impl MissionOwnerDraw {
     fn flag_carrier(&self, blue: bool) -> Option<i32> {
         for index in 0..self.static_state.borrow().maxclients {
             let client = self.client(index);
-            let client = client.borrow();
-            let wanted_team = if blue { Team::Red } else { Team::Blue };
-            let wanted_flag = if blue { Powerup::BlueFlag } else { Powerup::RedFlag };
+            let wanted_team = if blue { Team::TeamRed } else { Team::TeamBlue };
+            let wanted_flag = if blue { Powerup::PwBlueflag } else { Powerup::PwRedflag };
             if client.info_valid && client.team == wanted_team && client.powerups & (1 << wanted_flag as i32) != 0 {
                 return Some(index);
             }
@@ -817,8 +838,8 @@ impl MissionOwnerDraw {
     /// Flag status.
     fn flag_status(&self, rect: Rect2d, blue: bool, picture: &Option<Picture>) {
         let game_type = self.static_state.borrow().game_type;
-        if game_type != GameType::Ctf && game_type != GameType::OneFlagCtf {
-            if game_type == GameType::Harvester {
+        if game_type != GameType::GtCtf && game_type != GameType::Gt1fctf {
+            if game_type == GameType::GtHarvester {
                 let tools = self.host.icons.borrow().tools.clone();
                 let icon = if blue {
                     tools.media.borrow().graphics.blue_cube_icon.clone()
@@ -847,15 +868,8 @@ impl MissionOwnerDraw {
                 *picture,
             );
         } else {
-            let powerup = if blue { Powerup::BlueFlag } else { Powerup::RedFlag };
-            if self
-                .media
-                .borrow()
-                .items
-                .borrow()
-                .find_for_powerup(Product::Missionpack, powerup as i32)
-                .is_none()
-            {
+            let powerup = if blue { Powerup::PwBlueflag } else { Powerup::PwRedflag };
+            if find_item_for_powerup(Product::Missionpack, powerup).is_none() {
                 return;
             }
             let status = if blue {
@@ -885,14 +899,8 @@ impl MissionOwnerDraw {
     /// One-flag status.
     fn one_flag_status(&self, rect: Rect2d) {
         let status = self.static_state.borrow().flag_status;
-        if self.static_state.borrow().game_type != GameType::OneFlagCtf
-            || self
-                .media
-                .borrow()
-                .items
-                .borrow()
-                .find_for_powerup(Product::Missionpack, Powerup::NeutralFlag as i32)
-                .is_none()
+        if self.static_state.borrow().game_type != GameType::Gt1fctf
+            || find_item_for_powerup(Product::Missionpack, Powerup::PwNeutralflag).is_none()
             || !(0..=4).contains(&status)
         {
             return;
@@ -925,7 +933,7 @@ impl MissionOwnerDraw {
 
     /// Harvester skulls.
     fn skulls(&self, rect: Rect2d, scale: f32, color: Vec4, force_2d: bool, style: i32) {
-        if self.static_state.borrow().game_type != GameType::Harvester {
+        if self.static_state.borrow().game_type != GameType::GtHarvester {
             return;
         }
         let text = format!("{}", self.ps().generic1.min(99));
@@ -942,7 +950,7 @@ impl MissionOwnerDraw {
         if self.cvar("cg_drawIcons") == 0 {
             return;
         }
-        let red = self.team() == Team::Blue as i32;
+        let red = self.team() == Team::TeamBlue as i32;
         if !force_2d && self.cvar("cg_draw3dIcons") != 0 {
             let model = if red {
                 self.media.borrow().graphics.red_cube_model.clone()
@@ -980,33 +988,33 @@ impl MissionOwnerDraw {
         let ps = self.state.borrow().predicted_player_state.clone();
         let adj = if force_2d { 0.0 } else { 2.0 };
         let adjusted = rect2d(rect.x + adj, rect.y + adj, rect.width - adj, rect.height - adj);
-        if ps.powerups.get(Powerup::RedFlag as i32) != 0 {
+        if ps.powerups.get(Powerup::PwRedflag as usize) != 0 {
             self.host
                 .icons
                 .borrow()
-                .draw_flag_model(adjusted, Team::Red as i32, force_2d);
-        } else if ps.powerups.get(Powerup::BlueFlag as i32) != 0 {
+                .draw_flag_model(adjusted, Team::TeamRed as i32, force_2d);
+        } else if ps.powerups.get(Powerup::PwBlueflag as usize) != 0 {
             self.host
                 .icons
                 .borrow()
-                .draw_flag_model(adjusted, Team::Blue as i32, force_2d);
-        } else if ps.powerups.get(Powerup::NeutralFlag as i32) != 0 {
+                .draw_flag_model(adjusted, Team::TeamBlue as i32, force_2d);
+        } else if ps.powerups.get(Powerup::PwNeutralflag as usize) != 0 {
             self.host
                 .icons
                 .borrow()
-                .draw_flag_model(adjusted, Team::Free as i32, force_2d);
+                .draw_flag_model(adjusted, Team::TeamFree as i32, force_2d);
         }
     }
 
     /// Persistent/holdable item.
     fn item(&self, rect: Rect2d, persistent: bool) {
-        if persistent && self.static_state.borrow().game_type < GameType::Ctf {
+        if persistent && (self.static_state.borrow().game_type as i32) < (GameType::GtCtf as i32) {
             return;
         }
         let value = self.ps().stats.get(if persistent {
-            MissionpackStatIndex::PersistantPowerup as i32
+            MissionpackStatIndex::StatPersistantPowerup as usize
         } else {
-            MissionpackStatIndex::HoldableItem as i32
+            MissionpackStatIndex::StatHoldableItem as usize
         });
         if value == 0 {
             return;
@@ -1035,21 +1043,22 @@ impl MissionOwnerDraw {
 
     /// Selected powerup.
     fn selected_powerup(&self, rect: Rect2d) {
-        let powerups = self.selected().borrow().powerups;
-        for slot in 0..Powerup::NumPowerups as i32 {
+        let powerups = self.selected().powerups;
+        for slot in 0..Powerup::PwNumPowerups as i32 {
             if powerups & (1 << slot) == 0 {
                 continue;
             }
-            let item = self
-                .media
-                .borrow()
-                .items
-                .borrow()
-                .find_for_powerup(Product::Missionpack, slot);
+            let item = item_list(Product::Missionpack).iter().find(|item| matches!(item.kind, ItemKind::Powerup(tag) | ItemKind::Team(tag) | ItemKind::PersistantPowerup(tag) if tag as i32 == slot)).copied();
             if let Some(item) = item {
                 let shader = match item.icon {
                     None => None,
-                    Some(icon) => self.media.borrow().resources.borrow_mut().register_shader(&icon),
+                    Some(icon) => self
+                        .media
+                        .borrow()
+                        .resources
+                        .borrow_mut()
+                        .register_shader(icon)
+                        .unwrap_or(None),
                 };
                 self.host.icons.borrow().tools.draw_pic(rect, &shader);
                 return;
@@ -1060,13 +1069,13 @@ impl MissionOwnerDraw {
     /// Area powerup list.
     fn area_powerup(&self, rect: Rect2d, alignment: i32, special: i32, scale: f32, color: Vec4) {
         let ps = self.ps();
-        if ps.stats.get(stat_schema(Product::Missionpack).health) <= 0 {
+        if ps.stats.get(stat_schema(Product::Missionpack).health()) <= 0 {
             return;
         }
         let time = self.state.borrow().time;
         let mut sorted: Vec<(i32, i32)> = Vec::new();
         for slot in 0..16 {
-            let expiry = ps.powerups.get(slot);
+            let expiry = ps.powerups.get(slot as usize);
             let remaining = expiry.wrapping_sub(time);
             if expiry == 0 || remaining <= 0 || remaining >= 999000 {
                 continue;
@@ -1083,16 +1092,11 @@ impl MissionOwnerDraw {
         let mut y = rect.y;
         let tools = self.host.icons.borrow().tools.clone();
         for (powerup, _) in sorted {
-            let item = self
-                .media
-                .borrow()
-                .items
-                .borrow()
-                .find_for_powerup(Product::Missionpack, powerup);
+            let item = item_list(Product::Missionpack).iter().find(|item| matches!(item.kind, ItemKind::Powerup(tag) | ItemKind::Team(tag) | ItemKind::PersistantPowerup(tag) if tag as i32 == powerup)).copied();
             let Some(item) = item else {
                 continue;
             };
-            let remaining = self.ps().powerups.get(powerup).wrapping_sub(time);
+            let remaining = self.ps().powerups.get(powerup as usize).wrapping_sub(time);
             if remaining >= 5000 {
                 tools.draw.set_color(None);
             } else {
@@ -1102,10 +1106,16 @@ impl MissionOwnerDraw {
             }
             let shader = match item.icon {
                 None => None,
-                Some(icon) => self.media.borrow().resources.borrow_mut().register_shader(&icon),
+                Some(icon) => self
+                    .media
+                    .borrow()
+                    .resources
+                    .borrow_mut()
+                    .register_shader(icon)
+                    .unwrap_or(None),
             };
             tools.draw_pic(rect2d(x, y, rect.width * 0.75, rect.height), &shader);
-            let remaining = self.ps().powerups.get(powerup).wrapping_sub(time);
+            let remaining = self.ps().powerups.get(powerup as usize).wrapping_sub(time);
             self.text(
                 rect,
                 scale,
@@ -1160,7 +1170,6 @@ impl MissionOwnerDraw {
                     panic!("Invalid owner-draw slot {index}");
                 });
             let client = self.client(number);
-            let client = client.borrow();
             if client.info_valid && client.team as i32 == self.team() {
                 self.width_text(&client.name, scale);
             }
@@ -1183,25 +1192,26 @@ impl MissionOwnerDraw {
                     panic!("Invalid owner-draw slot {index}");
                 });
             let client_handle = self.client(number);
-            let client = client_handle.borrow();
+            let client = client_handle.clone();
             if !client.info_valid || client.team as i32 != self.team() {
                 continue;
             }
             let mut x = (rect.x + 1.0).trunc() as i32;
-            for slot in 0..=Powerup::NumPowerups as i32 {
+            for slot in 0..=Powerup::PwNumPowerups as i32 {
                 if client.powerups & (1 << slot) == 0 {
                     continue;
                 }
-                let item = self
-                    .media
-                    .borrow()
-                    .items
-                    .borrow()
-                    .find_for_powerup(Product::Missionpack, slot);
+                let item = item_list(Product::Missionpack).iter().find(|item| matches!(item.kind, ItemKind::Powerup(tag) | ItemKind::Team(tag) | ItemKind::PersistantPowerup(tag) if tag as i32 == slot)).copied();
                 if let Some(item) = item {
                     let shader = match item.icon {
                         None => None,
-                        Some(icon) => self.media.borrow().resources.borrow_mut().register_shader(&icon),
+                        Some(icon) => self
+                            .media
+                            .borrow()
+                            .resources
+                            .borrow_mut()
+                            .register_shader(icon)
+                            .unwrap_or(None),
                     };
                     self.host
                         .icons
@@ -1241,9 +1251,9 @@ impl MissionOwnerDraw {
             let left_over = rect.width - x as f32;
             let max = x as f32 + left_over / 3.0;
             drop(client);
-            let name = client_handle.borrow().name.clone();
+            let name = client_handle.name.clone();
             self.limited(&name, x as f32, y + text_y, scale, color, max, 0);
-            let location = self.location(client_handle.borrow().location);
+            let location = self.location(client_handle.location);
             x = (x as f32 + left_over / 3.0 + 2.0).trunc() as i32;
             self.limited(&location, x as f32, y + text_y, scale, color, rect.width - 4.0, 0);
             y += text_y + 2.0;
@@ -1263,7 +1273,7 @@ impl MissionOwnerDraw {
             self.state.borrow_mut().spectator_paint_x = (rect.x + 1.0).trunc() as i32;
             self.state.borrow_mut().spectator_paint_x2 = -1;
         }
-        if self.state.borrow().spectator_offset > self.state.borrow().spectator_len {
+        if self.state.borrow().spectator_offset > self.state.borrow().spectator_len as i32 {
             self.state.borrow_mut().spectator_offset = 0;
             self.state.borrow_mut().spectator_paint_x = (rect.x + 1.0).trunc() as i32;
             self.state.borrow_mut().spectator_paint_x2 = -1;
@@ -1277,7 +1287,7 @@ impl MissionOwnerDraw {
             if self.state.borrow().spectator_paint_x as f32 <= rect.x + 2.0 {
                 let (offset, len) = {
                     let state = self.state.borrow();
-                    (state.spectator_offset, state.spectator_len)
+                    (state.spectator_offset, state.spectator_len as i32)
                 };
                 if offset < len {
                     let rest: String = self
@@ -1354,7 +1364,7 @@ impl MissionOwnerDraw {
         let mut text: Option<String> = None;
         let mut color = Vec4 { w: 0.25, ..input_color };
         match MissionOwnerDrawId::from_i32(id) {
-            Some(MissionOwnerDrawId::Accuracy) => value = score.accuracy,
+            Some(MissionOwnerDrawId::Accuracy) => value = score.accuracy as f32,
             Some(MissionOwnerDrawId::Assists) => value = score.assist_count as f32,
             Some(MissionOwnerDrawId::Defend) => value = score.defend_count as f32,
             Some(MissionOwnerDrawId::Excellent) => value = score.excellent_count as f32,
@@ -1380,10 +1390,16 @@ impl MissionOwnerDraw {
         }
         let tools = self.host.icons.borrow().tools.clone();
         tools.draw.set_color(Some(color));
-        let picture = picture
-            .as_ref()
-            .copied()
-            .unwrap_or_else(|| tools.media.borrow().resources.borrow().picture(&None));
+        let picture = picture.as_ref().copied().unwrap_or_else(|| {
+            tools
+                .media
+                .borrow()
+                .resources
+                .borrow()
+                .picture(None)
+                .map(|material| Picture { order: material.id })
+                .unwrap_or(ZERO_PICTURE)
+        });
         tools.draw.stretch_pic(
             rect,
             TextureRect {
@@ -1427,7 +1443,13 @@ impl MissionOwnerDraw {
             Some(MissionOwnerDrawId::PlayerAmmoIcon2d) => self.ammo_icon(request.rect, true),
             Some(MissionOwnerDrawId::PlayerAmmoValue) => {
                 if self.host.weapon_hud.is_none()
-                    && self.state.borrow().entity_at(self.ps().client_num).current_state.weapon != 0
+                    && self
+                        .state
+                        .borrow()
+                        .entity_at(self.ps().client_num)
+                        .map(|entity| entity.current_state.weapon)
+                        .unwrap_or(0)
+                        != 0
                     && self.raw_value(request.owner_draw) > -1
                 {
                     let value = self.raw_value(request.owner_draw);
@@ -1458,8 +1480,8 @@ impl MissionOwnerDraw {
                 );
             }
             Some(MissionOwnerDrawId::SelectedPlayerArmor) => {
-                if self.selected().borrow().armor > 0 {
-                    let armor = self.selected().borrow().armor;
+                if self.selected().armor > 0 {
+                    let armor = self.selected().armor;
                     self.number(
                         request.rect,
                         request.text_scale,
@@ -1487,7 +1509,7 @@ impl MissionOwnerDraw {
                 } else {
                     self.selected_index()
                 };
-                let name = self.client(index).borrow().name.clone();
+                let name = self.client(index).name.clone();
                 let (x, y) = (request.rect.x, request.rect.y + request.rect.height);
                 self.text(
                     request.rect,
@@ -1500,7 +1522,7 @@ impl MissionOwnerDraw {
                 );
             }
             Some(MissionOwnerDrawId::SelectedPlayerLocation) => {
-                let location = self.location(self.selected().borrow().location);
+                let location = self.location(self.selected().location);
                 let (x, y) = (request.rect.x, request.rect.y + request.rect.height);
                 self.text(
                     request.rect,
@@ -1513,7 +1535,7 @@ impl MissionOwnerDraw {
                 );
             }
             Some(MissionOwnerDrawId::PlayerLocation) => {
-                let location = self.location(self.client(self.ps().client_num).borrow().location);
+                let location = self.location(self.client(self.ps().client_num).location);
                 let (x, y) = (request.rect.x, request.rect.y + request.rect.height);
                 self.text(
                     request.rect,
@@ -1527,12 +1549,12 @@ impl MissionOwnerDraw {
             }
             Some(MissionOwnerDrawId::SelectedPlayerStatus) => self.selected_status(request.rect),
             Some(MissionOwnerDrawId::PlayerStatus) => {
-                let task = self.client(self.ps().client_num).borrow().team_task;
+                let task = self.client(self.ps().client_num).team_task;
                 let handle = self.status_handle(task);
                 self.host.icons.borrow().tools.draw_pic(request.rect, &handle);
             }
             Some(MissionOwnerDrawId::SelectedPlayerWeapon) => {
-                let weapon = self.selected().borrow().cur_weapon;
+                let weapon = self.selected().cur_weapon;
                 let icon = self.media.borrow().weapon_registry.borrow().weapon(weapon).weapon_icon;
                 let defer = self.media.borrow().graphics.defer_shader.clone();
                 self.host.icons.borrow().tools.draw_pic(request.rect, &icon.or(defer));
@@ -1587,7 +1609,7 @@ impl MissionOwnerDraw {
             Some(MissionOwnerDrawId::RedFlagStatus) => self.flag_status(request.rect, false, &request.background),
             Some(MissionOwnerDrawId::BlueFlagName) | Some(MissionOwnerDrawId::RedFlagName) => {
                 if let Some(carrier) = self.flag_carrier(id == Some(MissionOwnerDrawId::BlueFlagName)) {
-                    let name = self.client(carrier).borrow().name.clone();
+                    let name = self.client(carrier).name.clone();
                     let (x, y) = (request.rect.x, request.rect.y + request.rect.height);
                     self.text(
                         request.rect,
@@ -1740,7 +1762,7 @@ impl MissionOwnerDraw {
                 }
             }
             Some(MissionOwnerDrawId::CapFragLimit) => {
-                let value = if self.static_state.borrow().game_type >= GameType::Ctf {
+                let value = if (self.static_state.borrow().game_type as i32) >= (GameType::GtCtf as i32) {
                     self.static_state.borrow().capturelimit
                 } else {
                     self.static_state.borrow().fraglimit
@@ -1777,5 +1799,113 @@ impl MissionOwnerDraw {
             }
             None => {}
         }
+    }
+}
+
+/// Owner-draw paint request (`UiOwnerDrawPaintRequest`).
+#[derive(Clone)]
+pub struct OwnerDrawPaintRequest {
+    /// Drawing context (must share the HUD recorder queue).
+    pub draw: Draw2D,
+    /// Rectangle.
+    pub rect: Rect2d,
+    /// Text X.
+    pub text_x: f32,
+    /// Text Y.
+    pub text_y: f32,
+    /// Owner-draw id.
+    pub owner_draw: i32,
+    /// Owner-draw flags.
+    pub owner_draw_flags: i32,
+    /// Alignment.
+    pub alignment: i32,
+    /// Special.
+    pub special: i32,
+    /// Text scale.
+    pub text_scale: f32,
+    /// Color.
+    pub color: Vec4,
+    /// Background picture.
+    pub background: Option<Picture>,
+    /// Text style.
+    pub text_style: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::shared::definitions::{GameType, MissionpackStatIndex, PersistentIndex, Product, Team};
+    use crate::q3::base::shared::player_state::PlayerState;
+    use crate::q3::presentation::hud::shared;
+    use crate::q3::presentation::hud::tests::*;
+    use crate::q3::presentation::mission_hud::MissionScoreFeeder;
+    use crate::q3::presentation::retail_snapshot::Snapshot;
+    use qa_core::cmd::Dialect;
+    use qa_core::cvar::CvarRegistry;
+
+    #[test]
+    fn owner_draw_ids_flags_and_values() {
+        assert_eq!(MissionOwnerDrawId::PlayerHead as i32, 3);
+        assert_eq!(MissionOwnerDrawId::from_i32(69), Some(MissionOwnerDrawId::Captures));
+        assert_eq!(MissionOwnerDrawId::from_i32(13), None);
+        assert_eq!(owner_draw_flags::SHOW_2DONLY, 0x10000000);
+        assert_eq!(MissionScoreFeeder::Scoreboard as i32, 11);
+        let game = world(Product::Missionpack);
+        game.static_state.borrow_mut().game_type = GameType::GtCtf;
+        game.static_state.borrow_mut().blueflag = 1;
+        let mut ps = PlayerState::new(Product::Missionpack, None);
+        ps.persistant
+            .set(PersistentIndex::PersTeam as usize, Team::TeamRed as i32);
+        ps.stats.set(MissionpackStatIndex::StatHealth as usize, 80);
+        ps.stats.set(MissionpackStatIndex::StatArmor as usize, 25);
+        game.state.borrow_mut().snap = Some(Snapshot {
+            message_number: 0,
+            server_time: 1,
+            delta_number: 0,
+            flags: 0,
+            server_command_number: 0,
+            parse_entities_number: 0,
+            area_mask: [0; 32],
+            player_state: ps,
+            entities: Vec::new(),
+        });
+        let configuration = shared(ClientConfiguration::new(
+            Product::Missionpack,
+            ClientConfigurationHost {
+                cvars: shared(CvarRegistry::new(Dialect::Q3)),
+                state: game.state.clone(),
+                static_state: game.static_state.clone(),
+                clients: game.store.clone(),
+                strings: game.strings.clone(),
+                status_visible: None,
+            },
+        ));
+        configuration.borrow().register_cvars();
+        let owner = MissionOwnerDraw::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            game.media.clone(),
+            MissionOwnerDrawHost {
+                weapon_hud: None,
+                icons: game.icons.clone(),
+                fonts: shared(zero_cgame_fonts()),
+                configuration: configuration.clone(),
+                random: shared(GameRandom::new(1)),
+                strings: game.strings.clone(),
+                selected_player: Rc::new(|| 0),
+                chat: Rc::new(HudChatText::default),
+            },
+        );
+        assert!(owner.your_team_has_flag());
+        assert!(!owner.other_team_has_flag());
+        assert!(owner.visible(owner_draw_flags::SHOW_YOURTEAMHASENEMYFLAG));
+        assert!(owner.visible(owner_draw_flags::SHOW_ANYTEAMGAME));
+        assert!(owner.visible(owner_draw_flags::SHOW_HEALTHOK));
+        assert!(!owner.visible(owner_draw_flags::SHOW_HEALTHCRITICAL));
+        assert_eq!(owner.value(MissionOwnerDrawId::PlayerHealth as i32), 80.0);
+        assert_eq!(owner.value(MissionOwnerDrawId::PlayerArmorValue as i32), 25.0);
+        assert_eq!(owner.value(999), -1.0);
+        assert!(owner.status_handle(2).is_none() || owner.status_handle(99).is_none());
+        assert_eq!(owner.width(MissionOwnerDrawId::GameType as i32, 1.0), 0.0);
     }
 }

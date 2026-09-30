@@ -5,13 +5,16 @@
 use qa_core::math::vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::{GameType, Product, MAX_ITEMS};
+use crate::q3::base::shared::items::{item_at, item_list};
+use crate::q3::presentation::audio::PresentSound;
 use crate::q3::presentation::character_resources::*;
 use crate::q3::presentation::effects::*;
 use crate::q3::presentation::entities::*;
 use crate::q3::presentation::local_entities::*;
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::model_access::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 use crate::q3::presentation::weapons::*;
 
 // ---------------------------------------------------------------------------
@@ -737,7 +740,7 @@ impl ClientMedia {
 
     /// Mission player media.
     pub fn mission_players(&self) -> PresentResult<MissionPlayerMedia> {
-        if self.product != Product::MissionPack {
+        if self.product != Product::Missionpack {
             return Err(PresentError::state("Mission player media requested in baseq3"));
         }
         Ok(MissionPlayerMedia {
@@ -765,7 +768,7 @@ impl ClientMedia {
             red_flag_base_model: graphics.red_flag_base_model.clone(),
             blue_flag_base_model: graphics.blue_flag_base_model.clone(),
             neutral_flag_base_model: graphics.neutral_flag_base_model.clone(),
-            variant: if self.product == Product::BaseQ3 {
+            variant: if self.product == Product::Baseq3 {
                 PacketEntityMediaVariant::Base
             } else {
                 PacketEntityMediaVariant::Mission(PacketMissionMedia {
@@ -806,7 +809,7 @@ impl ClientMedia {
             gib_intestine: graphics.gib_intestine.clone(),
             gib_leg: graphics.gib_leg.clone(),
             smoke2: graphics.smoke2.clone(),
-            variant: if self.product == Product::BaseQ3 {
+            variant: if self.product == Product::Baseq3 {
                 EffectMediaVariant::Base {
                     teleport_effect_shader: graphics.teleport_effect_shader.clone(),
                 }
@@ -860,7 +863,7 @@ impl ClientMedia {
                 sounds.gib_bounce3_sound.clone(),
             ],
         };
-        if self.product == Product::BaseQ3 {
+        if self.product == Product::Baseq3 {
             LocalEntityHostMedia::Base(base)
         } else {
             LocalEntityHostMedia::Mission(MissionLocalEntityMedia {
@@ -931,19 +934,19 @@ pub(crate) fn validate_media(media: &ClientMedia, host: &dyn ClientMediaHost) ->
 
 pub(crate) fn item_bits(host: &dyn ClientMediaHost) -> PresentResult<String> {
     let bits = host.config_string(27);
-    if bits.len() > MAX_ITEMS {
+    if bits.len() > MAX_ITEMS as usize {
         return Err(PresentError::range("CS_ITEMS exceeds source MAX_ITEMS precache buffer"));
     }
     Ok(bits)
 }
 
 /// Register item sounds (`registerItemSounds`).
-pub fn register_item_sounds(media: &mut ClientMedia, number: i32, items: &dyn PresentItemTable) -> PresentResult<()> {
-    let item = items
-        .item_at(media.product, number as usize)
+pub fn register_item_sounds(media: &mut ClientMedia, number: i32) -> PresentResult<()> {
+    let item = item_at(media.product, number)
+        .ok()
         .ok_or_else(|| PresentError::drop(format!("Bad item index {number} on entity")))?;
     if let Some(pickup) = item.pickup_sound {
-        media.sound_bank.register_sound(&pickup, false);
+        media.sound_bank.register_sound(pickup, false);
     }
     let bytes = item.sounds.as_bytes();
     let mut offset = 0;
@@ -956,7 +959,7 @@ pub fn register_item_sounds(media: &mut ClientMedia, number: i32, items: &dyn Pr
         if !(5..64).contains(&length) {
             return Err(PresentError::state(format!(
                 "PrecacheItem: {} has bad precache string",
-                item.class_name
+                item.class_name.unwrap_or("")
             )));
         }
         let name = &item.sounds[start..offset];
@@ -980,13 +983,9 @@ pub fn register_client_loading_graphics(media: &mut ClientMedia) {
 }
 
 /// Register client sounds (`registerClientSounds`).
-pub fn register_client_sounds(
-    media: &mut ClientMedia,
-    host: &mut dyn ClientMediaHost,
-    items: &dyn PresentItemTable,
-) -> PresentResult<()> {
+pub fn register_client_sounds(media: &mut ClientMedia, host: &mut dyn ClientMediaHost) -> PresentResult<()> {
     validate_media(media, host)?;
-    let mission = media.product == Product::MissionPack;
+    let mission = media.product == Product::Missionpack;
     let game_type = media.static_state.game_type;
     if mission {
         host.load_voice_chats();
@@ -1007,7 +1006,7 @@ pub fn register_client_sounds(
     if mission {
         sounds.count_prepare_team_sound = bank.register_sound("sound/feedback/prepare_team.wav", true);
     }
-    if game_type >= GameType::Team || host.build_script() {
+    if (game_type as i32) >= (GameType::GtTeam as i32) || host.build_script() {
         sounds.capture_award_sound = bank.register_sound("sound/teamplay/flagcapture_yourteam.wav", true);
         sounds.red_leads_sound = bank.register_sound("sound/feedback/redleads.wav", true);
         sounds.blue_leads_sound = bank.register_sound("sound/feedback/blueleads.wav", true);
@@ -1021,24 +1020,24 @@ pub fn register_client_sounds(
         sounds.return_opponent_sound = bank.register_sound("sound/teamplay/flagreturn_opponent.wav", true);
         sounds.taken_your_team_sound = bank.register_sound("sound/teamplay/flagtaken_yourteam.wav", true);
         sounds.taken_opponent_sound = bank.register_sound("sound/teamplay/flagtaken_opponent.wav", true);
-        if game_type == GameType::Ctf || host.build_script() {
+        if game_type == GameType::GtCtf || host.build_script() {
             sounds.red_flag_returned_sound = bank.register_sound("sound/teamplay/voc_red_returned.wav", true);
             sounds.blue_flag_returned_sound = bank.register_sound("sound/teamplay/voc_blue_returned.wav", true);
             sounds.enemy_took_your_flag_sound = bank.register_sound("sound/teamplay/voc_enemy_flag.wav", true);
             sounds.your_team_took_enemy_flag_sound = bank.register_sound("sound/teamplay/voc_team_flag.wav", true);
         }
         if mission {
-            if game_type == GameType::OneFlagCtf || host.build_script() {
+            if game_type == GameType::Gt1fctf || host.build_script() {
                 sounds.neutral_flag_returned_sound =
                     bank.register_sound("sound/teamplay/flagreturn_opponent.wav", true);
                 sounds.your_team_took_the_flag_sound = bank.register_sound("sound/teamplay/voc_team_1flag.wav", true);
                 sounds.enemy_took_the_flag_sound = bank.register_sound("sound/teamplay/voc_enemy_1flag.wav", true);
             }
-            if game_type == GameType::OneFlagCtf || game_type == GameType::Ctf || host.build_script() {
+            if game_type == GameType::Gt1fctf || game_type == GameType::GtCtf || host.build_script() {
                 sounds.you_have_flag_sound = bank.register_sound("sound/teamplay/voc_you_flag.wav", true);
                 sounds.holy_shit_sound = bank.register_sound("sound/feedback/voc_holyshit.wav", true);
             }
-            if game_type == GameType::Obelisk || host.build_script() {
+            if game_type == GameType::GtObelisk || host.build_script() {
                 sounds.your_base_is_under_attack_sound =
                     bank.register_sound("sound/teamplay/voc_base_attack.wav", true);
             }
@@ -1117,9 +1116,9 @@ pub fn register_client_sounds(
 
     // Source copies CS_ITEMS, but its sound filtering condition is commented out.
     item_bits(host)?;
-    let item_count = items.item_count(media.product);
+    let item_count = item_list(media.product).len();
     for i in 1..item_count {
-        register_item_sounds(media, i as i32, items)?;
+        register_item_sounds(media, i as i32)?;
     }
     for i in 1..256 {
         let name = host.config_string(288 + i);
@@ -1205,10 +1204,9 @@ pub fn register_client_sounds(
 pub fn register_client_graphics(
     media: &mut ClientMedia,
     host: &mut dyn ClientMediaHost,
-    items: &dyn PresentItemTable,
 ) -> PresentResult<RegisteredClientGraphics> {
     validate_media(media, host)?;
-    let mission = media.product == Product::MissionPack;
+    let mission = media.product == Product::Missionpack;
     let game_type = media.static_state.game_type;
     host.reset_refdef();
     host.clear_scene();
@@ -1261,8 +1259,8 @@ pub fn register_client_graphics(
     media.graphics.invis_shader = media.resources.register_shader("powerups/invisibility");
     media.graphics.regen_shader = media.resources.register_shader("powerups/regen");
     media.graphics.haste_puff_shader = media.resources.register_shader("hasteSmokePuff");
-    if game_type == GameType::Ctf
-        || mission && (game_type == GameType::OneFlagCtf || game_type == GameType::Harvester)
+    if game_type == GameType::GtCtf
+        || mission && (game_type == GameType::Gt1fctf || game_type == GameType::GtHarvester)
         || host.build_script()
     {
         media.graphics.red_cube_model = media.resources.register_model("models/powerups/orb/r_orb.md3");
@@ -1270,8 +1268,8 @@ pub fn register_client_graphics(
         media.graphics.red_cube_icon = media.resources.register_shader("icons/skull_red");
         media.graphics.blue_cube_icon = media.resources.register_shader("icons/skull_blue");
     }
-    if game_type == GameType::Ctf
-        || mission && (game_type == GameType::OneFlagCtf || game_type == GameType::Harvester)
+    if game_type == GameType::GtCtf
+        || mission && (game_type == GameType::Gt1fctf || game_type == GameType::GtHarvester)
         || host.build_script()
     {
         media.graphics.red_flag_model = media.resources.register_model("models/flags/r_flag.md3");
@@ -1300,14 +1298,14 @@ pub fn register_client_graphics(
         }
     }
     if mission {
-        if game_type == GameType::OneFlagCtf || host.build_script() {
+        if game_type == GameType::Gt1fctf || host.build_script() {
             media.graphics.neutral_flag_model = media.resources.register_model("models/flags/n_flag.md3");
             media.graphics.flag_shader[0] = media.resources.register_shader_no_mip("icons/iconf_neutral1");
             media.graphics.flag_shader[1] = media.resources.register_shader_no_mip("icons/iconf_red2");
             media.graphics.flag_shader[2] = media.resources.register_shader_no_mip("icons/iconf_blu2");
             media.graphics.flag_shader[3] = media.resources.register_shader_no_mip("icons/iconf_neutral3");
         }
-        if game_type == GameType::Obelisk || host.build_script() {
+        if game_type == GameType::GtObelisk || host.build_script() {
             media.graphics.overload_base_model = media.resources.register_model("models/powerups/overload_base.md3");
             media.graphics.overload_target_model =
                 media.resources.register_model("models/powerups/overload_target.md3");
@@ -1316,7 +1314,7 @@ pub fn register_client_graphics(
             media.graphics.overload_energy_model =
                 media.resources.register_model("models/powerups/overload_energy.md3");
         }
-        if game_type == GameType::Harvester || host.build_script() {
+        if game_type == GameType::GtHarvester || host.build_script() {
             media.graphics.harvester_model = media
                 .resources
                 .register_model("models/powerups/harvester/harvester.md3");
@@ -1328,7 +1326,7 @@ pub fn register_client_graphics(
         media.graphics.red_kamikaze_shader = media.resources.register_shader("models/weaphits/kamikred");
         media.graphics.dust_puff_shader = media.resources.register_shader("hasteSmokePuff");
     }
-    if game_type >= GameType::Team || host.build_script() {
+    if (game_type as i32) >= (GameType::GtTeam as i32) || host.build_script() {
         media.graphics.friend_shader = media.resources.register_shader("sprites/foe");
         media.graphics.red_quad_shader = media.resources.register_shader("powerups/blueflag");
         media.graphics.team_status_bar = media.resources.register_shader("gfx/2d/colorbar.tga");
@@ -1390,11 +1388,11 @@ pub fn register_client_graphics(
 
     let bits = item_bits(host)?;
     let bytes = bits.as_bytes();
-    let item_count = items.item_count(media.product);
+    let item_count = item_list(media.product).len();
     for i in 1..item_count {
         if bytes.get(i) == Some(&b'1') || host.build_script() {
             host.loading_item(i);
-            media.weapon_registry.register_item_visuals(i as i32, items)?;
+            media.weapon_registry.register_item_visuals(i as i32)?;
         }
     }
 

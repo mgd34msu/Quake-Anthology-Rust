@@ -9,8 +9,8 @@ use qa_core::math::{
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::presentation::mark_projector::*;
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 
 // ---------------------------------------------------------------------------
 // marks.ts
@@ -302,5 +302,79 @@ pub(crate) trait VecUnshift<T> {
 impl<T> VecUnshift<T> for Vec<T> {
     fn unshift_insert(&mut self, value: T) {
         self.insert(0, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MarkOptions {
+        clock: i32,
+        enabled: bool,
+    }
+    impl ImpactMarkOptions for MarkOptions {
+        fn clock(&self) -> i32 {
+            self.clock
+        }
+        fn enabled(&self) -> bool {
+            self.enabled
+        }
+        fn energy_shader(&self) -> Option<SceneShader> {
+            None
+        }
+    }
+
+    fn mark_projector() -> BspMarkProjector {
+        BspMarkProjector::new(MarkGeometry {
+            map: MarkMap {
+                nodes: Vec::new(),
+                planes: Vec::new(),
+                leaves: Vec::new(),
+                leaf_surfaces: Vec::new(),
+                surface_count: 0,
+            },
+            surfaces: Vec::new(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn impact_marks_validate() {
+        let mut system = ImpactMarkSystem::new(
+            mark_projector(),
+            Box::new(MarkOptions {
+                clock: 1000,
+                enabled: true,
+            }),
+        );
+        let request = ImpactMarkRequest {
+            shader: Some(SceneShader::new("mark")),
+            origin: zero_vec3(),
+            direction: vec3(0.0, 0.0, 1.0),
+            orientation: 0.0,
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+            alpha_fade: true,
+            radius: 8.0,
+            temporary: true,
+        };
+        assert!(system.impact_mark(&request).unwrap().is_empty());
+        assert_eq!(system.active_mark_count(), 0);
+        let bad = ImpactMarkRequest {
+            radius: 0.0,
+            ..request.clone()
+        };
+        assert!(system.impact_mark(&bad).is_err());
+        let zero_dir = ImpactMarkRequest {
+            direction: zero_vec3(),
+            ..request.clone()
+        };
+        assert!(system.impact_mark(&zero_dir).unwrap().is_empty());
+        let bad_color = ImpactMarkRequest {
+            color: vec4(2.0, 0.0, 0.0, 1.0),
+            ..request.clone()
+        };
+        assert!(system.impact_mark(&bad_color).is_err());
+        system.reset();
     }
 }

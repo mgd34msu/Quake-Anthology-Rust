@@ -5,7 +5,14 @@
 use qa_core::math::vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::draw_tools::{Draw2D, Rect2d};
+use crate::q3::presentation::hud::{shared, Shared};
+use crate::q3::presentation::mission_hud::CinematicService;
+use crate::q3::presentation::ref_entity::{RF_LIGHTING_ORIGIN, RF_NOSHADOW};
+use crate::q3::presentation::refdef::RDF_NOWORLDMODEL;
+use crate::q3::presentation::resources::RendererResources;
+use crate::q3::presentation::retail_snapshot::{create_model_entity_with, create_refdef, RefEntity, SceneModel};
+use qa_core::math::angles_to_axis;
 
 /// Model paint request (`UiModelPaintRequest`).
 #[derive(Clone)]
@@ -65,7 +72,7 @@ impl EngineUiModelPainter {
         };
         refdef.time = request.time;
         let bounds = self.resources.borrow().model_bounds(&request.model);
-        let mut entity = create_model_entity(request.model.clone());
+        let mut entity = create_model_entity_with(request.model.clone());
         let length = 0.5 * (bounds.max.z - bounds.min.z);
         entity.origin = vec3(
             length / 0.268,
@@ -74,10 +81,10 @@ impl EngineUiModelPainter {
         );
         entity.lighting_origin = entity.origin;
         entity.old_origin = entity.origin;
-        entity.axis = qvm_angles_to_axis(vec3(0.0, request.angle, 0.0));
+        entity.axis = angles_to_axis(vec3(0.0, request.angle, 0.0));
         entity.render_flags = RF_LIGHTING_ORIGIN | RF_NOSHADOW;
         self.resources.borrow_mut().clear_scene();
-        self.resources.borrow_mut().add_ref_entity(&entity);
+        self.resources.borrow_mut().add_ref_entity(RefEntity::Model(entity));
         self.resources.borrow_mut().render_scene(&refdef);
     }
 
@@ -107,3 +114,46 @@ impl ModelPainterService for PainterService {
 
 /// Seat cinematics handle (`EngineUiCinematics`).
 pub type EngineUiCinematics = Shared<dyn CinematicService>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::shared::definitions::Product;
+    use crate::q3::presentation::draw_tools::{rect2d, CoordinateSpace, HudDrawSink};
+    use crate::q3::presentation::hud::tests::*;
+    use crate::q3::presentation::hud::{shared, Shared};
+    use crate::q3::presentation::retail_snapshot::SceneModel;
+
+    #[test]
+    fn model_painter_happy_path() {
+        let game = world(Product::Baseq3);
+        let painter = EngineUiModelPainter::new(game.resources.clone(), game.draw.clone());
+        painter.paint(&UiModelPaintRequest {
+            draw: game.draw.clone(),
+            model: SceneModel::Loaded { id: 7 },
+            rect: rect2d(0.0, 0.0, 100.0, 100.0),
+            time: 5,
+            angle: 10.0,
+            field_of_view_x: 0.0,
+            field_of_view_y: 60.0,
+        });
+        assert_eq!(game.resources.borrow().scenes, vec!["clear", "add", "render"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "UI model painter must use its seat's drawing queue")]
+    fn model_painter_queue_mismatch() {
+        let game = world(Product::Baseq3);
+        let other: Shared<dyn HudDrawSink> = shared(FakeSink::default());
+        let painter = EngineUiModelPainter::new(game.resources.clone(), game.draw.clone());
+        painter.paint(&UiModelPaintRequest {
+            draw: Draw2D::new(other, CoordinateSpace::Stretch640, 640, 480),
+            model: SceneModel::Default,
+            rect: rect2d(0.0, 0.0, 10.0, 10.0),
+            time: 0,
+            angle: 0.0,
+            field_of_view_x: 0.0,
+            field_of_view_y: 0.0,
+        });
+    }
+}

@@ -3,15 +3,27 @@
 //! Donor provenance: `src/content/q3/presentation/server-commands.ts`.
 
 use crate::q3anim::PlayerGender;
+use qa_core::cmd::ascii_fold;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::presentation::client_info::ClientInfo;
 use crate::q3::presentation::retail_snapshot::*;
 use crate::q3::presentation::state::*;
 
 // ---------------------------------------------------------------------------
 // Server commands (server-commands.ts)
 // ---------------------------------------------------------------------------
+
+/// Truncate at NUL and require source byte characters (`bytes`).
+pub fn source_bytes(input: &str) -> PresentResult<String> {
+    let end = input.find('\0').unwrap_or(input.len());
+    let text = &input[..end];
+    if text.chars().any(|c| c as u32 > 255) {
+        return Err(range_msg("Cgame text requires source byte characters"));
+    }
+    Ok(text.to_owned())
+}
 
 /// Cvar read snapshot (`CvarSnapshot`, reduced to read fields).
 #[derive(Debug, Clone, PartialEq)]
@@ -215,7 +227,7 @@ pub(crate) fn server_argv(values: &[String], index: usize) -> PresentResult<Stri
 }
 
 pub(crate) fn server_integer(values: &[String], index: usize) -> PresentResult<i32> {
-    Ok(game_atoi(&server_argv(values, index)?))
+    game_atoi(&server_argv(values, index)?)
 }
 
 pub(crate) fn server_command_copy(values: &[String]) -> PresentResult<Vec<String>> {
@@ -314,13 +326,13 @@ impl SourceByteTokenizer {
 
 pub(crate) fn valid_game_type(value: i32) -> PresentResult<GameType> {
     GameType::from_i32(value)
-        .filter(|game| *game != GameType::MaxGameType)
+        .filter(|game| *game != GameType::GtMaxGameType)
         .ok_or_else(|| range_msg(format!("Invalid server game type {value}")))
 }
 
 pub(crate) fn empty_score() -> ClientScore {
     ClientScore {
-        team: Team::Free as i32,
+        team: Team::TeamFree as i32,
         ..ClientScore::default()
     }
 }
@@ -481,15 +493,15 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
         self.open()?;
         let info = self.config(0)?;
         let value = |key: &str| info_value_for_key(&info, key, 8192).unwrap_or_default();
-        static_state.game_type = valid_game_type(game_atoi(&value("g_gametype")))?;
+        static_state.game_type = valid_game_type(game_atoi(&value("g_gametype"))?)?;
         self.host
             .set_cvar("g_gametype", &(static_state.game_type as i32).to_string());
-        static_state.dm_flags = game_atoi(&value("dmflags"));
-        static_state.team_flags = game_atoi(&value("teamflags"));
-        static_state.fraglimit = game_atoi(&value("fraglimit"));
-        static_state.capturelimit = game_atoi(&value("capturelimit"));
-        static_state.timelimit = game_atoi(&value("timelimit"));
-        static_state.maxclients = game_atoi(&value("sv_maxclients"));
+        static_state.dm_flags = game_atoi(&value("dmflags"))?;
+        static_state.team_flags = game_atoi(&value("teamflags"))?;
+        static_state.fraglimit = game_atoi(&value("fraglimit"))?;
+        static_state.capturelimit = game_atoi(&value("capturelimit"))?;
+        static_state.timelimit = game_atoi(&value("timelimit"))?;
+        static_state.maxclients = game_atoi(&value("sv_maxclients"))?;
         static_state.mapname = format!("maps/{}.bsp", value("mapname")).chars().take(63).collect();
         static_state.red_team = value("g_redTeam").chars().take(63).collect();
         let red = static_state.red_team.clone();
@@ -503,13 +515,13 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
     fn flag_status(&mut self, state: &ClientGameState, static_state: &mut ClientGameStaticState) -> PresentResult<()> {
         let value = self.config(23)?;
         let bytes: Vec<char> = value.chars().collect();
-        if static_state.game_type == GameType::Ctf {
+        if static_state.game_type == GameType::GtCtf {
             if bytes.is_empty() {
                 return Err(range_msg("CTF flag status leaves source bytes uninitialized"));
             }
             static_state.redflag = i32::from(bytes[0] as u8).wrapping_sub(48);
             static_state.blueflag = i32::from(bytes.get(1).copied().unwrap_or('\0') as u8).wrapping_sub(48);
-        } else if state.product == Q3Product::MissionPack && static_state.game_type == GameType::OneFctf {
+        } else if state.product == Product::Missionpack && static_state.game_type == GameType::Gt1fctf {
             static_state.flag_status = i32::from(bytes.first().copied().unwrap_or('\0') as u8).wrapping_sub(48);
         }
         Ok(())
@@ -523,11 +535,11 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
     ) -> PresentResult<()> {
         self.open()?;
         self.check_products(state, static_state)?;
-        static_state.scores1 = game_atoi(&self.config(6)?);
-        static_state.scores2 = game_atoi(&self.config(7)?);
-        static_state.level_start_time = game_atoi(&self.config(21)?);
+        static_state.scores1 = game_atoi(&self.config(6)?)?;
+        static_state.scores2 = game_atoi(&self.config(7)?)?;
+        static_state.level_start_time = game_atoi(&self.config(21)?)?;
         self.flag_status(state, static_state)?;
-        state.warmup = game_atoi(&self.config(5)?);
+        state.warmup = game_atoi(&self.config(5)?)?;
         Ok(())
     }
 
@@ -536,12 +548,12 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
         state: &mut ClientGameState,
         static_state: &mut ClientGameStaticState,
     ) -> PresentResult<()> {
-        let warmup = game_atoi(&self.config(5)?);
+        let warmup = game_atoi(&self.config(5)?)?;
         state.warmup_count = -1;
         if warmup > 0 && state.warmup <= 0 {
-            let team_sound = state.product == Q3Product::MissionPack
-                && static_state.game_type >= GameType::Ctf
-                && static_state.game_type <= GameType::Harvester;
+            let team_sound = state.product == Product::Missionpack
+                && (static_state.game_type as i32) >= (GameType::GtCtf as i32)
+                && (static_state.game_type as i32) <= (GameType::GtHarvester as i32);
             self.local_sound(
                 if team_sound {
                     ClientServerCommandSound::CountPrepareTeam
@@ -596,7 +608,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
             info.score = score.score;
             info.powerups = server_integer(command, base as usize + 9)?;
         }
-        if state.product == Q3Product::MissionPack {
+        if state.product == Product::Missionpack {
             self.host.set_score_selection();
         }
         Ok(())
@@ -680,7 +692,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
         state.spectator_list = String::new();
         for i in 0..MAX_CLIENTS {
             let info = self.host.client_info(static_state, i)?;
-            if info.info_valid && info.team == Team::Spectator {
+            if info.info_valid && info.team == Team::TeamSpectator {
                 state.spectator_list = format!("{}{}     ", state.spectator_list, info.name)
                     .chars()
                     .take(1023)
@@ -718,41 +730,41 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
                 return Ok(());
             }
             6 => {
-                static_state.scores1 = game_atoi(&value);
+                static_state.scores1 = game_atoi(&value)?;
                 return Ok(());
             }
             7 => {
-                static_state.scores2 = game_atoi(&value);
+                static_state.scores2 = game_atoi(&value)?;
                 return Ok(());
             }
             8 => {
-                static_state.vote_time = game_atoi(&value);
+                static_state.vote_time = game_atoi(&value)?;
                 static_state.vote_modified = true;
                 return Ok(());
             }
             9 => {
                 static_state.vote_string = value.chars().take(1023).collect();
-                if state.product == Q3Product::MissionPack {
+                if state.product == Product::Missionpack {
                     self.local_sound(ClientServerCommandSound::VoteNow, 7);
                 }
                 return Ok(());
             }
             10 => {
-                static_state.vote_yes = game_atoi(&value);
+                static_state.vote_yes = game_atoi(&value)?;
                 static_state.vote_modified = true;
                 return Ok(());
             }
             11 => {
-                static_state.vote_no = game_atoi(&value);
+                static_state.vote_no = game_atoi(&value)?;
                 static_state.vote_modified = true;
                 return Ok(());
             }
             21 => {
-                static_state.level_start_time = game_atoi(&value);
+                static_state.level_start_time = game_atoi(&value)?;
                 return Ok(());
             }
             22 => {
-                state.intermission_started = game_atoi(&value) != 0;
+                state.intermission_started = game_atoi(&value)? != 0;
                 return Ok(());
             }
             23 => {
@@ -768,21 +780,21 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
         if (12..20).contains(&index) {
             let slot = (index % 2) as usize;
             if index < 14 {
-                static_state.team_vote_time[slot] = game_atoi(&value);
+                static_state.team_vote_time[slot] = game_atoi(&value)?;
                 static_state.team_vote_modified[slot] = true;
             } else if index < 16 {
                 if value.len() >= 1024 {
                     return Err(range_msg("Team vote string exceeds source row buffer"));
                 }
                 static_state.team_vote_string[slot] = value;
-                if state.product == Q3Product::MissionPack {
+                if state.product == Product::Missionpack {
                     self.local_sound(ClientServerCommandSound::VoteNow, 7);
                 }
             } else if index < 18 {
-                static_state.team_vote_yes[slot] = game_atoi(&value);
+                static_state.team_vote_yes[slot] = game_atoi(&value)?;
                 static_state.team_vote_modified[slot] = true;
             } else {
-                static_state.team_vote_no[slot] = game_atoi(&value);
+                static_state.team_vote_no[slot] = game_atoi(&value)?;
                 static_state.team_vote_modified[slot] = true;
             }
         } else if (32..288).contains(&index) {
@@ -901,7 +913,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
             self.local_sound(ClientServerCommandSound::CountFight, 7);
             self.host.center_print("FIGHT!", 120, 64);
         }
-        if state.product == Q3Product::MissionPack
+        if state.product == Product::Missionpack
             && self.cvar(ClientServerCommandCvar::UiSinglePlayerActive).integer_value != 0
         {
             self.host.set_cvar("ui_matchStartTime", &state.time.to_string());
@@ -927,8 +939,8 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
             "" => return Ok(()),
             "cp" => {
                 let y = match state.product {
-                    Q3Product::BaseQ3 => 143,
-                    Q3Product::MissionPack => 144,
+                    Product::Baseq3 => 143,
+                    Product::Missionpack => 144,
                 };
                 self.host.center_print(&server_argv(command, 1)?, y, 16);
                 return Ok(());
@@ -940,7 +952,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
             "print" => {
                 let value = server_argv(command, 1)?;
                 self.host.print(&value);
-                if state.product == Q3Product::MissionPack {
+                if state.product == Product::Missionpack {
                     let text = ascii_fold(&value);
                     if text.starts_with("vote failed") || text.starts_with("team vote failed") {
                         self.local_sound(ClientServerCommandSound::VoteFailed, 7);
@@ -964,7 +976,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
                 return Ok(());
             }
             "vchat" | "vtchat" | "vtell" => {
-                if state.product == Q3Product::MissionPack {
+                if state.product == Product::Missionpack {
                     let id = server_argv(command, 4)?;
                     if self.cvar(ClientServerCommandCvar::CgNoTaunt).integer_value != 0
                         && ["kill_insult", "taunt", "death_insult", "kill_gauntlet", "praise"].contains(&id.as_str())
@@ -1271,7 +1283,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
         command: &str,
     ) -> PresentResult<()> {
         self.open()?;
-        if state.product != Q3Product::MissionPack || state.intermission_started {
+        if state.product != Product::Missionpack || state.intermission_started {
             return Ok(());
         }
         let client_num = if client_number < 0 || client_number >= MAX_CLIENTS as i32 {
@@ -1385,7 +1397,7 @@ impl<H: ClientServerCommandHost> ClientServerCommandRuntime<H> {
         static_state: &mut ClientGameStaticState,
     ) -> PresentResult<()> {
         self.open()?;
-        if state.product != Q3Product::MissionPack || state.voice_chat_time >= state.time {
+        if state.product != Product::Missionpack || state.voice_chat_time >= state.time {
             return Ok(());
         }
         if state.voice_chat_buffer_out != state.voice_chat_buffer_in

@@ -413,4 +413,49 @@ mod tests {
         let big = "a".repeat(40_000);
         let _ = game_format("%s", &[GameFormatArgument::Text(big)]);
     }
+
+    #[test]
+    fn game_format_scoreboard_shapes() {
+        assert_eq!(
+            game_format(
+                "%5i %4i %4i %s",
+                &[
+                    GameFormatArgument::Int(1),
+                    GameFormatArgument::Int(2),
+                    GameFormatArgument::Int(3),
+                    GameFormatArgument::Text("name".to_string())
+                ],
+            ),
+            "    1    2    3 name"
+        );
+        assert_eq!(
+            game_format(
+                " SPECT %3i %4i %s",
+                &[
+                    GameFormatArgument::Int(5),
+                    GameFormatArgument::Int(6),
+                    GameFormatArgument::Text("x".to_string())
+                ],
+            ),
+            " SPECT   5    6 x"
+        );
+        assert_eq!(
+            game_format(
+                "%i:%i%i",
+                &[
+                    GameFormatArgument::Int(1),
+                    GameFormatArgument::Int(2),
+                    GameFormatArgument::Int(3)
+                ],
+            ),
+            "1:23"
+        );
+        assert_eq!(game_format("%2i", &[GameFormatArgument::Int(7)]), " 7");
+        assert_eq!(game_format("100%%", &[]), "100%");
+        assert_eq!(game_format_bounded("abcdef", &[], 4), "abc");
+        assert_eq!(
+            game_format_bounded("%s", &[GameFormatArgument::Text("toolong".to_string())], 4),
+            "too"
+        );
+    }
 }

@@ -236,4 +236,39 @@ mod tests {
         assert_eq!(left.random(), right.random());
         assert_eq!(left.crandom(), right.crandom());
     }
+
+    #[test]
+    fn game_atoi_matches_bg_lib() {
+        assert_eq!(game_atoi("  -42").unwrap(), -42);
+        assert_eq!(game_atoi("12abc").unwrap(), 12);
+        assert_eq!(game_atoi("").unwrap(), 0);
+        assert_eq!(game_atoi("   ").unwrap(), 0);
+        assert_eq!(game_atoi("+7").unwrap(), 7);
+        assert_eq!(game_atoi("9999999999").unwrap(), 9999999999i64 as i32);
+        assert!(game_atoi("-\0").is_err());
+    }
+
+    #[test]
+    fn game_atof_matches_bg_lib() {
+        assert!((f64::from(game_atof("3.5").unwrap()) - f64::from(3.5f32)).abs() < 1e-6);
+        assert!((f64::from(game_atof(".5").unwrap()) - f64::from(0.5f32)).abs() < 1e-6);
+        assert!((f64::from(game_atof("-2.25").unwrap()) - f64::from(-2.25f32)).abs() < 1e-6);
+        assert_eq!(game_atof("").unwrap(), 0.0);
+        assert_eq!(game_atof("abc").unwrap(), 0.0);
+        assert_eq!(game_atof("42").unwrap(), 42.0f32);
+    }
+
+    #[test]
+    fn game_random_is_deterministic() {
+        let mut random = GameRandom::new(0);
+        assert_eq!(random.rand(), 1);
+        assert_eq!(random.seed(), q_rand(0));
+        let mut other = GameRandom::new(12345);
+        let first = other.random();
+        other.reset(12345);
+        assert_eq!(other.random(), first);
+        other.reset(7);
+        let positive = other.random();
+        assert!((0.0..1.0).contains(&positive));
+    }
 }

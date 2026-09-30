@@ -3,21 +3,37 @@
 //! Donor provenance: `src/content/q3/presentation/weapons.ts`.
 
 use qa_core::math::{
-    add3, angle_mod, angle_vectors, angles_to_axis, dot3, length3, normalize3, perpendicular_vector,
-    rotate_point_around_vector, scale3, sub3, vec2, vec3, vec4, Axis, Bounds, Vec3, Vec4,
+    add3, angle_mod, angle_vectors, angles_to_axis, cross3, dot3, length3, normalize3, normalize3_or_zero,
+    perpendicular_vector, rotate_point_around_vector, scale3, sub3, vec2, vec3, vec4, Axis, Bounds, Vec3, Vec4,
 };
+use qa_core::numeric::q_crandom;
 use qa_core::numeric::qvm_float_to_int;
 use std::collections::HashSet;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::{
+    stat_schema, weapon_count, EntityType, ItemType, MoveType, PersistentIndex, Powerup, Product, Team, Weapon,
+    WeaponState,
+};
+use crate::q3::base::shared::entity_state::EntityState;
+use crate::q3::base::shared::items::{item_at, item_list, ItemDefinition, ItemKind};
+use crate::q3::base::shared::player_state::{MoveFlags, PlayerAnimation, PlayerState};
+use crate::q3::base::shared::trajectory::{evaluate_trajectory, Trajectory, TrajectoryType};
+use crate::q3::base::world::TraceContact;
+use crate::q3::presentation::audio::PresentSound;
+use crate::q3::presentation::collision_host::TraceResult;
+use crate::q3::presentation::effects::EffectFrame;
 use crate::q3::presentation::effects::*;
+use crate::q3::presentation::entities::PresentEntityTarget;
 use crate::q3::presentation::entities::*;
 use crate::q3::presentation::local_entities::*;
 use crate::q3::presentation::marks::*;
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::model_access::*;
 use crate::q3::presentation::movement_host::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
+use crate::q3::presentation::retail_snapshot::DynamicLight;
+use crate::q3::presentation::state::ClientGameState;
 
 // ---------------------------------------------------------------------------
 // weapons.ts
@@ -232,7 +248,7 @@ impl ClientWeaponSelection {
             .as_ref()
             .ok_or_else(|| PresentError::state("CG_WeaponSelectable: cg.snap == NULL"))?;
         Ok(snap.player_state.ammo.get(number as usize) != 0
-            && snap.player_state.stats.get(stat_schema(state.product).weapons) & (1 << number) != 0)
+            && snap.player_state.stats.get(stat_schema(state.product).weapons()) & (1 << number) != 0)
     }
 
     /// Next weapon.
@@ -249,7 +265,7 @@ impl ClientWeaponSelection {
         let followed = state
             .snap
             .as_ref()
-            .is_some_and(|snap| snap.player_state.pm_flags & MoveFlags::FOLLOW != 0);
+            .is_some_and(|snap| snap.player_state.pm_flags & MoveFlags::Follow as i32 != 0);
         if state.snap.is_none() || followed {
             return Ok(());
         }
@@ -257,7 +273,7 @@ impl ClientWeaponSelection {
         let original = state.weapon_select;
         for _ in 0..16 {
             state.weapon_select = (state.weapon_select + direction + 16) % 16;
-            if state.weapon_select != Weapon::Gauntlet as i32 && self.selectable(state, state.weapon_select)? {
+            if state.weapon_select != Weapon::WpGauntlet as i32 && self.selectable(state, state.weapon_select)? {
                 let selected = state.weapon_select;
                 if let Some(on_select) = self.on_select.as_mut() {
                     on_select(selected);
@@ -274,7 +290,7 @@ impl ClientWeaponSelection {
         let followed = state
             .snap
             .as_ref()
-            .is_some_and(|snap| snap.player_state.pm_flags & MoveFlags::FOLLOW != 0);
+            .is_some_and(|snap| snap.player_state.pm_flags & MoveFlags::Follow as i32 != 0);
         if state.snap.is_none() || followed || !(1..=15).contains(&number) {
             return;
         }
@@ -282,7 +298,7 @@ impl ClientWeaponSelection {
         let has = state
             .snap
             .as_ref()
-            .is_some_and(|snap| snap.player_state.stats.get(stat_schema(state.product).weapons) & (1 << number) != 0);
+            .is_some_and(|snap| snap.player_state.stats.get(stat_schema(state.product).weapons()) & (1 << number) != 0);
         if has {
             state.weapon_select = number;
             if let Some(on_select) = self.on_select.as_mut() {
@@ -574,9 +590,9 @@ impl ClientWeaponRuntime {
     ) -> PresentResult<()> {
         let ent = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.clone(),
         };
-        if ent.weapon == Weapon::None as i32 {
+        if ent.weapon == Weapon::WpNone as i32 {
             return Ok(());
         }
         if ent.weapon >= weapon_count(state.product) {
@@ -587,18 +603,18 @@ impl ClientWeaponRuntime {
             let time = state.time;
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.muzzle_flash_time = time;
         }
         let lightning_firing = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.player.lightning_firing,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).player.lightning_firing,
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.player.lightning_firing,
         };
-        if ent.weapon == Weapon::Lightning as i32 && lightning_firing != 0 {
+        if ent.weapon == Weapon::WpLightning as i32 && lightning_firing != 0 {
             return Ok(());
         }
-        if ent.powerups & (1 << Powerup::Quad as i32) != 0 {
+        if ent.powerups & (1 << Powerup::PwQuad as i32) != 0 {
             let quad = self.host.weapon_media().sounds.quad.clone();
             self.host.start_sound(None, ent.number, 4, quad);
         }
@@ -638,9 +654,10 @@ impl ClientWeaponRuntime {
                 state.predicted_player_entity.lerp_origin,
                 state.predicted_player_entity.lerp_angles,
             ),
-            PresentEntityTarget::Indexed(index) => {
-                (state.entity_at(index).lerp_origin, state.entity_at(index).lerp_angles)
-            }
+            PresentEntityTarget::Indexed(index) => (
+                state.entity_at(index as i32)?.lerp_origin,
+                state.entity_at(index as i32)?.lerp_angles,
+            ),
         };
         let axis = angles_to_axis(lerp_angles);
         let time = state.time;
@@ -716,7 +733,7 @@ impl ClientWeaponRuntime {
                 le.start_time = time;
                 le.end_time = end_time;
                 le.pos = Trajectory {
-                    type_: TrajectoryType::Gravity,
+                    trajectory_type: TrajectoryType::TrGravity,
                     time: pos_time,
                     duration: 0,
                     base: origin,
@@ -728,7 +745,7 @@ impl ClientWeaponRuntime {
                 }
                 le.bounce_factor = if shotgun { 0.3 } else { 0.4 * water };
                 le.angles = Trajectory {
-                    type_: TrajectoryType::Linear,
+                    trajectory_type: TrajectoryType::TrLinear,
                     time,
                     duration: 0,
                     base: vec3(
@@ -788,7 +805,7 @@ impl ClientWeaponRuntime {
         let (pos, trail_time) = {
             let entity = match target {
                 PresentEntityTarget::Predicted => &state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?,
             };
             (entity.current_state.pos, entity.trail_time)
         };
@@ -796,10 +813,10 @@ impl ClientWeaponRuntime {
         let mut t = 50 * ((trail_time + 50) / 50);
         let origin = evaluate_trajectory(&pos, time);
         let contents = self.host.point_contents_pred(origin, -1);
-        if pos.type_ == TrajectoryType::Stationary {
+        if pos.trajectory_type == TrajectoryType::TrStationary {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.trail_time = time;
             return Ok(());
@@ -809,7 +826,7 @@ impl ClientWeaponRuntime {
         {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.trail_time = time;
         }
@@ -862,13 +879,13 @@ impl ClientWeaponRuntime {
                 state.predicted_player_entity.lerp_angles,
                 state.predicted_player_entity.current_state.weapon,
             ),
-            PresentEntityTarget::Indexed(index) => match state.entity_ref(index) {
-                Some(entity) => (
+            PresentEntityTarget::Indexed(index) => match state.entity_at(index as i32) {
+                Ok(entity) => (
                     entity.current_state.pos,
                     entity.lerp_angles,
                     entity.current_state.weapon,
                 ),
-                None => return Ok(()),
+                Err(_) => return Ok(()),
             },
         };
         let origin = evaluate_trajectory(&pos, state.time);
@@ -892,21 +909,21 @@ impl ClientWeaponRuntime {
                 state.predicted_player_entity.current_state.pos,
                 state.predicted_player_entity.current_state.other_entity_num,
             ),
-            PresentEntityTarget::Indexed(index) => (
-                state.entity_at(index).current_state.pos,
-                state.entity_at(index).current_state.other_entity_num,
-            ),
+            PresentEntityTarget::Indexed(index) => {
+                let entity = state.entity_at(index as i32)?;
+                (entity.current_state.pos, entity.current_state.other_entity_num)
+            }
         };
         let origin = evaluate_trajectory(&pos, state.time);
         {
             let time = state.time;
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.trail_time = time;
         }
-        let owner = state.entity_at(other.max(0) as usize).clone();
+        let owner = state.entity_at(other.max(0))?.clone();
         let Some((start, end)) = q3_grapple_cable(owner.lerp_origin, angle_vectors(owner.lerp_angles).up, origin)
         else {
             return Ok(());
@@ -961,10 +978,10 @@ impl ClientWeaponRuntime {
         entity_num: i32,
     ) -> PresentResult<()> {
         self.host.weapon_effects().bleed(pool, frame, origin, entity_num)?;
-        if weapon == Weapon::GrenadeLauncher
-            || weapon == Weapon::RocketLauncher
-            || (product == Product::MissionPack
-                && (weapon == Weapon::Nailgun || weapon == Weapon::Chaingun || weapon == Weapon::ProxLauncher))
+        if weapon == Weapon::WpGrenadeLauncher
+            || weapon == Weapon::WpRocketLauncher
+            || (product == Product::Missionpack
+                && (weapon == Weapon::WpNailgun || weapon == Weapon::WpChaingun || weapon == Weapon::WpProxLauncher))
         {
             self.missile_hit_wall(product, pool, frame, weapon, 0, origin, direction, ImpactSound::Flesh)?;
         }
@@ -1017,8 +1034,8 @@ impl ClientWeaponRuntime {
             }
             fn is_player(&self, target: &i32) -> bool {
                 self.state
-                    .entity_ref((*target).max(0) as usize)
-                    .is_some_and(|entity| entity.current_state.e_type == EntityType::Player as i32)
+                    .entity_at((*target).max(0))
+                    .is_ok_and(|entity| entity.current_state.e_type == EntityType::EtPlayer as i32)
             }
             fn blood(&mut self, point: Vec3, _normal: Vec3, target: i32) {
                 // Shotgun flesh routes through missileHitPlayer, which bleeds
@@ -1036,7 +1053,7 @@ impl ClientWeaponRuntime {
                     self.host,
                     self.pool,
                     &self.frame,
-                    Weapon::Shotgun,
+                    Weapon::WpShotgun,
                     0,
                     point,
                     normal,
@@ -1112,19 +1129,22 @@ impl ClientWeaponRuntime {
             .clone()
             .ok_or_else(|| PresentError::state("CG_CalcMuzzlePoint: cg.snap == NULL"))?;
         if entity_num == snap.player_state.client_num {
-            let origin = add3(snap.player_state.origin, vec3(0.0, 0.0, snap.player_state.viewheight));
+            let origin = add3(
+                snap.player_state.origin(),
+                vec3(0.0, 0.0, snap.player_state.viewheight as f32),
+            );
             return Ok(Some(weapon_ma(
                 origin,
                 14.0,
                 angle_vectors(snap.player_state.viewangles).forward,
             )));
         }
-        let cent = state.entity_at(entity_num.max(0) as usize).clone();
+        let cent = state.entity_at(entity_num.max(0))?.clone();
         if !cent.current_valid {
             return Ok(None);
         }
         let anim = cent.current_state.legs_anim & !128;
-        let height = if anim == PlayerAnimation::LEGS_WALKCR || anim == PlayerAnimation::LEGS_IDLECR {
+        let height = if anim == PlayerAnimation::LegsWalkCr as i32 || anim == PlayerAnimation::LegsIdleCr as i32 {
             12.0
         } else {
             26.0
@@ -1175,7 +1195,7 @@ impl ClientWeaponRuntime {
                     state.product,
                     pool,
                     frame,
-                    Weapon::Machinegun,
+                    Weapon::WpMachinegun,
                     0,
                     end,
                     normal,
@@ -1245,9 +1265,9 @@ impl ClientWeaponRuntime {
     ) -> PresentResult<()> {
         let cent = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.clone(),
         };
-        if cent.current_state.weapon != Weapon::Lightning as i32 {
+        if cent.current_state.weapon != Weapon::WpLightning as i32 {
             return Ok(());
         }
         let mut angles = cent.lerp_angles;
@@ -1305,10 +1325,10 @@ impl ClientWeaponRuntime {
         Ok(())
     }
 
-    fn spin_angle(&mut self, state: &mut ClientGameState, target: PresentEntityTarget) -> f32 {
+    fn spin_angle(&mut self, state: &mut ClientGameState, target: PresentEntityTarget) -> PresentResult<f32> {
         let player = match target {
-            PresentEntityTarget::Predicted => state.predicted_player_entity.player,
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).player,
+            PresentEntityTarget::Predicted => state.predicted_player_entity.player.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.player.clone(),
         };
         let mut delta = state.time.wrapping_sub(player.barrel_time);
         let angle = if player.barrel_spinning {
@@ -1322,41 +1342,41 @@ impl ClientWeaponRuntime {
         };
         let current = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.current_state.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).current_state.clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.current_state.clone(),
         };
         let firing = current.e_flags & 256 != 0;
         if player.barrel_spinning != firing {
             let time = state.time;
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.player.barrel_time = time;
             entity.player.barrel_angle = angle_mod(f64::from(angle)) as f32;
             entity.player.barrel_spinning = firing;
-            if state.product == Product::MissionPack && current.weapon == Weapon::Chaingun as i32 && !firing {
+            if state.product == Product::Missionpack && current.weapon == Weapon::WpChaingun as i32 && !firing {
                 let sound = self.host.load_sound("sound/weapons/vulcan/wvulwind.wav");
                 self.host.start_sound(None, current.number, 2, sound);
             }
         }
-        angle
+        Ok(angle)
     }
 
     fn add_weapon_with_powerups(&mut self, gun: &RefModelEntity, powerups: i32) {
         let shaders = self.host.weapon_media().shaders.clone();
-        if powerups & (1 << Powerup::Invis as i32) != 0 {
+        if powerups & (1 << Powerup::PwInvis as i32) != 0 {
             let mut gun = gun.clone();
             gun.shading.custom_shader = shaders.invis;
             self.host.add_ref_entity(RefEntity::Model(gun));
             return;
         }
         self.host.add_ref_entity(RefEntity::Model(gun.clone()));
-        if powerups & (1 << Powerup::Battlesuit as i32) != 0 {
+        if powerups & (1 << Powerup::PwBattlesuit as i32) != 0 {
             let mut gun = gun.clone();
             gun.shading.custom_shader = shaders.battle_weapon;
             self.host.add_ref_entity(RefEntity::Model(gun));
         }
-        if powerups & (1 << Powerup::Quad as i32) != 0 {
+        if powerups & (1 << Powerup::PwQuad as i32) != 0 {
             let mut gun = gun.clone();
             gun.shading.custom_shader = shaders.quad_weapon;
             self.host.add_ref_entity(RefEntity::Model(gun));
@@ -1371,13 +1391,13 @@ impl ClientWeaponRuntime {
         pool: &mut LocalEntityPool,
         frame: &EffectFrame,
         parent: &RefModelEntity,
-        ps: Option<&SourcePlayerState>,
+        ps: Option<&PlayerState>,
         target: PresentEntityTarget,
         _team: Team,
     ) -> PresentResult<()> {
         let cent = match target {
             PresentEntityTarget::Predicted => state.predicted_player_entity.clone(),
-            PresentEntityTarget::Indexed(index) => state.entity_at(index).clone(),
+            PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.clone(),
         };
         let weapon_num = cent.current_state.weapon;
         let weapon = self.registry.require_weapon(weapon_num)?.clone();
@@ -1390,8 +1410,8 @@ impl ClientWeaponRuntime {
         };
         let mut gun = attached(weapon.packet.weapon_model.clone());
         if ps.is_some() {
-            if state.predicted_player_state.weapon == Weapon::Railgun as i32
-                && state.predicted_player_state.weapon_state == WeaponState::Firing
+            if state.predicted_player_state.weapon == Weapon::WpRailgun as i32
+                && state.predicted_player_state.weapon_state == WeaponState::WeaponFiring as i32
             {
                 let fraction = state.predicted_player_state.weapon_time as f32 / 1500.0;
                 let color = (qvm_float_to_int(255.0 * (1.0 - fraction)) & 255) as f32;
@@ -1406,7 +1426,7 @@ impl ClientWeaponRuntime {
         if ps.is_none() {
             let entity = match target {
                 PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
             };
             entity.player.lightning_firing = 0;
             if cent.current_state.e_flags & 256 != 0 && weapon.firing_sound.is_some() {
@@ -1419,7 +1439,7 @@ impl ClientWeaponRuntime {
                 );
                 let entity = match target {
                     PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                    PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                    PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
                 };
                 entity.player.lightning_firing = 1;
             } else if weapon.ready_sound.is_some() {
@@ -1436,21 +1456,21 @@ impl ClientWeaponRuntime {
         self.add_weapon_with_powerups(&gun, cent.current_state.powerups);
         if let Some(barrel_model) = weapon.packet.barrel_model.clone() {
             let mut barrel = attached(barrel_model);
-            let spin = self.spin_angle(state, target);
+            let spin = self.spin_angle(state, target)?;
             barrel.axis = angles_to_axis(vec3(0.0, 0.0, spin));
             position_rotated_entity_on_tag(&mut barrel, &gun, &weapon.packet.weapon_model, "tag_barrel");
             self.add_weapon_with_powerups(&barrel, cent.current_state.powerups);
         }
         let non_predicted_index = cent.current_state.client_num.max(0) as usize;
-        let non_predicted = state.entity_at(non_predicted_index).clone();
-        if !((weapon_num == Weapon::Lightning as i32
-            || weapon_num == Weapon::Gauntlet as i32
-            || weapon_num == Weapon::GrapplingHook as i32)
+        let non_predicted = state.entity_at(non_predicted_index as i32)?.clone();
+        if !((weapon_num == Weapon::WpLightning as i32
+            || weapon_num == Weapon::WpGauntlet as i32
+            || weapon_num == Weapon::WpGrapplingHook as i32)
             && non_predicted.current_state.e_flags & 256 != 0)
         {
             let railgun_flash = match target {
                 PresentEntityTarget::Predicted => state.predicted_player_entity.player.railgun_flash,
-                PresentEntityTarget::Indexed(index) => state.entity_at(index).player.railgun_flash,
+                PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.player.railgun_flash,
             };
             if state.time.wrapping_sub(cent.muzzle_flash_time) > 20 && !railgun_flash {
                 return Ok(());
@@ -1461,7 +1481,7 @@ impl ClientWeaponRuntime {
             return Ok(());
         }
         flash.axis = angles_to_axis(vec3(0.0, 0.0, self.host.crandom_f32() * 10.0));
-        if weapon_num == Weapon::Railgun as i32 {
+        if weapon_num == Weapon::WpRailgun as i32 {
             let color = self.host.client_info_view(cent.current_state.client_num).color1;
             flash.shading.shader_rgba = weapon_bytes(color, 255.0, 0.0);
         }
@@ -1472,20 +1492,20 @@ impl ClientWeaponRuntime {
             || cent.current_state.number != state.predicted_player_state.client_num
         {
             self.lightning_bolt(state, PresentEntityTarget::Indexed(non_predicted_index), flash.origin)?;
-            if weapon_num == Weapon::Railgun as i32 {
+            if weapon_num == Weapon::WpRailgun as i32 {
                 let railgun_flash = match target {
                     PresentEntityTarget::Predicted => state.predicted_player_entity.player.railgun_flash,
-                    PresentEntityTarget::Indexed(index) => state.entity_at(index).player.railgun_flash,
+                    PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.player.railgun_flash,
                 };
                 if railgun_flash {
                     let impact = match target {
                         PresentEntityTarget::Predicted => state.predicted_player_entity.player.railgun_impact,
-                        PresentEntityTarget::Indexed(index) => state.entity_at(index).player.railgun_impact,
+                        PresentEntityTarget::Indexed(index) => state.entity_at(index as i32)?.player.railgun_impact,
                     };
                     {
                         let entity = match target {
                             PresentEntityTarget::Predicted => &mut state.predicted_player_entity,
-                            PresentEntityTarget::Indexed(index) => state.entity_at(index),
+                            PresentEntityTarget::Indexed(index) => state.entity_at_mut(index as i32)?,
                         };
                         entity.player.railgun_flash = true;
                     }
@@ -1542,17 +1562,26 @@ impl ClientWeaponRuntime {
     fn map_torso_frame(&mut self, client_num: i32, frame: i32) -> PresentResult<i32> {
         let animations = self.host.client_info_view(client_num).animations;
         for index in [
-            PlayerAnimation::TORSO_DROP,
-            PlayerAnimation::TORSO_ATTACK,
-            PlayerAnimation::TORSO_ATTACK2,
+            PlayerAnimation::TorsoDrop as usize,
+            PlayerAnimation::TorsoAttack as usize,
+            PlayerAnimation::TorsoAttack2 as usize,
         ] {
             let animation = animations
                 .get(index)
                 .and_then(|slot| *slot)
                 .ok_or_else(|| PresentError::state(format!("Missing weapon torso animation {index}")))?;
-            let length = if index == PlayerAnimation::TORSO_DROP { 9 } else { 6 };
+            let length = if index == PlayerAnimation::TorsoDrop as usize {
+                9
+            } else {
+                6
+            };
             if frame >= animation.first_frame && frame < animation.first_frame + length {
-                return Ok(frame - animation.first_frame + if index == PlayerAnimation::TORSO_DROP { 6 } else { 1 });
+                return Ok(frame - animation.first_frame
+                    + if index == PlayerAnimation::TorsoDrop as usize {
+                        6
+                    } else {
+                        1
+                    });
             }
         }
         Ok(0)
@@ -1564,10 +1593,10 @@ impl ClientWeaponRuntime {
         state: &mut ClientGameState,
         pool: &mut LocalEntityPool,
         frame: &EffectFrame,
-        ps: &SourcePlayerState,
+        ps: &PlayerState,
     ) -> PresentResult<()> {
-        if ps.persistant.get(PersistentIndex::PERS_TEAM) == Team::Spectator as i32
-            || ps.pm_type == MoveType::Intermission
+        if ps.persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamSpectator as i32
+            || ps.pm_type == MoveType::PmIntermission as i32
             || state.rendering_third_person
         {
             return Ok(());
@@ -1609,16 +1638,16 @@ impl ClientWeaponRuntime {
             hand.back_lerp = 0.0;
         } else {
             let client_num = cent.current_state.client_num;
-            hand.frame = self.map_torso_frame(client_num, cent.player.torso.frame)?;
-            hand.old_frame = self.map_torso_frame(client_num, cent.player.torso.old_frame)?;
-            hand.back_lerp = cent.player.torso.back_lerp;
+            hand.frame = self.map_torso_frame(client_num, cent.player.torso.base.frame)?;
+            hand.old_frame = self.map_torso_frame(client_num, cent.player.torso.base.old_frame)?;
+            hand.back_lerp = cent.player.torso.base.back_lerp;
         }
         hand.shading.render_flags = RF_DEPTHHACK | RF_FIRST_PERSON | RF_MINLIGHT;
-        let team = ps.persistant.get(PersistentIndex::PERS_TEAM);
+        let team = ps.persistant.get(PersistentIndex::PersTeam as usize);
         if Team::from_i32(team).is_none() {
             return Err(PresentError::range("Invalid view weapon team"));
         }
-        let team = Team::from_i32(team).unwrap_or(Team::Free);
+        let team = Team::from_i32(team).unwrap_or(Team::TeamFree);
         let ps_owned = ps.clone();
         self.add_player_weapon(
             state,
@@ -1633,7 +1662,7 @@ impl ClientWeaponRuntime {
 
     /// Draw the weapon selection (`drawWeaponSelect`).
     pub fn draw_weapon_select(&mut self, state: &mut ClientGameState) -> PresentResult<()> {
-        if state.predicted_player_state.health <= 0 {
+        if state.predicted_player_state.health() <= 0 {
             return Ok(());
         }
         let color = match self.host.drawing().fade_color(state.weapon_select_time, 1400) {
@@ -1646,7 +1675,7 @@ impl ClientWeaponRuntime {
             .snap
             .clone()
             .ok_or_else(|| PresentError::state("CG_DrawWeaponSelect: cg.snap == NULL"))?;
-        let bits = snap.player_state.stats.get(stat_schema(state.product).weapons);
+        let bits = snap.player_state.stats.get(stat_schema(state.product).weapons());
         let mut count = 0;
         for i in 1..16 {
             if bits & (1 << i) != 0 {
@@ -1670,13 +1699,13 @@ impl ClientWeaponRuntime {
             }
             x += 40;
         }
-        let item = self.registry.weapon(state.weapon_select)?.item.clone();
+        let item = self.registry.weapon(state.weapon_select)?.item;
         if let Some(item) = item {
             if let Some(name) = item.pickup_name {
-                let width = self.host.drawing().draw_string_length(&name) * 16;
+                let width = self.host.drawing().draw_string_length(name) * 16;
                 self.host
                     .drawing()
-                    .draw_big_string_color((640 - width as i32) / 2, 358, &name, color);
+                    .draw_big_string_color((640 - width as i32) / 2, 358, name, color);
             }
         }
         self.host.drawing().set_color(None);
@@ -1823,17 +1852,17 @@ impl ClientWeaponMediaRegistry {
     }
 
     /// Register a weapon (`registerWeapon`).
-    pub fn register_weapon(&mut self, number: i32, items: &dyn PresentItemTable) -> PresentResult<()> {
-        self.register_weapon_now(number, items)
+    pub fn register_weapon(&mut self, number: i32) -> PresentResult<()> {
+        self.register_weapon_now(number)
     }
 
     /// Register item visuals (`registerItemVisuals`).
-    pub fn register_item_visuals(&mut self, number: i32, items: &dyn PresentItemTable) -> PresentResult<()> {
-        self.register_item_now(number, items)
+    pub fn register_item_visuals(&mut self, number: i32) -> PresentResult<()> {
+        self.register_item_now(number)
     }
 
-    fn ensure_items(&mut self, items: &dyn PresentItemTable) {
-        let count = items.item_count(self.product);
+    fn ensure_items(&mut self) {
+        let count = item_list(self.product).len();
         if self.item_records.len() < count {
             self.item_records.resize_with(count, || PacketItemVisual {
                 models: [default_model(), default_model()],
@@ -1843,15 +1872,15 @@ impl ClientWeaponMediaRegistry {
         }
     }
 
-    fn register_item_now(&mut self, number: i32, items: &dyn PresentItemTable) -> PresentResult<()> {
-        let count = items.item_count(self.product);
+    fn register_item_now(&mut self, number: i32) -> PresentResult<()> {
+        let count = item_list(self.product).len();
         if number < 0 || number as usize >= count {
             return Err(PresentError::drop(format!(
                 "CG_RegisterItemVisuals: itemNum {number} out of range [0-{}]",
                 count.saturating_sub(1)
             )));
         }
-        let item = items.item_at(self.product, number as usize).ok_or_else(|| {
+        let item = item_at(self.product, number).ok().ok_or_else(|| {
             PresentError::drop(format!(
                 "CG_RegisterItemVisuals: itemNum {number} out of range [0-{}]",
                 count.saturating_sub(1)
@@ -1861,12 +1890,12 @@ impl ClientWeaponMediaRegistry {
             return Ok(());
         }
         self.registered_items.insert(number);
-        self.ensure_items(items);
-        let model = match &item.world_models[0] {
+        self.ensure_items();
+        let model = match item.world_models[0] {
             None => default_model(),
             Some(path) => self.resources.register_model(path),
         };
-        let icon = match &item.icon {
+        let icon = match item.icon {
             None => None,
             Some(icon) => self.resources.register_shader(icon),
         };
@@ -1875,18 +1904,15 @@ impl ClientWeaponMediaRegistry {
             has_second: false,
             icon: icon.clone(),
         };
-        if item.item_type == ItemType::Weapon {
-            self.register_weapon_now(item.tag, items)?;
+        if matches!(item.kind, ItemKind::Weapon(_)) {
+            self.register_weapon_now(item.kind.tag())?;
         }
-        if (item.item_type == ItemType::Powerup
-            || item.item_type == ItemType::Health
-            || item.item_type == ItemType::Armor
-            || item.item_type == ItemType::Holdable)
-            && item.world_models[1].is_some()
+        if (matches!(
+            item.kind,
+            ItemKind::Powerup(_) | ItemKind::Health | ItemKind::Armor | ItemKind::Holdable(_)
+        )) && item.world_models[1].is_some()
         {
-            let second = self
-                .resources
-                .register_model(item.world_models[1].as_ref().unwrap_or(&String::new()).as_str());
+            let second = self.resources.register_model(item.world_models[1].unwrap_or_default());
             self.item_records[number as usize] = PacketItemVisual {
                 models: [model, second],
                 has_second: true,
@@ -1896,17 +1922,17 @@ impl ClientWeaponMediaRegistry {
         Ok(())
     }
 
-    fn register_weapon_now(&mut self, number: i32, items: &dyn PresentItemTable) -> PresentResult<()> {
+    fn register_weapon_now(&mut self, number: i32) -> PresentResult<()> {
         self.weapon(number)?;
         if number == 0 || self.registered_weapons.contains(&number) {
             return Ok(());
         }
         self.registered_weapons.insert(number);
-        let count = items.item_count(self.product);
+        let count = item_list(self.product).len();
         let mut found = None;
         for index in 0..count {
-            if let Some(item) = items.item_at(self.product, index) {
-                if item.item_type == ItemType::Weapon && item.tag == number {
+            if let Ok(item) = item_at(self.product, index as i32) {
+                if matches!(item.kind, ItemKind::Weapon(_)) && item.kind.tag() == number {
                     found = Some((index, item));
                     break;
                 }
@@ -1914,17 +1940,17 @@ impl ClientWeaponMediaRegistry {
         }
         let (index, item) = found.ok_or_else(|| PresentError::drop(format!("Couldn't find weapon {number}")))?;
         let mut weapon = empty_weapon();
-        weapon.item = Some(item.clone());
+        weapon.item = Some(*item);
         self.weapon_records[number as usize] = weapon;
-        self.register_item_now(index as i32, items)?;
-        let path = item.world_models[0].clone();
-        let icon = item.icon.clone();
+        self.register_item_now(index as i32)?;
+        let path = item.world_models[0];
+        let icon = item.icon;
         let (Some(path), Some(icon)) = (path, icon) else {
             return Err(PresentError::state(format!(
                 "Weapon {number} has no world model or icon"
             )));
         };
-        let model = self.resources.register_model(&path);
+        let model = self.resources.register_model(path);
         let bounds = model_bounds(&model);
         let midpoint = vec3(
             bounds.min.x + 0.5 * (bounds.max.x - bounds.min.x),
@@ -1936,18 +1962,18 @@ impl ClientWeaponMediaRegistry {
             weapon.packet.weapon_model = model;
             weapon.packet.weapon_midpoint = midpoint;
         }
-        let weapon_icon = self.resources.register_shader(&icon);
-        let ammo_icon = self.resources.register_shader(&icon);
+        let weapon_icon = self.resources.register_shader(icon);
+        let ammo_icon = self.resources.register_shader(icon);
         {
             let weapon = &mut self.weapon_records[number as usize];
             weapon.weapon_icon = weapon_icon;
             weapon.ammo_icon = ammo_icon;
         }
         for index in 0..count {
-            if let Some(candidate) = items.item_at(self.product, index) {
-                if candidate.item_type == ItemType::Ammo && candidate.tag == number {
-                    if let Some(ammo_path) = candidate.world_models[0].clone() {
-                        let ammo_model = self.resources.register_model(&ammo_path);
+            if let Ok(candidate) = item_at(self.product, index as i32) {
+                if candidate.kind.item_type() == ItemType::ItAmmo && candidate.kind.tag() == number {
+                    if let Some(ammo_path) = candidate.world_models[0] {
+                        let ammo_model = self.resources.register_model(ammo_path);
                         self.weapon_records[number as usize].ammo_model = ammo_model;
                     }
                     break;
@@ -1957,7 +1983,7 @@ impl ClientWeaponMediaRegistry {
         let stem = path
             .find('.')
             .map(|dot| path[..dot].to_string())
-            .unwrap_or(path.clone());
+            .unwrap_or_else(|| path.to_string());
         let flash = self.resources.register_model(&format!("{stem}_flash.md3"));
         let barrel = self.resources.register_model(&format!("{stem}_barrel.md3"));
         let mut hands = self.resources.register_model(&format!("{stem}_hand.md3"));
@@ -1980,7 +2006,7 @@ impl ClientWeaponMediaRegistry {
     fn register_weapon_specific(&mut self, number: i32) -> PresentResult<()> {
         let weapon = Weapon::from_i32(number);
         match weapon {
-            Some(Weapon::Gauntlet) => {
+            Some(Weapon::WpGauntlet) => {
                 self.weapon_records[number as usize].flash_dlight_color = vec3(0.6, 0.6, 1.0);
                 let firing = self.audio.register_sound("sound/weapons/melee/fstrun.wav");
                 let flash = self.audio.register_sound("sound/weapons/melee/fstatck.wav");
@@ -1988,7 +2014,7 @@ impl ClientWeaponMediaRegistry {
                 weapon.firing_sound = firing;
                 weapon.flash_sounds = [flash, None, None, None];
             }
-            Some(Weapon::Lightning) => {
+            Some(Weapon::WpLightning) => {
                 self.weapon_records[number as usize].flash_dlight_color = vec3(0.6, 0.6, 1.0);
                 let ready = self.audio.register_sound("sound/weapons/melee/fsthum.wav");
                 let firing = self.audio.register_sound("sound/weapons/lightning/lg_hum.wav");
@@ -2008,7 +2034,7 @@ impl ClientWeaponMediaRegistry {
                 self.effects.lightning_explosion_model = model;
                 self.effects.lightning_hit_sounds = hit;
             }
-            Some(Weapon::GrapplingHook) => {
+            Some(Weapon::WpGrapplingHook) => {
                 let shader = self.resources.register_shader("lightningBoltNew");
                 let model = self.resources.register_model("models/ammo/rocket/rocket.md3");
                 let ready = self.audio.register_sound("sound/weapons/melee/fsthum.wav");
@@ -2025,7 +2051,7 @@ impl ClientWeaponMediaRegistry {
                 weapon.firing_sound = firing;
                 self.effects.lightning_shader = shader;
             }
-            Some(Weapon::Chaingun) => {
+            Some(Weapon::WpChaingun) => {
                 let firing = self.audio.register_sound("sound/weapons/vulcan/wvulfire.wav");
                 let flashes = [
                     self.audio.register_sound("sound/weapons/vulcan/vulcanf1b.wav"),
@@ -2042,7 +2068,7 @@ impl ClientWeaponMediaRegistry {
                 weapon.eject_brass = Some(EjectBrass::Machinegun);
                 self.effects.bullet_explosion_shader = shader;
             }
-            Some(Weapon::Machinegun) => {
+            Some(Weapon::WpMachinegun) => {
                 let flashes = [
                     self.audio.register_sound("sound/weapons/machinegun/machgf1b.wav"),
                     self.audio.register_sound("sound/weapons/machinegun/machgf2b.wav"),
@@ -2056,14 +2082,14 @@ impl ClientWeaponMediaRegistry {
                 weapon.eject_brass = Some(EjectBrass::Machinegun);
                 self.effects.bullet_explosion_shader = shader;
             }
-            Some(Weapon::Shotgun) => {
+            Some(Weapon::WpShotgun) => {
                 let flash = self.audio.register_sound("sound/weapons/shotgun/sshotf1b.wav");
                 let weapon = &mut self.weapon_records[number as usize];
                 weapon.flash_dlight_color = vec3(1.0, 1.0, 0.0);
                 weapon.flash_sounds = [flash, None, None, None];
                 weapon.eject_brass = Some(EjectBrass::Shotgun);
             }
-            Some(Weapon::RocketLauncher) => {
+            Some(Weapon::WpRocketLauncher) => {
                 let model = self.resources.register_model("models/ammo/rocket/rocket.md3");
                 let sound = self.audio.register_sound("sound/weapons/rocket/rockfly.wav");
                 let flash = self.audio.register_sound("sound/weapons/rocket/rocklf1a.wav");
@@ -2080,8 +2106,8 @@ impl ClientWeaponMediaRegistry {
                 weapon.flash_sounds = [flash, None, None, None];
                 self.effects.rocket_explosion_shader = shader;
             }
-            Some(Weapon::ProxLauncher) | Some(Weapon::GrenadeLauncher) => {
-                let prox = weapon == Some(Weapon::ProxLauncher);
+            Some(Weapon::WpProxLauncher) | Some(Weapon::WpGrenadeLauncher) => {
+                let prox = weapon == Some(Weapon::WpProxLauncher);
                 let model = self.resources.register_model(if prox {
                     "models/weaphits/proxmine.md3"
                 } else {
@@ -2102,7 +2128,7 @@ impl ClientWeaponMediaRegistry {
                 weapon_record.flash_sounds = [flash, None, None, None];
                 self.effects.grenade_explosion_shader = shader;
             }
-            Some(Weapon::Nailgun) => {
+            Some(Weapon::WpNailgun) => {
                 let model = self.resources.register_model("models/weaphits/nail.md3");
                 let flash = self.audio.register_sound("sound/weapons/nailgun/wnalfire.wav");
                 let weapon = &mut self.weapon_records[number as usize];
@@ -2114,7 +2140,7 @@ impl ClientWeaponMediaRegistry {
                 weapon.flash_dlight_color = vec3(1.0, 0.75, 0.0);
                 weapon.flash_sounds = [flash, None, None, None];
             }
-            Some(Weapon::Plasmagun) => {
+            Some(Weapon::WpPlasmagun) => {
                 let sound = self.audio.register_sound("sound/weapons/plasma/lasfly.wav");
                 let flash = self.audio.register_sound("sound/weapons/plasma/hyprbf1a.wav");
                 let plasma = self.resources.register_shader("plasmaExplosion");
@@ -2127,7 +2153,7 @@ impl ClientWeaponMediaRegistry {
                 self.effects.plasma_explosion_shader = plasma;
                 self.effects.rail_rings_shader = rings;
             }
-            Some(Weapon::Railgun) => {
+            Some(Weapon::WpRailgun) => {
                 let ready = self.audio.register_sound("sound/weapons/railgun/rg_hum.wav");
                 let flash = self.audio.register_sound("sound/weapons/railgun/railgf1a.wav");
                 let explosion = self.resources.register_shader("railExplosion");
@@ -2141,7 +2167,7 @@ impl ClientWeaponMediaRegistry {
                 self.effects.rail_rings_shader = rings;
                 self.effects.rail_core_shader = core;
             }
-            Some(Weapon::Bfg) => {
+            Some(Weapon::WpBfg) => {
                 let ready = self.audio.register_sound("sound/weapons/bfg/bfg_hum.wav");
                 let flash = self.audio.register_sound("sound/weapons/bfg/bfg_fire.wav");
                 let shader = self.resources.register_shader("bfgExplosion");
@@ -2190,15 +2216,15 @@ pub fn emit_weapon_impact(
     let mut light_color = vec3(1.0, 1.0, 0.0);
     let mut sprite = false;
     let mut duration = 600;
-    let impact_weapon = if product == Product::BaseQ3 && (weapon == Weapon::ProxLauncher || weapon == Weapon::Chaingun)
-    {
-        Weapon::None
-    } else {
-        weapon
-    };
+    let impact_weapon =
+        if product == Product::Baseq3 && (weapon == Weapon::WpProxLauncher || weapon == Weapon::WpChaingun) {
+            Weapon::WpNone
+        } else {
+            weapon
+        };
     match impact_weapon {
-        Weapon::Nailgun | Weapon::None | Weapon::Gauntlet | Weapon::GrapplingHook => {
-            if product == Product::MissionPack {
+        Weapon::WpNailgun | Weapon::WpNone | Weapon::WpGauntlet | Weapon::WpGrapplingHook => {
+            if product == Product::Missionpack {
                 sound = match sound_type {
                     ImpactSound::Flesh => media.sounds.nail_hit_flesh.clone(),
                     ImpactSound::Metal => media.sounds.nail_hit_metal.clone(),
@@ -2220,7 +2246,7 @@ pub fn emit_weapon_impact(
                 radius = 12.0;
             }
         }
-        Weapon::Lightning => {
+        Weapon::WpLightning => {
             let r = host.rand_i32() & 3;
             sound = registry_effects.lightning_hit_sounds[if r < 2 {
                 1
@@ -2233,7 +2259,7 @@ pub fn emit_weapon_impact(
             mark = media.shaders.hole_mark.clone();
             radius = 12.0;
         }
-        Weapon::ProxLauncher => {
+        Weapon::WpProxLauncher => {
             model = media.models.dish_flash.clone();
             shader = registry_effects.grenade_explosion_shader.clone();
             sound = media.sounds.prox_explosion.clone();
@@ -2242,7 +2268,7 @@ pub fn emit_weapon_impact(
             light = 300.0;
             sprite = true;
         }
-        Weapon::GrenadeLauncher => {
+        Weapon::WpGrenadeLauncher => {
             model = media.models.dish_flash.clone();
             shader = registry_effects.grenade_explosion_shader.clone();
             sound = media.sounds.rocket_explosion.clone();
@@ -2251,7 +2277,7 @@ pub fn emit_weapon_impact(
             light = 300.0;
             sprite = true;
         }
-        Weapon::RocketLauncher => {
+        Weapon::WpRocketLauncher => {
             model = media.models.dish_flash.clone();
             shader = registry_effects.rocket_explosion_shader.clone();
             sound = media.sounds.rocket_explosion.clone();
@@ -2272,21 +2298,21 @@ pub fn emit_weapon_impact(
                 });
             }
         }
-        Weapon::Railgun => {
+        Weapon::WpRailgun => {
             model = media.models.ring_flash.clone();
             shader = registry_effects.rail_explosion_shader.clone();
             sound = media.sounds.plasma_explosion.clone();
             mark = media.shaders.energy_mark.clone();
             radius = 24.0;
         }
-        Weapon::Plasmagun => {
+        Weapon::WpPlasmagun => {
             model = media.models.ring_flash.clone();
             shader = registry_effects.plasma_explosion_shader.clone();
             sound = media.sounds.plasma_explosion.clone();
             mark = media.shaders.energy_mark.clone();
             radius = 16.0;
         }
-        Weapon::Bfg => {
+        Weapon::WpBfg => {
             model = media.models.dish_flash.clone();
             shader = registry_effects.bfg_explosion_shader.clone();
             sound = media.sounds.rocket_explosion.clone();
@@ -2294,13 +2320,13 @@ pub fn emit_weapon_impact(
             radius = 32.0;
             sprite = true;
         }
-        Weapon::Shotgun => {
+        Weapon::WpShotgun => {
             model = media.models.bullet_flash.clone();
             shader = registry_effects.bullet_explosion_shader.clone();
             mark = media.shaders.bullet_mark.clone();
             radius = 4.0;
         }
-        Weapon::Chaingun => {
+        Weapon::WpChaingun => {
             model = media.models.bullet_flash.clone();
             mark = media.shaders.bullet_mark.clone();
             // Donor selects flesh/metal first, then overwrites with ricochet; keep the final value.
@@ -2314,7 +2340,7 @@ pub fn emit_weapon_impact(
             };
             radius = 8.0;
         }
-        Weapon::Machinegun => {
+        Weapon::WpMachinegun => {
             model = media.models.bullet_flash.clone();
             shader = registry_effects.bullet_explosion_shader.clone();
             mark = media.shaders.bullet_mark.clone();
@@ -2348,13 +2374,13 @@ pub fn emit_weapon_impact(
         if let Some(le) = pool.get_mut(handle) {
             le.light = light;
             le.light_color = light_color;
-            if weapon == Weapon::Railgun {
+            if weapon == Weapon::WpRailgun {
                 let color = host.client_info_view(client_num).color1;
                 le.color = vec4(color.x, color.y, color.z, le.color.w);
             }
         }
     }
-    let color = if weapon == Weapon::Railgun {
+    let color = if weapon == Weapon::WpRailgun {
         host.client_info_view(client_num).color2
     } else {
         vec3(1.0, 1.0, 1.0)
@@ -2442,7 +2468,7 @@ pub fn emit_rail_trail(
                 le.life_rate = 1.0 / (le.end_time.wrapping_sub(time) as f32);
                 le.color = vec4(ci.color2.x * 0.75, ci.color2.y * 0.75, ci.color2.z * 0.75, 1.0);
                 le.pos = Trajectory {
-                    type_: TrajectoryType::Linear,
+                    trajectory_type: TrajectoryType::TrLinear,
                     time,
                     duration: 0,
                     base: weapon_ma(position, 4.0, side),
@@ -2497,7 +2523,7 @@ pub fn emit_plasma_trail(
         le.start_time = time;
         le.end_time = time.wrapping_add(600);
         le.pos = Trajectory {
-            type_: TrajectoryType::Gravity,
+            trajectory_type: TrajectoryType::TrGravity,
             time,
             duration: 0,
             base: re.origin,
@@ -2506,7 +2532,7 @@ pub fn emit_plasma_trail(
         le.bounce_factor = 0.3;
         le.color = vec4(flash_color.x * 0.2, flash_color.y * 0.2, flash_color.z * 0.2, 0.25);
         le.angles = Trajectory {
-            type_: TrajectoryType::Linear,
+            trajectory_type: TrajectoryType::TrLinear,
             time,
             duration: 0,
             base: vec3(rand_bits[0] as f32, rand_bits[1] as f32, rand_bits[2] as f32),
@@ -2515,4 +2541,63 @@ pub fn emit_plasma_trail(
         le.ref_entity = RefEntity::Sprite(re);
     }
     Ok(())
+}
+
+/// Shotgun event (`Q3ShotgunEvent`, minimal mirror).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Q3ShotgunEvent {
+    /// Muzzle.
+    pub muzzle: Vec3,
+    /// Direction.
+    pub direction: Vec3,
+    /// Seed.
+    pub seed: i32,
+}
+
+/// Shotgun pellet endpoints (`q3ShotgunEndpoints`).
+#[must_use]
+pub fn q3_shotgun_endpoints(origin: Vec3, direction: Vec3, initial_seed: i32) -> Vec<Vec3> {
+    let forward = normalize3_or_zero(direction);
+    let right = perpendicular_vector(forward);
+    let up = cross3(forward, right);
+    let mut seed = initial_seed;
+    let mut ends = Vec::with_capacity(11);
+    for _ in 0..11 {
+        let r = q_crandom(seed);
+        let u = q_crandom(r.seed);
+        seed = u.seed;
+        let horizontal = (r.value as f32) * 700.0 * 16.0;
+        let vertical = (u.value as f32) * 700.0 * 16.0;
+        ends.push(add3(
+            add3(add3(origin, scale3(forward, 131072.0)), scale3(right, horizontal)),
+            scale3(up, vertical),
+        ));
+    }
+    ends
+}
+
+/// Grapple cable (`q3GrappleCable`).
+#[must_use]
+pub fn q3_grapple_cable(origin: Vec3, up: Vec3, point: Vec3) -> Option<(Vec3, Vec3)> {
+    let start = add3(add3(origin, vec3(0.0, 0.0, 26.0)), scale3(up, -6.0));
+    if length3(sub3(start, point)) < 64.0 {
+        return None;
+    }
+    Some((start, point))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::shared::direction_byte::byte_to_direction;
+
+    #[test]
+    fn shotgun_endpoints_and_cable() {
+        let ends: Vec<Vec3> = q3_shotgun_endpoints(zero_vec3(), vec3(1.0, 0.0, 0.0), 42);
+        assert_eq!(ends.len(), 11);
+        assert!(q3_grapple_cable(zero_vec3(), vec3(0.0, 0.0, 1.0), zero_vec3()).is_none());
+        assert!(q3_grapple_cable(zero_vec3(), vec3(0.0, 0.0, 1.0), vec3(500.0, 0.0, 0.0)).is_some());
+        assert_eq!(byte_to_direction(5), vec3(0.0, 0.0, 1.0));
+        assert_eq!(byte_to_direction(999), zero_vec3());
+    }
 }

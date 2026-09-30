@@ -3,10 +3,21 @@
 //! Donor provenance: `src/content/q3/presentation/prediction.ts`.
 
 use qa_core::math::{add3, length3, scale3, sub3, vec3, Bounds, Vec3};
+use qa_core::numeric::qvm_float_to_int;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::items::{
+    can_item_be_grabbed, item_at, player_touches_item, ItemKind, PickupEntity, PlayerInventory,
+};
+use crate::q3::base::shared::jump_pad::*;
+use crate::q3::base::shared::player_state::*;
+use crate::q3::base::shared::trajectory::evaluate_trajectory;
+use crate::q3::base::world::{TraceShape, TraceSolidity};
+use crate::q3::presentation::collision_host::*;
+use crate::q3::presentation::movement_host::*;
 use crate::q3::presentation::state::*;
 
 // ---------------------------------------------------------------------------
@@ -19,6 +30,24 @@ pub const SOLID_BMODEL: i32 = 0x00ff_ffff;
 pub(crate) const CONTENTS_BODY: i32 = 0x0200_0000;
 
 pub(crate) const MASK_PLAYERSOLID: i32 = 1 | 0x0001_0000 | CONTENTS_BODY;
+
+/// Pmove options (`PresentationMovementOptions`).
+pub struct PmoveOptions<'a> {
+    /// Trace callback.
+    pub trace: Box<dyn FnMut(Vec3, Vec3, Bounds, i32, i32) -> MovementTrace + 'a>,
+    /// Point-contents callback.
+    pub point_contents: Box<dyn FnMut(Vec3, i32) -> i32 + 'a>,
+    /// Original server time.
+    pub original_server_time: i32,
+    /// Trace mask.
+    pub trace_mask: i32,
+    /// Fixed milliseconds.
+    pub fixed_msec: Option<i32>,
+    /// No footsteps.
+    pub no_footsteps: bool,
+    /// Gauntlet hit.
+    pub gauntlet_hit: bool,
+}
 
 /// User-command source (`CommandSource`).
 pub trait CommandSource {
@@ -40,7 +69,15 @@ impl ClientCommandHistory {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            commands: [UserCommand::default(); 64],
+            commands: [UserCommand {
+                server_time: 0,
+                angles: vec3(0.0, 0.0, 0.0),
+                buttons: 0,
+                weapon: Weapon::WpNone as i32,
+                forwardmove: 0,
+                rightmove: 0,
+                upmove: 0,
+            }; 64],
             number: 0,
         }
     }
@@ -107,7 +144,7 @@ pub trait PredictionHost {
     /// Command timing.
     fn command_timing(&self) -> CommandTiming;
     /// Move the player.
-    fn move_player(&mut self, ps: &mut PlayerState, command: &UserCommand, options: &mut PmoveOptions) -> PmoveResult;
+    fn move_player(&mut self, ps: &mut PlayerState, command: &UserCommand, options: &mut PmoveOptions) -> MoveBounds;
     /// Update view angles.
     fn update_view_angles(&mut self, ps: &mut PlayerState, command: &UserCommand);
     /// Current command number.
@@ -127,7 +164,7 @@ pub trait PredictionHost {
         previous: &mut PlayerState,
     ) -> PresentResult<()>;
     /// Predictable-event debug sink.
-    fn event_debug(&self) -> Option<PredictableEventDebug>;
+    fn event_debug(&self) -> Option<Rc<dyn PredictableEventDebug>>;
     /// Recipe pre-hook for predicted item touch; `false` skips the source.
     fn pre_predict_item(&mut self, state: &mut ClientGameState, entity_number: usize) -> bool;
     /// Recipe post-hook for predicted item touch.
@@ -136,27 +173,87 @@ pub trait PredictionHost {
     fn warn(&mut self, message: &str);
 }
 
-pub(crate) fn prediction_inventory(ps: &PlayerState) -> PresentResult<PlayerInventory<'_>> {
-    let schema = stat_schema(ps.product);
-    let team = ps.persistant.get(PersistentIndex::Team as i32)?;
-    let persistent = match schema.persistent_powerup {
-        Some(slot) => ps.stats.get(slot)?,
+/// Predicted-player inventory adapter (`PlayerInventory`).
+pub(crate) struct PredictionInventory<'a> {
+    product: Product,
+    health: i32,
+    armor: i32,
+    max_health: i32,
+    holdable_item: i32,
+    team: i32,
+    persistent_powerup_index: i32,
+    ammo: &'a PlayerStateSlots,
+    powerups: &'a PlayerStateSlots,
+}
+
+impl PlayerInventory for PredictionInventory<'_> {
+    fn product(&self) -> Product {
+        self.product
+    }
+    fn health(&self) -> i32 {
+        self.health
+    }
+    fn armor(&self) -> i32 {
+        self.armor
+    }
+    fn max_health(&self) -> i32 {
+        self.max_health
+    }
+    fn holdable_item(&self) -> i32 {
+        self.holdable_item
+    }
+    fn team(&self) -> i32 {
+        self.team
+    }
+    fn ammo(&self, weapon: Weapon) -> i32 {
+        self.ammo.get(weapon as usize)
+    }
+    fn powerup(&self, powerup: Powerup) -> i32 {
+        self.powerups.get(powerup as usize)
+    }
+    fn persistent_powerup_index(&self) -> i32 {
+        self.persistent_powerup_index
+    }
+}
+
+pub(crate) fn prediction_inventory(ps: &PlayerState) -> PresentResult<PredictionInventory<'_>> {
+    let (armor, max_health, holdable_item, persistent_powerup) = match stat_schema(ps.product()) {
+        StatSchema::Base(layout) => (layout.armor, layout.max_health, layout.holdable_item, None),
+        StatSchema::Missionpack(layout) => (
+            layout.armor,
+            layout.max_health,
+            layout.holdable_item,
+            Some(layout.persistent_powerup),
+        ),
+    };
+    let team = ps.persistant.get(PersistentIndex::PersTeam as usize);
+    let persistent = match persistent_powerup {
+        Some(slot) => ps.stats.get(slot as usize),
         None => 0,
     };
-    if ps.product == Q3Product::MissionPack && schema.persistent_powerup.is_none() {
+    if ps.product() == Product::Missionpack && persistent_powerup.is_none() {
         return Err(state_msg("Missionpack prediction requires its stat schema"));
     }
-    Ok(PlayerInventory::new(
-        ps.product,
-        ps.health()?,
-        ps.stats.get(schema.armor)?,
-        ps.stats.get(schema.max_health)?,
-        ps.stats.get(schema.holdable_item)?,
+    Ok(PredictionInventory {
+        product: ps.product(),
+        health: ps.health(),
+        armor: ps.stats.get(armor as usize),
+        max_health: ps.stats.get(max_health as usize),
+        holdable_item: ps.stats.get(holdable_item as usize),
         team,
-        persistent,
-        &ps.ammo,
-        &ps.powerups,
-    ))
+        persistent_powerup_index: persistent,
+        ammo: &ps.ammo,
+        powerups: &ps.powerups,
+    })
+}
+
+/// Weapons stat slot for a product.
+fn weapons_slot(product: Product) -> usize {
+    let slot = match stat_schema(product) {
+        StatSchema::Base(layout) => layout.weapons,
+        StatSchema::Missionpack(layout) => layout.weapons,
+    };
+    slot as usize
 }
 
 pub(crate) fn interpolate_vector(a: Vec3, b: Vec3, fraction: f32) -> Vec3 {
@@ -194,7 +291,15 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
         Self {
             collision,
             host,
-            command: UserCommand::default(),
+            command: UserCommand {
+                server_time: 0,
+                angles: vec3(0.0, 0.0, 0.0),
+                buttons: 0,
+                weapon: Weapon::WpNone as i32,
+                forwardmove: 0,
+                rightmove: 0,
+                upmove: 0,
+            },
         }
     }
 
@@ -219,7 +324,14 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             model_index: None,
         };
         let world_trace = self.collision.trace(&query);
-        let mut result = MovementTrace::from_world(&world_trace);
+        let mut result = MovementTrace {
+            base: world_trace,
+            entity_num: if world_trace.fraction != 1.0 {
+                ENTITYNUM_WORLD
+            } else {
+                ENTITYNUM_NONE
+            },
+        };
         for entity_number in state.solid_entities.clone() {
             let number = i32::try_from(entity_number).map_err(|_| range_msg("Entity number outside int32"))?;
             let cent = state.entity_at(number)?;
@@ -233,7 +345,7 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
                 self.collision.transformed_trace(
                     &query,
                     entity.modelindex,
-                    evaluate_trajectory(&entity.pos, state.physics_time)?,
+                    evaluate_trajectory(&entity.pos, state.physics_time),
                     cent.lerp_angles,
                 )
             } else {
@@ -243,20 +355,22 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
                 self.collision
                     .box_trace(vec3(-x, -x, -zd), vec3(x, x, zu), &query, cent.lerp_origin)
             };
-            if trace.solidity == TraceSolidity::AllSolid || trace.fraction < result.fraction {
+            if trace.solidity == TraceSolidity::AllSolid || trace.fraction < result.base.fraction {
                 result = MovementTrace {
-                    fraction: trace.fraction,
-                    end: trace.end,
-                    solidity: trace.solidity,
-                    contact: trace.contact,
-                    contents: trace.contents,
-                    surface_flags: trace.surface_flags,
+                    base: TraceResult {
+                        fraction: trace.fraction,
+                        end: trace.end,
+                        solidity: trace.solidity,
+                        contact: trace.contact,
+                        contents: trace.contents,
+                        surface_flags: trace.surface_flags,
+                    },
                     entity_num: entity.number,
                 };
-            } else if trace.solidity != TraceSolidity::Clear && result.solidity != TraceSolidity::AllSolid {
-                result.solidity = TraceSolidity::StartSolid;
+            } else if trace.solidity != TraceSolidity::Clear && result.base.solidity != TraceSolidity::AllSolid {
+                result.base.solidity = TraceSolidity::StartSolid;
             }
-            if result.solidity == TraceSolidity::AllSolid {
+            if result.base.solidity == TraceSolidity::AllSolid {
                 return Ok(result);
             }
         }
@@ -312,8 +426,8 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
         };
         let ps = &mut state.predicted_player_state;
         ps.bob_cycle = qvm_float_to_int(a.bob_cycle as f32 + fraction * cycle.wrapping_sub(a.bob_cycle) as f32);
-        ps.origin = interpolate_vector(a.origin, b.origin, fraction);
-        ps.velocity = interpolate_vector(a.velocity, b.velocity, fraction);
+        ps.set_origin(interpolate_vector(a.origin(), b.origin(), fraction));
+        ps.set_velocity(interpolate_vector(a.velocity(), b.velocity(), fraction));
         if !grab_angles {
             ps.viewangles = vec3(
                 lerp_angle(a.viewangles.x, b.viewangles.x, fraction),
@@ -347,11 +461,16 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
         let time = state.time;
         let product = state.product;
         let entity = state.entity_at_mut(number)?.current_state.clone();
-        let origin = state.predicted_player_state.origin;
-        if !settings.predict_items
-            || !player_touches_item(origin, &entity.pos, time)?
-            || state.entity_at(number)?.misc_time == time
-        {
+        let origin = state.predicted_player_state.origin();
+        let item_position = crate::q3::base::shared::items::Trajectory {
+            trajectory_type: entity.pos.trajectory_type as i32,
+            time: entity.pos.time,
+            duration: entity.pos.duration,
+            base: entity.pos.base,
+            delta: entity.pos.delta,
+        };
+        let touches = player_touches_item(origin, &item_position, time)?;
+        if !settings.predict_items || !touches || state.entity_at(number)?.misc_time == time {
             return Ok(());
         }
         let ps = &mut state.predicted_player_state;
@@ -365,35 +484,35 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             return Ok(());
         }
         let item = *item_at(product, entity.modelindex)?;
-        if product == Q3Product::MissionPack
-            && settings.game_type == GameType::OneFctf
-            && item.tag != Powerup::NeutralFlag as i32
+        if product == Product::Missionpack
+            && settings.game_type == GameType::Gt1fctf
+            && item.tag() != Powerup::PwNeutralflag as i32
         {
             return Ok(());
         }
-        if settings.game_type == GameType::Ctf
-            || (product == Q3Product::MissionPack && settings.game_type == GameType::Harvester)
+        if settings.game_type == GameType::GtCtf
+            || (product == Product::Missionpack && settings.game_type == GameType::GtHarvester)
         {
-            let team = ps.persistant.get(PersistentIndex::Team as i32)?;
-            if (team == Team::Red as i32 && item.tag == Powerup::RedFlag as i32)
-                || (team == Team::Blue as i32 && item.tag == Powerup::BlueFlag as i32)
+            let team = ps.persistant.get(PersistentIndex::PersTeam as usize);
+            if (team == Team::TeamRed as i32 && item.tag() == Powerup::PwRedflag as i32)
+                || (team == Team::TeamBlue as i32 && item.tag() == Powerup::PwBlueflag as i32)
             {
                 return Ok(());
             }
         }
-        ps.add_event(EntityEvent::ItemPickup as i32, entity.modelindex)?;
+        ps.add_event(EntityEvent::EvItemPickup as i32, entity.modelindex);
         let entity = state.entity_at_mut(number)?;
         entity.current_state.e_flags |= 0x80;
         entity.misc_time = time;
-        if item.item_type == ItemType::Weapon {
-            let slot = stat_schema(product).weapons;
-            let weapons = state.predicted_player_state.stats.get(slot)?;
+        if matches!(item.kind, ItemKind::Weapon(_)) {
+            let slot = weapons_slot(product);
+            let weapons = state.predicted_player_state.stats.get(slot);
             state
                 .predicted_player_state
                 .stats
-                .set(slot, weapons | (1 << item.tag))?;
-            if state.predicted_player_state.ammo.get(item.tag)? == 0 {
-                state.predicted_player_state.ammo.set(item.tag, 1)?;
+                .set(slot, weapons | (1 << item.tag()));
+            if state.predicted_player_state.ammo.get(item.tag() as usize) == 0 {
+                state.predicted_player_state.ammo.set(item.tag() as usize, 1);
             }
         }
         Ok(())
@@ -406,24 +525,24 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
         bounds: &Bounds,
         settings: &PredictionSettings,
     ) -> PresentResult<()> {
-        if state.predicted_player_state.health()? <= 0 {
+        if state.predicted_player_state.health() <= 0 {
             return Ok(());
         }
-        let spectator = state.predicted_player_state.pm_type == MoveType::Spectator as i32;
-        if state.predicted_player_state.pm_type != MoveType::Normal as i32 && !spectator {
+        let spectator = state.predicted_player_state.pm_type == MoveType::PmSpectator as i32;
+        if state.predicted_player_state.pm_type != MoveType::PmNormal as i32 && !spectator {
             return Ok(());
         }
         for entity_number in state.trigger_entities.clone() {
             let number = i32::try_from(entity_number).map_err(|_| range_msg("Entity number outside int32"))?;
             let entity = state.entity_at(number)?.current_state.clone();
-            if entity.e_type == EntityType::Item as i32 && !spectator {
+            if entity.e_type == EntityType::EtItem as i32 && !spectator {
                 self.touch_item(state, entity_number, settings)?;
                 continue;
             }
             if entity.solid != SOLID_BMODEL || entity.modelindex == 0 {
                 continue;
             }
-            let origin = state.predicted_player_state.origin;
+            let origin = state.predicted_player_state.origin();
             let trace = self.collision.trace(&TraceQuery {
                 start: origin,
                 end: origin,
@@ -437,11 +556,11 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             if trace.solidity == TraceSolidity::Clear {
                 continue;
             }
-            if entity.e_type == EntityType::TeleportTrigger as i32 {
+            if entity.e_type == EntityType::EtTeleportTrigger as i32 {
                 state.hyperspace = true;
-            } else if entity.e_type == EntityType::PushTrigger as i32 {
+            } else if entity.e_type == EntityType::EtPushTrigger as i32 {
                 let mut ps = state.take_predicted_player_state();
-                touch_jump_pad(&mut ps, &entity)?;
+                touch_jump_pad(&mut ps, &entity);
                 state.predicted_player_state = ps;
             }
         }
@@ -476,7 +595,7 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             state.predicted_player_state = snap_ps;
         }
         let snapshot_ps = state.snap.as_ref().expect("snap").player_state.clone();
-        if settings.demo_playback || (snapshot_ps.pm_flags & MoveFlags::FOLLOW) != 0 {
+        if settings.demo_playback || (snapshot_ps.pm_flags & (MoveFlags::Follow as i32)) != 0 {
             self.interpolate_player_state(state, false)?;
             return Ok(());
         }
@@ -485,8 +604,8 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             return Ok(());
         }
         let mut mask = MASK_PLAYERSOLID;
-        if state.predicted_player_state.pm_type == MoveType::Dead as i32
-            || snapshot_ps.persistant.get(PersistentIndex::Team as i32)? == Team::Spectator as i32
+        if state.predicted_player_state.pm_type == MoveType::PmDead as i32
+            || snapshot_ps.persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamSpectator as i32
         {
             mask &= !CONTENTS_BODY;
         }
@@ -538,12 +657,19 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
                     } else {
                         let physics_time = state.physics_time;
                         let old_time = state.old_time;
-                        let adjusted =
-                            adjust_position_for_mover(state, ps.origin, ps.ground_entity_num, physics_time, old_time)?;
-                        let delta = sub3(old.origin, adjusted);
+                        let adjusted = adjust_position_for_mover(
+                            state,
+                            ps.origin(),
+                            ps.ground_entity_num,
+                            physics_time,
+                            old_time,
+                        )?;
+                        let delta = sub3(old.origin(), adjusted);
                         let length = length3(delta);
                         if settings.show_miss != 0
-                            && (old.origin.x != adjusted.x || old.origin.y != adjusted.y || old.origin.z != adjusted.z)
+                            && (old.origin().x != adjusted.x
+                                || old.origin().y != adjusted.y
+                                || old.origin().z != adjusted.z)
                         {
                             self.host.warn("prediction error\n");
                         }
@@ -624,7 +750,13 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
         }
         let physics_time = state.physics_time;
         let time = state.time;
-        ps.origin = adjust_position_for_mover(state, ps.origin, ps.ground_entity_num, physics_time, time)?;
+        ps.set_origin(adjust_position_for_mover(
+            state,
+            ps.origin(),
+            ps.ground_entity_num,
+            physics_time,
+            time,
+        )?);
         if settings.show_miss != 0 && ps.event_sequence > old.event_sequence.wrapping_add(2) {
             self.host.warn("WARNING: dropped event\n");
         }
@@ -660,7 +792,14 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             model_index: None,
         };
         let world_trace = collision.trace(&query);
-        let mut result = MovementTrace::from_world(&world_trace);
+        let mut result = MovementTrace {
+            base: world_trace,
+            entity_num: if world_trace.fraction != 1.0 {
+                ENTITYNUM_WORLD
+            } else {
+                ENTITYNUM_NONE
+            },
+        };
         for entity_number in state.solid_entities.iter().copied() {
             let Ok(number) = i32::try_from(entity_number) else {
                 continue;
@@ -670,9 +809,7 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
             if entity.number == skip_number {
                 continue;
             }
-            let Ok(evaluated) = evaluate_trajectory(&entity.pos, state.physics_time) else {
-                continue;
-            };
+            let evaluated = evaluate_trajectory(&entity.pos, state.physics_time);
             let trace = if entity.solid == SOLID_BMODEL {
                 let mut query = query;
                 query.model_index = Some(entity.modelindex);
@@ -683,20 +820,22 @@ impl<C: CollisionWorld, H: PredictionHost> PredictionRuntime<C, H> {
                 let zu = (((entity.solid >> 16) & 255) - 32) as f32;
                 collision.box_trace(vec3(-x, -x, -zd), vec3(x, x, zu), &query, cent.lerp_origin)
             };
-            if trace.solidity == TraceSolidity::AllSolid || trace.fraction < result.fraction {
+            if trace.solidity == TraceSolidity::AllSolid || trace.fraction < result.base.fraction {
                 result = MovementTrace {
-                    fraction: trace.fraction,
-                    end: trace.end,
-                    solidity: trace.solidity,
-                    contact: trace.contact,
-                    contents: trace.contents,
-                    surface_flags: trace.surface_flags,
+                    base: TraceResult {
+                        fraction: trace.fraction,
+                        end: trace.end,
+                        solidity: trace.solidity,
+                        contact: trace.contact,
+                        contents: trace.contents,
+                        surface_flags: trace.surface_flags,
+                    },
                     entity_num: entity.number,
                 };
-            } else if trace.solidity != TraceSolidity::Clear && result.solidity != TraceSolidity::AllSolid {
-                result.solidity = TraceSolidity::StartSolid;
+            } else if trace.solidity != TraceSolidity::Clear && result.base.solidity != TraceSolidity::AllSolid {
+                result.base.solidity = TraceSolidity::StartSolid;
             }
-            if result.solidity == TraceSolidity::AllSolid {
+            if result.base.solidity == TraceSolidity::AllSolid {
                 return result;
             }
         }
@@ -739,9 +878,9 @@ pub fn build_solid_list(state: &mut ClientGameState) -> PresentResult<()> {
         let entity_type = entity.current_state.e_type;
         let next_solid = entity.next_state.solid;
         let index = usize::try_from(number).map_err(|_| range_msg("Entity number outside int32"))?;
-        if entity_type == EntityType::Item as i32
-            || entity_type == EntityType::PushTrigger as i32
-            || entity_type == EntityType::TeleportTrigger as i32
+        if entity_type == EntityType::EtItem as i32
+            || entity_type == EntityType::EtPushTrigger as i32
+            || entity_type == EntityType::EtTeleportTrigger as i32
         {
             state.trigger_entities.push(index);
         } else if next_solid != 0 {
@@ -763,12 +902,12 @@ pub fn adjust_position_for_mover(
         return Ok(input);
     }
     let mover = state.entity_at(mover_num)?.current_state.clone();
-    if mover.e_type != EntityType::Mover as i32 {
+    if mover.e_type != EntityType::EtMover as i32 {
         return Ok(input);
     }
-    let old_origin = evaluate_trajectory(&mover.pos, from_time)?;
-    evaluate_trajectory(&mover.apos, from_time)?;
-    let origin = evaluate_trajectory(&mover.pos, to_time)?;
-    evaluate_trajectory(&mover.apos, to_time)?;
+    let old_origin = evaluate_trajectory(&mover.pos, from_time);
+    let _ = evaluate_trajectory(&mover.apos, from_time);
+    let origin = evaluate_trajectory(&mover.pos, to_time);
+    let _ = evaluate_trajectory(&mover.apos, to_time);
     Ok(add3(input, sub3(origin, old_origin)))
 }

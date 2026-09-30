@@ -6,8 +6,12 @@ use qa_core::math::vec4;
 use std::cell::{Cell, RefCell};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::*;
+use crate::q3::presentation::config::HudCvarReader;
 use crate::q3::presentation::draw_tools::*;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::hud::{same, Shared};
+use crate::q3::presentation::prediction::CommandSource;
+use crate::q3::presentation::state::*;
 
 /// Lagometer sample counts.
 pub(crate) const LAG_SAMPLES: usize = 128;
@@ -260,7 +264,12 @@ impl ClientDrawStatus {
             .current_number()
             .wrapping_sub(64)
             .wrapping_add(1);
-        let command = self.host.commands.borrow().read(command_number);
+        let command = self
+            .host
+            .commands
+            .borrow()
+            .read(command_number)
+            .unwrap_or_else(|_| panic!("CG_DrawDisconnect command fell outside CMD_BACKUP"));
         let Some(command) = command else {
             panic!("CG_DrawDisconnect command fell outside CMD_BACKUP");
         };
@@ -280,7 +289,8 @@ impl ClientDrawStatus {
             .borrow()
             .resources
             .borrow_mut()
-            .register_shader("gfx/2d/net.tga");
+            .register_shader("gfx/2d/net.tga")
+            .unwrap_or(None);
         self.tools
             .draw_pic(rect2d(640.0 - 48.0, 480.0 - 48.0, 48.0, 48.0), &shader);
     }
@@ -309,7 +319,10 @@ impl ClientDrawStatus {
         let picture = {
             let media = self.tools.media.borrow();
             let resources = media.resources.borrow();
-            resources.picture(&media.graphics.white_shader)
+            resources
+                .picture(media.graphics.white_shader.as_ref())
+                .map(|material| Picture { order: material.id })
+                .unwrap_or(ZERO_PICTURE)
         };
         let yellow = vec4(1.0, 1.0, 0.0, 1.0);
         let blue = vec4(0.0, 0.0, 1.0, 1.0);
@@ -414,5 +427,39 @@ impl ClientDrawStatus {
                 .draw_big_string(adjusted.x as i32, adjusted.y as i32, "snc", 1.0);
         }
         self.draw_disconnect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::shared::definitions::Product;
+    use crate::q3::presentation::hud::shared;
+    use crate::q3::presentation::hud::tests::*;
+
+    #[test]
+    fn status_center_print_and_lagometer() {
+        let game = world(Product::Baseq3);
+        let status = ClientDrawStatus::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            game.tools.clone(),
+            ClientDrawStatusVariant::Baseq3,
+            ClientDrawStatusHost {
+                commands: shared(FakeCommandSource::default()),
+                cvars: game.cvars.clone(),
+            },
+        );
+        game.state.borrow_mut().time = 10;
+        status.center_print("a\nb", 100, 8);
+        assert_eq!(game.state.borrow().center_print_lines, 2);
+        game.cvars.borrow_mut().set("cg_centertime", 3, 3.0, "3");
+        status.draw_center_string();
+        assert!(!game.sink.borrow().blits.is_empty());
+        status.add_lagometer_frame_info();
+        status.add_lagometer_snapshot_info(Some(LagometerSnapshotSample { ping: 50, flags: 0 }));
+        status.add_lagometer_snapshot_info(None);
+        assert_eq!(status.frame_count.get(), 1);
+        assert_eq!(status.snapshot_count.get(), 2);
     }
 }

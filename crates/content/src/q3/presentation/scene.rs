@@ -2,12 +2,14 @@
 //!
 //! Donor provenance: `src/content/q3/presentation/scene.ts`.
 
-use qa_core::math::{vec4, Vec3};
+use qa_core::identity::{ActorId, SeatId};
+use qa_core::math::{vec4, Axis, Bounds, Vec3, Vec4};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 use crate::q3::presentation::refdef::*;
+use crate::q3::presentation::retail_snapshot::DynamicLight;
 
 // ---------------------------------------------------------------------------
 // scene.ts
@@ -489,5 +491,244 @@ impl Q3SceneRecorder {
             camera,
             source,
         });
+    }
+}
+
+/// Viewport rectangle (`Rect`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    /// X.
+    pub x: i32,
+    /// Y.
+    pub y: i32,
+    /// Width.
+    pub width: i32,
+    /// Height.
+    pub height: i32,
+}
+
+/// Perspective projection (`perspectiveProjection`, minimal mirror).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PerspectiveProjection {
+    /// Horizontal FOV.
+    pub fov_x: f32,
+    /// Vertical FOV.
+    pub fov_y: f32,
+    /// Far clip.
+    pub far_clip: f32,
+    /// Near clip.
+    pub near_clip: f32,
+}
+
+/// Build a perspective projection (`perspectiveProjection`).
+#[must_use]
+pub fn perspective_projection(fov_x: f32, fov_y: f32, far_clip: f32, near_clip: f32) -> PerspectiveProjection {
+    PerspectiveProjection {
+        fov_x,
+        fov_y,
+        far_clip,
+        near_clip,
+    }
+}
+
+/// Scene camera (`SceneCamera`, minimal mirror).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneCamera {
+    /// Viewport.
+    pub viewport: Rect,
+    /// Origin.
+    pub origin: Vec3,
+    /// Axis.
+    pub axis: Axis,
+    /// Projection.
+    pub projection: PerspectiveProjection,
+}
+
+/// Railgun beam settings (`RailSettings`, opaque mirror).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RailSettings;
+
+/// Fog volume (`FogVolume`, minimal mirror).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FogVolume {
+    /// Bounds.
+    pub bounds: Bounds,
+}
+
+/// Scene light (`SceneLight`, minimal mirror).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PresentSceneLight {
+    /// Origin.
+    pub origin: Vec3,
+    /// Radius.
+    pub radius: f32,
+    /// Color.
+    pub color: Vec3,
+    /// Additive.
+    pub additive: bool,
+}
+
+/// Presented entity model.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PresentEntityModel {
+    /// Brush model reference.
+    BrushModel {
+        /// World.
+        world: PresentWorld,
+        /// Model index.
+        model: usize,
+    },
+    /// Decoded model.
+    Decoded(Q3DecodedModel),
+}
+
+/// Scene entity (`SceneEntity`, minimal mirror).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresentSceneEntity {
+    /// Actor.
+    pub actor: Option<ActorId>,
+    /// Resource.
+    pub resource: PresentResource,
+    /// Model.
+    pub model: PresentEntityModel,
+    /// Origin.
+    pub origin: Vec3,
+    /// Axis.
+    pub axis: Axis,
+    /// Previous origin.
+    pub previous_origin: Vec3,
+    /// Frame.
+    pub frame: i32,
+    /// Previous frame.
+    pub previous_frame: i32,
+    /// Back lerp.
+    pub back_lerp: f32,
+    /// Skin.
+    pub skin: i32,
+    /// Color (unit).
+    pub color: Vec4,
+    /// Shader time seconds.
+    pub shader_time: f32,
+    /// Render flags.
+    pub render_flags: i32,
+    /// Lighting origin.
+    pub lighting_origin: Vec3,
+    /// Shadow plane.
+    pub shadow_plane: f32,
+}
+
+/// Model source options (`ModelSourceOptions`, minimal mirror).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModelSourceOptions {
+    /// Custom shader override.
+    pub custom_shader: Option<String>,
+    /// Custom skin surfaces.
+    pub custom_skin: Option<Vec<SkinMapping>>,
+    /// Non-normalized axes.
+    pub non_normalized_axes: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::identity::IdentityOwner;
+    use qa_core::math::{vec2, vec3};
+
+    #[test]
+    fn fog_admission() {
+        let poly = RefPoly {
+            shader: Some(SceneShader::new("s")),
+            vertices: vec![RefPolyVertex {
+                position: vec3(1.0, 1.0, 1.0),
+                tex_coord: vec2(0.0, 0.0),
+                color: vec4(1.0, 1.0, 1.0, 1.0),
+            }],
+        };
+        let fogs = vec![Q3FogSelection {
+            index: 2,
+            volume: FogVolume {
+                bounds: Bounds {
+                    min: zero_vec3(),
+                    max: vec3(2.0, 2.0, 2.0),
+                },
+            },
+        }];
+        let admitted = admit_q3_poly(&poly, &fogs).unwrap();
+        assert_eq!(admitted.fog.map(|fog| fog.index), Some(2));
+        assert!(q3_procedural_fog(vec3(1.0, 1.0, 1.0), 0.5, &fogs).is_some());
+        assert!(q3_procedural_fog(vec3(50.0, 50.0, 50.0), 0.5, &fogs).is_none());
+        let empty = RefPoly {
+            shader: Some(SceneShader::new("s")),
+            vertices: Vec::new(),
+        };
+        assert!(admit_q3_poly(&empty, &fogs).is_err());
+        assert!(admit_q3_poly(&empty, &[]).unwrap().fog.is_none());
+    }
+
+    #[test]
+    fn scene_capture_routes_entities() {
+        struct Target {
+            published: Vec<Q3PresentedScene>,
+            seat: SeatId,
+            actor: ActorId,
+        }
+        impl Q3SceneTarget for Target {
+            fn seat(&self) -> SeatId {
+                self.seat.clone()
+            }
+            fn viewport(&self) -> Rect {
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 480,
+                }
+            }
+            fn far_clip(&self) -> f32 {
+                1000.0
+            }
+            fn near_clip(&self) -> f32 {
+                1.0
+            }
+            fn rail(&self) -> RailSettings {
+                RailSettings
+            }
+            fn fog_selections(&self) -> Vec<Q3FogSelection> {
+                Vec::new()
+            }
+            fn print(&mut self, _text: &str) {}
+            fn actor(&self, _entity: &RefModelEntity) -> Option<ActorId> {
+                Some(self.actor.clone())
+            }
+            fn publish(&mut self, scene: Q3PresentedScene) {
+                self.published.push(scene);
+            }
+        }
+        let owner = IdentityOwner::create("scene-test").unwrap();
+        let mut recorder = Q3SceneRecorder::new(Box::new(Target {
+            published: Vec::new(),
+            seat: owner.seat(1),
+            actor: owner.actor(7, 0),
+        }));
+        let mut sprite = create_sprite_entity();
+        sprite.shading.custom_shader = Some(SceneShader::new("fx"));
+        recorder.add_ref_entity(&Q3AdmittedRefEntity::Entity(RefEntity::Sprite(sprite)));
+        recorder.add_ref_entity(&Q3AdmittedRefEntity::Entity(RefEntity::Beam(create_beam_entity())));
+        recorder.add_light(&DynamicLight {
+            origin: zero_vec3(),
+            radius: 10.0,
+            color: vec3(1.0, 1.0, 1.0),
+            additive: false,
+        });
+        let content = recorder.capture();
+        assert_eq!(content.effects.len(), 1);
+        assert_eq!(content.special_entities.len(), 1);
+        assert_eq!(content.lights.len(), 1);
+        let mut refdef = create_refdef();
+        refdef.width = 640;
+        refdef.height = 480;
+        refdef.fov_x = 90.0;
+        refdef.fov_y = 60.0;
+        recorder.render_scene(&refdef);
     }
 }

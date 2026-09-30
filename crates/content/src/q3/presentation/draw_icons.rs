@@ -6,8 +6,17 @@ use qa_core::math::{add3, vec3, vec4, Bounds, Vec3};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::items::{find_item_for_powerup, item_list};
 use crate::q3::presentation::draw_tools::*;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::hud::Shared;
+use crate::q3::presentation::ref_entity::RF_NOSHADOW;
+use crate::q3::presentation::refdef::RDF_NOWORLDMODEL;
+use crate::q3::presentation::retail_snapshot::{
+    create_model_entity_with, create_refdef, RefEntity, SceneModel, SceneSkin,
+};
+use crate::q3::presentation::state::*;
+use qa_core::math::angles_to_axis;
 
 /// Draw-icon settings (`ClientDrawIconSettings`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,8 +79,8 @@ impl ClientDrawIcons {
         }
         let viewport = self.tools.adjust_from_640(rect);
         let mut refdef = create_refdef();
-        let mut entity = create_model_entity(model.clone());
-        entity.axis = qvm_angles_to_axis(angles);
+        let mut entity = create_model_entity_with(model.clone());
+        entity.axis = angles_to_axis(angles);
         entity.origin = vec3(origin.x, origin.y, origin.z);
         entity.custom_skin = skin;
         entity.render_flags = RF_NOSHADOW;
@@ -87,7 +96,7 @@ impl ClientDrawIcons {
         // ClearScene starts an empty scene without discarding previously queued draw commands.
         let resources = self.tools.media.borrow().resources.clone();
         resources.borrow_mut().clear_scene();
-        resources.borrow_mut().add_ref_entity(&entity);
+        resources.borrow_mut().add_ref_entity(RefEntity::Model(entity));
         resources.borrow_mut().render_scene(&refdef);
     }
 
@@ -106,20 +115,20 @@ impl ClientDrawIcons {
             panic!("CG_DrawHead: invalid client number");
         }
         let settings = (self.settings)();
-        let client = client.borrow();
         if settings.draw_3d_icons {
             if client.head_model.is_default() {
                 return;
             }
-            let bounds = self
-                .tools
-                .media
-                .borrow()
-                .resources
-                .borrow()
-                .model_bounds(&client.head_model);
+            // Canonical client assets resolve to renderer views through the
+            // shared resource host's handle table.
+            let resources = self.tools.media.borrow().resources.clone();
+            let model = client
+                .head_model
+                .resource_id()
+                .map(|id| resources.borrow().model_for_handle(id as i32).unwrap_or_default())
+                .unwrap_or_default();
+            let bounds = resources.borrow().model_bounds(&model);
             let origin = add3(icon_origin(&bounds, 0.7), client.head_offset);
-            let model = client.head_model.clone();
             let skin = client.head_skin.clone();
             let deferred = client.deferred;
             drop(client);
@@ -130,10 +139,18 @@ impl ClientDrawIcons {
             }
         } else {
             if settings.draw_icons {
-                let icon = client.model_icon.clone();
+                let icon = client.model_icon.clone().and_then(|shader| {
+                    self.tools
+                        .media
+                        .borrow()
+                        .resources
+                        .borrow()
+                        .shader_for_handle(shader.id as i32)
+                        .unwrap_or(None)
+                });
                 drop(client);
                 self.tools.draw_pic(rect, &icon);
-                let deferred = static_state.borrow().client_info[client_num as usize].borrow().deferred;
+                let deferred = static_state.borrow().client_info[client_num as usize].deferred;
                 if deferred {
                     let defer = self.tools.media.borrow().graphics.defer_shader.clone();
                     self.tools.draw_pic(rect, &defer);
@@ -158,11 +175,11 @@ impl ClientDrawIcons {
             let origin = icon_origin(&bounds, 0.5);
             let time = self.state.borrow().time;
             let angles = vec3(0.0, 60.0 * (time as f32 / 2000.0).sin(), 0.0);
-            let model = if team == Team::Red as i32 {
+            let model = if team == Team::TeamRed as i32 {
                 media.graphics.red_flag_model.clone()
-            } else if team == Team::Blue as i32 {
+            } else if team == Team::TeamBlue as i32 {
                 media.graphics.blue_flag_model.clone()
-            } else if team == Team::Free as i32 {
+            } else if team == Team::TeamFree as i32 {
                 media.graphics.neutral_flag_model.clone()
             } else {
                 return;
@@ -170,19 +187,24 @@ impl ClientDrawIcons {
             drop(media);
             self.draw_3d_model(rect, &model, None, origin, angles);
         } else if settings.draw_icons {
-            let powerup = if team == Team::Red as i32 {
-                Powerup::RedFlag
-            } else if team == Team::Blue as i32 {
-                Powerup::BlueFlag
-            } else if team == Team::Free as i32 {
-                Powerup::NeutralFlag
+            let powerup = if team == Team::TeamRed as i32 {
+                Powerup::PwRedflag
+            } else if team == Team::TeamBlue as i32 {
+                Powerup::PwBlueflag
+            } else if team == Team::TeamFree as i32 {
+                Powerup::PwNeutralflag
             } else {
                 return;
             };
             let product = media.product;
-            let item = media.items.borrow().find_for_powerup(product, powerup as i32);
+            let item = find_item_for_powerup(product, powerup);
             if let Some(item) = item {
-                let index = media.items.borrow().index_of(product, &item);
+                let Some(index) = item_list(product)
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate as *const _, item as *const _))
+                else {
+                    return;
+                };
                 let visual = media.weapon_registry.borrow().item_visual(index);
                 drop(media);
                 self.tools.draw_pic(rect, &visual.icon);
@@ -192,13 +214,13 @@ impl ClientDrawIcons {
 
     /// Draw a team background (`drawTeamBackground`).
     pub fn draw_team_background(&self, rect: Rect2d, alpha: f32, team: i32) {
-        if team != Team::Red as i32 && team != Team::Blue as i32 {
+        if team != Team::TeamRed as i32 && team != Team::TeamBlue as i32 {
             return;
         }
         self.tools.draw.set_color(Some(vec4(
-            if team == Team::Red as i32 { 1.0 } else { 0.0 },
+            if team == Team::TeamRed as i32 { 1.0 } else { 0.0 },
             0.0,
-            if team == Team::Blue as i32 { 1.0 } else { 0.0 },
+            if team == Team::TeamBlue as i32 { 1.0 } else { 0.0 },
             alpha,
         )));
         let bar = self.tools.media.borrow().graphics.team_status_bar.clone();

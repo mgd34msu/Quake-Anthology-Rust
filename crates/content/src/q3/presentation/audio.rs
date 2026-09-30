@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::hud::shared;
+use crate::q3::presentation::hud::Shared;
+use qa_core::identity::{ActorId, SeatId};
 
 /// Sound registration row (`SoundRegistration`).
 #[derive(Debug, Clone, PartialEq)]
@@ -213,6 +215,24 @@ impl ClientSoundBank for Q3PresentationSoundBank {
     }
 }
 
+/// Cgame sound bank (`ClientSoundBank`, used surface).
+pub trait ClientSoundBank {
+    /// Register a sound.
+    fn register_sound(&mut self, path: Option<&str>, compressed: bool) -> Option<PcmSound>;
+    /// Fetch (or synchronously load) a sound.
+    fn sound(&mut self, path: Option<&str>, compressed: bool) -> Option<PcmSound>;
+    /// Handle for a sound.
+    fn index_for_sound(&self, sound: &Option<PcmSound>) -> i32;
+    /// Asset for a sound.
+    fn asset(&self, sound: &Option<PcmSound>) -> Option<SoundAsset>;
+    /// Sound at a handle.
+    fn sound_at_index(&self, index: i32) -> Option<PcmSound>;
+    /// Optional sound at a handle.
+    fn sound_for_index(&self, index: i32) -> Option<PcmSound>;
+    /// All registrations.
+    fn registrations(&self) -> Vec<SoundRegistration>;
+}
+
 /// Cgame audio target (`Q3AudioTarget`).
 pub trait Q3AudioTarget {
     /// Viewing seat.
@@ -289,9 +309,9 @@ impl Q3PresentationAudio {
         };
         let source = match origin {
             Some(position) => SoundOrigin::Fixed { position },
-            None => match actor {
+            None => match &actor {
                 None => panic!("Entity-attached sound requires a source actor"),
-                Some(actor) => SoundOrigin::Actor { actor },
+                Some(actor) => SoundOrigin::Actor { actor: actor.clone() },
             },
         };
         let seat = self.target.borrow().seat();
@@ -358,4 +378,190 @@ impl Q3PresentationAudio {
         let seat = self.target.borrow().seat();
         self.target.borrow_mut().stop_loop(seat, actor);
     }
+}
+
+/// Decoded sound data (`PcmSound` payload; the handle is shared for identity).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PcmSoundData {
+    /// Debug name.
+    pub name: String,
+}
+
+/// Shared decoded sound (`PcmSound`); identity is handle identity.
+pub type PcmSound = Shared<PcmSoundData>;
+
+/// Build a sound handle.
+#[must_use]
+pub fn pcm_sound(name: &str) -> PcmSound {
+    shared(PcmSoundData { name: name.to_string() })
+}
+
+/// Registered sound asset (`SoundAsset`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundAsset {
+    /// Decoded PCM.
+    pub pcm: PcmSound,
+    /// Resource binding.
+    pub resource: Option<String>,
+}
+
+/// Engine sound bank (`SoundBank`, used surface).
+pub trait SoundBank {
+    /// Register a path for a family.
+    fn register(&mut self, path: &str, family: &str) -> Option<SoundAsset>;
+}
+
+/// Sound checkpoint row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoundCheckpointRow {
+    /// Path.
+    pub path: String,
+    /// Compressed intent.
+    pub compressed: bool,
+    /// Handle.
+    pub handle: i32,
+    /// Resource binding.
+    pub resource: Option<String>,
+}
+
+/// Sound origin (`SoundOrigin`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SoundOrigin {
+    /// Attached to an actor.
+    Actor {
+        /// Actor.
+        actor: ActorId,
+    },
+    /// Fixed position.
+    Fixed {
+        /// Position.
+        position: Vec3,
+    },
+    /// Local.
+    Local,
+}
+
+/// One-shot sound (`PlaySound`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaySound {
+    /// Asset.
+    pub sound: SoundAsset,
+    /// Actor.
+    pub actor: Option<ActorId>,
+    /// Origin.
+    pub origin: SoundOrigin,
+    /// Seat audience.
+    pub seat: SeatId,
+    /// Channel.
+    pub channel: i32,
+    /// Volume.
+    pub volume: f32,
+    /// Attenuation.
+    pub attenuation: f32,
+}
+
+/// Looping sound (`LoopSound`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopSound {
+    /// Asset.
+    pub sound: SoundAsset,
+    /// Actor.
+    pub actor: ActorId,
+    /// Origin.
+    pub origin: SoundOrigin,
+    /// Seat audience.
+    pub seat: SeatId,
+    /// Velocity.
+    pub velocity: Vec3,
+    /// Volume.
+    pub volume: f32,
+    /// Attenuation.
+    pub attenuation: f32,
+    /// Frame number.
+    pub frame_number: i32,
+    /// Persistent loop.
+    pub persistent: bool,
+}
+
+/// Start-sound origin (`StartSoundOptions.origin`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StartSoundOrigin {
+    /// Entity-attached.
+    Entity {
+        /// Entity.
+        entity: i32,
+    },
+    /// Fixed position.
+    Fixed {
+        /// Position.
+        position: Vec3,
+    },
+    /// Local.
+    Local,
+}
+
+/// Start-sound options (`StartSoundOptions`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StartSoundOptions {
+    /// Entity.
+    pub entity: i32,
+    /// Origin.
+    pub origin: StartSoundOrigin,
+    /// Channel.
+    pub channel: i32,
+    /// Volume (0-127).
+    pub volume: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::presentation::hud::tests::*;
+    use crate::q3::presentation::hud::{shared, Shared};
+
+    #[test]
+    fn sound_bank_checkpoint_round_trip() {
+        let bank: Shared<dyn SoundBank> = shared(FakeEngineBank::default());
+        let mut sounds = Q3PresentationSoundBank::new(bank, None, Box::new(|_, _| None));
+        let first = sounds.register_sound(Some("sound/a.wav"), false).unwrap();
+        assert_eq!(sounds.index_for_sound(&Some(first.clone())), 1);
+        assert_eq!(sounds.index_for_sound(&None), 0);
+        assert_eq!(sounds.register_sound(Some(""), false), None);
+        assert_eq!(sounds.register_sound(Some("*null"), false), None);
+        let rows = sounds.capture_checkpoint();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].handle, 1);
+        let bank: Shared<dyn SoundBank> = shared(FakeEngineBank::default());
+        let mut restored = Q3PresentationSoundBank::new(bank, None, Box::new(|_, _| None));
+        restored.restore_checkpoint(&rows);
+        assert_eq!(restored.registrations().len(), 1);
+    }
+}
+
+/// Decoded sound handle (`PcmSound`, minimal mirror: handle by path).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PresentSound {
+    /// Source path.
+    pub path: String,
+}
+
+impl PresentSound {
+    /// New handle.
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+/// Sound start options (`StartSoundOptions`, minimal mirror).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundOptions {
+    /// Entity.
+    pub entity: i32,
+    /// Channel.
+    pub channel: i32,
+    /// Origin.
+    pub origin: SoundOrigin,
+    /// Volume.
+    pub volume: i32,
 }

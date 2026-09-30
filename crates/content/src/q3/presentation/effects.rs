@@ -9,9 +9,12 @@ use qa_core::math::{
 use qa_core::numeric::{q_random, qvm_float_to_int};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::shared::definitions::Product;
+use crate::q3::base::shared::trajectory::{Trajectory, TrajectoryType};
+use crate::q3::presentation::audio::PresentSound;
 use crate::q3::presentation::local_entities::*;
-use crate::q3::presentation::mirrors_present_scene::*;
 use crate::q3::presentation::ref_entity::*;
+use crate::q3::presentation::ref_entity::{PresentError, PresentResult};
 
 // ---------------------------------------------------------------------------
 // effects.ts
@@ -95,8 +98,8 @@ impl EffectMedia {
     #[must_use]
     pub fn product(&self) -> Product {
         match &self.variant {
-            EffectMediaVariant::Base { .. } => Product::BaseQ3,
-            EffectMediaVariant::Mission(_) => Product::MissionPack,
+            EffectMediaVariant::Base { .. } => Product::Baseq3,
+            EffectMediaVariant::Mission(_) => Product::Missionpack,
         }
     }
 }
@@ -284,7 +287,7 @@ impl ClientEffects {
                 le.life_rate = effect_life_rate(le.start_time, le.end_time);
                 le.color = vec4(0.0, 0.0, 0.0, 1.0);
                 le.pos = Trajectory {
-                    type_: TrajectoryType::Linear,
+                    trajectory_type: TrajectoryType::TrLinear,
                     time: frame.time,
                     duration: 0,
                     base: position,
@@ -341,7 +344,7 @@ impl ClientEffects {
             );
             le.color = options.color;
             le.pos = Trajectory {
-                type_: TrajectoryType::Linear,
+                trajectory_type: TrajectoryType::TrLinear,
                 time: le.start_time,
                 duration: 0,
                 base: options.origin,
@@ -510,7 +513,7 @@ impl ClientEffects {
             le.start_time = frame.time;
             le.end_time = qvm_float_to_int(le.start_time.wrapping_add(5000) as f32 + random * 3000.0);
             le.pos = Trajectory {
-                type_: TrajectoryType::Gravity,
+                trajectory_type: TrajectoryType::TrGravity,
                 time: frame.time,
                 duration: 0,
                 base: origin,
@@ -583,7 +586,7 @@ impl ClientEffects {
             le.start_time = frame.time;
             le.end_time = qvm_float_to_int(le.start_time.wrapping_add(10000) as f32 + random * 6000.0);
             le.pos = Trajectory {
-                type_: TrajectoryType::Gravity,
+                trajectory_type: TrajectoryType::TrGravity,
                 time: frame.time,
                 duration: 0,
                 base: origin,
@@ -834,5 +837,130 @@ pub(crate) fn set_custom_shader(entity: &mut RefEntity, shader: Option<SceneShad
         RefEntity::RailRings(re) => re.shading.custom_shader = shader,
         RefEntity::Lightning(re) => re.shading.custom_shader = shader,
         RefEntity::Portal(_) => {}
+    }
+}
+
+/// Effect frame: clock and snapshot identity for effect constructors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectFrame {
+    /// Time milliseconds.
+    pub time: i32,
+    /// Product.
+    pub product: Product,
+    /// Snapshot player client, when a snapshot is current.
+    pub snap_client: Option<i32>,
+    /// Predicted player client.
+    pub predicted_client: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestEffects {
+        next_rand: i32,
+        sounds: Vec<(Vec3, i32, i32, Option<PresentSound>)>,
+    }
+    impl EffectImports for TestEffects {
+        fn random_integer(&mut self) -> i32 {
+            let value = self.next_rand;
+            self.next_rand = (self.next_rand + 1) % 32768;
+            value
+        }
+        fn start_sound(&mut self, origin: Vec3, entity: i32, channel: i32, sound: Option<PresentSound>) {
+            self.sounds.push((origin, entity, channel, sound));
+        }
+    }
+
+    fn test_media() -> EffectMedia {
+        EffectMedia {
+            water_bubble_shader: None,
+            smoke_puff_rage_pro_shader: None,
+            blood_explosion_shader: None,
+            teleport_effect_model: default_model(),
+            gib_skull: default_model(),
+            gib_brain: default_model(),
+            gib_abdomen: default_model(),
+            gib_arm: default_model(),
+            gib_chest: default_model(),
+            gib_fist: default_model(),
+            gib_foot: default_model(),
+            gib_forearm: default_model(),
+            gib_intestine: default_model(),
+            gib_leg: default_model(),
+            smoke2: default_model(),
+            variant: EffectMediaVariant::Base {
+                teleport_effect_shader: None,
+            },
+        }
+    }
+
+    fn test_options() -> EffectOptions {
+        EffectOptions {
+            no_projectile_trail: false,
+            blood: true,
+            gibs: true,
+            score_plum: true,
+            hardware_rage_pro: false,
+        }
+    }
+
+    #[test]
+    fn effects_smoke_and_explosion() {
+        let mut pool = LocalEntityPool::new(Product::Baseq3);
+        let mut effects = ClientEffects::new(
+            Product::Baseq3,
+            Product::Baseq3,
+            test_media(),
+            test_options(),
+            Box::new(TestEffects {
+                next_rand: 7,
+                sounds: Vec::new(),
+            }),
+        )
+        .unwrap();
+        let frame = EffectFrame {
+            time: 1000,
+            product: Product::Baseq3,
+            snap_client: Some(0),
+            predicted_client: 0,
+        };
+        let handle = effects
+            .smoke_puff(
+                &mut pool,
+                &frame,
+                &SmokePuffOptions {
+                    origin: zero_vec3(),
+                    velocity: zero_vec3(),
+                    radius: 10.0,
+                    color: vec4(1.0, 1.0, 1.0, 1.0),
+                    duration: 500,
+                    start_time: 1000,
+                    fade_in_time: 0,
+                    flags: 0,
+                    shader: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(pool.get(handle).map(|le| le.end_time), Some(1500));
+        let bad = effects.make_explosion(
+            &mut pool,
+            &frame,
+            &ExplosionOptions {
+                origin: zero_vec3(),
+                direction: None,
+                model: default_model(),
+                shader: None,
+                duration: 0,
+                sprite: false,
+            },
+        );
+        assert!(bad.is_err());
+        effects
+            .bubble_trail(&mut pool, &frame, zero_vec3(), vec3(0.0, 0.0, 64.0), 16.0)
+            .unwrap();
+        assert!(pool.active_count() >= 2);
+        effects.gib_player(&mut pool, &frame, zero_vec3()).unwrap();
+        assert!(pool.active_count() >= 12);
     }
 }

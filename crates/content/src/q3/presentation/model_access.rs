@@ -80,3 +80,32 @@ pub struct ModelTag {
     /// Axes.
     pub axes: Axis,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::math::vec3;
+
+    #[test]
+    fn model_accessors() {
+        assert_eq!(
+            model_bounds(&default_model()),
+            Bounds {
+                min: zero_vec3(),
+                max: zero_vec3()
+            }
+        );
+        let inline_model = SceneModel::Inline(SceneInlineModel {
+            path: "*1".to_string(),
+            index: 1,
+            geometry: PresentWorld::new("world"),
+            resource: PresentResource::new("*1"),
+            bounds: Bounds {
+                min: vec3(1.0, 1.0, 1.0),
+                max: vec3(2.0, 2.0, 2.0),
+            },
+        });
+        assert_eq!(model_bounds(&inline_model).max, vec3(2.0, 2.0, 2.0));
+        assert!(lerp_model_tag(&default_model(), "tag", 0, 0, 0.0).is_none());
+    }
+}

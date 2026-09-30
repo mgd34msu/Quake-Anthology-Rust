@@ -5,7 +5,9 @@
 use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::hud::Shared;
+use crate::q3::presentation::retail_snapshot::PcmSound;
+use crate::q3::presentation::state::*;
 
 /// Frame audio host (`ClientFrameAudioHost`).
 pub trait ClientFrameAudioHost {
@@ -105,13 +107,58 @@ impl ClientFrameAudio {
             }
             let previous = expiry.wrapping_sub(old_time);
             if remaining / 1000 != previous / 1000 {
-                self.host.borrow_mut().start_sound(
-                    None,
-                    snapshot.player_state.client_num,
-                    4,
-                    self.wear_off_sound.clone(),
-                );
+                self.host
+                    .borrow_mut()
+                    .start_sound(None, snapshot.player_state.client_num, 4, self.wear_off_sound);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::shared::definitions::{Powerup, Product};
+    use crate::q3::base::shared::player_state::PlayerState;
+    use crate::q3::presentation::hud::tests::*;
+    use crate::q3::presentation::hud::{shared, Shared};
+    use crate::q3::presentation::retail_snapshot::{PcmSound as RetailPcmSound, Snapshot};
+    use crate::q3::presentation::state::ClientGameState;
+
+    #[test]
+    fn frame_audio_buffering() {
+        let state = shared(ClientGameState::new(Product::Baseq3, 0, 0).unwrap());
+        let host: Shared<FakeFrameAudio> = shared(FakeFrameAudio::default());
+        let audio = ClientFrameAudio::new(state.clone(), Some(RetailPcmSound::new(1)), host.clone());
+        audio.add_buffered_sound(Some(RetailPcmSound::new(2)));
+        state.borrow_mut().time = 100;
+        audio.play_buffered_sounds();
+        assert_eq!(host.borrow().local, vec![7]);
+        assert_eq!(state.borrow().sound_time, 850);
+        audio.play_buffered_sounds();
+        assert_eq!(host.borrow().local.len(), 1);
+    }
+
+    #[test]
+    fn frame_audio_powerup_tick() {
+        let state = shared(ClientGameState::new(Product::Baseq3, 0, 0).unwrap());
+        let mut ps = PlayerState::new(Product::Baseq3, None);
+        ps.powerups.set(Powerup::PwQuad as usize, 4500);
+        state.borrow_mut().snap = Some(Snapshot {
+            message_number: 0,
+            server_time: 3000,
+            delta_number: 0,
+            flags: 0,
+            server_command_number: 0,
+            parse_entities_number: 0,
+            area_mask: [0; 32],
+            player_state: ps,
+            entities: Vec::new(),
+        });
+        state.borrow_mut().time = 3000;
+        state.borrow_mut().old_time = 1500;
+        let host: Shared<FakeFrameAudio> = shared(FakeFrameAudio::default());
+        ClientFrameAudio::new(state, Some(RetailPcmSound::new(1)), host.clone()).powerup_timer_sounds();
+        assert_eq!(host.borrow().placed.len(), 1);
     }
 }

@@ -6,10 +6,17 @@ use qa_core::math::{vec3, vec4};
 use std::cell::{Cell, RefCell};
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::items::{find_item_for_powerup, item_at};
+use crate::q3::base::shared::player_state::*;
 use crate::q3::presentation::client_info::*;
+use crate::q3::presentation::config::{HudConfigStrings, HudCvarReader};
 use crate::q3::presentation::draw_icons::*;
 use crate::q3::presentation::draw_tools::*;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::hud::{same, Shared};
+use crate::q3::presentation::state::info_value_for_key;
+use crate::q3::presentation::state::*;
 
 /// Corner icon size.
 pub(crate) const CORNER_ICON_SIZE: f32 = 48.0;
@@ -73,22 +80,22 @@ pub(crate) const FPS_FRAMES: usize = 4;
 
 /// Powerup draw order (`POWERUPS`).
 pub(crate) const CORNER_POWERUPS: [Powerup; 16] = [
-    Powerup::None,
-    Powerup::Quad,
-    Powerup::Battlesuit,
-    Powerup::Haste,
-    Powerup::Invis,
-    Powerup::Regen,
-    Powerup::Flight,
-    Powerup::RedFlag,
-    Powerup::BlueFlag,
-    Powerup::NeutralFlag,
-    Powerup::Scout,
-    Powerup::Guard,
-    Powerup::Doubler,
-    Powerup::AmmoRegen,
-    Powerup::Invulnerability,
-    Powerup::NumPowerups,
+    Powerup::PwNone,
+    Powerup::PwQuad,
+    Powerup::PwBattlesuit,
+    Powerup::PwHaste,
+    Powerup::PwInvis,
+    Powerup::PwRegen,
+    Powerup::PwFlight,
+    Powerup::PwRedflag,
+    Powerup::PwBlueflag,
+    Powerup::PwNeutralflag,
+    Powerup::PwScout,
+    Powerup::PwGuard,
+    Powerup::PwDoubler,
+    Powerup::PwAmmoregen,
+    Powerup::PwInvulnerability,
+    Powerup::PwNumPowerups,
 ];
 
 /// HUD corner host services (`ClientHudCornersHost`).
@@ -189,7 +196,7 @@ impl ClientHudCorners {
             4 => value.clamp(-999, 9999),
             _ => value,
         };
-        let text = game_format("%i", &[GameFormatArg::Int(value)], 16);
+        let text = game_format_bounded("%i", &[GameFormatArgument::from(value)], 16);
         let units: Vec<char> = text.chars().collect();
         let length = units.len().min(width as usize);
         let mut draw_x = x + 2.0 + CORNER_CHAR_WIDTH * (width as f32 - length as f32);
@@ -218,7 +225,9 @@ impl ClientHudCorners {
     /// Draw the upper right (`drawUpperRight`).
     pub fn draw_upper_right(&self) {
         let mut y = 0.0f32;
-        if self.static_state.borrow().game_type >= GameType::Team && self.cvar("cg_drawTeamOverlay") == 1 {
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32)
+            && self.cvar("cg_drawTeamOverlay") == 1
+        {
             y = self.draw_team_overlay(y, true, true);
         }
         if self.cvar("cg_drawSnapshot") != 0 {
@@ -239,7 +248,9 @@ impl ClientHudCorners {
     pub fn draw_lower_right(&self) {
         self.require_base("CG_DrawLowerRight");
         let mut y = 480.0 - CORNER_ICON_SIZE;
-        if self.static_state.borrow().game_type >= GameType::Team && self.cvar("cg_drawTeamOverlay") == 2 {
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32)
+            && self.cvar("cg_drawTeamOverlay") == 2
+        {
             y = self.draw_team_overlay(y, true, false);
         }
         y = self.draw_scores(y);
@@ -250,7 +261,9 @@ impl ClientHudCorners {
     pub fn draw_lower_left(&self) {
         self.require_base("CG_DrawLowerLeft");
         let mut y = 480.0 - CORNER_ICON_SIZE;
-        if self.static_state.borrow().game_type >= GameType::Team && self.cvar("cg_drawTeamOverlay") == 3 {
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32)
+            && self.cvar("cg_drawTeamOverlay") == 3
+        {
             y = self.draw_team_overlay(y, false, false);
         }
         self.draw_pickup_item(y.trunc() as i32);
@@ -285,10 +298,13 @@ impl ClientHudCorners {
             width = width.max(draw_strlen(&message));
         }
         width = width * CORNER_TINYCHAR_WIDTH + CORNER_TINYCHAR_WIDTH * 2;
-        let team = self.active_player_state().persistant.get(PersistentIndex::Team as i32);
-        let color = if team == Team::Red as i32 {
+        let team = self
+            .active_player_state()
+            .persistant
+            .get(PersistentIndex::PersTeam as usize);
+        let color = if team == Team::TeamRed as i32 {
             vec4(1.0, 0.0, 0.0, 0.33)
-        } else if team == Team::Blue as i32 {
+        } else if team == Team::TeamBlue as i32 {
             vec4(0.0, 0.0, 1.0, 0.33)
         } else {
             vec4(0.0, 1.0, 0.0, 0.33)
@@ -324,10 +340,10 @@ impl ClientHudCorners {
         });
         let predicted = self.state.borrow().predicted_player_state.clone();
         let schema = stat_schema(self.state.borrow().product);
-        if predicted.stats.get(schema.health) <= 0 || self.state.borrow().attacker_time == 0 {
+        if predicted.stats.get(schema.health()) <= 0 || self.state.borrow().attacker_time == 0 {
             return y;
         }
-        let client_num = predicted.persistant.get(PersistentIndex::Attacker as i32);
+        let client_num = predicted.persistant.get(PersistentIndex::PersAttacker as usize);
         if !(0..64).contains(&client_num) || client_num == snapshot.player_state.client_num {
             return y;
         }
@@ -344,7 +360,7 @@ impl ClientHudCorners {
             .strings
             .borrow()
             .config_string(CS_PLAYERS + client_num as usize);
-        let name = info_value_for_key(&name, "n", 8192);
+        let name = info_value_for_key(&name, "n", 8192).unwrap_or_default();
         let y = y + size;
         self.icons.borrow().tools.draw_big_string(
             640 - draw_strlen(&name) * CORNER_BIGCHAR_WIDTH,
@@ -360,12 +376,12 @@ impl ClientHudCorners {
         let snapshot = self.state.borrow().snap.clone().unwrap_or_else(|| {
             panic!("CG_DrawSnapshot requires a current snapshot");
         });
-        let text = game_format(
+        let text = game_format_bounded(
             "time:%i snap:%i cmd:%i",
             &[
-                GameFormatArg::Int(snapshot.server_time),
-                GameFormatArg::Int(self.state.borrow().latest_snapshot_num),
-                GameFormatArg::Int(self.static_state.borrow().server_command_sequence),
+                GameFormatArgument::from(snapshot.server_time),
+                GameFormatArgument::from(self.state.borrow().latest_snapshot_num),
+                GameFormatArgument::from(self.static_state.borrow().server_command_sequence),
             ],
             1024,
         );
@@ -394,7 +410,7 @@ impl ClientHudCorners {
                 total = 1;
             }
             let fps = (1000 * FPS_FRAMES as i32) / total;
-            let text = game_format("%ifps", &[GameFormatArg::Int(fps)], 1024);
+            let text = game_format_bounded("%ifps", &[GameFormatArgument::from(fps)], 1024);
             self.icons.borrow().tools.draw_big_string(
                 635 - draw_strlen(&text) * CORNER_BIGCHAR_WIDTH,
                 y as i32 + 2,
@@ -417,12 +433,12 @@ impl ClientHudCorners {
         seconds -= minutes * 60;
         let tens = seconds / 10;
         seconds -= tens * 10;
-        let text = game_format(
+        let text = game_format_bounded(
             "%i:%i%i",
             &[
-                GameFormatArg::Int(minutes),
-                GameFormatArg::Int(tens),
-                GameFormatArg::Int(seconds),
+                GameFormatArgument::from(minutes),
+                GameFormatArgument::from(tens),
+                GameFormatArgument::from(seconds),
             ],
             1024,
         );
@@ -436,7 +452,7 @@ impl ClientHudCorners {
     }
 
     /// Sorted team client.
-    fn team_client(&self, sorted_index: i32) -> Shared<ClientInfo> {
+    fn team_client(&self, sorted_index: i32) -> ClientInfo {
         let number = self
             .state
             .borrow()
@@ -462,8 +478,8 @@ impl ClientHudCorners {
             return y;
         }
         let player_state = self.active_player_state();
-        let team = player_state.persistant.get(PersistentIndex::Team as i32);
-        if team != Team::Red as i32 && team != Team::Blue as i32 {
+        let team = player_state.persistant.get(PersistentIndex::PersTeam as usize);
+        if team != Team::TeamRed as i32 && team != Team::TeamBlue as i32 {
             return y;
         }
         let count = self
@@ -475,7 +491,6 @@ impl ClientHudCorners {
         let mut player_width = 0;
         for index in 0..count {
             let client = self.team_client(index);
-            let client = client.borrow();
             if client.info_valid && client.team as i32 == team {
                 players += 1;
                 player_width = player_width.max(draw_strlen(&client.name));
@@ -499,7 +514,7 @@ impl ClientHudCorners {
         let return_y = if upper { y + height as f32 } else { y - height as f32 };
         let mut y = if upper { y } else { y - height as f32 };
         let icons = self.icons.borrow();
-        icons.tools.draw.set_color(Some(if team == Team::Red as i32 {
+        icons.tools.draw.set_color(Some(if team == Team::TeamRed as i32 {
             vec4(1.0, 0.0, 0.0, 0.33)
         } else {
             vec4(0.0, 0.0, 1.0, 0.33)
@@ -511,7 +526,7 @@ impl ClientHudCorners {
         icons.tools.draw.set_color(None);
         for index in 0..count {
             let client_handle = self.team_client(index);
-            let client = client_handle.borrow();
+            let client = client_handle;
             if !client.info_valid || client.team as i32 != team {
                 continue;
             }
@@ -556,9 +571,12 @@ impl ClientHudCorners {
             icons.tools.draw_string_ext(&FixedTextOptions {
                 x: xx as f32,
                 y,
-                text: game_format(
+                text: game_format_bounded(
                     "%3i %3i",
-                    &[GameFormatArg::Int(client.health), GameFormatArg::Int(client.armor)],
+                    &[
+                        GameFormatArgument::from(client.health),
+                        GameFormatArgument::from(client.armor),
+                    ],
                     16,
                 ),
                 color: get_color_for_health(client.health, client.armor),
@@ -586,19 +604,20 @@ impl ClientHudCorners {
                     continue;
                 }
                 let product = self.state.borrow().product;
-                let item = icons
-                    .tools
-                    .media
-                    .borrow()
-                    .items
-                    .borrow()
-                    .find_for_powerup(product, powerup as i32);
+                let item = find_item_for_powerup(product, powerup);
                 let Some(item) = item else {
                     continue;
                 };
                 let shader = match item.icon {
                     None => None,
-                    Some(icon) => icons.tools.media.borrow().resources.borrow_mut().register_shader(&icon),
+                    Some(icon) => icons
+                        .tools
+                        .media
+                        .borrow()
+                        .resources
+                        .borrow_mut()
+                        .register_shader(icon)
+                        .unwrap_or(None),
                 };
                 icons.tools.draw_pic(rect2d(xx as f32, y, 8.0, 8.0), &shader);
                 xx += if right {
@@ -622,15 +641,15 @@ impl ClientHudCorners {
         let mut y1 = y;
         let mut x = 640;
         let icons = self.icons.borrow();
-        if self.static_state.borrow().game_type >= GameType::Team {
-            let mut text = game_format("%2i", &[GameFormatArg::Int(score2)], 1024);
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32) {
+            let mut text = game_format_bounded("%2i", &[GameFormatArgument::from(score2)], 1024);
             let mut width = draw_strlen(&text) * CORNER_BIGCHAR_WIDTH + 8;
             x -= width;
             icons.tools.fill_rect(
                 rect2d(x as f32, y - 4.0, width as f32, CORNER_BIGCHAR_HEIGHT + 8.0),
                 Some(vec4(0.0, 0.0, 1.0, 0.33)),
             );
-            if player_state.persistant.get(PersistentIndex::Team as i32) == Team::Blue as i32 {
+            if player_state.persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamBlue as i32 {
                 let select = icons.tools.media.borrow().graphics.select_shader.clone();
                 icons.tools.draw_pic(
                     rect2d(x as f32, y - 4.0, width as f32, CORNER_BIGCHAR_HEIGHT + 8.0),
@@ -638,15 +657,8 @@ impl ClientHudCorners {
                 );
             }
             icons.tools.draw_big_string(x + 4, y as i32, &text, 1.0);
-            if self.static_state.borrow().game_type == GameType::Ctf
-                && icons
-                    .tools
-                    .media
-                    .borrow()
-                    .items
-                    .borrow()
-                    .find_for_powerup(self.state.borrow().product, Powerup::BlueFlag as i32)
-                    .is_some()
+            if self.static_state.borrow().game_type == GameType::GtCtf
+                && find_item_for_powerup(self.state.borrow().product, Powerup::PwBlueflag).is_some()
             {
                 y1 = y - CORNER_BIGCHAR_HEIGHT - 8.0;
                 let flag = self.static_state.borrow().blueflag;
@@ -668,14 +680,14 @@ impl ClientHudCorners {
                     );
                 }
             }
-            text = game_format("%2i", &[GameFormatArg::Int(score1)], 1024);
+            text = game_format_bounded("%2i", &[GameFormatArgument::from(score1)], 1024);
             width = draw_strlen(&text) * CORNER_BIGCHAR_WIDTH + 8;
             x -= width;
             icons.tools.fill_rect(
                 rect2d(x as f32, y - 4.0, width as f32, CORNER_BIGCHAR_HEIGHT + 8.0),
                 Some(vec4(1.0, 0.0, 0.0, 0.33)),
             );
-            if player_state.persistant.get(PersistentIndex::Team as i32) == Team::Red as i32 {
+            if player_state.persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamRed as i32 {
                 let select = icons.tools.media.borrow().graphics.select_shader.clone();
                 icons.tools.draw_pic(
                     rect2d(x as f32, y - 4.0, width as f32, CORNER_BIGCHAR_HEIGHT + 8.0),
@@ -683,15 +695,8 @@ impl ClientHudCorners {
                 );
             }
             icons.tools.draw_big_string(x + 4, y as i32, &text, 1.0);
-            if self.static_state.borrow().game_type == GameType::Ctf
-                && icons
-                    .tools
-                    .media
-                    .borrow()
-                    .items
-                    .borrow()
-                    .find_for_powerup(self.state.borrow().product, Powerup::RedFlag as i32)
-                    .is_some()
+            if self.static_state.borrow().game_type == GameType::GtCtf
+                && find_item_for_powerup(self.state.borrow().product, Powerup::PwRedflag).is_some()
             {
                 y1 = y - CORNER_BIGCHAR_HEIGHT - 8.0;
                 let flag = self.static_state.borrow().redflag;
@@ -713,20 +718,21 @@ impl ClientHudCorners {
                     );
                 }
             }
-            let limit = if self.static_state.borrow().game_type >= GameType::Ctf {
+            let limit = if (self.static_state.borrow().game_type as i32) >= (GameType::GtCtf as i32) {
                 self.static_state.borrow().capturelimit
             } else {
                 self.static_state.borrow().fraglimit
             };
             if limit != 0 {
-                text = game_format("%2i", &[GameFormatArg::Int(limit)], 1024);
+                text = game_format_bounded("%2i", &[GameFormatArgument::from(limit)], 1024);
                 let width = draw_strlen(&text) * CORNER_BIGCHAR_WIDTH + 8;
                 x -= width;
                 icons.tools.draw_big_string(x + 4, y as i32, &text, 1.0);
             }
         } else {
-            let score = player_state.persistant.get(PersistentIndex::Score as i32);
-            let spectator = player_state.persistant.get(PersistentIndex::Team as i32) == Team::Spectator as i32;
+            let score = player_state.persistant.get(PersistentIndex::PersScore as usize);
+            let spectator =
+                player_state.persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamSpectator as i32;
             if score1 != score {
                 score2 = score;
             }
@@ -737,7 +743,11 @@ impl ClientHudCorners {
                 x = self.draw_free_score(x, y, score1, !spectator && score == score1, true);
             }
             if self.static_state.borrow().fraglimit != 0 {
-                let text = game_format("%2i", &[GameFormatArg::Int(self.static_state.borrow().fraglimit)], 1024);
+                let text = game_format_bounded(
+                    "%2i",
+                    &[GameFormatArgument::from(self.static_state.borrow().fraglimit)],
+                    1024,
+                );
                 let width = draw_strlen(&text) * CORNER_BIGCHAR_WIDTH + 8;
                 x -= width;
                 icons.tools.draw_big_string(x + 4, y as i32, &text, 1.0);
@@ -749,7 +759,7 @@ impl ClientHudCorners {
 
     /// Draw one free-for-all score (`drawFreeScore`).
     fn draw_free_score(&self, x: i32, y: f32, score: i32, selected: bool, first: bool) -> i32 {
-        let text = game_format("%2i", &[GameFormatArg::Int(score)], 1024);
+        let text = game_format_bounded("%2i", &[GameFormatArgument::from(score)], 1024);
         let width = draw_strlen(&text) * CORNER_BIGCHAR_WIDTH + 8;
         let x = x - width;
         let color = if selected {
@@ -782,13 +792,13 @@ impl ClientHudCorners {
         self.require_base("CG_DrawPowerups");
         let player_state = self.active_player_state();
         let schema = stat_schema(self.state.borrow().product);
-        if player_state.stats.get(schema.health) <= 0 {
+        if player_state.stats.get(schema.health()) <= 0 {
             return y;
         }
         let mut sorted: Vec<i32> = Vec::new();
         let mut sorted_times: Vec<i32> = Vec::new();
         for powerup in 0..player_state.powerups.len() as i32 {
-            let expiration = player_state.powerups.get(powerup);
+            let expiration = player_state.powerups.get(powerup as usize);
             if expiration == 0 {
                 continue;
             }
@@ -811,15 +821,7 @@ impl ClientHudCorners {
                 panic!("Invalid powerup slot");
             });
             let product = self.state.borrow().product;
-            let item = self
-                .icons
-                .borrow()
-                .tools
-                .media
-                .borrow()
-                .items
-                .borrow()
-                .find_for_powerup(product, kind as i32);
+            let item = find_item_for_powerup(product, kind);
             let Some(item) = item else {
                 continue;
             };
@@ -853,7 +855,8 @@ impl ClientHudCorners {
                     .borrow()
                     .resources
                     .borrow_mut()
-                    .register_shader(&icon),
+                    .register_shader(icon)
+                    .unwrap_or(None),
             };
             self.icons.borrow().tools.draw_pic(
                 rect2d(640.0 - size, y + CORNER_ICON_SIZE / 2.0 - size / 2.0, size, size),
@@ -869,7 +872,7 @@ impl ClientHudCorners {
         self.require_base("CG_DrawPickupItem");
         let player_state = self.active_player_state();
         let schema = stat_schema(self.state.borrow().product);
-        if player_state.stats.get(schema.health) <= 0 {
+        if player_state.stats.get(schema.health()) <= 0 {
             return y;
         }
         let y = y - CORNER_ICON_SIZE as i32;
@@ -887,7 +890,9 @@ impl ClientHudCorners {
         };
         let product = self.state.borrow().product;
         let icons = self.icons.borrow();
-        let item = icons.tools.media.borrow().items.borrow().at(product, value);
+        let Ok(item) = item_at(product, value) else {
+            return y;
+        };
         icons
             .tools
             .media
@@ -909,10 +914,46 @@ impl ClientHudCorners {
         icons.tools.draw_big_string(
             CORNER_ICON_SIZE as i32 + 16,
             y + CORNER_ICON_SIZE as i32 / 2 - CORNER_BIGCHAR_WIDTH / 2,
-            &item.pickup_name.unwrap_or_default(),
+            item.pickup_name.unwrap_or_default(),
             fade.x,
         );
         icons.tools.draw.set_color(None);
         y
+    }
+}
+
+/// Millisecond clock (`milliseconds`).
+pub trait HudClock {
+    /// Current milliseconds.
+    fn milliseconds(&self) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::shared::definitions::Product;
+    use crate::q3::presentation::hud::shared;
+    use crate::q3::presentation::hud::tests::*;
+
+    #[test]
+    fn corner_field_clamps() {
+        let game = world(Product::Baseq3);
+        let corners = ClientHudCorners::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            game.icons.clone(),
+            ClientHudCornersHost {
+                cvars: game.cvars.clone(),
+                strings: game.strings.clone(),
+                clock: shared(FakeClock { time: 100 }),
+            },
+        );
+        corners.draw_field(0.0, 0.0, 3, 9999);
+        assert_eq!(game.sink.borrow().blits.len(), 3);
+        game.sink.borrow_mut().blits.clear();
+        corners.draw_field(0.0, 0.0, 1, 42);
+        assert_eq!(game.sink.borrow().blits.len(), 1);
+        corners.draw_field(0.0, 0.0, 0, 42);
+        assert_eq!(game.sink.borrow().blits.len(), 1);
     }
 }

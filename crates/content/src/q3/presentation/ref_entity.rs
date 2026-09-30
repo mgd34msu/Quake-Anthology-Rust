@@ -5,9 +5,9 @@
 use crate::md3::Md3Model;
 use crate::md5::Md5AnimationFrame;
 use qa_core::math::{vec2, vec3, vec4, Axis, Bounds, Vec2, Vec3, Vec4};
+use std::fmt;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_scene::*;
 
 // ---------------------------------------------------------------------------
 // ref-entity.ts
@@ -668,4 +668,144 @@ pub fn copy_source_ref_entity(entity: &SourceRefEntity) -> SourceRefEntity {
 #[must_use]
 pub fn copy_ref_poly(poly: &RefPoly) -> RefPoly {
     poly.clone()
+}
+
+/// Skin surface mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkinMapping {
+    /// Surface name.
+    pub name: String,
+    /// Shader name.
+    pub shader: String,
+}
+
+/// World handle for inline models (`DecodedWorld`, minimal mirror).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PresentWorld {
+    /// Name.
+    pub name: String,
+}
+
+impl PresentWorld {
+    /// New handle.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// Resolved resource reference (`ResolvedResourceReference`, minimal mirror).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PresentResource {
+    /// Path.
+    pub path: String,
+}
+
+impl PresentResource {
+    /// New reference.
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+/// Failure of a presentation operation (`RangeError`, `CommonError("drop")`,
+/// or a plain `Error` in the donors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentError {
+    /// Machine-readable class.
+    pub kind: PresentErrorKind,
+    /// Human-readable message.
+    pub message: String,
+}
+
+/// Error class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentErrorKind {
+    /// Out-of-range input (`RangeError`).
+    Range,
+    /// Dropped client (`CommonError("drop")`).
+    Drop,
+    /// Invalid state or bug (`Error`).
+    State,
+}
+
+impl PresentError {
+    /// Range error.
+    #[must_use]
+    pub fn range(message: impl Into<String>) -> Self {
+        Self {
+            kind: PresentErrorKind::Range,
+            message: message.into(),
+        }
+    }
+
+    /// Drop error.
+    #[must_use]
+    pub fn drop(message: impl Into<String>) -> Self {
+        Self {
+            kind: PresentErrorKind::Drop,
+            message: message.into(),
+        }
+    }
+
+    /// State error.
+    #[must_use]
+    pub fn state(message: impl Into<String>) -> Self {
+        Self {
+            kind: PresentErrorKind::State,
+            message: message.into(),
+        }
+    }
+}
+impl From<crate::q3::presentation::state::PresentClientError> for PresentError {
+    /// Bridge the client group error into the scene group error.
+    ///
+    /// Both port the same donor failures (`RangeError`, `CommonError("drop")`,
+    /// `Error`); scene code calling state.ts-owned accessors propagates them
+    /// unchanged through this conversion.
+    fn from(error: crate::q3::presentation::state::PresentClientError) -> Self {
+        use crate::q3::presentation::state::PresentClientError;
+        match error {
+            PresentClientError::Drop(message) => Self::drop(message),
+            PresentClientError::Range(message) => Self::range(message),
+            PresentClientError::State(message) => Self::state(message),
+        }
+    }
+}
+
+impl fmt::Display for PresentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for PresentError {}
+
+/// Presentation result.
+pub type PresentResult<T> = Result<T, PresentError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_factories() {
+        let model = create_model_entity(default_model());
+        assert_eq!(model.shading.shader_rgba, vec4(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(RefEntity::Model(model.clone()).kind(), "model");
+        assert_eq!(copy_ref_entity(&RefEntity::Model(model)).kind(), "model");
+        assert_eq!(create_sprite_entity().radius, 0.0);
+        assert_eq!(create_beam_entity().radius, 0.0);
+        assert_eq!(create_portal_entity().frame, 0);
+        let poly = RefPoly {
+            shader: Some(SceneShader::new("s")),
+            vertices: vec![RefPolyVertex {
+                position: zero_vec3(),
+                tex_coord: vec2(0.0, 0.0),
+                color: vec4(1.0, 2.0, 3.0, 4.0),
+            }],
+        };
+        assert_eq!(copy_ref_poly(&poly), poly);
+    }
 }

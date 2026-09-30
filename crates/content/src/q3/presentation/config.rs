@@ -8,8 +8,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::numeric::game_atoi;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::presentation::client_info::ClientInfoStore;
+use crate::q3::presentation::hud::Shared;
 use crate::q3::presentation::hud_corners::*;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::state::*;
 
 /// Maximum clients for config reload.
 pub(crate) const CONFIG_MAX_CLIENTS: i32 = 64;
@@ -624,7 +628,8 @@ impl ClientConfiguration {
         self.host.static_state.borrow_mut().local_server = game_atoi(&config_source_string(
             running.map(|snapshot| snapshot.value).unwrap_or_default().as_str(),
             MAX_TOKEN_CHARS,
-        ));
+        ))
+        .unwrap_or_default();
         self.force_model_modification_count
             .set(self.read_vm_symbol(ClientVmCvarSymbol::CgForceModel).modification_count);
         let (team_model, team_head) = if self.product == Product::Missionpack {
@@ -805,5 +810,127 @@ impl ClientConfiguration {
 impl HudCvarReader for ClientConfiguration {
     fn read_vm_cvar(&self, name: &str) -> CvarSnapshot {
         self.read_vm_cvar(name)
+    }
+}
+
+/// Cached VM cvar reader (`readVmCvar`).
+pub trait HudCvarReader {
+    /// Read a cached VM cvar.
+    fn read_vm_cvar(&self, name: &str) -> CvarSnapshot;
+}
+
+/// Configstring source (`configString`).
+pub trait HudConfigStrings {
+    /// Read a configstring.
+    fn config_string(&self, index: usize) -> String;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::presentation::hud::tests::*;
+    use crate::q3::presentation::hud::{shared, Shared};
+    use qa_core::cmd::Dialect;
+
+    #[test]
+    fn cvar_table_shapes() {
+        let base = cvar_table(Product::Baseq3);
+        let mission = cvar_table(Product::Missionpack);
+        assert_eq!(base.len(), 89);
+        assert_eq!(mission.len(), 101);
+        let defer = base
+            .iter()
+            .find(|entry| entry.symbol == ClientVmCvarSymbol::CgDeferPlayers)
+            .unwrap();
+        assert_eq!(defer.default_value, "1");
+        let defer = mission
+            .iter()
+            .find(|entry| entry.symbol == ClientVmCvarSymbol::CgDeferPlayers)
+            .unwrap();
+        assert_eq!(defer.default_value, "0");
+        let marks = base
+            .iter()
+            .find(|entry| entry.symbol == ClientVmCvarSymbol::CgAddMarks)
+            .unwrap();
+        assert_eq!(marks.name, "cg_marks");
+        let overlay = base
+            .iter()
+            .find(|entry| entry.symbol == ClientVmCvarSymbol::CgTeamOverlayUserinfo)
+            .unwrap();
+        assert_eq!(overlay.flags, cvar_flags::READ_ONLY | cvar_flags::USER_INFO);
+        let red = mission
+            .iter()
+            .find(|entry| entry.symbol == ClientVmCvarSymbol::CgRedTeamName)
+            .unwrap();
+        assert_eq!(red.default_value, "Stroggs");
+    }
+
+    #[test]
+    fn configuration_register_read_update() {
+        let cvars = shared(CvarRegistry::new(Dialect::Q3));
+        let state = shared(ClientGameState::new(Product::Missionpack, 0, 0).unwrap());
+        let static_state = shared(ClientGameStaticState::new(Product::Missionpack));
+        let store: Shared<dyn ClientInfoStore> = shared(FakeStore {
+            state: state.clone(),
+            slots: static_state
+                .borrow()
+                .client_info
+                .iter()
+                .map(|info| shared(info.clone()))
+                .collect::<Vec<_>>(),
+            loads: Cell::new(0),
+        });
+        let strings: Shared<dyn HudConfigStrings> = shared(FakeStrings::default());
+        let configuration = ClientConfiguration::new(
+            Product::Missionpack,
+            ClientConfigurationHost {
+                cvars: cvars.clone(),
+                state,
+                static_state,
+                clients: store,
+                strings,
+                status_visible: None,
+            },
+        );
+        configuration.register_cvars();
+        assert_eq!(configuration.read_vm_cvar("cg_fov").value, "90");
+        assert_eq!(configuration.read_vm_cvar("CG_FOV").value, "90");
+        cvars.borrow_mut().set("cg_fov", "110", true).unwrap();
+        configuration.update_cvars();
+        assert_eq!(configuration.read_vm_cvar("cg_fov").value, "110");
+        configuration.set_vm_integer(ClientVmCvarSymbol::CgCurrentSelectedPlayer, 0);
+    }
+
+    #[test]
+    fn configuration_status_override() {
+        let cvars = shared(CvarRegistry::new(Dialect::Q3));
+        let state = shared(ClientGameState::new(Product::Baseq3, 0, 0).unwrap());
+        let static_state = shared(ClientGameStaticState::new(Product::Baseq3));
+        let store: Shared<dyn ClientInfoStore> = shared(FakeStore {
+            state: state.clone(),
+            slots: static_state
+                .borrow()
+                .client_info
+                .iter()
+                .map(|info| shared(info.clone()))
+                .collect::<Vec<_>>(),
+            loads: Cell::new(0),
+        });
+        let strings: Shared<dyn HudConfigStrings> = shared(FakeStrings::default());
+        let configuration = ClientConfiguration::new(
+            Product::Baseq3,
+            ClientConfigurationHost {
+                cvars,
+                state,
+                static_state,
+                clients: store,
+                strings,
+                status_visible: Some(Rc::new(|| false)),
+            },
+        );
+        configuration.register_cvars();
+        let status = configuration.read_vm_cvar("cg_drawStatus");
+        assert_eq!(status.value, "0");
+        assert_eq!(status.integer_value, 0);
     }
 }

@@ -6,7 +6,13 @@ use crate::q3anim::{PlayerFootsteps, PlayerGender};
 use qa_core::math::{vec3, vec4, Vec3, Vec4};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::presentation::mirrors_present_client::*;
+use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::direction_byte::byte_to_direction;
+use crate::q3::base::shared::entity_state::*;
+use crate::q3::base::shared::items::{find_item_for_holdable, item_at, item_list, ItemKind};
+use crate::q3::base::shared::player_state::*;
+use crate::q3::base::shared::trajectory::evaluate_trajectory;
 use crate::q3::presentation::retail_snapshot::*;
 use crate::q3::presentation::state::*;
 
@@ -260,7 +266,7 @@ pub struct SpawnedPuff {
 #[allow(clippy::too_many_arguments)]
 pub trait ClientEventHost {
     /// Product.
-    fn product(&self) -> Q3Product;
+    fn product(&self) -> Product;
     /// Media.
     fn media(&self) -> &ClientEventMedia;
     /// Options.
@@ -374,7 +380,7 @@ pub trait ClientEventHost {
 }
 
 /// Rank place string (`placeString`).
-pub fn place_string(rank: i32) -> PresentResult<String> {
+pub fn place_string(rank: i32) -> String {
     let tied = (rank & 0x4000) != 0;
     let rank = rank & !0x4000;
     let place = if rank == 1 {
@@ -395,103 +401,205 @@ pub fn place_string(rank: i32) -> PresentResult<String> {
         } else {
             "th"
         };
-        game_format(&format!("%i{suffix}"), &[GameFormatArg::from(rank)], 16_384)?
+        game_format_bounded(&format!("%i{suffix}"), &[GameFormatArgument::from(rank)], 16_384)
     };
-    game_format(
+    game_format_bounded(
         "%s%s",
         &[
-            GameFormatArg::from(if tied { "Tied for " } else { "" }),
-            GameFormatArg::from(place),
+            GameFormatArgument::from(if tied { "Tied for " } else { "" }),
+            GameFormatArgument::from(place),
         ],
         64,
     )
 }
 
+/// Canonical entity event from a wire tag (`from_i32`).
+fn entity_event_from_i32(event: i32) -> Option<EntityEvent> {
+    match event {
+        0 => Some(EntityEvent::EvNone),
+        1 => Some(EntityEvent::EvFootstep),
+        2 => Some(EntityEvent::EvFootstepMetal),
+        3 => Some(EntityEvent::EvFootsplash),
+        4 => Some(EntityEvent::EvFootwade),
+        5 => Some(EntityEvent::EvSwim),
+        6 => Some(EntityEvent::EvStep4),
+        7 => Some(EntityEvent::EvStep8),
+        8 => Some(EntityEvent::EvStep12),
+        9 => Some(EntityEvent::EvStep16),
+        10 => Some(EntityEvent::EvFallShort),
+        11 => Some(EntityEvent::EvFallMedium),
+        12 => Some(EntityEvent::EvFallFar),
+        13 => Some(EntityEvent::EvJumpPad),
+        14 => Some(EntityEvent::EvJump),
+        15 => Some(EntityEvent::EvWaterTouch),
+        16 => Some(EntityEvent::EvWaterLeave),
+        17 => Some(EntityEvent::EvWaterUnder),
+        18 => Some(EntityEvent::EvWaterClear),
+        19 => Some(EntityEvent::EvItemPickup),
+        20 => Some(EntityEvent::EvGlobalItemPickup),
+        21 => Some(EntityEvent::EvNoammo),
+        22 => Some(EntityEvent::EvChangeWeapon),
+        23 => Some(EntityEvent::EvFireWeapon),
+        24 => Some(EntityEvent::EvUseItem0),
+        25 => Some(EntityEvent::EvUseItem1),
+        26 => Some(EntityEvent::EvUseItem2),
+        27 => Some(EntityEvent::EvUseItem3),
+        28 => Some(EntityEvent::EvUseItem4),
+        29 => Some(EntityEvent::EvUseItem5),
+        30 => Some(EntityEvent::EvUseItem6),
+        31 => Some(EntityEvent::EvUseItem7),
+        32 => Some(EntityEvent::EvUseItem8),
+        33 => Some(EntityEvent::EvUseItem9),
+        34 => Some(EntityEvent::EvUseItem10),
+        35 => Some(EntityEvent::EvUseItem11),
+        36 => Some(EntityEvent::EvUseItem12),
+        37 => Some(EntityEvent::EvUseItem13),
+        38 => Some(EntityEvent::EvUseItem14),
+        39 => Some(EntityEvent::EvUseItem15),
+        40 => Some(EntityEvent::EvItemRespawn),
+        41 => Some(EntityEvent::EvItemPop),
+        42 => Some(EntityEvent::EvPlayerTeleportIn),
+        43 => Some(EntityEvent::EvPlayerTeleportOut),
+        44 => Some(EntityEvent::EvGrenadeBounce),
+        45 => Some(EntityEvent::EvGeneralSound),
+        46 => Some(EntityEvent::EvGlobalSound),
+        47 => Some(EntityEvent::EvGlobalTeamSound),
+        48 => Some(EntityEvent::EvBulletHitFlesh),
+        49 => Some(EntityEvent::EvBulletHitWall),
+        50 => Some(EntityEvent::EvMissileHit),
+        51 => Some(EntityEvent::EvMissileMiss),
+        52 => Some(EntityEvent::EvMissileMissMetal),
+        53 => Some(EntityEvent::EvRailtrail),
+        54 => Some(EntityEvent::EvShotgun),
+        55 => Some(EntityEvent::EvBullet),
+        56 => Some(EntityEvent::EvPain),
+        57 => Some(EntityEvent::EvDeath1),
+        58 => Some(EntityEvent::EvDeath2),
+        59 => Some(EntityEvent::EvDeath3),
+        60 => Some(EntityEvent::EvObituary),
+        61 => Some(EntityEvent::EvPowerupQuad),
+        62 => Some(EntityEvent::EvPowerupBattlesuit),
+        63 => Some(EntityEvent::EvPowerupRegen),
+        64 => Some(EntityEvent::EvGibPlayer),
+        65 => Some(EntityEvent::EvScoreplum),
+        66 => Some(EntityEvent::EvProximityMineStick),
+        67 => Some(EntityEvent::EvProximityMineTrigger),
+        68 => Some(EntityEvent::EvKamikaze),
+        69 => Some(EntityEvent::EvObeliskexplode),
+        70 => Some(EntityEvent::EvObeliskpain),
+        71 => Some(EntityEvent::EvInvulImpact),
+        72 => Some(EntityEvent::EvJuiced),
+        73 => Some(EntityEvent::EvLightningbolt),
+        74 => Some(EntityEvent::EvDebugLine),
+        75 => Some(EntityEvent::EvStoploopingsound),
+        76 => Some(EntityEvent::EvTaunt),
+        77 => Some(EntityEvent::EvTauntYes),
+        78 => Some(EntityEvent::EvTauntNo),
+        79 => Some(EntityEvent::EvTauntFollowme),
+        80 => Some(EntityEvent::EvTauntGetflag),
+        81 => Some(EntityEvent::EvTauntGuardbase),
+        82 => Some(EntityEvent::EvTauntPatrol),
+        _ => None,
+    }
+}
+
+/// Canonical holdable from a use-item tag.
+fn holdable_from_tag(tag: i32) -> PresentResult<Holdable> {
+    match tag {
+        1 => Ok(Holdable::HiTeleporter),
+        2 => Ok(Holdable::HiMedkit),
+        3 => Ok(Holdable::HiKamikaze),
+        4 => Ok(Holdable::HiPortal),
+        5 => Ok(Holdable::HiInvulnerability),
+        _ => Err(drop_msg("HoldableItem not found")),
+    }
+}
+
 pub(crate) fn entity_event_name(event: i32) -> Option<&'static str> {
-    EntityEvent::from_i32(event).map(|event| match event {
-        EntityEvent::None => "EV_NONE",
-        EntityEvent::Footstep => "EV_FOOTSTEP",
-        EntityEvent::FootstepMetal => "EV_FOOTSTEP_METAL",
-        EntityEvent::Footsplash => "EV_FOOTSPLASH",
-        EntityEvent::Footwade => "EV_FOOTWADE",
-        EntityEvent::Swim => "EV_SWIM",
-        EntityEvent::Step4 => "EV_STEP_4",
-        EntityEvent::Step8 => "EV_STEP_8",
-        EntityEvent::Step12 => "EV_STEP_12",
-        EntityEvent::Step16 => "EV_STEP_16",
-        EntityEvent::FallShort => "EV_FALL_SHORT",
-        EntityEvent::FallMedium => "EV_FALL_MEDIUM",
-        EntityEvent::FallFar => "EV_FALL_FAR",
-        EntityEvent::JumpPad => "EV_JUMP_PAD",
-        EntityEvent::Jump => "EV_JUMP",
-        EntityEvent::WaterTouch => "EV_WATER_TOUCH",
-        EntityEvent::WaterLeave => "EV_WATER_LEAVE",
-        EntityEvent::WaterUnder => "EV_WATER_UNDER",
-        EntityEvent::WaterClear => "EV_WATER_CLEAR",
-        EntityEvent::ItemPickup => "EV_ITEM_PICKUP",
-        EntityEvent::GlobalItemPickup => "EV_GLOBAL_ITEM_PICKUP",
-        EntityEvent::Noammo => "EV_NOAMMO",
-        EntityEvent::ChangeWeapon => "EV_CHANGE_WEAPON",
-        EntityEvent::FireWeapon => "EV_FIRE_WEAPON",
-        EntityEvent::UseItem0 => "EV_USE_ITEM0",
-        EntityEvent::UseItem1 => "EV_USE_ITEM1",
-        EntityEvent::UseItem2 => "EV_USE_ITEM2",
-        EntityEvent::UseItem3 => "EV_USE_ITEM3",
-        EntityEvent::UseItem4 => "EV_USE_ITEM4",
-        EntityEvent::UseItem5 => "EV_USE_ITEM5",
-        EntityEvent::UseItem6 => "EV_USE_ITEM6",
-        EntityEvent::UseItem7 => "EV_USE_ITEM7",
-        EntityEvent::UseItem8 => "EV_USE_ITEM8",
-        EntityEvent::UseItem9 => "EV_USE_ITEM9",
-        EntityEvent::UseItem10 => "EV_USE_ITEM10",
-        EntityEvent::UseItem11 => "EV_USE_ITEM11",
-        EntityEvent::UseItem12 => "EV_USE_ITEM12",
-        EntityEvent::UseItem13 => "EV_USE_ITEM13",
-        EntityEvent::UseItem14 => "EV_USE_ITEM14",
-        EntityEvent::UseItem15 => "EV_USE_ITEM15",
-        EntityEvent::ItemRespawn => "EV_ITEM_RESPAWN",
-        EntityEvent::ItemPop => "EV_ITEM_POP",
-        EntityEvent::PlayerTeleportIn => "EV_PLAYER_TELEPORT_IN",
-        EntityEvent::PlayerTeleportOut => "EV_PLAYER_TELEPORT_OUT",
-        EntityEvent::GrenadeBounce => "EV_GRENADE_BOUNCE",
-        EntityEvent::GeneralSound => "EV_GENERAL_SOUND",
-        EntityEvent::GlobalSound => "EV_GLOBAL_SOUND",
-        EntityEvent::GlobalTeamSound => "EV_GLOBAL_TEAM_SOUND",
-        EntityEvent::BulletHitFlesh => "EV_BULLET_HIT_FLESH",
-        EntityEvent::BulletHitWall => "EV_BULLET_HIT_WALL",
-        EntityEvent::MissileHit => "EV_MISSILE_HIT",
-        EntityEvent::MissileMiss => "EV_MISSILE_MISS",
-        EntityEvent::MissileMissMetal => "EV_MISSILE_MISS_METAL",
-        EntityEvent::Railtrail => "EV_RAILTRAIL",
-        EntityEvent::Shotgun => "EV_SHOTGUN",
-        EntityEvent::Bullet => "EV_BULLET",
-        EntityEvent::Pain => "EV_PAIN",
-        EntityEvent::Death1 => "EV_DEATH1",
-        EntityEvent::Death2 => "EV_DEATH2",
-        EntityEvent::Death3 => "EV_DEATH3",
-        EntityEvent::Obituary => "EV_OBITUARY",
-        EntityEvent::PowerupQuad => "EV_POWERUP_QUAD",
-        EntityEvent::PowerupBattlesuit => "EV_POWERUP_BATTLESUIT",
-        EntityEvent::PowerupRegen => "EV_POWERUP_REGEN",
-        EntityEvent::GibPlayer => "EV_GIB_PLAYER",
-        EntityEvent::Scoreplum => "EV_SCOREPLUM",
-        EntityEvent::ProximityMineStick => "EV_PROXIMITY_MINE_STICK",
-        EntityEvent::ProximityMineTrigger => "EV_PROXIMITY_MINE_TRIGGER",
-        EntityEvent::Kamikaze => "EV_KAMIKAZE",
-        EntityEvent::ObeliskExplode => "EV_OBELISKEXPLODE",
-        EntityEvent::ObeliskPain => "EV_OBELISKPAIN",
-        EntityEvent::InvulImpact => "EV_INVUL_IMPACT",
-        EntityEvent::Juiced => "EV_JUICED",
-        EntityEvent::LightningBolt => "EV_LIGHTNINGBOLT",
-        EntityEvent::DebugLine => "EV_DEBUG_LINE",
-        EntityEvent::StopLoopingSound => "EV_STOPLOOPINGSOUND",
-        EntityEvent::Taunt => "EV_TAUNT",
-        EntityEvent::TauntYes => "EV_TAUNT_YES",
-        EntityEvent::TauntNo => "EV_TAUNT_NO",
-        EntityEvent::TauntFollowMe => "EV_TAUNT_FOLLOWME",
-        EntityEvent::TauntGetFlag => "EV_TAUNT_GETFLAG",
-        EntityEvent::TauntGuardBase => "EV_TAUNT_GUARDBASE",
-        EntityEvent::TauntPatrol => "EV_TAUNT_PATROL",
+    entity_event_from_i32(event).map(|event| match event {
+        EntityEvent::EvNone => "EV_NONE",
+        EntityEvent::EvFootstep => "EV_FOOTSTEP",
+        EntityEvent::EvFootstepMetal => "EV_FOOTSTEP_METAL",
+        EntityEvent::EvFootsplash => "EV_FOOTSPLASH",
+        EntityEvent::EvFootwade => "EV_FOOTWADE",
+        EntityEvent::EvSwim => "EV_SWIM",
+        EntityEvent::EvStep4 => "EV_STEP_4",
+        EntityEvent::EvStep8 => "EV_STEP_8",
+        EntityEvent::EvStep12 => "EV_STEP_12",
+        EntityEvent::EvStep16 => "EV_STEP_16",
+        EntityEvent::EvFallShort => "EV_FALL_SHORT",
+        EntityEvent::EvFallMedium => "EV_FALL_MEDIUM",
+        EntityEvent::EvFallFar => "EV_FALL_FAR",
+        EntityEvent::EvJumpPad => "EV_JUMP_PAD",
+        EntityEvent::EvJump => "EV_JUMP",
+        EntityEvent::EvWaterTouch => "EV_WATER_TOUCH",
+        EntityEvent::EvWaterLeave => "EV_WATER_LEAVE",
+        EntityEvent::EvWaterUnder => "EV_WATER_UNDER",
+        EntityEvent::EvWaterClear => "EV_WATER_CLEAR",
+        EntityEvent::EvItemPickup => "EV_ITEM_PICKUP",
+        EntityEvent::EvGlobalItemPickup => "EV_GLOBAL_ITEM_PICKUP",
+        EntityEvent::EvNoammo => "EV_NOAMMO",
+        EntityEvent::EvChangeWeapon => "EV_CHANGE_WEAPON",
+        EntityEvent::EvFireWeapon => "EV_FIRE_WEAPON",
+        EntityEvent::EvUseItem0 => "EV_USE_ITEM0",
+        EntityEvent::EvUseItem1 => "EV_USE_ITEM1",
+        EntityEvent::EvUseItem2 => "EV_USE_ITEM2",
+        EntityEvent::EvUseItem3 => "EV_USE_ITEM3",
+        EntityEvent::EvUseItem4 => "EV_USE_ITEM4",
+        EntityEvent::EvUseItem5 => "EV_USE_ITEM5",
+        EntityEvent::EvUseItem6 => "EV_USE_ITEM6",
+        EntityEvent::EvUseItem7 => "EV_USE_ITEM7",
+        EntityEvent::EvUseItem8 => "EV_USE_ITEM8",
+        EntityEvent::EvUseItem9 => "EV_USE_ITEM9",
+        EntityEvent::EvUseItem10 => "EV_USE_ITEM10",
+        EntityEvent::EvUseItem11 => "EV_USE_ITEM11",
+        EntityEvent::EvUseItem12 => "EV_USE_ITEM12",
+        EntityEvent::EvUseItem13 => "EV_USE_ITEM13",
+        EntityEvent::EvUseItem14 => "EV_USE_ITEM14",
+        EntityEvent::EvUseItem15 => "EV_USE_ITEM15",
+        EntityEvent::EvItemRespawn => "EV_ITEM_RESPAWN",
+        EntityEvent::EvItemPop => "EV_ITEM_POP",
+        EntityEvent::EvPlayerTeleportIn => "EV_PLAYER_TELEPORT_IN",
+        EntityEvent::EvPlayerTeleportOut => "EV_PLAYER_TELEPORT_OUT",
+        EntityEvent::EvGrenadeBounce => "EV_GRENADE_BOUNCE",
+        EntityEvent::EvGeneralSound => "EV_GENERAL_SOUND",
+        EntityEvent::EvGlobalSound => "EV_GLOBAL_SOUND",
+        EntityEvent::EvGlobalTeamSound => "EV_GLOBAL_TEAM_SOUND",
+        EntityEvent::EvBulletHitFlesh => "EV_BULLET_HIT_FLESH",
+        EntityEvent::EvBulletHitWall => "EV_BULLET_HIT_WALL",
+        EntityEvent::EvMissileHit => "EV_MISSILE_HIT",
+        EntityEvent::EvMissileMiss => "EV_MISSILE_MISS",
+        EntityEvent::EvMissileMissMetal => "EV_MISSILE_MISS_METAL",
+        EntityEvent::EvRailtrail => "EV_RAILTRAIL",
+        EntityEvent::EvShotgun => "EV_SHOTGUN",
+        EntityEvent::EvBullet => "EV_BULLET",
+        EntityEvent::EvPain => "EV_PAIN",
+        EntityEvent::EvDeath1 => "EV_DEATH1",
+        EntityEvent::EvDeath2 => "EV_DEATH2",
+        EntityEvent::EvDeath3 => "EV_DEATH3",
+        EntityEvent::EvObituary => "EV_OBITUARY",
+        EntityEvent::EvPowerupQuad => "EV_POWERUP_QUAD",
+        EntityEvent::EvPowerupBattlesuit => "EV_POWERUP_BATTLESUIT",
+        EntityEvent::EvPowerupRegen => "EV_POWERUP_REGEN",
+        EntityEvent::EvGibPlayer => "EV_GIB_PLAYER",
+        EntityEvent::EvScoreplum => "EV_SCOREPLUM",
+        EntityEvent::EvProximityMineStick => "EV_PROXIMITY_MINE_STICK",
+        EntityEvent::EvProximityMineTrigger => "EV_PROXIMITY_MINE_TRIGGER",
+        EntityEvent::EvKamikaze => "EV_KAMIKAZE",
+        EntityEvent::EvObeliskexplode => "EV_OBELISKEXPLODE",
+        EntityEvent::EvObeliskpain => "EV_OBELISKPAIN",
+        EntityEvent::EvInvulImpact => "EV_INVUL_IMPACT",
+        EntityEvent::EvJuiced => "EV_JUICED",
+        EntityEvent::EvLightningbolt => "EV_LIGHTNINGBOLT",
+        EntityEvent::EvDebugLine => "EV_DEBUG_LINE",
+        EntityEvent::EvStoploopingsound => "EV_STOPLOOPINGSOUND",
+        EntityEvent::EvTaunt => "EV_TAUNT",
+        EntityEvent::EvTauntYes => "EV_TAUNT_YES",
+        EntityEvent::EvTauntNo => "EV_TAUNT_NO",
+        EntityEvent::EvTauntFollowme => "EV_TAUNT_FOLLOWME",
+        EntityEvent::EvTauntGetflag => "EV_TAUNT_GETFLAG",
+        EntityEvent::EvTauntGuardbase => "EV_TAUNT_GUARDBASE",
+        EntityEvent::EvTauntPatrol => "EV_TAUNT_PATROL",
     })
 }
 
@@ -524,8 +632,8 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
 
     fn center_y(&self, state: &ClientGameState) -> i32 {
         match state.product {
-            Q3Product::BaseQ3 => 143,
-            Q3Product::MissionPack => 144,
+            Product::Baseq3 => 143,
+            Product::Missionpack => 144,
         }
     }
 
@@ -567,10 +675,12 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         state.item_pickup_time = state.time;
         state.item_pickup_blend_time = state.time;
         let item = *item_at(state.product, index)?;
-        if item.item_type == ItemType::Weapon && self.host.options().autoswitch && item.tag != Weapon::Machinegun as i32
+        if matches!(item.kind, ItemKind::Weapon(_))
+            && self.host.options().autoswitch
+            && item.tag() != Weapon::WpMachinegun as i32
         {
             state.weapon_select_time = state.time;
-            state.weapon_select = item.tag;
+            state.weapon_select = item.tag();
         }
         Ok(())
     }
@@ -583,8 +693,8 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         entity_ref: EventEntityRef,
     ) -> PresentResult<()> {
         let es = event_entity(state, entity_ref)?.current_state.clone();
-        let mut item = (es.event & !EV_EVENT_BITS) - EntityEvent::UseItem0 as i32;
-        if item < 0 || item > Holdable::NumHoldable as i32 {
+        let mut item = (es.event & !EV_EVENT_BITS) - EntityEvent::EvUseItem0 as i32;
+        if item < 0 || item > Holdable::HiNumHoldable as i32 {
             item = 0;
         }
         if es.number == self.snapshot(state)?.player_state.client_num {
@@ -593,16 +703,18 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
             } else {
                 format!(
                     "Use {}",
-                    find_item_for_holdable(state.product, item)?.pickup_name.unwrap_or("")
+                    find_item_for_holdable(state.product, holdable_from_tag(item)?)?
+                        .pickup_name
+                        .unwrap_or("")
                 )
             };
             let y = self.center_y(state);
             self.host.center_print(&text, y, 16);
         }
-        if item == Holdable::Teleporter as i32 {
+        if item == Holdable::HiTeleporter as i32 {
             return Ok(());
         }
-        if item == Holdable::Medkit as i32 {
+        if item == Holdable::HiMedkit as i32 {
             if es.client_num >= 0 && es.client_num < MAX_CLIENTS as i32 {
                 let time = state.time;
                 self.host.set_medkit_usage_time(static_state, es.client_num, time)?;
@@ -611,11 +723,11 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
             self.host.start_sound(None, es.number, EV_BODY, sound);
             return Ok(());
         }
-        if self.host.product() == Q3Product::MissionPack {
-            if item == Holdable::Kamikaze as i32 || item == Holdable::Portal as i32 {
+        if self.host.product() == Product::Missionpack {
+            if item == Holdable::HiKamikaze as i32 || item == Holdable::HiPortal as i32 {
                 return Ok(());
             }
-            if item == Holdable::Invulnerability as i32 {
+            if item == Holdable::HiInvulnerability as i32 {
                 let sound = self
                     .host
                     .mission_sounds()
@@ -675,7 +787,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 PlayerGender::Neuter => "its",
                 _ => "his",
             };
-            let mission = state.product == Q3Product::MissionPack;
+            let mission = state.product == Product::Missionpack;
             message = Some(if mission && modification == 26 {
                 "goes out with a bang".to_owned()
             } else if modification == 5 {
@@ -704,19 +816,19 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         let ps = self.snapshot(state)?.player_state.clone();
         if attacker == ps.client_num {
             let mut text = format!("You fragged {target_name}");
-            if self.host.options().game_type < GameType::Team {
-                text += &game_format(
+            if (self.host.options().game_type as i32) < GameType::GtTeam as i32 {
+                text += &game_format_bounded(
                     "\n%s place with %i",
                     &[
-                        GameFormatArg::from(place_string(
-                            ps.persistant.get(PersistentIndex::Rank as i32)?.wrapping_add(1),
-                        )?),
-                        GameFormatArg::from(ps.persistant.get(PersistentIndex::Score as i32)?),
+                        GameFormatArgument::from(place_string(
+                            ps.persistant.get(PersistentIndex::PersRank as usize).wrapping_add(1),
+                        )),
+                        GameFormatArgument::from(ps.persistant.get(PersistentIndex::PersScore as usize)),
                     ],
                     16_384,
-                )?;
+                );
             }
-            let mission = state.product == Q3Product::MissionPack;
+            let mission = state.product == Product::Missionpack;
             if !mission || !(self.host.options().single_player_active && self.host.options().camera_orbit) {
                 let y = self.center_y(state);
                 self.host.center_print(&text, y, 16);
@@ -735,7 +847,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         }
         let mut suffix = "";
         if attacker != ENTITYNUM_WORLD {
-            let mission = state.product == Q3Product::MissionPack;
+            let mission = state.product == Product::Missionpack;
             message = Some(match modification {
                 2 => "was pummeled by".to_owned(),
                 3 => "was machinegunned by".to_owned(),
@@ -811,7 +923,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         let team = self.host.client_info_brief(static_state, state.client_num)?.team;
         match event {
             0 | 1 => {
-                let expected = if event == 0 { Team::Red } else { Team::Blue };
+                let expected = if event == 0 { Team::TeamRed } else { Team::TeamBlue };
                 let sounds = self.host.media().sounds;
                 self.host.add_buffered_sound(if team == expected {
                     sounds.capture_your_team_sound
@@ -820,7 +932,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 });
             }
             2 | 3 => {
-                let expected = if event == 2 { Team::Red } else { Team::Blue };
+                let expected = if event == 2 { Team::TeamRed } else { Team::TeamBlue };
                 let sounds = self.host.media().sounds;
                 self.host.add_buffered_sound(if team == expected {
                     sounds.return_your_team_sound
@@ -836,18 +948,18 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
             4 | 5 => {
                 let ps = self.snapshot(state)?.player_state.clone();
                 let held = if event == 4 {
-                    Powerup::BlueFlag
+                    Powerup::PwBlueflag
                 } else {
-                    Powerup::RedFlag
+                    Powerup::PwRedflag
                 };
-                if ps.powerups.get(held as i32)? != 0 || ps.powerups.get(Powerup::NeutralFlag as i32)? != 0 {
+                if ps.powerups.get(held as usize) != 0 || ps.powerups.get(Powerup::PwNeutralflag as usize) != 0 {
                     return Ok(());
                 }
-                let threatened = if event == 4 { Team::Blue } else { Team::Red };
-                if team != Team::Red && team != Team::Blue {
+                let threatened = if event == 4 { Team::TeamBlue } else { Team::TeamRed };
+                if team != Team::TeamRed && team != Team::TeamBlue {
                     return Ok(());
                 }
-                if self.host.product() == Q3Product::MissionPack && self.host.options().game_type == GameType::OneFctf {
+                if self.host.product() == Product::Missionpack && self.host.options().game_type == GameType::Gt1fctf {
                     let sounds = self.host.mission_sounds().copied().unwrap_or_default();
                     self.host.add_buffered_sound(if team == threatened {
                         sounds.your_team_took_the_flag_sound
@@ -864,7 +976,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 }
             }
             6 | 7 => {
-                let expected = if event == 6 { Team::Red } else { Team::Blue };
+                let expected = if event == 6 { Team::TeamRed } else { Team::TeamBlue };
                 if team == expected {
                     let sound = self.host.media().sounds.your_base_is_under_attack_sound;
                     self.host.add_buffered_sound(sound);
@@ -890,7 +1002,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 let sound = self.host.media().sounds.teams_tied_sound;
                 self.host.add_buffered_sound(sound);
             }
-            13 if self.host.product() == Q3Product::MissionPack => {
+            13 if self.host.product() == Product::Missionpack => {
                 let sound = self.host.mission_sounds().and_then(|sounds| sounds.kamikaze_far_sound);
                 self.host.start_local_sound(sound, EV_ANNOUNCER);
             }
@@ -926,11 +1038,11 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         let es = event_entity(state, entity_ref)?.current_state.clone();
         let event = es.event & !EV_EVENT_BITS;
         if self.host.options().debug_events {
-            let text = game_format(
+            let text = game_format_bounded(
                 "ent:%3i  event:%3i ",
-                &[GameFormatArg::from(es.number), GameFormatArg::from(event)],
+                &[GameFormatArgument::from(es.number), GameFormatArgument::from(event)],
                 16_384,
-            )?;
+            );
             self.host.print(&text);
         }
         if event == 0 {
@@ -945,14 +1057,14 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
             es.client_num
         };
         let info = self.host.client_info_brief(static_state, client_num)?;
-        let mission = self.host.product() == Q3Product::MissionPack;
-        let mission_only = (event >= EntityEvent::ProximityMineStick as i32
-            && event <= EntityEvent::LightningBolt as i32)
-            || event >= EntityEvent::TauntYes as i32;
+        let mission = self.host.product() == Product::Missionpack;
+        let mission_only = (event >= EntityEvent::EvProximityMineStick as i32
+            && event <= EntityEvent::EvLightningbolt as i32)
+            || event >= EntityEvent::EvTauntYes as i32;
         let known = entity_event_name(event);
         if known.is_none()
-            || event == EntityEvent::UseItem15 as i32
-            || event == EntityEvent::Bullet as i32
+            || event == EntityEvent::EvUseItem15 as i32
+            || event == EntityEvent::EvBullet as i32
             || (mission_only && !mission)
         {
             if self.host.options().debug_events {
@@ -961,33 +1073,33 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
             return Err(drop_msg(format!("Unknown event: {event}")));
         }
         if self.host.options().debug_events {
-            let label = if event >= EntityEvent::Step4 as i32 && event <= EntityEvent::Step16 as i32 {
+            let label = if event >= EntityEvent::EvStep4 as i32 && event <= EntityEvent::EvStep16 as i32 {
                 "EV_STEP"
-            } else if event >= EntityEvent::Death1 as i32 && event <= EntityEvent::Death3 as i32 {
+            } else if event >= EntityEvent::EvDeath1 as i32 && event <= EntityEvent::EvDeath3 as i32 {
                 "EV_DEATHx"
             } else {
                 known.expect("checked event name")
             };
             self.host.print(&format!("{label}\n"));
         }
-        if event >= EntityEvent::UseItem0 as i32 && event <= EntityEvent::UseItem14 as i32 {
+        if event >= EntityEvent::EvUseItem0 as i32 && event <= EntityEvent::EvUseItem14 as i32 {
             self.use_item(state, static_state, entity_ref)?;
             return Ok(());
         }
-        let event_enum = EntityEvent::from_i32(event).expect("checked known event");
+        let event_enum = entity_event_from_i32(event).expect("checked known event");
         match event_enum {
-            EntityEvent::Footstep
-            | EntityEvent::FootstepMetal
-            | EntityEvent::Footsplash
-            | EntityEvent::Footwade
-            | EntityEvent::Swim => {
+            EntityEvent::EvFootstep
+            | EntityEvent::EvFootstepMetal
+            | EntityEvent::EvFootsplash
+            | EntityEvent::EvFootwade
+            | EntityEvent::EvSwim => {
                 if self.host.options().footsteps {
                     let pick = (self.host.rand_int() & 3) as usize;
                     let bank;
-                    let sounds = if event_enum == EntityEvent::Footstep {
+                    let sounds = if event_enum == EntityEvent::EvFootstep {
                         bank = *self.host.media().footsteps.bank(info.footsteps);
                         &bank
-                    } else if event_enum == EntityEvent::FootstepMetal {
+                    } else if event_enum == EntityEvent::EvFootstepMetal {
                         &self.host.media().footsteps.metal
                     } else {
                         &self.host.media().footsteps.splash
@@ -996,12 +1108,12 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     self.host.start_sound(None, es.number, EV_BODY, sound);
                 }
             }
-            EntityEvent::FallShort | EntityEvent::FallMedium | EntityEvent::FallFar => {
-                if event_enum == EntityEvent::FallShort {
+            EntityEvent::EvFallShort | EntityEvent::EvFallMedium | EntityEvent::EvFallFar => {
+                if event_enum == EntityEvent::EvFallShort {
                     let sound = self.host.media().sounds.land_sound;
                     self.host.start_sound(None, es.number, EV_AUTO, sound);
                 } else {
-                    let (channel, name) = if event_enum == EntityEvent::FallMedium {
+                    let (channel, name) = if event_enum == EntityEvent::EvFallMedium {
                         (EV_VOICE, "*pain100_1.wav")
                     } else {
                         (EV_AUTO, "*fall1.wav")
@@ -1009,18 +1121,18 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     let sound = self.host.custom_sound(es.number, name);
                     self.host.start_sound(None, es.number, channel, sound);
                 }
-                if event_enum == EntityEvent::FallFar {
+                if event_enum == EntityEvent::EvFallFar {
                     event_entity_mut(state, entity_ref)?.player.pain_time = state.time;
                 }
                 if client_num == state.predicted_player_state.client_num {
-                    state.land_change = -8.0 * (event - EntityEvent::FallShort as i32 + 1) as f32;
+                    state.land_change = -8.0 * (event - EntityEvent::EvFallShort as i32 + 1) as f32;
                     state.land_time = state.time;
                 }
             }
-            EntityEvent::Step4 | EntityEvent::Step8 | EntityEvent::Step12 | EntityEvent::Step16 => {
+            EntityEvent::EvStep4 | EntityEvent::EvStep8 | EntityEvent::EvStep12 | EntityEvent::EvStep16 => {
                 if client_num == state.predicted_player_state.client_num
                     && !self.host.options().demo_playback
-                    && (self.snapshot(state)?.player_state.pm_flags & MoveFlags::FOLLOW) == 0
+                    && (self.snapshot(state)?.player_state.pm_flags & (MoveFlags::Follow as i32)) == 0
                     && !self.host.options().no_predict
                     && !self.host.options().synchronous_clients
                 {
@@ -1030,11 +1142,11 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     } else {
                         0.0
                     };
-                    state.step_change = (old_step + 4.0 * (event - EntityEvent::Step4 as i32 + 1) as f32).min(32.0);
+                    state.step_change = (old_step + 4.0 * (event - EntityEvent::EvStep4 as i32 + 1) as f32).min(32.0);
                     state.step_time = state.time;
                 }
             }
-            EntityEvent::JumpPad => {
+            EntityEvent::EvJumpPad => {
                 let shader = self.host.media().smoke_puff_shader.clone();
                 self.host.smoke_puff(
                     state,
@@ -1057,80 +1169,80 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 let sound = self.host.custom_sound(es.number, "*jump1.wav");
                 self.host.start_sound(None, es.number, EV_VOICE, sound);
             }
-            EntityEvent::Jump => {
+            EntityEvent::EvJump => {
                 let sound = self.host.custom_sound(es.number, "*jump1.wav");
                 self.host.start_sound(None, es.number, EV_VOICE, sound);
             }
-            EntityEvent::Taunt => {
+            EntityEvent::EvTaunt => {
                 let sound = self.host.custom_sound(es.number, "*taunt.wav");
                 self.host.start_sound(None, es.number, EV_VOICE, sound);
             }
-            EntityEvent::TauntYes
-            | EntityEvent::TauntNo
-            | EntityEvent::TauntFollowMe
-            | EntityEvent::TauntGetFlag
-            | EntityEvent::TauntGuardBase
-            | EntityEvent::TauntPatrol => {
+            EntityEvent::EvTauntYes
+            | EntityEvent::EvTauntNo
+            | EntityEvent::EvTauntFollowme
+            | EntityEvent::EvTauntGetflag
+            | EntityEvent::EvTauntGuardbase
+            | EntityEvent::EvTauntPatrol => {
                 if mission {
                     let command = match event_enum {
-                        EntityEvent::TauntYes => "yes",
-                        EntityEvent::TauntNo => "no",
-                        EntityEvent::TauntFollowMe => "followme",
-                        EntityEvent::TauntGetFlag => "ongetflag",
-                        EntityEvent::TauntGuardBase => "ondefense",
+                        EntityEvent::EvTauntYes => "yes",
+                        EntityEvent::EvTauntNo => "no",
+                        EntityEvent::EvTauntFollowme => "followme",
+                        EntityEvent::EvTauntGetflag => "ongetflag",
+                        EntityEvent::EvTauntGuardbase => "ondefense",
                         _ => "onpatrol",
                     };
                     self.host
                         .voice_chat_local(state, static_state, 1, false, es.number, 53, command)?;
                 }
             }
-            EntityEvent::WaterTouch => {
+            EntityEvent::EvWaterTouch => {
                 let sound = self.host.media().sounds.watr_in_sound;
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::WaterLeave => {
+            EntityEvent::EvWaterLeave => {
                 let sound = self.host.media().sounds.watr_out_sound;
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::WaterUnder => {
+            EntityEvent::EvWaterUnder => {
                 let sound = self.host.media().sounds.watr_un_sound;
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::WaterClear => {
+            EntityEvent::EvWaterClear => {
                 let sound = self.host.custom_sound(es.number, "*gasp.wav");
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::ItemPickup | EntityEvent::GlobalItemPickup => {
+            EntityEvent::EvItemPickup | EntityEvent::EvGlobalItemPickup => {
                 let index = es.event_parm;
                 if index >= 1 && index < item_list(state.product).len() as i32 {
                     let item = *item_at(state.product, index)?;
-                    if event_enum == EntityEvent::GlobalItemPickup {
+                    if event_enum == EntityEvent::EvGlobalItemPickup {
                         if let Some(path) = item.pickup_sound {
                             let sound = self.host.register_sound(Some(path), false);
                             let client = self.snapshot(state)?.player_state.client_num;
                             self.host.start_sound(None, client, EV_AUTO, sound);
                         }
-                    } else if item.item_type == ItemType::Powerup || item.item_type == ItemType::Team {
+                    } else if matches!(item.kind, ItemKind::Powerup(_) | ItemKind::Team(_)) {
                         let sound = self.host.media().sounds.n_health_sound;
                         self.host.start_sound(None, es.number, EV_AUTO, sound);
-                    } else if item.item_type == ItemType::PersistantPowerup {
+                    } else if matches!(item.kind, ItemKind::PersistantPowerup(_)) {
                         if mission {
                             let sounds = self.host.mission_sounds().copied().unwrap_or_default();
-                            let sound = if item.tag == Powerup::Scout as i32 {
+                            let sound = if item.tag() == Powerup::PwScout as i32 {
                                 sounds.scout_sound
-                            } else if item.tag == Powerup::Guard as i32 {
+                            } else if item.tag() == Powerup::PwGuard as i32 {
                                 sounds.guard_sound
-                            } else if item.tag == Powerup::Doubler as i32 {
+                            } else if item.tag() == Powerup::PwDoubler as i32 {
                                 sounds.doubler_sound
-                            } else if item.tag == Powerup::Ammoregen as i32 {
+                            } else if item.tag() == Powerup::PwAmmoregen as i32 {
                                 sounds.ammoregen_sound
                             } else {
                                 None
                             };
-                            if item.tag == Powerup::Scout as i32
-                                || item.tag == Powerup::Guard as i32
-                                || item.tag == Powerup::Doubler as i32
-                                || item.tag == Powerup::Ammoregen as i32
+                            if item.tag() == Powerup::PwScout as i32
+                                || item.tag() == Powerup::PwGuard as i32
+                                || item.tag() == Powerup::PwDoubler as i32
+                                || item.tag() == Powerup::PwAmmoregen as i32
                             {
                                 self.host.start_sound(None, es.number, EV_AUTO, sound);
                             }
@@ -1144,25 +1256,25 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     }
                 }
             }
-            EntityEvent::Noammo => {
+            EntityEvent::EvNoammo => {
                 if es.number == self.snapshot(state)?.player_state.client_num {
                     self.host.out_of_ammo_change(state);
                 }
             }
-            EntityEvent::ChangeWeapon => {
+            EntityEvent::EvChangeWeapon => {
                 let sound = self.host.media().sounds.select_sound;
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::FireWeapon => {
+            EntityEvent::EvFireWeapon => {
                 self.host.fire_weapon(state, entity_ref);
             }
-            EntityEvent::PlayerTeleportIn | EntityEvent::PlayerTeleportOut => {
+            EntityEvent::EvPlayerTeleportIn | EntityEvent::EvPlayerTeleportOut => {
                 let sounds = self.host.media().sounds;
                 self.host.start_sound(
                     None,
                     es.number,
                     EV_AUTO,
-                    if event_enum == EntityEvent::PlayerTeleportIn {
+                    if event_enum == EntityEvent::EvPlayerTeleportIn {
                         sounds.tele_in_sound
                     } else {
                         sounds.tele_out_sound
@@ -1170,17 +1282,17 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 );
                 self.host.spawn_effect(state, position);
             }
-            EntityEvent::ItemPop => {
+            EntityEvent::EvItemPop => {
                 let sound = self.host.media().sounds.respawn_sound;
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::ItemRespawn => {
+            EntityEvent::EvItemRespawn => {
                 let time = state.time;
                 event_entity_mut(state, entity_ref)?.misc_time = time;
                 let sound = self.host.media().sounds.respawn_sound;
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::GrenadeBounce => {
+            EntityEvent::EvGrenadeBounce => {
                 let sounds = self.host.media().sounds;
                 let sound = if (self.host.rand_int() & 1) != 0 {
                     sounds.hgrenb1a_sound
@@ -1189,7 +1301,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 };
                 self.host.start_sound(None, es.number, EV_AUTO, sound);
             }
-            EntityEvent::ProximityMineStick => {
+            EntityEvent::EvProximityMineStick => {
                 if mission {
                     let sounds = self.host.mission_sounds().copied().unwrap_or_default();
                     let sound = if (es.event_parm & 64) != 0 {
@@ -1202,52 +1314,52 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     self.host.start_sound(None, es.number, EV_AUTO, sound);
                 }
             }
-            EntityEvent::ProximityMineTrigger => {
+            EntityEvent::EvProximityMineTrigger => {
                 if mission {
                     let sound = self.host.mission_sounds().and_then(|sounds| sounds.wstbactv_sound);
                     self.host.start_sound(None, es.number, EV_AUTO, sound);
                 }
             }
-            EntityEvent::Kamikaze => {
+            EntityEvent::EvKamikaze => {
                 if mission {
                     let origin = event_entity(state, entity_ref)?.lerp_origin;
                     self.host.kamikaze_effect(state, origin);
                 }
             }
-            EntityEvent::ObeliskExplode => {
+            EntityEvent::EvObeliskexplode => {
                 if mission {
                     let origin = event_entity(state, entity_ref)?.lerp_origin;
                     self.host.obelisk_explode(state, origin);
                 }
             }
-            EntityEvent::ObeliskPain => {
+            EntityEvent::EvObeliskpain => {
                 if mission {
                     let origin = event_entity(state, entity_ref)?.lerp_origin;
                     self.host.obelisk_pain(state, origin);
                 }
             }
-            EntityEvent::InvulImpact => {
+            EntityEvent::EvInvulImpact => {
                 if mission {
                     let origin = event_entity(state, entity_ref)?.lerp_origin;
                     self.host.invulnerability_impact(state, origin, es.angles);
                 }
             }
-            EntityEvent::Juiced => {
+            EntityEvent::EvJuiced => {
                 if mission {
                     let origin = event_entity(state, entity_ref)?.lerp_origin;
                     self.host.invulnerability_juiced(state, origin);
                 }
             }
-            EntityEvent::LightningBolt => {
+            EntityEvent::EvLightningbolt => {
                 if mission {
                     self.host.lightning_bolt_beam(state, es.origin2, es.pos.base);
                 }
             }
-            EntityEvent::Scoreplum => {
+            EntityEvent::EvScoreplum => {
                 let origin = event_entity(state, entity_ref)?.lerp_origin;
                 self.host.score_plum(state, es.other_entity_num, origin, es.time);
             }
-            EntityEvent::MissileHit => {
+            EntityEvent::EvMissileHit => {
                 self.host.missile_hit_player(
                     state,
                     es.weapon,
@@ -1256,27 +1368,27 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     es.other_entity_num,
                 );
             }
-            EntityEvent::MissileMiss | EntityEvent::MissileMissMetal => {
+            EntityEvent::EvMissileMiss | EntityEvent::EvMissileMissMetal => {
                 self.host.missile_hit_wall(
                     state,
                     es.weapon,
                     0,
                     position,
                     byte_to_direction(es.event_parm),
-                    if event_enum == EntityEvent::MissileMiss {
+                    if event_enum == EntityEvent::EvMissileMiss {
                         ImpactSound::Default
                     } else {
                         ImpactSound::Metal
                     },
                 );
             }
-            EntityEvent::Railtrail => {
-                event_entity_mut(state, entity_ref)?.current_state.weapon = Weapon::Railgun as i32;
+            EntityEvent::EvRailtrail => {
+                event_entity_mut(state, entity_ref)?.current_state.weapon = Weapon::WpRailgun as i32;
                 self.host.rail_trail(state, client_num, es.origin2, es.pos.base);
                 if es.event_parm != 255 {
                     self.host.missile_hit_wall(
                         state,
-                        Weapon::Railgun as i32,
+                        Weapon::WpRailgun as i32,
                         es.client_num,
                         position,
                         byte_to_direction(es.event_parm),
@@ -1284,7 +1396,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     );
                 }
             }
-            EntityEvent::BulletHitWall => {
+            EntityEvent::EvBulletHitWall => {
                 self.host.bullet(
                     state,
                     es.pos.base,
@@ -1294,7 +1406,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     },
                 );
             }
-            EntityEvent::BulletHitFlesh => {
+            EntityEvent::EvBulletHitFlesh => {
                 self.host.bullet(
                     state,
                     es.pos.base,
@@ -1304,10 +1416,10 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     },
                 );
             }
-            EntityEvent::Shotgun => {
+            EntityEvent::EvShotgun => {
                 self.host.shotgun_fire(state, entity_ref);
             }
-            EntityEvent::GeneralSound | EntityEvent::GlobalSound => {
+            EntityEvent::EvGeneralSound | EntityEvent::EvGlobalSound => {
                 let sounds = self.host.media().game_sounds.clone();
                 let sound = sounds
                     .get(es.event_parm as usize)
@@ -1324,38 +1436,38 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                         self.host.custom_sound(es.number, &path)
                     }
                 };
-                if event_enum == EntityEvent::GeneralSound {
+                if event_enum == EntityEvent::EvGeneralSound {
                     self.host.start_sound(None, es.number, EV_VOICE, sound);
                 } else {
                     self.host.start_sound(None, client, EV_AUTO, sound);
                 }
             }
-            EntityEvent::GlobalTeamSound => {
+            EntityEvent::EvGlobalTeamSound => {
                 self.team_sound(state, static_state, es.event_parm)?;
             }
-            EntityEvent::Pain => {
+            EntityEvent::EvPain => {
                 if es.number != self.snapshot(state)?.player_state.client_num {
                     self.pain_event(state, static_state, entity_ref, es.event_parm)?;
                 }
             }
-            EntityEvent::Death1 | EntityEvent::Death2 | EntityEvent::Death3 => {
+            EntityEvent::EvDeath1 | EntityEvent::EvDeath2 | EntityEvent::EvDeath3 => {
                 let sound = self.host.custom_sound(
                     es.number,
-                    &format!("*death{}.wav", event - EntityEvent::Death1 as i32 + 1),
+                    &format!("*death{}.wav", event - EntityEvent::EvDeath1 as i32 + 1),
                 );
                 self.host.start_sound(None, es.number, EV_VOICE, sound);
             }
-            EntityEvent::Obituary => {
+            EntityEvent::EvObituary => {
                 self.obituary(state, static_state, &es)?;
             }
-            EntityEvent::PowerupQuad | EntityEvent::PowerupBattlesuit | EntityEvent::PowerupRegen => {
+            EntityEvent::EvPowerupQuad | EntityEvent::EvPowerupBattlesuit | EntityEvent::EvPowerupRegen => {
                 if es.number == self.snapshot(state)?.player_state.client_num {
-                    state.powerup_active = if event_enum == EntityEvent::PowerupQuad {
-                        Powerup::Quad as i32
-                    } else if event_enum == EntityEvent::PowerupBattlesuit {
-                        Powerup::Battlesuit as i32
+                    state.powerup_active = if event_enum == EntityEvent::EvPowerupQuad {
+                        Powerup::PwQuad as i32
+                    } else if event_enum == EntityEvent::EvPowerupBattlesuit {
+                        Powerup::PwBattlesuit as i32
                     } else {
-                        Powerup::Regen as i32
+                        Powerup::PwRegen as i32
                     };
                     state.powerup_time = state.time;
                 }
@@ -1364,16 +1476,16 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     None,
                     es.number,
                     EV_ITEM,
-                    if event_enum == EntityEvent::PowerupQuad {
+                    if event_enum == EntityEvent::EvPowerupQuad {
                         sounds.quad_sound
-                    } else if event_enum == EntityEvent::PowerupBattlesuit {
+                    } else if event_enum == EntityEvent::EvPowerupBattlesuit {
                         sounds.protect_sound
                     } else {
                         sounds.regen_sound
                     },
                 );
             }
-            EntityEvent::GibPlayer => {
+            EntityEvent::EvGibPlayer => {
                 if (es.e_flags & 512) == 0 {
                     let sound = self.host.media().sounds.gib_sound;
                     self.host.start_sound(None, es.number, EV_BODY, sound);
@@ -1381,31 +1493,31 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 let origin = event_entity(state, entity_ref)?.lerp_origin;
                 self.host.gib_player(state, origin);
             }
-            EntityEvent::StopLoopingSound => {
+            EntityEvent::EvStoploopingsound => {
                 self.host.stop_looping_sound(es.number);
                 event_entity_mut(state, entity_ref)?.current_state.loop_sound = 0;
             }
-            EntityEvent::DebugLine => {
+            EntityEvent::EvDebugLine => {
                 self.host.beam(state, entity_ref);
             }
-            EntityEvent::None
-            | EntityEvent::UseItem0
-            | EntityEvent::UseItem1
-            | EntityEvent::UseItem2
-            | EntityEvent::UseItem3
-            | EntityEvent::UseItem4
-            | EntityEvent::UseItem5
-            | EntityEvent::UseItem6
-            | EntityEvent::UseItem7
-            | EntityEvent::UseItem8
-            | EntityEvent::UseItem9
-            | EntityEvent::UseItem10
-            | EntityEvent::UseItem11
-            | EntityEvent::UseItem12
-            | EntityEvent::UseItem13
-            | EntityEvent::UseItem14
-            | EntityEvent::UseItem15
-            | EntityEvent::Bullet => {
+            EntityEvent::EvNone
+            | EntityEvent::EvUseItem0
+            | EntityEvent::EvUseItem1
+            | EntityEvent::EvUseItem2
+            | EntityEvent::EvUseItem3
+            | EntityEvent::EvUseItem4
+            | EntityEvent::EvUseItem5
+            | EntityEvent::EvUseItem6
+            | EntityEvent::EvUseItem7
+            | EntityEvent::EvUseItem8
+            | EntityEvent::EvUseItem9
+            | EntityEvent::EvUseItem10
+            | EntityEvent::EvUseItem11
+            | EntityEvent::EvUseItem12
+            | EntityEvent::EvUseItem13
+            | EntityEvent::EvUseItem14
+            | EntityEvent::EvUseItem15
+            | EntityEvent::EvBullet => {
                 return Err(drop_msg(format!("Unknown event: {event}")));
             }
         }
@@ -1422,7 +1534,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         self.check_product(state)?;
         let number = i32::try_from(entity_number).map_err(|_| range_msg("Entity number outside int32"))?;
         let entity = state.entity_at_mut(number)?;
-        if entity.current_state.e_type > EntityType::Events as i32 {
+        if entity.current_state.e_type > EntityType::EtEvents as i32 {
             if entity.previous_event != 0 {
                 return Ok(());
             }
@@ -1431,7 +1543,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                 entity.current_state.number = other;
             }
             entity.previous_event = 1;
-            let event = entity.current_state.e_type - EntityType::Events as i32;
+            let event = entity.current_state.e_type - EntityType::EtEvents as i32;
             entity.current_state.event = event;
         } else {
             if entity.current_state.event == entity.previous_event {
@@ -1445,9 +1557,25 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         }
         let server_time = self.snapshot(state)?.server_time;
         let entity = state.entity_at_mut(number)?;
-        entity.lerp_origin = evaluate_trajectory(&entity.current_state.pos.clone(), server_time)?;
+        entity.lerp_origin = evaluate_trajectory(&entity.current_state.pos, server_time);
         self.host.set_entity_sound_position(state, entity_number);
         let position = state.entity_at(number)?.lerp_origin;
         self.entity_event(state, static_state, EventEntityRef::Entity(entity_number), position)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn place_string_ranks() {
+        assert_eq!(place_string(1), "^41st^7");
+        assert_eq!(place_string(2), "^12nd^7");
+        assert_eq!(place_string(3), "^33rd^7");
+        assert_eq!(place_string(4), "4th");
+        assert_eq!(place_string(11), "11th");
+        assert_eq!(place_string(21), "21st");
+        assert_eq!(place_string(0x4000 | 1), "Tied for ^41st^7");
     }
 }
