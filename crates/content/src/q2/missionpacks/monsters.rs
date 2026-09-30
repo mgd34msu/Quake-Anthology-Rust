@@ -12,6 +12,8 @@ pub mod hints;
 pub mod power_armor;
 pub mod rogue_arsenal;
 pub mod rogue_common;
+pub mod rogue_flyer;
+pub mod rogue_hover;
 pub mod rogue_infantry;
 pub mod rogue_soldier;
 pub mod rogue_variants;

@@ -87,7 +87,7 @@ fn flyer_initialize(context: &mut MonsterContext) {
 }
 
 /// Pain (`pain`).
-fn flyer_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
+pub fn flyer_pain(context: &mut MonsterContext, _reaction: &PainReaction) {
     damaged_skin(context);
     if context.game.host.now() < context.state().pain_time {
         return;
