@@ -511,13 +511,7 @@ fn spawn_szombie(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Erro
     monster.monster.game.total_monsters += 1;
     let total = monster.monster.game.total_monsters;
     monster.monster.game.host.emit(Q1Event::MonsterTotal { total });
-    let enemy = monster
-        .monster
-        .game
-        .players_snapshot()
-        .into_iter()
-        .next()
-        .map(|player| player.actor.id().clone());
+    let enemy = (monster.monster.game.host.players)().into_iter().next();
     monster.monster.monster.enemy = enemy;
     monster.monster.game.update_entity(&id, |entity| entity.frame = 174)?;
     monster.monster.controller.current_frame = String::from("szombie_paine10");
@@ -590,11 +584,7 @@ pub fn spawn_homing_flame(game: &mut Q1EntityServices, source: &ActorId) -> Resu
         });
     let enemy = match stored {
         Some(enemy) if game.is_player(&enemy) => Some(enemy),
-        _ => game
-            .players_snapshot()
-            .into_iter()
-            .next()
-            .map(|player| player.actor.id().clone()),
+        _ => (game.host.players)().into_iter().next(),
     };
     game.update_entity(&flame, |entity| {
         entity.references.insert(String::from("enemy"), enemy.clone());
@@ -804,6 +794,10 @@ mod tests {
         let player = attach_test_player(&mut game);
         let source = game.create("monster_szombie", None, None).expect("source");
         game.spawn_entity(&source, None).expect("spawn");
+        game.update_entity(&source, |entity| {
+            entity.references.insert(String::from("enemy"), Some(player.clone()));
+        })
+        .expect("enemy");
         let flame = spawn_homing_flame(&mut game, &source).expect("flame");
         assert!(game.entity_ref(&source).is_none());
         let entity = game.entity_ref(&flame).expect("flame");
