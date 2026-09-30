@@ -1254,26 +1254,15 @@ mod tests {
     use crate::contract::ArmorState;
     use crate::contract::InventoryEntry;
     use crate::contract::PoweredProtectionState;
-    use crate::contract::ProjectileRole;
     use crate::contract::RegularArmorState;
     use crate::q3::foundation::character::*;
     use crate::q3::foundation::movement_hooks::*;
-    use crate::q3anim::PlayerFootsteps;
 
     use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 
     use qa_core::time::{FrameContext, SourceTime};
     use std::cell::RefCell;
     use std::rc::Rc;
-
-    use crate::q3::foundation::animation_config::*;
-
-    use crate::q3::foundation::events::*;
-    use crate::q3::foundation::held_weapons::*;
-
-    use crate::q3::foundation::player_pose::*;
-    use crate::q3::foundation::weapon_behavior::*;
-    use crate::q3::foundation::weapon_pose::*;
 
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -1288,15 +1277,6 @@ mod tests {
         ActorAnimationState as WorldActorAnimationState, AnimationState, MovementEffect as WorldMovementEffect,
         MovementEnvironment as WorldMovementEnvironment, Q3UserCommand, UserCommand, WeaponState as FamilyWeaponState,
     };
-
-    fn animation_fixture() -> String {
-        let mut text = String::from("sex f\nfootsteps boot\nheadoffset 1 2 3\nfixedlegs\nfixedtorso\n");
-        for frame in 0..31 {
-            text.push_str(&format!("{frame} 6 0 10\n"));
-        }
-        text
-    }
-
     fn test_frame(elapsed: SourceTime) -> FrameContext {
         FrameContext {
             frame: 1,
@@ -1369,48 +1349,6 @@ mod tests {
     fn actor_key(actor: &ActorId) -> SavedActorId {
         SavedActorId::from(actor)
     }
-
-    #[test]
-    fn weapon_view_pose_torso_frames_and_barrel() {
-        let motion = Q3WeaponViewMotion {
-            origin: vec3(1.0, 2.0, 3.0),
-            angles: vec3(0.0, 0.0, 0.0),
-            time_ms: 1000,
-            horizontal_speed: 200.0,
-            bob_cycle: 2,
-            bob_fraction_sine: 0.5,
-            land_time: 900,
-            land_change: 8.0,
-        };
-        let first = q3_weapon_view_pose(&motion);
-        assert_eq!(first, q3_weapon_view_pose(&motion));
-        let odd = Q3WeaponViewMotion { bob_cycle: 3, ..motion };
-        assert_ne!(first.1.z, q3_weapon_view_pose(&odd).1.z);
-
-        let config = parse_player_animation_config(&animation_fixture(), "<t>").unwrap();
-        let drop = config.animations[Q3PlayerAnimation::TORSO_DROP as usize]
-            .as_ref()
-            .unwrap()
-            .first_frame;
-        assert_eq!(q3_torso_weapon_frame(&config, drop + 2).unwrap(), 8);
-        let attack = config.animations[Q3PlayerAnimation::TORSO_ATTACK as usize]
-            .as_ref()
-            .unwrap()
-            .first_frame;
-        assert_eq!(q3_torso_weapon_frame(&config, attack).unwrap(), 1);
-        assert_eq!(q3_torso_weapon_frame(&config, 5000).unwrap(), 0);
-        let mut missing = config.clone();
-        missing.animations[Q3PlayerAnimation::TORSO_DROP as usize] = None;
-        assert!(q3_torso_weapon_frame(&missing, drop).is_err());
-
-        let mut barrel = Q3WeaponBarrel::default();
-        let spin = barrel.step(100, true);
-        assert!(!spin.stopped);
-        barrel.step(200, true);
-        let stop = barrel.step(300, false);
-        assert!(stop.stopped);
-    }
-
     #[test]
     fn spawn_loadout_and_weapon_requests() {
         let (_, provider) = test_actor();
@@ -2067,147 +2005,5 @@ mod tests {
             dead.animation.state.legs & !ANIMATION_TOGGLE_BIT,
             Q3PlayerAnimation::LEGS_IDLE
         );
-    }
-
-    struct StepRandom {
-        value: i32,
-    }
-
-    impl Q3EventRandom for StepRandom {
-        fn rand(&mut self) -> i32 {
-            self.value
-        }
-    }
-
-    fn event_fixture(event: i32, parameter: i32) -> Q3CharacterEvent {
-        let (actor, _) = test_actor();
-        Q3CharacterEvent {
-            actor,
-            sequence: 4,
-            time_ms: 2000,
-            event,
-            parameter,
-        }
-    }
-
-    #[test]
-    fn event_presenter_covers_character_events() {
-        let mut pose = create_player_pose_state();
-        let options = Q3CharacterEventOptions {
-            local: false,
-            footsteps: true,
-            predict_steps: true,
-            source_flags: 0,
-        };
-        let mut presenter = Q3CharacterEventPresenter::new(&mut pose, PlayerFootsteps::Boot, StepRandom { value: 7 });
-        assert!(presenter.pain(100, 90).is_empty());
-        let pain = presenter.pain(600, 20);
-        assert_eq!(pain.len(), 1);
-        assert!(matches!(
-            &pain[0],
-            Q3CharacterPresentationEffect::CustomSound { name, .. } if name == "*pain25_1.wav"
-        ));
-
-        let steps = presenter.event(&event_fixture(Q3EntityEvent::FOOTSTEP, 0), &options);
-        assert!(matches!(
-            &steps[0],
-            Q3CharacterPresentationEffect::Footstep {
-                material: Q3StepMaterial::Boot,
-                variant: 3
-            }
-        ));
-        let metal = presenter.event(&event_fixture(Q3EntityEvent::FOOTSTEP_METAL, 0), &options);
-        assert!(matches!(
-            &metal[0],
-            Q3CharacterPresentationEffect::Footstep {
-                material: Q3StepMaterial::Metal,
-                ..
-            }
-        ));
-        let quiet = Q3CharacterEventOptions {
-            footsteps: false,
-            ..options
-        };
-        assert!(presenter
-            .event(&event_fixture(Q3EntityEvent::FOOTSTEP, 0), &quiet)
-            .is_empty());
-
-        let fire = presenter.event(&event_fixture(Q3EntityEvent::FIRE_WEAPON, 0), &options);
-        assert_eq!(fire, vec![Q3CharacterPresentationEffect::WeaponFire]);
-        assert_eq!(presenter.muzzle_flash_time, 2000);
-
-        let death = presenter.event(&event_fixture(Q3EntityEvent::DEATH2, 0), &options);
-        assert!(matches!(
-            &death[0],
-            Q3CharacterPresentationEffect::CustomSound { name, .. } if name == "*death2.wav"
-        ));
-
-        let gib = presenter.event(&event_fixture(Q3EntityEvent::GIB_PLAYER, 0), &options);
-        assert_eq!(gib.len(), 2);
-        let flagged = Q3CharacterEventOptions {
-            source_flags: 0x200,
-            ..options
-        };
-        let gib = presenter.event(&event_fixture(Q3EntityEvent::GIB_PLAYER, 0), &flagged);
-        assert_eq!(gib, vec![Q3CharacterPresentationEffect::GibPlayer]);
-
-        let remote_pain = presenter.event(&event_fixture(Q3EntityEvent::PAIN, 60), &options);
-        assert!(!remote_pain.is_empty());
-        let local = Q3CharacterEventOptions { local: true, ..options };
-        assert!(presenter
-            .event(&event_fixture(Q3EntityEvent::PAIN, 60), &local)
-            .is_empty());
-        let tele = presenter.event(&event_fixture(Q3EntityEvent::PLAYER_TELEPORT_OUT, 0), &options);
-        assert_eq!(tele.len(), 2);
-        let kept = presenter.event(&event_fixture(Q3EntityEvent::OBITUARY, 9), &options);
-        assert!(matches!(
-            &kept[0],
-            Q3CharacterPresentationEffect::SourceEvent(event) if event.parameter == 9
-        ));
-        let nop = presenter.event(&event_fixture(0x300 | Q3EntityEvent::JUMP, 0), &options);
-        assert_eq!(nop.len(), 1);
-
-        let mut pose = create_player_pose_state();
-        let mut presenter = Q3CharacterEventPresenter::new(&mut pose, PlayerFootsteps::Normal, StepRandom { value: 0 });
-        let local = Q3CharacterEventOptions { local: true, ..options };
-        presenter.event(&event_fixture(Q3EntityEvent::FALL_FAR, 0), &local);
-        assert_eq!(presenter.land_time, 2000);
-        assert_eq!(presenter.land_change, -24.0);
-        presenter.event(&event_fixture(Q3EntityEvent::STEP_8, 0), &local);
-        assert_eq!(presenter.step_time, 2000);
-        assert!(presenter.step_change > 0.0);
-        let pad = presenter.event(&event_fixture(Q3EntityEvent::JUMP_PAD, 0), &options);
-        assert_eq!(pad.len(), 3);
-        assert!(matches!(pad[0], Q3CharacterPresentationEffect::JumpPadSmoke));
-    }
-
-    #[test]
-    fn projectile_behavior_maps_roles() {
-        assert_eq!(
-            q3_projectile_behavior(Q3Weapon::ROCKET_LAUNCHER).unwrap(),
-            Q3ProjectileBehavior {
-                weapon: "q3:weapon/rocketlauncher".to_string(),
-                role: ProjectileRole::Rocket,
-            }
-        );
-        assert_eq!(
-            q3_projectile_behavior(Q3Weapon::PROX_LAUNCHER).unwrap().role,
-            ProjectileRole::Grenade
-        );
-        assert_eq!(
-            q3_projectile_behavior(Q3Weapon::NAILGUN).unwrap().role,
-            ProjectileRole::Nail
-        );
-        assert!(q3_projectile_behavior(99).is_err());
-        assert!(q3_projectile_behavior(Q3Weapon::MACHINEGUN).is_err());
-    }
-
-    #[test]
-    fn weapon_hand_grip_matches_sarge_registration() {
-        assert_eq!(Q3_WEAPON_HAND_GRIP.origin.x, -2.9841071642362156f64 as f32);
-        assert_eq!(Q3_WEAPON_HAND_GRIP.axis[0], vec3(1.0, 0.0, 0.0));
-        assert_eq!(Q3_WEAPON_HAND_GRIP.scale, vec3(1.0, 1.0, 1.0));
-        assert_eq!(Q3_CHARACTER_VIEW_HEIGHT, 26);
-        assert_eq!(Q3_CHARACTER_BOUNDS.min, vec3(-15.0, -15.0, -24.0));
     }
 }

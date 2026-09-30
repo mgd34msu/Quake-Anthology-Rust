@@ -6,8 +6,8 @@ use crate::q3anim::PlayerFootsteps;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::character::*;
-use crate::q3::foundation::mirrors::*;
 use crate::q3::foundation::player_pose::*;
+use qa_world::movement::q3::constants::entity_event;
 
 // ---------------------------------------------------------------------------
 // events.ts: CG_EntityEvent and CG_PainEvent character behavior.
@@ -191,19 +191,19 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
         let event = source.event & !0x300;
         let time = source.time_ms;
         match event {
-            x if x == Q3EntityEvent::NONE => Vec::new(),
-            x if x == Q3EntityEvent::FOOTSTEP
-                || x == Q3EntityEvent::FOOTSTEP_METAL
-                || x == Q3EntityEvent::FOOTSPLASH
-                || x == Q3EntityEvent::FOOTWADE
-                || x == Q3EntityEvent::SWIM =>
+            x if x == entity_event::NONE => Vec::new(),
+            x if x == entity_event::FOOTSTEP
+                || x == entity_event::FOOTSTEP_METAL
+                || x == entity_event::FOOTSPLASH
+                || x == entity_event::FOOTWADE
+                || x == entity_event::SWIM =>
             {
                 if !options.footsteps {
                     return Vec::new();
                 }
-                let material = if event == Q3EntityEvent::FOOTSTEP {
+                let material = if event == entity_event::FOOTSTEP {
                     self.footsteps.into()
-                } else if event == Q3EntityEvent::FOOTSTEP_METAL {
+                } else if event == entity_event::FOOTSTEP_METAL {
                     Q3StepMaterial::Metal
                 } else {
                     Q3StepMaterial::Splash
@@ -213,20 +213,20 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                     variant: self.random.rand() & 3,
                 }]
             }
-            x if x == Q3EntityEvent::FALL_SHORT || x == Q3EntityEvent::FALL_MEDIUM || x == Q3EntityEvent::FALL_FAR => {
-                if event == Q3EntityEvent::FALL_FAR {
+            x if x == entity_event::FALL_SHORT || x == entity_event::FALL_MEDIUM || x == entity_event::FALL_FAR => {
+                if event == entity_event::FALL_FAR {
                     self.pose.pain_time = time;
                 }
                 if options.local {
-                    self.land_change = -8.0 * (event - Q3EntityEvent::FALL_SHORT + 1) as f32;
+                    self.land_change = -8.0 * (event - entity_event::FALL_SHORT + 1) as f32;
                     self.land_time = time;
                 }
-                if event == Q3EntityEvent::FALL_SHORT {
+                if event == entity_event::FALL_SHORT {
                     vec![Effect::Sound {
                         channel: Q3SoundChannel::Auto,
                         path: "sound/player/land1.wav".to_string(),
                     }]
-                } else if event == Q3EntityEvent::FALL_MEDIUM {
+                } else if event == entity_event::FALL_MEDIUM {
                     vec![Effect::CustomSound {
                         channel: Q3SoundChannel::Voice,
                         name: "*pain100_1.wav".to_string(),
@@ -238,10 +238,10 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                     }]
                 }
             }
-            x if x == Q3EntityEvent::STEP_4
-                || x == Q3EntityEvent::STEP_8
-                || x == Q3EntityEvent::STEP_12
-                || x == Q3EntityEvent::STEP_16 =>
+            x if x == entity_event::STEP_4
+                || x == entity_event::STEP_8
+                || x == entity_event::STEP_12
+                || x == entity_event::STEP_16 =>
             {
                 if !options.local || !options.predict_steps {
                     return Vec::new();
@@ -252,11 +252,11 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                 } else {
                     0.0
                 };
-                self.step_change = (previous + 4.0 * (event - Q3EntityEvent::STEP_4 + 1) as f32).min(32.0);
+                self.step_change = (previous + 4.0 * (event - entity_event::STEP_4 + 1) as f32).min(32.0);
                 self.step_time = time;
                 Vec::new()
             }
-            x if x == Q3EntityEvent::JUMP_PAD => vec![
+            x if x == entity_event::JUMP_PAD => vec![
                 Effect::JumpPadSmoke,
                 Effect::Sound {
                     channel: Q3SoundChannel::Voice,
@@ -267,46 +267,46 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                     name: "*jump1.wav".to_string(),
                 },
             ],
-            x if x == Q3EntityEvent::JUMP => vec![Effect::CustomSound {
+            x if x == entity_event::JUMP => vec![Effect::CustomSound {
                 channel: Q3SoundChannel::Voice,
                 name: "*jump1.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::TAUNT => vec![Effect::CustomSound {
+            x if x == entity_event::TAUNT => vec![Effect::CustomSound {
                 channel: Q3SoundChannel::Voice,
                 name: "*taunt.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::WATER_TOUCH => vec![Effect::Sound {
+            x if x == entity_event::WATER_TOUCH => vec![Effect::Sound {
                 channel: Q3SoundChannel::Auto,
                 path: "sound/player/watr_in.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::WATER_LEAVE => vec![Effect::Sound {
+            x if x == entity_event::WATER_LEAVE => vec![Effect::Sound {
                 channel: Q3SoundChannel::Auto,
                 path: "sound/player/watr_out.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::WATER_UNDER => vec![Effect::Sound {
+            x if x == entity_event::WATER_UNDER => vec![Effect::Sound {
                 channel: Q3SoundChannel::Auto,
                 path: "sound/player/watr_un.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::WATER_CLEAR => vec![Effect::CustomSound {
+            x if x == entity_event::WATER_CLEAR => vec![Effect::CustomSound {
                 channel: Q3SoundChannel::Auto,
                 name: "*gasp.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::NOAMMO => {
+            x if x == entity_event::NOAMMO => {
                 if options.local {
                     vec![Effect::OutOfAmmo]
                 } else {
                     Vec::new()
                 }
             }
-            x if x == Q3EntityEvent::CHANGE_WEAPON => vec![Effect::Sound {
+            x if x == entity_event::CHANGE_WEAPON => vec![Effect::Sound {
                 channel: Q3SoundChannel::Auto,
                 path: "sound/weapons/change.wav".to_string(),
             }],
-            x if x == Q3EntityEvent::FIRE_WEAPON => {
+            x if x == entity_event::FIRE_WEAPON => {
                 self.muzzle_flash_time = time;
                 vec![Effect::WeaponFire]
             }
-            x if x == Q3EntityEvent::PLAYER_TELEPORT_IN => vec![
+            x if x == entity_event::PLAYER_TELEPORT_IN => vec![
                 Effect::Sound {
                     channel: Q3SoundChannel::Auto,
                     path: "sound/world/telein.wav".to_string(),
@@ -315,7 +315,7 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                     direction: Q3TeleportDirection::In,
                 },
             ],
-            x if x == Q3EntityEvent::PLAYER_TELEPORT_OUT => vec![
+            x if x == entity_event::PLAYER_TELEPORT_OUT => vec![
                 Effect::Sound {
                     channel: Q3SoundChannel::Auto,
                     path: "sound/world/teleout.wav".to_string(),
@@ -324,20 +324,20 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                     direction: Q3TeleportDirection::Out,
                 },
             ],
-            x if x == Q3EntityEvent::PAIN => {
+            x if x == entity_event::PAIN => {
                 if options.local {
                     Vec::new()
                 } else {
                     self.pain(time, source.parameter)
                 }
             }
-            x if x == Q3EntityEvent::DEATH1 || x == Q3EntityEvent::DEATH2 || x == Q3EntityEvent::DEATH3 => {
+            x if x == entity_event::DEATH1 || x == entity_event::DEATH2 || x == entity_event::DEATH3 => {
                 vec![Effect::CustomSound {
                     channel: Q3SoundChannel::Voice,
-                    name: format!("*death{}.wav", event - Q3EntityEvent::DEATH1 + 1),
+                    name: format!("*death{}.wav", event - entity_event::DEATH1 + 1),
                 }]
             }
-            x if x == Q3EntityEvent::GIB_PLAYER => {
+            x if x == entity_event::GIB_PLAYER => {
                 if options.source_flags & 0x200 != 0 {
                     vec![Effect::GibPlayer]
                 } else {
@@ -350,8 +350,131 @@ impl<'a, R: Q3EventRandom> Q3CharacterEventPresenter<'a, R> {
                     ]
                 }
             }
-            x if x == Q3EntityEvent::STOPLOOPINGSOUND => vec![Effect::StopLoopingSound],
+            x if x == entity_event::STOPLOOPINGSOUND => vec![Effect::StopLoopingSound],
             _ => vec![Effect::SourceEvent(source.clone())],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::q3anim::PlayerFootsteps;
+    use qa_core::identity::{IdentityOwner, OwnedActor, ProviderId};
+
+    use super::*;
+    fn test_actor() -> (OwnedActor, ProviderId) {
+        let owner = IdentityOwner::create("test").unwrap();
+        let provider = ProviderId::new("q3", "test");
+        let owned = owner.owned_actor(&owner.actor(3, 1), provider.clone()).unwrap();
+        (owned, provider)
+    }
+    struct StepRandom {
+        value: i32,
+    }
+
+    impl Q3EventRandom for StepRandom {
+        fn rand(&mut self) -> i32 {
+            self.value
+        }
+    }
+    fn event_fixture(event: i32, parameter: i32) -> Q3CharacterEvent {
+        let (actor, _) = test_actor();
+        Q3CharacterEvent {
+            actor,
+            sequence: 4,
+            time_ms: 2000,
+            event,
+            parameter,
+        }
+    }
+    #[test]
+    fn event_presenter_covers_character_events() {
+        let mut pose = create_player_pose_state();
+        let options = Q3CharacterEventOptions {
+            local: false,
+            footsteps: true,
+            predict_steps: true,
+            source_flags: 0,
+        };
+        let mut presenter = Q3CharacterEventPresenter::new(&mut pose, PlayerFootsteps::Boot, StepRandom { value: 7 });
+        assert!(presenter.pain(100, 90).is_empty());
+        let pain = presenter.pain(600, 20);
+        assert_eq!(pain.len(), 1);
+        assert!(matches!(
+            &pain[0],
+            Q3CharacterPresentationEffect::CustomSound { name, .. } if name == "*pain25_1.wav"
+        ));
+
+        let steps = presenter.event(&event_fixture(entity_event::FOOTSTEP, 0), &options);
+        assert!(matches!(
+            &steps[0],
+            Q3CharacterPresentationEffect::Footstep {
+                material: Q3StepMaterial::Boot,
+                variant: 3
+            }
+        ));
+        let metal = presenter.event(&event_fixture(entity_event::FOOTSTEP_METAL, 0), &options);
+        assert!(matches!(
+            &metal[0],
+            Q3CharacterPresentationEffect::Footstep {
+                material: Q3StepMaterial::Metal,
+                ..
+            }
+        ));
+        let quiet = Q3CharacterEventOptions {
+            footsteps: false,
+            ..options
+        };
+        assert!(presenter
+            .event(&event_fixture(entity_event::FOOTSTEP, 0), &quiet)
+            .is_empty());
+
+        let fire = presenter.event(&event_fixture(entity_event::FIRE_WEAPON, 0), &options);
+        assert_eq!(fire, vec![Q3CharacterPresentationEffect::WeaponFire]);
+        assert_eq!(presenter.muzzle_flash_time, 2000);
+
+        let death = presenter.event(&event_fixture(entity_event::DEATH2, 0), &options);
+        assert!(matches!(
+            &death[0],
+            Q3CharacterPresentationEffect::CustomSound { name, .. } if name == "*death2.wav"
+        ));
+
+        let gib = presenter.event(&event_fixture(entity_event::GIB_PLAYER, 0), &options);
+        assert_eq!(gib.len(), 2);
+        let flagged = Q3CharacterEventOptions {
+            source_flags: 0x200,
+            ..options
+        };
+        let gib = presenter.event(&event_fixture(entity_event::GIB_PLAYER, 0), &flagged);
+        assert_eq!(gib, vec![Q3CharacterPresentationEffect::GibPlayer]);
+
+        let remote_pain = presenter.event(&event_fixture(entity_event::PAIN, 60), &options);
+        assert!(!remote_pain.is_empty());
+        let local = Q3CharacterEventOptions { local: true, ..options };
+        assert!(presenter
+            .event(&event_fixture(entity_event::PAIN, 60), &local)
+            .is_empty());
+        let tele = presenter.event(&event_fixture(entity_event::PLAYER_TELEPORT_OUT, 0), &options);
+        assert_eq!(tele.len(), 2);
+        let kept = presenter.event(&event_fixture(entity_event::OBITUARY, 9), &options);
+        assert!(matches!(
+            &kept[0],
+            Q3CharacterPresentationEffect::SourceEvent(event) if event.parameter == 9
+        ));
+        let nop = presenter.event(&event_fixture(0x300 | entity_event::JUMP, 0), &options);
+        assert_eq!(nop.len(), 1);
+
+        let mut pose = create_player_pose_state();
+        let mut presenter = Q3CharacterEventPresenter::new(&mut pose, PlayerFootsteps::Normal, StepRandom { value: 0 });
+        let local = Q3CharacterEventOptions { local: true, ..options };
+        presenter.event(&event_fixture(entity_event::FALL_FAR, 0), &local);
+        assert_eq!(presenter.land_time, 2000);
+        assert_eq!(presenter.land_change, -24.0);
+        presenter.event(&event_fixture(entity_event::STEP_8, 0), &local);
+        assert_eq!(presenter.step_time, 2000);
+        assert!(presenter.step_change > 0.0);
+        let pad = presenter.event(&event_fixture(entity_event::JUMP_PAD, 0), &options);
+        assert_eq!(pad.len(), 3);
+        assert!(matches!(pad[0], Q3CharacterPresentationEffect::JumpPadSmoke));
     }
 }
