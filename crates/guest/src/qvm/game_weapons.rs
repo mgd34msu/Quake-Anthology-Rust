@@ -775,7 +775,7 @@ pub struct QvmPrimaryWeapons {
     /// Shared state.
     state: Rc<RefCell<QvmWeaponState>>,
     /// Weapon dispatcher.
-    dispatcher: QvmWeaponDispatcher,
+    dispatcher: QvmWeaponDispatcher<QvmWeaponDispatcherOperations>,
     /// Bound hook ids.
     hooks: Vec<u64>,
 }
