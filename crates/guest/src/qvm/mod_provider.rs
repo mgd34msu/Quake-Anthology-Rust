@@ -2922,7 +2922,7 @@ pub fn validate_qvm_mod_items_mirror(
         .chain(stage.continuation.when.iter())
     {
         field(&value.field, false, true)?;
-        if value.mask.is_some_and(|mask| mask < 0 || mask > 0x7fff_ffff) {
+        if value.mask.is_some_and(|mask| mask > 0x7fff_ffff) {
             return Err(GuestError::invalid("Invalid QVM weapon source state predicate"));
         }
     }
@@ -5519,9 +5519,9 @@ impl<H: ModProviderHost> QvmModProvider<H> {
                     ("owned", ProfileValue::Bool(self.owned.contains(actor))),
                     (
                         "event",
-                        self.event_keys.get(actor).map_or(ProfileValue::Null, |event| {
-                            ProfileValue::Str(event.clone())
-                        }),
+                        self.event_keys
+                            .get(actor)
+                            .map_or(ProfileValue::Null, |event| ProfileValue::Str(event.clone())),
                     ),
                 ])
             })

@@ -474,7 +474,8 @@ mod tests {
         {
             bytes[248 + index * 4..252 + index * 4].copy_from_slice(&slot.to_le_bytes());
         }
-        let state = sample();
+        let mut state = sample();
+        state.powerups = [0; 16];
         write_qvm_player_state_preserve(&mut bytes, &state, AbiProfile::Legacy).unwrap();
         let raw = read_slots(&bytes, 248);
         assert_eq!(raw[5], 5);

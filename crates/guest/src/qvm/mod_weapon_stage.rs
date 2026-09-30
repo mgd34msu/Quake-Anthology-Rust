@@ -469,7 +469,8 @@ fn classify_provider_opcode(opcode: super::mod_provider::QvmOpcode) -> StageOpco
 
 impl QvmStageImage for QvmImage {
     fn stage_opcode(&self, index: usize) -> Option<StageOpcode> {
-        self.instruction(index).map(|instruction| classify_game_opcode(instruction.opcode))
+        self.instruction(index)
+            .map(|instruction| classify_game_opcode(instruction.opcode))
     }
 
     fn stage_operand(&self, index: usize) -> Option<i32> {
@@ -605,10 +606,7 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &impl QvmStageIm
     let mut previous = continuation.instruction;
     for value in &continuation.calls {
         let target = value.instruction.checked_sub(1).and_then(|at| image.stage_opcode(at));
-        let target_operand = value
-            .instruction
-            .checked_sub(1)
-            .and_then(|at| image.stage_operand(at));
+        let target_operand = value.instruction.checked_sub(1).and_then(|at| image.stage_operand(at));
         if value.instruction <= previous
             || value.instruction >= limit
             || image.stage_opcode(value.instruction) != Some(StageOpcode::Call)

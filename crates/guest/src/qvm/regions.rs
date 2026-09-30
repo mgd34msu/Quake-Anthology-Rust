@@ -569,16 +569,17 @@ mod tests {
 
     #[test]
     fn read_only_rejects_calls_and_foreign_writes() {
-        // ENTER 16; CONST 0; CALL; LEAVE 16
+        // ENTER 16; CONST 0; CALL; POP; LEAVE 16
         let program = vec![
             instruction(0, QvmOpcode::OpEnter, QvmOperand::Word(16)),
             instruction(5, QvmOpcode::OpConst, QvmOperand::Word(0)),
             instruction(10, QvmOpcode::OpCall, QvmOperand::None),
-            instruction(11, QvmOpcode::OpLeave, QvmOperand::Word(16)),
+            instruction(11, QvmOpcode::OpPop, QvmOperand::None),
+            instruction(12, QvmOpcode::OpLeave, QvmOperand::Word(16)),
         ];
         let region = QvmRegionEvaluation {
             entry: 1,
-            join: 3,
+            join: 4,
             inputs: vec![],
             result: None,
         };
