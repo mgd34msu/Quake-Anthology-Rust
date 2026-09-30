@@ -380,7 +380,7 @@ pub trait ClientEventHost {
 }
 
 /// Rank place string (`placeString`).
-pub fn place_string(rank: i32) -> PresentResult<String> {
+pub fn place_string(rank: i32) -> String {
     let tied = (rank & 0x4000) != 0;
     let rank = rank & !0x4000;
     let place = if rank == 1 {
@@ -403,14 +403,14 @@ pub fn place_string(rank: i32) -> PresentResult<String> {
         };
         game_format_bounded(&format!("%i{suffix}"), &[GameFormatArgument::from(rank)], 16_384)
     };
-    Ok(game_format_bounded(
+    game_format_bounded(
         "%s%s",
         &[
             GameFormatArgument::from(if tied { "Tied for " } else { "" }),
             GameFormatArgument::from(place),
         ],
         64,
-    ))
+    )
 }
 
 /// Canonical entity event from a wire tag (`from_i32`).
@@ -822,7 +822,7 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
                     &[
                         GameFormatArgument::from(place_string(
                             ps.persistant.get(PersistentIndex::PersRank as usize).wrapping_add(1),
-                        )?),
+                        )),
                         GameFormatArgument::from(ps.persistant.get(PersistentIndex::PersScore as usize)),
                     ],
                     16_384,
@@ -1561,5 +1561,21 @@ impl<H: ClientEventHost> ClientEventRuntime<H> {
         self.host.set_entity_sound_position(state, entity_number);
         let position = state.entity_at(number)?.lerp_origin;
         self.entity_event(state, static_state, EventEntityRef::Entity(entity_number), position)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn place_string_ranks() {
+        assert_eq!(place_string(1), "^41st^7");
+        assert_eq!(place_string(2), "^12nd^7");
+        assert_eq!(place_string(3), "^33rd^7");
+        assert_eq!(place_string(4), "4th");
+        assert_eq!(place_string(11), "11th");
+        assert_eq!(place_string(21), "21st");
+        assert_eq!(place_string(0x4000 | 1), "Tied for ^41st^7");
     }
 }

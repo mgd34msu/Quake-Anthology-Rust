@@ -2351,8 +2351,8 @@ pub(crate) mod tests {
     use crate::q3::base::shared::entity_state::EntityState as CanonicalEntityState;
     use crate::q3::base::shared::player_state::PlayerState as CanonicalPlayerState;
     use crate::q3::base::world::{TraceContact, TraceSolidity};
+    use crate::q3::foundation::animation_config::{Animation, TOTAL_ANIMATION_COUNT};
     use crate::q3::presentation::client_info::ClientInfo;
-    use crate::q3::presentation::mirrors_present_hud::{AnimationCell, ANIMATION_COUNT};
     use qa_core::math::{vec3, vec4, Plane, Vec3};
     use std::collections::HashMap;
 
@@ -2477,7 +2477,7 @@ pub(crate) mod tests {
         }
         fn parse_animation_config(&mut self, ci: &mut ClientInfo, _text: &str, path: &str) -> PresentResult<bool> {
             self.parsed.push(path.to_string());
-            let dummy = AnimationCell {
+            let dummy = Animation {
                 first_frame: 0,
                 num_frames: 1,
                 loop_frames: 0,
@@ -2486,7 +2486,7 @@ pub(crate) mod tests {
                 reversed: false,
                 flipflop: false,
             };
-            ci.animations = [dummy; ANIMATION_COUNT];
+            ci.animations = [dummy; TOTAL_ANIMATION_COUNT];
             Ok(true)
         }
         fn model_has_tag(&mut self, _model: &SceneModel, tag: &str) -> bool {
@@ -2814,7 +2814,7 @@ pub(crate) mod tests {
         slots[0].skin_name = "other".to_string();
         slots[0].head_model_name = "other".to_string();
         slots[0].head_skin_name = "other".to_string();
-        let dummy = AnimationCell {
+        let dummy = Animation {
             first_frame: 0,
             num_frames: 1,
             loop_frames: 0,
@@ -2823,7 +2823,7 @@ pub(crate) mod tests {
             reversed: false,
             flipflop: false,
         };
-        slots[0].animations = [dummy; ANIMATION_COUNT];
+        slots[0].animations = [dummy; TOTAL_ANIMATION_COUNT];
         store.new_client_info(&mut slots, 1, CLIENT_CONFIG).unwrap();
         assert!(slots[1].info_valid);
         assert!(slots[1].deferred);

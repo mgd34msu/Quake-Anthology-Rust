@@ -966,3 +966,17 @@ impl ClientGameState {
         std::mem::replace(&mut self.predicted_player_state, PlayerState::new(self.product, None))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_string_lookup() {
+        let info = "\\mapname\\q3dm1\\n\\sarge";
+        assert_eq!(info_value_for_key(info, "mapname", 8192).unwrap(), "q3dm1");
+        assert_eq!(info_value_for_key(info, "N", 8192).unwrap(), "sarge");
+        assert_eq!(info_value_for_key(info, "missing", 8192).unwrap(), "");
+        assert_eq!(info_value_for_key("\\a\\b\\c\\d", "c", 8192).unwrap(), "d");
+    }
+}

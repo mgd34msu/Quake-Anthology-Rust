@@ -9,20 +9,30 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::shared::definitions::Team as CanonicalTeam;
+use crate::q3::base::game::numeric::game_atof;
+use crate::q3::base::game::numeric::GameRandom;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::items::{find_item_for_powerup, item_list};
+use crate::q3::base::shared::player_state::*;
+use crate::q3::presentation::audio::PcmSound;
 use crate::q3::presentation::client_info::*;
 use crate::q3::presentation::config::*;
 use crate::q3::presentation::console::*;
 use crate::q3::presentation::draw_icons::*;
 use crate::q3::presentation::draw_tools::*;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::presentation::hud::ClientMedia;
+use crate::q3::presentation::hud::{same, shared, Shared};
 use crate::q3::presentation::mission_owner_draw::*;
+use crate::q3::presentation::player_state::{ArsenalAmmoWarning, WeaponHudReader, WeaponHudStatus};
+use crate::q3::presentation::resources::SoundAssetReader;
+use crate::q3::presentation::retail_snapshot::{SceneModel, SceneShader};
+use crate::q3::presentation::state::*;
 use crate::q3::presentation::ui_adapters::*;
 
 /// Mission HUD host services (`MissionHudHost`).
 pub trait MissionHudHost {
     /// Weapon HUD report.
-    fn weapon_hud(&self) -> Option<WeaponHudReport>;
+    fn weapon_hud(&self) -> Option<(Option<WeaponHudStatus>, ArsenalAmmoWarning)>;
     /// Sound assets.
     fn assets(&self) -> Shared<dyn SoundAssetReader>;
     /// Font registry.
@@ -353,12 +363,20 @@ impl MissionHud {
                 chat: chat_fn,
             },
         );
-        let zero = media.borrow().resources.borrow().picture(&None);
+        let zero = media
+            .borrow()
+            .resources
+            .borrow()
+            .picture(None)
+            .map(|material| Picture { order: material.id })
+            .unwrap_or(ZERO_PICTURE);
         let white = media
             .borrow()
             .resources
             .borrow()
-            .picture(&media.borrow().graphics.white_shader);
+            .picture(media.borrow().graphics.white_shader.as_ref())
+            .map(|material| Picture { order: material.id })
+            .unwrap_or(ZERO_PICTURE);
         Self {
             state,
             static_state,
@@ -436,7 +454,8 @@ impl MissionHud {
                 .borrow()
                 .resources
                 .borrow_mut()
-                .register_shader_no_mip(Some(path));
+                .register_shader_no_mip(Some(path))
+                .unwrap_or(None);
             self.open();
             if generation != self.generation.get() {
                 panic!("Mission HUD asset registration belongs to a retired lifecycle");
@@ -448,7 +467,9 @@ impl MissionHud {
             .borrow()
             .resources
             .borrow()
-            .picture(&shader("ui/assets/gradientbar2.tga"));
+            .picture(shader("ui/assets/gradientbar2.tga").as_ref())
+            .map(|material| Picture { order: material.id })
+            .unwrap_or(ZERO_PICTURE);
         *self.fx_base.borrow_mut() = shader("menu/art/fx_base");
         for (index, name) in ["red", "yel", "grn", "teal", "blue", "cyan", "white"]
             .iter()
@@ -456,13 +477,23 @@ impl MissionHud {
         {
             self.fx_colors.borrow_mut()[index] = shader(&format!("menu/art/fx_{name}"));
         }
-        let picture = |path: &str| self.media.borrow().resources.borrow().picture(&shader(path));
+        let picture = |path: &str| {
+            self.media
+                .borrow()
+                .resources
+                .borrow()
+                .picture(shader(path).as_ref())
+                .map(|material| Picture { order: material.id })
+                .unwrap_or(ZERO_PICTURE)
+        };
         let white = self
             .media
             .borrow()
             .resources
             .borrow()
-            .picture(&self.media.borrow().graphics.white_shader);
+            .picture(self.media.borrow().graphics.white_shader.as_ref())
+            .map(|material| Picture { order: material.id })
+            .unwrap_or(ZERO_PICTURE);
         self.open();
         *self.widget_assets.borrow_mut() = UiWidgetAssets {
             white_shader: white,
@@ -494,9 +525,23 @@ impl MissionHud {
     fn register_picture(&self, path: Option<&str>) -> Option<Picture> {
         self.open();
         let generation = self.generation.get();
-        let shader = self.media.borrow().resources.borrow_mut().register_shader_no_mip(path);
+        let shader = self
+            .media
+            .borrow()
+            .resources
+            .borrow_mut()
+            .register_shader_no_mip(path)
+            .unwrap_or(None);
         self.registration_current(generation);
-        let picture = shader.map(|shader| self.media.borrow().resources.borrow().picture(&Some(shader)));
+        let picture = shader.map(|shader| {
+            self.media
+                .borrow()
+                .resources
+                .borrow()
+                .picture(Some(&shader))
+                .map(|material| Picture { order: material.id })
+                .unwrap_or(ZERO_PICTURE)
+        });
         self.pictures.borrow_mut().insert(asset_key(path), picture);
         picture
     }
@@ -515,7 +560,13 @@ impl MissionHud {
     fn register_model(&self, path: Option<&str>) -> SceneModel {
         self.open();
         let generation = self.generation.get();
-        let model = self.media.borrow().resources.borrow_mut().register_model(path);
+        let model = self
+            .media
+            .borrow()
+            .resources
+            .borrow_mut()
+            .register_model(path)
+            .unwrap_or_default();
         self.registration_current(generation);
         self.models.borrow_mut().insert(asset_key(path), model.clone());
         model
@@ -554,25 +605,37 @@ impl MissionHud {
 
     /// Read a script source.
     fn source(&self, path: &str) -> Option<MenuSource> {
-        if !self.host.borrow().assets().borrow().has(path) {
+        if !self.host.borrow().assets().borrow().has_asset(path) {
             return None;
         }
         Some(script_source(
             path,
-            &self.host.borrow().assets().borrow().read_sync(path),
+            &self
+                .host
+                .borrow()
+                .assets()
+                .borrow()
+                .read_asset_sync(path)
+                .unwrap_or_default(),
         ))
     }
 
     /// Read a menu buffer (`getMenuBuffer`).
     pub fn get_menu_buffer(&self, filename: &str) -> Option<String> {
         self.open();
-        if !self.host.borrow().assets().borrow().has(filename) {
+        if !self.host.borrow().assets().borrow().has_asset(filename) {
             self.host
                 .borrow_mut()
                 .print(&format!("^1menu file not found: {filename}, using default\n"));
             return None;
         }
-        let data = self.host.borrow().assets().borrow().read_sync(filename);
+        let data = self
+            .host
+            .borrow()
+            .assets()
+            .borrow()
+            .read_asset_sync(filename)
+            .unwrap_or_default();
         if data.len() >= 32768 {
             self.host.borrow_mut().print(&format!(
                 "^1menu file too large: {filename} is {}, max allowed is 32768",
@@ -623,7 +686,7 @@ impl MissionHud {
             panic!("Mission HUD menu registration is already active");
         }
         let started = self.host.borrow().milliseconds();
-        if !self.host.borrow().assets().borrow().has(path) {
+        if !self.host.borrow().assets().borrow().has_asset(path) {
             panic!("^3menu file not found: {path}, using default\n");
         }
         struct LoadingGuard<'a> {
@@ -635,7 +698,13 @@ impl MissionHud {
             }
         }
         let _guard = LoadingGuard { hud: self };
-        let bytes = self.host.borrow().assets().borrow().read_sync(path);
+        let bytes = self
+            .host
+            .borrow()
+            .assets()
+            .borrow()
+            .read_asset_sync(path)
+            .unwrap_or_default();
         self.open();
         if bytes.len() >= 4096 {
             panic!("^1menu file too large: {path} is {}, max allowed is 4096", bytes.len());
@@ -663,7 +732,15 @@ impl MissionHud {
                 .get(&asset_key(gradient.path.as_deref()))
                 .copied()
                 .flatten()
-                .unwrap_or_else(|| self.media.borrow().resources.borrow().picture(&None));
+                .unwrap_or_else(|| {
+                    self.media
+                        .borrow()
+                        .resources
+                        .borrow()
+                        .picture(None)
+                        .map(|material| Picture { order: material.id })
+                        .unwrap_or(ZERO_PICTURE)
+                });
         }
         if self.loaded.borrow().is_some() {
             {
@@ -681,7 +758,14 @@ impl MissionHud {
                 definitions: definitions.clone(),
                 cvars: self.host.borrow().cvars(),
                 widget_assets: *self.widget_assets.borrow(),
-                zero_picture: self.media.borrow().resources.borrow().picture(&None),
+                zero_picture: self
+                    .media
+                    .borrow()
+                    .resources
+                    .borrow()
+                    .picture(None)
+                    .map(|material| Picture { order: material.id })
+                    .unwrap_or(ZERO_PICTURE),
                 fonts: self.fonts_handle.borrow().clone(),
             };
             let runtime = self.host.borrow_mut().create_menu_runtime(seed);
@@ -782,7 +866,7 @@ impl MissionHud {
     /// Check a pending order (`checkOrderPending`).
     pub fn check_order_pending(&self) {
         let cgs = self.static_state.borrow();
-        if cgs.game_type < GameType::Ctf || !cgs.order_pending {
+        if (cgs.game_type as i32) < (GameType::GtCtf as i32) || !cgs.order_pending {
             return;
         }
         let current = cgs.current_order;
@@ -826,7 +910,7 @@ impl MissionHud {
         let index = self.selected();
         if index >= 0 && index < self.state.borrow().num_sorted_team_players {
             let number = self.state.borrow().sorted_team_players[index as usize];
-            let client = self.static_state.borrow().client_info[number as usize].borrow().clone();
+            let client = self.static_state.borrow().client_info[number as usize].clone();
             self.set_cvar("cg_selectedPlayerName", &client.name);
             self.set_cvar("cg_selectedPlayer", &format!("{number}"));
             self.static_state.borrow_mut().current_order = client.team_task;
@@ -875,9 +959,9 @@ impl MissionHud {
             return self.state.borrow().num_scores;
         }
         let team = if feeder == MissionScoreFeeder::Red as i32 {
-            Team::Red as i32
+            Team::TeamRed as i32
         } else if feeder == MissionScoreFeeder::Blue as i32 {
-            Team::Blue as i32
+            Team::TeamBlue as i32
         } else {
             return 0;
         };
@@ -891,9 +975,9 @@ impl MissionHud {
     }
 
     /// Score + info for a feeder row.
-    fn info_from_score_index(&self, index: i32, team: i32) -> (ClientScore, Shared<ClientInfo>) {
+    fn info_from_score_index(&self, index: i32, team: i32) -> (ClientScore, ClientInfo) {
         let mut score_index = index;
-        if self.static_state.borrow().game_type >= GameType::Team {
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32) {
             let mut count = 0;
             for position in 0..self.state.borrow().num_scores {
                 if self.state.borrow().scores[position as usize].team != team {
@@ -930,45 +1014,48 @@ impl MissionHud {
     /// Feeder item (`feederItem`).
     pub fn feeder_item(&self, feeder: i32, index: i32, column: i32) -> MenuFeederItem {
         let team = if feeder == MissionScoreFeeder::Red as i32 {
-            Team::Red as i32
+            Team::TeamRed as i32
         } else if feeder == MissionScoreFeeder::Blue as i32 {
-            Team::Blue as i32
+            Team::TeamBlue as i32
         } else {
             -1
         };
         let (score, info_handle) = self.info_from_score_index(index, team);
-        let info = info_handle.borrow();
+        let info = info_handle;
         let mut text = String::new();
         let mut picture = None;
         if info.info_valid {
             match column {
                 0 => {
                     let mut powerup = None;
-                    if info.powerups & (1 << Powerup::NeutralFlag as i32) != 0 {
-                        powerup = Some(Powerup::NeutralFlag);
-                    } else if info.powerups & (1 << Powerup::RedFlag as i32) != 0 {
-                        powerup = Some(Powerup::RedFlag);
-                    } else if info.powerups & (1 << Powerup::BlueFlag as i32) != 0 {
-                        powerup = Some(Powerup::BlueFlag);
+                    if info.powerups & (1 << Powerup::PwNeutralflag as i32) != 0 {
+                        powerup = Some(Powerup::PwNeutralflag);
+                    } else if info.powerups & (1 << Powerup::PwRedflag as i32) != 0 {
+                        powerup = Some(Powerup::PwRedflag);
+                    } else if info.powerups & (1 << Powerup::PwBlueflag as i32) != 0 {
+                        powerup = Some(Powerup::PwBlueflag);
                     }
                     if let Some(powerup) = powerup {
-                        let item = self
-                            .media
-                            .borrow()
-                            .items
-                            .borrow()
-                            .find_for_powerup(self.state.borrow().product, powerup as i32);
+                        let item = find_item_for_powerup(self.state.borrow().product, powerup);
                         let Some(item) = item else {
                             panic!("Mission HUD flag has no source item");
                         };
-                        let at = self
-                            .media
-                            .borrow()
-                            .items
-                            .borrow()
-                            .index_of(self.state.borrow().product, &item);
+                        let Some(at) = item_list(self.state.borrow().product)
+                            .iter()
+                            .position(|candidate| std::ptr::eq(candidate as *const _, item as *const _))
+                        else {
+                            panic!("Mission HUD flag item has no catalog index");
+                        };
                         let visual = self.media.borrow().weapon_registry.borrow().item_visual(at);
-                        picture = Some(self.media.borrow().resources.borrow().picture(&visual.icon));
+                        picture = Some(
+                            self.media
+                                .borrow()
+                                .resources
+                                .borrow()
+                                .picture(visual.icon.as_ref())
+                                .map(|material| Picture { order: material.id })
+                                .unwrap_or(ZERO_PICTURE),
+                        );
                     } else if info.bot_skill > 0 && info.bot_skill <= 5 {
                         let shader = self
                             .media
@@ -980,7 +1067,15 @@ impl MissionHud {
                             .unwrap_or_else(|| {
                                 panic!("Mission HUD source index {} outside 5", info.bot_skill - 1);
                             });
-                        picture = Some(self.media.borrow().resources.borrow().picture(&shader));
+                        picture = Some(
+                            self.media
+                                .borrow()
+                                .resources
+                                .borrow()
+                                .picture(shader.as_ref())
+                                .map(|material| Picture { order: material.id })
+                                .unwrap_or(ZERO_PICTURE),
+                        );
                     } else if info.handicap < 100 {
                         text = format!("{}", info.handicap);
                     }
@@ -988,17 +1083,25 @@ impl MissionHud {
                 1 => {
                     if team != -1 {
                         let shader = self.owner_draw.status_handle(info.team_task);
-                        picture = Some(self.media.borrow().resources.borrow().picture(&shader));
+                        picture = Some(
+                            self.media
+                                .borrow()
+                                .resources
+                                .borrow()
+                                .picture(shader.as_ref())
+                                .map(|material| Picture { order: material.id })
+                                .unwrap_or(ZERO_PICTURE),
+                        );
                     }
                 }
                 2 => {
                     let schema = stat_schema(self.state.borrow().product);
-                    if self.snapshot().stats.get(schema.clients_ready) & (1 << score.client) != 0 {
+                    if self.snapshot().stats.get(schema.clients_ready()) & (1 << score.client) != 0 {
                         text = "Ready".to_string();
                     } else if team == -1 {
-                        if self.static_state.borrow().game_type == GameType::Tournament {
+                        if self.static_state.borrow().game_type == GameType::GtTournament {
                             text = format!("{}/{}", info.wins, info.losses);
-                        } else if info.team == CanonicalTeam::TeamSpectator {
+                        } else if info.team == Team::TeamSpectator {
                             text = "Spectator".to_string();
                         }
                     } else if info.team_leader {
@@ -1023,14 +1126,14 @@ impl MissionHud {
 
     /// Feeder selection (`feederSelection`).
     pub fn feeder_selection(&self, feeder: i32, index: i32) {
-        if self.static_state.borrow().game_type < GameType::Team {
+        if (self.static_state.borrow().game_type as i32) < (GameType::GtTeam as i32) {
             self.state.borrow_mut().selected_score = index;
             return;
         }
         let team = if feeder == MissionScoreFeeder::Red as i32 {
-            Team::Red as i32
+            Team::TeamRed as i32
         } else {
-            Team::Blue as i32
+            Team::TeamBlue as i32
         };
         let mut count = 0;
         for position in 0..self.state.borrow().num_scores {
@@ -1051,9 +1154,9 @@ impl MissionHud {
         let mut blue = 0;
         for position in 0..self.state.borrow().num_scores {
             let score = self.state.borrow().scores[position as usize];
-            if score.team == Team::Red as i32 {
+            if score.team == Team::TeamRed as i32 {
                 red += 1;
-            } else if score.team == Team::Blue as i32 {
+            } else if score.team == Team::TeamBlue as i32 {
                 blue += 1;
             }
             if player.client_num == score.client {
@@ -1066,9 +1169,9 @@ impl MissionHud {
         if self.loaded.borrow().is_none() {
             return;
         }
-        if self.static_state.borrow().game_type >= GameType::Team {
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32) {
             let selected = self.state.borrow().selected_score;
-            let is_blue = self.state.borrow().scores[selected as usize].team == Team::Blue as i32;
+            let is_blue = self.state.borrow().scores[selected as usize].team == Team::TeamBlue as i32;
             self.loaded
                 .borrow_mut()
                 .as_mut()
@@ -1165,7 +1268,8 @@ impl MissionHud {
             .read_vm_cvar("cl_paused")
             .integer_value
             != 0
-            || self.static_state.borrow().game_type == GameType::SinglePlayer && state_pm == MoveType::Intermission
+            || self.static_state.borrow().game_type == GameType::GtSinglePlayer
+                && state_pm == MoveType::PmIntermission as i32
         {
             self.state.borrow_mut().deferred_player_loading = 0;
             self.scoreboard_first_time.set(true);
@@ -1179,8 +1283,8 @@ impl MissionHud {
             return false;
         }
         if !show_scores
-            && state_pm != MoveType::Dead
-            && state_pm != MoveType::Intermission
+            && state_pm != MoveType::PmDead as i32
+            && state_pm != MoveType::PmIntermission as i32
             && fade_color(time, score_fade, 200.0).is_none()
         {
             self.state.borrow_mut().deferred_player_loading = 0;
@@ -1189,7 +1293,7 @@ impl MissionHud {
             return false;
         }
         if self.scoreboard.borrow().is_none() && self.loaded.borrow().is_some() {
-            let name = if self.static_state.borrow().game_type >= GameType::Team {
+            let name = if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32) {
                 "teamscore_menu"
             } else {
                 "score_menu"
@@ -1271,7 +1375,7 @@ impl MissionHud {
     pub fn client_num_from_name(&self, name: &str) -> i32 {
         let text = hud_fold(&hud_source_text(name, name.chars().count() + 1));
         for index in 0..self.static_state.borrow().maxclients {
-            let client = self.static_state.borrow().client_info[index as usize].borrow().clone();
+            let client = self.static_state.borrow().client_info[index as usize].clone();
             if client.info_valid && hud_fold(&client.name) == text {
                 return index;
             }
@@ -1309,17 +1413,19 @@ impl MissionHud {
                 let cgs = self.static_state.borrow();
                 (cgs.cursor_x, cgs.cursor_y)
             };
-            loaded.runtime.set_display_cursor(cursor_x, cursor_y);
+            loaded.runtime.set_display_cursor(cursor_x as f32, cursor_y as f32);
         }
         let pm_type = self.state.borrow().predicted_player_state.pm_type;
-        if (pm_type == MoveType::Normal || pm_type == MoveType::Spectator) && !self.state.borrow().show_scores {
+        if (pm_type == MoveType::PmNormal as i32 || pm_type == MoveType::PmSpectator as i32)
+            && !self.state.borrow().show_scores
+        {
             self.host.borrow_mut().set_key_catcher(0);
             return;
         }
         {
             let mut cgs = self.static_state.borrow_mut();
-            cgs.cursor_x = (cgs.cursor_x + x).clamp(0.0, 640.0);
-            cgs.cursor_y = (cgs.cursor_y + y).clamp(0.0, 480.0);
+            cgs.cursor_x = (cgs.cursor_x as f32 + x).clamp(0.0, 640.0) as i32;
+            cgs.cursor_y = (cgs.cursor_y as f32 + y).clamp(0.0, 480.0) as i32;
         }
         let (cursor_x, cursor_y) = {
             let cgs = self.static_state.borrow();
@@ -1329,7 +1435,7 @@ impl MissionHud {
             .loaded
             .borrow()
             .as_ref()
-            .map(|loaded| loaded.runtime.cursor_type(cursor_x, cursor_y))
+            .map(|loaded| loaded.runtime.cursor_type(cursor_x as f32, cursor_y as f32))
             .unwrap_or(MenuCursorType::Arrow);
         self.static_state.borrow_mut().active_cursor = if cursor == MenuCursorType::Arrow {
             self.media.borrow().graphics.select_cursor.clone()
@@ -1352,7 +1458,7 @@ impl MissionHud {
                 .as_mut()
                 .expect("Mission HUD menus are not loaded")
                 .runtime
-                .pointer_move(cursor_x, cursor_y);
+                .pointer_move(cursor_x as f32, cursor_y as f32);
         }
     }
 
@@ -1362,7 +1468,9 @@ impl MissionHud {
             return;
         }
         let pm_type = self.state.borrow().predicted_player_state.pm_type;
-        if pm_type == MoveType::Normal || pm_type == MoveType::Spectator && !self.state.borrow().show_scores {
+        if pm_type == MoveType::PmNormal as i32
+            || pm_type == MoveType::PmSpectator as i32 && !self.state.borrow().show_scores
+        {
             self.event_handling(0);
             self.host.borrow_mut().set_key_catcher(0);
             return;
@@ -1372,7 +1480,7 @@ impl MissionHud {
                 let cgs = self.static_state.borrow();
                 (cgs.cursor_x, cgs.cursor_y)
             };
-            loaded.runtime.handle_key(key, down, cursor_x, cursor_y);
+            loaded.runtime.handle_key(key, down, cursor_x as f32, cursor_y as f32);
         }
         if self.captured_menu.borrow().is_some() {
             *self.captured_menu.borrow_mut() = None;
@@ -1387,7 +1495,7 @@ impl MissionHud {
                 .as_mut()
                 .expect("Mission HUD menus are not loaded")
                 .runtime
-                .capture_menu(cursor_x, cursor_y);
+                .capture_menu(cursor_x as f32, cursor_y as f32);
         }
     }
 }
@@ -1395,12 +1503,12 @@ impl MissionHud {
 /// Fixed weapon HUD reader.
 pub(crate) struct FixedWeaponHudReader {
     /// Report.
-    report: WeaponHudReport,
+    report: (Option<WeaponHudStatus>, ArsenalAmmoWarning),
 }
 
 impl WeaponHudReader for FixedWeaponHudReader {
-    fn read_weapon_hud(&self) -> WeaponHudReport {
-        self.report
+    fn read(&mut self) -> (Option<WeaponHudStatus>, ArsenalAmmoWarning) {
+        self.report.clone()
     }
 }
 
@@ -1458,7 +1566,13 @@ impl MenuLoadContext for MissionHudLoadContext<'_> {
         self.current();
         let model = self.hud.register_model(path);
         self.current();
-        self.hud.media.borrow().resources.borrow().model_handle(&model)
+        self.hud
+            .media
+            .borrow()
+            .resources
+            .borrow()
+            .model_handle(&model)
+            .unwrap_or(0) as u32
     }
 
     fn publish_asset_font(&mut self, field: &str, reference: &FontReference) {
@@ -1531,9 +1645,9 @@ impl MenuPaintCallbacks for MissionHudCallbacks<'_> {
     }
 
     fn team_color(&mut self) -> Vec4 {
-        match self.hud.snapshot().persistant.get(PersistentIndex::Team as i32) {
-            x if x == Team::Red as i32 => vec4(1.0, 0.0, 0.0, 0.25),
-            x if x == Team::Blue as i32 => vec4(0.0, 0.0, 1.0, 0.25),
+        match self.hud.snapshot().persistant.get(PersistentIndex::PersTeam as usize) {
+            x if x == Team::TeamRed as i32 => vec4(1.0, 0.0, 0.0, 0.25),
+            x if x == Team::TeamBlue as i32 => vec4(0.0, 0.0, 1.0, 0.25),
             _ => vec4(0.0, 0.17, 0.0, 0.25),
         }
     }
@@ -1543,16 +1657,19 @@ impl MenuPaintCallbacks for MissionHudCallbacks<'_> {
     }
 
     fn cvar_value(&mut self, name: &str) -> f64 {
-        game_atof(
-            &self
-                .hud
-                .host
-                .borrow()
-                .cvars()
-                .borrow()
-                .get(name)
-                .map(|snapshot| snapshot.value.chars().take(127).collect::<String>())
-                .unwrap_or_default(),
+        f64::from(
+            game_atof(
+                &self
+                    .hud
+                    .host
+                    .borrow()
+                    .cvars()
+                    .borrow()
+                    .get(name)
+                    .map(|snapshot| snapshot.value.chars().take(127).collect::<String>())
+                    .unwrap_or_default(),
+            )
+            .unwrap_or_default(),
         )
     }
 }
@@ -1591,4 +1708,295 @@ impl ConsoleOrders for MissionHud {
     fn your_team_has_flag(&self) -> bool {
         MissionHud::your_team_has_flag(self)
     }
+}
+
+/// Captured menu handle (`UiCapturedMenu`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CapturedMenu {
+    /// Identity.
+    pub id: u64,
+    /// Name.
+    pub name: String,
+}
+
+/// Menu snapshot (`UiRuntimeSnapshot`, used surface).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MenuSnapshot {
+    /// Open menus.
+    pub open_menus: Vec<String>,
+}
+
+/// Menu frame (`UiRuntimeFrame` time surface; draw travels separately).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MenuFrame {
+    /// Time (always 0; the source never assigns `cgDC.realTime`).
+    pub time: i32,
+    /// Frame time (always 0).
+    pub frame_time: i32,
+}
+
+/// Menu script source (`ScriptSource`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuSource {
+    /// Path.
+    pub path: String,
+    /// Text.
+    pub text: String,
+}
+
+/// Font reference (`UiFontReference`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontReference {
+    /// Path.
+    pub path: Option<String>,
+    /// Point size.
+    pub point_size: i32,
+}
+
+/// Asset reference with a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetReference {
+    /// Path.
+    pub path: Option<String>,
+}
+
+/// Global menu assets (`UiGlobalAssets`, used surface).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MenuGlobalAssets {
+    /// Gradient bar.
+    pub gradient_bar: Option<AssetReference>,
+}
+
+/// Menu definitions (`UiMenuDefinitions`, used surface).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MenuDefinitions {
+    /// Assets.
+    pub assets: MenuGlobalAssets,
+}
+
+/// Menu reset scope (`"strings" | "menus"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuResetScope {
+    /// Strings.
+    Strings,
+    /// Menus.
+    Menus,
+}
+
+/// Menu cursor type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuCursorType {
+    /// Arrow.
+    Arrow,
+    /// Other (sized).
+    Other,
+}
+
+/// Feeder item (`UiRuntimeFeederItem`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuFeederItem {
+    /// Text.
+    pub text: String,
+    /// Picture.
+    pub picture: Option<Picture>,
+}
+
+/// Widget assets (`UiWidgetAssets`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiWidgetAssets {
+    /// White shader.
+    pub white_shader: Picture,
+    /// Gradient bar.
+    pub gradient_bar: Picture,
+    /// Scroll bar.
+    pub scroll_bar: Picture,
+    /// Scroll arrow down.
+    pub scroll_bar_arrow_down: Picture,
+    /// Scroll arrow up.
+    pub scroll_bar_arrow_up: Picture,
+    /// Scroll arrow left.
+    pub scroll_bar_arrow_left: Picture,
+    /// Scroll arrow right.
+    pub scroll_bar_arrow_right: Picture,
+    /// Scroll thumb.
+    pub scroll_bar_thumb: Picture,
+    /// Slider bar.
+    pub slider_bar: Picture,
+    /// Slider thumb.
+    pub slider_thumb: Picture,
+}
+
+/// Menu audio (`UiRuntimeAudio`).
+pub trait HudMenuAudio {
+    /// Play a local sound.
+    fn play_local(&mut self, sound: MenuAudioSound);
+    /// Start background audio.
+    fn start_background(&mut self, path: Option<String>);
+    /// Stop background audio.
+    fn stop_background(&mut self);
+}
+
+/// Menu audio sound (`PcmSound | number | undefined`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenuAudioSound {
+    /// Missing.
+    Missing,
+    /// PCM.
+    Pcm(Option<PcmSound>),
+    /// Handle.
+    Handle(i32),
+}
+
+/// Cinematic asset (`UiCinematicAsset`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CinematicAsset {
+    /// Path.
+    pub path: String,
+}
+
+/// Cinematic instance (`UiCinematicInstance`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CinematicInstance {
+    /// Asset.
+    pub asset: CinematicAsset,
+    /// Handle index.
+    pub handle: i32,
+}
+
+/// Cinematics (`UiRuntimeCinematics` + `EngineUiCinematics.owner`).
+pub trait CinematicService {
+    /// Play a cinematic.
+    fn play(&mut self, asset: &CinematicAsset, rect: Rect2d) -> Option<CinematicInstance>;
+    /// Run a cinematic.
+    fn run(&mut self, handle: i32, time: i32);
+    /// Draw a cinematic.
+    fn draw(&mut self, handle: i32, rect: Rect2d, draw: &Draw2D);
+    /// Stop a cinematic.
+    fn stop(&mut self, handle: i32);
+    /// Prepare a cinematic.
+    fn prepare(&mut self, path: &str) -> CinematicAsset;
+    /// Stop a slot.
+    fn stop_slot(&mut self, index: i32);
+}
+
+/// Font registry (`UiAssetRegistry.registerFont`).
+pub trait FontRegistry {
+    /// Register a font.
+    fn register_font(&mut self, path: Option<&str>, point_size: i32) -> Option<RegisteredFont>;
+}
+
+/// Command buffer (`CommandBuffer.append`).
+pub trait HudCommandBuffer {
+    /// Append text.
+    fn append(&mut self, text: &str);
+}
+
+/// Menu paint callbacks (feeder + owner-draw + team color + model paint).
+pub trait MenuPaintCallbacks {
+    /// Feeder count.
+    fn feeder_count(&mut self, feeder: i32) -> i32;
+    /// Feeder item.
+    fn feeder_item(&mut self, feeder: i32, index: i32, column: i32) -> MenuFeederItem;
+    /// Feeder selection.
+    fn feeder_select(&mut self, feeder: i32, index: i32);
+    /// Owner-draw visibility.
+    fn owner_visible(&mut self, flags: i32) -> bool;
+    /// Owner-draw width.
+    fn owner_width(&mut self, id: i32, scale: f32) -> f32;
+    /// Owner-draw value.
+    fn owner_value(&mut self, id: i32) -> f32;
+    /// Owner-draw paint.
+    fn owner_paint(&mut self, request: &mut OwnerDrawPaintRequest);
+    /// Close a cinematic.
+    fn close_cinematic(&mut self, handle: i32);
+    /// Team color.
+    fn team_color(&mut self) -> Vec4;
+    /// Paint a model.
+    fn paint_model(&mut self, request: &UiModelPaintRequest);
+    /// Cvar value.
+    fn cvar_value(&mut self, name: &str) -> f64;
+}
+
+/// Menu runtime (`UiRuntime`, used surface).
+pub trait MenuRuntime {
+    /// Snapshot.
+    fn snapshot(&self) -> MenuSnapshot;
+    /// Reload definitions.
+    fn reload_definitions(&mut self, definitions: &MenuDefinitions);
+    /// Reset definitions.
+    fn reset_definitions(&mut self, scope: MenuResetScope);
+    /// Run a frame.
+    fn frame(&mut self, frame: &MenuFrame, draw: &mut Draw2D, callbacks: &mut dyn MenuPaintCallbacks);
+    /// Paint a captured menu.
+    fn paint_captured(
+        &mut self,
+        menu: &CapturedMenu,
+        frame: &MenuFrame,
+        force: bool,
+        draw: &mut Draw2D,
+        callbacks: &mut dyn MenuPaintCallbacks,
+    );
+    /// Clear captured forced state.
+    fn clear_captured_forced(&mut self, menu: &CapturedMenu);
+    /// Menu handle by name.
+    fn menu_handle(&self, name: &str) -> Option<CapturedMenu>;
+    /// Set a captured feeder selection.
+    fn set_captured_feeder_selection(&mut self, menu: &CapturedMenu, feeder: i32, index: i32);
+    /// Scroll a captured feeder.
+    fn scroll_captured_feeder(&mut self, menu: &CapturedMenu, feeder: i32, down: bool);
+    /// Close by name.
+    fn close(&mut self, name: &str);
+    /// Show by name.
+    fn show(&mut self, name: &str);
+    /// Set the display cursor.
+    fn set_display_cursor(&mut self, x: f32, y: f32);
+    /// Cursor type at a point.
+    fn cursor_type(&self, x: f32, y: f32) -> MenuCursorType;
+    /// Move a captured menu.
+    fn move_captured_menu(&mut self, menu: &CapturedMenu, dx: f32, dy: f32);
+    /// Pointer move.
+    fn pointer_move(&mut self, x: f32, y: f32);
+    /// Handle a key.
+    fn handle_key(&mut self, key: i32, down: bool, x: f32, y: f32);
+    /// Capture the menu at a point.
+    fn capture_menu(&mut self, x: f32, y: f32) -> Option<CapturedMenu>;
+    /// Retire the runtime.
+    fn retire(&mut self);
+}
+
+/// Menu load context (`loadMenuDefinitions` callbacks).
+pub trait MenuLoadContext {
+    /// Random int.
+    fn random_next_int(&mut self) -> i32;
+    /// Resolve the root source.
+    fn resolve_root(&mut self, requested: &str) -> Option<MenuSource>;
+    /// Resolve a nested source.
+    fn resolve(&mut self, from_path: &str, requested: &str) -> Option<MenuSource>;
+    /// Register a font.
+    fn register_font(&mut self, reference: &FontReference);
+    /// Register a picture, returning its handle.
+    fn register_picture(&mut self, path: Option<&str>) -> u32;
+    /// Register a sound, returning its handle.
+    fn register_sound(&mut self, path: Option<&str>) -> u32;
+    /// Register a model, returning its handle.
+    fn register_model(&mut self, path: Option<&str>) -> u32;
+    /// Publish an asset font field.
+    fn publish_asset_font(&mut self, field: &str, reference: &FontReference);
+    /// Initial assets.
+    fn initial_assets(&self) -> Option<MenuGlobalAssets>;
+}
+
+/// Menu runtime seed for creation.
+#[derive(Clone)]
+pub struct MenuRuntimeSeed {
+    /// Definitions.
+    pub definitions: MenuDefinitions,
+    /// Cvars.
+    pub cvars: Shared<CvarRegistry>,
+    /// Widget assets.
+    pub widget_assets: UiWidgetAssets,
+    /// Zero picture.
+    pub zero_picture: Picture,
+    /// Fonts.
+    pub fonts: FontSet,
 }

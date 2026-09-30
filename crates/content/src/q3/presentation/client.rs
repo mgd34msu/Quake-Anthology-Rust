@@ -62,6 +62,14 @@ pub trait Q3SceneSession {
     fn print(&mut self, text: &str);
 }
 
+/// Local sound starter (`startLocalSound` / `startSound`).
+pub trait HudLocalSound {
+    /// Start a local sound.
+    fn start_local_sound(&mut self, sound: Option<PcmSound>, channel: i32);
+    /// Start a placed sound.
+    fn start_sound(&mut self, origin: Option<Vec3>, entity: i32, channel: i32, sound: Option<PcmSound>);
+}
+
 /// Presentation session (`Q3PresentationSession`).
 pub trait Q3PresentationSession: Q3SceneSession {
     /// Add a reliable client command.

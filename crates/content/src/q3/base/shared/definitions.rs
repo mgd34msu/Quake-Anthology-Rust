@@ -366,6 +366,44 @@ pub fn stat_schema(product: Product) -> StatSchema {
     }
 }
 
+impl StatSchema {
+    /// Health stat slot.
+    #[must_use]
+    pub fn health(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.health as usize,
+            Self::Missionpack(layout) => layout.health as usize,
+        }
+    }
+
+    /// Armor stat slot.
+    #[must_use]
+    pub fn armor(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.armor as usize,
+            Self::Missionpack(layout) => layout.armor as usize,
+        }
+    }
+
+    /// Holdable-item stat slot.
+    #[must_use]
+    pub fn holdable_item(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.holdable_item as usize,
+            Self::Missionpack(layout) => layout.holdable_item as usize,
+        }
+    }
+
+    /// Clients-ready stat slot.
+    #[must_use]
+    pub fn clients_ready(self) -> usize {
+        match self {
+            Self::Base(layout) => layout.clients_ready as usize,
+            Self::Missionpack(layout) => layout.clients_ready as usize,
+        }
+    }
+}
+
 /// Weapon count for a product.
 #[must_use]
 pub fn weapon_count(product: Product) -> i32 {
@@ -771,5 +809,29 @@ mod tests {
         assert_eq!(Q3Product::from(Product::Missionpack), Q3Product::MissionPack);
         assert_eq!(Product::from(Q3Product::BaseQ3), Product::Baseq3);
         assert_eq!(Product::from(QvmProduct::Missionpack), Product::Missionpack);
+    }
+    #[test]
+    fn product_spellings() {
+        assert_eq!(Product::Baseq3.as_str(), "baseq3");
+        assert_eq!(Product::Missionpack.as_str(), "missionpack");
+    }
+    #[test]
+    fn game_type_ordering_matches_source_comparisons() {
+        assert!((GameType::GtTeam as i32) < (GameType::GtCtf as i32));
+        assert!((GameType::GtTournament as i32) < (GameType::GtTeam as i32));
+        assert_eq!(GameType::from_i32(4), Some(GameType::GtCtf));
+        assert_eq!(GameType::from_i32(99), None);
+        assert_eq!(Team::from_i32(3), Some(Team::TeamSpectator));
+        assert_eq!(PersistentIndex::PersRank as i32, 2);
+    }
+    #[test]
+    fn stat_schema_slots() {
+        let base = stat_schema(Product::Baseq3);
+        assert_eq!(base.health(), BaseStatIndex::StatHealth as usize);
+        assert_eq!(base.armor(), BaseStatIndex::StatArmor as usize);
+        let mission = stat_schema(Product::Missionpack);
+        assert_eq!(mission.health(), MissionpackStatIndex::StatHealth as usize);
+        assert_eq!(mission.armor(), MissionpackStatIndex::StatArmor as usize);
+        assert!((ARMOR_PROTECTION - 0.66).abs() < f64::EPSILON);
     }
 }

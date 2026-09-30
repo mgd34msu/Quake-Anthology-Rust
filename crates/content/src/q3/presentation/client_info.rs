@@ -6,9 +6,11 @@ use crate::q3anim::{PlayerFootsteps, PlayerGender};
 use qa_core::math::{vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::shared::definitions::Team;
-use crate::q3::presentation::mirrors_present_hud::*;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::foundation::animation_config::{Animation, MAX_ANIMATIONS_SENTINEL, TOTAL_ANIMATION_COUNT};
+use crate::q3::presentation::hud::Shared;
 use crate::q3::presentation::retail_snapshot::{default_model, PcmSound, SceneModel, SceneShader, SceneSkin};
+use crate::q3::presentation::state::{ClientEntity, ClientGameState};
 
 /// One stable `cgs.clientinfo` slot (`ClientInfo`).
 #[derive(Debug, Clone, PartialEq)]
@@ -96,7 +98,7 @@ pub struct ClientInfo {
     /// Model icon.
     pub model_icon: Option<SceneShader>,
     /// Animation cells (37; index 31 is the sentinel gap).
-    pub animations: [AnimationCell; ANIMATION_COUNT],
+    pub animations: [Animation; TOTAL_ANIMATION_COUNT],
     /// Sounds (32).
     pub sounds: [Option<PcmSound>; 32],
 }
@@ -145,7 +147,7 @@ impl Default for ClientInfo {
             torso_skin: None,
             head_skin: None,
             model_icon: None,
-            animations: [AnimationCell::default(); ANIMATION_COUNT],
+            animations: [Animation::default(); TOTAL_ANIMATION_COUNT],
             sounds: std::array::from_fn(|_| None),
         }
     }
@@ -158,7 +160,7 @@ impl ClientInfo {
             panic!("Client animation table has the wrong length");
         }
         for (index, source) in animations.iter().enumerate() {
-            if source.is_none() && index == ANIMATION_SENTINEL {
+            if source.is_none() && index == MAX_ANIMATIONS_SENTINEL {
                 continue;
             }
             let Some(source) = source else {
@@ -171,5 +173,54 @@ impl ClientInfo {
     /// Copy all fields plus animation values (`copyFrom`).
     pub fn copy_from(&mut self, source: &ClientInfo) {
         *self = source.clone();
+    }
+}
+
+/// Client info store (`ClientInfoStore`, used surface).
+pub trait ClientInfoStore {
+    /// Canonical frame state.
+    fn state_handle(&self) -> Shared<ClientGameState>;
+    /// Canonical client slot.
+    fn client_info(&self, index: i32) -> Shared<ClientInfo>;
+    /// Load deferred players.
+    fn load_deferred_players(&mut self, reset: &mut dyn FnMut(&mut ClientEntity));
+    /// Publish a client info string.
+    fn new_client_info(&mut self, index: i32, config: &str);
+    /// Reset the store.
+    fn reset(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::foundation::animation_config::{Animation, MAX_ANIMATIONS_SENTINEL, TOTAL_ANIMATION_COUNT};
+
+    #[test]
+    fn client_info_animations_and_copy() {
+        let mut info = ClientInfo::default();
+        let mut rows = vec![None; TOTAL_ANIMATION_COUNT];
+        for (index, row) in rows.iter_mut().enumerate() {
+            if index != MAX_ANIMATIONS_SENTINEL {
+                *row = Some(Animation {
+                    first_frame: index as i32,
+                    num_frames: 2,
+                    ..Animation::default()
+                });
+            }
+        }
+        info.set_animations(&rows);
+        assert_eq!(info.animations[0].first_frame, 0);
+        assert_eq!(info.animations[MAX_ANIMATIONS_SENTINEL].first_frame, 0);
+        info.name = "sarge".to_string();
+        let mut other = ClientInfo::default();
+        other.copy_from(&info);
+        assert_eq!(other.name, "sarge");
+        assert_eq!(other.animations[5].first_frame, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "Client animation table has the wrong length")]
+    fn client_info_animation_length() {
+        ClientInfo::default().set_animations(&[None]);
     }
 }

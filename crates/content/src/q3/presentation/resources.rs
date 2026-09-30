@@ -2,7 +2,7 @@
 //!
 //! Donor provenance: `src/content/q3/presentation/resources.ts`.
 
-use qa_core::math::{dot3, Bounds, Plane, Vec3};
+use qa_core::math::{dot3, vec3, Bounds, Plane, Vec3};
 use std::collections::HashMap;
 
 // Intra-group imports: sibling modules split from the same flat port.
@@ -119,6 +119,8 @@ pub trait RendererResources {
     fn model_for_handle(&self, handle: i32) -> PresentResult<SceneModel>;
     /// Shader for an integer handle.
     fn shader_for_handle(&self, handle: i32) -> PresentResult<Option<SceneShader>>;
+    /// Bounds for a model (`modelBounds`); zero when the owner holds no geometry.
+    fn model_bounds(&self, model: &SceneModel) -> Bounds;
     /// Clear the scene.
     fn clear_scene(&mut self);
     /// Submit a scene entity.
@@ -914,6 +916,14 @@ impl<H: Q3ResourceHost, W: ResourceWorld> RendererResources for Q3RendererResour
         match self.shaders.get(&handle) {
             Some(shader) => Ok(Some(shader.clone())),
             None => Err(range_msg(format!("Invalid cgame shader handle {handle}"))),
+        }
+    }
+
+    fn model_bounds(&self, model: &SceneModel) -> Bounds {
+        let _ = model;
+        Bounds {
+            min: vec3(0.0, 0.0, 0.0),
+            max: vec3(0.0, 0.0, 0.0),
         }
     }
 

@@ -65,9 +65,10 @@ impl PcmSound {
 }
 
 /// Registered model handle (`SceneModel`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SceneModel {
     /// Default (missing) model.
+    #[default]
     Default,
     /// Loaded model.
     Loaded {

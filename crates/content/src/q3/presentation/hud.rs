@@ -2,19 +2,233 @@
 //!
 //! Donor provenance: `src/content/q3/presentation/hud.ts`.
 
-use qa_core::math::{vec3, vec4, Vec4};
-use std::cell::Cell;
+use qa_core::math::{vec3, vec4, Vec3, Vec4};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::shared::definitions::Team as CanonicalTeam;
+use crate::q3::base::game::format::{game_format_bounded, GameFormatArgument};
+use crate::q3::base::game::numeric::GameRandom;
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::player_state::*;
+use crate::q3::presentation::audio::ClientSoundBank;
+use crate::q3::presentation::client::HudLocalSound;
 use crate::q3::presentation::client_info::*;
+use crate::q3::presentation::config::HudCvarReader;
 use crate::q3::presentation::draw_icons::*;
 use crate::q3::presentation::draw_status::*;
 use crate::q3::presentation::draw_tools::*;
 use crate::q3::presentation::hud_corners::*;
-use crate::q3::presentation::mirrors_present_hud::*;
 use crate::q3::presentation::mission_hud::*;
+use crate::q3::presentation::player_state::WeaponHudReader;
+use crate::q3::presentation::resources::RendererResources;
+use crate::q3::presentation::retail_snapshot::{PcmSound, SceneModel, SceneShader};
 use crate::q3::presentation::scoreboard::*;
+use crate::q3::presentation::state::*;
+
+/// Shared handle (`Shared`: `Rc<RefCell<T>>`).
+pub type Shared<T> = Rc<RefCell<T>>;
+
+/// Build a [`Shared`] handle.
+pub fn shared<T>(value: T) -> Shared<T> {
+    Rc::new(RefCell::new(value))
+}
+
+/// Pointer identity between two [`Shared`] handles.
+pub fn same<T: ?Sized>(a: &Shared<T>, b: &Shared<T>) -> bool {
+    Rc::ptr_eq(a, b)
+}
+
+/// Item visual (`PacketItemVisual`, used surface).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ItemVisual {
+    /// Icon.
+    pub icon: Option<SceneShader>,
+}
+
+/// Weapon visual (`ClientWeaponInfo`, used surface).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WeaponVisual {
+    /// Ammo model.
+    pub ammo_model: SceneModel,
+    /// Ammo icon.
+    pub ammo_icon: Option<SceneShader>,
+    /// Weapon icon.
+    pub weapon_icon: Option<SceneShader>,
+}
+
+/// Weapon/item visual registry (`ClientWeaponMediaRegistry`, used surface).
+pub trait WeaponRegistryService {
+    /// Visual for an item index.
+    fn item_visual(&self, index: usize) -> ItemVisual;
+    /// Visual for a weapon number.
+    fn weapon(&self, number: i32) -> WeaponVisual;
+    /// Register an item's visuals.
+    fn register_item_visuals(&mut self, number: i32);
+}
+
+/// Cgame graphics (`ClientMediaGraphics`, used surface).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClientGraphics {
+    /// Charset shader.
+    pub charset_shader: Option<SceneShader>,
+    /// Proportional charset.
+    pub charset_prop: Option<SceneShader>,
+    /// Proportional glow.
+    pub charset_prop_glow: Option<SceneShader>,
+    /// Banner charset.
+    pub charset_prop_b: Option<SceneShader>,
+    /// White shader.
+    pub white_shader: Option<SceneShader>,
+    /// Back tile.
+    pub back_tile_shader: Option<SceneShader>,
+    /// Team status bar.
+    pub team_status_bar: Option<SceneShader>,
+    /// Select shader.
+    pub select_shader: Option<SceneShader>,
+    /// Defer shader.
+    pub defer_shader: Option<SceneShader>,
+    /// Lagometer shader.
+    pub lagometer_shader: Option<SceneShader>,
+    /// Red flag model.
+    pub red_flag_model: SceneModel,
+    /// Blue flag model.
+    pub blue_flag_model: SceneModel,
+    /// Neutral flag model.
+    pub neutral_flag_model: SceneModel,
+    /// Armor model.
+    pub armor_model: SceneModel,
+    /// Armor icon.
+    pub armor_icon: Option<SceneShader>,
+    /// Crosshair shaders (10).
+    pub crosshair_shader: Vec<Option<SceneShader>>,
+    /// Number shaders (11).
+    pub number_shaders: Vec<Option<SceneShader>>,
+    /// Bot skill shaders (5).
+    pub bot_skill_shaders: Vec<Option<SceneShader>>,
+    /// Scoreboard score header.
+    pub scoreboard_score: Option<SceneShader>,
+    /// Scoreboard ping header.
+    pub scoreboard_ping: Option<SceneShader>,
+    /// Scoreboard time header.
+    pub scoreboard_time: Option<SceneShader>,
+    /// Scoreboard name header.
+    pub scoreboard_name: Option<SceneShader>,
+    /// Red flag status shaders (3).
+    pub red_flag_shader: Vec<Option<SceneShader>>,
+    /// Blue flag status shaders (3).
+    pub blue_flag_shader: Vec<Option<SceneShader>>,
+    /// Generic flag status shaders (3).
+    pub flag_shaders: Vec<Option<SceneShader>>,
+    /// Assault shader.
+    pub assault_shader: Option<SceneShader>,
+    /// Defend shader.
+    pub defend_shader: Option<SceneShader>,
+    /// Patrol shader.
+    pub patrol_shader: Option<SceneShader>,
+    /// Follow shader.
+    pub follow_shader: Option<SceneShader>,
+    /// Retrieve shader.
+    pub retrieve_shader: Option<SceneShader>,
+    /// Escort shader.
+    pub escort_shader: Option<SceneShader>,
+    /// Camp shader.
+    pub camp_shader: Option<SceneShader>,
+    /// Red cube model.
+    pub red_cube_model: SceneModel,
+    /// Blue cube model.
+    pub blue_cube_model: SceneModel,
+    /// Red cube icon.
+    pub red_cube_icon: Option<SceneShader>,
+    /// Blue cube icon.
+    pub blue_cube_icon: Option<SceneShader>,
+    /// Heart shader.
+    pub heart_shader: Option<SceneShader>,
+    /// Select cursor.
+    pub select_cursor: Option<SceneShader>,
+    /// Size cursor.
+    pub size_cursor: Option<SceneShader>,
+}
+
+impl ClientGraphics {
+    /// Blank graphics with sized shader tables.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            crosshair_shader: vec![None; 10],
+            number_shaders: vec![None; 11],
+            bot_skill_shaders: vec![None; 5],
+            red_flag_shader: vec![None; 3],
+            blue_flag_shader: vec![None; 3],
+            flag_shaders: vec![None; 3],
+            ..Self::default()
+        }
+    }
+}
+
+/// Cgame sounds (`ClientMediaSounds`, used surface).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClientSounds {
+    /// Talk sound.
+    pub talk_sound: Option<PcmSound>,
+    /// Count 1 sound.
+    pub count1_sound: Option<PcmSound>,
+    /// Count 2 sound.
+    pub count2_sound: Option<PcmSound>,
+    /// Count 3 sound.
+    pub count3_sound: Option<PcmSound>,
+    /// Winner sound.
+    pub winner_sound: Option<PcmSound>,
+    /// Loser sound.
+    pub loser_sound: Option<PcmSound>,
+    /// Wear-off sound.
+    pub wear_off_sound: Option<PcmSound>,
+}
+
+/// Map-lifetime cgame media (`ClientMedia`, used surface).
+pub struct ClientMedia {
+    /// Product.
+    pub product: Product,
+    /// Static state.
+    pub static_state: Shared<ClientGameStaticState>,
+    /// Renderer resources.
+    pub resources: Shared<dyn RendererResources>,
+    /// Sound bank.
+    pub sound_bank: Shared<dyn ClientSoundBank>,
+    /// Weapon registry.
+    pub weapon_registry: Shared<dyn WeaponRegistryService>,
+    /// Graphics.
+    pub graphics: ClientGraphics,
+    /// Sounds.
+    pub sounds: ClientSounds,
+}
+
+impl ClientMedia {
+    /// Assemble media, checking the product.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        product: Product,
+        static_state: Shared<ClientGameStaticState>,
+        resources: Shared<dyn RendererResources>,
+        sound_bank: Shared<dyn ClientSoundBank>,
+        weapon_registry: Shared<dyn WeaponRegistryService>,
+        graphics: ClientGraphics,
+        sounds: ClientSounds,
+    ) -> Self {
+        if static_state.borrow().product != product {
+            panic!("Client media product differs from cgs");
+        }
+        Self {
+            product,
+            static_state,
+            resources,
+            sound_bank,
+            weapon_registry,
+            graphics,
+            sounds,
+        }
+    }
+}
 
 /// HUD icon size.
 pub(crate) const HUD_ICON: f32 = 48.0;
@@ -166,7 +380,7 @@ impl ClientHud {
     }
 
     /// Client slot.
-    fn client(&self, index: i32) -> Shared<ClientInfo> {
+    fn client(&self, index: i32) -> ClientInfo {
         self.static_state
             .borrow()
             .client_info
@@ -208,8 +422,8 @@ impl ClientHud {
         let time = self.state.borrow().time;
         let damage_time = self.state.borrow().damage_time;
         let mut size = 60.0f32;
-        if damage_time != 0 && (time as f32 - damage_time as f32) < HUD_DAMAGE_TIME {
-            let frac = (time as f32 - damage_time as f32) / HUD_DAMAGE_TIME;
+        if damage_time != 0.0 && (time as f32 - damage_time) < HUD_DAMAGE_TIME {
+            let frac = (time as f32 - damage_time) / HUD_DAMAGE_TIME;
             size = 60.0 * (1.5 - frac * 0.5);
             let stretch = size - 60.0;
             let damage_x = self.state.borrow().damage_x;
@@ -284,14 +498,19 @@ impl ClientHud {
         let time = self.state.borrow().time;
         let icons = self.host.icons.borrow();
         let tools = icons.tools.clone();
-        let schema = stat_schema(ps.product);
+        let schema = stat_schema(ps.product());
         tools.draw.set_color(None);
         icons.draw_team_background(
             rect2d(0.0, 420.0, 640.0, 60.0),
             0.33,
-            ps.persistant.get(PersistentIndex::Team as i32),
+            ps.persistant.get(PersistentIndex::PersTeam as usize),
         );
-        let weapon = self.state.borrow().entity_at(ps.client_num).current_state.weapon;
+        let weapon = self
+            .state
+            .borrow()
+            .entity_at(ps.client_num)
+            .map(|entity| entity.current_state.weapon)
+            .unwrap_or(0);
         let ammo_model = tools.media.borrow().weapon_registry.borrow().weapon(weapon).ammo_model;
         if self.host.weapon_hud.is_none() && weapon != 0 && !ammo_model.is_default() {
             icons.draw_3d_model(
@@ -304,16 +523,16 @@ impl ClientHud {
         }
         drop(icons);
         self.draw_status_bar_head(285.0);
-        if predicted.powerups.get(Powerup::RedFlag as i32) != 0 {
-            self.draw_status_bar_flag(333.0, Team::Red as i32);
-        } else if predicted.powerups.get(Powerup::BlueFlag as i32) != 0 {
-            self.draw_status_bar_flag(333.0, Team::Blue as i32);
-        } else if predicted.powerups.get(Powerup::NeutralFlag as i32) != 0 {
-            self.draw_status_bar_flag(333.0, Team::Free as i32);
+        if predicted.powerups.get(Powerup::PwRedflag as usize) != 0 {
+            self.draw_status_bar_flag(333.0, Team::TeamRed as i32);
+        } else if predicted.powerups.get(Powerup::PwBlueflag as usize) != 0 {
+            self.draw_status_bar_flag(333.0, Team::TeamBlue as i32);
+        } else if predicted.powerups.get(Powerup::PwNeutralflag as usize) != 0 {
+            self.draw_status_bar_flag(333.0, Team::TeamFree as i32);
         }
         let icons = self.host.icons.borrow();
         let tools = icons.tools.clone();
-        if ps.stats.get(schema.armor) != 0 {
+        if ps.stats.get(schema.armor()) != 0 {
             let armor_model = tools.media.borrow().graphics.armor_model.clone();
             icons.draw_3d_model(
                 rect2d(470.0, 432.0, HUD_ICON, HUD_ICON),
@@ -324,12 +543,12 @@ impl ClientHud {
             );
         }
         if self.host.weapon_hud.is_none() && weapon != 0 {
-            let ammo = ps.ammo.get(weapon);
+            let ammo = ps.ammo.get(weapon as usize);
             if ammo > -1 {
                 let firing = vec4(0.5, 0.5, 0.5, 1.0);
                 let normal = vec4(1.0, 0.69, 0.0, 1.0);
                 tools.draw.set_color(Some(
-                    if predicted.weapon_state == WeaponState::Firing && predicted.weapon_time > 100 {
+                    if predicted.weapon_state == WeaponState::WeaponFiring as i32 && predicted.weapon_time > 100 {
                         firing
                     } else {
                         normal
@@ -351,7 +570,7 @@ impl ClientHud {
                 }
             }
         }
-        let health = ps.stats.get(schema.health);
+        let health = ps.stats.get(schema.health());
         let low = vec4(1.0, 0.2, 0.2, 1.0);
         let normal = vec4(1.0, 0.69, 0.0, 1.0);
         let white = vec4(1.0, 1.0, 1.0, 1.0);
@@ -370,7 +589,7 @@ impl ClientHud {
         }));
         self.host.corners.borrow().draw_field(185.0, 432.0, 3, health);
         tools.draw.set_color(Some(color_for_health(&self.state)));
-        let armor = ps.stats.get(schema.armor);
+        let armor = ps.stats.get(schema.armor());
         if armor > 0 {
             tools.draw.set_color(Some(normal));
             self.host.corners.borrow().draw_field(370.0, 432.0, 3, armor);
@@ -388,7 +607,7 @@ impl ClientHud {
         let value = self
             .snapshot()
             .stats
-            .get(stat_schema(self.state.borrow().product).holdable_item);
+            .get(stat_schema(self.state.borrow().product).holdable_item());
         if value == 0 {
             return;
         }
@@ -432,7 +651,7 @@ impl ClientHud {
         let reward = self.reward(0);
         if reward.count >= 10 {
             tools.draw_pic(rect2d(296.0, 56.0, 44.0, 44.0), &reward.shader);
-            let text = game_format("%d", &[GameFormatArg::Int(reward.count)], 32);
+            let text = game_format_bounded("%d", &[GameFormatArgument::from(reward.count)], 32);
             let color = color.expect("CG_DrawReward: source null text color at zero reward time");
             self.fixed_text(
                 (640.0 - 8.0 * draw_strlen(&text) as f32) / 2.0,
@@ -456,7 +675,7 @@ impl ClientHud {
     /// Draw the crosshair (`drawCrosshair`).
     pub fn draw_crosshair(&self) {
         if !self.enabled("cg_drawCrosshair")
-            || self.snapshot().persistant.get(PersistentIndex::Team as i32) == Team::Spectator as i32
+            || self.snapshot().persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamSpectator as i32
             || self.state.borrow().rendering_third_person
         {
             return;
@@ -501,7 +720,14 @@ impl ClientHud {
                 panic!("HUD crosshair shader outside source array");
             });
         let view = self.state.borrow().refdef.clone();
-        let picture = tools.media.borrow().resources.borrow().picture(&shader);
+        let picture = tools
+            .media
+            .borrow()
+            .resources
+            .borrow()
+            .picture(shader.as_ref())
+            .map(|material| Picture { order: material.id })
+            .unwrap_or(ZERO_PICTURE);
         tools.draw.stretch_pixels(
             Rect2d {
                 x: rect.x + view.x as f32 + 0.5 * (view.width as f32 - rect.width),
@@ -541,7 +767,15 @@ impl ClientHud {
         if self.host.prediction.borrow().point_contents(trace.end, 0) & 64 != 0 {
             return;
         }
-        if self.state.borrow().entity_at(trace.entity_num).current_state.powerups & (1 << Powerup::Invis as i32) != 0 {
+        if self
+            .state
+            .borrow()
+            .entity_at(trace.entity_num)
+            .map(|entity| entity.current_state.powerups)
+            .unwrap_or(0)
+            & (1 << Powerup::PwInvis as i32)
+            != 0
+        {
             return;
         }
         self.state.borrow_mut().crosshair_client_num = trace.entity_num;
@@ -566,7 +800,7 @@ impl ClientHud {
             self.host.icons.borrow().tools.draw.set_color(None);
             return;
         };
-        let name = self.client(crosshair_num).borrow().name.clone();
+        let name = self.client(crosshair_num).name.clone();
         if matches!(self.variant, ClientHudVariant::Missionpack { .. }) {
             self.proportional(
                 &name,
@@ -592,9 +826,9 @@ impl ClientHud {
     pub fn draw_spectator(&self) {
         let tools = self.host.icons.borrow().tools.clone();
         tools.draw_big_string(248, 440, "SPECTATOR", 1.0);
-        if self.static_state.borrow().game_type == GameType::Tournament {
+        if self.static_state.borrow().game_type == GameType::GtTournament {
             tools.draw_big_string(200, 460, "waiting to play", 1.0);
-        } else if self.static_state.borrow().game_type >= GameType::Team {
+        } else if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32) {
             tools.draw_big_string(8, 460, "press ESC and use the JOIN menu to play", 1.0);
         }
     }
@@ -606,20 +840,20 @@ impl ClientHud {
         }
         if self.static_state.borrow().vote_modified {
             self.static_state.borrow_mut().vote_modified = false;
-            let talk = self.host.icons.borrow().tools.media.borrow().sounds.talk_sound.clone();
+            let talk = self.host.icons.borrow().tools.media.borrow().sounds.talk_sound;
             self.host.sounds.borrow_mut().start_local_sound(talk, 6);
         }
         let time = self.state.borrow().time;
         let vote_time = self.static_state.borrow().vote_time;
         let sec = (30000 - time.wrapping_sub(vote_time)).max(0) / 1000;
         let cgs = self.static_state.borrow();
-        let text = game_format(
+        let text = game_format_bounded(
             "VOTE(%i):%s yes:%i no:%i",
             &[
-                GameFormatArg::Int(sec),
-                GameFormatArg::Text(cgs.vote_string.clone()),
-                GameFormatArg::Int(cgs.vote_yes),
-                GameFormatArg::Int(cgs.vote_no),
+                GameFormatArgument::from(sec),
+                GameFormatArgument::from(cgs.vote_string.clone()),
+                GameFormatArgument::from(cgs.vote_yes),
+                GameFormatArgument::from(cgs.vote_no),
             ],
             1024,
         );
@@ -636,30 +870,30 @@ impl ClientHud {
 
     /// Draw the team vote (`drawTeamVote`).
     pub fn draw_team_vote(&self) {
-        let team = self.client(0).borrow().team;
-        if team != CanonicalTeam::TeamRed && team != CanonicalTeam::TeamBlue {
+        let team = self.client(0).team;
+        if team != Team::TeamRed && team != Team::TeamBlue {
             return;
         }
-        let index = if team == CanonicalTeam::TeamRed { 0 } else { 1 };
+        let index = if team == Team::TeamRed { 0 } else { 1 };
         if self.static_state.borrow().team_vote_time[index] == 0 {
             return;
         }
         if self.static_state.borrow().team_vote_modified[index] {
             self.static_state.borrow_mut().team_vote_modified[index] = false;
-            let talk = self.host.icons.borrow().tools.media.borrow().sounds.talk_sound.clone();
+            let talk = self.host.icons.borrow().tools.media.borrow().sounds.talk_sound;
             self.host.sounds.borrow_mut().start_local_sound(talk, 6);
         }
         let time = self.state.borrow().time;
         let vote_time = self.static_state.borrow().team_vote_time[index];
         let sec = (30000 - time.wrapping_sub(vote_time)).max(0) / 1000;
         let cgs = self.static_state.borrow();
-        let text = game_format(
+        let text = game_format_bounded(
             "TEAMVOTE(%i):%s yes:%i no:%i",
             &[
-                GameFormatArg::Int(sec),
-                GameFormatArg::Text(cgs.team_vote_string[index].clone()),
-                GameFormatArg::Int(cgs.team_vote_yes[index]),
-                GameFormatArg::Int(cgs.team_vote_no[index]),
+                GameFormatArgument::from(sec),
+                GameFormatArgument::from(cgs.team_vote_string[index].clone()),
+                GameFormatArgument::from(cgs.team_vote_yes[index]),
+                GameFormatArgument::from(cgs.team_vote_no[index]),
             ],
             1024,
         );
@@ -670,12 +904,12 @@ impl ClientHud {
     /// Draw the follow message (`drawFollow`).
     pub fn draw_follow(&self) -> bool {
         let ps = self.snapshot();
-        if ps.pm_flags & MOVE_FLAG_FOLLOW == 0 {
+        if ps.pm_flags & (MoveFlags::Follow as i32) == 0 {
             return false;
         }
         let tools = self.host.icons.borrow().tools.clone();
         tools.draw_big_string(248, 24, "following", 1.0);
-        let name = self.client(ps.client_num).borrow().name.clone();
+        let name = self.client(ps.client_num).name.clone();
         self.fixed_text(
             0.5 * (640.0 - 32.0 * draw_strlen(&name) as f32),
             40.0,
@@ -729,9 +963,9 @@ impl ClientHud {
             self.prox_time.set(time.wrapping_add(1000));
         }
         let text = if self.prox_tick.get() != 0 {
-            game_format(
+            game_format_bounded(
                 "INTERNAL COMBUSTION IN: %i",
-                &[GameFormatArg::Int(self.prox_tick.get())],
+                &[GameFormatArgument::from(self.prox_tick.get())],
                 32,
             )
         } else {
@@ -825,14 +1059,13 @@ impl ClientHud {
         let game_type = self.static_state.borrow().game_type;
         let mut heading = String::new();
         let mut draw_heading = true;
-        if game_type == GameType::Tournament {
+        if game_type == GameType::GtTournament {
             let maxclients = self.static_state.borrow().maxclients;
             let mut first: Option<String> = None;
             let mut second: Option<String> = None;
             for index in 0..maxclients {
                 let client = self.client(index);
-                let client = client.borrow();
-                if client.info_valid && client.team == CanonicalTeam::TeamFree {
+                if client.info_valid && client.team == Team::TeamFree {
                     if first.is_none() {
                         first = Some(client.name.clone());
                     } else {
@@ -842,31 +1075,31 @@ impl ClientHud {
             }
             match (first, second) {
                 (Some(first), Some(second)) => {
-                    heading = game_format(
+                    heading = game_format_bounded(
                         "%s vs %s",
-                        &[GameFormatArg::Text(first), GameFormatArg::Text(second)],
+                        &[GameFormatArgument::from(first), GameFormatArgument::from(second)],
                         1024,
                     );
                 }
                 _ => draw_heading = false,
             }
-        } else if game_type == GameType::Ffa {
+        } else if game_type == GameType::GtFfa {
             heading = "Free For All".to_string();
-        } else if game_type == GameType::Team {
+        } else if game_type == GameType::GtTeam {
             heading = "Team Deathmatch".to_string();
-        } else if game_type == GameType::Ctf {
+        } else if game_type == GameType::GtCtf {
             heading = "Capture the Flag".to_string();
         } else if matches!(self.variant, ClientHudVariant::Missionpack { .. }) {
-            if game_type == GameType::OneFlagCtf {
+            if game_type == GameType::Gt1fctf {
                 heading = "One Flag CTF".to_string();
-            } else if game_type == GameType::Obelisk {
+            } else if game_type == GameType::GtObelisk {
                 heading = "Overload".to_string();
-            } else if game_type == GameType::Harvester {
+            } else if game_type == GameType::GtHarvester {
                 heading = "Harvester".to_string();
             }
         }
         if draw_heading {
-            let tournament = game_type == GameType::Tournament;
+            let tournament = game_type == GameType::GtTournament;
             if matches!(self.variant, ClientHudVariant::Missionpack { .. }) {
                 self.proportional_sized(
                     &heading,
@@ -895,7 +1128,7 @@ impl ClientHud {
             self.state.borrow_mut().warmup = 0;
             sec = 0;
         }
-        let text = game_format("Starts in: %i", &[GameFormatArg::Int(sec.wrapping_add(1))], 1024);
+        let text = game_format_bounded("Starts in: %i", &[GameFormatArgument::from(sec.wrapping_add(1))], 1024);
         if sec != self.state.borrow().warmup_count {
             self.state.borrow_mut().warmup_count = sec;
             let sounds = self.host.icons.borrow().tools.media.borrow().sounds.clone();
@@ -960,7 +1193,7 @@ impl ClientHud {
     /// Draw intermission (`drawIntermission`).
     pub fn draw_intermission(&self) {
         if matches!(self.variant, ClientHudVariant::Baseq3 { .. })
-            && self.static_state.borrow().game_type == GameType::SinglePlayer
+            && self.static_state.borrow().game_type == GameType::GtSinglePlayer
         {
             self.host.status.borrow().draw_center_string();
             return;
@@ -992,15 +1225,15 @@ impl ClientHud {
             return;
         }
         let ps = self.snapshot();
-        if ps.pm_type == MoveType::Intermission {
+        if ps.pm_type == MoveType::PmIntermission as i32 {
             self.draw_intermission();
             return;
         }
-        if ps.persistant.get(PersistentIndex::Team as i32) == Team::Spectator as i32 {
+        if ps.persistant.get(PersistentIndex::PersTeam as usize) == Team::TeamSpectator as i32 {
             self.draw_spectator();
             self.draw_crosshair();
             self.draw_crosshair_names();
-        } else if !self.state.borrow().show_scores && ps.stats.get(stat_schema(ps.product).health) > 0 {
+        } else if !self.state.borrow().show_scores && ps.stats.get(stat_schema(ps.product()).health()) > 0 {
             if matches!(self.variant, ClientHudVariant::Missionpack { .. }) {
                 if self.enabled("cg_drawStatus") {
                     let ClientHudVariant::Missionpack { menus, .. } = &self.variant else {
@@ -1026,7 +1259,7 @@ impl ClientHud {
             }
             self.draw_reward();
         }
-        if self.static_state.borrow().game_type >= GameType::Team
+        if (self.static_state.borrow().game_type as i32) >= (GameType::GtTeam as i32)
             && matches!(self.variant, ClientHudVariant::Baseq3 { .. })
         {
             self.host.corners.borrow().draw_team_info();
@@ -1049,5 +1282,748 @@ impl ClientHud {
         if !self.state.borrow().score_board_showing {
             self.host.status.borrow().draw_center_string();
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PredictionTrace {
+    /// Entity number.
+    pub entity_num: i32,
+    /// End position.
+    pub end: Vec3,
+}
+
+/// Prediction service (`PredictionRuntime` + collision, used surface).
+pub trait PredictionService {
+    /// Canonical frame state.
+    fn state_handle(&self) -> Shared<ClientGameState>;
+    /// Trace a box.
+    fn trace(&self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, skip: i32, contents: i32) -> PredictionTrace;
+    /// Point contents.
+    fn point_contents(&self, point: Vec3, pass_entity: i32) -> i32;
+}
+
+/// Weapon runtime + selection (`ClientWeaponRuntime` / `ClientWeaponSelection`).
+pub trait WeaponService {
+    /// Canonical frame state.
+    fn state_handle(&self) -> Shared<ClientGameState>;
+    /// Visual registry.
+    fn registry_handle(&self) -> Shared<dyn WeaponRegistryService>;
+    /// Draw the weapon selector.
+    fn draw_weapon_select(&mut self);
+    /// Next weapon.
+    fn next_weapon(&mut self);
+    /// Previous weapon.
+    fn previous_weapon(&mut self);
+    /// Select a weapon.
+    fn select_weapon(&mut self, weapon: i32);
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::q3::presentation::audio::PcmSound as AudioPcmSound;
+    use crate::q3::presentation::audio::{pcm_sound, SoundAsset, SoundBank, SoundRegistration};
+    use crate::q3::presentation::config::HudConfigStrings;
+    use crate::q3::presentation::console::{HudCommands, ServerCommandService, ViewService};
+    use crate::q3::presentation::frame_audio::ClientFrameAudioHost;
+    use crate::q3::presentation::prediction::CommandSource;
+    use crate::q3::presentation::resources::WorldScene;
+    use crate::q3::presentation::retail_snapshot::PcmSound as RetailPcmSound;
+    use crate::q3::presentation::retail_snapshot::{
+        DynamicLight, MaterialPicture, RefEntity, RefPoly, Refdef, SceneSkin, Snapshot,
+    };
+    use qa_core::cvar::CvarSnapshot;
+    use qa_core::math::Bounds;
+    use std::collections::HashMap;
+
+    /// Recording pixel sink.
+    #[derive(Debug, Default)]
+    pub(crate) struct FakeSink {
+        /// Colors set.
+        pub(crate) colors: Vec<Option<Vec4>>,
+        /// Blits.
+        pub(crate) blits: Vec<(Rect2d, TextureRect, Picture)>,
+    }
+
+    impl HudDrawSink for FakeSink {
+        fn set_color(&mut self, color: Option<Vec4>) {
+            self.colors.push(color);
+        }
+        fn stretch_pixels(&mut self, rect: Rect2d, uv: TextureRect, picture: Picture) {
+            self.blits.push((rect, uv, picture));
+        }
+    }
+
+    /// Canned renderer resources.
+    #[derive(Debug, Default)]
+    pub(crate) struct FakeResources {
+        /// Scene calls.
+        pub(crate) scenes: Vec<String>,
+        /// Registered shaders.
+        pub(crate) shaders: Vec<String>,
+        /// Bounds to return.
+        pub(crate) bounds: Option<Bounds>,
+    }
+
+    impl RendererResources for FakeResources {
+        fn clear_scene(&mut self) {
+            self.scenes.push("clear".to_string());
+        }
+        fn add_ref_entity(&mut self, _entity: RefEntity) {
+            self.scenes.push("add".to_string());
+        }
+        fn add_poly(&mut self, _poly: RefPoly) {
+            self.scenes.push("poly".to_string());
+        }
+        fn add_light(&mut self, _light: DynamicLight) {
+            self.scenes.push("light".to_string());
+        }
+        fn remap_shader(&mut self, _original: &str, _replacement: &str, _offset: &str) -> PresentResult<()> {
+            Ok(())
+        }
+        fn load_world(&mut self, _path: &str) -> PresentResult<WorldScene> {
+            Ok(WorldScene {
+                model_bounds: Vec::new(),
+            })
+        }
+        fn render_scene(&mut self, _refdef: &Refdef) {
+            self.scenes.push("render".to_string());
+        }
+        fn picture(&self, shader: Option<&SceneShader>) -> PresentResult<MaterialPicture> {
+            Ok(shader.cloned().unwrap_or(SceneShader {
+                id: 0,
+                name: String::new(),
+                material_order: 0,
+            }))
+        }
+        fn register_shader(&mut self, path: &str) -> PresentResult<Option<SceneShader>> {
+            self.shaders.push(path.to_string());
+            Ok(Some(SceneShader {
+                id: path.len() as u32 + 1,
+                name: path.to_string(),
+                material_order: 0,
+            }))
+        }
+        fn register_shader_no_mip(&mut self, path: Option<&str>) -> PresentResult<Option<SceneShader>> {
+            Ok(path.map(|path| {
+                self.shaders.push(path.to_string());
+                SceneShader {
+                    id: path.len() as u32 + 1,
+                    name: path.to_string(),
+                    material_order: 0,
+                }
+            }))
+        }
+        fn register_skin(&mut self, path: &str) -> PresentResult<Option<SceneSkin>> {
+            self.shaders.push(path.to_string());
+            Ok(Some(SceneSkin {
+                id: path.len() as u32 + 1,
+                surfaces: Vec::new(),
+            }))
+        }
+        fn register_model(&mut self, path: Option<&str>) -> PresentResult<SceneModel> {
+            Ok(path
+                .map(|path| SceneModel::Loaded {
+                    id: path.len() as u32 + 1,
+                })
+                .unwrap_or_default())
+        }
+        fn model_handle(&self, model: &SceneModel) -> PresentResult<i32> {
+            Ok(model.resource_id().unwrap_or(0) as i32)
+        }
+        fn model_for_handle(&self, handle: i32) -> PresentResult<SceneModel> {
+            Ok(if handle == 0 {
+                SceneModel::default()
+            } else {
+                SceneModel::Loaded { id: handle as u32 }
+            })
+        }
+        fn shader_for_handle(&self, handle: i32) -> PresentResult<Option<SceneShader>> {
+            Ok(if handle == 0 {
+                None
+            } else {
+                Some(SceneShader {
+                    id: handle as u32,
+                    name: format!("handle{handle}"),
+                    material_order: 0,
+                })
+            })
+        }
+        fn model_bounds(&self, _model: &SceneModel) -> Bounds {
+            self.bounds.unwrap_or(Bounds {
+                min: vec3(-8.0, -8.0, -24.0),
+                max: vec3(8.0, 8.0, 32.0),
+            })
+        }
+    }
+
+    /// Canned sound bank.
+    #[derive(Debug, Default)]
+    pub(crate) struct FakeSoundBank {
+        /// Registered paths.
+        pub(crate) paths: Vec<String>,
+        /// Sounds by path.
+        pub(crate) sounds: HashMap<String, AudioPcmSound>,
+    }
+
+    impl ClientSoundBank for FakeSoundBank {
+        fn register_sound(&mut self, path: Option<&str>, _compressed: bool) -> Option<AudioPcmSound> {
+            let path = path?;
+            self.paths.push(path.to_string());
+            let sound = pcm_sound(path);
+            self.sounds.insert(path.to_string(), sound.clone());
+            Some(sound)
+        }
+        fn sound(&mut self, path: Option<&str>, compressed: bool) -> Option<AudioPcmSound> {
+            self.register_sound(path, compressed)
+        }
+        fn index_for_sound(&self, _sound: &Option<AudioPcmSound>) -> i32 {
+            1
+        }
+        fn asset(&self, sound: &Option<AudioPcmSound>) -> Option<SoundAsset> {
+            sound.clone().map(|pcm| SoundAsset { pcm, resource: None })
+        }
+        fn sound_at_index(&self, _index: i32) -> Option<AudioPcmSound> {
+            None
+        }
+        fn sound_for_index(&self, _index: i32) -> Option<AudioPcmSound> {
+            None
+        }
+        fn registrations(&self) -> Vec<SoundRegistration> {
+            Vec::new()
+        }
+    }
+
+    /// Canned engine bank.
+    #[derive(Debug, Default)]
+    pub(crate) struct FakeEngineBank {
+        /// Paths.
+        pub(crate) paths: Vec<String>,
+    }
+
+    impl SoundBank for FakeEngineBank {
+        fn register(&mut self, path: &str, _family: &str) -> Option<SoundAsset> {
+            self.paths.push(path.to_string());
+            Some(SoundAsset {
+                pcm: pcm_sound(path),
+                resource: Some(format!("res:{path}")),
+            })
+        }
+    }
+
+    /// Canned weapon registry.
+    #[derive(Debug, Default)]
+    pub(crate) struct FakeRegistry {
+        /// Registered visuals.
+        pub(crate) visuals: Vec<i32>,
+    }
+
+    impl WeaponRegistryService for FakeRegistry {
+        fn item_visual(&self, index: usize) -> ItemVisual {
+            ItemVisual {
+                icon: Some(SceneShader {
+                    id: index as u32 + 1,
+                    name: format!("item{index}"),
+                    material_order: 0,
+                }),
+            }
+        }
+        fn weapon(&self, number: i32) -> WeaponVisual {
+            WeaponVisual {
+                ammo_model: SceneModel::Loaded { id: number as u32 + 1 },
+                ammo_icon: Some(SceneShader {
+                    id: number as u32 + 1,
+                    name: format!("ammo{number}"),
+                    material_order: 0,
+                }),
+                weapon_icon: Some(SceneShader {
+                    id: number as u32 + 1,
+                    name: format!("weapon{number}"),
+                    material_order: 0,
+                }),
+            }
+        }
+        fn register_item_visuals(&mut self, number: i32) {
+            self.visuals.push(number);
+        }
+    }
+
+    /// Canned cvar reader.
+    pub(crate) struct FakeCvars {
+        /// Values by lowercase name.
+        pub(crate) values: HashMap<String, CvarSnapshot>,
+    }
+
+    impl FakeCvars {
+        /// Blank reader.
+        pub(crate) fn new() -> Self {
+            Self { values: HashMap::new() }
+        }
+
+        /// Set an integer value.
+        pub(crate) fn set(&mut self, name: &str, integer: i32, numeric: f32, value: &str) {
+            self.values.insert(
+                name.to_lowercase(),
+                CvarSnapshot {
+                    name: name.to_string(),
+                    value: value.to_string(),
+                    reset_value: value.to_string(),
+                    latched_value: None,
+                    flags: 0,
+                    modified: false,
+                    modification_count: 1,
+                    numeric_value: numeric,
+                    integer_value: integer,
+                },
+            );
+        }
+    }
+
+    impl HudCvarReader for FakeCvars {
+        fn read_vm_cvar(&self, name: &str) -> CvarSnapshot {
+            self.values.get(&name.to_lowercase()).cloned().unwrap_or(CvarSnapshot {
+                name: name.to_string(),
+                value: "0".to_string(),
+                reset_value: "0".to_string(),
+                latched_value: None,
+                flags: 0,
+                modified: false,
+                modification_count: 0,
+                numeric_value: 0.0,
+                integer_value: 0,
+            })
+        }
+    }
+
+    /// Canned configstrings.
+    #[derive(Default)]
+    pub(crate) struct FakeStrings {
+        /// Strings by index.
+        pub(crate) values: HashMap<usize, String>,
+    }
+
+    impl HudConfigStrings for FakeStrings {
+        fn config_string(&self, index: usize) -> String {
+            self.values.get(&index).cloned().unwrap_or_default()
+        }
+    }
+
+    /// Recording commands.
+    #[derive(Default)]
+    pub(crate) struct FakeCommands {
+        /// Client commands.
+        pub(crate) client: Vec<String>,
+        /// Console commands.
+        pub(crate) console: Vec<String>,
+        /// Added names.
+        pub(crate) added: Vec<String>,
+        /// Printed lines.
+        pub(crate) printed: Vec<String>,
+    }
+
+    impl HudCommands for FakeCommands {
+        fn send_client_command(&mut self, text: &str) {
+            self.client.push(text.to_string());
+        }
+        fn send_console_command(&mut self, text: &str) {
+            self.console.push(text.to_string());
+        }
+        fn add_command(&mut self, name: &str) {
+            self.added.push(name.to_string());
+        }
+        fn print(&mut self, text: &str) {
+            self.printed.push(text.to_string());
+        }
+    }
+
+    /// Canned clock.
+    pub(crate) struct FakeClock {
+        /// Time.
+        pub(crate) time: i32,
+    }
+
+    impl HudClock for FakeClock {
+        fn milliseconds(&self) -> i32 {
+            self.time
+        }
+    }
+
+    /// Recording sounds.
+    #[derive(Default)]
+    pub(crate) struct FakeLocalSound {
+        /// Local starts.
+        pub(crate) local: Vec<(String, i32)>,
+        /// Placed starts.
+        pub(crate) placed: Vec<(i32, i32)>,
+    }
+
+    impl HudLocalSound for FakeLocalSound {
+        fn start_local_sound(&mut self, sound: Option<RetailPcmSound>, channel: i32) {
+            self.local
+                .push((sound.map(|sound| sound.id.to_string()).unwrap_or_default(), channel));
+        }
+        fn start_sound(&mut self, _origin: Option<Vec3>, entity: i32, channel: i32, _sound: Option<RetailPcmSound>) {
+            self.placed.push((entity, channel));
+        }
+    }
+
+    /// Canned client store over canonical slots.
+    pub(crate) struct FakeStore {
+        /// State.
+        pub(crate) state: Shared<ClientGameState>,
+        /// Slots.
+        pub(crate) slots: Vec<Shared<ClientInfo>>,
+        /// Deferred loads.
+        pub(crate) loads: Cell<i32>,
+    }
+
+    impl ClientInfoStore for FakeStore {
+        fn state_handle(&self) -> Shared<ClientGameState> {
+            self.state.clone()
+        }
+        fn client_info(&self, index: i32) -> Shared<ClientInfo> {
+            self.slots[index as usize].clone()
+        }
+        fn load_deferred_players(&mut self, _reset: &mut dyn FnMut(&mut ClientEntity)) {
+            self.loads.set(self.loads.get() + 1);
+        }
+        fn new_client_info(&mut self, _index: i32, _config: &str) {}
+        fn reset(&mut self) {}
+    }
+
+    /// Canned presenter.
+    pub(crate) struct FakePresenter {
+        /// State.
+        pub(crate) state: Shared<ClientGameState>,
+    }
+
+    impl PlayerPresenter for FakePresenter {
+        fn state_handle(&self) -> Shared<ClientGameState> {
+            self.state.clone()
+        }
+        fn reset_player_entity(&mut self, _entity: &mut ClientEntity) {}
+    }
+
+    /// Canned prediction.
+    pub(crate) struct FakePrediction {
+        /// State.
+        pub(crate) state: Shared<ClientGameState>,
+        /// Trace result.
+        pub(crate) trace: PredictionTrace,
+        /// Contents.
+        pub(crate) contents: i32,
+    }
+
+    impl PredictionService for FakePrediction {
+        fn state_handle(&self) -> Shared<ClientGameState> {
+            self.state.clone()
+        }
+        fn trace(
+            &self,
+            _start: Vec3,
+            _end: Vec3,
+            _mins: Vec3,
+            _maxs: Vec3,
+            _skip: i32,
+            _contents: i32,
+        ) -> PredictionTrace {
+            self.trace
+        }
+        fn point_contents(&self, _point: Vec3, _pass_entity: i32) -> i32 {
+            self.contents
+        }
+    }
+
+    /// Canned weapons.
+    pub(crate) struct FakeWeapons {
+        /// State.
+        pub(crate) state: Shared<ClientGameState>,
+        /// Registry.
+        pub(crate) registry: Shared<dyn WeaponRegistryService>,
+        /// Selections.
+        pub(crate) selected: Vec<i32>,
+    }
+
+    impl WeaponService for FakeWeapons {
+        fn state_handle(&self) -> Shared<ClientGameState> {
+            self.state.clone()
+        }
+        fn registry_handle(&self) -> Shared<dyn WeaponRegistryService> {
+            self.registry.clone()
+        }
+        fn draw_weapon_select(&mut self) {}
+        fn next_weapon(&mut self) {}
+        fn previous_weapon(&mut self) {}
+        fn select_weapon(&mut self, weapon: i32) {
+            self.selected.push(weapon);
+        }
+    }
+
+    /// Canned view.
+    pub(crate) struct FakeView {
+        /// State.
+        pub(crate) state: Shared<ClientGameState>,
+        /// Calls.
+        pub(crate) calls: Vec<String>,
+    }
+
+    impl ViewService for FakeView {
+        fn state_handle(&self) -> Shared<ClientGameState> {
+            self.state.clone()
+        }
+        fn test_gun(&mut self, _model: Option<String>, _param: Option<f64>) {
+            self.calls.push("testgun".to_string());
+        }
+        fn test_model(&mut self, _model: Option<String>, _param: Option<f64>) {
+            self.calls.push("testmodel".to_string());
+        }
+        fn next_model_frame(&mut self) {
+            self.calls.push("nextframe".to_string());
+        }
+        fn previous_model_frame(&mut self) {
+            self.calls.push("prevframe".to_string());
+        }
+        fn next_model_skin(&mut self) {
+            self.calls.push("nextskin".to_string());
+        }
+        fn previous_model_skin(&mut self) {
+            self.calls.push("prevskin".to_string());
+        }
+        fn zoom_down(&mut self) {
+            self.calls.push("+zoom".to_string());
+        }
+        fn zoom_up(&mut self) {
+            self.calls.push("-zoom".to_string());
+        }
+        fn clear_test_model(&mut self) {
+            self.calls.push("clear".to_string());
+        }
+    }
+
+    /// Canned server commands.
+    #[derive(Default)]
+    pub(crate) struct FakeServerCommands {
+        /// Builds.
+        pub(crate) builds: i32,
+    }
+
+    impl ServerCommandService for FakeServerCommands {
+        fn build_spectator_string(&mut self) {
+            self.builds += 1;
+        }
+    }
+
+    /// Canned command source.
+    #[derive(Default)]
+    pub(crate) struct FakeCommandSource {
+        /// Current number.
+        pub(crate) current: i32,
+        /// Commands.
+        pub(crate) commands: HashMap<i32, UserCommand>,
+    }
+
+    impl CommandSource for FakeCommandSource {
+        fn current_number(&self) -> i32 {
+            self.current
+        }
+        fn read(&self, number: i32) -> PresentResult<Option<UserCommand>> {
+            Ok(self.commands.get(&number).copied())
+        }
+    }
+
+    /// Canned frame-audio host.
+    #[derive(Default)]
+    pub(crate) struct FakeFrameAudio {
+        /// Local starts.
+        pub(crate) local: Vec<i32>,
+        /// Placed starts.
+        pub(crate) placed: Vec<(i32, i32)>,
+    }
+
+    impl ClientFrameAudioHost for FakeFrameAudio {
+        fn start_local_sound(&mut self, _sound: Option<RetailPcmSound>, channel: i32) {
+            self.local.push(channel);
+        }
+        fn start_sound(&mut self, _origin: Option<Vec3>, entity: i32, channel: i32, _sound: Option<RetailPcmSound>) {
+            self.placed.push((entity, channel));
+        }
+    }
+
+    /// Test world fixture.
+    pub(crate) struct World {
+        /// State.
+        pub(crate) state: Shared<ClientGameState>,
+        /// Static state.
+        pub(crate) static_state: Shared<ClientGameStaticState>,
+        /// Media.
+        pub(crate) media: Shared<ClientMedia>,
+        /// Sink.
+        pub(crate) sink: Shared<FakeSink>,
+        /// Draw.
+        pub(crate) draw: Draw2D,
+        /// Tools.
+        pub(crate) tools: ClientDrawTools,
+        /// Icons.
+        pub(crate) icons: Shared<ClientDrawIcons>,
+        /// Cvars.
+        pub(crate) cvars: Shared<FakeCvars>,
+        /// Strings.
+        pub(crate) strings: Shared<FakeStrings>,
+        /// Commands.
+        pub(crate) commands: Shared<FakeCommands>,
+        /// Sounds.
+        pub(crate) sounds: Shared<FakeLocalSound>,
+        /// Store.
+        pub(crate) store: Shared<FakeStore>,
+        /// Registry.
+        pub(crate) registry: Shared<FakeRegistry>,
+        /// Resources.
+        pub(crate) resources: Shared<FakeResources>,
+    }
+
+    /// Build a world.
+    pub(crate) fn world(product: Product) -> World {
+        let state = shared(ClientGameState::new(product, 0, 0).unwrap());
+        let static_state = shared(ClientGameStaticState::new(product));
+        static_state.borrow_mut().maxclients = 64;
+        let sink: Shared<FakeSink> = shared(FakeSink::default());
+        let queue: Shared<dyn HudDrawSink> = sink.clone();
+        let draw = Draw2D::new(queue, CoordinateSpace::Stretch640, 640, 480);
+        let resources: Shared<FakeResources> = shared(FakeResources::default());
+        let bank: Shared<dyn ClientSoundBank> = shared(FakeSoundBank::default());
+        let registry: Shared<FakeRegistry> = shared(FakeRegistry::default());
+        let media = shared(ClientMedia::new(
+            product,
+            static_state.clone(),
+            resources.clone(),
+            bank,
+            registry.clone(),
+            ClientGraphics::new(),
+            ClientSounds::default(),
+        ));
+        let tools = ClientDrawTools::new(draw.clone(), media.clone());
+        let icons = shared(ClientDrawIcons::new(
+            state.clone(),
+            tools.clone(),
+            Rc::new(|| ClientDrawIconSettings {
+                draw_icons: true,
+                draw_3d_icons: true,
+            }),
+            draw.clone(),
+        ));
+        let slots = static_state
+            .borrow()
+            .client_info
+            .iter()
+            .map(|info| shared(info.clone()))
+            .collect::<Vec<_>>();
+        World {
+            state: state.clone(),
+            static_state: static_state.clone(),
+            media,
+            sink,
+            draw,
+            tools,
+            icons,
+            cvars: shared(FakeCvars::new()),
+            strings: shared(FakeStrings::default()),
+            commands: shared(FakeCommands::default()),
+            sounds: shared(FakeLocalSound::default()),
+            store: shared(FakeStore {
+                state,
+                slots,
+                loads: Cell::new(0),
+            }),
+            registry,
+            resources,
+        }
+    }
+
+    #[test]
+    fn hud_follow_and_warmup() {
+        let game = world(Product::Baseq3);
+        let status = shared(ClientDrawStatus::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            game.tools.clone(),
+            ClientDrawStatusVariant::Baseq3,
+            ClientDrawStatusHost {
+                commands: shared(FakeCommandSource::default()),
+                cvars: game.cvars.clone(),
+            },
+        ));
+        let corners = shared(ClientHudCorners::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            game.icons.clone(),
+            ClientHudCornersHost {
+                cvars: game.cvars.clone(),
+                strings: game.strings.clone(),
+                clock: shared(FakeClock { time: 0 }),
+            },
+        ));
+        let board = shared(BaseScoreboard::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            BaseScoreboardHost {
+                icons: game.icons.clone(),
+                clients: game.store.clone(),
+                players: shared(FakePresenter {
+                    state: game.state.clone(),
+                }),
+                cvars: game.cvars.clone(),
+                strings: game.strings.clone(),
+                commands: game.commands.clone(),
+            },
+        ));
+        let hud = ClientHud::new(
+            game.state.clone(),
+            game.static_state.clone(),
+            ClientHudHost {
+                weapon_hud: None,
+                icons: game.icons.clone(),
+                status,
+                corners,
+                prediction: shared(FakePrediction {
+                    state: game.state.clone(),
+                    trace: PredictionTrace {
+                        entity_num: 99,
+                        end: vec3(0.0, 0.0, 0.0),
+                    },
+                    contents: 0,
+                }),
+                weapons: shared(FakeWeapons {
+                    state: game.state.clone(),
+                    registry: game.registry.clone(),
+                    selected: Vec::new(),
+                }),
+                random: shared(GameRandom::new(3)),
+                cvars: game.cvars.clone(),
+                sounds: game.sounds.clone(),
+            },
+            ClientHudVariant::Baseq3 { scoreboard: board },
+        );
+        game.state.borrow_mut().snap = Some(Snapshot {
+            message_number: 0,
+            server_time: 10,
+            delta_number: 0,
+            flags: 0,
+            server_command_number: 0,
+            parse_entities_number: 0,
+            area_mask: [0; 32],
+            player_state: PlayerState::new(Product::Baseq3, None),
+            entities: Vec::new(),
+        });
+        assert!(!hud.draw_follow());
+        game.cvars.borrow_mut().set("cg_drawAmmoWarning", 1, 1.0, "1");
+        game.state.borrow_mut().low_ammo_warning = 1;
+        hud.draw_ammo_warning();
+        assert!(!game.sink.borrow().blits.is_empty());
+        game.state.borrow_mut().warmup = -1;
+        hud.draw_warmup();
+        assert_eq!(game.state.borrow().warmup_count, 0);
+        hud.scan_for_crosshair_entity();
+        assert_eq!(game.state.borrow().crosshair_client_num, 0);
     }
 }
