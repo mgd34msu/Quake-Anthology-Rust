@@ -10,7 +10,9 @@
 //! `src/contracts/weapon-behavior.ts` (`WeaponTrajectoryUpdate`,
 //! `WeaponBehaviorProjectilePort`), `src/world/gameplay/authority.ts`
 //! (`CombatTraits`, `PowerArmorCellBinding`),
-//! `src/world/gameplay/policies.ts` (`Q2DamageSourceEffects`).
+//! `src/world/gameplay/policies.ts` (`Q2DamageSourceEffects`),
+//! `src/contracts/equipment.ts` (`SharedGrappleControl`),
+//! `src/contracts/content.ts` (`GrappleSelection` and parts).
 //!
 //! Armor, inventory-entry, pickup, held-weapon, model-attachment and
 //! identity/math types are reused from shared modules, never redefined.
@@ -828,4 +830,92 @@ pub struct ActorObservation {
     pub owner: ProviderId,
     /// Source definition text.
     pub definition: String,
+}
+
+/// Grapple provider reference (`ProviderReference`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GrappleProviderReference {
+    /// Owning provider.
+    pub provider: ProviderId,
+    /// Content id.
+    pub content: String,
+}
+
+/// Grapple binding (`GrappleSelection["binding"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrappleBinding {
+    /// Weapon slot.
+    Slot,
+    /// Offhand.
+    Offhand,
+}
+
+/// Grapple mechanic (`GrappleSelection["mechanic"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrappleMechanic {
+    /// Q1 threewave.
+    Q1Threewave,
+    /// Q2 CTF.
+    Q2Ctf,
+    /// Q2 LMCTF.
+    Q2Lmctf,
+    /// Q3 QVM.
+    Q3Qvm,
+}
+
+/// Grapple edition (`GrappleSelection["edition"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GrappleEdition {
+    /// Classic.
+    Classic,
+    /// Rerelease.
+    Rerelease,
+}
+
+/// QVM grapple profile reference (`QvmGrappleDefinition` projection).
+///
+/// Q2 content only routes on the selection; the executable-bound definition
+/// stays Q3 execution scope, so the shim keeps the profile identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QvmGrappleReference {
+    /// Profile id.
+    pub id: String,
+    /// Profile title.
+    pub title: String,
+}
+
+/// Grapple selection (`GrappleSelection`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GrappleSelection {
+    /// Disabled.
+    Disabled,
+    /// Enabled.
+    Enabled {
+        /// Source.
+        source: GrappleProviderReference,
+        /// Binding.
+        binding: GrappleBinding,
+        /// Mechanic.
+        mechanic: GrappleMechanic,
+        /// Edition.
+        edition: GrappleEdition,
+        /// QVM profile; present only for the Q3 mechanic.
+        profile: Option<QvmGrappleReference>,
+    },
+}
+
+/// Shared grapple control (`SharedGrappleControl`).
+pub trait SharedGrappleControl: std::fmt::Debug {
+    /// Read the selection.
+    fn selection(&self) -> &GrappleSelection;
+    /// Whether the mechanic owns the native slot.
+    fn native_slot(&self, mechanic: GrappleMechanic) -> bool;
+    /// Feed offhand input.
+    fn input(&mut self, actor: &ActorId, held: bool);
+    /// Release the actor.
+    fn release(&mut self, actor: &ActorId);
+    /// Whether the actor is pulling.
+    fn pulling(&self, actor: &ActorId) -> bool;
+    /// Gravity scale.
+    fn gravity_scale(&self, actor: &ActorId) -> u8;
 }

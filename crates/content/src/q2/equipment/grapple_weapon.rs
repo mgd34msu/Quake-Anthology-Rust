@@ -190,22 +190,24 @@ pub fn fire_ctf_grapple_weapon(
     core: Q2CtfGrappleEquipment,
     state: &mut Q2GenericFrameState,
     edition: Q2Edition,
-    kick: fn(Vec3, f64),
-) {
+) -> Option<(Vec3, f64)> {
     if core.state_snapshot(game, actor.clone()).grapple_state != CtfGrapplePhase::Fly {
         if edition == Q2Edition::Classic {
             state.frame += 1;
         }
-        return;
+        return None;
     }
-    if edition == Q2Edition::Classic {
+    let kick = if edition == Q2Edition::Classic {
         let pose = (core.hooks.pose)(actor.clone(), game);
-        kick(scale3(angle_vectors(pose.angles).forward, -2.0), -1.0);
-    }
+        Some((scale3(angle_vectors(pose.angles).forward, -2.0), -1.0))
+    } else {
+        None
+    };
     core.fire_from_pose(actor.clone(), game);
     if edition == Q2Edition::Classic && game.host.actors().is_live(&actor) {
         state.frame += 1;
     }
+    kick
 }
 
 /// Fire the LMCTF grapple weapon (`fireLmctfGrappleWeapon`).
@@ -214,14 +216,16 @@ pub fn fire_lmctf_grapple_weapon(
     game: &mut Q2GameServices,
     core: LmctfGrappleEquipment,
     state: &mut Q2GenericFrameState,
-    kick: fn(Vec3, f64),
-) {
+) -> Option<(Vec3, f64)> {
     state.source_firing = core.state_snapshot(game, actor.clone()).hook_state == 0;
-    if state.source_firing {
+    let kick = if state.source_firing {
         let pose = (core.hooks.pose)(actor.clone(), game);
-        kick(scale3(angle_vectors(pose.angles).forward, -2.0), -1.0);
-    }
+        Some((scale3(angle_vectors(pose.angles).forward, -2.0), -1.0))
+    } else {
+        None
+    };
     core.fire(actor, game);
+    kick
 }
 
 /// Release the LMCTF grapple weapon (`releaseLmctfGrappleWeapon`).
@@ -568,23 +572,18 @@ impl ClassicFrameHooks for GrappleFrameHooks<'_> {
     fn fire(&mut self, _buffered: bool) {
         match self.source {
             GrappleWeaponSource::Ctf { core, edition } => {
-                fire_ctf_grapple_weapon(
-                    self.actor.clone(),
-                    self.game,
-                    core,
-                    self.animation,
-                    edition,
-                    self.presentation.kick,
-                );
+                if let Some((origin, pitch)) =
+                    fire_ctf_grapple_weapon(self.actor.clone(), self.game, core, self.animation, edition)
+                {
+                    (self.presentation.kick)(origin, pitch);
+                }
             }
             GrappleWeaponSource::Lmctf { core } => {
-                fire_lmctf_grapple_weapon(
-                    self.actor.clone(),
-                    self.game,
-                    core,
-                    self.animation,
-                    self.presentation.kick,
-                );
+                if let Some((origin, pitch)) =
+                    fire_lmctf_grapple_weapon(self.actor.clone(), self.game, core, self.animation)
+                {
+                    (self.presentation.kick)(origin, pitch);
+                }
             }
         }
     }

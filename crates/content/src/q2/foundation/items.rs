@@ -2157,6 +2157,16 @@ fn item_module_name(_classname: &str) -> Option<String> {
 }
 
 impl Q2ItemModule {
+    /// Item pickup touch (`Touch_Item`, shared with match modes).
+    pub fn touch_item_callback() -> crate::q2::foundation::host::Q2Touch {
+        touch_pickup
+    }
+
+    /// Item respawn think (`q2_items_respawn`, shared with match modes).
+    pub fn respawn_item_callback() -> crate::q2::foundation::host::Q2Think {
+        respawn_item
+    }
+
     /// Register hooks and build the spawn module.
     pub fn register(&self, game: &mut Q2GameServices) -> SpawnModule {
         game.items.hooks = Some(self.hooks);

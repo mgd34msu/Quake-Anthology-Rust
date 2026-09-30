@@ -32,7 +32,7 @@ pub struct LmctfGrapplePolicy {
     /// Whether the hook may attach.
     pub can_attach: fn(ActorId, ActorId, &mut Q2GameServices) -> bool,
     /// Whether the hook may damage.
-    pub can_damage: fn(ActorId) -> bool,
+    pub can_damage: fn(ActorId, &mut Q2GameServices) -> bool,
     /// Whether a hit counts as a player hit.
     pub player_hit: fn(ActorId, &mut Q2GameServices) -> bool,
 }
@@ -43,7 +43,7 @@ pub fn lmctf_can_attach(_owner: ActorId, _target: ActorId, _game: &mut Q2GameSer
 }
 
 /// Damage anything (`canDamage` default).
-pub fn lmctf_can_damage(_target: ActorId) -> bool {
+pub fn lmctf_can_damage(_target: ActorId, _game: &mut Q2GameServices) -> bool {
     true
 }
 
@@ -62,7 +62,7 @@ pub fn default_lmctf_grapple_policy() -> LmctfGrapplePolicy {
 }
 
 /// Ignore a release (`released` default).
-pub fn lmctf_released(_actor: ActorId) {}
+pub fn lmctf_released(_actor: ActorId, _game: &mut Q2GameServices) {}
 
 /// LMCTF grapple equipment (`LmctfGrappleEquipment`).
 ///
@@ -75,7 +75,7 @@ pub struct LmctfGrappleEquipment {
     /// Grapple policy.
     pub policy: LmctfGrapplePolicy,
     /// Release callback.
-    pub released: fn(ActorId),
+    pub released: fn(ActorId, &mut Q2GameServices),
 }
 
 impl LmctfGrappleEquipment {
@@ -103,10 +103,11 @@ impl LmctfGrappleEquipment {
         let body = game.host.bodies().read(&player);
         if let Some(body) = body {
             if body.ground.is_some() {
-                let previous = (self.hooks.previous_velocity)(player.clone());
+                let previous = (self.hooks.previous_velocity)(player.clone(), game);
                 (self.hooks.set_previous_velocity)(
                     player.clone(),
                     vec3(previous.x, previous.y, 0.0),
+                    game,
                 );
                 grapple_velocity(
                     player.clone(),
@@ -115,7 +116,7 @@ impl LmctfGrappleEquipment {
                 );
             }
         }
-        (self.released)(player.clone());
+        (self.released)(player.clone(), game);
         let hook = {
             let state = lmctf_state_mut(game, player.clone());
             state.hook_state = 0;
@@ -178,7 +179,7 @@ impl LmctfGrappleEquipment {
         moved.velocity = Vec3::default();
         game.write_body(hook.clone(), &moved, true);
         lmctf_state_mut(game, owner.clone()).hook_state = 2;
-        if (self.policy.can_damage)(contact.other.clone()) {
+        if (self.policy.can_damage)(contact.other.clone(), game) {
             let frame = (game.host.now() * 10.0).round() as i32;
             let repeated = game
                 .require_entity(&hook)
@@ -396,8 +397,10 @@ impl LmctfGrappleEquipment {
                 return;
             }
             // The donor draws the fresh cable twice.
-            self.draw(player.clone(), start, game.body_of(hook.clone()).origin);
-            self.draw(player, start, game.body_of(hook).origin);
+            let end = game.body_of(hook.clone()).origin;
+            self.draw(player.clone(), game, start, end);
+            let end = game.body_of(hook).origin;
+            self.draw(player, game, start, end);
             return;
         }
         let hooked = lmctf_state_mut(game, player.clone()).hook.clone();
@@ -408,7 +411,8 @@ impl LmctfGrappleEquipment {
             return;
         };
         if lmctf_state_mut(game, player.clone()).hook_state == 1 {
-            self.draw(player, start, game.body_of(hook).origin);
+            let end = game.body_of(hook).origin;
+            self.draw(player, game, start, end);
             return;
         }
         if let Some(enemy) = game.require_entity(&hook).enemy.clone() {
@@ -420,7 +424,7 @@ impl LmctfGrappleEquipment {
             }
         }
         let end = game.body_of(hook).origin;
-        self.draw(player.clone(), start, end);
+        self.draw(player.clone(), game, start, end);
         let distance = length3(sub3(end, start)).trunc();
         lmctf_state_mut(game, player.clone()).hook_length = f64::from(distance);
         let speed = if distance > 120.0 {
@@ -440,18 +444,21 @@ impl LmctfGrappleEquipment {
         };
         let velocity = scale3(normalize3(sub3(end, start)), speed);
         grapple_velocity(player.clone(), game, velocity);
-        (self.hooks.set_previous_velocity)(player, velocity);
+        (self.hooks.set_previous_velocity)(player, velocity, game);
     }
 
     /// Draw the hook cable (`draw`).
-    fn draw(&self, player: ActorId, start: Vec3, end: Vec3) {
+    fn draw(&self, player: ActorId, game: &mut Q2GameServices, start: Vec3, end: Vec3) {
         if length3(sub3(end, start)) > 64.0 {
-            (self.hooks.emit)(GrappleCableEvent {
-                actor: player,
-                start,
-                end,
-                offset: Vec3::default(),
-            });
+            (self.hooks.emit)(
+                GrappleCableEvent {
+                    actor: player,
+                    start,
+                    end,
+                    offset: Vec3::default(),
+                },
+                game,
+            );
         }
     }
 
@@ -497,7 +504,7 @@ pub fn lmctf_actor_released(game: &mut Q2GameServices, actor: &ActorId) {
         source.hook_state = 0;
         source.hook_length = 0.0;
         if game.host.actors().is_live(&owner) {
-            (handle.released)(owner);
+            (handle.released)(owner, game);
         }
     }
 }
