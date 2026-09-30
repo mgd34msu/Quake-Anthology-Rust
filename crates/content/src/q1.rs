@@ -36,6 +36,7 @@ pub fn q1_range(message: impl Into<String>) -> Q1Error {
     Q1Error::Range(message.into())
 }
 
+pub mod addons;
 pub mod base;
 pub mod equipment;
 pub mod foundation;
