@@ -3,7 +3,7 @@
 //! Quake II rogue/m_carrier.c. ZeniMax Media, GPL-2.0-or-later.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{Bounds, Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
+use qa_core::math::{Bounds, Vec3, add3, dot3, normalize3, scale3, sub3, vec3};
 
 use super::spawn::{
     create_rogue_monster, find_rogue_spawn_point, rogue_spawn_callbacks,

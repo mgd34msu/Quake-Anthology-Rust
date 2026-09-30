@@ -12,6 +12,7 @@ pub mod fixbot;
 pub mod gekk;
 pub mod gladb;
 pub mod hints;
+pub mod medic;
 pub mod power_armor;
 pub mod rogue_arsenal;
 pub mod rogue_common;
