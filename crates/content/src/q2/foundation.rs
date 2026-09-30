@@ -15,6 +15,7 @@ pub mod monsters;
 pub mod motion;
 pub mod movers;
 pub mod runtime;
+pub mod scenery;
 pub mod shadow_lights;
 pub mod start_items;
 pub mod weapons;

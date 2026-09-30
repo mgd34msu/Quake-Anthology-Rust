@@ -17,6 +17,15 @@ pub fn free_q2_entity(actor: ActorId, game: &mut Q2GameServices) {
     game.remove_actor(actor);
 }
 
+/// Free an entity die callback (`freeQ2Entity` as `Q2Die`).
+pub fn free_q2_entity_die(
+    actor: ActorId,
+    game: &mut Q2GameServices,
+    _reaction: crate::q2::support::contracts::DeathReaction,
+) {
+    game.remove_actor(actor);
+}
+
 /// One callback table's definitions.
 #[derive(Debug, Clone, Default)]
 pub struct Q2CallbackDefinitions {
