@@ -2,7 +2,11 @@
 
 pub mod effects;
 pub mod frames;
+pub mod ghost;
 pub mod oldnew_children;
 pub mod oldnew_projectiles;
+pub mod orb;
 pub mod registry;
+pub mod sacrifice;
 pub mod sphere_points;
+pub mod szombie;
