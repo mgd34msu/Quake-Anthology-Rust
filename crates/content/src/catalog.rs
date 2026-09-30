@@ -4179,6 +4179,7 @@ pub fn resolve_launch(
             ExecutionModule::Quakec { owner, artifact, api } => {
                 let resolved =
                     resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
+                admit_resource(&mut resources, resolved.clone());
                 execution.push(ExecutionModule::Quakec {
                     owner: owner.clone(),
                     artifact: resolved,
@@ -4188,6 +4189,7 @@ pub fn resolve_launch(
             ExecutionModule::Qvm { owner, artifact, role, api } => {
                 let resolved =
                     resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
+                admit_resource(&mut resources, resolved.clone());
                 let order = order_for_content(options.catalog, &mounted.plan, &artifact.content)?;
                 let scoped = mounted.borrow_ordered_reader(&OrderedPlan {
                     id: create_mount_plan_id("qvm-abi", &hex_lower(artifact.content.as_str().as_bytes()))?,
@@ -4239,6 +4241,7 @@ pub fn resolve_launch(
             } => {
                 let resolved =
                     resolve_launch_resource(options.catalog, &mounted, artifact, LaunchResourceKind::Artifact)?;
+                admit_resource(&mut resources, resolved.clone());
                 execution.push(ExecutionModule::Native {
                     owner: owner.clone(),
                     artifact: resolved,
@@ -5025,7 +5028,7 @@ mod tests {
     use crate::contract::{
         ModuleIdentity, QvmAbiProfile, QvmGrappleCallbacks, QvmGrappleDefinition, QvmGrappleFields,
         QvmGrappleFovOffset, QvmGrappleGlobals, QvmGrappleMovement, QvmGrapplePresentation, QvmGrappleViewAnchor,
-        QvmGrappleViewAttachment, SourceModuleApi,
+        QvmGrappleViewAttachment, ResourceResolution, SourceModuleApi,
     };
     use crate::monsters::{MonsterFamily, MonsterProgram};
     use qa_core::math::Vec3;
@@ -6358,5 +6361,830 @@ mod tests {
         std::fs::create_dir_all(&removed).unwrap();
         assert!(managed_addon_hidden(&root, &directory).unwrap());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Compat seam tests (`launch.ts`, `weapon-behaviors.ts`,
+    // `qvm-weapon-behaviors.ts`, `native-weapon-behaviors.ts`).
+
+    fn seam_content() -> ContentId {
+        create_content_id(&ContentIdentity {
+            family: GameFamily::Q1,
+            edition: "classic".to_string(),
+            package: "id1".to_string(),
+            revision: "v1".to_string(),
+        })
+        .unwrap()
+    }
+
+    fn seam_reference(namespace: &str, name: &str, content: &ContentId) -> ProviderReference {
+        ProviderReference {
+            provider: ProviderId::new(namespace, name),
+            content: content.clone(),
+        }
+    }
+
+    fn seam_preset(content: &ContentId) -> LaunchPreset {
+        let official = seam_reference("q1", "official", content);
+        LaunchPreset {
+            id: RecipeId("recipe:seam:v1".to_string()),
+            weapon_behaviors: Vec::new(),
+            mods: Vec::new(),
+            map: MapSelection {
+                geometry: ResourceRequest {
+                    content: content.clone(),
+                    path: "maps/test.bsp".to_string(),
+                },
+                entities: official.clone(),
+            },
+            campaign: CampaignSelection::None,
+            movement: official.clone(),
+            character: CharacterSelection {
+                definition: official.clone(),
+                appearance: official.clone(),
+            },
+            weapons: Vec::new(),
+            equipment: disabled_equipment(),
+            enemies: EnemySelection::MapDefined,
+            presentation: PresentationSelection {
+                doppler: crate::contract::DopplerSelection::Disabled,
+                environment: EnvironmentSelection::Disabled,
+                assets: content.clone(),
+                hud: official.clone(),
+                effects: official.clone(),
+                audio: official,
+            },
+            engine_behavior: seam_reference("q1", "engine", content),
+            combat: seam_reference("q1", "combat", content),
+            inventory: seam_reference("q1", "inventory", content),
+            r#match: seam_reference("q1", "match", content),
+            transition: seam_reference("q1", "transition", content),
+            execution: Vec::new(),
+            timing: Vec::new(),
+            ordering: FrameOrdering::Native {
+                clock: ClockProfile::Q2Classic,
+            },
+        }
+    }
+
+    struct StubWeapons {
+        timing: Vec<ProviderTiming>,
+    }
+
+    impl LaunchWeaponSources for StubWeapons {
+        fn canonical_weapon_source(
+            &self,
+            _map: &ProviderReference,
+            weapon: &ProviderReference,
+            _catalog: &InstalledCatalog,
+        ) -> Result<ProviderReference, CatalogError> {
+            Ok(weapon.clone())
+        }
+
+        fn selected_weapon_resources(
+            &self,
+            _map: &ProviderReference,
+            _weapons: &[ProviderReference],
+            _catalog: &InstalledCatalog,
+        ) -> Result<Vec<ResourceRequest>, CatalogError> {
+            Ok(Vec::new())
+        }
+
+        fn selected_weapon_timing(
+            &self,
+            _map: &ProviderReference,
+            _weapons: &[ProviderReference],
+            _catalog: &InstalledCatalog,
+        ) -> Result<Vec<ProviderTiming>, CatalogError> {
+            Ok(self.timing.clone())
+        }
+
+        fn admit_weapon_timing(
+            &self,
+            timing: &mut Vec<ProviderTiming>,
+            weapon: &ProviderTiming,
+        ) -> Result<(), CatalogError> {
+            if !timing.iter().any(|entry| entry.provider == weapon.provider) {
+                timing.push(weapon.clone());
+            }
+            Ok(())
+        }
+
+        fn weapon_provider_ids(&self) -> Vec<ProviderId> {
+            vec![
+                ProviderId::new("q1", "weapons/classic/id1"),
+                ProviderId::new("q1", "weapons/rerelease/id1"),
+                ProviderId::new("q1", "weapons/classic/hipnotic"),
+                ProviderId::new("q1", "weapons/rerelease/hipnotic"),
+                ProviderId::new("q2", "weapons/classic/baseq2"),
+                ProviderId::new("q2", "weapons/rerelease/baseq2"),
+            ]
+        }
+    }
+
+    struct StubCompat(QvmAbiProfile);
+
+    impl LaunchQvmCompatibility for StubCompat {
+        fn read_qvm_compatibility(
+            &self,
+            _mounts: &dyn BehaviorMounts,
+            _artifact_path: &str,
+            _digest: &ContentDigest,
+            _role: QvmCompatRole,
+        ) -> Result<QvmAbiProfile, CatalogError> {
+            Ok(self.0)
+        }
+    }
+
+    fn loose_product(root: &std::path::Path, content: &ContentId) -> CatalogProduct {
+        CatalogProduct {
+            id: content.clone(),
+            expectation: expectation("seam-game", GameFamily::Q1, "classic", "id1", None),
+            availability: ProductAvailability::Installed,
+            archives: Vec::new(),
+            loose_root: Some(root.to_string_lossy().into_owned()),
+            user_content: None,
+            maps: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn bare_product(id: &str, content: &ContentId) -> CatalogProduct {
+        CatalogProduct {
+            id: content.clone(),
+            expectation: expectation(id, GameFamily::Q1, "classic", "id1", None),
+            availability: ProductAvailability::Installed,
+            archives: Vec::new(),
+            loose_root: None,
+            user_content: None,
+            maps: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn launch_choice_selects_preset_and_overrides() {
+        let content = seam_content();
+        let preset = seam_preset(&content);
+        let choice = preset_choice(preset.id.clone());
+        assert!(matches!(choice.map, LaunchSelection::Preset));
+        let selected = select_launch(&choice, &preset, None).unwrap();
+        assert_eq!(selected.id, preset.id);
+        assert_eq!(selected.preset, preset.id);
+        assert_eq!(selected.map, preset.map);
+        let other = seam_reference("q1", "other", &content);
+        let mut overridden = preset_choice(preset.id.clone());
+        overridden.movement = LaunchSelection::Selected(other.clone());
+        let selected = select_launch(&overridden, &preset, Some(&RecipeId("recipe:seam:v2".to_string()))).unwrap();
+        assert_eq!(selected.id.as_str(), "recipe:seam:v2");
+        assert_eq!(selected.movement, other);
+        let mut mismatched = preset_choice(RecipeId("recipe:other:v1".to_string()));
+        mismatched.preset = RecipeId("recipe:other:v1".to_string());
+        let error = select_launch(&mismatched, &preset, None).unwrap_err();
+        assert!(error.to_string().contains("does not match supplied preset"), "{error}");
+    }
+
+    #[test]
+    fn launch_prepare_rejects_conflicting_execution() {
+        let content = seam_content();
+        let mut preset = seam_preset(&content);
+        let owner = seam_reference("q1", "official", &content);
+        let module = |implementation: &str| ExecutionModule::Typescript {
+            owner: owner.clone(),
+            implementation: ProviderId::new("ts", implementation),
+            role: ModuleRole::ServerGame,
+            api: crate::contract::SourceModuleApi::Q2ClassicGame,
+        };
+        preset.execution = vec![module("a"), module("b")];
+        let catalog = test_catalog(vec![bare_product("seam-game", &content)]);
+        let options = ResolveLaunchOptions {
+            choice: &preset_choice(preset.id.clone()),
+            preset: &preset,
+            catalog: &catalog,
+            id: None,
+            mounts: None,
+        };
+        let error = prepare_launch_mount_plan(&options, &StubWeapons { timing: Vec::new() }).unwrap_err();
+        assert!(error.to_string().contains("Conflicting execution modules for q1:official/server-game"), "{error}");
+    }
+
+    #[test]
+    fn launch_resolves_geometry_execution_and_ordering() {
+        for (profile, server, client, ui) in [(QvmAbiProfile::Modern, 8u8, 4u8, 6u8), (QvmAbiProfile::Legacy116n, 7u8, 3u8, 4u8)] {
+            let root = temp_root("launch");
+            std::fs::create_dir_all(root.join("maps")).unwrap();
+            std::fs::create_dir_all(root.join("vm")).unwrap();
+            std::fs::write(root.join("maps").join("test.bsp"), b"map-bytes").unwrap();
+            std::fs::write(root.join("vm").join("qagame.qvm"), b"qvm-bytes").unwrap();
+            let content = seam_content();
+            let mut preset = seam_preset(&content);
+            let owner = seam_reference("q1", "official", &content);
+            preset.execution = vec![
+                ExecutionModule::Typescript {
+                    owner: owner.clone(),
+                    implementation: ProviderId::new("ts", "game"),
+                    role: ModuleRole::ServerGame,
+                    api: crate::contract::SourceModuleApi::Q2ClassicGame,
+                },
+                ExecutionModule::Qvm {
+                    owner: seam_reference("q3", "server", &content),
+                    artifact: ResourceRequest {
+                        content: content.clone(),
+                        path: "vm/qagame.qvm".to_string(),
+                    },
+                    role: ModuleRole::ServerGame,
+                    api: Q3ApiIdentity::Qagame(7),
+                },
+                ExecutionModule::Qvm {
+                    owner: seam_reference("q3", "client", &content),
+                    artifact: ResourceRequest {
+                        content: content.clone(),
+                        path: "vm/qagame.qvm".to_string(),
+                    },
+                    role: ModuleRole::ClientGame,
+                    api: Q3ApiIdentity::Cgame(3),
+                },
+                ExecutionModule::Qvm {
+                    owner: seam_reference("q3", "ui", &content),
+                    artifact: ResourceRequest {
+                        content: content.clone(),
+                        path: "vm/qagame.qvm".to_string(),
+                    },
+                    role: ModuleRole::Ui,
+                    api: Q3ApiIdentity::Ui(6),
+                },
+            ];
+            let weapon_provider = ProviderId::new("q9", "weapons/test");
+            preset.timing = vec![
+                ProviderTiming {
+                    // Stock providers are filtered out of the preset timing.
+                    provider: ProviderId::new("q1", "equipment/threewave-grapple"),
+                    clock: ClockProfile::Q2Classic,
+                    numeric: Q1_DONOR_PROFILE,
+                },
+                ProviderTiming {
+                    provider: ProviderId::new("q1", "custom"),
+                    clock: ClockProfile::Q2Classic,
+                    numeric: Q1_DONOR_PROFILE,
+                },
+            ];
+            let catalog = test_catalog(vec![loose_product(&root, &content)]);
+            let options = ResolveLaunchOptions {
+                choice: &preset_choice(preset.id.clone()),
+                preset: &preset,
+                catalog: &catalog,
+                id: None,
+                mounts: None,
+            };
+            let weapons = StubWeapons {
+                timing: vec![ProviderTiming {
+                    provider: weapon_provider.clone(),
+                    clock: ClockProfile::Q2Classic,
+                    numeric: Q1_DONOR_PROFILE,
+                }],
+            };
+            let recipe = resolve_launch(&options, &weapons, &StubCompat(profile)).unwrap();
+            assert_eq!(recipe.schema_version, 3);
+            assert_eq!(recipe.map.geometry_content, content);
+            assert_eq!(recipe.map.geometry.requested_path, "maps/test.bsp");
+            assert_eq!(recipe.execution.len(), 4);
+            assert!(matches!(recipe.execution[0], ExecutionModule::Typescript { .. }));
+            assert!(matches!(recipe.execution[1], ExecutionModule::Qvm { api: Q3ApiIdentity::Qagame(v), .. } if v == server));
+            assert!(matches!(recipe.execution[2], ExecutionModule::Qvm { api: Q3ApiIdentity::Cgame(v), .. } if v == client));
+            assert!(matches!(recipe.execution[3], ExecutionModule::Qvm { api: Q3ApiIdentity::Ui(v), .. } if v == ui));
+            assert!(recipe.resources.iter().any(|resource| resource.requested_path == "maps/test.bsp"));
+            assert!(recipe.resources.iter().any(|resource| resource.requested_path == "vm/qagame.qvm"));
+            // Single-source artifacts pin their mount order.
+            assert!(recipe.mounts.prefix_orders.iter().any(|order| order.prefix == "vm/qagame.qvm"));
+            // Stock preset timing is replaced by surviving, equipment, monster, and weapon rows.
+            assert_eq!(recipe.timing.len(), 2);
+            assert_eq!(recipe.timing[0].provider, ProviderId::new("q1", "custom"));
+            assert_eq!(recipe.timing[1].provider, weapon_provider);
+            // Native ordering with weapon providers becomes mixed.
+            match &recipe.ordering {
+                FrameOrdering::Mixed { providers } => {
+                    assert!(providers.contains(&ProviderId::new("q1", "official")));
+                    assert!(providers.contains(&ProviderId::new("q1", "custom")));
+                    assert!(providers.contains(&weapon_provider));
+                }
+                ordering => panic!("expected mixed ordering, got {ordering:?}"),
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn launch_reports_missing_and_absent_resources() {
+        let root = temp_root("launch-missing");
+        std::fs::create_dir_all(root.join("maps")).unwrap();
+        std::fs::write(root.join("maps").join("test.bsp"), b"map-bytes").unwrap();
+        let content = seam_content();
+        let other_content = create_content_id(&ContentIdentity {
+            family: GameFamily::Q1,
+            edition: "classic".to_string(),
+            package: "rogue".to_string(),
+            revision: "v1".to_string(),
+        })
+        .unwrap();
+        let other = bare_product("other-game", &other_content);
+        let catalog = test_catalog(vec![loose_product(&root, &content), other]);
+        let preset = seam_preset(&content);
+        let options = ResolveLaunchOptions {
+            choice: &preset_choice(preset.id.clone()),
+            preset: &preset,
+            catalog: &catalog,
+            id: None,
+            mounts: None,
+        };
+        let prepared = prepare_launch_mount_plan(&options, &StubWeapons { timing: Vec::new() }).unwrap();
+        let mounted = open_mount_plan(&prepared.plan, OpenMountOptions::default()).unwrap();
+        let error = resolve_launch_resource(
+            &catalog,
+            &mounted,
+            &ResourceRequest { content: content.clone(), path: "maps/absent.bsp".to_string() },
+            LaunchResourceKind::Map,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Required resource is missing"), "{error}");
+        // Bytes from another content's mount fail the provenance check.
+        let error = resolve_launch_resource(
+            &catalog,
+            &mounted,
+            &ResourceRequest { content: other_content.clone(), path: "maps/test.bsp".to_string() },
+            LaunchResourceKind::Map,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("is absent from its selected content and base"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn seam_digest() -> ContentDigest {
+        create_content_digest(&"ab".repeat(32)).unwrap()
+    }
+
+    fn seam_module() -> ModuleIdentity {
+        ModuleIdentity {
+            id: ProviderId::new("q1", "gameplay"),
+            artifact_path: "progs.dat".to_string(),
+            digest: seam_digest(),
+            revision: "v1".to_string(),
+        }
+    }
+
+    fn seam_program() -> QcWeaponProgramSnapshot {
+        // Function 1 stores function 2 into the think field at statement 1.
+        QcWeaponProgramSnapshot {
+            digest: seam_digest(),
+            capability_error: None,
+            functions: vec![
+                QcWeaponFunction { index: 0, name: "<none>".to_string(), first_statement: -1, parameter_words: 0 },
+                QcWeaponFunction { index: 1, name: "fire".to_string(), first_statement: 0, parameter_words: 0 },
+                QcWeaponFunction { index: 2, name: "think".to_string(), first_statement: 2, parameter_words: 0 },
+            ],
+            statements: vec![
+                QcWeaponStatement { opcode: QcWeaponOpcode::Address, a: 0, b: 10, c: 4 },
+                QcWeaponStatement { opcode: QcWeaponOpcode::StorePFn, a: 11, b: 4, c: 0 },
+            ],
+            think_field_offset: Some(7),
+            initial_global_words: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 2],
+            function_globals: vec![QcFunctionGlobal { name: "think".to_string(), offset: 11 }],
+        }
+    }
+
+    fn seam_metadata() -> SourceWeaponBehaviorMetadata {
+        SourceWeaponBehaviorMetadata {
+            id: "q1:rocket".to_string(),
+            title: "Rocket".to_string(),
+            artifact_digest: seam_digest(),
+            role: ProjectileRole::Rocket,
+            fire_function: "fire".to_string(),
+            activation_function: None,
+        }
+    }
+
+    #[test]
+    fn qc_weapon_behaviors_resolve_and_catalog() {
+        let module = seam_module();
+        let program = seam_program();
+        let supported = resolve_qc_weapon_behavior(&module, &program, &seam_metadata());
+        match supported {
+            WeaponBehaviorCompatibility::Supported { definition } => {
+                assert_eq!(definition.id, "q1:rocket");
+                assert_eq!(definition.role, ProjectileRole::Rocket);
+                assert!(definition.activate.is_none());
+                assert!(matches!(
+                    definition.fire,
+                    WeaponBehaviorCallback::Quakec { function_index: 1, .. }
+                ));
+            }
+            verdict => panic!("expected supported, got {verdict:?}"),
+        }
+        let mut gated = seam_metadata();
+        gated.activation_function = Some("think".to_string());
+        match resolve_qc_weapon_behavior(&module, &program, &gated) {
+            WeaponBehaviorCompatibility::Supported { definition } => {
+                assert!(matches!(
+                    definition.activate,
+                    Some(WeaponBehaviorCallback::Quakec { function_index: 2, .. })
+                ));
+            }
+            verdict => panic!("expected gated supported, got {verdict:?}"),
+        }
+        let mut foreign = seam_metadata();
+        foreign.artifact_digest = create_content_digest(&"cd".repeat(32)).unwrap();
+        assert!(matches!(
+            resolve_qc_weapon_behavior(&module, &program, &foreign),
+            WeaponBehaviorCompatibility::Unsupported { reason } if reason.contains("different source artifact")
+        ));
+        let incapable = QcWeaponProgramSnapshot {
+            capability_error: Some("missing field".to_string()),
+            ..program.clone()
+        };
+        assert!(matches!(
+            resolve_qc_weapon_behavior(&module, &incapable, &seam_metadata()),
+            WeaponBehaviorCompatibility::Unsupported { reason } if reason == "missing field"
+        ));
+        let mut missing = seam_metadata();
+        missing.fire_function = "absent".to_string();
+        assert!(matches!(
+            resolve_qc_weapon_behavior(&module, &program, &missing),
+            WeaponBehaviorCompatibility::Unsupported { reason } if reason.contains("absent from the source program")
+        ));
+        let mut catalog = WeaponBehaviorCatalog::new();
+        let WeaponBehaviorCompatibility::Supported { definition } =
+            resolve_qc_weapon_behavior(&module, &program, &seam_metadata())
+        else {
+            panic!("expected supported");
+        };
+        catalog.add(definition.clone()).unwrap();
+        assert!(catalog.add(definition.clone()).unwrap_err().to_string().contains("Duplicate weapon behavior"));
+        assert_eq!(catalog.for_role(ProjectileRole::Rocket).len(), 1);
+        assert!(catalog.for_role(ProjectileRole::Grenade).is_empty());
+        assert_eq!(catalog.require("q1:rocket").unwrap(), definition);
+        assert!(catalog.require("q1:absent").unwrap_err().to_string().contains("Unknown weapon behavior"));
+    }
+
+    #[test]
+    fn qc_trajectory_inspection_reports_literal_stores() {
+        let bindings = inspect_qc_trajectory_bindings(&seam_program());
+        assert_eq!(
+            bindings,
+            vec![QcTrajectoryBindingInspection { producer_function: 1, think_function: 2, statement: 1 }]
+        );
+        let no_think = QcWeaponProgramSnapshot { think_field_offset: None, ..seam_program() };
+        assert!(inspect_qc_trajectory_bindings(&no_think).is_empty());
+        let mut reassigned = seam_program();
+        reassigned.statements.push(QcWeaponStatement { opcode: QcWeaponOpcode::StoreFn, a: 0, b: 11, c: 0 });
+        assert!(inspect_qc_trajectory_bindings(&reassigned).is_empty());
+    }
+
+    struct StubMounts {
+        files: HashMap<String, Vec<u8>>,
+        digest: ContentDigest,
+    }
+
+    impl BehaviorMounts for StubMounts {
+        fn open_behavior(&self, path: &str) -> Result<Option<OpenedResource>, CatalogError> {
+            let Some(bytes) = self.files.get(path) else {
+                return Ok(None);
+            };
+            let content = seam_content();
+            Ok(Some(OpenedResource {
+                reference: ResolvedResourceReference {
+                    id: crate::contract::ResourceId(format!("resource:seam:{path}")),
+                    requested_path: path.to_string(),
+                    provenance: ResourceProvenance::Loose {
+                        mount: LooseMount {
+                            identity: create_mount_identity(
+                                create_mount_id("seam", "stub").unwrap(),
+                                content,
+                                0,
+                            )
+                            .unwrap(),
+                            root_path: "/stub".to_string(),
+                        },
+                        member_path: path.to_string(),
+                    },
+                    digest: self.digest.clone(),
+                    byte_length: bytes.len() as u64,
+                    resolution: ResourceResolution::DefaultOrder {
+                        plan: create_mount_plan_id("seam", "stub").unwrap(),
+                        rank: 0,
+                    },
+                },
+                bytes: bytes.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn qc_weapon_discovery_reads_declarations_or_reports_bindings() {
+        let program = seam_program();
+        let module = seam_module();
+        let empty = StubMounts { files: HashMap::new(), digest: seam_digest() };
+        match discover_qc_weapon_behaviors(&empty, &module, &program).unwrap() {
+            MountedWeaponBehaviorDiscovery::Undeclared { bindings, reason } => {
+                assert_eq!(bindings.len(), 1);
+                assert!(reason.contains("No authored weapon behavior declaration"), "{reason}");
+            }
+            discovery => panic!("expected undeclared, got {discovery:?}"),
+        }
+        let digest = seam_digest();
+        let document = format!(
+            r#"{{"version": 1, "behaviors": [
+                {{"id": "q1:rocket", "title": "Rocket", "artifactDigest": "{digest}", "role": "rocket",
+                  "aspect": "trajectory", "fireFunction": "fire"}},
+                {{"id": "q1:missing", "title": "Missing", "artifactDigest": "{digest}", "role": "nail",
+                  "aspect": "trajectory", "fireFunction": "absent"}}]}}"#,
+        );
+        let declared = StubMounts {
+            files: HashMap::from([("weapon-behaviors.json".to_string(), document.into_bytes())]),
+            digest: seam_digest(),
+        };
+        match discover_qc_weapon_behaviors(&declared, &module, &program).unwrap() {
+            MountedWeaponBehaviorDiscovery::Declared { declarations } => {
+                assert_eq!(declarations.len(), 2);
+                assert!(matches!(declarations[0], WeaponBehaviorCompatibility::Supported { .. }));
+                assert!(matches!(declarations[1], WeaponBehaviorCompatibility::Unsupported { .. }));
+            }
+            discovery => panic!("expected declared, got {discovery:?}"),
+        }
+        for (name, bytes) in [
+            ("bad json", b"{not json".to_vec()),
+            ("bad version", br#"{"version": 2, "behaviors": []}"#.to_vec()),
+            ("bad entry", br#"{"version": 1, "behaviors": [{"id": "no-namespace"}]}"#.to_vec()),
+        ] {
+            let mounts = StubMounts {
+                files: HashMap::from([("weapon-behaviors.json".to_string(), bytes)]),
+                digest: seam_digest(),
+            };
+            assert!(discover_qc_weapon_behaviors(&mounts, &module, &program).is_err(), "{name}");
+        }
+        let bad_digest = br#"{"version": 1, "behaviors": [
+            {"id": "q1:bad", "title": "Bad", "artifactDigest": "zzz", "role": "rocket",
+             "aspect": "trajectory", "fireFunction": "fire"}]}"#;
+        let mounts = StubMounts {
+            files: HashMap::from([("weapon-behaviors.json".to_string(), bad_digest.to_vec())]),
+            digest: seam_digest(),
+        };
+        let error = discover_qc_weapon_behaviors(&mounts, &module, &program).unwrap_err();
+        assert!(error.to_string().contains("artifact digest"), "{error}");
+        let duplicate = format!(
+            r#"{{"version": 1, "behaviors": [
+                {{"id": "q1:dup", "title": "A", "artifactDigest": "{digest}", "role": "rocket",
+                  "aspect": "trajectory", "fireFunction": "fire"}},
+                {{"id": "q1:dup", "title": "B", "artifactDigest": "{digest}", "role": "rocket",
+                  "aspect": "trajectory", "fireFunction": "fire"}}]}}"#,
+        );
+        let mounts = StubMounts {
+            files: HashMap::from([("weapon-behaviors.json".to_string(), duplicate.into_bytes())]),
+            digest: seam_digest(),
+        };
+        let error = discover_qc_weapon_behaviors(&mounts, &module, &program).unwrap_err();
+        assert!(error.to_string().contains("Duplicate declared weapon behavior"), "{error}");
+    }
+
+    struct StubQvmService {
+        bytecode: bool,
+    }
+
+    impl QvmWeaponBehaviorService<String, String> for StubQvmService {
+        fn resolve_qvm_artifact(
+            &self,
+            _abi_profile: QvmAbiProfile,
+            _bytes: &[u8],
+            module: &ModuleIdentity,
+        ) -> Result<QvmWeaponArtifactResolution<String>, CatalogError> {
+            if self.bytecode {
+                Ok(QvmWeaponArtifactResolution::Bytecode(module.artifact_path.clone()))
+            } else {
+                Ok(QvmWeaponArtifactResolution::Other)
+            }
+        }
+
+        fn read_qvm_weapon_profile(
+            &self,
+            declaration: &SaveJson,
+            _artifact: &String,
+        ) -> Result<String, CatalogError> {
+            match declaration.get("id") {
+                Some(SaveJson::String(id)) => Ok(id.clone()),
+                _ => Err(invalid("missing profile id")),
+            }
+        }
+
+        fn qvm_weapon_profile_id(&self, profile: &String) -> String {
+            profile.clone()
+        }
+    }
+
+    fn qvm_declaration(id: &str) -> SaveJson {
+        parse_save_json(&format!(
+            r#"{{"artifactPath": "vm/qagame.qvm", "abiProfile": "q3-modern", "id": "{id}"}}"#,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn qvm_weapon_behaviors_load_and_deduplicate() {
+        let document = read_qvm_weapon_behavior_document(br#"{"version": 1, "profiles": [{"id": "a"}, {"id": "b"}]}"#).unwrap();
+        assert_eq!(document.len(), 2);
+        assert!(read_qvm_weapon_behavior_document(br#"{"version": 2, "profiles": []}"#).is_err());
+        let provider = ProviderId::new("q3", "gameplay");
+        let mounts = StubMounts {
+            files: HashMap::from([
+                ("vm/qagame.qvm".to_string(), b"bytecode".to_vec()),
+                (
+                    "qvm-weapon-behaviors.json".to_string(),
+                    br#"{"version": 1, "profiles": [
+                        {"artifactPath": "vm/qagame.qvm", "abiProfile": "q3-modern", "id": "qvm:rocket"},
+                        {"artifactPath": "vm/qagame.qvm", "abiProfile": "q3-1.16n-base", "id": "qvm:rail"}]}"#
+                        .to_vec(),
+                ),
+            ]),
+            digest: seam_digest(),
+        };
+        let service = StubQvmService { bytecode: true };
+        let loaded = load_qvm_weapon_behavior(&mounts, &provider, &qvm_declaration("qvm:rocket"), &service).unwrap();
+        assert_eq!(loaded.artifact, "vm/qagame.qvm");
+        assert_eq!(loaded.resource.requested_path, "vm/qagame.qvm");
+        assert_eq!(loaded.profile, "qvm:rocket");
+        let discovered = discover_qvm_weapon_behaviors(&mounts, &provider, &service).unwrap().unwrap();
+        assert_eq!(discovered.len(), 2);
+        let absent = StubMounts { files: HashMap::new(), digest: seam_digest() };
+        assert!(discover_qvm_weapon_behaviors(&absent, &provider, &service).unwrap().is_none());
+        let error = load_qvm_weapon_behavior(&absent, &provider, &qvm_declaration("qvm:rocket"), &service).unwrap_err();
+        assert!(error.to_string().contains("artifact is missing"), "{error}");
+        let error = load_qvm_weapon_behavior(
+            &mounts,
+            &provider,
+            &qvm_declaration("qvm:rocket"),
+            &StubQvmService { bytecode: false },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires actual bytecode"), "{error}");
+        let duplicated = StubMounts {
+            files: HashMap::from([
+                ("vm/qagame.qvm".to_string(), b"bytecode".to_vec()),
+                (
+                    "qvm-weapon-behaviors.json".to_string(),
+                    br#"{"version": 1, "profiles": [
+                        {"artifactPath": "vm/qagame.qvm", "abiProfile": "q3-modern", "id": "qvm:dup"},
+                        {"artifactPath": "vm/qagame.qvm", "abiProfile": "q3-modern", "id": "qvm:dup"}]}"#
+                        .to_vec(),
+                ),
+            ]),
+            digest: seam_digest(),
+        };
+        let error = discover_qvm_weapon_behaviors(&duplicated, &provider, &service).unwrap_err();
+        assert!(error.to_string().contains("Duplicate QVM weapon behavior"), "{error}");
+    }
+
+    fn native_declaration(artifact: &str, id: &str) -> NativeWeaponBehaviorDeclaration {
+        use crate::contract::{
+            NativeWeaponAllocate, NativeWeaponCalls, NativeWeaponClient, NativeWeaponCommand, NativeWeaponEntity,
+            NativeWeaponEntry, NativeWeaponEquipped, NativeWeaponFree, NativeWeaponThink, NativeWeaponTime,
+        };
+        let entry = NativeWeaponEntry { rva: 16, registration: None };
+        NativeWeaponBehaviorDeclaration {
+            version: 1,
+            id: id.to_string(),
+            title: id.to_string(),
+            role: ProjectileRole::Rocket,
+            artifact_path: artifact.to_string(),
+            artifact_digest: seam_digest(),
+            entity: NativeWeaponEntity {
+                byte_length: 64, origin: 0, angles: 8, velocity: 16, client: 24, owner: 32,
+                view_height: 40, generation: 44, next_think: 48, think_callback: 52,
+                think_registration: 56, touch_callback: 60,
+            },
+            client: NativeWeaponClient { byte_length: 16, weapon: 0, view_angles: 4, forward: 8 },
+            equipped_weapon: NativeWeaponEquipped { byte_length: 8, callback: 0, expected: entry.clone() },
+            time: NativeWeaponTime { rva: 32 },
+            think: NativeWeaponThink {
+                tag: 1,
+                registration: crate::contract::NativeWeaponRegistrationLayout {
+                    byte_length: 8, name: 0, tag: 4, callback: 8,
+                },
+            },
+            allocate: NativeWeaponAllocate { entry: entry.clone() },
+            free: NativeWeaponFree { entry: entry.clone() },
+            projectile_touch: entry.clone(),
+            equip: NativeWeaponCalls { calls: vec![entry.clone()] },
+            launch: NativeWeaponCalls { calls: vec![entry.clone()] },
+            activate_rva: None,
+            fire_rva: 48,
+            initialization_classes: Vec::new(),
+            equipment: Vec::new(),
+            ammunition: NativeWeaponCommand { arguments: Vec::new(), tail: String::new() },
+            initial_cvars: Vec::new(),
+            provisioning_cvars: Vec::new(),
+        }
+    }
+
+    fn native_definition(id: &str, module: &ModuleIdentity) -> WeaponBehaviorDefinition {
+        WeaponBehaviorDefinition {
+            id: id.to_string(),
+            title: id.to_string(),
+            module: module.clone(),
+            role: ProjectileRole::Rocket,
+            activate: None,
+            fire: WeaponBehaviorCallback::NativeArtifact {
+                module: module.clone(),
+                image_offset: 48,
+                abi: crate::contract::NativeCallAbi::Native(crate::contract::NativeAbi::WindowsX86_64),
+            },
+        }
+    }
+
+    struct StubNativeService {
+        definition: bool,
+        builtin: bool,
+    }
+
+    impl NativeWeaponBehaviorService for StubNativeService {
+        fn read_native_weapon_declaration(&self, value: &SaveJson) -> Result<NativeWeaponBehaviorDeclaration, CatalogError> {
+            let reader = SaveReader::new(value);
+            let artifact = reader.field("artifactPath").string().map_err(CatalogError::from)?;
+            let id = reader.field("id").string().map_err(CatalogError::from)?;
+            Ok(native_declaration(&artifact, &id))
+        }
+
+        fn native_weapon_definition(
+            &self,
+            declaration: &NativeWeaponBehaviorDeclaration,
+            module: &ModuleIdentity,
+            _image_bytes: &[u8],
+        ) -> Result<Option<WeaponBehaviorDefinition>, CatalogError> {
+            Ok(self.definition.then(|| native_definition(&declaration.id, module)))
+        }
+
+        fn builtin_rerelease_weapon_declaration(
+            &self,
+            _module: &ModuleIdentity,
+        ) -> Result<Option<NativeWeaponBehaviorDeclaration>, CatalogError> {
+            Ok(self.builtin.then(|| native_declaration("game_x64.dll", "native:blaster")))
+        }
+    }
+
+    #[test]
+    fn native_weapon_behaviors_load_document_and_builtin_fallback() {
+        let document =
+            read_native_weapon_behavior_document(br#"{"version": 1, "profiles": [{"id": "a"}]}"#).unwrap();
+        assert_eq!(document.len(), 1);
+        assert!(read_native_weapon_behavior_document(br#"{"version": 0, "profiles": []}"#).is_err());
+        let provider = ProviderId::new("q2", "gameplay");
+        let service = StubNativeService { definition: true, builtin: true };
+        let mounts = StubMounts {
+            files: HashMap::from([
+                ("game_x64.dll".to_string(), b"pe-bytes".to_vec()),
+                (
+                    "native-weapon-behaviors.json".to_string(),
+                    br#"{"version": 1, "profiles": [
+                        {"artifactPath": "game_x64.dll", "id": "native:blaster"},
+                        {"artifactPath": "game_x64.dll", "id": "native:rail"}]}"#
+                        .to_vec(),
+                ),
+            ]),
+            digest: seam_digest(),
+        };
+        let value = parse_save_json(r#"{"artifactPath": "game_x64.dll", "id": "native:blaster"}"#).unwrap();
+        let loaded = load_native_weapon_behavior(&mounts, &provider, &value, &service).unwrap();
+        assert_eq!(loaded.definition.id, "native:blaster");
+        assert_eq!(loaded.declaration.artifact_path, "game_x64.dll");
+        let discovered = discover_native_weapon_behaviors(&mounts, &provider, &service).unwrap().unwrap();
+        assert_eq!(discovered.len(), 2);
+        // No document falls back to the stock game image.
+        let fallback = StubMounts {
+            files: HashMap::from([("game_x64.dll".to_string(), b"pe-bytes".to_vec())]),
+            digest: seam_digest(),
+        };
+        let discovered = discover_native_weapon_behaviors(&fallback, &provider, &service).unwrap().unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].definition.id, "native:blaster");
+        let empty = StubMounts { files: HashMap::new(), digest: seam_digest() };
+        assert!(discover_native_weapon_behaviors(&empty, &provider, &service).unwrap().is_none());
+        let no_builtin = StubNativeService { definition: true, builtin: false };
+        assert!(discover_native_weapon_behaviors(&fallback, &provider, &no_builtin).unwrap().is_none());
+        // Missing artifacts and empty definitions fail the load.
+        let error = load_native_weapon_behavior(&empty, &provider, &value, &service).unwrap_err();
+        assert!(error.to_string().contains("artifact is missing"), "{error}");
+        let no_definition = StubNativeService { definition: false, builtin: true };
+        let error = load_native_weapon_behavior(&mounts, &provider, &value, &no_definition).unwrap_err();
+        assert!(error.to_string().contains("no executable definition"), "{error}");
+        let duplicated = StubMounts {
+            files: HashMap::from([
+                ("game_x64.dll".to_string(), b"pe-bytes".to_vec()),
+                (
+                    "native-weapon-behaviors.json".to_string(),
+                    br#"{"version": 1, "profiles": [
+                        {"artifactPath": "game_x64.dll", "id": "native:dup"},
+                        {"artifactPath": "game_x64.dll", "id": "native:dup"}]}"#
+                        .to_vec(),
+                ),
+            ]),
+            digest: seam_digest(),
+        };
+        let error = discover_native_weapon_behaviors(&duplicated, &provider, &service).unwrap_err();
+        assert!(error.to_string().contains("Duplicate native weapon behavior"), "{error}");
     }
 }
