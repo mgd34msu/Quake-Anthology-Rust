@@ -66,12 +66,19 @@ pub fn lease_ports(count: usize, owner: &str) -> Result<PortLease, ToolsError> {
     let result = (|| -> Result<(), ToolsError> {
         let mut collisions = 0;
         while ports.len() < count {
-            let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| ToolsError::io("leasing a loopback port", error))?;
-            let port = listener.local_addr().map_err(|error| ToolsError::io("leasing a loopback port", error))?.port();
+            let listener =
+                TcpListener::bind("127.0.0.1:0").map_err(|error| ToolsError::io("leasing a loopback port", error))?;
+            let port = listener
+                .local_addr()
+                .map_err(|error| ToolsError::io("leasing a loopback port", error))?
+                .port();
             let path = root.join(format!("{port}.json"));
             let mut owner_text = String::new();
             escape_string(owner, &mut owner_text);
-            let lock_text = format!("{{\"owner\":{owner_text},\"pid\":{},\"port\":{port}}}", std::process::id());
+            let lock_text = format!(
+                "{{\"owner\":{owner_text},\"pid\":{},\"port\":{port}}}",
+                std::process::id()
+            );
             match exclusive_text(&path, &lock_text, 0o600) {
                 Ok(()) => {}
                 Err(error) => {
@@ -114,15 +121,19 @@ fn exclusive_text(path: &Path, text: &str, mode: u32) -> Result<(), ToolsError> 
         options.mode(mode);
     }
     let _ = mode;
-    let mut file = options.open(path).map_err(|error| ToolsError::io(format!("locking {}", path.display()), error))?;
-    file.write_all(text.as_bytes()).map_err(|error| ToolsError::io(format!("locking {}", path.display()), error))?;
+    let mut file = options
+        .open(path)
+        .map_err(|error| ToolsError::io(format!("locking {}", path.display()), error))?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| ToolsError::io(format!("locking {}", path.display()), error))?;
     Ok(())
 }
 
 #[cfg(unix)]
 fn set_permissions(path: &Path, mode: u32) -> Result<(), ToolsError> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|error| ToolsError::io(format!("setting mode on {}", path.display()), error))
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|error| ToolsError::io(format!("setting mode on {}", path.display()), error))
 }
 
 #[cfg(not(unix))]
@@ -134,14 +145,21 @@ fn set_permissions(_path: &Path, _mode: u32) -> Result<(), ToolsError> {
 ///
 /// Refuses symlinked sources and rehashes after the copy.
 pub fn copy_pinned_file(source: &Path, destination: &Path, sha256: &str, executable: bool) -> Result<(), ToolsError> {
-    let canonical = fs::canonicalize(source).map_err(|error| ToolsError::io(format!("resolving {}", source.display()), error))?;
+    let canonical =
+        fs::canonicalize(source).map_err(|error| ToolsError::io(format!("resolving {}", source.display()), error))?;
     if canonical != resolve(source) {
-        return Err(ToolsError::invalid(format!("Input symlink is not an owned immutable file: {}", source.display())));
+        return Err(ToolsError::invalid(format!(
+            "Input symlink is not an owned immutable file: {}",
+            source.display()
+        )));
     }
     copy_exclusive(source, destination)?;
     set_permissions(destination, if executable { 0o500 } else { 0o400 })?;
     if hash_file(destination)? != sha256 {
-        return Err(ToolsError::invalid(format!("Input changed while being copied: {}", source.display())));
+        return Err(ToolsError::invalid(format!(
+            "Input changed while being copied: {}",
+            source.display()
+        )));
     }
     Ok(())
 }
@@ -177,11 +195,17 @@ impl Drop for PrivateDisplay {
 }
 
 /// Start a private display provider (`Xvfb`-shaped) writing its number to `display.txt`.
-pub fn start_private_display(executable: &Path, output_root: &Path, environment: &HashMap<String, String>) -> Result<PrivateDisplay, ToolsError> {
+pub fn start_private_display(
+    executable: &Path,
+    output_root: &Path,
+    environment: &HashMap<String, String>,
+) -> Result<PrivateDisplay, ToolsError> {
     let display_path = output_root.join("display.txt");
-    let stdout = File::create(&display_path).map_err(|error| ToolsError::io(format!("creating {}", display_path.display()), error))?;
+    let stdout = File::create(&display_path)
+        .map_err(|error| ToolsError::io(format!("creating {}", display_path.display()), error))?;
     let stderr_path = output_root.join("display-stderr.txt");
-    let stderr = File::create(&stderr_path).map_err(|error| ToolsError::io(format!("creating {}", stderr_path.display()), error))?;
+    let stderr = File::create(&stderr_path)
+        .map_err(|error| ToolsError::io(format!("creating {}", stderr_path.display()), error))?;
     let mut command = Command::new(executable);
     command
         .args(["-displayfd", "1", "-screen", "0", "1280x720x24", "-nolisten", "tcp"])
@@ -191,10 +215,15 @@ pub fn start_private_display(executable: &Path, output_root: &Path, environment:
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     detach(&mut command);
-    let mut child = command.spawn().map_err(|error| ToolsError::io(format!("starting {}", executable.display()), error))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| ToolsError::io(format!("starting {}", executable.display()), error))?;
     let deadline = Instant::now() + Duration::from_millis(5000);
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| ToolsError::io("polling display provider", error))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| ToolsError::io("polling display provider", error))?
+        {
             let code = status.code().map_or(-1, |code| code as i64);
             kill_process_group(child.id(), SIGKILL);
             let _ = child.wait();
@@ -210,14 +239,19 @@ pub fn start_private_display(executable: &Path, output_root: &Path, environment:
         if Instant::now() >= deadline {
             kill_process_group(child.id(), SIGKILL);
             let _ = child.wait();
-            return Err(ToolsError::invalid("Private display provider did not allocate a display within 5000ms"));
+            return Err(ToolsError::invalid(
+                "Private display provider did not allocate a display within 5000ms",
+            ));
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
 fn is_display_number(text: &str) -> bool {
-    text.ends_with('\n') && !text.is_empty() && text[..text.len() - 1].bytes().all(|byte| byte.is_ascii_digit()) && !text[..text.len() - 1].is_empty()
+    text.ends_with('\n')
+        && !text.is_empty()
+        && text[..text.len() - 1].bytes().all(|byte| byte.is_ascii_digit())
+        && !text[..text.len() - 1].is_empty()
 }
 
 #[cfg(test)]

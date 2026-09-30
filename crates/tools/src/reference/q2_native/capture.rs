@@ -132,7 +132,11 @@ impl CaseOutput {
     #[must_use]
     pub fn to_json(&self) -> Json {
         match self {
-            Self::Png { identity, width, height } => Json::object(vec![
+            Self::Png {
+                identity,
+                width,
+                height,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("png")),
                 ("identity".to_owned(), identity.to_json()),
                 ("width".to_owned(), Json::uint(u64::from(*width))),
@@ -182,13 +186,25 @@ impl CaseChecks {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("checkpointSequenceCompleted".to_owned(), Json::boolean(self.checkpoint_sequence_completed)),
+            (
+                "checkpointSequenceCompleted".to_owned(),
+                Json::boolean(self.checkpoint_sequence_completed),
+            ),
             ("screenshots640x480".to_owned(), Json::boolean(self.screenshots_640x480)),
             ("demoWritten".to_owned(), Json::boolean(self.demo_written)),
             ("loopbackReply".to_owned(), Json::boolean(self.loopback_reply)),
-            ("nativeClientConnected".to_owned(), Json::boolean(self.native_client_connected)),
-            ("softwareRendererObserved".to_owned(), Json::boolean(self.software_renderer_observed)),
-            ("saveAndReloadObserved".to_owned(), Json::boolean(self.save_and_reload_observed)),
+            (
+                "nativeClientConnected".to_owned(),
+                Json::boolean(self.native_client_connected),
+            ),
+            (
+                "softwareRendererObserved".to_owned(),
+                Json::boolean(self.software_renderer_observed),
+            ),
+            (
+                "saveAndReloadObserved".to_owned(),
+                Json::boolean(self.save_and_reload_observed),
+            ),
         ])
     }
 }
@@ -203,21 +219,34 @@ pub fn case_checks(
     observations: &[NamedObservation],
     port: u16,
 ) -> CaseChecks {
-    let screenshots: Vec<&CaseOutput> =
-        outputs.iter().filter(|output| matches!(output, CaseOutput::Png { .. })).collect();
+    let screenshots: Vec<&CaseOutput> = outputs
+        .iter()
+        .filter(|output| matches!(output, CaseOutput::Png { .. }))
+        .collect();
     let demo = outputs.iter().find(|output| output.identity().path.ends_with(".dm2"));
-    let client_output =
-        observations.iter().find(|item| item.name == "client").map_or("", |item| item.observation.stdout.as_str());
+    let client_output = observations
+        .iter()
+        .find(|item| item.name == "client")
+        .map_or("", |item| item.observation.stdout.as_str());
     CaseChecks {
         checkpoint_sequence_completed: failure.is_none(),
         screenshots_640x480: screenshots.len() >= 2
-            && screenshots
-                .iter()
-                .all(|output| matches!(output, CaseOutput::Png { width: 640, height: 480, .. })),
+            && screenshots.iter().all(|output| {
+                matches!(
+                    output,
+                    CaseOutput::Png {
+                        width: 640,
+                        height: 480,
+                        ..
+                    }
+                )
+            }),
         demo_written: demo.is_some_and(|output| output.identity().size > 1024),
         loopback_reply: mode == CaseMode::SingleplayerSave
             || queries.iter().all(|item| {
-                item.response.iter().any(|packet| packet.from == "127.0.0.1" && packet.port == port)
+                item.response
+                    .iter()
+                    .any(|packet| packet.from == "127.0.0.1" && packet.port == port)
             }),
         native_client_connected: observations
             .iter()
@@ -305,12 +334,17 @@ pub fn compilation_input_paths(document: &Json) -> Result<Vec<String>, ToolsErro
     };
     let mut paths = std::collections::BTreeSet::new();
     for entry in entries {
-        let (Some(directory), Some(file)) =
-            (entry.get("directory").and_then(Json::as_str), entry.get("file").and_then(Json::as_str))
-        else {
+        let (Some(directory), Some(file)) = (
+            entry.get("directory").and_then(Json::as_str),
+            entry.get("file").and_then(Json::as_str),
+        ) else {
             return Err(ToolsError::invalid("Invalid compilation database entry"));
         };
-        paths.insert(fsutil::lexical_absolute(Path::new(directory), file).to_string_lossy().into_owned());
+        paths.insert(
+            fsutil::lexical_absolute(Path::new(directory), file)
+                .to_string_lossy()
+                .into_owned(),
+        );
     }
     Ok(paths.into_iter().collect())
 }
@@ -337,7 +371,11 @@ pub fn inspect_outputs(home: &str) -> Result<Vec<CaseOutput>, ToolsError> {
             }
             let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
             let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
-            results.push(CaseOutput::Png { identity, width, height });
+            results.push(CaseOutput::Png {
+                identity,
+                width,
+                height,
+            });
         } else {
             results.push(CaseOutput::File { identity });
         }
@@ -374,7 +412,16 @@ pub fn private_display(directory: &str, environment: &[(String, String)]) -> Res
         }
         let display = format!(":{number}");
         let mut child = start_observed(
-            &[String::from("/usr/bin/Xvfb"), display.clone(), String::from("-screen"), String::from("0"), String::from("640x480x24"), String::from("-nolisten"), String::from("tcp"), String::from("-noreset")],
+            &[
+                String::from("/usr/bin/Xvfb"),
+                display.clone(),
+                String::from("-screen"),
+                String::from("0"),
+                String::from("640x480x24"),
+                String::from("-nolisten"),
+                String::from("tcp"),
+                String::from("-noreset"),
+            ],
             directory,
             environment,
             Some(180_000),
@@ -389,12 +436,17 @@ pub fn private_display(directory: &str, environment: &[(String, String)]) -> Res
             std::thread::sleep(Duration::from_millis(25));
         }
         if ready {
-            return Ok(PrivateDisplay { display, process: child });
+            return Ok(PrivateDisplay {
+                display,
+                process: child,
+            });
         }
         let _ = child.finish(&format!("{directory}/xvfb-failed"));
         return Err(ToolsError::invalid("Private Xvfb did not create its socket"));
     }
-    Err(ToolsError::invalid("No unused private display number in reserved search range"))
+    Err(ToolsError::invalid(
+        "No unused private display number in reserved search range",
+    ))
 }
 
 fn binary_observation(identity: FileIdentity, header: CommandObservation, linked: CommandObservation) -> Json {
@@ -433,8 +485,7 @@ fn provenance(directory: &str) -> Result<Json, ToolsError> {
             &project_text,
             None,
         )?;
-        let linked =
-            observe_command(&[String::from("ldd"), path.clone()], &project_text, None)?;
+        let linked = observe_command(&[String::from("ldd"), path.clone()], &project_text, None)?;
         for line in linked.stdout.split('\n') {
             if let Some(dependency) = ldd_dependency(line) {
                 dependencies.insert(dependency);
@@ -484,7 +535,10 @@ fn make_home(path: &str) -> Result<(), ToolsError> {
     std::fs::create_dir_all(format!("{path}/baseq2"))
         .map_err(|error| ToolsError::io(format!("creating {path}/baseq2"), error))?;
     for name in ["autoexec.cfg", "q2config.cfg", "config.cfg"] {
-        fsutil::write_text(Path::new(&format!("{path}/baseq2/{name}")), "// isolated native reference\n")?;
+        fsutil::write_text(
+            Path::new(&format!("{path}/baseq2/{name}")),
+            "// isolated native reference\n",
+        )?;
     }
     Ok(())
 }
@@ -543,10 +597,25 @@ fn run_case(
     let run = (|| -> Result<(), ToolsError> {
         if mode == CaseMode::DedicatedNetwork {
             let mut server_settings = common.to_vec();
-            server_settings.extend([("homedir", server_home.as_str()), ("deathmatch", "1"), ("maxclients", "4")]);
+            server_settings.extend([
+                ("homedir", server_home.as_str()),
+                ("deathmatch", "1"),
+                ("maxclients", "4"),
+            ]);
             let mut argv = vec![format!("{build}/q2reproded")];
             argv.extend(settings(&server_settings));
-            argv.extend(["+map", "q2dm1", "+status", "+serverinfo", "+echo", "NATIVE_SERVER_READY"].into_iter().map(str::to_owned));
+            argv.extend(
+                [
+                    "+map",
+                    "q2dm1",
+                    "+status",
+                    "+serverinfo",
+                    "+echo",
+                    "NATIVE_SERVER_READY",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            );
             dedicated = Some(start_observed(&argv, directory, &environment, None)?);
             let server = dedicated.as_mut().expect("stored dedicated server");
             server.wait_for("NATIVE_SERVER_READY", None)?;
@@ -608,7 +677,9 @@ fn run_case(
             client.send("viewpos\nstatus\nscreenshot png\necho NATIVE_RELOAD_OBSERVED")?;
             client.wait_for("NATIVE_RELOAD_OBSERVED", None)?;
         } else {
-            let server = dedicated.as_mut().ok_or_else(|| ToolsError::invalid("Dedicated process absent"))?;
+            let server = dedicated
+                .as_mut()
+                .ok_or_else(|| ToolsError::invalid("Dedicated process absent"))?;
             server.send("status\nstatus p\nstatus t\nsv_fps\necho NATIVE_CLIENT_STATUS")?;
             server.wait_for("NATIVE_CLIENT_STATUS", None)?;
             queries.push(query(port, "status")?);
@@ -666,7 +737,10 @@ fn run_case(
             ),
         ),
     ]);
-    fsutil::write_text(Path::new(&format!("{directory}/case.json")), &format!("{}\n", result.render_pretty()))?;
+    fsutil::write_text(
+        Path::new(&format!("{directory}/case.json")),
+        &format!("{}\n", result.render_pretty()),
+    )?;
     Ok(result)
 }
 
@@ -674,12 +748,21 @@ fn run_case(
 pub fn capture() -> Result<i32, ToolsError> {
     let project = quake_typescript_root();
     let run_id = now_iso().replace([':', '.'], "-");
-    let directory = project.join(".artifacts/q2-native").join(run_id).to_string_lossy().into_owned();
+    let directory = project
+        .join(".artifacts/q2-native")
+        .join(run_id)
+        .to_string_lossy()
+        .into_owned();
     std::fs::create_dir_all(&directory).map_err(|error| ToolsError::io(format!("creating {directory}"), error))?;
     let identity = provenance(&directory)?;
-    fsutil::write_text(Path::new(&format!("{directory}/provenance.json")), &format!("{}\n", identity.render_pretty()))?;
-    let environment =
-        [("PATH", "/usr/bin:/bin"), ("LC_ALL", "C"), ("TZ", "UTC")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect::<Vec<(String, String)>>();
+    fsutil::write_text(
+        Path::new(&format!("{directory}/provenance.json")),
+        &format!("{}\n", identity.render_pretty()),
+    )?;
+    let environment = [("PATH", "/usr/bin:/bin"), ("LC_ALL", "C"), ("TZ", "UTC")]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect::<Vec<(String, String)>>();
     let display = private_display(&directory, &environment)?;
     let mut display_process = display.process;
     let run = (|| -> Result<(Vec<Json>, Vec<Json>), ToolsError> {
@@ -693,14 +776,26 @@ pub fn capture() -> Result<i32, ToolsError> {
             )?;
             content.push(staged_with_id(definition.id, &mounted));
             for mode in [CaseMode::DedicatedNetwork, CaseMode::SingleplayerSave] {
-                let result = run_case(&definition, &mounted.mount, &format!("{}/{}/{}", directory, definition.id, mode.as_str()), mode, &display.display)?;
+                let result = run_case(
+                    &definition,
+                    &mounted.mount,
+                    &format!("{}/{}/{}", directory, definition.id, mode.as_str()),
+                    mode,
+                    &display.display,
+                )?;
                 println!(
                     "{}",
                     Json::object(vec![
                         ("case".to_owned(), result.get("id").unwrap_or(&Json::Null).clone()),
-                        ("observed".to_owned(), result.get("observed").unwrap_or(&Json::Null).clone()),
+                        (
+                            "observed".to_owned(),
+                            result.get("observed").unwrap_or(&Json::Null).clone()
+                        ),
                         ("checks".to_owned(), result.get("checks").unwrap_or(&Json::Null).clone()),
-                        ("failure".to_owned(), result.get("failure").unwrap_or(&Json::Null).clone()),
+                        (
+                            "failure".to_owned(),
+                            result.get("failure").unwrap_or(&Json::Null).clone()
+                        ),
                     ])
                     .render()
                 );
@@ -720,7 +815,10 @@ pub fn capture() -> Result<i32, ToolsError> {
     }
     for name in ["environment.rs", "schema.rs"] {
         tools.push(identify_file(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference").join(name).to_string_lossy(),
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/reference")
+                .join(name)
+                .to_string_lossy(),
         )?);
     }
     let mut display_pairs = vec![("binary".to_owned(), identify_file("/usr/bin/Xvfb")?.to_json())];
@@ -758,14 +856,20 @@ pub fn capture() -> Result<i32, ToolsError> {
             ),
         ),
     ]);
-    fsutil::write_text(Path::new(&format!("{directory}/capture.json")), &format!("{}\n", result.render_pretty()))?;
+    fsutil::write_text(
+        Path::new(&format!("{directory}/capture.json")),
+        &format!("{}\n", result.render_pretty()),
+    )?;
     let destination = project.join("verification/reference-cases/q2-native/latest.json");
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
     }
     fsutil::write_text(&destination, &format!("{}\n", result.render_pretty()))?;
-    let observed_cases = cases.iter().filter(|case| case.get("observed").and_then(Json::as_bool) == Some(true)).count();
+    let observed_cases = cases
+        .iter()
+        .filter(|case| case.get("observed").and_then(Json::as_bool) == Some(true))
+        .count();
     println!(
         "{}",
         Json::object(vec![
@@ -805,13 +909,17 @@ mod tests {
 
     #[test]
     fn expands_settings_in_order() {
-        assert_eq!(settings(&[("a", "1"), ("b", "2")]), vec!["+set", "a", "1", "+set", "b", "2"]);
+        assert_eq!(
+            settings(&[("a", "1"), ("b", "2")]),
+            vec!["+set", "a", "1", "+set", "b", "2"]
+        );
     }
 
     #[test]
     fn parses_ldd_dependencies() {
         assert_eq!(
-            ldd_dependency("libSDL2-2.0.so.0 => /lib/x86_64-linux-gnu/libSDL2-2.0.so.0 (0x00007f1b2c000000)").as_deref(),
+            ldd_dependency("libSDL2-2.0.so.0 => /lib/x86_64-linux-gnu/libSDL2-2.0.so.0 (0x00007f1b2c000000)")
+                .as_deref(),
             Some("/lib/x86_64-linux-gnu/libSDL2-2.0.so.0")
         );
         assert_eq!(
@@ -837,14 +945,22 @@ mod tests {
 
     #[test]
     fn validates_compilation_databases() {
-        let document = parse_json(r#"[{"directory": "/tmp/build", "file": "../src/a.c"}, {"directory": "/tmp/build", "file": "/abs/b.c"}]"#).unwrap();
-        assert_eq!(compilation_input_paths(&document).unwrap(), vec!["/abs/b.c".to_owned(), "/tmp/src/a.c".to_owned()]);
+        let document = parse_json(
+            r#"[{"directory": "/tmp/build", "file": "../src/a.c"}, {"directory": "/tmp/build", "file": "/abs/b.c"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            compilation_input_paths(&document).unwrap(),
+            vec!["/abs/b.c".to_owned(), "/tmp/src/a.c".to_owned()]
+        );
         assert!(compilation_input_paths(&parse_json(r#"{"not": "array"}"#).unwrap()).is_err());
         assert!(compilation_input_paths(&parse_json(r#"[{"directory": "/tmp"}]"#).unwrap()).is_err());
     }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
-        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+        let mut bytes = vec![
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
         bytes.extend_from_slice(&width.to_be_bytes());
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes
@@ -858,7 +974,14 @@ mod tests {
         fsutil::write_bytes(&directory.join("demo.dm2"), &[1; 2048]).expect("write");
         let outputs = inspect_outputs(&text).expect("inspect");
         assert_eq!(outputs.len(), 2);
-        assert!(outputs.iter().any(|output| matches!(output, CaseOutput::Png { width: 640, height: 480, .. })));
+        assert!(outputs.iter().any(|output| matches!(
+            output,
+            CaseOutput::Png {
+                width: 640,
+                height: 480,
+                ..
+            }
+        )));
         fsutil::write_bytes(&directory.join("bad.png"), b"short").expect("write");
         assert!(inspect_outputs(&text).is_err());
         fsutil::remove_forced(&directory);
@@ -885,14 +1008,24 @@ mod tests {
 
     fn file_output(path: &str, size: u64) -> CaseOutput {
         CaseOutput::File {
-            identity: FileIdentity { path: path.to_owned(), size, sha256: String::new() },
+            identity: FileIdentity {
+                path: path.to_owned(),
+                size,
+                sha256: String::new(),
+            },
         }
     }
 
     #[test]
     fn evaluates_network_case_checks() {
         let port = 27910;
-        let packet = UdpPacket { hex: String::new(), text: "reply".to_owned(), from: "127.0.0.1".to_owned(), port, elapsed_ms: 1.0 };
+        let packet = UdpPacket {
+            hex: String::new(),
+            text: "reply".to_owned(),
+            from: "127.0.0.1".to_owned(),
+            port,
+            elapsed_ms: 1.0,
+        };
         let queries = vec![UdpQuery {
             destination: String::new(),
             request: "status".to_owned(),
@@ -901,16 +1034,40 @@ mod tests {
         }];
         let home = "/tmp/home";
         let png = |name: &str| CaseOutput::Png {
-            identity: FileIdentity { path: format!("{home}/{name}"), size: 10, sha256: String::new() },
+            identity: FileIdentity {
+                path: format!("{home}/{name}"),
+                size: 10,
+                sha256: String::new(),
+            },
             width: 640,
             height: 480,
         };
-        let outputs = vec![png("a.png"), png("b.png"), file_output(&format!("{home}/native-reference.dm2"), 2048)];
-        let observations =
-            vec![named_observation("client", "Connected to 127.0.0.1\nllvmpipe\n"), named_observation("dedicated", "")];
-        let checks = case_checks(CaseMode::DedicatedNetwork, None, &outputs, &queries, &observations, port);
+        let outputs = vec![
+            png("a.png"),
+            png("b.png"),
+            file_output(&format!("{home}/native-reference.dm2"), 2048),
+        ];
+        let observations = vec![
+            named_observation("client", "Connected to 127.0.0.1\nllvmpipe\n"),
+            named_observation("dedicated", ""),
+        ];
+        let checks = case_checks(
+            CaseMode::DedicatedNetwork,
+            None,
+            &outputs,
+            &queries,
+            &observations,
+            port,
+        );
         assert!(checks.all(), "{:?}", checks.to_json().render());
-        let failed = case_checks(CaseMode::DedicatedNetwork, Some("boom"), &outputs, &queries, &observations, port);
+        let failed = case_checks(
+            CaseMode::DedicatedNetwork,
+            Some("boom"),
+            &outputs,
+            &queries,
+            &observations,
+            port,
+        );
         assert!(!failed.checkpoint_sequence_completed);
         assert!(!failed.all());
     }
@@ -919,7 +1076,11 @@ mod tests {
     fn evaluates_save_case_checks() {
         let home = "/tmp/home";
         let png = |name: &str| CaseOutput::Png {
-            identity: FileIdentity { path: format!("{home}/{name}"), size: 10, sha256: String::new() },
+            identity: FileIdentity {
+                path: format!("{home}/{name}"),
+                size: 10,
+                sha256: String::new(),
+            },
             width: 640,
             height: 480,
         };
@@ -941,4 +1102,3 @@ mod tests {
         assert!(!missing.save_and_reload_observed);
     }
 }
-

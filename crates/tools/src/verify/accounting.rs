@@ -16,7 +16,11 @@ use crate::verify::schema::{
 };
 
 /// Check a record's assertions against its expected contracts.
-pub fn assertion_failures(expected: &ExpectedCase, assertions: &[AssertionObservation], assertion_count: i64) -> Result<Vec<String>, ToolsError> {
+pub fn assertion_failures(
+    expected: &ExpectedCase,
+    assertions: &[AssertionObservation],
+    assertion_count: i64,
+) -> Result<Vec<String>, ToolsError> {
     let mut failures = Vec::new();
     if assertion_count != assertions.len() as i64 {
         failures.push("Assertion count does not match observations".to_owned());
@@ -38,7 +42,10 @@ pub fn assertion_failures(expected: &ExpectedCase, assertions: &[AssertionObserv
         }
     }
     for contract in &expected.contracts {
-        let count = assertions.iter().filter(|assertion| assertion.contract_id == contract.id).count() as i64;
+        let count = assertions
+            .iter()
+            .filter(|assertion| assertion.contract_id == contract.id)
+            .count() as i64;
         if count < contract.minimum_assertions {
             failures.push(format!(
                 "Contract {} requires {} assertions, received {count}",
@@ -53,30 +60,65 @@ pub fn assertion_failures(expected: &ExpectedCase, assertions: &[AssertionObserv
 }
 
 /// Check a record against its expected case.
-pub fn record_failures(expected: &ExpectedCase, record: &ExecutionRecord, manifest_hash: &str) -> Result<Vec<String>, ToolsError> {
+pub fn record_failures(
+    expected: &ExpectedCase,
+    record: &ExecutionRecord,
+    manifest_hash: &str,
+) -> Result<Vec<String>, ToolsError> {
     let mut failures = Vec::new();
-    if record.case_id != expected.id || record.configuration_id != expected.configuration_id || record.suite_id != expected.suite_id {
+    if record.case_id != expected.id
+        || record.configuration_id != expected.configuration_id
+        || record.suite_id != expected.suite_id
+    {
         failures.push("Record identity does not match expected case".to_owned());
     }
     if record.evidence_kind != expected.evidence_kind {
         failures.push("Record evidence kind does not match expected case".to_owned());
     }
-    if hash_json(&Json::array(record.contracts.iter().map(crate::verify::schema::ExpectedContract::to_json).collect()))?
-        != hash_json(&Json::array(expected.contracts.iter().map(crate::verify::schema::ExpectedContract::to_json).collect()))?
-    {
+    if hash_json(&Json::array(
+        record
+            .contracts
+            .iter()
+            .map(crate::verify::schema::ExpectedContract::to_json)
+            .collect(),
+    ))? != hash_json(&Json::array(
+        expected
+            .contracts
+            .iter()
+            .map(crate::verify::schema::ExpectedContract::to_json)
+            .collect(),
+    ))? {
         failures.push("Recorded contracts do not match expected contracts".to_owned());
     }
-    if hash_json(&Json::array(record.inputs.iter().map(crate::verify::schema::InputRequirement::to_json).collect()))?
-        != hash_json(&Json::array(expected.requirements.iter().map(crate::verify::schema::InputRequirement::to_json).collect()))?
-    {
+    if hash_json(&Json::array(
+        record
+            .inputs
+            .iter()
+            .map(crate::verify::schema::InputRequirement::to_json)
+            .collect(),
+    ))? != hash_json(&Json::array(
+        expected
+            .requirements
+            .iter()
+            .map(crate::verify::schema::InputRequirement::to_json)
+            .collect(),
+    ))? {
         failures.push("Recorded inputs do not match required inputs".to_owned());
     }
-    let record_command = record.command.as_ref().map_or(Json::Null, crate::verify::schema::CommandContract::to_json);
-    let expected_command = expected.command.as_ref().map_or(Json::Null, crate::verify::schema::CommandContract::to_json);
+    let record_command = record
+        .command
+        .as_ref()
+        .map_or(Json::Null, crate::verify::schema::CommandContract::to_json);
+    let expected_command = expected
+        .command
+        .as_ref()
+        .map_or(Json::Null, crate::verify::schema::CommandContract::to_json);
     if hash_json(&record_command)? != hash_json(&expected_command)? {
         failures.push("Recorded command does not match expected command".to_owned());
     }
-    if record.fingerprints.manifest != manifest_hash || hash_json(&expected.to_json())? != record.fingerprints.expected_case {
+    if record.fingerprints.manifest != manifest_hash
+        || hash_json(&expected.to_json())? != record.fingerprints.expected_case
+    {
         failures.push("Stale manifest or case fingerprint".to_owned());
     }
     if hash_json(&record.environment.to_json())? != record.fingerprints.environment {
@@ -92,7 +134,11 @@ pub fn record_failures(expected: &ExpectedCase, record: &ExecutionRecord, manife
         failures.push("Record finishes before it starts".to_owned());
     }
     if record.outcome.status() == VerificationStatus::Pass {
-        failures.extend(assertion_failures(expected, &record.assertions, record.assertion_count)?);
+        failures.extend(assertion_failures(
+            expected,
+            &record.assertions,
+            record.assertion_count,
+        )?);
         if expected.command.is_none() {
             failures.push("Unbound command cannot pass".to_owned());
         }
@@ -108,7 +154,11 @@ pub fn record_failures(expected: &ExpectedCase, record: &ExecutionRecord, manife
         if record.artifacts.is_empty() {
             failures.push("PASS has no raw evidence artifacts".to_owned());
         }
-        if expected.requirements.iter().any(|requirement| requirement.sha256.is_none()) {
+        if expected
+            .requirements
+            .iter()
+            .any(|requirement| requirement.sha256.is_none())
+        {
             failures.push("PASS contains unpinned required inputs".to_owned());
         }
     }
@@ -155,7 +205,12 @@ pub fn reconcile(manifest: &CaseManifest, records: &[ExecutionRecord]) -> Result
         }
         counts.add(record.outcome.status());
     }
-    let missing_case_ids: Vec<String> = manifest.cases.iter().filter(|item| !actual.contains_key(item.id.as_str())).map(|item| item.id.clone()).collect();
+    let missing_case_ids: Vec<String> = manifest
+        .cases
+        .iter()
+        .filter(|item| !actual.contains_key(item.id.as_str()))
+        .map(|item| item.id.clone())
+        .collect();
     let complete = missing_case_ids.is_empty()
         && unexpected_case_ids.is_empty()
         && duplicate_case_ids.is_empty()
@@ -177,7 +232,9 @@ pub fn reconcile(manifest: &CaseManifest, records: &[ExecutionRecord]) -> Result
         invalid_records,
         complete,
         gameplay_complete: complete
-            && manifest.cases.iter().any(|item| item.evidence_kind == EvidenceKind::Gameplay || item.evidence_kind == EvidenceKind::Release),
+            && manifest.cases.iter().any(|item| {
+                item.evidence_kind == EvidenceKind::Gameplay || item.evidence_kind == EvidenceKind::Release
+            }),
     })
 }
 
@@ -198,29 +255,48 @@ pub fn artifact_failures(record: &ExecutionRecord) -> Result<Vec<String>, ToolsE
                 .map_err(|error| ToolsError::io(format!("resolving {}", record.output_root), error))?;
             let relative = Path::new(&artifact.path);
             let path = root.join(relative);
-            let real = std::fs::canonicalize(&path).map_err(|error| ToolsError::io(format!("resolving {}", path.display()), error))?;
+            let real = std::fs::canonicalize(&path)
+                .map_err(|error| ToolsError::io(format!("resolving {}", path.display()), error))?;
             if relative.is_absolute() || !is_within(&root, &path) || path == root || !is_within(&root, &real) {
                 return Err(ToolsError::invalid("Artifact escapes owned output root"));
             }
-            let stat = std::fs::symlink_metadata(&path).map_err(|error| ToolsError::io(format!("stating {}", path.display()), error))?;
+            let stat = std::fs::symlink_metadata(&path)
+                .map_err(|error| ToolsError::io(format!("stating {}", path.display()), error))?;
             if !stat.is_file() || stat.is_symlink() {
                 return Err(ToolsError::invalid("Artifact is not a regular owned file"));
             }
-            let bytes = std::fs::read(&path).map_err(|error| ToolsError::io(format!("reading {}", path.display()), error))?;
+            let bytes =
+                std::fs::read(&path).map_err(|error| ToolsError::io(format!("reading {}", path.display()), error))?;
             if bytes.len() as i64 != artifact.bytes || hash_bytes(&bytes) != artifact.sha256 {
                 failures.push(format!("Artifact changed: {}", artifact.path));
             }
             if artifact.path == "driver-result.json" {
                 found_driver = true;
-                let text = String::from_utf8(bytes).map_err(|_| ToolsError::invalid("driver-result.json is not UTF-8"))?;
+                let text =
+                    String::from_utf8(bytes).map_err(|_| ToolsError::invalid("driver-result.json is not UTF-8"))?;
                 let output = parse_driver_output(&parse_json(&text)?)?;
-                let output_assertions = Json::array(output.assertions.iter().map(AssertionObservation::to_json).collect());
-                let record_assertions = Json::array(record.assertions.iter().map(AssertionObservation::to_json).collect());
-                let output_checkpoints =
-                    Json::array(output.checkpoints.iter().map(crate::verify::schema::Checkpoint::to_json).collect());
-                let record_checkpoints =
-                    Json::array(record.checkpoints.iter().map(crate::verify::schema::Checkpoint::to_json).collect());
-                if output.case_id != record.case_id || hash_json(&output_assertions)? != hash_json(&record_assertions)? || hash_json(&output_checkpoints)? != hash_json(&record_checkpoints)? {
+                let output_assertions =
+                    Json::array(output.assertions.iter().map(AssertionObservation::to_json).collect());
+                let record_assertions =
+                    Json::array(record.assertions.iter().map(AssertionObservation::to_json).collect());
+                let output_checkpoints = Json::array(
+                    output
+                        .checkpoints
+                        .iter()
+                        .map(crate::verify::schema::Checkpoint::to_json)
+                        .collect(),
+                );
+                let record_checkpoints = Json::array(
+                    record
+                        .checkpoints
+                        .iter()
+                        .map(crate::verify::schema::Checkpoint::to_json)
+                        .collect(),
+                );
+                if output.case_id != record.case_id
+                    || hash_json(&output_assertions)? != hash_json(&record_assertions)?
+                    || hash_json(&output_checkpoints)? != hash_json(&record_checkpoints)?
+                {
                     failures.push("Raw driver output does not match recorded assertions/checkpoints".to_owned());
                 }
                 for declared in &output.artifact_paths {
@@ -250,10 +326,17 @@ pub struct ResumeDecision {
 }
 
 /// Decide whether a previous passing record can be reused.
-pub fn can_resume(expected: &ExpectedCase, current: &Fingerprints, previous: &ExecutionRecord) -> Result<ResumeDecision, ToolsError> {
+pub fn can_resume(
+    expected: &ExpectedCase,
+    current: &Fingerprints,
+    previous: &ExecutionRecord,
+) -> Result<ResumeDecision, ToolsError> {
     let mut reasons = record_failures(expected, previous, &current.manifest)?;
     if previous.outcome.status() != VerificationStatus::Pass {
-        reasons.push(format!("Previous attempt status is {}", previous.outcome.status().as_str()));
+        reasons.push(format!(
+            "Previous attempt status is {}",
+            previous.outcome.status().as_str()
+        ));
     }
     if hash_json(&current.to_json())? != hash_json(&previous.fingerprints.to_json())? {
         reasons.push("Source, fixture, environment, executable, or schedule fingerprint changed".to_owned());

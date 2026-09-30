@@ -65,7 +65,11 @@ pub fn steam_classic_checks(console_text: &str, queries: &[UdpQuery], port: u16)
         loaded_q2dm1: console_text.contains("SpawnServer: q2dm1"),
         loaded_base1: console_text.contains("SpawnServer: base1"),
         protocol34: queries.iter().any(|item| {
-            item.request == "status" && item.response.iter().any(|packet| packet.text.contains("\\protocol\\34"))
+            item.request == "status"
+                && item
+                    .response
+                    .iter()
+                    .any(|packet| packet.text.contains("\\protocol\\34"))
         }),
         classic_challenge: queries.iter().any(|item| {
             item.request == "getchallenge" && item.response.iter().any(|packet| packet.text.contains("challenge "))
@@ -76,13 +80,19 @@ pub fn steam_classic_checks(console_text: &str, queries: &[UdpQuery], port: u16)
                 .filter(|item| !item.request.ends_with("quit"))
                 .all(|item| {
                     !item.response.is_empty()
-                        && item.response.iter().all(|packet| packet.from == "127.0.0.1" && packet.port == port)
+                        && item
+                            .response
+                            .iter()
+                            .all(|packet| packet.from == "127.0.0.1" && packet.port == port)
                 }),
     }
 }
 
 fn staged_binary(original: &FileIdentity, staged: &FileIdentity) -> Json {
-    Json::object(vec![("original".to_owned(), original.to_json()), ("staged".to_owned(), staged.to_json())])
+    Json::object(vec![
+        ("original".to_owned(), original.to_json()),
+        ("staged".to_owned(), staged.to_json()),
+    ])
 }
 
 /// Capture the retail classic dedicated server (donor `captureSteamClassic`).
@@ -94,7 +104,8 @@ pub fn capture_steam_classic() -> Result<i32, ToolsError> {
     let directory = project.join(".artifacts/q2-retail").join(run_id);
     let stage = directory.join("game");
     let prefix = directory.join("prefix");
-    std::fs::create_dir_all(&prefix).map_err(|error| ToolsError::io(format!("creating {}", prefix.display()), error))?;
+    std::fs::create_dir_all(&prefix)
+        .map_err(|error| ToolsError::io(format!("creating {}", prefix.display()), error))?;
     let archives = ["baseq2/pak0.pak", "baseq2/pak1.pak", "baseq2/pak2.pak"]
         .into_iter()
         .map(|name| retail.join(name).to_string_lossy().into_owned())
@@ -129,7 +140,10 @@ pub fn capture_steam_classic() -> Result<i32, ToolsError> {
         ("TZ".to_owned(), "UTC".to_owned()),
         ("WINEPREFIX".to_owned(), prefix.to_string_lossy().into_owned()),
         ("WINEDEBUG".to_owned(), "-all,err+all,warn+all".to_owned()),
-        ("WINEDLLOVERRIDES".to_owned(), "winemenubuilder.exe=d;winegstreamer=d;mscoree=d;mshtml=d".to_owned()),
+        (
+            "WINEDLLOVERRIDES".to_owned(),
+            "winemenubuilder.exe=d;winegstreamer=d;mscoree=d;mshtml=d".to_owned(),
+        ),
         ("LIBGL_ALWAYS_SOFTWARE".to_owned(), "1".to_owned()),
         ("MESA_LOADER_DRIVER_OVERRIDE".to_owned(), "llvmpipe".to_owned()),
         ("SDL_AUDIODRIVER".to_owned(), "dummy".to_owned()),
@@ -210,11 +224,19 @@ pub fn capture_steam_classic() -> Result<i32, ToolsError> {
                 let output = child.output();
                 let out: Vec<char> = output.chars().collect();
                 let output_tail: String = out[out.len().saturating_sub(2500)..].iter().collect();
-                return Err(ToolsError::invalid(format!("Retail map checkpoint timed out: {console_tail} {output_tail}")));
+                return Err(ToolsError::invalid(format!(
+                    "Retail map checkpoint timed out: {console_tail} {output_tail}"
+                )));
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        for request in ["status", "info 34", "getchallenge", "rcon native-reference status", "rcon native-reference serverinfo"] {
+        for request in [
+            "status",
+            "info 34",
+            "getchallenge",
+            "rcon native-reference status",
+            "rcon native-reference serverinfo",
+        ] {
             queries.push(query(port, request)?);
         }
         queries.push(query(port, "rcon native-reference map base1")?);
@@ -240,8 +262,10 @@ pub fn capture_steam_classic() -> Result<i32, ToolsError> {
         inputs_after.push(identify_file(&original.path)?);
     }
     let observed = failure.is_none() && checks.all();
-    let capture_program =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference/q2_native/steam_classic.rs").to_string_lossy().into_owned();
+    let capture_program = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/reference/q2_native/steam_classic.rs")
+        .to_string_lossy()
+        .into_owned();
     let exe = std::env::current_exe().map_err(|error| ToolsError::io("resolving current executable", error))?;
     let result = Json::object(vec![
         ("schemaVersion".to_owned(), Json::int(1)),
@@ -289,7 +313,10 @@ pub fn capture_steam_classic() -> Result<i32, ToolsError> {
             ),
         ),
     ]);
-    fsutil::write_text(&directory.join("capture.json"), &format!("{}\n", result.render_pretty()))?;
+    fsutil::write_text(
+        &directory.join("capture.json"),
+        &format!("{}\n", result.render_pretty()),
+    )?;
     let destination = project.join("verification/reference-cases/q2-native/steam-classic.json");
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)
@@ -318,7 +345,13 @@ mod tests {
     use super::*;
 
     fn packet(text: &str, port: u16) -> UdpPacket {
-        UdpPacket { hex: String::new(), text: text.to_owned(), from: "127.0.0.1".to_owned(), port, elapsed_ms: 1.0 }
+        UdpPacket {
+            hex: String::new(),
+            text: text.to_owned(),
+            from: "127.0.0.1".to_owned(),
+            port,
+            elapsed_ms: 1.0,
+        }
     }
 
     fn query_with(request: &str, packets: Vec<UdpPacket>) -> UdpQuery {

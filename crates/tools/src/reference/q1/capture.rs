@@ -35,7 +35,10 @@ pub fn verify_source_pin(source_root: &str, pin: &SourcePin) -> Result<Json, Too
     }
     let bytes = fsutil::read_bytes(&path)?;
     if crate::verify::hash::hash_bytes(&bytes) != pin.sha256 {
-        return Err(ToolsError::invalid(format!("Source changed during capture: {}", pin.id)));
+        return Err(ToolsError::invalid(format!(
+            "Source changed during capture: {}",
+            pin.id
+        )));
     }
     let decoded = String::from_utf8_lossy(&bytes);
     let lines: Vec<&str> = decoded.split('\n').collect();
@@ -45,7 +48,10 @@ pub fn verify_source_pin(source_root: &str, pin: &SourcePin) -> Result<Json, Too
             || excerpt.last_line < excerpt.first_line
             || u64::from(excerpt.last_line) > lines.len() as u64
         {
-            return Err(ToolsError::invalid(format!("Invalid source excerpt bounds: {}", pin.id)));
+            return Err(ToolsError::invalid(format!(
+                "Invalid source excerpt bounds: {}",
+                pin.id
+            )));
         }
         let code = lines[excerpt.first_line as usize - 1..excerpt.last_line as usize].join("\n");
         excerpts.push(Json::object(vec![
@@ -67,12 +73,21 @@ pub fn verify_source_pin(source_root: &str, pin: &SourcePin) -> Result<Json, Too
 /// Render one evaluated case with fingerprints (donor spread order).
 fn render_case(case: &Q1Case, observed: &Q1Output) -> Result<Json, ToolsError> {
     let Json::Object(mut pairs) = case.to_json() else {
-        return Err(ToolsError::parse(format!("Q1 case did not render as an object: {}", case.id)));
+        return Err(ToolsError::parse(format!(
+            "Q1 case did not render as an object: {}",
+            case.id
+        )));
     };
     pairs.push(("observed".to_owned(), observed.to_json()));
     pairs.push(("passed".to_owned(), Json::boolean(true)));
-    pairs.push(("inputSha256".to_owned(), Json::string(hash_json(&case.input.to_json())?)));
-    pairs.push(("expectedSha256".to_owned(), Json::string(hash_json(&case.expected.to_json())?)));
+    pairs.push((
+        "inputSha256".to_owned(),
+        Json::string(hash_json(&case.input.to_json())?),
+    ));
+    pairs.push((
+        "expectedSha256".to_owned(),
+        Json::string(hash_json(&case.expected.to_json())?),
+    ));
     Ok(Json::object(pairs))
 }
 
@@ -199,7 +214,10 @@ pub fn capture_q1(source_root: &str) -> Result<Json, ToolsError> {
 
 /// Re-verify a stored Q1 capture against recomputed expectations.
 pub fn verify_captured_cases(value: &Json) -> Result<(), ToolsError> {
-    if value.as_object().is_none() || value.get("schemaVersion").and_then(Json::as_f64) != Some(1.0) || value.get("game").and_then(Json::as_str) != Some("q1") {
+    if value.as_object().is_none()
+        || value.get("schemaVersion").and_then(Json::as_f64) != Some(1.0)
+        || value.get("game").and_then(Json::as_str) != Some("q1")
+    {
         return Err(ToolsError::invalid("Invalid Q1 capture header"));
     }
     let oracle = value.get("oracle").unwrap_or(&Json::Null);
@@ -207,16 +225,22 @@ pub fn verify_captured_cases(value: &Json) -> Result<(), ToolsError> {
         || oracle.get("kind").and_then(Json::as_str) != Some("source-derived")
         || oracle.get("measuredOriginalExecution").and_then(Json::as_bool) != Some(false)
     {
-        return Err(ToolsError::invalid("Q1 capture must identify source-derived, unmeasured evidence"));
+        return Err(ToolsError::invalid(
+            "Q1 capture must identify source-derived, unmeasured evidence",
+        ));
     }
     let mut expected = Vec::new();
     for case in q1_cases() {
         expected.push(evaluate_case(&case)?);
     }
     if value.get("caseCount").and_then(Json::as_f64) != Some(expected.len() as f64)
-        || value.get("cases").is_none_or(|cases| !deep_strict_equal(cases, &Json::array(expected)))
+        || value
+            .get("cases")
+            .is_none_or(|cases| !deep_strict_equal(cases, &Json::array(expected)))
     {
-        return Err(ToolsError::invalid("Stored Q1 cases differ from the pinned source-derived expectations"));
+        return Err(ToolsError::invalid(
+            "Stored Q1 cases differ from the pinned source-derived expectations",
+        ));
     }
     Ok(())
 }
@@ -224,14 +248,22 @@ pub fn verify_captured_cases(value: &Json) -> Result<(), ToolsError> {
 /// Run the Q1 capture (donor `main`): capture or `--check` against the stored record.
 pub fn run(args: &[String]) -> Result<(), ToolsError> {
     let check = args.first().is_some_and(|arg| arg == "--check");
-    let positional: Vec<&String> = if check { args.iter().skip(1).collect() } else { args.iter().collect() };
+    let positional: Vec<&String> = if check {
+        args.iter().skip(1).collect()
+    } else {
+        args.iter().collect()
+    };
     if positional.len() > 1 || positional.iter().any(|arg| arg.starts_with("--")) {
-        return Err(ToolsError::invalid("Usage: qa-tools reference::q1::capture::run [--check] [qsrc-root]"));
+        return Err(ToolsError::invalid(
+            "Usage: qa-tools reference::q1::capture::run [--check] [qsrc-root]",
+        ));
     }
     let source_root = match positional.first() {
         Some(root) => {
             let cwd = std::env::current_dir().map_err(|error| ToolsError::io("resolving current directory", error))?;
-            fsutil::lexical_absolute(&cwd, root.as_str()).to_string_lossy().into_owned()
+            fsutil::lexical_absolute(&cwd, root.as_str())
+                .to_string_lossy()
+                .into_owned()
         }
         None => source_root(),
     };
@@ -248,7 +280,10 @@ pub fn run(args: &[String]) -> Result<(), ToolsError> {
     }
     let summary = Json::object(vec![
         ("path".to_owned(), Json::string(output.to_string_lossy())),
-        ("cases".to_owned(), record.get("caseCount").unwrap_or(&Json::Null).clone()),
+        (
+            "cases".to_owned(),
+            record.get("caseCount").unwrap_or(&Json::Null).clone(),
+        ),
         ("oracle".to_owned(), Json::string("source-derived")),
         ("mode".to_owned(), Json::string(if check { "check" } else { "capture" })),
     ]);
@@ -274,15 +309,26 @@ mod tests {
             id: "test-source".to_owned(),
             path: "evidence.txt".to_owned(),
             sha256: hash_str("one\ntwo\nthree\n"),
-            excerpts: vec![SourceExcerpt { first_line: 2, last_line: 3, purpose: "line slicing".to_owned() }],
+            excerpts: vec![SourceExcerpt {
+                first_line: 2,
+                last_line: 3,
+                purpose: "line slicing".to_owned(),
+            }],
         };
         let result = verify_source_pin(&text, &pin).expect("verify");
         let excerpts = result.get("excerpts").and_then(Json::as_array).expect("excerpts");
         assert_eq!(excerpts.len(), 1);
         assert_eq!(excerpts[0].get("code").and_then(Json::as_str), Some("two\nthree"));
-        assert_eq!(excerpts[0].get("sha256").and_then(Json::as_str), Some(hash_str("two\nthree").as_str()));
+        assert_eq!(
+            excerpts[0].get("sha256").and_then(Json::as_str),
+            Some(hash_str("two\nthree").as_str())
+        );
         let bad_bounds = SourcePin {
-            excerpts: vec![SourceExcerpt { first_line: 0, last_line: 1, purpose: "invalid".to_owned() }],
+            excerpts: vec![SourceExcerpt {
+                first_line: 0,
+                last_line: 1,
+                purpose: "invalid".to_owned(),
+            }],
             ..pin.clone()
         };
         let error = verify_source_pin(&text, &bad_bounds).expect_err("bounds");
@@ -297,11 +343,17 @@ mod tests {
 
     #[test]
     fn oracle_has_no_engine_dependency() {
-        let source = fsutil::read_text(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference/q1/oracle.rs"),
-        )
-        .expect("oracle source");
-        for forbidden in ["qa_client", "qa_core", "qa_app", "qa_platform", "qa_net", "qa_bots", "qa_render"] {
+        let source = fsutil::read_text(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference/q1/oracle.rs"))
+            .expect("oracle source");
+        for forbidden in [
+            "qa_client",
+            "qa_core",
+            "qa_app",
+            "qa_platform",
+            "qa_net",
+            "qa_bots",
+            "qa_render",
+        ] {
             assert!(!source.contains(forbidden), "oracle references {forbidden}");
         }
     }
@@ -363,7 +415,10 @@ mod tests {
         assert_eq!(capture.get("game").and_then(Json::as_str), Some("q1"));
         let cases = capture.get("cases").and_then(Json::as_array).expect("cases");
         assert!(!cases.is_empty());
-        assert_eq!(capture.get("caseCount").and_then(Json::as_f64), Some(cases.len() as f64));
+        assert_eq!(
+            capture.get("caseCount").and_then(Json::as_f64),
+            Some(cases.len() as f64)
+        );
         for case in cases {
             assert_eq!(case.get("passed").and_then(Json::as_bool), Some(true));
         }

@@ -57,9 +57,24 @@ pub struct RepositorySpec {
 #[must_use]
 pub fn repositories() -> Vec<RepositorySpec> {
     [
-        ("q1-ts", RepositoryRole::ImplementationCandidate, "../quake-1-re-ts", "6bc6a8bf29b66981e3b6ce7251ebbc6413120270"),
-        ("q2-ts", RepositoryRole::ImplementationCandidate, "../quake-2-re-ts", "0d73750cbe5683c7411934d0a5d4eb5acd4da676"),
-        ("q3-ts", RepositoryRole::ImplementationCandidate, "../quake-3-ts", "8453c49824eb7a5ed5aee452f74e19336965d1f8"),
+        (
+            "q1-ts",
+            RepositoryRole::ImplementationCandidate,
+            "../quake-1-re-ts",
+            "6bc6a8bf29b66981e3b6ce7251ebbc6413120270",
+        ),
+        (
+            "q2-ts",
+            RepositoryRole::ImplementationCandidate,
+            "../quake-2-re-ts",
+            "0d73750cbe5683c7411934d0a5d4eb5acd4da676",
+        ),
+        (
+            "q3-ts",
+            RepositoryRole::ImplementationCandidate,
+            "../quake-3-ts",
+            "8453c49824eb7a5ed5aee452f74e19336965d1f8",
+        ),
     ]
     .into_iter()
     .map(|(id, role, path, expected_revision)| RepositorySpec {
@@ -73,9 +88,12 @@ pub fn repositories() -> Vec<RepositorySpec> {
 
 /// Run git in `root`, returning lossy standard output.
 pub fn git(root: &Path, args: &[&str]) -> Result<String, ToolsError> {
-    let output = Command::new("git").arg("-C").arg(root).args(args).output().map_err(|error| {
-        ToolsError::command(format!("spawning git in {}: {error}", root.display()))
-    })?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| ToolsError::command(format!("spawning git in {}: {error}", root.display())))?;
     if !output.status.success() {
         return Err(ToolsError::command(format!(
             "Git failed in {}: {}",
@@ -91,7 +109,9 @@ pub fn safe_relative_path(path: &str) -> Result<String, ToolsError> {
     if path.is_empty()
         || path.starts_with('/')
         || path.contains('\\')
-        || path.split('/').any(|part| part == ".." || part == "." || part.is_empty())
+        || path
+            .split('/')
+            .any(|part| part == ".." || part == "." || part.is_empty())
     {
         return Err(ToolsError::invalid(format!("Invalid repository-relative path: {path}")));
     }
@@ -140,7 +160,10 @@ fn is_test_path(path: &str) -> bool {
         while let Some(found) = path[from..].find(needle) {
             let index = from + found;
             let before = index == 0 || path.as_bytes()[index - 1] == b'/';
-            let after = path.as_bytes().get(index + needle.len()).is_some_and(|next| *next == b'/' || *next == b'.');
+            let after = path
+                .as_bytes()
+                .get(index + needle.len())
+                .is_some_and(|next| *next == b'/' || *next == b'.');
             if before && after {
                 return true;
             }
@@ -176,11 +199,18 @@ pub fn classify_file(role: RepositoryRole, path: &str) -> FileKind {
         if is_test_path(path) {
             return FileKind::Test;
         }
-        return if path.starts_with("src/") { FileKind::Runtime } else { FileKind::Tool };
+        return if path.starts_with("src/") {
+            FileKind::Runtime
+        } else {
+            FileKind::Tool
+        };
     }
     if role == RepositoryRole::OriginalReference {
         let ext = extension(path).to_lowercase();
-        if matches!(ext.as_str(), ".c" | ".h" | ".cc" | ".cpp" | ".cxx" | ".hpp" | ".qc" | ".asm" | ".s") {
+        if matches!(
+            ext.as_str(),
+            ".c" | ".h" | ".cc" | ".cpp" | ".cxx" | ".hpp" | ".qc" | ".asm" | ".s"
+        ) {
             return FileKind::ReferenceCode;
         }
     }
@@ -195,7 +225,10 @@ pub fn classify_file(role: RepositoryRole, path: &str) -> FileKind {
         while let Some(found) = path[from..].find(needle) {
             let index = from + found;
             let before = index == 0 || path.as_bytes()[index - 1] == b'/';
-            let after = path.as_bytes().get(index + needle.len()).is_none_or(|next| *next == b'.');
+            let after = path
+                .as_bytes()
+                .get(index + needle.len())
+                .is_none_or(|next| *next == b'.');
             if before && after {
                 return FileKind::Document;
             }
@@ -204,7 +237,11 @@ pub fn classify_file(role: RepositoryRole, path: &str) -> FileKind {
     }
     {
         let ext = extension(path).to_lowercase();
-        if matches!(ext.as_str(), ".json" | ".jsonc" | ".yaml" | ".yml" | ".toml" | ".ini" | ".cfg" | ".lock") || path.starts_with('.') {
+        if matches!(
+            ext.as_str(),
+            ".json" | ".jsonc" | ".yaml" | ".yml" | ".toml" | ".ini" | ".cfg" | ".lock"
+        ) || path.starts_with('.')
+        {
             return FileKind::Configuration;
         }
     }
@@ -279,7 +316,12 @@ fn census_name(name: &str) -> String {
 
 /// Census functions from an already-scanned file.
 #[must_use]
-pub fn census_functions_from_scan(repository: &str, path: &str, source: &str, decls: &[DeclInfo]) -> Vec<CensusFunction> {
+pub fn census_functions_from_scan(
+    repository: &str,
+    path: &str,
+    source: &str,
+    decls: &[DeclInfo],
+) -> Vec<CensusFunction> {
     let starts = line_starts(source);
     let utf16 = Utf16Map::new(source);
     let mut functions = Vec::new();
@@ -360,7 +402,10 @@ impl CensusFile {
             ("bytes".to_owned(), Json::uint(self.bytes)),
             ("sha256".to_owned(), Json::string(&self.sha256)),
             ("lineCount".to_owned(), Json::uint(self.line_count as u64)),
-            ("functions".to_owned(), Json::array(self.functions.iter().map(CensusFunction::to_json).collect())),
+            (
+                "functions".to_owned(),
+                Json::array(self.functions.iter().map(CensusFunction::to_json).collect()),
+            ),
         ])
     }
 }
@@ -411,11 +456,20 @@ impl CapturedRepository {
             ("id".to_owned(), Json::string(&self.spec.id)),
             ("role".to_owned(), Json::string(self.spec.role.as_str())),
             ("path".to_owned(), Json::string(&self.spec.path)),
-            ("expectedRevision".to_owned(), Json::string(&self.spec.expected_revision)),
+            (
+                "expectedRevision".to_owned(),
+                Json::string(&self.spec.expected_revision),
+            ),
             ("revision".to_owned(), Json::string(&self.revision)),
             ("sourceSetSha256".to_owned(), Json::string(&self.source_set_sha256)),
-            ("submodules".to_owned(), Json::array(self.submodules.iter().map(CensusSubmodule::to_json).collect())),
-            ("files".to_owned(), Json::array(self.files.iter().map(CensusFile::to_json).collect())),
+            (
+                "submodules".to_owned(),
+                Json::array(self.submodules.iter().map(CensusSubmodule::to_json).collect()),
+            ),
+            (
+                "files".to_owned(),
+                Json::array(self.files.iter().map(CensusFile::to_json).collect()),
+            ),
         ])
     }
 }
@@ -424,7 +478,10 @@ fn census_clean(root: &Path, spec: &RepositorySpec) -> Result<String, ToolsError
     let revision = git(root, &["rev-parse", "HEAD"])?;
     let revision = revision.trim().to_owned();
     if revision != spec.expected_revision {
-        return Err(ToolsError::invalid(format!("{}: HEAD {revision} differs from reviewed revision {}", spec.id, spec.expected_revision)));
+        return Err(ToolsError::invalid(format!(
+            "{}: HEAD {revision} differs from reviewed revision {}",
+            spec.id, spec.expected_revision
+        )));
     }
     if !git(root, &["status", "--porcelain=v1", "--untracked-files=no"])?.is_empty() {
         return Err(ToolsError::invalid(format!(
@@ -446,12 +503,18 @@ pub fn capture_repository(project_root: &Path, spec: &RepositorySpec) -> Result<
         .map(str::to_owned)
         .collect();
     let mut submodules = Vec::new();
-    for entry in git(&repository_root, &["ls-files", "--stage", "-z"])?.split('\0').filter(|entry| !entry.is_empty()) {
+    for entry in git(&repository_root, &["ls-files", "--stage", "-z"])?
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+    {
         if !entry.starts_with("160000 ") {
             continue;
         }
         let Some(tab) = entry.find('\t') else {
-            return Err(ToolsError::invalid(format!("{}:{entry} needs an explicitly pinned submodule source", spec.id)));
+            return Err(ToolsError::invalid(format!(
+                "{}:{entry} needs an explicitly pinned submodule source",
+                spec.id
+            )));
         };
         let metadata: Vec<&str> = entry[..tab].split(' ').collect();
         let path = &entry[tab + 1..];
@@ -460,7 +523,10 @@ pub fn capture_repository(project_root: &Path, spec: &RepositorySpec) -> Result<
                 && metadata.get(1) == Some(&candidate.expected_revision.as_str())
         });
         let Some(child) = child else {
-            return Err(ToolsError::invalid(format!("{}:{path} needs an explicitly pinned submodule source", spec.id)));
+            return Err(ToolsError::invalid(format!(
+                "{}:{path} needs an explicitly pinned submodule source",
+                spec.id
+            )));
         };
         submodules.push(CensusSubmodule {
             path: path.to_owned(),
@@ -469,8 +535,11 @@ pub fn capture_repository(project_root: &Path, spec: &RepositorySpec) -> Result<
         });
         tracked.remove(path);
     }
-    let untracked: Vec<String> =
-        git(&repository_root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0').filter(|entry| !entry.is_empty()).map(str::to_owned).collect();
+    let untracked: Vec<String> = git(&repository_root, &["ls-files", "--others", "--exclude-standard", "-z"])?
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect();
     let mut paths: Vec<String> = tracked.iter().cloned().collect();
     paths.extend(untracked.iter().cloned());
     paths.sort_by(|left, right| compare_text(left, right));
@@ -486,7 +555,11 @@ pub fn capture_repository(project_root: &Path, spec: &RepositorySpec) -> Result<
             let target = target.to_string_lossy().into_owned();
             files.push(CensusFile {
                 path: path.clone(),
-                tracking: if tracked.contains(path) { FileTracking::Tracked } else { FileTracking::Untracked },
+                tracking: if tracked.contains(path) {
+                    FileTracking::Tracked
+                } else {
+                    FileTracking::Untracked
+                },
                 kind: FileKind::Other,
                 bytes: target.len() as u64,
                 sha256: hash_str(&target),
@@ -496,27 +569,45 @@ pub fn capture_repository(project_root: &Path, spec: &RepositorySpec) -> Result<
             continue;
         }
         if !details.is_file() {
-            return Err(ToolsError::invalid(format!("{}:{path} is not a regular source file", spec.id)));
+            return Err(ToolsError::invalid(format!(
+                "{}:{path} is not a regular source file",
+                spec.id
+            )));
         }
-        let bytes = std::fs::read(&absolute).map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
+        let bytes = std::fs::read(&absolute)
+            .map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
         let source = String::from_utf8_lossy(&bytes).into_owned();
         let is_typescript = path.ends_with(".ts") || path.ends_with(".tsx");
         files.push(CensusFile {
             path: path.clone(),
-            tracking: if tracked.contains(path) { FileTracking::Tracked } else { FileTracking::Untracked },
+            tracking: if tracked.contains(path) {
+                FileTracking::Tracked
+            } else {
+                FileTracking::Untracked
+            },
             kind: classify_file(spec.role, path),
             bytes: bytes.len() as u64,
             sha256: hash_bytes(&bytes),
             line_count: source.split('\n').count(),
-            functions: if is_typescript { enumerate_functions(&spec.id, path, &source) } else { Vec::new() },
+            functions: if is_typescript {
+                enumerate_functions(&spec.id, path, &source)
+            } else {
+                Vec::new()
+            },
         });
     }
     if census_clean(&repository_root, spec)? != revision {
-        return Err(ToolsError::invalid(format!("{}: source changed during the census", spec.id)));
+        return Err(ToolsError::invalid(format!(
+            "{}: source changed during the census",
+            spec.id
+        )));
     }
     let fingerprint = Json::object(vec![
         ("revision".to_owned(), Json::string(&revision)),
-        ("submodules".to_owned(), Json::array(submodules.iter().map(CensusSubmodule::to_json).collect())),
+        (
+            "submodules".to_owned(),
+            Json::array(submodules.iter().map(CensusSubmodule::to_json).collect()),
+        ),
         (
             "files".to_owned(),
             Json::array(
@@ -533,7 +624,13 @@ pub fn capture_repository(project_root: &Path, spec: &RepositorySpec) -> Result<
             ),
         ),
     ]);
-    Ok(CapturedRepository { spec: spec.clone(), revision, source_set_sha256: hash_str(&fingerprint.render()), submodules, files })
+    Ok(CapturedRepository {
+        spec: spec.clone(),
+        revision,
+        source_set_sha256: hash_str(&fingerprint.render()),
+        submodules,
+        files,
+    })
 }
 
 /// A built source manifest.
@@ -550,8 +647,11 @@ impl SourceManifest {
     #[must_use]
     pub fn to_json(&self) -> Json {
         let total_files: usize = self.repositories.iter().map(|repository| repository.files.len()).sum();
-        let total_functions: usize =
-            self.repositories.iter().map(|repository| repository.files.iter().map(|file| file.functions.len()).sum::<usize>()).sum();
+        let total_functions: usize = self
+            .repositories
+            .iter()
+            .map(|repository| repository.files.iter().map(|file| file.functions.len()).sum::<usize>())
+            .sum();
         Json::object(vec![
             ("schemaVersion".to_owned(), Json::int(1)),
             ("generator".to_owned(), Json::string("crates/tools/src/bin/qa-source-census.rs")),
@@ -611,7 +711,10 @@ pub fn build_source_manifest(project_root: &Path) -> Result<SourceManifest, Tool
     for spec in repositories() {
         captured.push(capture_repository(project_root, &spec)?);
     }
-    Ok(SourceManifest { repositories: captured, captured_at: now_iso() })
+    Ok(SourceManifest {
+        repositories: captured,
+        captured_at: now_iso(),
+    })
 }
 
 /// Parsed inventory arguments.
@@ -635,7 +738,10 @@ pub fn inventory_arguments(args: &[String], default_root: &Path) -> Result<Inven
                 if value.is_none_or(|next| next.starts_with("--")) {
                     return Err(ToolsError::invalid("--root requires a project directory"));
                 }
-                root = lexical_absolute(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")), &value.expect("root value"));
+                root = lexical_absolute(
+                    &std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+                    &value.expect("root value"),
+                );
                 index += 2;
             }
             "--check" => {
@@ -651,14 +757,19 @@ pub fn inventory_arguments(args: &[String], default_root: &Path) -> Result<Inven
 /// Verify generated text against a file, or stage and atomically replace it.
 pub fn write_or_check(path: &Path, text: &str, check: bool) -> Result<(), ToolsError> {
     if check {
-        let current = std::fs::read_to_string(path).map_err(|error| ToolsError::io(format!("reading {}", path.display()), error))?;
+        let current = std::fs::read_to_string(path)
+            .map_err(|error| ToolsError::io(format!("reading {}", path.display()), error))?;
         if current != text {
-            return Err(ToolsError::invalid(format!("Generated inventory differs: {}", path.display())));
+            return Err(ToolsError::invalid(format!(
+                "Generated inventory differs: {}",
+                path.display()
+            )));
         }
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
     }
     let staging = make_temp_dir(path.parent().unwrap_or_else(|| Path::new(".")), ".inventory-")?;
     let staged = staging.join("manifest.json");
@@ -673,9 +784,16 @@ pub fn run_census(options: &InventoryArguments) -> Result<String, ToolsError> {
     let output = options.root.join("verification/source-manifest.json");
     let text = format!("{}\n", manifest.to_json().render_pretty());
     write_or_check(&output, &text, options.check)?;
-    let total_files: usize = manifest.repositories.iter().map(|repository| repository.files.len()).sum();
-    let total_functions: usize =
-        manifest.repositories.iter().map(|repository| repository.files.iter().map(|file| file.functions.len()).sum::<usize>()).sum();
+    let total_files: usize = manifest
+        .repositories
+        .iter()
+        .map(|repository| repository.files.len())
+        .sum();
+    let total_functions: usize = manifest
+        .repositories
+        .iter()
+        .map(|repository| repository.files.iter().map(|file| file.functions.len()).sum::<usize>())
+        .sum();
     Ok(format!(
         "{} {}: {} repositories, {} files, {} TypeScript functions.\n",
         if options.check { "Verified" } else { "Wrote" },
@@ -692,21 +810,66 @@ mod tests {
 
     #[test]
     fn classifies_paths() {
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "src/a.ts"), FileKind::Runtime);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "tools/a.ts"), FileKind::Tool);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "src/a.test.ts"), FileKind::Test);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "src/__tests__/a.ts"), FileKind::Test);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "tests/x.ts"), FileKind::Test);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "src/contest.ts"), FileKind::Runtime);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "a.d.ts"), FileKind::Declaration);
-        assert_eq!(classify_file(RepositoryRole::OriginalReference, "a.C"), FileKind::ReferenceCode);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "a.c"), FileKind::Other);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "README.md"), FileKind::Document);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "LICENSE"), FileKind::Document);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "LICENSES"), FileKind::Other);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "a.json"), FileKind::Configuration);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, ".hidden/x"), FileKind::Configuration);
-        assert_eq!(classify_file(RepositoryRole::ImplementationCandidate, "a.bin"), FileKind::Other);
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "src/a.ts"),
+            FileKind::Runtime
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "tools/a.ts"),
+            FileKind::Tool
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "src/a.test.ts"),
+            FileKind::Test
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "src/__tests__/a.ts"),
+            FileKind::Test
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "tests/x.ts"),
+            FileKind::Test
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "src/contest.ts"),
+            FileKind::Runtime
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "a.d.ts"),
+            FileKind::Declaration
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::OriginalReference, "a.C"),
+            FileKind::ReferenceCode
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "a.c"),
+            FileKind::Other
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "README.md"),
+            FileKind::Document
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "LICENSE"),
+            FileKind::Document
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "LICENSES"),
+            FileKind::Other
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "a.json"),
+            FileKind::Configuration
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, ".hidden/x"),
+            FileKind::Configuration
+        );
+        assert_eq!(
+            classify_file(RepositoryRole::ImplementationCandidate, "a.bin"),
+            FileKind::Other
+        );
     }
 
     #[test]
@@ -728,7 +891,11 @@ mod tests {
 
     #[test]
     fn enumerates_functions_with_offsets() {
-        let functions = enumerate_functions("repo", "a.ts", "export function f(a: number): void {\n  g(() => 1);\n}\n");
+        let functions = enumerate_functions(
+            "repo",
+            "a.ts",
+            "export function f(a: number): void {\n  g(() => 1);\n}\n",
+        );
         assert_eq!(functions.len(), 2);
         assert_eq!(functions[0].id, "repo:a.ts#0");
         assert_eq!(functions[0].name, "f");
@@ -743,7 +910,8 @@ mod tests {
         let parsed = inventory_arguments(&[], &root).unwrap();
         assert_eq!(parsed.root, root);
         assert!(!parsed.check);
-        let parsed = inventory_arguments(&["--check".to_owned(), "--root".to_owned(), "sub".to_owned()], &root).unwrap();
+        let parsed =
+            inventory_arguments(&["--check".to_owned(), "--root".to_owned(), "sub".to_owned()], &root).unwrap();
         assert!(parsed.check);
         assert!(parsed.root.is_absolute());
         assert!(inventory_arguments(&["--root".to_owned()], &root).is_err());

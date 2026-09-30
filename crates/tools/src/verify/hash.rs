@@ -24,7 +24,9 @@ pub fn is_array(value: &Json) -> bool {
 
 /// Canonical JSON: sorted keys, compact separators (donor `canonicalJson`).
 pub fn canonical_json(value: &Json) -> Result<String, ToolsError> {
-    value.render_canonical().map_err(|_| ToolsError::invalid("Fingerprints require finite JSON data"))
+    value
+        .render_canonical()
+        .map_err(|_| ToolsError::invalid("Fingerprints require finite JSON data"))
 }
 
 /// SHA-256 hex digest of bytes (donor `hashBytes`).
@@ -69,7 +71,10 @@ mod tests {
     #[test]
     fn canonical_form_matches_donor() {
         let value = parse_json("{\"b\":[3,2],\"a\":{\"y\":1,\"x\":true}}").unwrap();
-        assert_eq!(canonical_json(&value).unwrap(), "{\"a\":{\"x\":true,\"y\":1},\"b\":[3,2]}");
+        assert_eq!(
+            canonical_json(&value).unwrap(),
+            "{\"a\":{\"x\":true,\"y\":1},\"b\":[3,2]}"
+        );
     }
 
     #[test]

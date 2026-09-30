@@ -166,7 +166,14 @@ impl Q1Input {
                     ),
                 ),
             ]),
-            Self::RunThink { server_time, frame_time, next_think, entity, globals, effect } => Json::object(vec![
+            Self::RunThink {
+                server_time,
+                frame_time,
+                next_think,
+                entity,
+                globals,
+                effect,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("run-think")),
                 ("serverTime".to_owned(), Json::float(*server_time)),
                 ("frameTime".to_owned(), Json::float(*frame_time)),
@@ -189,7 +196,14 @@ impl Q1Input {
                 ("kind".to_owned(), Json::string("mg1-hub")),
                 ("serverFlags".to_owned(), Json::int(i64::from(*server_flags))),
             ]),
-            Self::Mg3Counter { server_flags, count, coop, spawn_flags, activator, entity } => Json::object(vec![
+            Self::Mg3Counter {
+                server_flags,
+                count,
+                coop,
+                spawn_flags,
+                activator,
+                entity,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("mg3-counter")),
                 ("serverFlags".to_owned(), Json::int(i64::from(*server_flags))),
                 ("count".to_owned(), Json::float(*count)),
@@ -297,31 +311,59 @@ impl Q1Output {
         match self {
             Self::ScalarProgram { values, bits } => Json::object(vec![
                 ("kind".to_owned(), Json::string("scalar-program")),
-                ("values".to_owned(), Json::array(values.iter().map(|value| Json::float(*value)).collect())),
+                (
+                    "values".to_owned(),
+                    Json::array(values.iter().map(|value| Json::float(*value)).collect()),
+                ),
                 ("bits".to_owned(), Json::array(bits.iter().map(Json::string).collect())),
             ]),
-            Self::RunThink { ran, continue_physics, next_think, free, globals, callback_entry } => Json::object(vec![
+            Self::RunThink {
+                ran,
+                continue_physics,
+                next_think,
+                free,
+                globals,
+                callback_entry,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("run-think")),
                 ("ran".to_owned(), Json::boolean(*ran)),
                 ("continuePhysics".to_owned(), Json::boolean(*continue_physics)),
                 ("nextThink".to_owned(), Json::float(*next_think)),
                 ("free".to_owned(), Json::boolean(*free)),
                 ("globals".to_owned(), globals.to_json()),
-                ("callbackEntry".to_owned(), callback_entry.as_ref().map_or(Json::Null, CallbackEntry::to_json)),
+                (
+                    "callbackEntry".to_owned(),
+                    callback_entry.as_ref().map_or(Json::Null, CallbackEntry::to_json),
+                ),
             ]),
             Self::Mg1Hub { present_mask, calls } => Json::object(vec![
                 ("kind".to_owned(), Json::string("mg1-hub")),
                 ("requiredMask".to_owned(), Json::int(31)),
                 ("presentMask".to_owned(), Json::int(i64::from(*present_mask))),
-                ("calls".to_owned(), Json::array(calls.iter().map(Json::string).collect())),
+                (
+                    "calls".to_owned(),
+                    Json::array(calls.iter().map(Json::string).collect()),
+                ),
             ]),
-            Self::Mg3Counter { removed, count, use_callback, runes, callback } => Json::object(vec![
+            Self::Mg3Counter {
+                removed,
+                count,
+                use_callback,
+                runes,
+                callback,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("mg3-counter")),
                 ("removed".to_owned(), Json::boolean(*removed)),
                 ("count".to_owned(), Json::float(*count)),
                 ("use".to_owned(), use_callback.as_ref().map_or(Json::Null, Json::string)),
-                ("runes".to_owned(), runes.map_or(Json::Null, |runes| Json::int(i64::from(runes)))),
-                ("callback".to_owned(), callback.as_ref().map_or(Json::Null, TargetCallback::to_json)),
+                (
+                    "runes".to_owned(),
+                    runes.map_or(Json::Null, |runes| Json::int(i64::from(runes))),
+                ),
+                (
+                    "callback".to_owned(),
+                    callback.as_ref().map_or(Json::Null, TargetCallback::to_json),
+                ),
             ]),
         }
     }
@@ -346,11 +388,18 @@ fn fields(value: &[(String, Json)], expected: &[&str]) -> Result<(), ToolsError>
 }
 
 fn field<'a>(value: &'a [(String, Json)], key: &str) -> &'a Json {
-    value.iter().find(|(present, _)| present == key).map(|(_, found)| found).expect("checked field")
+    value
+        .iter()
+        .find(|(present, _)| present == key)
+        .map(|(_, found)| found)
+        .expect("checked field")
 }
 
 fn kind_of(value: &[(String, Json)]) -> Option<&str> {
-    value.iter().find(|(present, _)| present == "kind").and_then(|(_, found)| found.as_str())
+    value
+        .iter()
+        .find(|(present, _)| present == "kind")
+        .and_then(|(_, found)| found.as_str())
 }
 
 fn finite(value: &Json) -> Result<f64, ToolsError> {
@@ -412,7 +461,9 @@ fn parse_effect(value: &Json) -> Result<ThinkEffect, ToolsError> {
         }
         Some("reschedule") => {
             fields(item, &["kind", "nextThink"])?;
-            Ok(ThinkEffect::Reschedule { next_think: stored_float(field(item, "nextThink"))? })
+            Ok(ThinkEffect::Reschedule {
+                next_think: stored_float(field(item, "nextThink"))?,
+            })
         }
         _ => Err(ToolsError::parse("Unknown think callback effect")),
     }
@@ -421,7 +472,9 @@ fn parse_effect(value: &Json) -> Result<ThinkEffect, ToolsError> {
 fn parse_operation(value: &Json) -> Result<ScalarOperation, ToolsError> {
     let item = object(value)?;
     fields(item, &["operator", "operand"])?;
-    let operator = field(item, "operator").as_str().ok_or_else(|| ToolsError::parse("Unknown scalar operator"))?;
+    let operator = field(item, "operator")
+        .as_str()
+        .ok_or_else(|| ToolsError::parse("Unknown scalar operator"))?;
     let operator = ScalarOperator::parse(operator)?;
     let operand = stored_float(field(item, "operand"))?;
     if operator == ScalarOperator::Divide && operand == 0.0 {
@@ -436,7 +489,9 @@ pub fn parse_q1_input(value: &Json) -> Result<Q1Input, ToolsError> {
     match kind_of(item) {
         Some("scalar-program") => {
             fields(item, &["kind", "initial", "operations"])?;
-            let raw = field(item, "operations").as_array().ok_or_else(|| ToolsError::parse("Expected scalar operations array"))?;
+            let raw = field(item, "operations")
+                .as_array()
+                .ok_or_else(|| ToolsError::parse("Expected scalar operations array"))?;
             if raw.len() > 1024 {
                 return Err(ToolsError::parse("Scalar program exceeds 1024-operation capture scope"));
             }
@@ -444,10 +499,24 @@ pub fn parse_q1_input(value: &Json) -> Result<Q1Input, ToolsError> {
             for entry in raw {
                 operations.push(parse_operation(entry)?);
             }
-            Ok(Q1Input::ScalarProgram { initial: stored_float(field(item, "initial"))?, operations })
+            Ok(Q1Input::ScalarProgram {
+                initial: stored_float(field(item, "initial"))?,
+                operations,
+            })
         }
         Some("run-think") => {
-            fields(item, &["kind", "serverTime", "frameTime", "nextThink", "entity", "globals", "effect"])?;
+            fields(
+                item,
+                &[
+                    "kind",
+                    "serverTime",
+                    "frameTime",
+                    "nextThink",
+                    "entity",
+                    "globals",
+                    "effect",
+                ],
+            )?;
             let server_time = finite(field(item, "serverTime"))?;
             let frame_time = finite(field(item, "frameTime"))?;
             if server_time < 0.0 || frame_time < 0.0 || !(server_time + frame_time).is_finite() {
@@ -465,11 +534,26 @@ pub fn parse_q1_input(value: &Json) -> Result<Q1Input, ToolsError> {
         }
         Some("mg1-hub") => {
             fields(item, &["kind", "serverFlags"])?;
-            Ok(Q1Input::Mg1Hub { server_flags: int_operand(field(item, "serverFlags"))? })
+            Ok(Q1Input::Mg1Hub {
+                server_flags: int_operand(field(item, "serverFlags"))?,
+            })
         }
         Some("mg3-counter") => {
-            fields(item, &["kind", "serverFlags", "count", "coop", "spawnFlags", "activator", "entity"])?;
-            let coop = field(item, "coop").as_bool().ok_or_else(|| ToolsError::parse("Expected coop boolean"))?;
+            fields(
+                item,
+                &[
+                    "kind",
+                    "serverFlags",
+                    "count",
+                    "coop",
+                    "spawnFlags",
+                    "activator",
+                    "entity",
+                ],
+            )?;
+            let coop = field(item, "coop")
+                .as_bool()
+                .ok_or_else(|| ToolsError::parse("Expected coop boolean"))?;
             Ok(Q1Input::Mg3Counter {
                 server_flags: int_operand(field(item, "serverFlags"))?,
                 count: stored_float(field(item, "count"))?,
@@ -547,32 +631,73 @@ fn run_think(
             callback_entry: None,
         };
     }
-    let time = if next_think < server_time { fround(server_time) } else { next_think };
-    let entry = CallbackEntry { time, self_entity: entity, other_entity: 0 };
-    let callback_globals = CallbackGlobals { time, self_entity: entity, other_entity: 0 };
+    let time = if next_think < server_time {
+        fround(server_time)
+    } else {
+        next_think
+    };
+    let entry = CallbackEntry {
+        time,
+        self_entity: entity,
+        other_entity: 0,
+    };
+    let callback_globals = CallbackGlobals {
+        time,
+        self_entity: entity,
+        other_entity: 0,
+    };
     let (next_think, free, continue_physics) = match effect {
         ThinkEffect::Retain => (0.0, false, true),
         ThinkEffect::Remove => (-1.0, true, false),
         ThinkEffect::Reschedule { next_think } => (next_think, false, true),
     };
-    Q1Output::RunThink { ran: true, continue_physics, next_think, free, globals: callback_globals, callback_entry: Some(entry) }
+    Q1Output::RunThink {
+        ran: true,
+        continue_physics,
+        next_think,
+        free,
+        globals: callback_globals,
+        callback_entry: Some(entry),
+    }
 }
 
 /// Evaluate an oracle input document.
 pub fn run_q1_oracle(value: &Json) -> Result<Q1Output, ToolsError> {
     match parse_q1_input(value)? {
         Q1Input::ScalarProgram { initial, operations } => scalar(initial, &operations),
-        Q1Input::RunThink { server_time, frame_time, next_think, entity, globals, effect } => {
-            Ok(run_think(server_time, frame_time, next_think, entity, globals, effect))
-        }
+        Q1Input::RunThink {
+            server_time,
+            frame_time,
+            next_think,
+            entity,
+            globals,
+            effect,
+        } => Ok(run_think(server_time, frame_time, next_think, entity, globals, effect)),
         Q1Input::Mg1Hub { server_flags } => {
             let present_mask = server_flags & 31;
-            let calls = vec![if present_mask == 31 { "trigger_changelevel()".to_owned() } else { "remove(self)".to_owned() }];
+            let calls = vec![if present_mask == 31 {
+                "trigger_changelevel()".to_owned()
+            } else {
+                "remove(self)".to_owned()
+            }];
             Ok(Q1Output::Mg1Hub { present_mask, calls })
         }
-        Q1Input::Mg3Counter { server_flags, count, coop, spawn_flags, activator, entity } => {
+        Q1Input::Mg3Counter {
+            server_flags,
+            count,
+            coop,
+            spawn_flags,
+            activator,
+            entity,
+        } => {
             if coop && spawn_flags & 131_072 != 0 || !coop && spawn_flags & 32768 != 0 {
-                return Ok(Q1Output::Mg3Counter { removed: true, count, use_callback: None, runes: None, callback: None });
+                return Ok(Q1Output::Mg3Counter {
+                    removed: true,
+                    count,
+                    use_callback: None,
+                    runes: None,
+                    callback: None,
+                });
             }
             let count = if count == 0.0 { 2.0 } else { count };
             let mut runes = 0;
@@ -582,7 +707,10 @@ pub fn run_q1_oracle(value: &Json) -> Result<Q1Output, ToolsError> {
                 }
             }
             let callback = if f64::from(runes) >= count {
-                Some(TargetCallback { self_entity: entity, activator })
+                Some(TargetCallback {
+                    self_entity: entity,
+                    activator,
+                })
             } else {
                 None
             };
@@ -611,19 +739,26 @@ mod tests {
     fn pinned_cases_agree_with_the_oracle() {
         for item in q1_cases() {
             let observed = run_q1_oracle(&item.input.to_json()).expect(&format!("evaluate {}", item.id));
-            assert!(deep_strict_equal(&observed.to_json(), &item.expected.to_json()), "{}", item.id);
+            assert!(
+                deep_strict_equal(&observed.to_json(), &item.expected.to_json()),
+                "{}",
+                item.id
+            );
         }
     }
 
     #[test]
     fn mg1_exhausts_five_required_bits() {
         for flags in 0..128 {
-            let input =
-                parse_json(&format!(r#"{{"kind": "mg1-hub", "serverFlags": {flags}}}"#)).expect("input");
+            let input = parse_json(&format!(r#"{{"kind": "mg1-hub", "serverFlags": {flags}}}"#)).expect("input");
             let Q1Output::Mg1Hub { calls, .. } = run_q1_oracle(&input).expect("evaluate") else {
                 panic!("wrong oracle result kind for flags {flags}");
             };
-            let expected = if flags % 32 == 31 { "trigger_changelevel()" } else { "remove(self)" };
+            let expected = if flags % 32 == 31 {
+                "trigger_changelevel()"
+            } else {
+                "remove(self)"
+            };
             assert_eq!(calls, vec![expected.to_owned()], "flags {flags}");
         }
     }
@@ -638,14 +773,21 @@ mod tests {
                     r#"{{"kind": "mg3-counter", "serverFlags": {flags}, "count": {threshold}, "coop": false, "spawnFlags": 0, "entity": 40, "activator": 2}}"#,
                 ))
                 .expect("input");
-                let Q1Output::Mg3Counter { runes: observed, callback, .. } =
-                    run_q1_oracle(&input).expect("evaluate")
+                let Q1Output::Mg3Counter {
+                    runes: observed,
+                    callback,
+                    ..
+                } = run_q1_oracle(&input).expect("evaluate")
                 else {
                     panic!("wrong oracle result kind for flags {flags}");
                 };
                 assert_eq!(observed, Some(runes), "flags {flags} threshold {threshold}");
                 let count = if threshold == 0.0 { 2.0 } else { threshold };
-                assert_eq!(callback.is_some(), f64::from(runes) >= count, "flags {flags} threshold {threshold}");
+                assert_eq!(
+                    callback.is_some(),
+                    f64::from(runes) >= count,
+                    "flags {flags} threshold {threshold}"
+                );
             }
         }
     }
@@ -673,11 +815,14 @@ mod tests {
         )
         .expect("input");
         let observed = run_q1_oracle(&input).expect("evaluate");
-        let expected = parse_json(
-            r#"{"kind": "scalar-program", "values": [-0, -0], "bits": ["80000000", "80000000"]}"#,
-        )
-        .expect("expected");
-        assert!(deep_strict_equal(&observed.to_json(), &expected), "{}", observed.to_json().render());
+        let expected =
+            parse_json(r#"{"kind": "scalar-program", "values": [-0, -0], "bits": ["80000000", "80000000"]}"#)
+                .expect("expected");
+        assert!(
+            deep_strict_equal(&observed.to_json(), &expected),
+            "{}",
+            observed.to_json().render()
+        );
     }
 
     #[test]
@@ -687,11 +832,14 @@ mod tests {
         )
         .expect("input");
         let observed = run_q1_oracle(&input).expect("evaluate");
-        let expected = parse_json(
-            r#"{"kind": "scalar-program", "values": [-1.75, 15], "bits": ["bfe00000", "41700000"]}"#,
-        )
-        .expect("expected");
-        assert!(deep_strict_equal(&observed.to_json(), &expected), "{}", observed.to_json().render());
+        let expected =
+            parse_json(r#"{"kind": "scalar-program", "values": [-1.75, 15], "bits": ["bfe00000", "41700000"]}"#)
+                .expect("expected");
+        assert!(
+            deep_strict_equal(&observed.to_json(), &expected),
+            "{}",
+            observed.to_json().render()
+        );
     }
 
     #[test]

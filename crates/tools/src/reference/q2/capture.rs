@@ -64,7 +64,9 @@ pub fn capture_q2() -> Result<Json, ToolsError> {
     let mut rendered = Vec::new();
     for reference in q2_cases()? {
         for location in &reference.sources {
-            let line_count = source_text(&sources.text, location.source.as_str())?.split('\n').count();
+            let line_count = source_text(&sources.text, location.source.as_str())?
+                .split('\n')
+                .count();
             if location.first_line < 1
                 || location.last_line < location.first_line
                 || u64::from(location.last_line) > line_count as u64
@@ -147,14 +149,18 @@ pub fn capture_q2() -> Result<Json, ToolsError> {
 }
 
 fn capture_field<'a>(capture: &'a Json, key: &str) -> Result<&'a Json, ToolsError> {
-    capture.get(key).ok_or_else(|| ToolsError::parse(format!("Capture is missing {key}")))
+    capture
+        .get(key)
+        .ok_or_else(|| ToolsError::parse(format!("Capture is missing {key}")))
 }
 
 /// Run the Q2 capture (donor `main`): write `capture.json` unless `--check`
 /// is given, print the summary line, and return the exit code.
 pub fn run(args: &[String]) -> Result<i32, ToolsError> {
     if args.iter().any(|arg| arg != "--check") {
-        return Err(ToolsError::invalid("Usage: qa-tools reference::q2::capture::run [--check]"));
+        return Err(ToolsError::invalid(
+            "Usage: qa-tools reference::q2::capture::run [--check]",
+        ));
     }
     let capture =
         capture_q2().map_err(|error| ToolsError::invalid(format!("Q2 source reference capture failed: {error}")))?;
@@ -177,10 +183,17 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         ("cases".to_owned(), capture_field(&capture, "assertionCount")?.clone()),
         ("passed".to_owned(), capture_field(&capture, "passed")?.clone()),
         ("failed".to_owned(), Json::array(failed)),
-        ("nativeEngineExecution".to_owned(), capture_field(&capture, "nativeEngineExecution")?.clone()),
+        (
+            "nativeEngineExecution".to_owned(),
+            capture_field(&capture, "nativeEngineExecution")?.clone(),
+        ),
     ]);
     println!("{}", summary.render());
-    Ok(if capture_field(&capture, "passed")?.as_bool() == Some(true) { 0 } else { 1 })
+    Ok(if capture_field(&capture, "passed")?.as_bool() == Some(true) {
+        0
+    } else {
+        1
+    })
 }
 
 #[cfg(test)]
@@ -196,13 +209,21 @@ mod tests {
     #[test]
     fn capture_passes_all_cases() {
         let capture = capture_q2().expect("capture");
-        assert_eq!(capture.get("id").and_then(Json::as_str), Some("q2-initial-source-derived-contracts"));
+        assert_eq!(
+            capture.get("id").and_then(Json::as_str),
+            Some("q2-initial-source-derived-contracts")
+        );
         assert_eq!(capture.get("assertionCount").and_then(Json::as_f64), Some(32.0));
         assert_eq!(capture.get("passed").and_then(Json::as_bool), Some(true));
         let cases = capture.get("cases").and_then(Json::as_array).expect("cases array");
         assert_eq!(cases.len(), 32);
         for case in cases {
-            assert_eq!(case.get("passed").and_then(Json::as_bool), Some(true), "{}", case.render());
+            assert_eq!(
+                case.get("passed").and_then(Json::as_bool),
+                Some(true),
+                "{}",
+                case.render()
+            );
         }
     }
 

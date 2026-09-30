@@ -70,7 +70,10 @@ impl UdpQuery {
             ("destination".to_owned(), Json::string(&self.destination)),
             ("request".to_owned(), Json::string(&self.request)),
             ("sentHex".to_owned(), Json::string(&self.sent_hex)),
-            ("response".to_owned(), Json::array(self.response.iter().map(UdpPacket::to_json).collect())),
+            (
+                "response".to_owned(),
+                Json::array(self.response.iter().map(UdpPacket::to_json).collect()),
+            ),
         ])
     }
 }
@@ -105,11 +108,17 @@ pub fn query(port: u16, request: &str) -> Result<UdpQuery, ToolsError> {
                 port: peer.port(),
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
             }),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock || error.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock || error.kind() == std::io::ErrorKind::TimedOut => {}
             Err(error) => return Err(ToolsError::io("receiving a UDP probe reply", error)),
         }
     }
-    Ok(UdpQuery { destination, request: request.to_owned(), sent_hex: to_hex(&bytes), response })
+    Ok(UdpQuery {
+        destination,
+        request: request.to_owned(),
+        sent_hex: to_hex(&bytes),
+        response,
+    })
 }
 
 #[cfg(test)]
@@ -142,7 +151,10 @@ mod tests {
         let packet = &result.response[0];
         assert_eq!(packet.from, "127.0.0.1");
         assert_eq!(packet.port, port);
-        assert_eq!(packet.text, latin1(&[255, 255, 255, 255, b's', b't', b'a', b't', b'u', b's', b'\n']));
+        assert_eq!(
+            packet.text,
+            latin1(&[255, 255, 255, 255, b's', b't', b'a', b't', b'u', b's', b'\n'])
+        );
         responder.join().expect("responder");
     }
 

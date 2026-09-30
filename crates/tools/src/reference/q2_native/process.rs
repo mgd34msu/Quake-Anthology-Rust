@@ -93,18 +93,32 @@ impl ProcessObservation {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("command".to_owned(), Json::array(self.command.iter().map(Json::string).collect())),
+            (
+                "command".to_owned(),
+                Json::array(self.command.iter().map(Json::string).collect()),
+            ),
             ("cwd".to_owned(), Json::string(&self.cwd)),
             (
                 "environment".to_owned(),
-                Json::object(self.environment.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect()),
+                Json::object(
+                    self.environment
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Json::string(value)))
+                        .collect(),
+                ),
             ),
             ("pid".to_owned(), Json::uint(u64::from(self.pid))),
             ("startedAt".to_owned(), Json::string(&self.started_at)),
             ("durationMs".to_owned(), Json::float(self.duration_ms)),
-            ("exitCode".to_owned(), self.exit_code.map_or(Json::Null, |code| Json::int(i64::from(code)))),
+            (
+                "exitCode".to_owned(),
+                self.exit_code.map_or(Json::Null, |code| Json::int(i64::from(code))),
+            ),
             ("timeout".to_owned(), Json::boolean(self.timeout)),
-            ("events".to_owned(), Json::array(self.events.iter().map(ProcessEvent::to_json).collect())),
+            (
+                "events".to_owned(),
+                Json::array(self.events.iter().map(ProcessEvent::to_json).collect()),
+            ),
             ("stdout".to_owned(), Json::string(&self.stdout)),
             ("stderr".to_owned(), Json::string(&self.stderr)),
             ("cleanup".to_owned(), Json::string("reaped")),
@@ -148,7 +162,10 @@ impl ObservedProcess {
     }
 
     fn exited(&mut self) -> Result<bool, ToolsError> {
-        self.child.try_wait().map(|status| status.is_some()).map_err(|error| ToolsError::io("polling a child process", error))
+        self.child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(|error| ToolsError::io("polling a child process", error))
     }
 
     /// Whether the child is still running.
@@ -158,7 +175,10 @@ impl ObservedProcess {
 
     /// Wait for natural exit and return the exit code (`None` on signals).
     pub fn wait_for_exit(&mut self) -> Result<Option<i32>, ToolsError> {
-        let status = self.child.wait().map_err(|error| ToolsError::io("waiting for a child process", error))?;
+        let status = self
+            .child
+            .wait()
+            .map_err(|error| ToolsError::io("waiting for a child process", error))?;
         self.stopped.store(true, Ordering::SeqCst);
         Ok(status.code())
     }
@@ -168,8 +188,15 @@ impl ObservedProcess {
         if self.exited()? {
             return Err(ToolsError::invalid(format!("Process exited before command: {text}")));
         }
-        self.events.push(ProcessEvent { elapsed_ms: self.elapsed_ms(), kind: EventKind::Stdin, text: text.to_owned() });
-        let stdin = self.stdin.as_mut().ok_or_else(|| ToolsError::invalid(format!("Process exited before command: {text}")))?;
+        self.events.push(ProcessEvent {
+            elapsed_ms: self.elapsed_ms(),
+            kind: EventKind::Stdin,
+            text: text.to_owned(),
+        });
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| ToolsError::invalid(format!("Process exited before command: {text}")))?;
         stdin
             .write_all(format!("{text}\n").as_bytes())
             .and_then(|()| stdin.flush())
@@ -183,11 +210,17 @@ impl ObservedProcess {
             let stdout = snapshot(&self.stdout);
             let stderr = snapshot(&self.stderr);
             if stdout.contains(text) || stderr.contains(text) {
-                self.events.push(ProcessEvent { elapsed_ms: self.elapsed_ms(), kind: EventKind::Checkpoint, text: text.to_owned() });
+                self.events.push(ProcessEvent {
+                    elapsed_ms: self.elapsed_ms(),
+                    kind: EventKind::Checkpoint,
+                    text: text.to_owned(),
+                });
                 return Ok(());
             }
             if self.exited()? {
-                return Err(ToolsError::invalid(format!("Process exited before {text}: {stdout}{stderr}")));
+                return Err(ToolsError::invalid(format!(
+                    "Process exited before {text}: {stdout}{stderr}"
+                )));
             }
             if Instant::now() > deadline {
                 return Err(ToolsError::invalid(format!(
@@ -226,8 +259,7 @@ impl ObservedProcess {
         }
         let stdout = snapshot(&self.stdout);
         let stderr = snapshot(&self.stderr);
-        std::fs::create_dir_all(directory)
-            .map_err(|error| ToolsError::io(format!("creating {directory}"), error))?;
+        std::fs::create_dir_all(directory).map_err(|error| ToolsError::io(format!("creating {directory}"), error))?;
         fsutil::write_text(std::path::Path::new(directory).join("stdout.txt").as_path(), &stdout)?;
         fsutil::write_text(std::path::Path::new(directory).join("stderr.txt").as_path(), &stderr)?;
         Ok(ProcessObservation {
@@ -259,10 +291,19 @@ pub fn start_observed(
     environment: &[(String, String)],
     timeout_ms: Option<u64>,
 ) -> Result<ObservedProcess, ToolsError> {
-    let (program, args) = command.split_first().ok_or_else(|| ToolsError::invalid("Cannot observe an empty command"))?;
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| ToolsError::invalid("Cannot observe an empty command"))?;
     let mut child_command = Command::new(program);
-    child_command.args(args).current_dir(cwd).env_clear().envs(environment.iter().cloned());
-    child_command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    child_command
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(environment.iter().cloned());
+    child_command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = child_command
         .spawn()
         .map_err(|error| ToolsError::io(format!("spawning {}", command.join(" ")), error))?;
@@ -312,18 +353,28 @@ mod tests {
     use super::*;
 
     fn environment() -> Vec<(String, String)> {
-        vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned()), ("LC_ALL".to_owned(), "C".to_owned())]
+        vec![
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("LC_ALL".to_owned(), "C".to_owned()),
+        ]
     }
 
     fn temp_dir(prefix: &str) -> String {
-        fsutil::make_temp_dir(&std::env::temp_dir(), prefix).expect("temp dir").to_string_lossy().into_owned()
+        fsutil::make_temp_dir(&std::env::temp_dir(), prefix)
+            .expect("temp dir")
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]
     fn observes_checkpoints_and_reaps() {
         let directory = temp_dir("quake-observed-");
         let mut child = start_observed(
-            &[String::from("sh"), String::from("-c"), String::from("echo READY; exec sleep 30")],
+            &[
+                String::from("sh"),
+                String::from("-c"),
+                String::from("echo READY; exec sleep 30"),
+            ],
             &directory,
             &environment(),
             None,
@@ -347,7 +398,11 @@ mod tests {
     fn sends_stdin_and_waits_for_exit() {
         let directory = temp_dir("quake-observed-stdin-");
         let mut child = start_observed(
-            &[String::from("sh"), String::from("-c"), String::from("read line; echo got:$line")],
+            &[
+                String::from("sh"),
+                String::from("-c"),
+                String::from("read line; echo got:$line"),
+            ],
             &directory,
             &environment(),
             None,
@@ -357,7 +412,10 @@ mod tests {
         assert_eq!(child.wait_for_exit().expect("exit"), Some(0));
         let observation = child.finish(&format!("{directory}/logs")).expect("finish");
         assert_eq!(observation.stdout, "got:hello\n");
-        assert!(observation.events.iter().any(|event| event.kind == EventKind::Stdin && event.text == "hello"));
+        assert!(observation
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::Stdin && event.text == "hello"));
         fsutil::remove_forced(std::path::Path::new(&directory));
     }
 
@@ -365,7 +423,11 @@ mod tests {
     fn reports_missing_checkpoints_and_exited_sends() {
         let directory = temp_dir("quake-observed-missing-");
         let mut child = start_observed(
-            &[String::from("sh"), String::from("-c"), String::from("echo READY; exec sleep 30")],
+            &[
+                String::from("sh"),
+                String::from("-c"),
+                String::from("echo READY; exec sleep 30"),
+            ],
             &directory,
             &environment(),
             None,
@@ -375,7 +437,10 @@ mod tests {
         assert!(error.to_string().starts_with("Missing checkpoint NEVER:"), "{error}");
         let _ = child.finish(&format!("{directory}/logs")).expect("finish");
         let error = child.send("late").expect_err("send after reap");
-        assert!(error.to_string().starts_with("Process exited before command:"), "{error}");
+        assert!(
+            error.to_string().starts_with("Process exited before command:"),
+            "{error}"
+        );
         fsutil::remove_forced(std::path::Path::new(&directory));
     }
 

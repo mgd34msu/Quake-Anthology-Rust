@@ -37,8 +37,16 @@ struct Limits {
     output_bytes: usize,
 }
 
-const LIMITS: Limits =
-    Limits { depth: 12, visited_entries: 150_000, archive_bytes: 64 * 1024 * 1024 * 1024, directory_bytes: 64 * 1024 * 1024, metadata_bytes: 8 * 1024 * 1024, archive_members: 300_000, reported_members: 3000, output_bytes: 32 * 1024 * 1024 };
+const LIMITS: Limits = Limits {
+    depth: 12,
+    visited_entries: 150_000,
+    archive_bytes: 64 * 1024 * 1024 * 1024,
+    directory_bytes: 64 * 1024 * 1024,
+    metadata_bytes: 8 * 1024 * 1024,
+    archive_members: 300_000,
+    reported_members: 3000,
+    output_bytes: 32 * 1024 * 1024,
+};
 
 fn limits_json() -> Json {
     Json::object(vec![
@@ -99,7 +107,20 @@ fn relevant_name(name: &str) -> bool {
 fn sensitive_name(path: &str) -> bool {
     let lower = path.to_lowercase();
     for segment in lower.split('/') {
-        if matches!(segment, "config" | "configs" | "save" | "saves" | "savedgames" | "account" | "accounts" | "credential" | "credentials" | "secret" | "secrets") {
+        if matches!(
+            segment,
+            "config"
+                | "configs"
+                | "save"
+                | "saves"
+                | "savedgames"
+                | "account"
+                | "accounts"
+                | "credential"
+                | "credentials"
+                | "secret"
+                | "secrets"
+        ) {
             return true;
         }
     }
@@ -116,7 +137,11 @@ fn sensitive_name(path: &str) -> bool {
 /// Whether an archive member is a targeted fixture (donor `wantedMember`).
 fn wanted_member(path: &str) -> bool {
     let lower = path.to_lowercase();
-    contains_fuzzy(&lower, "quake", "64") || contains_fuzzy(&lower, "q1", "n64") || contains_fuzzy(&lower, "quake", "n64") || lower.ends_with(".md4") || lower.split('/').next_back().is_some_and(|base| base == "gamex86.dll")
+    contains_fuzzy(&lower, "quake", "64")
+        || contains_fuzzy(&lower, "q1", "n64")
+        || contains_fuzzy(&lower, "quake", "n64")
+        || lower.ends_with(".md4")
+        || lower.split('/').next_back().is_some_and(|base| base == "gamex86.dll")
 }
 
 /// Case-folded `head` + optional character + `tail` search (donor `.?`).
@@ -144,12 +169,18 @@ fn wanted_manifest_line(line: &str) -> bool {
     if sensitive_name(&lower) {
         return false;
     }
-    if contains_fuzzy(&lower, "quake", "64") || contains_fuzzy(&lower, "q1", "n64") || contains_fuzzy(&lower, "quake", "n64") {
+    if contains_fuzzy(&lower, "quake", "64")
+        || contains_fuzzy(&lower, "q1", "n64")
+        || contains_fuzzy(&lower, "quake", "n64")
+    {
         return true;
     }
     if let Some(position) = lower.find(".md4") {
         let after = &lower[position + 4..];
-        if after.is_empty() || after.starts_with(['"', ';', ',']) || after.chars().next().is_some_and(char::is_whitespace) {
+        if after.is_empty()
+            || after.starts_with(['"', ';', ','])
+            || after.chars().next().is_some_and(char::is_whitespace)
+        {
             return true;
         }
     }
@@ -168,14 +199,18 @@ fn extension(path: &str) -> &str {
 /// Read an exact range, failing on short reads (donor `read`).
 fn read_range(file: &mut File, path: &str, offset: u64, length: usize, size: u64) -> Result<Vec<u8>, ToolsError> {
     if offset.saturating_add(length as u64) > size {
-        return Err(ToolsError::invalid(format!("Invalid file range {offset}+{length}/{size}")));
+        return Err(ToolsError::invalid(format!(
+            "Invalid file range {offset}+{length}/{size}"
+        )));
     }
-    file.seek(SeekFrom::Start(offset)).map_err(|error| ToolsError::io(format!("seeking {path}"), error))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| ToolsError::io(format!("seeking {path}"), error))?;
     let mut bytes = vec![0u8; length];
     let mut done = 0;
     while done < length {
-        let count =
-            file.read(&mut bytes[done..]).map_err(|error| ToolsError::io(format!("reading {path}"), error))?;
+        let count = file
+            .read(&mut bytes[done..])
+            .map_err(|error| ToolsError::io(format!("reading {path}"), error))?;
         if count == 0 {
             return Err(ToolsError::invalid("File shortened while reading"));
         }
@@ -282,7 +317,11 @@ fn parse_directory(file: &mut File, path: &str, size: u64, magic: &str) -> Resul
         }
         let offset = read_u32_le(&header, 4) as u64;
         let length = read_u32_le(&header, 8) as usize;
-        if length > LIMITS.directory_bytes || length % 64 != 0 || length / 64 > LIMITS.archive_members || offset.saturating_add(length as u64) > size {
+        if length > LIMITS.directory_bytes
+            || length % 64 != 0
+            || length / 64 > LIMITS.archive_members
+            || offset.saturating_add(length as u64) > size
+        {
             return Err(ToolsError::invalid("PAK directory exceeds bounds"));
         }
         let data = read_range(file, path, offset, length, size)?;
@@ -305,7 +344,11 @@ fn parse_directory(file: &mut File, path: &str, size: u64, magic: &str) -> Resul
                 crc32: None,
             });
         }
-        return Ok(Directory { kind: Container::Pak, sha256: hash_bytes(&data), members });
+        return Ok(Directory {
+            kind: Container::Pak,
+            sha256: hash_bytes(&data),
+            members,
+        });
     }
     let tail_start = size.saturating_sub(65_557);
     let tail = read_range(file, path, tail_start, (size - tail_start) as usize, size)?;
@@ -360,7 +403,9 @@ fn parse_directory(file: &mut File, path: &str, size: u64, magic: &str) -> Resul
             offset = safe_u64(&extended, 48)?;
             kind = Container::Zip64;
         } else {
-            return Err(ToolsError::invalid(format!("Invalid file range {locator_at}+20/{size}")));
+            return Err(ToolsError::invalid(format!(
+                "Invalid file range {locator_at}+20/{size}"
+            )));
         }
     }
     if length > LIMITS.directory_bytes as u64
@@ -449,7 +494,11 @@ fn parse_directory(file: &mut File, path: &str, size: u64, magic: &str) -> Resul
     if position != length {
         return Err(ToolsError::invalid("Unconsumed ZIP directory data"));
     }
-    Ok(Directory { kind, sha256: hash_bytes(&data), members })
+    Ok(Directory {
+        kind,
+        sha256: hash_bytes(&data),
+        members,
+    })
 }
 
 /// Archive inspection outcome.
@@ -490,22 +539,53 @@ impl Inspection {
                 ("container".to_owned(), Json::string(container.as_str())),
                 ("directorySha256".to_owned(), Json::string(directory_sha256)),
                 ("memberCount".to_owned(), Json::uint(*member_count as u64)),
-                ("sensitiveNamesOmitted".to_owned(), Json::uint(*sensitive_names_omitted as u64)),
+                (
+                    "sensitiveNamesOmitted".to_owned(),
+                    Json::uint(*sensitive_names_omitted as u64),
+                ),
                 (
                     "extensionCounts".to_owned(),
                     Json::object(
-                        extension_counts.iter().map(|(name, count)| (name.clone(), Json::uint(*count as u64))).collect(),
+                        extension_counts
+                            .iter()
+                            .map(|(name, count)| (name.clone(), Json::uint(*count as u64)))
+                            .collect(),
                     ),
                 ),
-                ("targetedMemberCount".to_owned(), Json::uint(targeted_members.len() as u64)),
-                ("targetedMembers".to_owned(), Json::array(targeted_members.iter().take(LIMITS.reported_members).map(Member::to_json).collect())),
-                ("reportedMembers".to_owned(), Json::array(reported_members.iter().take(LIMITS.reported_members).map(Member::to_json).collect())),
+                (
+                    "targetedMemberCount".to_owned(),
+                    Json::uint(targeted_members.len() as u64),
+                ),
+                (
+                    "targetedMembers".to_owned(),
+                    Json::array(
+                        targeted_members
+                            .iter()
+                            .take(LIMITS.reported_members)
+                            .map(Member::to_json)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "reportedMembers".to_owned(),
+                    Json::array(
+                        reported_members
+                            .iter()
+                            .take(LIMITS.reported_members)
+                            .map(Member::to_json)
+                            .collect(),
+                    ),
+                ),
                 ("omittedMembers".to_owned(), Json::uint(*omitted_members as u64)),
             ]),
             Self::Unsupported { reason } | Self::Error { reason } => Json::object(vec![
                 (
                     "kind".to_owned(),
-                    Json::string(if matches!(self, Self::Unsupported { .. }) { "unsupported" } else { "error" }),
+                    Json::string(if matches!(self, Self::Unsupported { .. }) {
+                        "unsupported"
+                    } else {
+                        "error"
+                    }),
                 ),
                 ("reason".to_owned(), Json::string(reason)),
             ]),
@@ -538,8 +618,14 @@ impl MetadataManifest {
             ("sha256".to_owned(), Json::string(&self.sha256)),
             ("lineCount".to_owned(), Json::uint(self.line_count as u64)),
             ("header".to_owned(), Json::string(&self.header)),
-            ("targetedLineCount".to_owned(), Json::uint(self.targeted_line_count as u64)),
-            ("targetedLines".to_owned(), Json::array(self.targeted_lines.iter().map(Json::string).collect())),
+            (
+                "targetedLineCount".to_owned(),
+                Json::uint(self.targeted_line_count as u64),
+            ),
+            (
+                "targetedLines".to_owned(),
+                Json::array(self.targeted_lines.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -563,7 +649,10 @@ impl FileEvidence {
             ("bytes".to_owned(), Json::uint(self.bytes)),
             ("sha256".to_owned(), Json::string(&self.sha256)),
             ("headerHex".to_owned(), Json::string(&self.header_hex)),
-            ("qfilesHashMatches".to_owned(), Json::array(self.qfiles_hash_matches.iter().map(Json::string).collect())),
+            (
+                "qfilesHashMatches".to_owned(),
+                Json::array(self.qfiles_hash_matches.iter().map(Json::string).collect()),
+            ),
             ("inspection".to_owned(), self.inspection.to_json()),
             (
                 "metadataManifests".to_owned(),
@@ -575,11 +664,17 @@ impl FileEvidence {
 
 /// Known corpus hashes by sha256 (donor `knownHashes`).
 fn known_hashes(project_root: &Path) -> Result<HashMap<String, Vec<String>>, ToolsError> {
-    let value = parse_json(&fsutil::read_text(&project_root.join("verification/product-manifest.json"))?)?;
+    let value = parse_json(&fsutil::read_text(
+        &project_root.join("verification/product-manifest.json"),
+    )?)?;
     let Some(entries) = value.as_object() else {
         return Err(ToolsError::invalid("Product manifest lacks archive evidence"));
     };
-    let Some(archives) = entries.iter().find(|(key, _)| key == "archives").and_then(|(_, found)| found.as_array()) else {
+    let Some(archives) = entries
+        .iter()
+        .find(|(key, _)| key == "archives")
+        .and_then(|(_, found)| found.as_array())
+    else {
         return Err(ToolsError::invalid("Product manifest lacks archive evidence"));
     };
     let mut result: HashMap<String, Vec<String>> = HashMap::new();
@@ -608,15 +703,18 @@ fn walk_file_name(name: &str) -> bool {
 /// Bounded discovery walk (donor `walk`).
 fn walk(root: &str, depth: usize, files: &mut Vec<String>, walker: &mut Walker) -> Result<(), ToolsError> {
     if depth > LIMITS.depth {
-        walker.errors.push((root.to_owned(), "Directory depth bound reached".to_owned()));
+        walker
+            .errors
+            .push((root.to_owned(), "Directory depth bound reached".to_owned()));
         return Ok(());
     }
     let mut entries: Vec<(String, std::fs::FileType)> = Vec::new();
     let listing = std::fs::read_dir(root).map_err(|error| ToolsError::io(format!("listing {root}"), error))?;
     for entry in listing {
         let entry = entry.map_err(|error| ToolsError::io(format!("listing {root}"), error))?;
-        let file_type =
-            entry.file_type().map_err(|error| ToolsError::io(format!("stating {}", entry.path().display()), error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| ToolsError::io(format!("stating {}", entry.path().display()), error))?;
         entries.push((entry.file_name().to_string_lossy().into_owned(), file_type));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -667,13 +765,18 @@ fn planet_manifest(
     let payload = read_range(file, path, payload_at, member.bytes as usize, size)?;
     let text = String::from_utf8_lossy(&payload).replace("\r\n", "\n");
     let lines: Vec<&str> = text.split('\n').collect();
-    let targeted: Vec<String> =
-        lines.iter().filter(|line| wanted_manifest_line(line)).map(|line| (*line).to_owned()).collect();
+    let targeted: Vec<String> = lines
+        .iter()
+        .filter(|line| wanted_manifest_line(line))
+        .map(|line| (*line).to_owned())
+        .collect();
     manifests.push(MetadataManifest {
         member: member.clone(),
         sha256: hash_bytes(&payload),
         line_count: lines.len(),
-        header: lines.first().map_or(String::new(), |line| line.chars().take(256).collect()),
+        header: lines
+            .first()
+            .map_or(String::new(), |line| line.chars().take(256).collect()),
         targeted_line_count: targeted.len(),
         targeted_lines: targeted.into_iter().take(LIMITS.reported_members).collect(),
     });
@@ -683,7 +786,10 @@ fn planet_manifest(
 /// Inspect one candidate file (donor `inspect`).
 fn inspect(path: &str, known: &HashMap<String, Vec<String>>) -> Result<FileEvidence, ToolsError> {
     let mut file = File::open(path).map_err(|error| ToolsError::io(format!("opening {path}"), error))?;
-    let bytes = file.metadata().map_err(|error| ToolsError::io(format!("stating {path}"), error))?.len();
+    let bytes = file
+        .metadata()
+        .map_err(|error| ToolsError::io(format!("stating {path}"), error))?
+        .len();
     if bytes > LIMITS.archive_bytes {
         return Err(ToolsError::invalid("File exceeds hashing limit"));
     }
@@ -696,8 +802,11 @@ fn inspect(path: &str, known: &HashMap<String, Vec<String>>) -> Result<FileEvide
             Ok(observed) => match planet_manifest(&mut file, path, bytes, &observed) {
                 Ok(manifests) => {
                     metadata_manifests = manifests;
-                    let public: Vec<&Member> =
-                        observed.members.iter().filter(|member| !sensitive_name(&member.path)).collect();
+                    let public: Vec<&Member> = observed
+                        .members
+                        .iter()
+                        .filter(|member| !sensitive_name(&member.path))
+                        .collect();
                     let mut extension_counts: Vec<(String, usize)> = Vec::new();
                     let mut extension_indexes: HashMap<String, usize> = HashMap::new();
                     for member in &public {
@@ -727,12 +836,18 @@ fn inspect(path: &str, known: &HashMap<String, Vec<String>>) -> Result<FileEvide
                         omitted_members: reported.len().saturating_sub(LIMITS.reported_members),
                     }
                 }
-                Err(error) => Inspection::Error { reason: error.to_string() },
+                Err(error) => Inspection::Error {
+                    reason: error.to_string(),
+                },
             },
-            Err(error) => Inspection::Error { reason: error.to_string() },
+            Err(error) => Inspection::Error {
+                reason: error.to_string(),
+            },
         }
     } else {
-        Inspection::Unsupported { reason: "Hash and header only; this discovery reader parses PAK and ZIP/ZIP64 directories".to_owned() }
+        Inspection::Unsupported {
+            reason: "Hash and header only; this discovery reader parses PAK and ZIP/ZIP64 directories".to_owned(),
+        }
     };
     Ok(FileEvidence {
         path: path.to_owned(),
@@ -790,13 +905,18 @@ fn unresolved_fixtures() -> Json {
 
 fn main_file_name(name: &str) -> bool {
     let lower = name.to_lowercase();
-    ["zip", "pk3", "pak", "7z", "gz", "bundle"].into_iter().any(|extension| lower.ends_with(&format!(".{extension}")))
+    ["zip", "pk3", "pak", "7z", "gz", "bundle"]
+        .into_iter()
+        .any(|extension| lower.ends_with(&format!(".{extension}")))
 }
 /// Build the discovery report over explicit roots (donor `main` core).
 pub fn discover_fixtures(downloads: &Path, steam_quake: &Path, project_root: &Path) -> Result<Json, ToolsError> {
     let mut files: Vec<String> = Vec::new();
     let mut candidates: Vec<Json> = Vec::new();
-    let mut walker = Walker { visited_entries: 0, errors: Vec::new() };
+    let mut walker = Walker {
+        visited_entries: 0,
+        errors: Vec::new(),
+    };
     let downloads_text = downloads.to_string_lossy().into_owned();
     let mut top: Vec<(String, std::fs::FileType)> = Vec::new();
     let listing =
@@ -849,7 +969,10 @@ pub fn discover_fixtures(downloads: &Path, steam_quake: &Path, project_root: &Pa
     unique.sort();
     let mut evidence = Vec::new();
     for path in &unique {
-        let base = Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or(path.clone());
+        let base = Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or(path.clone());
         eprintln!("Inspecting {base}");
         match inspect(path, &known) {
             Ok(file) => evidence.push(file),
@@ -868,36 +991,61 @@ pub fn discover_fixtures(downloads: &Path, steam_quake: &Path, project_root: &Pa
     }
     let summary = Json::object(vec![
         ("files".to_owned(), Json::uint(evidence.len() as u64)),
-        ("bytesHashed".to_owned(), Json::uint(evidence.iter().map(|file| file.bytes).sum::<u64>())),
+        (
+            "bytesHashed".to_owned(),
+            Json::uint(evidence.iter().map(|file| file.bytes).sum::<u64>()),
+        ),
         (
             "inspectedArchives".to_owned(),
-            Json::uint(evidence.iter().filter(|file| matches!(file.inspection, Inspection::Inspected { .. })).count() as u64),
+            Json::uint(
+                evidence
+                    .iter()
+                    .filter(|file| matches!(file.inspection, Inspection::Inspected { .. }))
+                    .count() as u64,
+            ),
         ),
         (
             "duplicateQfilesArchives".to_owned(),
-            Json::uint(evidence.iter().filter(|file| !file.qfiles_hash_matches.is_empty()).count() as u64),
+            Json::uint(
+                evidence
+                    .iter()
+                    .filter(|file| !file.qfiles_hash_matches.is_empty())
+                    .count() as u64,
+            ),
         ),
         ("targetMatches".to_owned(), Json::uint(target_matches.len() as u64)),
     ]);
     Ok(Json::object(vec![
         ("schemaVersion".to_owned(), Json::int(1)),
-        ("generator".to_owned(), Json::string("bun tools/inventory/additional-fixtures.ts --write")),
+        (
+            "generator".to_owned(),
+            Json::string("bun tools/inventory/additional-fixtures.ts --write"),
+        ),
         (
             "roots".to_owned(),
             Json::object(vec![
                 ("downloads".to_owned(), Json::string(downloads.to_string_lossy())),
                 ("steamQuake".to_owned(), Json::string(steam_quake.to_string_lossy())),
-                ("knownCorpusManifest".to_owned(), Json::string("verification/product-manifest.json")),
+                (
+                    "knownCorpusManifest".to_owned(),
+                    Json::string("verification/product-manifest.json"),
+                ),
             ]),
         ),
         ("limits".to_owned(), limits_json()),
-        ("evidenceLimits".to_owned(), Json::array(evidence_limits().iter().map(Json::string).collect())),
+        (
+            "evidenceLimits".to_owned(),
+            Json::array(evidence_limits().iter().map(Json::string).collect()),
+        ),
         ("unresolvedFixtures".to_owned(), unresolved_fixtures()),
         ("candidates".to_owned(), Json::array(candidates)),
         ("visitedEntries".to_owned(), Json::uint(walker.visited_entries as u64)),
         ("summary".to_owned(), summary),
         ("targetMatches".to_owned(), Json::array(target_matches)),
-        ("evidence".to_owned(), Json::array(evidence.iter().map(FileEvidence::to_json).collect())),
+        (
+            "evidence".to_owned(),
+            Json::array(evidence.iter().map(FileEvidence::to_json).collect()),
+        ),
         (
             "errors".to_owned(),
             Json::array(
@@ -919,7 +1067,9 @@ pub fn discover_fixtures(downloads: &Path, steam_quake: &Path, project_root: &Pa
 /// Run discovery (donor `main`): `--write` or `--check` the report.
 pub fn run(args: &[String]) -> Result<(), ToolsError> {
     if args.len() != 1 || (args[0] != "--write" && args[0] != "--check") {
-        return Err(ToolsError::invalid("Usage: qa-tools inventory::additional_fixtures --write|--check"));
+        return Err(ToolsError::invalid(
+            "Usage: qa-tools inventory::additional_fixtures --write|--check",
+        ));
     }
     let project_root = quake_typescript_root();
     let report = discover_fixtures(&downloads_root(), &steam_quake_root(), &project_root)?;
@@ -942,7 +1092,19 @@ mod tests {
 
     #[test]
     fn classifies_relevant_names() {
-        for name in ["quake-stuff", "Quake2", "q2repro", "q1source", "q3a", "pak0.pak", "pakexplr.zip", "gladachar", "lmctf09", "quake", "quake64"] {
+        for name in [
+            "quake-stuff",
+            "Quake2",
+            "q2repro",
+            "q1source",
+            "q3a",
+            "pak0.pak",
+            "pakexplr.zip",
+            "gladachar",
+            "lmctf09",
+            "quake",
+            "quake64",
+        ] {
             assert!(relevant_name(name), "{name}");
         }
         for name in ["q4data", "pak.zip", "random", "q", "gl"] {
@@ -952,7 +1114,18 @@ mod tests {
 
     #[test]
     fn classifies_sensitive_names() {
-        for name in ["/root/config/x", "a/save", "accounts", "Credential", "cdkey.txt", "user/q3key", "x.vdf", "app.acf", "game.cfg", "setup.ini"] {
+        for name in [
+            "/root/config/x",
+            "a/save",
+            "accounts",
+            "Credential",
+            "cdkey.txt",
+            "user/q3key",
+            "x.vdf",
+            "app.acf",
+            "game.cfg",
+            "setup.ini",
+        ] {
             assert!(sensitive_name(name), "{name}");
         }
         for name in ["/root/maps/q3dm1.bsp", "pak0.pak", "configuration.txt", "savedgames2/x"] {
@@ -962,7 +1135,15 @@ mod tests {
 
     #[test]
     fn classifies_wanted_members() {
-        for name in ["quake64/maps/x.bsp", "QUAKE-64/x", "q1n64/player.mdl", "quake_n64/x", "models/x.md4", "baseq2/gamex86.dll", "a/b/gamex86.dll"] {
+        for name in [
+            "quake64/maps/x.bsp",
+            "QUAKE-64/x",
+            "q1n64/player.mdl",
+            "quake_n64/x",
+            "models/x.md4",
+            "baseq2/gamex86.dll",
+            "a/b/gamex86.dll",
+        ] {
             assert!(wanted_member(name), "{name}");
         }
         for name in ["quake/maps/x.bsp", "q2dm1.bsp", "gamex86.dll.bak"] {
@@ -1008,11 +1189,24 @@ mod tests {
     fn inspects_pak_archives() {
         let directory = fsutil::make_temp_dir(&std::env::temp_dir(), "quake-fixture-").expect("temp dir");
         let pak = directory.join("quake-test.pak");
-        fsutil::write_bytes(&pak, &write_pak(&[("maps/q2dm1.bsp", b"map"), ("config.cfg", b"cfg"), ("quake64/x.md4", b"md4")]))
-            .expect("write");
+        fsutil::write_bytes(
+            &pak,
+            &write_pak(&[
+                ("maps/q2dm1.bsp", b"map"),
+                ("config.cfg", b"cfg"),
+                ("quake64/x.md4", b"md4"),
+            ]),
+        )
+        .expect("write");
         let evidence = inspect(&pak.to_string_lossy(), &HashMap::new()).expect("inspect");
-        let Inspection::Inspected { member_count, sensitive_names_omitted, targeted_members, reported_members, omitted_members, .. } =
-            &evidence.inspection
+        let Inspection::Inspected {
+            member_count,
+            sensitive_names_omitted,
+            targeted_members,
+            reported_members,
+            omitted_members,
+            ..
+        } = &evidence.inspection
         else {
             panic!("expected inspection");
         };
@@ -1054,8 +1248,17 @@ mod tests {
         let nosteam = directory.join("nosteam");
         std::fs::create_dir_all(&nosteam).expect("mkdir");
         let report = discover_fixtures(&downloads, &nosteam, &directory.join("project")).expect("discover");
-        assert_eq!(report.get("summary").and_then(|summary| summary.get("files")).and_then(Json::as_f64), Some(1.0));
-        assert_eq!(report.get("candidates").and_then(Json::as_array).map(<[Json]>::len), Some(1));
+        assert_eq!(
+            report
+                .get("summary")
+                .and_then(|summary| summary.get("files"))
+                .and_then(Json::as_f64),
+            Some(1.0)
+        );
+        assert_eq!(
+            report.get("candidates").and_then(Json::as_array).map(<[Json]>::len),
+            Some(1)
+        );
         fsutil::remove_forced(&directory);
     }
 }

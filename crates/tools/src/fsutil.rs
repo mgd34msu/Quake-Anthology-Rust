@@ -27,7 +27,8 @@ pub fn read_json(path: &Path) -> Result<Json, ToolsError> {
 pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), ToolsError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
+            fs::create_dir_all(parent)
+                .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
         }
     }
     fs::write(path, bytes).map_err(|error| ToolsError::io(format!("writing {}", path.display()), error))
@@ -75,13 +76,19 @@ pub fn make_temp_dir(parent: &Path, prefix: &str) -> Result<PathBuf, ToolsError>
             Err(error) => return Err(ToolsError::io(format!("creating {}", path.display()), error)),
         }
     }
-    Err(ToolsError::invalid(format!("Cannot create a unique directory under {}", parent.display())))
+    Err(ToolsError::invalid(format!(
+        "Cannot create a unique directory under {}",
+        parent.display()
+    )))
 }
 
 /// Stage `text` in a fresh sibling directory of `destination`, then atomically
 /// rename it into place (donor staged-write pattern).
 pub fn write_atomic_text(destination: &Path, text: &str, file_name: &str, prefix: &str) -> Result<(), ToolsError> {
-    let parent = destination.parent().filter(|path| !path.as_os_str().is_empty()).map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let temporary = make_temp_dir(&parent, prefix)?;
     let staged = temporary.join(file_name);
     let result = (|| -> Result<(), ToolsError> {
@@ -89,7 +96,8 @@ pub fn write_atomic_text(destination: &Path, text: &str, file_name: &str, prefix
         File::open(&staged)
             .and_then(|file| file.sync_all())
             .map_err(|error| ToolsError::io(format!("syncing {}", staged.display()), error))?;
-        fs::rename(&staged, destination).map_err(|error| ToolsError::io(format!("publishing {}", destination.display()), error))?;
+        fs::rename(&staged, destination)
+            .map_err(|error| ToolsError::io(format!("publishing {}", destination.display()), error))?;
         Ok(())
     })();
     let _ = fs::remove_dir_all(&temporary);
@@ -99,15 +107,22 @@ pub fn write_atomic_text(destination: &Path, text: &str, file_name: &str, prefix
 /// Copy `source` to `destination` failing when the destination exists
 /// (donor `COPYFILE_EXCL` copy).
 pub fn copy_exclusive(source: &Path, destination: &Path) -> Result<u64, ToolsError> {
-    let mut input = File::open(source).map_err(|error| ToolsError::io(format!("opening {}", source.display()), error))?;
+    let mut input =
+        File::open(source).map_err(|error| ToolsError::io(format!("opening {}", source.display()), error))?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
         .map_err(|error| ToolsError::io(format!("creating {}", destination.display()), error))?;
-    std::io::copy(&mut input, &mut output).map_err(|error| ToolsError::io(format!("copying {}", source.display()), error))?;
-    output.sync_all().map_err(|error| ToolsError::io(format!("syncing {}", destination.display()), error))?;
-    output.metadata().map(|meta| meta.len()).map_err(|error| ToolsError::io(format!("stating {}", destination.display()), error))
+    std::io::copy(&mut input, &mut output)
+        .map_err(|error| ToolsError::io(format!("copying {}", source.display()), error))?;
+    output
+        .sync_all()
+        .map_err(|error| ToolsError::io(format!("syncing {}", destination.display()), error))?;
+    output
+        .metadata()
+        .map(|meta| meta.len())
+        .map_err(|error| ToolsError::io(format!("stating {}", destination.display()), error))
 }
 
 /// Remove a file or directory tree, ignoring missing paths.
@@ -123,7 +138,11 @@ pub fn remove_forced(path: &Path) {
 /// (donor `path.resolve` semantics: no symlink resolution).
 #[must_use]
 pub fn lexical_absolute(base: &Path, path: &str) -> PathBuf {
-    let joined = if Path::new(path).is_absolute() { PathBuf::from(path) } else { base.join(path) };
+    let joined = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        base.join(path)
+    };
     let mut parts: Vec<String> = Vec::new();
     let mut rooted = false;
     for component in joined.components() {
@@ -151,20 +170,42 @@ pub fn lexical_absolute(base: &Path, path: &str) -> PathBuf {
 /// `path.relative(...).replaceAll("\\", "/")`).
 #[must_use]
 pub fn posix_relative(base: &Path, path: &Path) -> String {
-    let absolute_base = if base.is_absolute() { base.to_path_buf() } else { lexical_absolute(&PathBuf::from("/"), &base.to_string_lossy()) };
-    let absolute_path = if path.is_absolute() { path.to_path_buf() } else { lexical_absolute(&PathBuf::from("/"), &path.to_string_lossy()) };
-    let base_parts: Vec<String> = absolute_base.components().filter_map(|component| match component {
-        std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-        _ => None,
-    }).collect();
-    let path_parts: Vec<String> = absolute_path.components().filter_map(|component| match component {
-        std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-        _ => None,
-    }).collect();
-    let common = base_parts.iter().zip(path_parts.iter()).take_while(|(left, right)| left == right).count();
+    let absolute_base = if base.is_absolute() {
+        base.to_path_buf()
+    } else {
+        lexical_absolute(&PathBuf::from("/"), &base.to_string_lossy())
+    };
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        lexical_absolute(&PathBuf::from("/"), &path.to_string_lossy())
+    };
+    let base_parts: Vec<String> = absolute_base
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let path_parts: Vec<String> = absolute_path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let common = base_parts
+        .iter()
+        .zip(path_parts.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
     let mut parts = vec![".."; base_parts.len() - common];
     parts.extend(path_parts[common..].iter().map(String::as_str));
-    if parts.is_empty() { String::new() } else { parts.join("/") }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.join("/")
+    }
 }
 
 /// Create a symlink `link` pointing at `original`.

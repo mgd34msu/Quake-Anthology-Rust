@@ -38,7 +38,10 @@ pub fn line_starts(source: &str) -> Vec<usize> {
             starts.push(index + 1);
         } else if bytes[index] == b'\n' {
             starts.push(index + 1);
-        } else if bytes[index] == 0xE2 && bytes.get(index + 1) == Some(&0x80) && matches!(bytes.get(index + 2), Some(0xA8 | 0xA9)) {
+        } else if bytes[index] == 0xE2
+            && bytes.get(index + 1) == Some(&0x80)
+            && matches!(bytes.get(index + 2), Some(0xA8 | 0xA9))
+        {
             starts.push(index + 3);
             index += 2;
         }
@@ -55,7 +58,9 @@ pub fn line_starts(source: &str) -> Vec<usize> {
 pub fn line_col_utf16(source: &str, starts: &[usize], offset: usize) -> (usize, usize) {
     let line = starts.partition_point(|start| *start <= offset).max(1);
     let start = starts.get(line.saturating_sub(1)).copied().unwrap_or(0);
-    let column = source.get(start..offset.min(source.len())).map_or(1, |text| text.encode_utf16().count() + 1);
+    let column = source
+        .get(start..offset.min(source.len()))
+        .map_or(1, |text| text.encode_utf16().count() + 1);
     (line, column)
 }
 
@@ -144,7 +149,11 @@ pub fn to_int32(value: f64) -> i32 {
     }
     let truncated = value.trunc();
     let wrapped = ((truncated % 4_294_967_296.0) + 4_294_967_296.0) % 4_294_967_296.0;
-    if wrapped >= 2_147_483_648.0 { (wrapped - 4_294_967_296.0) as i32 } else { wrapped as i32 }
+    if wrapped >= 2_147_483_648.0 {
+        (wrapped - 4_294_967_296.0) as i32
+    } else {
+        wrapped as i32
+    }
 }
 
 /// JavaScript `ToUint32` (`>>> 0`): truncate toward zero, then wrap modulo 2^32.
@@ -163,7 +172,11 @@ pub fn math_min(left: f64, right: f64) -> f64 {
     if left.is_nan() || right.is_nan() {
         f64::NAN
     } else if left == 0.0 && right == 0.0 {
-        if left.is_sign_negative() || right.is_sign_negative() { -0.0 } else { 0.0 }
+        if left.is_sign_negative() || right.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
     } else {
         left.min(right)
     }
@@ -175,7 +188,11 @@ pub fn math_max(left: f64, right: f64) -> f64 {
     if left.is_nan() || right.is_nan() {
         f64::NAN
     } else if left == 0.0 && right == 0.0 {
-        if left.is_sign_negative() && right.is_sign_negative() { -0.0 } else { 0.0 }
+        if left.is_sign_negative() && right.is_sign_negative() {
+            -0.0
+        } else {
+            0.0
+        }
     } else {
         left.max(right)
     }

@@ -120,15 +120,17 @@ pub struct Completed {
 /// Spawn `argv` in `cwd`, capture both streams, and enforce `timeout_ms`.
 ///
 /// Reader threads start before waiting so partial output survives timeouts.
-pub fn run_capture(
-    argv: &[String],
-    cwd: &Path,
-    env: &EnvSpec,
-    timeout_ms: u64,
-) -> Result<Completed, ToolsError> {
-    let (program, args) = argv.split_first().ok_or_else(|| ToolsError::invalid("Cannot run an empty command"))?;
+pub fn run_capture(argv: &[String], cwd: &Path, env: &EnvSpec, timeout_ms: u64) -> Result<Completed, ToolsError> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| ToolsError::invalid("Cannot run an empty command"))?;
     let mut command = Command::new(program);
-    command.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     match env {
         EnvSpec::Inherit => {}
         EnvSpec::InheritWith(extra) => {

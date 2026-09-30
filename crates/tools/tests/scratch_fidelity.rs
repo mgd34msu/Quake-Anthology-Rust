@@ -1,16 +1,25 @@
 use std::collections::HashMap;
 
 const KINDS: [&str; 7] = [
-    "FunctionDeclaration", "FunctionExpression", "ArrowFunction", "MethodDeclaration",
-    "GetAccessor", "SetAccessor", "Constructor",
+    "FunctionDeclaration",
+    "FunctionExpression",
+    "ArrowFunction",
+    "MethodDeclaration",
+    "GetAccessor",
+    "SetAccessor",
+    "Constructor",
 ];
 
 #[test]
 fn fidelity_vs_golden() {
-    let text = std::fs::read_to_string("/home/buzzkill/Projects/quake-typescript/verification/source-manifest.json").unwrap();
+    let text =
+        std::fs::read_to_string("/home/buzzkill/Projects/quake-typescript/verification/source-manifest.json").unwrap();
     let manifest = qa_tools::json::parse_json(&text).unwrap();
     let repos = manifest.get("repositories").unwrap().as_array().unwrap();
-    let repo = repos.iter().find(|r| r.get("id").unwrap().as_str() == Some("q1-ts")).unwrap();
+    let repo = repos
+        .iter()
+        .find(|r| r.get("id").unwrap().as_str() == Some("q1-ts"))
+        .unwrap();
     let files = repo.get("files").unwrap().as_array().unwrap();
     let root = "/home/buzzkill/Projects/quake-1-re-ts";
     let mut compared = 0;
@@ -24,11 +33,16 @@ fn fidelity_vs_golden() {
         let get = |k: &str| obj.iter().find(|(key, _)| key == k).map(|(_, v)| v).unwrap();
         let path = get("path").as_str().unwrap();
         let want_sha = get("sha256").as_str().unwrap();
-        if !(path.ends_with(".ts") || path.ends_with(".tsx")) { continue; }
+        if !(path.ends_with(".ts") || path.ends_with(".tsx")) {
+            continue;
+        }
         let full = format!("{root}/{path}");
         let bytes = match std::fs::read(&full) {
             Ok(b) => b,
-            Err(_) => { skipped_changed += 1; continue; }
+            Err(_) => {
+                skipped_changed += 1;
+                continue;
+            }
         };
         if qa_tools::verify::hash::hash_bytes(&bytes) != want_sha {
             skipped_changed += 1;
@@ -45,7 +59,17 @@ fn fidelity_vs_golden() {
                 continue;
             }
             let end_line = line_of(decl.start.max(decl.end.saturating_sub(1)));
-            mine.insert(utf16.to_utf16(decl.start), (decl.kind.to_owned(), decl.name.clone(), line_of(decl.start), end_line, utf16.to_utf16(decl.end), decl.body.is_some()));
+            mine.insert(
+                utf16.to_utf16(decl.start),
+                (
+                    decl.kind.to_owned(),
+                    decl.name.clone(),
+                    line_of(decl.start),
+                    end_line,
+                    utf16.to_utf16(decl.end),
+                    decl.body.is_some(),
+                ),
+            );
         }
         let golden_fns = get("functions").as_array().unwrap();
         compared += 1;
@@ -58,7 +82,12 @@ fn fidelity_vs_golden() {
                     missing += 1;
                     if shown < 100000 {
                         shown += 1;
-                        println!("MISSING {path}#{} {:?} line={}", start, gg("kind").as_str(), gg("line").as_f64().unwrap());
+                        println!(
+                            "MISSING {path}#{} {:?} line={}",
+                            start,
+                            gg("kind").as_str(),
+                            gg("line").as_f64().unwrap()
+                        );
                     }
                 }
                 Some((kind, name, line, end_line, end, has_body)) => {
@@ -68,7 +97,13 @@ fn fidelity_vs_golden() {
                     let gendline = gg("endLine").as_f64().unwrap() as usize;
                     let gend = gg("endOffset").as_f64().unwrap() as usize;
                     let gbody = gg("hasBody").as_bool().unwrap();
-                    if kind != gkind || name != gname || line != gline || end_line != gendline || end != gend || has_body != gbody {
+                    if kind != gkind
+                        || name != gname
+                        || line != gline
+                        || end_line != gendline
+                        || end != gend
+                        || has_body != gbody
+                    {
                         field_mismatch += 1;
                         if shown < 100000 {
                             shown += 1;

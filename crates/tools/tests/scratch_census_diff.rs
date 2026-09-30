@@ -1,12 +1,16 @@
 #[test]
 fn census_matches_golden() {
     use qa_tools::inventory::source_census as census;
-    let text = std::fs::read_to_string("/home/buzzkill/Projects/quake-typescript/verification/source-manifest.json").unwrap();
+    let text =
+        std::fs::read_to_string("/home/buzzkill/Projects/quake-typescript/verification/source-manifest.json").unwrap();
     let manifest = qa_tools::json::parse_json(&text).unwrap();
     let repos = manifest.get("repositories").unwrap().as_array().unwrap();
     let root = std::path::Path::new("/home/buzzkill/Projects/quake-typescript");
     for spec in census::repositories() {
-        let golden = repos.iter().find(|r| r.get("id").unwrap().as_str() == Some(&spec.id)).unwrap();
+        let golden = repos
+            .iter()
+            .find(|r| r.get("id").unwrap().as_str() == Some(&spec.id))
+            .unwrap();
         let captured = census::capture_repository(root, &spec).unwrap();
         let actual = captured.to_json();
         // Compare everything except nothing: full deep equality expected.

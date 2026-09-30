@@ -52,16 +52,27 @@ impl CommandRun {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("command".to_owned(), Json::array(self.command.iter().map(Json::string).collect())),
+            (
+                "command".to_owned(),
+                Json::array(self.command.iter().map(Json::string).collect()),
+            ),
             ("cwd".to_owned(), Json::string(&self.cwd)),
             (
                 "environment".to_owned(),
-                Json::object(self.environment.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect()),
+                Json::object(
+                    self.environment
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Json::string(value)))
+                        .collect(),
+                ),
             ),
             ("startedAt".to_owned(), Json::string(&self.started_at)),
             ("durationMs".to_owned(), Json::float(self.duration_ms)),
             ("pid".to_owned(), Json::uint(u64::from(self.pid))),
-            ("exitCode".to_owned(), self.exit_code.map_or(Json::Null, |code| Json::int(i64::from(code)))),
+            (
+                "exitCode".to_owned(),
+                self.exit_code.map_or(Json::Null, |code| Json::int(i64::from(code))),
+            ),
             ("timedOut".to_owned(), Json::boolean(self.timed_out)),
             ("stdout".to_owned(), Json::string(&self.stdout)),
             ("stderr".to_owned(), Json::string(&self.stderr)),
@@ -79,16 +90,26 @@ pub fn run_command(
     let started_at = now_iso();
     let start = Instant::now();
     let log = format!("{cwd}/process-{}", started_at.replace(':', "-"));
-    let (program, args) = argv.split_first().ok_or_else(|| ToolsError::invalid("Cannot run an empty command"))?;
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| ToolsError::invalid("Cannot run an empty command"))?;
     let mut child_command = std::process::Command::new(program);
-    child_command.args(args).current_dir(cwd).env_clear().envs(environment.iter().cloned());
+    child_command
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(environment.iter().cloned());
     let stdout_log = std::fs::File::create(format!("{log}.stdout.txt"))
         .map_err(|error| ToolsError::io(format!("creating {log}.stdout.txt"), error))?;
     let stderr_log = std::fs::File::create(format!("{log}.stderr.txt"))
         .map_err(|error| ToolsError::io(format!("creating {log}.stderr.txt"), error))?;
-    child_command.stdin(Stdio::null()).stdout(Stdio::from(stdout_log)).stderr(Stdio::from(stderr_log));
-    let mut child =
-        child_command.spawn().map_err(|error| ToolsError::io(format!("spawning {}", argv.join(" ")), error))?;
+    child_command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log));
+    let mut child = child_command
+        .spawn()
+        .map_err(|error| ToolsError::io(format!("spawning {}", argv.join(" ")), error))?;
     let pid = child.id();
     let done = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
@@ -108,7 +129,9 @@ pub fn run_command(
         watchdog_flag.store(true, Ordering::SeqCst);
         kill_process(pid, SIGKILL);
     });
-    let status = child.wait().map_err(|error| ToolsError::io("waiting for a child process", error))?;
+    let status = child
+        .wait()
+        .map_err(|error| ToolsError::io("waiting for a child process", error))?;
     done.store(true, Ordering::SeqCst);
     let _ = watchdog.join();
     let timed_out = timed_out.load(Ordering::SeqCst);
@@ -202,9 +225,18 @@ impl RetailChecks {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("processExitedSuccessfully".to_owned(), Json::boolean(self.process_exited_successfully)),
-            ("mapCheckpointObserved".to_owned(), Json::boolean(self.map_checkpoint_observed)),
-            ("doneCheckpointObserved".to_owned(), Json::boolean(self.done_checkpoint_observed)),
+            (
+                "processExitedSuccessfully".to_owned(),
+                Json::boolean(self.process_exited_successfully),
+            ),
+            (
+                "mapCheckpointObserved".to_owned(),
+                Json::boolean(self.map_checkpoint_observed),
+            ),
+            (
+                "doneCheckpointObserved".to_owned(),
+                Json::boolean(self.done_checkpoint_observed),
+            ),
         ])
     }
 }
@@ -227,12 +259,22 @@ fn retail_corpus() -> String {
 pub fn capture_retail() -> Result<Json, ToolsError> {
     let project = quake_typescript_root();
     let steam = steam_common_path();
-    let wine = steam.join("Proton - Experimental/files/bin/wine").to_string_lossy().into_owned();
-    let wineserver = steam.join("Proton - Experimental/files/bin/wineserver").to_string_lossy().into_owned();
+    let wine = steam
+        .join("Proton - Experimental/files/bin/wine")
+        .to_string_lossy()
+        .into_owned();
+    let wineserver = steam
+        .join("Proton - Experimental/files/bin/wineserver")
+        .to_string_lossy()
+        .into_owned();
     let original = steam.join("Quake/Winquake.exe").to_string_lossy().into_owned();
     let corpus = retail_corpus();
     let run_id = now_iso().replace([':', '.'], "-");
-    let directory = project.join(".artifacts/q1-retail").join(run_id).to_string_lossy().into_owned();
+    let directory = project
+        .join(".artifacts/q1-retail")
+        .join(run_id)
+        .to_string_lossy()
+        .into_owned();
     let game = format!("{directory}/game");
     let id1 = format!("{game}/id1");
     let prefix = format!("{directory}/wineprefix");
@@ -240,7 +282,8 @@ pub fn capture_retail() -> Result<Json, ToolsError> {
     std::fs::create_dir_all(&directory).map_err(|error| ToolsError::io(format!("creating {directory}"), error))?;
     std::fs::create_dir_all(&id1).map_err(|error| ToolsError::io(format!("creating {id1}"), error))?;
     std::fs::create_dir_all(&prefix).map_err(|error| ToolsError::io(format!("creating {prefix}"), error))?;
-    std::fs::create_dir_all(&private_home).map_err(|error| ToolsError::io(format!("creating {private_home}"), error))?;
+    std::fs::create_dir_all(&private_home)
+        .map_err(|error| ToolsError::io(format!("creating {private_home}"), error))?;
     std::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference/q1_retail/capture.rs"),
         format!("{directory}/capture-driver.rs"),
@@ -253,13 +296,22 @@ pub fn capture_retail() -> Result<Json, ToolsError> {
         fsutil::create_symlink(Path::new(&path), Path::new(&format!("{id1}/{target}")))?;
     }
     let executable = identify_file(&original)?;
-    std::fs::copy(&original, format!("{game}/Winquake.exe")).map_err(|error| ToolsError::io("staging Winquake.exe", error))?;
-    fsutil::write_text(Path::new(&format!("{id1}/config.cfg")), "// Private retail reference profile\n")?;
-    fsutil::write_text(Path::new(&format!("{id1}/autoexec.cfg")), "// Private retail reference profile\n")?;
+    std::fs::copy(&original, format!("{game}/Winquake.exe"))
+        .map_err(|error| ToolsError::io("staging Winquake.exe", error))?;
+    fsutil::write_text(
+        Path::new(&format!("{id1}/config.cfg")),
+        "// Private retail reference profile\n",
+    )?;
+    fsutil::write_text(
+        Path::new(&format!("{id1}/autoexec.cfg")),
+        "// Private retail reference profile\n",
+    )?;
     let config = capture_config();
     fsutil::write_text(Path::new(&format!("{id1}/reference.cfg")), &config)?;
     let mut number = 25000 + std::process::id() % 10000;
-    while Path::new(&format!("/tmp/.X11-unix/X{number}")).exists() || Path::new(&format!("/tmp/.X{number}-lock")).exists() {
+    while Path::new(&format!("/tmp/.X11-unix/X{number}")).exists()
+        || Path::new(&format!("/tmp/.X{number}-lock")).exists()
+    {
         number += 1;
     }
     let display = format!(":{number}");
@@ -275,10 +327,19 @@ pub fn capture_retail() -> Result<Json, ToolsError> {
         ("LIBGL_ALWAYS_SOFTWARE".to_owned(), "1".to_owned()),
         ("MESA_LOADER_DRIVER_OVERRIDE".to_owned(), "llvmpipe".to_owned()),
     ];
-    let display_command = ["/usr/bin/Xvfb", display.as_str(), "-screen", "0", "800x600x24", "-nolisten", "tcp", "-noreset"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<String>>();
+    let display_command = [
+        "/usr/bin/Xvfb",
+        display.as_str(),
+        "-screen",
+        "0",
+        "800x600x24",
+        "-nolisten",
+        "tcp",
+        "-noreset",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<String>>();
     let mut xvfb: ObservedProcess = start_observed(&display_command, &directory, &environment, None)?;
     let xvfb_pid = xvfb.pid();
     let mut observed: Option<CommandRun> = None;
@@ -320,7 +381,11 @@ pub fn capture_retail() -> Result<Json, ToolsError> {
     let mut entries: Vec<PathBuf> = Vec::new();
     for entry in std::fs::read_dir(&id1).map_err(|error| ToolsError::io(format!("listing {id1}"), error))? {
         let entry = entry.map_err(|error| ToolsError::io(format!("listing {id1}"), error))?;
-        if entry.file_type().map_err(|error| ToolsError::io(format!("stating {}", entry.path().display()), error))?.is_file() {
+        if entry
+            .file_type()
+            .map_err(|error| ToolsError::io(format!("stating {}", entry.path().display()), error))?
+            .is_file()
+        {
             entries.push(entry.path());
         }
     }
@@ -385,7 +450,10 @@ pub fn capture_retail() -> Result<Json, ToolsError> {
             ),
         ),
     ]);
-    fsutil::write_text(Path::new(&format!("{directory}/capture.json")), &format!("{}\n", result.render_pretty()))?;
+    fsutil::write_text(
+        Path::new(&format!("{directory}/capture.json")),
+        &format!("{}\n", result.render_pretty()),
+    )?;
     fsutil::write_text(
         &project.join("verification/reference-cases/q1-retail/latest.json"),
         &format!("{}\n", result.render_pretty()),
@@ -435,9 +503,16 @@ mod tests {
     fn file_logged_commands_capture_streams() {
         let directory = fsutil::make_temp_dir(&std::env::temp_dir(), "quake-q1-command-").expect("temp dir");
         let text = directory.to_string_lossy().into_owned();
-        let environment = vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned()), ("LC_ALL".to_owned(), "C".to_owned())];
+        let environment = vec![
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("LC_ALL".to_owned(), "C".to_owned()),
+        ];
         let run = run_command(
-            &[String::from("sh"), String::from("-c"), String::from("echo out; echo err >&2; exit 3")],
+            &[
+                String::from("sh"),
+                String::from("-c"),
+                String::from("echo out; echo err >&2; exit 3"),
+            ],
             &text,
             &environment,
             10_000,
@@ -447,9 +522,16 @@ mod tests {
         assert!(!run.timed_out);
         assert_eq!(run.stdout, "out\n");
         assert_eq!(run.stderr, "err\n");
-        assert!(run_command(&[String::from("sh"), String::from("-c"), String::from("exec sleep 30")], &text, &environment, 200)
+        assert!(
+            run_command(
+                &[String::from("sh"), String::from("-c"), String::from("exec sleep 30")],
+                &text,
+                &environment,
+                200
+            )
             .expect("timeout run")
-            .timed_out);
+            .timed_out
+        );
         fsutil::remove_forced(&directory);
     }
 
@@ -470,7 +552,10 @@ mod tests {
         let checks = retail_checks(Some(&run), "Q1_RETAIL_MAP_READY\nQ1_RETAIL_DONE\n");
         assert!(checks.all());
         assert!(!retail_checks(None, "").process_exited_successfully);
-        let timed_out = CommandRun { timed_out: true, ..run.clone() };
+        let timed_out = CommandRun {
+            timed_out: true,
+            ..run.clone()
+        };
         assert!(!retail_checks(Some(&timed_out), "Q1_RETAIL_MAP_READY\nQ1_RETAIL_DONE\n").all());
     }
 }

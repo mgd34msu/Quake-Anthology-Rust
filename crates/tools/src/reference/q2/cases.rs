@@ -35,14 +35,23 @@ impl Q2Case {
         Json::object(vec![
             ("id".to_owned(), Json::string(self.id)),
             ("contract".to_owned(), Json::string(self.contract)),
-            ("sources".to_owned(), Json::array(self.sources.iter().map(SourceLocation::to_json).collect())),
-            ("preconditions".to_owned(), Json::array(self.preconditions.iter().map(Json::string).collect())),
+            (
+                "sources".to_owned(),
+                Json::array(self.sources.iter().map(SourceLocation::to_json).collect()),
+            ),
+            (
+                "preconditions".to_owned(),
+                Json::array(self.preconditions.iter().map(Json::string).collect()),
+            ),
             ("input".to_owned(), self.input.clone()),
             ("expected".to_owned(), self.expected.clone()),
             ("oracleKind".to_owned(), Json::string("source-derived")),
             (
                 "rng".to_owned(),
-                Json::object(vec![("draws".to_owned(), Json::int(0)), ("owner".to_owned(), Json::Null)]),
+                Json::object(vec![
+                    ("draws".to_owned(), Json::int(0)),
+                    ("owner".to_owned(), Json::Null),
+                ]),
             ),
             ("actual".to_owned(), actual.clone()),
             ("passed".to_owned(), Json::boolean(passed)),
@@ -50,23 +59,77 @@ impl Q2Case {
     }
 }
 
-const CLASSIC_THINK: [SourceLocation; 1] = [SourceLocation { source: SourceId::ClassicPhys, first_line: 95, last_line: 111, symbol: "SV_RunThink" }];
-const RERELEASE_THINK: [SourceLocation; 1] =
-    [SourceLocation { source: SourceId::RereleasePhys, first_line: 99, last_line: 113, symbol: "SV_RunThink" }];
+const CLASSIC_THINK: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::ClassicPhys,
+    first_line: 95,
+    last_line: 111,
+    symbol: "SV_RunThink",
+}];
+const RERELEASE_THINK: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::RereleasePhys,
+    first_line: 99,
+    last_line: 113,
+    symbol: "SV_RunThink",
+}];
 const PICKUP_SOURCES: [SourceLocation; 3] = [
-    SourceLocation { source: SourceId::ClassicLocal, first_line: 234, last_line: 240, symbol: "gitem_t.pickup" },
-    SourceLocation { source: SourceId::ClassicItems, first_line: 447, last_line: 510, symbol: "Add_Ammo/Pickup_Ammo" },
-    SourceLocation { source: SourceId::ClassicItems, first_line: 761, last_line: 821, symbol: "Touch_Item" },
+    SourceLocation {
+        source: SourceId::ClassicLocal,
+        first_line: 234,
+        last_line: 240,
+        symbol: "gitem_t.pickup",
+    },
+    SourceLocation {
+        source: SourceId::ClassicItems,
+        first_line: 447,
+        last_line: 510,
+        symbol: "Add_Ammo/Pickup_Ammo",
+    },
+    SourceLocation {
+        source: SourceId::ClassicItems,
+        first_line: 761,
+        last_line: 821,
+        symbol: "Touch_Item",
+    },
 ];
 const ARMOR_SOURCES: [SourceLocation; 4] = [
-    SourceLocation { source: SourceId::ClassicLocal, first_line: 202, last_line: 210, symbol: "gitem_armor_t" },
-    SourceLocation { source: SourceId::ClassicItems, first_line: 39, last_line: 41, symbol: "armor_info" },
-    SourceLocation { source: SourceId::ClassicCombat, first_line: 255, last_line: 292, symbol: "CheckArmor" },
-    SourceLocation { source: SourceId::ClassicCombat, first_line: 474, last_line: 477, symbol: "T_Damage remaining take" },
+    SourceLocation {
+        source: SourceId::ClassicLocal,
+        first_line: 202,
+        last_line: 210,
+        symbol: "gitem_armor_t",
+    },
+    SourceLocation {
+        source: SourceId::ClassicItems,
+        first_line: 39,
+        last_line: 41,
+        symbol: "armor_info",
+    },
+    SourceLocation {
+        source: SourceId::ClassicCombat,
+        first_line: 255,
+        last_line: 292,
+        symbol: "CheckArmor",
+    },
+    SourceLocation {
+        source: SourceId::ClassicCombat,
+        first_line: 474,
+        last_line: 477,
+        symbol: "T_Damage remaining take",
+    },
 ];
 const CROSS_SOURCES: [SourceLocation; 3] = [
-    SourceLocation { source: SourceId::RereleaseLocal, first_line: 251, last_line: 262, symbol: "SPAWNFLAG_EDITOR_MASK" },
-    SourceLocation { source: SourceId::RereleaseLocal, first_line: 733, last_line: 733, symbol: "SFL_CROSS_TRIGGER_MASK" },
+    SourceLocation {
+        source: SourceId::RereleaseLocal,
+        first_line: 251,
+        last_line: 262,
+        symbol: "SPAWNFLAG_EDITOR_MASK",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseLocal,
+        first_line: 733,
+        last_line: 733,
+        symbol: "SFL_CROSS_TRIGGER_MASK",
+    },
     SourceLocation {
         source: SourceId::RereleaseTarget,
         first_line: 1985,
@@ -75,11 +138,36 @@ const CROSS_SOURCES: [SourceLocation; 3] = [
     },
 ];
 const COMMAND_SOURCES: [SourceLocation; 5] = [
-    SourceLocation { source: SourceId::ClassicMove, first_line: 779, last_line: 822, symbol: "PM_CheckJump" },
-    SourceLocation { source: SourceId::ClassicMove, first_line: 994, last_line: 1003, symbol: "PM_CheckDuck" },
-    SourceLocation { source: SourceId::RereleaseGame, first_line: 417, last_line: 425, symbol: "button_t" },
-    SourceLocation { source: SourceId::RereleaseMove, first_line: 1065, last_line: 1102, symbol: "PM_CheckJump" },
-    SourceLocation { source: SourceId::RereleaseMove, first_line: 1372, last_line: 1391, symbol: "PM_CheckDuck" },
+    SourceLocation {
+        source: SourceId::ClassicMove,
+        first_line: 779,
+        last_line: 822,
+        symbol: "PM_CheckJump",
+    },
+    SourceLocation {
+        source: SourceId::ClassicMove,
+        first_line: 994,
+        last_line: 1003,
+        symbol: "PM_CheckDuck",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseGame,
+        first_line: 417,
+        last_line: 425,
+        symbol: "button_t",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseMove,
+        first_line: 1065,
+        last_line: 1102,
+        symbol: "PM_CheckJump",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseMove,
+        first_line: 1372,
+        last_line: 1391,
+        symbol: "PM_CheckDuck",
+    },
 ];
 const CONFIG_SOURCES: [SourceLocation; 2] = [
     SourceLocation {
@@ -96,31 +184,106 @@ const CONFIG_SOURCES: [SourceLocation; 2] = [
     },
 ];
 const CLOCK_SOURCES: [SourceLocation; 7] = [
-    SourceLocation { source: SourceId::ClassicLocal, first_line: 73, last_line: 73, symbol: "FRAMETIME" },
-    SourceLocation { source: SourceId::ClassicLocal, first_line: 301, last_line: 304, symbol: "level_locals_t.time" },
-    SourceLocation { source: SourceId::ClassicMain, first_line: 353, last_line: 359, symbol: "G_RunFrame" },
-    SourceLocation { source: SourceId::RereleaseLocal, first_line: 288, last_line: 309, symbol: "gtime_t" },
-    SourceLocation { source: SourceId::RereleaseMain, first_line: 415, last_line: 415, symbol: "FRAME_TIME_MS initialization" },
-    SourceLocation { source: SourceId::RereleaseMain, first_line: 823, last_line: 831, symbol: "G_RunFrame_" },
-    SourceLocation { source: SourceId::RereleaseReadme, first_line: 46, last_line: 48, symbol: "40hz Tickrate Support" },
+    SourceLocation {
+        source: SourceId::ClassicLocal,
+        first_line: 73,
+        last_line: 73,
+        symbol: "FRAMETIME",
+    },
+    SourceLocation {
+        source: SourceId::ClassicLocal,
+        first_line: 301,
+        last_line: 304,
+        symbol: "level_locals_t.time",
+    },
+    SourceLocation {
+        source: SourceId::ClassicMain,
+        first_line: 353,
+        last_line: 359,
+        symbol: "G_RunFrame",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseLocal,
+        first_line: 288,
+        last_line: 309,
+        symbol: "gtime_t",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseMain,
+        first_line: 415,
+        last_line: 415,
+        symbol: "FRAME_TIME_MS initialization",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseMain,
+        first_line: 823,
+        last_line: 831,
+        symbol: "G_RunFrame_",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseReadme,
+        first_line: 46,
+        last_line: 48,
+        symbol: "40hz Tickrate Support",
+    },
 ];
-const FRAME_SOURCES: [SourceLocation; 1] =
-    [SourceLocation { source: SourceId::ClassicMain, first_line: 353, last_line: 410, symbol: "G_RunFrame" }];
-const FRAME_LOOP_SOURCES: [SourceLocation; 1] =
-    [SourceLocation { source: SourceId::ClassicMain, first_line: 376, last_line: 410, symbol: "G_RunFrame live edict loop" }];
-const SAVE_POI_SOURCES: [SourceLocation; 1] =
-    [SourceLocation { source: SourceId::RereleaseSave, first_line: 728, last_line: 740, symbol: "level_locals_t save fields" }];
-const SAVE_FOG_SOURCES: [SourceLocation; 1] =
-    [SourceLocation { source: SourceId::RereleaseSave, first_line: 1262, last_line: 1301, symbol: "edict_t fog/bmodel_anim fields" }];
+const FRAME_SOURCES: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::ClassicMain,
+    first_line: 353,
+    last_line: 410,
+    symbol: "G_RunFrame",
+}];
+const FRAME_LOOP_SOURCES: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::ClassicMain,
+    first_line: 376,
+    last_line: 410,
+    symbol: "G_RunFrame live edict loop",
+}];
+const SAVE_POI_SOURCES: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::RereleaseSave,
+    first_line: 728,
+    last_line: 740,
+    symbol: "level_locals_t save fields",
+}];
+const SAVE_FOG_SOURCES: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::RereleaseSave,
+    first_line: 1262,
+    last_line: 1301,
+    symbol: "edict_t fog/bmodel_anim fields",
+}];
 const SAVE_AMMO_SOURCES: [SourceLocation; 3] = [
-    SourceLocation { source: SourceId::RereleaseSave, first_line: 484, last_line: 497, symbol: "std::array save type" },
-    SourceLocation { source: SourceId::RereleaseSave, first_line: 788, last_line: 802, symbol: "client_persistant_t.max_ammo" },
-    SourceLocation { source: SourceId::RereleaseShared, first_line: 79, last_line: 98, symbol: "ammo_t" },
+    SourceLocation {
+        source: SourceId::RereleaseSave,
+        first_line: 484,
+        last_line: 497,
+        symbol: "std::array save type",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseSave,
+        first_line: 788,
+        last_line: 802,
+        symbol: "client_persistant_t.max_ammo",
+    },
+    SourceLocation {
+        source: SourceId::RereleaseShared,
+        first_line: 79,
+        last_line: 98,
+        symbol: "ammo_t",
+    },
 ];
-const SAVE_CROSS_SOURCES: [SourceLocation; 1] =
-    [SourceLocation { source: SourceId::RereleaseSave, first_line: 661, last_line: 680, symbol: "game_locals_t save fields" }];
+const SAVE_CROSS_SOURCES: [SourceLocation; 1] = [SourceLocation {
+    source: SourceId::RereleaseSave,
+    first_line: 661,
+    last_line: 680,
+    symbol: "game_locals_t save fields",
+}];
 const FLECHETTE_SOURCES: [SourceLocation; 2] = [
-    SourceLocation { source: SourceId::RereleaseShared, first_line: 79, last_line: 98, symbol: "ammo_t" },
+    SourceLocation {
+        source: SourceId::RereleaseShared,
+        first_line: 79,
+        last_line: 98,
+        symbol: "ammo_t",
+    },
     SourceLocation {
         source: SourceId::RereleaseClient,
         first_line: 844,
@@ -134,7 +297,14 @@ const COMMAND_PRECONDITIONS: [&str; 1] = ["Only command predicates are evaluated
 
 // Each entry: id, contract, sources, preconditions, input JSON, expected JSON.
 #[allow(clippy::too_many_lines)]
-fn raw_cases() -> Vec<(&'static str, &'static str, &'static [SourceLocation], &'static [&'static str], &'static str, &'static str)> {
+fn raw_cases() -> Vec<(
+    &'static str,
+    &'static str,
+    &'static [SourceLocation],
+    &'static [&'static str],
+    &'static str,
+    &'static str,
+)> {
     vec![
         (
             "q2.clock.classic10hz-rerelease40hz",
@@ -404,7 +574,8 @@ pub fn q2_cases() -> Result<Vec<Q2Case>, ToolsError> {
             contract,
             sources: sources.to_vec(),
             preconditions: preconditions.iter().map(|text| (*text).to_owned()).collect(),
-            input: parse_json(input).map_err(|error| ToolsError::parse(format!("Case {id} has invalid input: {error}")))?,
+            input: parse_json(input)
+                .map_err(|error| ToolsError::parse(format!("Case {id} has invalid input: {error}")))?,
             expected: parse_json(expected)
                 .map_err(|error| ToolsError::parse(format!("Case {id} has invalid expectation: {error}")))?,
         });

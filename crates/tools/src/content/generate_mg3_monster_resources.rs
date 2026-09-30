@@ -148,7 +148,10 @@ pub fn render_module(resources: &[(String, Vec<String>)]) -> String {
             .map(|(classname, paths)| {
                 (
                     classname.clone(),
-                    Json::object(vec![("resources".to_owned(), Json::array(paths.iter().map(Json::string).collect()))]),
+                    Json::object(vec![(
+                        "resources".to_owned(),
+                        Json::array(paths.iter().map(Json::string).collect()),
+                    )]),
                 )
             })
             .collect(),
@@ -161,7 +164,9 @@ pub fn render_module(resources: &[(String, Vec<String>)]) -> String {
 
 /// Run the generator: `args` is `[donor, project-root?]`.
 pub fn run(args: &[String]) -> Result<PathBuf, ToolsError> {
-    let donor = args.first().ok_or_else(|| ToolsError::invalid("Pass the quakec_mg3 source directory"))?;
+    let donor = args
+        .first()
+        .ok_or_else(|| ToolsError::invalid("Pass the quakec_mg3 source directory"))?;
     let root = args.get(1).map_or_else(
         || std::env::current_dir().map_err(|error| ToolsError::io("resolving current directory", error)),
         |path| Ok(PathBuf::from(path)),

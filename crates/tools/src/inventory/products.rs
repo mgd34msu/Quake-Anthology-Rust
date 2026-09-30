@@ -62,11 +62,26 @@ impl ExpectedProduct {
             ("title".to_owned(), Json::string(&self.title)),
             ("scope".to_owned(), Json::string("required")),
             ("contentDirectory".to_owned(), Json::string(&self.content_directory)),
-            ("baseProduct".to_owned(), self.base_product.as_ref().map_or(Json::Null, Json::string)),
-            ("requiredArchive".to_owned(), self.required_archive.as_ref().map_or(Json::Null, Json::string)),
-            ("requiredPrograms".to_owned(), Json::array(self.required_programs.iter().copied().map(Json::string).collect())),
-            ("mapWitness".to_owned(), self.map_witness.as_ref().map_or(Json::Null, Json::string)),
-            ("protocols".to_owned(), Json::array(self.protocols.iter().copied().map(Json::string).collect())),
+            (
+                "baseProduct".to_owned(),
+                self.base_product.as_ref().map_or(Json::Null, Json::string),
+            ),
+            (
+                "requiredArchive".to_owned(),
+                self.required_archive.as_ref().map_or(Json::Null, Json::string),
+            ),
+            (
+                "requiredPrograms".to_owned(),
+                Json::array(self.required_programs.iter().copied().map(Json::string).collect()),
+            ),
+            (
+                "mapWitness".to_owned(),
+                self.map_witness.as_ref().map_or(Json::Null, Json::string),
+            ),
+            (
+                "protocols".to_owned(),
+                Json::array(self.protocols.iter().copied().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -75,15 +90,31 @@ impl ExpectedProduct {
 #[must_use]
 pub fn expected_products() -> Vec<ExpectedProduct> {
     let mut products = Vec::new();
-    let q1_titles =
-        [("id1", "Quake"), ("hipnotic", "Scourge of Armagon"), ("rogue", "Dissolution of Eternity"), ("dopa", "Dimension of the Past"), ("mg1", "Dimension of the Machine"), ("mg3", "Dawn of the Machine"), ("ctf", "Capture the Flag")];
+    let q1_titles = [
+        ("id1", "Quake"),
+        ("hipnotic", "Scourge of Armagon"),
+        ("rogue", "Dissolution of Eternity"),
+        ("dopa", "Dimension of the Past"),
+        ("mg1", "Dimension of the Machine"),
+        ("mg3", "Dawn of the Machine"),
+        ("ctf", "Capture the Flag"),
+    ];
     for edition in ["classic", "rerelease"] {
-        let campaigns: &[&str] =
-            if edition == "classic" { &["id1", "hipnotic", "rogue"] } else { &["id1", "hipnotic", "rogue", "dopa", "mg1", "mg3", "ctf"] };
+        let campaigns: &[&str] = if edition == "classic" {
+            &["id1", "hipnotic", "rogue"]
+        } else {
+            &["id1", "hipnotic", "rogue", "dopa", "mg1", "mg3", "ctf"]
+        };
         for campaign in campaigns {
-            let directory =
-                if edition == "rerelease" { format!("q1/rerelease/{campaign}") } else { format!("q1/{campaign}") };
-            let title = q1_titles.iter().find(|(name, _)| name == campaign).map_or(*campaign, |(_, title)| *title);
+            let directory = if edition == "rerelease" {
+                format!("q1/rerelease/{campaign}")
+            } else {
+                format!("q1/{campaign}")
+            };
+            let title = q1_titles
+                .iter()
+                .find(|(name, _)| name == campaign)
+                .map_or(*campaign, |(_, title)| *title);
             products.push(ExpectedProduct {
                 id: format!("q1-{edition}-{campaign}"),
                 family: "q1",
@@ -91,7 +122,11 @@ pub fn expected_products() -> Vec<ExpectedProduct> {
                 campaign,
                 title: title.to_owned(),
                 content_directory: directory.clone(),
-                base_product: if *campaign == "id1" { None } else { Some(format!("q1-{edition}-id1")) },
+                base_product: if *campaign == "id1" {
+                    None
+                } else {
+                    Some(format!("q1-{edition}-id1"))
+                },
                 required_archive: Some(format!("{directory}/pak0.pak")),
                 required_programs: vec!["progs.dat"],
                 map_witness: None,
@@ -125,8 +160,15 @@ pub fn expected_products() -> Vec<ExpectedProduct> {
         map_witness: None,
         protocols: vec!["netquake"],
     });
-    let q2_campaigns =
-        [("baseq2", "Quake II", "base1"), ("xatrix", "The Reckoning", "xswamp"), ("rogue", "Ground Zero", "rmine1"), ("ctf", "Capture the Flag", "q2ctf1"), ("lmctf", "Loki's Minions CTF", "lmctf09"), ("mg2", "Call of the Machine", "mguhub"), ("n64", "Quake II 64", "q64/rtest")];
+    let q2_campaigns = [
+        ("baseq2", "Quake II", "base1"),
+        ("xatrix", "The Reckoning", "xswamp"),
+        ("rogue", "Ground Zero", "rmine1"),
+        ("ctf", "Capture the Flag", "q2ctf1"),
+        ("lmctf", "Loki's Minions CTF", "lmctf09"),
+        ("mg2", "Call of the Machine", "mguhub"),
+        ("n64", "Quake II 64", "q64/rtest"),
+    ];
     for edition in ["classic", "rerelease"] {
         for (campaign, title, map) in q2_campaigns {
             if edition == "classic" && (campaign == "mg2" || campaign == "n64") {
@@ -135,8 +177,11 @@ pub fn expected_products() -> Vec<ExpectedProduct> {
             if edition == "rerelease" && campaign == "lmctf" {
                 continue;
             }
-            let directory =
-                if edition == "rerelease" { "q2/rerelease/baseq2".to_owned() } else { format!("q2/{campaign}") };
+            let directory = if edition == "rerelease" {
+                "q2/rerelease/baseq2".to_owned()
+            } else {
+                format!("q2/{campaign}")
+            };
             products.push(ExpectedProduct {
                 id: format!("q2-{edition}-{campaign}"),
                 family: "q2",
@@ -150,7 +195,11 @@ pub fn expected_products() -> Vec<ExpectedProduct> {
                     Some(format!("q2-{edition}-baseq2"))
                 },
                 required_archive: Some(format!("{directory}/pak0.pak")),
-                required_programs: vec![if edition == "rerelease" { "game_x64.dll" } else { "gamex86.dll" }],
+                required_programs: vec![if edition == "rerelease" {
+                    "game_x64.dll"
+                } else {
+                    "gamex86.dll"
+                }],
                 map_witness: Some(format!("maps/{map}.bsp")),
                 protocols: if edition == "rerelease" {
                     vec!["q2-rerelease"]
@@ -167,9 +216,17 @@ pub fn expected_products() -> Vec<ExpectedProduct> {
             family: "q3",
             edition: "classic",
             campaign,
-            title: if campaign == "baseq3" { "Quake III Arena".to_owned() } else { "Team Arena".to_owned() },
+            title: if campaign == "baseq3" {
+                "Quake III Arena".to_owned()
+            } else {
+                "Team Arena".to_owned()
+            },
             content_directory: directory.clone(),
-            base_product: if campaign == "baseq3" { None } else { Some("q3-baseq3".to_owned()) },
+            base_product: if campaign == "baseq3" {
+                None
+            } else {
+                Some("q3-baseq3".to_owned())
+            },
             required_archive: Some(format!("{directory}/pak0.pk3")),
             required_programs: vec!["vm/qagame.qvm", "vm/cgame.qvm", "vm/ui.qvm"],
             map_witness: None,
@@ -208,8 +265,14 @@ fn limits_json() -> Json {
         ("archiveEntries".to_owned(), Json::uint(LIMITS.archive_entries as u64)),
         ("files".to_owned(), Json::uint(LIMITS.files as u64)),
         ("depth".to_owned(), Json::uint(LIMITS.depth as u64)),
-        ("headerCompressedBytes".to_owned(), Json::uint(LIMITS.header_compressed_bytes as u64)),
-        ("headerInflatedBytes".to_owned(), Json::uint(LIMITS.header_inflated_bytes as u64)),
+        (
+            "headerCompressedBytes".to_owned(),
+            Json::uint(LIMITS.header_compressed_bytes as u64),
+        ),
+        (
+            "headerInflatedBytes".to_owned(),
+            Json::uint(LIMITS.header_inflated_bytes as u64),
+        ),
         ("programBytes".to_owned(), Json::uint(LIMITS.program_bytes as u64)),
         ("outputBytes".to_owned(), Json::uint(LIMITS.output_bytes as u64)),
     ])
@@ -280,9 +343,15 @@ impl Occurrence {
             ("compressedBytes".to_owned(), Json::uint(self.entry.compressed_bytes)),
             ("compression".to_owned(), Json::uint(u64::from(self.entry.compression))),
             ("flags".to_owned(), Json::uint(u64::from(self.entry.flags))),
-            ("crc32".to_owned(), self.entry.crc32.as_ref().map_or(Json::Null, Json::string)),
+            (
+                "crc32".to_owned(),
+                self.entry.crc32.as_ref().map_or(Json::Null, Json::string),
+            ),
             ("observation".to_owned(), self.observation.to_json()),
-            ("programSha256".to_owned(), self.program_sha256.as_ref().map_or(Json::Null, Json::string)),
+            (
+                "programSha256".to_owned(),
+                self.program_sha256.as_ref().map_or(Json::Null, Json::string),
+            ),
         ])
     }
 }
@@ -322,7 +391,10 @@ impl Archive {
             ("bytes".to_owned(), Json::uint(self.bytes)),
             ("sha256".to_owned(), Json::string(&self.sha256)),
             ("container".to_owned(), Json::string(self.container.as_str())),
-            ("entries".to_owned(), Json::array(self.entries.iter().map(Occurrence::to_json).collect())),
+            (
+                "entries".to_owned(),
+                Json::array(self.entries.iter().map(Occurrence::to_json).collect()),
+            ),
             (
                 "duplicatePaths".to_owned(),
                 Json::array(
@@ -331,7 +403,10 @@ impl Archive {
                         .map(|(path, ordinals)| {
                             Json::object(vec![
                                 ("path".to_owned(), Json::string(path)),
-                                ("ordinals".to_owned(), Json::array(ordinals.iter().map(|ordinal| Json::uint(*ordinal as u64)).collect())),
+                                (
+                                    "ordinals".to_owned(),
+                                    Json::array(ordinals.iter().map(|ordinal| Json::uint(*ordinal as u64)).collect()),
+                                ),
                             ])
                         })
                         .collect(),
@@ -376,14 +451,18 @@ fn read_u32_be(bytes: &[u8], offset: usize) -> u32 {
 /// Read an exact range, failing on short reads (donor `readRange`).
 fn read_range(file: &mut File, path: &str, offset: u64, length: usize, size: u64) -> Result<Vec<u8>, ToolsError> {
     if offset.saturating_add(length as u64) > size {
-        return Err(ToolsError::invalid(format!("Invalid file range {offset}+{length}/{size}")));
+        return Err(ToolsError::invalid(format!(
+            "Invalid file range {offset}+{length}/{size}"
+        )));
     }
-    file.seek(SeekFrom::Start(offset)).map_err(|error| ToolsError::io(format!("seeking {path}"), error))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| ToolsError::io(format!("seeking {path}"), error))?;
     let mut bytes = vec![0u8; length];
     let mut done = 0;
     while done < length {
-        let count =
-            file.read(&mut bytes[done..]).map_err(|error| ToolsError::io(format!("reading {path}"), error))?;
+        let count = file
+            .read(&mut bytes[done..])
+            .map_err(|error| ToolsError::io(format!("reading {path}"), error))?;
         if count == 0 {
             return Err(ToolsError::invalid("File shortened during inspection"));
         }
@@ -408,12 +487,16 @@ fn hash_file(file: &mut File, path: &str, size: u64) -> Result<String, ToolsErro
 fn pak_directory(file: &mut File, path: &str, size: u64) -> Result<Vec<Entry>, ToolsError> {
     let header = read_range(file, path, 0, 12.min(size as usize), size)?;
     if header.len() < 12 {
-        return Err(ToolsError::invalid("PAK directory exceeds bounds or has partial records"));
+        return Err(ToolsError::invalid(
+            "PAK directory exceeds bounds or has partial records",
+        ));
     }
     let offset = read_u32_le(&header, 4) as u64;
     let length = read_u32_le(&header, 8) as usize;
     if length % 64 != 0 || length > LIMITS.directory_bytes || length / 64 > LIMITS.archive_entries {
-        return Err(ToolsError::invalid("PAK directory exceeds bounds or has partial records"));
+        return Err(ToolsError::invalid(
+            "PAK directory exceeds bounds or has partial records",
+        ));
     }
     let directory = read_range(file, path, offset, length, size)?;
     let mut entries = Vec::new();
@@ -430,7 +513,10 @@ fn pak_directory(file: &mut File, path: &str, size: u64) -> Result<Vec<Entry>, T
             crc32: None,
         };
         if entry.offset.saturating_add(entry.bytes) > size {
-            return Err(ToolsError::invalid(format!("PAK entry outside archive: {}", entry.path)));
+            return Err(ToolsError::invalid(format!(
+                "PAK entry outside archive: {}",
+                entry.path
+            )));
         }
         entries.push(entry);
     }
@@ -468,9 +554,14 @@ fn zip_directory(file: &mut File, path: &str, size: u64) -> Result<Vec<Entry>, T
         || length == 0xffff_ffff
         || offset == 0xffff_ffff
     {
-        return Err(ToolsError::invalid("Multi-disk/ZIP64 archives require a separate bounded reader"));
+        return Err(ToolsError::invalid(
+            "Multi-disk/ZIP64 archives require a separate bounded reader",
+        ));
     }
-    if count > LIMITS.archive_entries || length > LIMITS.directory_bytes as u64 || offset.saturating_add(length) > tail_offset + end as u64 {
+    if count > LIMITS.archive_entries
+        || length > LIMITS.directory_bytes as u64
+        || offset.saturating_add(length) > tail_offset + end as u64
+    {
         return Err(ToolsError::invalid("ZIP directory exceeds bounds"));
     }
     let length = length as usize;
@@ -512,7 +603,11 @@ fn inflate_raw_capped(input: &[u8], full: bool, cap: usize) -> Result<Vec<u8>, T
     let mut output = vec![0u8; 64.min(cap)];
     let mut produced = 0_usize;
     let mut consumed = 0_usize;
-    let flush = if full { FlushDecompress::Finish } else { FlushDecompress::Sync };
+    let flush = if full {
+        FlushDecompress::Finish
+    } else {
+        FlushDecompress::Sync
+    };
     loop {
         if produced == output.len() {
             if output.len() >= cap {
@@ -572,16 +667,31 @@ fn entry_bytes(
         return read_range(file, path, offset, length as usize, size);
     }
     if entry.compression != 8 {
-        return Err(ToolsError::invalid(format!("Unsupported ZIP compression {}", entry.compression)));
+        return Err(ToolsError::invalid(format!(
+            "Unsupported ZIP compression {}",
+            entry.compression
+        )));
     }
-    let take = if full { entry.compressed_bytes } else { (LIMITS.header_compressed_bytes as u64).min(entry.compressed_bytes) };
+    let take = if full {
+        entry.compressed_bytes
+    } else {
+        (LIMITS.header_compressed_bytes as u64).min(entry.compressed_bytes)
+    };
     let compressed = read_range(file, path, offset, take as usize, size)?;
-    let cap = if full { LIMITS.program_bytes } else { LIMITS.header_inflated_bytes };
+    let cap = if full {
+        LIMITS.program_bytes
+    } else {
+        LIMITS.header_inflated_bytes
+    };
     let decoded = inflate_raw_capped(&compressed, full, cap)?;
     if full && decoded.len() as u64 != entry.bytes {
         return Err(ToolsError::invalid("Decoded program size disagrees with directory"));
     }
-    Ok(if full { decoded } else { decoded[..64.min(decoded.len())].to_vec() })
+    Ok(if full {
+        decoded
+    } else {
+        decoded[..64.min(decoded.len())].to_vec()
+    })
 }
 /// Node-style extension: from the last dot in the final segment, or empty.
 fn extension(path: &str) -> &str {
@@ -606,10 +716,7 @@ fn dirname(path: &str) -> &str {
 /// Whether an entry is a gameplay program (donor `isProgram`).
 fn is_program(path: &str) -> bool {
     let lower = path.to_lowercase();
-    (lower.ends_with("/qwprogs.dat")
-        || lower == "qwprogs.dat"
-        || lower.ends_with("/progs.dat")
-        || lower == "progs.dat")
+    (lower.ends_with("/qwprogs.dat") || lower == "qwprogs.dat" || lower.ends_with("/progs.dat") || lower == "progs.dat")
         || lower.ends_with(".qvm")
         || lower.ends_with(".dll")
         || lower.ends_with(".so")
@@ -618,7 +725,25 @@ fn is_program(path: &str) -> bool {
 fn inspected_extension(lower: &str) -> bool {
     matches!(
         lower,
-        ".bsp" | ".mdl" | ".spr" | ".md2" | ".sp2" | ".md3" | ".md4" | ".md5mesh" | ".md5anim" | ".cin" | ".ogv" | ".roq" | ".wav" | ".ogg" | ".mp3" | ".flac" | ".qvm" | ".dll" | ".so"
+        ".bsp"
+            | ".mdl"
+            | ".spr"
+            | ".md2"
+            | ".sp2"
+            | ".md3"
+            | ".md4"
+            | ".md5mesh"
+            | ".md5anim"
+            | ".cin"
+            | ".ogv"
+            | ".roq"
+            | ".wav"
+            | ".ogg"
+            | ".mp3"
+            | ".flac"
+            | ".qvm"
+            | ".dll"
+            | ".so"
     )
 }
 
@@ -630,24 +755,26 @@ fn ascii(bytes: &[u8]) -> String {
 /// Classify a header by magic (donor `observe`).
 fn observe(path: &str, header: &[u8]) -> Observation {
     let magic = ascii(&header[..4.min(header.len())]);
-    let version: i64 = if header.len() >= 8 { i64::from(read_u32_le(header, 4)) } else { -1 };
+    let version: i64 = if header.len() >= 8 {
+        i64::from(read_u32_le(header, 4))
+    } else {
+        -1
+    };
     let mut format: Option<String> = None;
     if extension(path).to_lowercase() == ".bsp" && header.len() >= 4 {
-        format = Some(
-            if read_u32_le(header, 0) == 29 {
-                "bsp29".to_owned()
-            } else if magic == "BSP2" {
-                "bsp2".to_owned()
-            } else if magic == "2PSB" {
-                "bsp2-rmq".to_owned()
-            } else if magic == "IBSP" {
-                format!("ibsp{version}")
-            } else if magic == "QBSP" {
-                format!("qbsp{version}")
-            } else {
-                "unknown-bsp".to_owned()
-            },
-        );
+        format = Some(if read_u32_le(header, 0) == 29 {
+            "bsp29".to_owned()
+        } else if magic == "BSP2" {
+            "bsp2".to_owned()
+        } else if magic == "2PSB" {
+            "bsp2-rmq".to_owned()
+        } else if magic == "IBSP" {
+            format!("ibsp{version}")
+        } else if magic == "QBSP" {
+            format!("qbsp{version}")
+        } else {
+            "unknown-bsp".to_owned()
+        });
     } else if magic == "IDPO" {
         format = Some(format!("mdl{version}"));
     } else if magic == "IDSP" {
@@ -682,7 +809,11 @@ fn observe(path: &str, header: &[u8]) -> Observation {
             }
         ));
     } else if ascii(&header[..2.min(header.len())]) == "MZ" {
-        let pe_offset = if header.len() >= 64 { read_u32_le(header, 60) as usize } else { header.len() };
+        let pe_offset = if header.len() >= 64 {
+            read_u32_le(header, 60) as usize
+        } else {
+            header.len()
+        };
         if pe_offset + 26 <= header.len() && read_u32_le(header, pe_offset) == 0x0000_4550 {
             let machine = read_u16_le(header, pe_offset + 4);
             let optional = read_u16_le(header, pe_offset + 24);
@@ -706,16 +837,31 @@ fn observe(path: &str, header: &[u8]) -> Observation {
         } else {
             format = Some("pe-dos-header".to_owned());
         }
-    } else if header.len() >= 4 && (path.to_lowercase().ends_with("qwprogs.dat") || path.to_lowercase().ends_with("progs.dat")) {
+    } else if header.len() >= 4
+        && (path.to_lowercase().ends_with("qwprogs.dat") || path.to_lowercase().ends_with("progs.dat"))
+    {
         format = Some(format!("quakec-v{}", read_u32_le(header, 0)));
     } else if header.len() >= 2 && read_u16_le(header, 0) == 0x1084 {
         format = Some("roq".to_owned());
     }
     match format {
-        Some(format) => Observation::Header { format, header_hex: to_hex(&header[..16.min(header.len())]) },
+        Some(format) => Observation::Header {
+            format,
+            header_hex: to_hex(&header[..16.min(header.len())]),
+        },
         None => {
-            let without_dot = extension(path).to_lowercase().strip_prefix('.').unwrap_or("").to_owned();
-            Observation::Extension { format: if without_dot.is_empty() { "no-extension".to_owned() } else { without_dot } }
+            let without_dot = extension(path)
+                .to_lowercase()
+                .strip_prefix('.')
+                .unwrap_or("")
+                .to_owned();
+            Observation::Extension {
+                format: if without_dot.is_empty() {
+                    "no-extension".to_owned()
+                } else {
+                    without_dot
+                },
+            }
         }
     }
 }
@@ -723,7 +869,12 @@ fn observe(path: &str, header: &[u8]) -> Observation {
 #[cfg(unix)]
 fn change_key(meta: &std::fs::Metadata) -> (u64, std::time::SystemTime, i64, i64) {
     use std::os::unix::fs::MetadataExt;
-    (meta.len(), meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.ctime(), meta.ctime_nsec())
+    (
+        meta.len(),
+        meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+        meta.ctime(),
+        meta.ctime_nsec(),
+    )
 }
 
 #[cfg(not(unix))]
@@ -745,10 +896,22 @@ fn identity_key(_meta: &std::fs::Metadata) -> (u64, u64) {
 /// Inspect one archive (donor `inspectArchive`).
 fn inspect_archive(path: &str, absolute: &str) -> Result<Archive, ToolsError> {
     let mut file = File::open(absolute).map_err(|error| ToolsError::io(format!("opening {absolute}"), error))?;
-    let before_meta = file.metadata().map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
+    let before_meta = file
+        .metadata()
+        .map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
     let size = before_meta.len();
-    let magic = ascii(&read_range(&mut file, absolute, 0, (4 as u64).min(size) as usize, size)?);
-    let container = if magic == "PACK" { Container::Pak } else { Container::Zip };
+    let magic = ascii(&read_range(
+        &mut file,
+        absolute,
+        0,
+        (4 as u64).min(size) as usize,
+        size,
+    )?);
+    let container = if magic == "PACK" {
+        Container::Pak
+    } else {
+        Container::Zip
+    };
     let directory = if container == Container::Pak {
         pak_directory(&mut file, absolute, size)?
     } else {
@@ -757,9 +920,17 @@ fn inspect_archive(path: &str, absolute: &str) -> Result<Archive, ToolsError> {
     let mut entries = Vec::with_capacity(directory.len());
     for entry in &directory {
         let program = is_program(&entry.path);
-        let fallback = extension(&entry.path).to_lowercase().strip_prefix('.').unwrap_or("").to_owned();
+        let fallback = extension(&entry.path)
+            .to_lowercase()
+            .strip_prefix('.')
+            .unwrap_or("")
+            .to_owned();
         let mut observation = Observation::Extension {
-            format: if fallback.is_empty() { "no-extension".to_owned() } else { fallback },
+            format: if fallback.is_empty() {
+                "no-extension".to_owned()
+            } else {
+                fallback
+            },
         };
         let mut program_sha256 = None;
         if program || inspected_extension(&extension(&entry.path).to_lowercase()) {
@@ -771,11 +942,17 @@ fn inspect_archive(path: &str, absolute: &str) -> Result<Archive, ToolsError> {
                     }
                 }
                 Err(error) => {
-                    observation = Observation::Uninspected { reason: error.to_string() };
+                    observation = Observation::Uninspected {
+                        reason: error.to_string(),
+                    };
                 }
             }
         }
-        entries.push(Occurrence { entry: entry.clone(), observation, program_sha256 });
+        entries.push(Occurrence {
+            entry: entry.clone(),
+            observation,
+            program_sha256,
+        });
     }
     let mut names: Vec<(String, Vec<usize>)> = Vec::new();
     let mut indexes: HashMap<String, usize> = HashMap::new();
@@ -788,13 +965,21 @@ fn inspect_archive(path: &str, absolute: &str) -> Result<Archive, ToolsError> {
         }
     }
     let sha256 = hash_file(&mut file, absolute, size)?;
-    let after_meta = file.metadata().map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
+    let after_meta = file
+        .metadata()
+        .map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
     if change_key(&before_meta) != change_key(&after_meta) {
-        return Err(ToolsError::invalid(format!("Archive changed during inspection: {path}")));
+        return Err(ToolsError::invalid(format!(
+            "Archive changed during inspection: {path}"
+        )));
     }
     Ok(Archive {
         path: path.to_owned(),
-        scope: if path.starts_with("quakelive/") || path == "q1-paks.zip" { "provenance-only" } else { "product-content" },
+        scope: if path.starts_with("quakelive/") || path == "q1-paks.zip" {
+            "provenance-only"
+        } else {
+            "product-content"
+        },
         bytes: size,
         sha256,
         container,
@@ -805,7 +990,13 @@ fn inspect_archive(path: &str, absolute: &str) -> Result<Archive, ToolsError> {
 
 fn selected_name(name: &str) -> bool {
     let lower = name.to_lowercase();
-    lower.ends_with(".pak") || lower.ends_with(".pk3") || lower.ends_with(".kpf") || lower.ends_with(".zip") || lower == "qwprogs.dat" || lower == "progs.dat" || lower.starts_with("game") && (lower.ends_with(".dll") || lower.ends_with(".so"))
+    lower.ends_with(".pak")
+        || lower.ends_with(".pk3")
+        || lower.ends_with(".kpf")
+        || lower.ends_with(".zip")
+        || lower == "qwprogs.dat"
+        || lower == "progs.dat"
+        || lower.starts_with("game") && (lower.ends_with(".dll") || lower.ends_with(".so"))
 }
 
 /// Discover selected corpus files (donor `discover`).
@@ -814,7 +1005,13 @@ fn discover(root: &str) -> Result<Vec<String>, ToolsError> {
     let root = if root.is_empty() { "/".to_owned() } else { root };
     let mut selected = Vec::new();
     let mut count = 0_usize;
-    fn walk(directory: &str, root: &str, depth: usize, count: &mut usize, selected: &mut Vec<String>) -> Result<(), ToolsError> {
+    fn walk(
+        directory: &str,
+        root: &str,
+        depth: usize,
+        count: &mut usize,
+        selected: &mut Vec<String>,
+    ) -> Result<(), ToolsError> {
         if depth > LIMITS.depth {
             return Err(ToolsError::invalid("Inventory traversal depth exceeded"));
         }
@@ -884,13 +1081,17 @@ fn product_json(
     archives: &[Archive],
     programs: &[Program],
 ) -> Json {
-    let base = expected.iter().find(|candidate| candidate.id == product.base_product.as_deref().unwrap_or(""));
+    let base = expected
+        .iter()
+        .find(|candidate| candidate.id == product.base_product.as_deref().unwrap_or(""));
     let mut required_content: Vec<String> = required_archives(product);
     if let Some(base) = base {
         required_content.extend(required_archives(base));
     }
-    let own: Vec<&Archive> =
-        archives.iter().filter(|archive| dirname(&archive.path) == product.content_directory).collect();
+    let own: Vec<&Archive> = archives
+        .iter()
+        .filter(|archive| dirname(&archive.path) == product.content_directory)
+        .collect();
     let base_evidence: Vec<Json> = base
         .map(|base| {
             archives
@@ -905,7 +1106,10 @@ fn product_json(
         .iter()
         .map(|name| {
             let mut occurrences = Vec::new();
-            for program in programs.iter().filter(|program| program.path == format!("{}/{}", product.content_directory, name)) {
+            for program in programs
+                .iter()
+                .filter(|program| program.path == format!("{}/{}", product.content_directory, name))
+            {
                 occurrences.push(Json::object(vec![
                     ("source".to_owned(), Json::string(&program.path)),
                     ("ordinal".to_owned(), Json::Null),
@@ -919,7 +1123,10 @@ fn product_json(
                     occurrences.push(Json::object(vec![
                         ("source".to_owned(), Json::string(&archive.path)),
                         ("ordinal".to_owned(), Json::uint(entry.entry.ordinal as u64)),
-                        ("sha256".to_owned(), Json::string(entry.program_sha256.as_ref().expect("checked sha"))),
+                        (
+                            "sha256".to_owned(),
+                            Json::string(entry.program_sha256.as_ref().expect("checked sha")),
+                        ),
                     ]));
                 }
             }
@@ -951,7 +1158,10 @@ fn product_json(
         .collect();
     let mut missing = Vec::new();
     for path in &required_content {
-        if !archives.iter().any(|archive| archive.path.to_lowercase() == path.to_lowercase()) {
+        if !archives
+            .iter()
+            .any(|archive| archive.path.to_lowercase() == path.to_lowercase())
+        {
             missing.push(format!("archive:{path}"));
         }
     }
@@ -962,7 +1172,9 @@ fn product_json(
         .required_programs
         .iter()
         .filter(|name| {
-            !programs.iter().any(|program| program.path == format!("{}/{}", product.content_directory, name))
+            !programs
+                .iter()
+                .any(|program| program.path == format!("{}/{}", product.content_directory, name))
                 && !own.iter().any(|archive| {
                     archive.entries.iter().any(|entry| {
                         entry.entry.path.to_lowercase() == name.to_lowercase() && entry.program_sha256.is_some()
@@ -971,8 +1183,13 @@ fn product_json(
         })
         .copied()
         .collect();
-    let status =
-        if product.campaign == "quake64" { "unresolved" } else if missing.is_empty() { "observed" } else { "missing-evidence" };
+    let status = if product.campaign == "quake64" {
+        "unresolved"
+    } else if missing.is_empty() {
+        "observed"
+    } else {
+        "missing-evidence"
+    };
     let fixture_status = if product.campaign == "quake64" {
         "unresolved"
     } else if missing_programs.is_empty() {
@@ -1034,14 +1251,21 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
     let mut snapshots = Vec::with_capacity(paths.len());
     for path in &paths {
         let absolute = format!("{}/{}", root.trim_end_matches('/'), path);
-        snapshots.push((path.clone(), std::fs::metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?));
+        snapshots.push((
+            path.clone(),
+            std::fs::metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?,
+        ));
     }
     for path in &paths {
         let absolute = format!("{}/{}", root.trim_end_matches('/'), path);
         let outcome: Result<(), ToolsError> = (|| {
             if path == "quakelive/web.pak" {
-                let mut file = File::open(&absolute).map_err(|error| ToolsError::io(format!("opening {absolute}"), error))?;
-                let size = file.metadata().map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?.len();
+                let mut file =
+                    File::open(&absolute).map_err(|error| ToolsError::io(format!("opening {absolute}"), error))?;
+                let size = file
+                    .metadata()
+                    .map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?
+                    .len();
                 opaque_fixtures.push(Json::object(vec![
                     ("path".to_owned(), Json::string(path)),
                     ("bytes".to_owned(), Json::uint(size)),
@@ -1052,18 +1276,35 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
                         Json::string("Quake Live web resource bundle; observed header is neither PACK nor ZIP. Opaque provenance only; no game archive directory claimed."),
                     ),
                 ]));
-            } else if [".pak", ".pk3", ".kpf", ".zip"].into_iter().any(|extension| path.to_lowercase().ends_with(extension)) {
+            } else if [".pak", ".pk3", ".kpf", ".zip"]
+                .into_iter()
+                .any(|extension| path.to_lowercase().ends_with(extension))
+            {
                 archives.push(inspect_archive(path, &absolute)?);
             } else {
-                let mut file = File::open(&absolute).map_err(|error| ToolsError::io(format!("opening {absolute}"), error))?;
-                let before = file.metadata().map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
+                let mut file =
+                    File::open(&absolute).map_err(|error| ToolsError::io(format!("opening {absolute}"), error))?;
+                let before = file
+                    .metadata()
+                    .map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
                 let row = Program {
                     path: path.clone(),
                     bytes: before.len(),
                     sha256: hash_file(&mut file, &absolute, before.len())?,
-                    observation: observe(path, &read_range(&mut file, &absolute, 0, (65_536 as u64).min(before.len()) as usize, before.len())?),
+                    observation: observe(
+                        path,
+                        &read_range(
+                            &mut file,
+                            &absolute,
+                            0,
+                            (65_536 as u64).min(before.len()) as usize,
+                            before.len(),
+                        )?,
+                    ),
                 };
-                let after = file.metadata().map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
+                let after = file
+                    .metadata()
+                    .map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
                 if change_key(&before) != change_key(&after) {
                     return Err(ToolsError::invalid("Program changed during inspection"));
                 }
@@ -1083,14 +1324,19 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
     }
     for (path, before) in &snapshots {
         let absolute = format!("{}/{}", root.trim_end_matches('/'), path);
-        let after = std::fs::metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
+        let after =
+            std::fs::metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {absolute}"), error))?;
         if identity_key(before) != identity_key(&after) || change_key(before) != change_key(&after) {
-            return Err(ToolsError::invalid(format!("Corpus input changed during inventory: {path}")));
+            return Err(ToolsError::invalid(format!(
+                "Corpus input changed during inventory: {path}"
+            )));
         }
     }
     let expected = expected_products();
-    let products: Vec<Json> =
-        expected.iter().map(|product| product_json(product, &expected, &archives, &programs)).collect();
+    let products: Vec<Json> = expected
+        .iter()
+        .map(|product| product_json(product, &expected, &archives, &programs))
+        .collect();
     let mut formats: Vec<(String, usize, usize, Vec<Json>)> = Vec::new();
     let mut format_indexes: HashMap<String, usize> = HashMap::new();
     for archive in archives.iter().filter(|archive| archive.scope == "product-content") {
@@ -1148,7 +1394,13 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
     }
     let gaps: Vec<Json> = ["bsp2", "md4-v1"]
         .into_iter()
-        .filter(|format| formats.iter().find(|(name, _, _, _)| name == format).map_or(0, |(_, header, _, _)| *header) == 0)
+        .filter(|format| {
+            formats
+                .iter()
+                .find(|(name, _, _, _)| name == format)
+                .map_or(0, |(_, header, _, _)| *header)
+                == 0
+        })
         .map(|format| {
             Json::object(vec![
                 ("format".to_owned(), Json::string(format)),
@@ -1162,32 +1414,59 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
         ("expectedProducts".to_owned(), Json::uint(products.len() as u64)),
         (
             "observedProducts".to_owned(),
-            Json::uint(products.iter().filter(|product| product.get("status").and_then(Json::as_str) == Some("observed")).count() as u64),
+            Json::uint(
+                products
+                    .iter()
+                    .filter(|product| product.get("status").and_then(Json::as_str) == Some("observed"))
+                    .count() as u64,
+            ),
         ),
         (
             "unresolvedProducts".to_owned(),
-            Json::uint(products.iter().filter(|product| product.get("status").and_then(Json::as_str) == Some("unresolved")).count() as u64),
+            Json::uint(
+                products
+                    .iter()
+                    .filter(|product| product.get("status").and_then(Json::as_str) == Some("unresolved"))
+                    .count() as u64,
+            ),
         ),
         ("archives".to_owned(), Json::uint(archives.len() as u64)),
-        ("archiveEntries".to_owned(), Json::uint(archives.iter().map(|archive| archive.entries.len() as u64).sum::<u64>())),
+        (
+            "archiveEntries".to_owned(),
+            Json::uint(archives.iter().map(|archive| archive.entries.len() as u64).sum::<u64>()),
+        ),
         ("standalonePrograms".to_owned(), Json::uint(programs.len() as u64)),
         (
             "uninspectedEntries".to_owned(),
             Json::uint(
                 archives
                     .iter()
-                    .map(|archive| archive.entries.iter().filter(|entry| matches!(entry.observation, Observation::Uninspected { .. })).count() as u64)
+                    .map(|archive| {
+                        archive
+                            .entries
+                            .iter()
+                            .filter(|entry| matches!(entry.observation, Observation::Uninspected { .. }))
+                            .count() as u64
+                    })
                     .sum::<u64>(),
             ),
         ),
         (
             "duplicateNamesWithinArchives".to_owned(),
-            Json::uint(archives.iter().map(|archive| archive.duplicate_paths.len() as u64).sum::<u64>()),
+            Json::uint(
+                archives
+                    .iter()
+                    .map(|archive| archive.duplicate_paths.len() as u64)
+                    .sum::<u64>(),
+            ),
         ),
     ]);
     Ok(Json::object(vec![
         ("schemaVersion".to_owned(), Json::int(1)),
-        ("generator".to_owned(), Json::string("bun run tools/inventory/products.ts --write")),
+        (
+            "generator".to_owned(),
+            Json::string("bun run tools/inventory/products.ts --write"),
+        ),
         ("corpusRoot".to_owned(), Json::string("../qfiles")),
         (
             "expectationSources".to_owned(),
@@ -1204,7 +1483,10 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
             ),
         ),
         ("limits".to_owned(), limits_json()),
-        ("evidenceLimits".to_owned(), Json::array(evidence_limits().iter().map(Json::string).collect())),
+        (
+            "evidenceLimits".to_owned(),
+            Json::array(evidence_limits().iter().map(Json::string).collect()),
+        ),
         ("products".to_owned(), Json::array(products)),
         ("fixtures".to_owned(), Json::array(fixtures)),
         ("requiredFixtureGaps".to_owned(), Json::array(gaps)),
@@ -1225,8 +1507,14 @@ pub fn inventory_products(root: &str) -> Result<Json, ToolsError> {
             ),
         ),
         ("summary".to_owned(), summary),
-        ("archives".to_owned(), Json::array(archives.iter().map(Archive::to_json).collect())),
-        ("programs".to_owned(), Json::array(programs.iter().map(Program::to_json).collect())),
+        (
+            "archives".to_owned(),
+            Json::array(archives.iter().map(Archive::to_json).collect()),
+        ),
+        (
+            "programs".to_owned(),
+            Json::array(programs.iter().map(Program::to_json).collect()),
+        ),
         ("opaqueFixtures".to_owned(), Json::array(opaque_fixtures)),
         ("inspectionErrors".to_owned(), Json::array(inspection_errors)),
     ]))
@@ -1237,7 +1525,9 @@ fn write_u32_le(buf: &mut [u8], offset: usize, value: u32) {
 }
 
 fn find_product<'a>(products: &'a [Json], id: &str) -> Option<&'a Json> {
-    products.iter().find(|row| row.get("id").and_then(Json::as_str) == Some(id))
+    products
+        .iter()
+        .find(|row| row.get("id").and_then(Json::as_str) == Some(id))
 }
 
 /// Self-test the inventory reader on a synthetic corpus (donor `verifyReader`).
@@ -1262,7 +1552,10 @@ pub fn verify_reader() -> Result<(), ToolsError> {
         std::fs::write(&path, &pak).map_err(|error| ToolsError::io(format!("writing {path}"), error))?;
         let manifest = inventory_products(&root)?;
         let empty = Json::Null;
-        let archives = manifest.get("archives").and_then(Json::as_array).map_or(&[][..], |list| list);
+        let archives = manifest
+            .get("archives")
+            .and_then(Json::as_array)
+            .map_or(&[][..], |list| list);
         let archive = archives.first().unwrap_or(&empty);
         let entries = archive.get("entries").and_then(Json::as_array).map_or(0, <[Json]>::len);
         let ordinals = archive
@@ -1280,27 +1573,48 @@ pub fn verify_reader() -> Result<(), ToolsError> {
         if archive.get("sha256").and_then(Json::as_str) != Some(expected_hash.as_str()) {
             return Err(ToolsError::invalid("Archive hash mismatch"));
         }
-        let products = manifest.get("products").and_then(Json::as_array).map_or(&[][..], |list| list);
+        let products = manifest
+            .get("products")
+            .and_then(Json::as_array)
+            .map_or(&[][..], |list| list);
         let product = find_product(products, "q2-classic-baseq2").unwrap_or(&empty);
-        let maps = product.get("mapEvidence").and_then(Json::as_array).map_or(0, <[Json]>::len);
+        let maps = product
+            .get("mapEvidence")
+            .and_then(Json::as_array)
+            .map_or(0, <[Json]>::len);
         if product.get("status").and_then(Json::as_str) != Some("observed")
             || product.get("programFixtureStatus").and_then(Json::as_str) != Some("missing-reference-fixture")
             || maps != 2
         {
-            return Err(ToolsError::invalid("Content availability was conflated with guest program fixtures"));
+            return Err(ToolsError::invalid(
+                "Content availability was conflated with guest program fixtures",
+            ));
         }
         if products.len() != expected_products().len()
-            || find_product(products, "q1-rerelease-quake64").and_then(|row| row.get("status")).and_then(Json::as_str) != Some("unresolved")
+            || find_product(products, "q1-rerelease-quake64")
+                .and_then(|row| row.get("status"))
+                .and_then(Json::as_str)
+                != Some("unresolved")
         {
-            return Err(ToolsError::invalid("Missing content reduced the expected product domain"));
+            return Err(ToolsError::invalid(
+                "Missing content reduced the expected product domain",
+            ));
         }
-        if find_product(products, "q1-quakeworld").and_then(|row| row.get("status")).and_then(Json::as_str) != Some("missing-evidence") {
+        if find_product(products, "q1-quakeworld")
+            .and_then(|row| row.get("status"))
+            .and_then(Json::as_str)
+            != Some("missing-evidence")
+        {
             return Err(ToolsError::invalid("An absent base mount was reported available"));
         }
         let headers = manifest
             .get("formatCounts")
             .and_then(Json::as_array)
-            .and_then(|counts| counts.iter().find(|row| row.get("format").and_then(Json::as_str) == Some("ibsp38")))
+            .and_then(|counts| {
+                counts
+                    .iter()
+                    .find(|row| row.get("format").and_then(Json::as_str) == Some("ibsp38"))
+            })
             .and_then(|row| row.get("headerOccurrences"))
             .and_then(Json::as_f64);
         if headers != Some(2.0) {
@@ -1309,8 +1623,14 @@ pub fn verify_reader() -> Result<(), ToolsError> {
         write_u32_le(&mut pak, 8, LIMITS.directory_bytes as u32 + 64);
         std::fs::write(&path, &pak).map_err(|error| ToolsError::io(format!("writing {path}"), error))?;
         let invalid = inventory_products(&root)?;
-        let error_count = invalid.get("inspectionErrors").and_then(Json::as_array).map_or(0, <[Json]>::len);
-        let archive_count = invalid.get("archives").and_then(Json::as_array).map_or(0, <[Json]>::len);
+        let error_count = invalid
+            .get("inspectionErrors")
+            .and_then(Json::as_array)
+            .map_or(0, <[Json]>::len);
+        let archive_count = invalid
+            .get("archives")
+            .and_then(Json::as_array)
+            .map_or(0, <[Json]>::len);
         if error_count != 1 || archive_count != 0 {
             return Err(ToolsError::invalid("Oversized archive directory was accepted"));
         }
@@ -1323,8 +1643,14 @@ pub fn verify_reader() -> Result<(), ToolsError> {
 
 /// CLI entry point returning a process exit code (donor `import.meta.main`).
 pub fn run(args: &[String]) -> Result<i32, ToolsError> {
-    if args.iter().any(|argument| argument != "--write" && argument != "--check" && argument != "--self-test") || args.len() > 1 {
-        return Err(ToolsError::invalid("Usage: qa-tools inventory::products --write|--check|--self-test"));
+    if args
+        .iter()
+        .any(|argument| argument != "--write" && argument != "--check" && argument != "--self-test")
+        || args.len() > 1
+    {
+        return Err(ToolsError::invalid(
+            "Usage: qa-tools inventory::products --write|--check|--self-test",
+        ));
     }
     if args.contains(&"--self-test".to_owned()) {
         verify_reader()?;
@@ -1343,20 +1669,29 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
     let destination = quake_typescript_root().join("verification/product-manifest.json");
     if args.contains(&"--write".to_owned()) {
         if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
         }
         fsutil::write_text(&destination, &serialized)?;
     } else if args.contains(&"--check".to_owned()) && fsutil::read_text(&destination)? != serialized {
-        return Err(ToolsError::invalid("Product manifest differs from current corpus; run --write to regenerate"));
+        return Err(ToolsError::invalid(
+            "Product manifest differs from current corpus; run --write to regenerate",
+        ));
     }
     let empty = Json::Null;
     let mut pairs = match manifest.get("summary") {
         Some(Json::Object(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let products = manifest.get("products").and_then(Json::as_array).map_or(&[][..], |list| list);
+    let products = manifest
+        .get("products")
+        .and_then(Json::as_array)
+        .map_or(&[][..], |list| list);
     pairs.push(("manifestBytes".to_owned(), Json::uint(serialized.len() as u64)));
-    pairs.push(("inspectionErrors".to_owned(), manifest.get("inspectionErrors").unwrap_or(&empty).clone()));
+    pairs.push((
+        "inspectionErrors".to_owned(),
+        manifest.get("inspectionErrors").unwrap_or(&empty).clone(),
+    ));
     pairs.push((
         "missing".to_owned(),
         Json::array(
@@ -1378,21 +1713,38 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         Json::array(
             products
                 .iter()
-                .filter(|product| product.get("missingProgramFixtures").and_then(Json::as_array).is_some_and(|list| !list.is_empty()))
+                .filter(|product| {
+                    product
+                        .get("missingProgramFixtures")
+                        .and_then(Json::as_array)
+                        .is_some_and(|list| !list.is_empty())
+                })
                 .map(|product| {
                     Json::object(vec![
                         ("id".to_owned(), product.get("id").unwrap_or(&empty).clone()),
-                        ("missing".to_owned(), product.get("missingProgramFixtures").unwrap_or(&empty).clone()),
+                        (
+                            "missing".to_owned(),
+                            product.get("missingProgramFixtures").unwrap_or(&empty).clone(),
+                        ),
                     ])
                 })
                 .collect(),
         ),
     ));
-    pairs.push(("requiredFixtureGaps".to_owned(), manifest.get("requiredFixtureGaps").unwrap_or(&empty).clone()));
+    pairs.push((
+        "requiredFixtureGaps".to_owned(),
+        manifest.get("requiredFixtureGaps").unwrap_or(&empty).clone(),
+    ));
     println!("{}", Json::object(pairs).render());
-    let errors = manifest.get("inspectionErrors").and_then(Json::as_array).map_or(0, <[Json]>::len);
-    let uninspected =
-        manifest.get("summary").and_then(|summary| summary.get("uninspectedEntries")).and_then(Json::as_f64).unwrap_or(0.0);
+    let errors = manifest
+        .get("inspectionErrors")
+        .and_then(Json::as_array)
+        .map_or(0, <[Json]>::len);
+    let uninspected = manifest
+        .get("summary")
+        .and_then(|summary| summary.get("uninspectedEntries"))
+        .and_then(Json::as_f64)
+        .unwrap_or(0.0);
     if errors > 0 || uninspected > 0.0 {
         return Ok(1);
     }

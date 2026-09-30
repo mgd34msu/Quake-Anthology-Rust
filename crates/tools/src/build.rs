@@ -91,7 +91,10 @@ fn run_gate(snapshot_path: &Path, name: &str) -> Result<(), ToolsError> {
         .status()
         .map_err(|error| ToolsError::io(format!("running build gate {name}"), error))?;
     if !status.success() {
-        return Err(ToolsError::invalid(format!("Build snapshot {name} failed with exit {}.", status.code().unwrap_or(-1))));
+        return Err(ToolsError::invalid(format!(
+            "Build snapshot {name} failed with exit {}.",
+            status.code().unwrap_or(-1)
+        )));
     }
     Ok(())
 }
@@ -132,7 +135,9 @@ fn node_arch() -> &'static str {
 /// Build the workspace at `directory`.
 pub fn build_workspace(directory: &Path, kind: BuildKind) -> Result<BuildEvidence, ToolsError> {
     if std::env::consts::OS != "linux" {
-        return Err(ToolsError::invalid("The first build target is Linux. Run this build on Linux."));
+        return Err(ToolsError::invalid(
+            "The first build target is Linux. Run this build on Linux.",
+        ));
     }
     let workspace = crate::verify::snapshot::resolve(directory);
     let entries: &[BuildEntry] = match kind {
@@ -176,17 +181,35 @@ pub fn build_workspace(directory: &Path, kind: BuildKind) -> Result<BuildEvidenc
     let dist = workspace.join("dist");
     std::fs::create_dir_all(&dist).map_err(|error| ToolsError::io(format!("creating {}", dist.display()), error))?;
     let candidate = make_temp_dir(&dist, &format!(".candidate-{}-", kind.as_str()))?;
-    let result = build_entries(&workspace, &snapshot_path, &candidate, kind, entries, &snapshot.manifest.sha256);
+    let result = build_entries(
+        &workspace,
+        &snapshot_path,
+        &candidate,
+        kind,
+        entries,
+        &snapshot.manifest.sha256,
+    );
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&candidate);
     }
     let (_, final_directory, evidence) = result?;
     let metadata = format!("{}\n", evidence.render_pretty());
-    let pointer = dist.join(format!(".{}-{}-{}.json", kind.as_str(), crate::time::now_millis(), random_uuid()?));
-    std::fs::write(&pointer, &metadata).map_err(|error| ToolsError::io(format!("writing {}", pointer.display()), error))?;
+    let pointer = dist.join(format!(
+        ".{}-{}-{}.json",
+        kind.as_str(),
+        crate::time::now_millis(),
+        random_uuid()?
+    ));
+    std::fs::write(&pointer, &metadata)
+        .map_err(|error| ToolsError::io(format!("writing {}", pointer.display()), error))?;
     std::fs::rename(&pointer, dist.join(format!("{}.json", kind.as_str())))
         .map_err(|error| ToolsError::io(format!("publishing {}.json", kind.as_str()), error))?;
-    println!("Built {} from {}: {}", kind.as_str(), snapshot.manifest.sha256, final_directory.display());
+    println!(
+        "Built {} from {}: {}",
+        kind.as_str(),
+        snapshot.manifest.sha256,
+        final_directory.display()
+    );
     Ok(BuildEvidence {
         kind,
         evidence,
@@ -205,9 +228,17 @@ fn build_entries(
 ) -> Result<(Vec<BuiltEntry>, PathBuf, Json), ToolsError> {
     let mut built_entries = Vec::new();
     for entry in entries {
-        let mut build_args = vec!["build".to_owned(), snapshot_path.join(entry.source).to_string_lossy().into_owned()];
+        let mut build_args = vec![
+            "build".to_owned(),
+            snapshot_path.join(entry.source).to_string_lossy().into_owned(),
+        ];
         if kind == BuildKind::Runtime {
-            build_args.push(snapshot_path.join("src/render/worker-entry.ts").to_string_lossy().into_owned());
+            build_args.push(
+                snapshot_path
+                    .join("src/render/worker-entry.ts")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         let outfile = candidate.join(entry.executable);
         build_args.extend([
@@ -225,10 +256,15 @@ fn build_entries(
             .output()
             .map_err(|error| ToolsError::io(format!("compiling {}", entry.source), error))?;
         if !output.status.success() {
-            let logs = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            let logs = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             return Err(ToolsError::invalid(logs.trim()));
         }
-        let bytes = std::fs::read(&outfile).map_err(|error| ToolsError::io(format!("reading {}", outfile.display()), error))?;
+        let bytes =
+            std::fs::read(&outfile).map_err(|error| ToolsError::io(format!("reading {}", outfile.display()), error))?;
         built_entries.push(BuiltEntry {
             source: entry.source,
             executable: entry.executable,
@@ -244,8 +280,15 @@ fn build_entries(
             snapshot_path.display()
         )));
     }
-    let suffix = candidate.file_name().and_then(|name| name.to_string_lossy().rsplit('-').next().map(str::to_owned)).unwrap_or_default();
-    let final_directory = workspace.join("dist").join(format!("{}-{}-{suffix}", kind.as_str(), &source_sha[..16.min(source_sha.len())]));
+    let suffix = candidate
+        .file_name()
+        .and_then(|name| name.to_string_lossy().rsplit('-').next().map(str::to_owned))
+        .unwrap_or_default();
+    let final_directory = workspace.join("dist").join(format!(
+        "{}-{}-{suffix}",
+        kind.as_str(),
+        &source_sha[..16.min(source_sha.len())]
+    ));
     let (bun_version, bun_revision, bun_executable) = bun_info()?;
     let typescript = typescript_version(snapshot_path)?;
     let evidence = Json::object(vec![
@@ -268,12 +311,20 @@ fn build_entries(
         ("architecture".to_owned(), Json::string(node_arch())),
         (
             "gates".to_owned(),
-            Json::array(vec![Json::string("typecheck"), Json::string("policy"), Json::string("input-stability")]),
+            Json::array(vec![
+                Json::string("typecheck"),
+                Json::string("policy"),
+                Json::string("input-stability"),
+            ]),
         ),
-        ("entries".to_owned(), Json::array(built_entries.iter().map(BuiltEntry::to_json).collect())),
+        (
+            "entries".to_owned(),
+            Json::array(built_entries.iter().map(BuiltEntry::to_json).collect()),
+        ),
     ]);
     let metadata = format!("{}\n", evidence.render_pretty());
-    std::fs::write(candidate.join("build.json"), &metadata).map_err(|error| ToolsError::io("writing build.json", error))?;
+    std::fs::write(candidate.join("build.json"), &metadata)
+        .map_err(|error| ToolsError::io("writing build.json", error))?;
     for entry in &built_entries {
         let provenance = Json::object(vec![
             ("schemaVersion".to_owned(), Json::int(1)),
@@ -290,9 +341,13 @@ fn build_entries(
             ),
             ("typescript".to_owned(), Json::string(&typescript)),
         ]);
-        std::fs::write(candidate.join(format!("{}.build.json", entry.executable)), format!("{}\n", provenance.render_pretty()))
-            .map_err(|error| ToolsError::io("writing entry provenance", error))?;
+        std::fs::write(
+            candidate.join(format!("{}.build.json", entry.executable)),
+            format!("{}\n", provenance.render_pretty()),
+        )
+        .map_err(|error| ToolsError::io("writing entry provenance", error))?;
     }
-    std::fs::rename(candidate, &final_directory).map_err(|error| ToolsError::io(format!("publishing {}", final_directory.display()), error))?;
+    std::fs::rename(candidate, &final_directory)
+        .map_err(|error| ToolsError::io(format!("publishing {}", final_directory.display()), error))?;
     Ok((built_entries, final_directory, evidence))
 }

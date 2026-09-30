@@ -598,7 +598,9 @@ impl<'a> Parser<'a> {
                                     let low = self.hex4()?;
                                     if (0xDC00..0xE000).contains(&low) {
                                         let scalar = 0x1_0000 + ((high - 0xD800) << 10) + (low - 0xDC00);
-                                        out.push(char::from_u32(scalar).ok_or_else(|| self.error("invalid code point"))?);
+                                        out.push(
+                                            char::from_u32(scalar).ok_or_else(|| self.error("invalid code point"))?,
+                                        );
                                         continue;
                                     }
                                     return Err(self.error("invalid low surrogate"));
@@ -629,7 +631,8 @@ impl<'a> Parser<'a> {
                         if end > self.bytes.len() {
                             return Err(self.error("invalid UTF-8"));
                         }
-                        let text = std::str::from_utf8(&self.bytes[self.offset..end]).map_err(|_| self.error("invalid UTF-8"))?;
+                        let text = std::str::from_utf8(&self.bytes[self.offset..end])
+                            .map_err(|_| self.error("invalid UTF-8"))?;
                         let ch = text.chars().next().ok_or_else(|| self.error("invalid UTF-8"))?;
                         out.push(ch);
                         self.offset += width;
@@ -730,7 +733,9 @@ pub fn deep_strict_equal(left: &Json, right: &Json) -> bool {
         (Json::Object(a), Json::Object(b)) => {
             a.len() == b.len()
                 && a.iter().all(|(key, value)| {
-                    b.iter().find(|(other, _)| other == key).is_some_and(|(_, other)| deep_strict_equal(value, other))
+                    b.iter()
+                        .find(|(other, _)| other == key)
+                        .is_some_and(|(_, other)| deep_strict_equal(value, other))
                 })
         }
         _ => false,

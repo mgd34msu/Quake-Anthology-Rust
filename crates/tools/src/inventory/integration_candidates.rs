@@ -17,8 +17,8 @@ use super::source_census::census_functions_from_scan;
 use super::ts_scan::{self, DeclInfo};
 use crate::error::ToolsError;
 use crate::fsutil;
-use crate::json::{parse_json, Json};
 use crate::js::{trim_js, Utf16Map};
+use crate::json::{parse_json, Json};
 use crate::reference::environment::{projects_root, quake_typescript_root};
 use crate::sha256::hash_hex;
 
@@ -46,7 +46,9 @@ pub fn parse_options(args: &[String]) -> Result<Options, ToolsError> {
     let mut index = 0;
     while index < args.len() {
         let key = &args[index];
-        let value = args.get(index + 1).ok_or_else(|| ToolsError::invalid(format!("Missing value for {key}")))?;
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| ToolsError::invalid(format!("Missing value for {key}")))?;
         if key == "--game" && (value == "q1" || value == "q2" || value == "q3") {
             game = value.clone();
         } else if key == "--out" {
@@ -59,7 +61,11 @@ pub fn parse_options(args: &[String]) -> Result<Options, ToolsError> {
         }
         index += 2;
     }
-    Ok(Options { game, out, donor_revision })
+    Ok(Options {
+        game,
+        out,
+        donor_revision,
+    })
 }
 
 /// Whether a git tree path is a scanned TypeScript file (case-sensitive donor regex).
@@ -148,7 +154,10 @@ pub struct AnchorInventory {
 impl AnchorInventory {
     fn to_json(&self) -> Json {
         Json::object(vec![
-            ("accepted".to_owned(), Json::array(self.accepted.iter().map(Anchor::to_json).collect())),
+            (
+                "accepted".to_owned(),
+                Json::array(self.accepted.iter().map(Anchor::to_json).collect()),
+            ),
             ("rejected".to_owned(), Json::array(self.rejected.clone())),
         ])
     }
@@ -199,10 +208,22 @@ impl Declaration {
             ("endOffset".to_owned(), Json::uint(self.end_offset as u64)),
             ("signature".to_owned(), Json::string(&self.signature)),
             ("signatureTokenHash".to_owned(), Json::string(&self.signature_hash)),
-            ("bodyTokenHash".to_owned(), self.body_hash.as_ref().map_or(Json::Null, Json::string)),
-            ("enclosing".to_owned(), Json::array(self.enclosing.iter().map(Json::string).collect())),
-            ("exports".to_owned(), Json::array(self.exports.iter().map(Json::string).collect())),
-            ("evidenceIds".to_owned(), Json::array(self.evidence_ids.iter().map(Json::string).collect())),
+            (
+                "bodyTokenHash".to_owned(),
+                self.body_hash.as_ref().map_or(Json::Null, Json::string),
+            ),
+            (
+                "enclosing".to_owned(),
+                Json::array(self.enclosing.iter().map(Json::string).collect()),
+            ),
+            (
+                "exports".to_owned(),
+                Json::array(self.exports.iter().map(Json::string).collect()),
+            ),
+            (
+                "evidenceIds".to_owned(),
+                Json::array(self.evidence_ids.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -236,11 +257,23 @@ impl FileRecord {
             ("sha256".to_owned(), Json::string(&self.sha256)),
             ("bytes".to_owned(), Json::uint(self.bytes as u64)),
             ("kind".to_owned(), Json::string(&self.kind)),
-            ("imports".to_owned(), Json::array(self.imports.iter().map(Json::string).collect())),
-            ("declarations".to_owned(), Json::array(self.declarations.iter().map(Declaration::to_json).collect())),
+            (
+                "imports".to_owned(),
+                Json::array(self.imports.iter().map(Json::string).collect()),
+            ),
+            (
+                "declarations".to_owned(),
+                Json::array(self.declarations.iter().map(Declaration::to_json).collect()),
+            ),
             ("censusFunctions".to_owned(), Json::uint(self.census_functions as u64)),
-            ("diagnostics".to_owned(), Json::array(self.diagnostics.iter().map(Json::string).collect())),
-            ("skipped".to_owned(), self.skipped.as_ref().map_or(Json::Null, Json::string)),
+            (
+                "diagnostics".to_owned(),
+                Json::array(self.diagnostics.iter().map(Json::string).collect()),
+            ),
+            (
+                "skipped".to_owned(),
+                self.skipped.as_ref().map_or(Json::Null, Json::string),
+            ),
         ])
     }
 }
@@ -266,7 +299,10 @@ impl Repository {
             ("root".to_owned(), Json::string(&self.root)),
             ("revision".to_owned(), Json::string(&self.revision)),
             ("sourceSetSha256".to_owned(), Json::string(&self.source_set_sha256)),
-            ("files".to_owned(), Json::array(self.files.iter().map(FileRecord::to_json).collect())),
+            (
+                "files".to_owned(),
+                Json::array(self.files.iter().map(FileRecord::to_json).collect()),
+            ),
         ])
     }
 }
@@ -277,14 +313,18 @@ fn collect_anchors(inventories: &[(&str, &[u8])]) -> Result<AnchorInventory, Too
     let mut rejected = Vec::new();
     for (_, bytes) in inventories {
         let value = parse_json(&String::from_utf8_lossy(bytes))?;
-        let object = value.as_object().ok_or_else(|| ToolsError::invalid("Invalid feature inventory"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| ToolsError::invalid("Invalid feature inventory"))?;
         let features = object
             .iter()
             .find(|(key, _)| key == "features")
             .and_then(|(_, features)| features.as_array())
             .ok_or_else(|| ToolsError::invalid("Invalid feature inventory"))?;
         for feature in features {
-            let entries = feature.as_object().ok_or_else(|| ToolsError::invalid("Invalid feature"))?;
+            let entries = feature
+                .as_object()
+                .ok_or_else(|| ToolsError::invalid("Invalid feature"))?;
             let id = entries
                 .iter()
                 .find(|(key, _)| key == "id")
@@ -303,14 +343,23 @@ fn collect_anchors(inventories: &[(&str, &[u8])]) -> Result<AnchorInventory, Too
                     let path = get("path")?.as_str()?;
                     let line = get("line")?.as_f64()?;
                     let end_line = get("endLine")?.as_f64()?;
-                    Some(Anchor { id: id.to_owned(), repository: repository.to_owned(), path: path.to_owned(), line, end_line })
+                    Some(Anchor {
+                        id: id.to_owned(),
+                        repository: repository.to_owned(),
+                        path: path.to_owned(),
+                        line,
+                        end_line,
+                    })
                 });
                 match anchor {
                     Some(anchor) => accepted.push(anchor),
                     None => rejected.push(Json::object(vec![
                         ("featureId".to_owned(), Json::string(id)),
                         ("evidence".to_owned(), row.clone()),
-                        ("reason".to_owned(), Json::string("Not a numeric source-location anchor")),
+                        (
+                            "reason".to_owned(),
+                            Json::string("Not a numeric source-location anchor"),
+                        ),
                     ])),
                 }
             }
@@ -326,7 +375,10 @@ fn anchors(root: &Path) -> Result<AnchorInventory, ToolsError> {
         let spec = format!("{BASELINE}:verification/features/{game}.json");
         inventories.push((game, git_bytes(root, &["show", &spec])?));
     }
-    let borrowed: Vec<(&str, &[u8])> = inventories.iter().map(|(game, bytes)| (*game, bytes.as_slice())).collect();
+    let borrowed: Vec<(&str, &[u8])> = inventories
+        .iter()
+        .map(|(game, bytes)| (*game, bytes.as_slice()))
+        .collect();
     collect_anchors(&borrowed)
 }
 
@@ -342,7 +394,12 @@ fn map_declarations(
     let utf16 = Utf16Map::new(source);
     let mut declarations = Vec::with_capacity(decls.len());
     for decl in decls {
-        let signature_end = decl.body.map(|(start, _)| start).or(decl.members_pos).or(decl.initializer_start).unwrap_or(decl.end);
+        let signature_end = decl
+            .body
+            .map(|(start, _)| start)
+            .or(decl.members_pos)
+            .or(decl.initializer_start)
+            .unwrap_or(decl.end);
         let signature = trim_js(&source[decl.start..signature_end]).to_owned();
         let start_offset = utf16.to_utf16(decl.start);
         let end_offset = utf16.to_utf16(decl.end);
@@ -384,7 +441,10 @@ fn map_declarations(
 fn capture(root: &Path, id: &str, revision: &str, evidence: &[Anchor]) -> Result<Repository, ToolsError> {
     let listing = git_bytes(root, &["ls-tree", "-r", "-z", revision])?;
     let mut files = Vec::new();
-    for entry in String::from_utf8_lossy(&listing).split('\0').filter(|entry| !entry.is_empty()) {
+    for entry in String::from_utf8_lossy(&listing)
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+    {
         let (path, symlink) = parse_ls_entry(entry);
         if !selected(&path) {
             continue;
@@ -409,14 +469,25 @@ fn capture(root: &Path, id: &str, revision: &str, evidence: &[Anchor]) -> Result
             file.imports = scanned.imports.clone();
             file.diagnostics = scanned.diagnostics.clone();
             file.declarations = map_declarations(id, &file.path, &source, &scanned.declarations, evidence);
-            let ids: HashSet<&str> = file.declarations.iter().map(|declaration| declaration.id.as_str()).collect();
+            let ids: HashSet<&str> = file
+                .declarations
+                .iter()
+                .map(|declaration| declaration.id.as_str())
+                .collect();
             if ids.len() != file.declarations.len() {
-                return Err(ToolsError::invalid(format!("Duplicate declaration IDs in {id}:{}", file.path)));
+                return Err(ToolsError::invalid(format!(
+                    "Duplicate declaration IDs in {id}:{}",
+                    file.path
+                )));
             }
             let census = census_functions_from_scan(id, &file.path, &source, &scanned.declarations);
             file.census_functions = census.len();
             for row in &census {
-                if !file.declarations.iter().any(|candidate| candidate.start_offset == row.start_offset) {
+                if !file
+                    .declarations
+                    .iter()
+                    .any(|candidate| candidate.start_offset == row.start_offset)
+                {
                     return Err(ToolsError::invalid(format!("Lost census declaration {}", row.id)));
                 }
             }
@@ -515,14 +586,21 @@ impl Candidate {
         Json::object(vec![
             ("donorId".to_owned(), Json::string(&self.donor_id)),
             ("status".to_owned(), Json::string(self.status)),
-            ("groupIds".to_owned(), Json::array(self.group_ids.iter().map(Json::string).collect())),
+            (
+                "groupIds".to_owned(),
+                Json::array(self.group_ids.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
 
 /// Match one donor declaration against the unified index (donor candidate expression).
 fn match_candidate(keys: &[String], index: &Index) -> (&'static str, Vec<String>) {
-    let group_ids: Vec<String> = keys.iter().filter(|key| index.map.contains_key(*key)).cloned().collect();
+    let group_ids: Vec<String> = keys
+        .iter()
+        .filter(|key| index.map.contains_key(*key))
+        .cloned()
+        .collect();
     let mut witnesses: Vec<&str> = Vec::new();
     'outer: for key in &group_ids {
         if let Some(ids) = index.map.get(key) {
@@ -557,7 +635,11 @@ fn match_all(files: &[FileRecord], index: &Index) -> Vec<Candidate> {
                 &file.imports,
             );
             let (status, group_ids) = match_candidate(&keys, index);
-            candidates.push(Candidate { donor_id: declaration.id.clone(), status, group_ids });
+            candidates.push(Candidate {
+                donor_id: declaration.id.clone(),
+                status,
+                group_ids,
+            });
         }
     }
     candidates
@@ -565,21 +647,38 @@ fn match_all(files: &[FileRecord], index: &Index) -> Vec<Candidate> {
 
 /// Summary row for one captured repository.
 fn repository_summary(repository: &Repository) -> Json {
-    let declarations: Vec<&Declaration> =
-        repository.files.iter().flat_map(|file| file.declarations.iter()).collect();
+    let declarations: Vec<&Declaration> = repository
+        .files
+        .iter()
+        .flat_map(|file| file.declarations.iter())
+        .collect();
     Json::object(vec![
         ("id".to_owned(), Json::string(&repository.id)),
         ("revision".to_owned(), Json::string(&repository.revision)),
-        ("sourceSetSha256".to_owned(), Json::string(&repository.source_set_sha256)),
+        (
+            "sourceSetSha256".to_owned(),
+            Json::string(&repository.source_set_sha256),
+        ),
         ("files".to_owned(), Json::uint(repository.files.len() as u64)),
         ("declarations".to_owned(), Json::uint(declarations.len() as u64)),
         (
             "censusFunctions".to_owned(),
-            Json::uint(repository.files.iter().map(|file| file.census_functions as u64).sum::<u64>()),
+            Json::uint(
+                repository
+                    .files
+                    .iter()
+                    .map(|file| file.census_functions as u64)
+                    .sum::<u64>(),
+            ),
         ),
         (
             "unanchored".to_owned(),
-            Json::uint(declarations.iter().filter(|declaration| declaration.evidence_ids.is_empty()).count() as u64),
+            Json::uint(
+                declarations
+                    .iter()
+                    .filter(|declaration| declaration.evidence_ids.is_empty())
+                    .count() as u64,
+            ),
         ),
         (
             "classifications".to_owned(),
@@ -605,7 +704,10 @@ fn repository_summary(repository: &Repository) -> Json {
                     .map(|file| {
                         Json::object(vec![
                             ("path".to_owned(), Json::string(&file.path)),
-                            ("diagnostics".to_owned(), Json::array(file.diagnostics.iter().map(Json::string).collect())),
+                            (
+                                "diagnostics".to_owned(),
+                                Json::array(file.diagnostics.iter().map(Json::string).collect()),
+                            ),
                         ])
                     })
                     .collect(),
@@ -621,7 +723,10 @@ fn repository_summary(repository: &Repository) -> Json {
                     .map(|file| {
                         Json::object(vec![
                             ("path".to_owned(), Json::string(&file.path)),
-                            ("reason".to_owned(), Json::string(file.skipped.as_ref().expect("filtered skip"))),
+                            (
+                                "reason".to_owned(),
+                                Json::string(file.skipped.as_ref().expect("filtered skip")),
+                            ),
                         ])
                     })
                     .collect(),
@@ -651,7 +756,10 @@ fn summarize(game: &str, donor: &Repository, unified: &Repository, candidates: &
                 .collect(),
             ),
         ),
-        ("repositories".to_owned(), Json::array(vec![repository_summary(donor), repository_summary(unified)])),
+        (
+            "repositories".to_owned(),
+            Json::array(vec![repository_summary(donor), repository_summary(unified)]),
+        ),
         (
             "statuses".to_owned(),
             Json::object(
@@ -733,20 +841,34 @@ fn historical_completion(root: &Path) -> Result<Json, ToolsError> {
 pub fn run(args: &[String]) -> Result<(), ToolsError> {
     let options = parse_options(args)?;
     let root = quake_typescript_root();
-    let donor_directory = DONORS.iter().find(|(game, _)| *game == options.game).map_or("quake-1-re-ts", |(_, directory)| *directory);
+    let donor_directory = DONORS
+        .iter()
+        .find(|(game, _)| *game == options.game)
+        .map_or("quake-1-re-ts", |(_, directory)| *directory);
     let donor_root = projects_root().join(donor_directory);
     let anchor_inventory = anchors(&root)?;
     let revision_spec = format!("{}^{{commit}}", options.donor_revision);
-    let donor_revision = String::from_utf8_lossy(&git_bytes(&donor_root, &["rev-parse", &revision_spec])?).trim().to_owned();
-    let donor = capture(&donor_root, &format!("{}-ts", options.game), &donor_revision, &anchor_inventory.accepted)?;
+    let donor_revision = String::from_utf8_lossy(&git_bytes(&donor_root, &["rev-parse", &revision_spec])?)
+        .trim()
+        .to_owned();
+    let donor = capture(
+        &donor_root,
+        &format!("{}-ts", options.game),
+        &donor_revision,
+        &anchor_inventory.accepted,
+    )?;
     let unified = capture(&root, "unified", BASELINE, &anchor_inventory.accepted)?;
     let index = build_index(&unified.files);
     let candidates = match_all(&donor.files, &index);
     let summary = summarize(&options.game, &donor, &unified, &candidates);
     let inventories = feature_inventories(&root, &donor, &unified)?;
     let completion = historical_completion(&root)?;
-    std::fs::create_dir_all(&options.out).map_err(|error| ToolsError::io(format!("creating {}", options.out.display()), error))?;
-    fsutil::write_text(&options.out.join("anchor-inventory.json"), &anchor_inventory.to_json().render())?;
+    std::fs::create_dir_all(&options.out)
+        .map_err(|error| ToolsError::io(format!("creating {}", options.out.display()), error))?;
+    fsutil::write_text(
+        &options.out.join("anchor-inventory.json"),
+        &anchor_inventory.to_json().render(),
+    )?;
     fsutil::write_text(&options.out.join("historical-completion.json"), &completion.render())?;
     fsutil::write_text(
         &options.out.join("feature-join.json"),
@@ -760,8 +882,14 @@ pub fn run(args: &[String]) -> Result<(), ToolsError> {
         &options.out.join("inventory.json"),
         &Json::object(vec![
             ("schemaVersion".to_owned(), Json::int(1)),
-            ("parser".to_owned(), Json::string(format!("qa-tools-ts-scan@{}", env!("CARGO_PKG_VERSION")))),
-            ("repositories".to_owned(), Json::array(vec![donor.to_json(), unified.to_json()])),
+            (
+                "parser".to_owned(),
+                Json::string(format!("qa-tools-ts-scan@{}", env!("CARGO_PKG_VERSION"))),
+            ),
+            (
+                "repositories".to_owned(),
+                Json::array(vec![donor.to_json(), unified.to_json()]),
+            ),
         ])
         .render(),
     )?;
@@ -778,14 +906,20 @@ pub fn run(args: &[String]) -> Result<(), ToolsError> {
                             (
                                 key.clone(),
                                 Json::array(
-                                    index.map.get(key).map_or(Vec::new(), |ids| ids.iter().map(Json::string).collect()),
+                                    index
+                                        .map
+                                        .get(key)
+                                        .map_or(Vec::new(), |ids| ids.iter().map(Json::string).collect()),
                                 ),
                             )
                         })
                         .collect(),
                 ),
             ),
-            ("candidates".to_owned(), Json::array(candidates.iter().map(Candidate::to_json).collect())),
+            (
+                "candidates".to_owned(),
+                Json::array(candidates.iter().map(Candidate::to_json).collect()),
+            ),
         ])
         .render(),
     )?;
@@ -823,7 +957,15 @@ mod tests {
         for path in ["src/a.d.ts", "src/x.d.mts", "lib/y.d.cts"] {
             assert_eq!(classify_kind(path), "declaration", "{path}");
         }
-        for path in ["tests/a.ts", "src/__tests__/a.ts", "test.ts", "src/tests.ts", "src/a.test.ts", "src/a.spec.ts", "test/x.ts"] {
+        for path in [
+            "tests/a.ts",
+            "src/__tests__/a.ts",
+            "test.ts",
+            "src/tests.ts",
+            "src/a.test.ts",
+            "src/a.spec.ts",
+            "test/x.ts",
+        ] {
             assert_eq!(classify_kind(path), "test", "{path}");
         }
         for path in ["src/a.ts", "src/testing/a.ts", "src/contest/a.ts", "src/mytest.ts"] {
@@ -838,8 +980,14 @@ mod tests {
 
     #[test]
     fn parses_ls_entries() {
-        assert_eq!(parse_ls_entry("100644 blob abc123\tsrc/a.ts"), ("src/a.ts".to_owned(), false));
-        assert_eq!(parse_ls_entry("120000 blob abc123\tlink.ts"), ("link.ts".to_owned(), true));
+        assert_eq!(
+            parse_ls_entry("100644 blob abc123\tsrc/a.ts"),
+            ("src/a.ts".to_owned(), false)
+        );
+        assert_eq!(
+            parse_ls_entry("120000 blob abc123\tlink.ts"),
+            ("link.ts".to_owned(), true)
+        );
         assert_eq!(parse_ls_entry("no-tab"), ("no-tab".to_owned(), false));
     }
 
@@ -859,14 +1007,20 @@ mod tests {
     fn maps_function_records() {
         let source = "export function add(a: number, b: number): number {\n  return a + b;\n}\n";
         let declarations = mapped(source, &[]);
-        let function = declarations.iter().find(|declaration| declaration.kind == "FunctionDeclaration").expect("function");
+        let function = declarations
+            .iter()
+            .find(|declaration| declaration.kind == "FunctionDeclaration")
+            .expect("function");
         assert_eq!(function.name, "add");
         assert_eq!(function.line, 1);
         assert_eq!(function.end_line, 3);
         assert_eq!(function.start_offset, 0);
         assert_eq!(function.end_offset, source.len() - 1);
         assert_eq!(function.signature, "export function add(a: number, b: number): number");
-        assert_eq!(function.id, format!("unified:src/a.ts#0:{}:FunctionDeclaration", source.len() - 1));
+        assert_eq!(
+            function.id,
+            format!("unified:src/a.ts#0:{}:FunctionDeclaration", source.len() - 1)
+        );
         assert!(function.body_hash.is_some());
         assert_eq!(function.exports, vec!["export".to_owned()]);
     }
@@ -875,7 +1029,10 @@ mod tests {
     fn reports_utf16_offsets() {
         let source = "// é\nfunction g() {\n}\n";
         let declarations = mapped(source, &[]);
-        let function = declarations.iter().find(|declaration| declaration.name == "g").expect("g");
+        let function = declarations
+            .iter()
+            .find(|declaration| declaration.name == "g")
+            .expect("g");
         assert_eq!(function.line, 2);
         assert_eq!(function.start_offset, 5);
         assert_eq!(source.as_bytes()[6], b'f');
@@ -900,9 +1057,17 @@ mod tests {
         };
         let declarations = mapped(
             source,
-            &[anchor("inside", 2.0, 2.0), anchor("touching", 3.0, 3.0), anchor("outside", 4.0, 5.0), foreign],
+            &[
+                anchor("inside", 2.0, 2.0),
+                anchor("touching", 3.0, 3.0),
+                anchor("outside", 4.0, 5.0),
+                foreign,
+            ],
         );
-        let function = declarations.iter().find(|declaration| declaration.kind == "FunctionDeclaration").expect("function");
+        let function = declarations
+            .iter()
+            .find(|declaration| declaration.kind == "FunctionDeclaration")
+            .expect("function");
         assert_eq!(function.evidence_ids, vec!["inside".to_owned(), "touching".to_owned()]);
     }
 
@@ -956,7 +1121,9 @@ mod tests {
             ],
         )];
         let index = build_index(&unified);
-        let keys = |name: &str, signature: &str| declaration_keys(name, &ts_scan::token_hash(signature), None, "other/b.ts", &[]);
+        let keys = |name: &str, signature: &str| {
+            declaration_keys(name, &ts_scan::token_hash(signature), None, "other/b.ts", &[])
+        };
         let (status, groups) = match_candidate(&keys("foo", "function foo(q)"), &index);
         assert_eq!(status, "ambiguous");
         assert_eq!(groups, vec!["name:foo".to_owned()]);
@@ -965,13 +1132,31 @@ mod tests {
         assert!(groups.is_empty());
         let (status, groups) = match_candidate(&keys("only", "function foo()"), &index);
         assert_eq!(status, "single-candidate");
-        assert_eq!(groups, vec![format!("signature:{}", ts_scan::token_hash("function foo()"))]);
+        assert_eq!(
+            groups,
+            vec![format!("signature:{}", ts_scan::token_hash("function foo()"))]
+        );
     }
 
     #[test]
     fn dedupes_declaration_keys() {
-        let keys = declaration_keys("f", "sig", Some("body"), "src/a.ts", &["\"x\"".to_owned(), "\"x\"".to_owned()]);
-        assert_eq!(keys, vec!["name:f", "signature:sig", "body:body", "path-basename:a.ts", "import-specifier:\"x\""]);
+        let keys = declaration_keys(
+            "f",
+            "sig",
+            Some("body"),
+            "src/a.ts",
+            &["\"x\"".to_owned(), "\"x\"".to_owned()],
+        );
+        assert_eq!(
+            keys,
+            vec![
+                "name:f",
+                "signature:sig",
+                "body:body",
+                "path-basename:a.ts",
+                "import-specifier:\"x\""
+            ]
+        );
     }
 
     #[test]
@@ -994,9 +1179,17 @@ mod tests {
     }
 
     fn git(repo: &Path, args: &[&str]) {
-        let output =
-            std::process::Command::new("git").arg("-C").arg(repo).args(args).output().expect("spawn git");
-        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -1015,7 +1208,10 @@ mod tests {
             let repository = capture(&directory, "unified", "HEAD", &[])?;
             assert_eq!(repository.files.len(), 1);
             assert_eq!(repository.files[0].kind, "runtime");
-            assert!(repository.files[0].declarations.iter().any(|declaration| declaration.kind == "FunctionDeclaration"));
+            assert!(repository.files[0]
+                .declarations
+                .iter()
+                .any(|declaration| declaration.kind == "FunctionDeclaration"));
             assert!(repository.files[0].census_functions >= 1);
             assert_eq!(repository.source_set_sha256.len(), 64);
             assert_eq!(repository.revision, "HEAD");

@@ -64,9 +64,17 @@ impl StagedContent {
         Json::object(vec![
             (
                 "archivesLowToHighPriority".to_owned(),
-                Json::array(self.archives_low_to_high_priority.iter().map(FileIdentity::to_json).collect()),
+                Json::array(
+                    self.archives_low_to_high_priority
+                        .iter()
+                        .map(FileIdentity::to_json)
+                        .collect(),
+                ),
             ),
-            ("entries".to_owned(), Json::array(self.entries.iter().map(ArchiveEntry::to_json).collect())),
+            (
+                "entries".to_owned(),
+                Json::array(self.entries.iter().map(ArchiveEntry::to_json).collect()),
+            ),
             ("mount".to_owned(), Json::string(&self.mount)),
             ("selection".to_owned(), Json::string(&self.selection)),
         ])
@@ -112,8 +120,13 @@ pub fn stage_content(archives: &[String], directory: &str, maps: &[String]) -> R
                 return Err(ToolsError::invalid(format!("Invalid PAK entry: {name}")));
             }
             let data = &bytes[entry_offset..entry_offset + entry_size];
-            let entry =
-                ArchiveEntry { archive: archive.clone(), name: name.clone(), offset: entry_offset as u64, size: entry_size as u64, sha256: hash_bytes(data) };
+            let entry = ArchiveEntry {
+                archive: archive.clone(),
+                name: name.clone(),
+                offset: entry_offset as u64,
+                size: entry_size as u64,
+                sha256: hash_bytes(data),
+            };
             if let Some(prior) = selected.iter_mut().find(|entry| entry.name == name) {
                 *prior = entry;
             } else {
@@ -172,8 +185,7 @@ mod tests {
         fsutil::write_bytes(&pak, &bytes).expect("write pak");
         let pak_text = pak.to_string_lossy().into_owned();
         let mount = directory.join("mount").to_string_lossy().into_owned();
-        let staged =
-            stage_content(&[pak_text.clone()], &mount, &["maps/q2dm1.bsp".to_owned()]).expect("stage");
+        let staged = stage_content(&[pak_text.clone()], &mount, &["maps/q2dm1.bsp".to_owned()]).expect("stage");
         assert_eq!(staged.entries.len(), 1);
         assert_eq!(staged.entries[0].name, "maps/q2dm1.bsp");
         assert_eq!(staged.entries[0].archive, pak_text);
@@ -197,8 +209,12 @@ mod tests {
         let pak = directory.join("pak0.pak");
         let bytes = write_pak(&[("maps/other.bsp", b"other")]);
         fsutil::write_bytes(&pak, &bytes).expect("write pak");
-        let error = stage_content(&[pak.to_string_lossy().into_owned()], &mount, &["maps/q2dm1.bsp".to_owned()])
-            .expect_err("missing map");
+        let error = stage_content(
+            &[pak.to_string_lossy().into_owned()],
+            &mount,
+            &["maps/q2dm1.bsp".to_owned()],
+        )
+        .expect_err("missing map");
         assert!(error.to_string().starts_with("Missing selected content"), "{error}");
         fsutil::remove_forced(&directory);
     }

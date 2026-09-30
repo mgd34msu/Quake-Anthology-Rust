@@ -15,7 +15,12 @@ use crate::json::Json;
 pub fn camera_tool(args: &[String]) -> Result<(), ToolsError> {
     let (command, input, output, interval) = match args {
         [command, input, output] => (command.as_str(), input.as_str(), output.as_str(), None),
-        [command, input, output, interval] => (command.as_str(), input.as_str(), output.as_str(), Some(interval.as_str())),
+        [command, input, output, interval] => (
+            command.as_str(),
+            input.as_str(),
+            output.as_str(),
+            Some(interval.as_str()),
+        ),
         _ => return Err(usage()),
     };
     if (command != "normalize" && command != "sample") || args.len() > 4 {
@@ -43,12 +48,17 @@ pub fn camera_tool(args: &[String]) -> Result<(), ToolsError> {
         }
         time += step;
     }
-    write_bytes(Path::new(output), format!("{}\n", Json::array(rows).render_pretty()).as_bytes())?;
+    write_bytes(
+        Path::new(output),
+        format!("{}\n", Json::array(rows).render_pretty()).as_bytes(),
+    )?;
     Ok(())
 }
 
 fn usage() -> ToolsError {
-    ToolsError::invalid("Usage: source-camera normalize <input.camera> <output.camera> | sample <input.camera> <output.json> [step-ms]")
+    ToolsError::invalid(
+        "Usage: source-camera normalize <input.camera> <output.camera> | sample <input.camera> <output.json> [step-ms]",
+    )
 }
 
 fn vec_json(x: f32, y: f32, z: f32) -> Json {
@@ -62,8 +72,14 @@ fn vec_json(x: f32, y: f32, z: f32) -> Json {
 fn sample_row(milliseconds: f64, sample: &CameraSample) -> Json {
     Json::object(vec![
         ("milliseconds".to_owned(), Json::float(milliseconds)),
-        ("origin".to_owned(), vec_json(sample.origin.x, sample.origin.y, sample.origin.z)),
-        ("direction".to_owned(), vec_json(sample.direction.x, sample.direction.y, sample.direction.z)),
+        (
+            "origin".to_owned(),
+            vec_json(sample.origin.x, sample.origin.y, sample.origin.z),
+        ),
+        (
+            "direction".to_owned(),
+            vec_json(sample.direction.x, sample.direction.y, sample.direction.z),
+        ),
         ("fov".to_owned(), Json::float(f64::from(sample.fov))),
         (
             "events".to_owned(),

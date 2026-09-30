@@ -136,7 +136,11 @@ pub fn single_clock(command_time: f64, server_time: f64) -> ClockOutput {
     } else if msec > 200.0 {
         msec = 200.0;
     }
-    ClockOutput { command_time: server_time, msec, frametime: fround(msec * 0.001) }
+    ClockOutput {
+        command_time: server_time,
+        msec,
+        frametime: fround(msec * 0.001),
+    }
 }
 
 /// Move subdivision mode.
@@ -241,7 +245,10 @@ impl MoveOutput {
             ("commandTime".to_owned(), Json::float(self.command_time)),
             ("framecount".to_owned(), Json::float(self.framecount)),
             ("upmove".to_owned(), Json::float(self.upmove)),
-            ("steps".to_owned(), Json::array(self.steps.iter().map(MoveStep::to_json).collect())),
+            (
+                "steps".to_owned(),
+                Json::array(self.steps.iter().map(MoveStep::to_json).collect()),
+            ),
         ])
     }
 }
@@ -258,7 +265,12 @@ pub fn subdivide_move(input: &MoveInput) -> Result<MoveOutput, ToolsError> {
     let mut upmove = input.upmove;
     let mut steps = Vec::new();
     if input.server_time < command_time {
-        return Ok(MoveOutput { command_time, framecount, upmove, steps });
+        return Ok(MoveOutput {
+            command_time,
+            framecount,
+            upmove,
+            steps,
+        });
     }
     if input.server_time > command_time + 1000.0 {
         command_time = input.server_time - 1000.0;
@@ -275,12 +287,21 @@ pub fn subdivide_move(input: &MoveInput) -> Result<MoveOutput, ToolsError> {
         }
         let single = single_clock(command_time, command_time + msec);
         command_time = single.command_time;
-        steps.push(MoveStep { command_time, msec: single.msec, upmove });
+        steps.push(MoveStep {
+            command_time,
+            msec: single.msec,
+            upmove,
+        });
         if input.jump_held {
             upmove = 20.0;
         }
     }
-    Ok(MoveOutput { command_time, framecount, upmove, steps })
+    Ok(MoveOutput {
+        command_time,
+        framecount,
+        upmove,
+        steps,
+    })
 }
 
 /// Timer-drop input.
@@ -345,7 +366,12 @@ pub fn drop_timers(input: &TimerInput) -> TimerOutput {
     if torso_timer > 0.0 {
         torso_timer = js_max(0.0, torso_timer - input.msec);
     }
-    TimerOutput { pm_time, flags, legs_timer, torso_timer }
+    TimerOutput {
+        pm_time,
+        flags,
+        legs_timer,
+        torso_timer,
+    }
 }
 
 /// Modeled weapon.
@@ -492,7 +518,10 @@ impl WeaponInput {
             ("torsoAnim".to_owned(), Json::float(self.torso_anim)),
             ("ammo".to_owned(), self.ammo.to_json()),
             ("eventSequence".to_owned(), Json::float(self.event_sequence)),
-            ("steps".to_owned(), Json::array(self.steps.iter().map(WeaponStep::to_json).collect())),
+            (
+                "steps".to_owned(),
+                Json::array(self.steps.iter().map(WeaponStep::to_json).collect()),
+            ),
         ])
     }
 }
@@ -573,10 +602,22 @@ impl WeaponSequence {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("states".to_owned(), Json::array(self.states.iter().map(WeaponObservation::to_json).collect())),
-            ("events".to_owned(), Json::array(self.events.iter().map(WeaponEvent::to_json).collect())),
-            ("ring".to_owned(), Json::array(self.ring.iter().map(|slot| Json::float(*slot)).collect())),
-            ("trace".to_owned(), Json::array(self.trace.iter().map(Json::string).collect())),
+            (
+                "states".to_owned(),
+                Json::array(self.states.iter().map(WeaponObservation::to_json).collect()),
+            ),
+            (
+                "events".to_owned(),
+                Json::array(self.events.iter().map(WeaponEvent::to_json).collect()),
+            ),
+            (
+                "ring".to_owned(),
+                Json::array(self.ring.iter().map(|slot| Json::float(*slot)).collect()),
+            ),
+            (
+                "trace".to_owned(),
+                Json::array(self.trace.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -600,7 +641,14 @@ pub fn weapon_sequence(input: &WeaponInput) -> WeaponSequence {
                    torso_anim: f64,
                    ammo: Ammo,
                    event_sequence: f64| {
-        WeaponObservation { weapon, weapon_state, weapon_time, torso_anim, ammo, event_sequence }
+        WeaponObservation {
+            weapon,
+            weapon_state,
+            weapon_time,
+            torso_anim,
+            ammo,
+            event_sequence,
+        }
     };
     for (index, step) in input.steps.iter().enumerate() {
         trace.push(format!("step:{index}"));
@@ -626,7 +674,14 @@ pub fn weapon_sequence(input: &WeaponInput) -> WeaponSequence {
             }
         }
         if weapon_time > 0.0 {
-            states.push(observe(weapon, weapon_state, weapon_time, torso_anim, ammo, event_sequence));
+            states.push(observe(
+                weapon,
+                weapon_state,
+                weapon_time,
+                torso_anim,
+                ammo,
+                event_sequence,
+            ));
             continue;
         }
         if weapon_state == WeaponState::Dropping {
@@ -684,9 +739,21 @@ pub fn weapon_sequence(input: &WeaponInput) -> WeaponSequence {
                 weapon_time += add_time;
             }
         }
-        states.push(observe(weapon, weapon_state, weapon_time, torso_anim, ammo, event_sequence));
+        states.push(observe(
+            weapon,
+            weapon_state,
+            weapon_time,
+            torso_anim,
+            ammo,
+            event_sequence,
+        ));
     }
-    WeaponSequence { states, events, ring, trace }
+    WeaponSequence {
+        states,
+        events,
+        ring,
+        trace,
+    }
 }
 
 /// Prior VM context.
@@ -731,7 +798,10 @@ impl ConnectInput {
             ("configuredPassword".to_owned(), Json::string(&self.configured_password)),
             ("providedPassword".to_owned(), Json::string(&self.provided_password)),
             ("existingBotFlag".to_owned(), Json::boolean(self.existing_bot_flag)),
-            ("priorVm".to_owned(), self.prior_vm.map_or(Json::Null, |vm| Json::string(vm.as_str()))),
+            (
+                "priorVm".to_owned(),
+                self.prior_vm.map_or(Json::Null, |vm| Json::string(vm.as_str())),
+            ),
         ])
     }
 }
@@ -793,10 +863,16 @@ impl ConnectOutput {
     pub fn to_json(&self) -> Json {
         Json::object(vec![
             ("returnValue".to_owned(), Json::float(self.return_value)),
-            ("denial".to_owned(), self.denial.as_ref().map_or(Json::Null, Json::string)),
+            (
+                "denial".to_owned(),
+                self.denial.as_ref().map_or(Json::Null, Json::string),
+            ),
             ("serverState".to_owned(), Json::string(self.server_state.as_str())),
             ("currentVm".to_owned(), Json::string(self.current_vm.as_str())),
-            ("trace".to_owned(), Json::array(self.trace.iter().map(Json::string).collect())),
+            (
+                "trace".to_owned(),
+                Json::array(self.trace.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -851,13 +927,27 @@ pub fn client_connect(input: &ConnectInput) -> ConnectOutput {
         trace.push("server:return".to_owned());
     } else {
         trace.extend(
-            ["SV_UserinfoChanged", "NET_OutOfBandPrint:connectResponse", "server:CS_CONNECTED"]
-                .into_iter()
-                .map(str::to_owned),
+            [
+                "SV_UserinfoChanged",
+                "NET_OutOfBandPrint:connectResponse",
+                "server:CS_CONNECTED",
+            ]
+            .into_iter()
+            .map(str::to_owned),
         );
     }
-    let server_state = if denial.is_none() { ServerState::Connected } else { ServerState::Free };
-    ConnectOutput { return_value, denial, server_state, current_vm, trace }
+    let server_state = if denial.is_none() {
+        ServerState::Connected
+    } else {
+        ServerState::Free
+    };
+    ConnectOutput {
+        return_value,
+        denial,
+        server_state,
+        current_vm,
+        trace,
+    }
 }
 
 /// Nested-VM output.
@@ -877,8 +967,14 @@ impl NestedOutput {
     pub fn to_json(&self) -> Json {
         Json::object(vec![
             ("result".to_owned(), Json::float(self.result)),
-            ("currentVm".to_owned(), self.current_vm.as_ref().map_or(Json::Null, Json::string)),
-            ("trace".to_owned(), Json::array(self.trace.iter().map(Json::string).collect())),
+            (
+                "currentVm".to_owned(),
+                self.current_vm.as_ref().map_or(Json::Null, Json::string),
+            ),
+            (
+                "trace".to_owned(),
+                Json::array(self.trace.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -894,21 +990,37 @@ pub fn nested_vm(prior_vm: Option<&str>) -> NestedOutput {
     ) -> f64 {
         let old_vm = current_vm.clone();
         *current_vm = Some(vm.to_owned());
-        trace.push(format!("enter:{vm}:current:{}", current_vm.as_deref().unwrap_or("null")));
+        trace.push(format!(
+            "enter:{vm}:current:{}",
+            current_vm.as_deref().unwrap_or("null")
+        ));
         let result = entry(current_vm, trace);
         if old_vm.is_some() {
             *current_vm = old_vm;
         }
-        trace.push(format!("return:{vm}:{result}:current:{}", current_vm.as_deref().unwrap_or("null")));
+        trace.push(format!(
+            "return:{vm}:{result}:current:{}",
+            current_vm.as_deref().unwrap_or("null")
+        ));
         result
     }
     let mut current_vm = prior_vm.map(str::to_owned);
     let mut trace = Vec::new();
     let result = call("game", &mut current_vm, &mut trace, &mut |current_vm, trace| {
-        trace.push(format!("host:before:current:{}", current_vm.as_deref().unwrap_or("null")));
+        trace.push(format!(
+            "host:before:current:{}",
+            current_vm.as_deref().unwrap_or("null")
+        ));
         let nested = call("cgame", current_vm, trace, &mut |_, _| 7.0);
-        trace.push(format!("host:after:{nested}:current:{}", current_vm.as_deref().unwrap_or("null")));
+        trace.push(format!(
+            "host:after:{nested}:current:{}",
+            current_vm.as_deref().unwrap_or("null")
+        ));
         nested + 1.0
     });
-    NestedOutput { result, current_vm, trace }
+    NestedOutput {
+        result,
+        current_vm,
+        trace,
+    }
 }

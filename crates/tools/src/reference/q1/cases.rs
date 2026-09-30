@@ -5,7 +5,9 @@
 //! like the donor (`storedFloat`).
 
 use crate::json::Json;
-use crate::reference::q1::oracle::{CallbackEntry, CallbackGlobals, Q1Input, Q1Output, ScalarOperation, ScalarOperator, TargetCallback, ThinkEffect};
+use crate::reference::q1::oracle::{
+    CallbackEntry, CallbackGlobals, Q1Input, Q1Output, ScalarOperation, ScalarOperator, TargetCallback, ThinkEffect,
+};
 
 /// A pinned oracle case.
 #[derive(Debug, Clone)]
@@ -28,7 +30,10 @@ impl Q1Case {
     pub fn to_json(&self) -> Json {
         Json::object(vec![
             ("id".to_owned(), Json::string(self.id)),
-            ("sources".to_owned(), Json::array(self.sources.iter().map(|source| Json::string(*source)).collect())),
+            (
+                "sources".to_owned(),
+                Json::array(self.sources.iter().map(|source| Json::string(*source)).collect()),
+            ),
             ("derivation".to_owned(), Json::string(self.derivation)),
             ("input".to_owned(), self.input.to_json()),
             ("expected".to_owned(), self.expected.to_json()),
@@ -36,14 +41,29 @@ impl Q1Case {
     }
 }
 
-const THINK_SOURCES: [&str; 4] = ["quake-sv-phys", "quake-prog-fields", "quake-server-clock", "quake-host-clock"];
+const THINK_SOURCES: [&str; 4] = [
+    "quake-sv-phys",
+    "quake-prog-fields",
+    "quake-server-clock",
+    "quake-host-clock",
+];
 const SCALAR_SOURCES: [&str; 2] = ["quake-pr-exec", "quake-eval-type"];
 const MG1_SOURCES: [&str; 2] = ["mg1-hub", "mg1-sigils"];
 const MG3_SOURCES: [&str; 3] = ["mg3-counter", "mg3-defs", "mg3-subs"];
-const REMOVE_SOURCES: [&str; 6] =
-    ["quake-sv-phys", "quake-prog-fields", "quake-server-clock", "quake-host-clock", "quake-remove-builtin", "quake-free-edict"];
+const REMOVE_SOURCES: [&str; 6] = [
+    "quake-sv-phys",
+    "quake-prog-fields",
+    "quake-server-clock",
+    "quake-host-clock",
+    "quake-remove-builtin",
+    "quake-free-edict",
+];
 
-const INITIAL_GLOBALS: CallbackGlobals = CallbackGlobals { time: 7.0, self_entity: 99, other_entity: 98 };
+const INITIAL_GLOBALS: CallbackGlobals = CallbackGlobals {
+    time: 7.0,
+    self_entity: 99,
+    other_entity: 98,
+};
 
 fn op(operator: ScalarOperator, operand: f64) -> ScalarOperation {
     ScalarOperation { operator, operand }
@@ -57,15 +77,30 @@ fn think_output(
     globals: CallbackGlobals,
     entry: Option<CallbackEntry>,
 ) -> Q1Output {
-    Q1Output::RunThink { ran, continue_physics, next_think, free, globals, callback_entry: entry }
+    Q1Output::RunThink {
+        ran,
+        continue_physics,
+        next_think,
+        free,
+        globals,
+        callback_entry: entry,
+    }
 }
 
 fn entry(time: f64, self_entity: i64) -> CallbackEntry {
-    CallbackEntry { time, self_entity, other_entity: 0 }
+    CallbackEntry {
+        time,
+        self_entity,
+        other_entity: 0,
+    }
 }
 
 fn entry_globals(time: f64, self_entity: i64) -> CallbackGlobals {
-    CallbackGlobals { time, self_entity, other_entity: 0 }
+    CallbackGlobals {
+        time,
+        self_entity,
+        other_entity: 0,
+    }
 }
 
 /// Pinned Q1 oracle cases.

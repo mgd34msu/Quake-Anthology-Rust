@@ -155,11 +155,18 @@ fn fields(value: &[(String, Json)], expected: &[&str]) -> Result<(), ToolsError>
 }
 
 fn field<'a>(value: &'a [(String, Json)], key: &str) -> &'a Json {
-    value.iter().find(|(present, _)| present == key).map(|(_, found)| found).expect("checked field")
+    value
+        .iter()
+        .find(|(present, _)| present == key)
+        .map(|(_, found)| found)
+        .expect("checked field")
 }
 
 fn kind_of(value: &[(String, Json)]) -> Option<&str> {
-    value.iter().find(|(present, _)| present == "kind").and_then(|(_, found)| found.as_str())
+    value
+        .iter()
+        .find(|(present, _)| present == "kind")
+        .and_then(|(_, found)| found.as_str())
 }
 
 fn number(value: &Json) -> Result<f64, ToolsError> {
@@ -280,14 +287,20 @@ pub fn parse_q2_input(value: &Json) -> Result<Q2Input, ToolsError> {
         Some("save-fields") => {
             fields(item, &["kind", "struct", "fields"])?;
             let raw = object(field(item, "fields"))?;
-            Ok(Q2Input::SaveFields { save_struct: text(field(item, "struct"))?.to_owned(), fields: raw.to_vec() })
+            Ok(Q2Input::SaveFields {
+                save_struct: text(field(item, "struct"))?.to_owned(),
+                fields: raw.to_vec(),
+            })
         }
         Some("flechette-default") => {
             fields(item, &["kind"])?;
             Ok(Q2Input::FlechetteDefault)
         }
         Some("q64-config") => {
-            fields(item, &["kind", "isN64", "deathmatch", "initialN64Physics", "airacceleration"])?;
+            fields(
+                item,
+                &["kind", "isN64", "deathmatch", "initialN64Physics", "airacceleration"],
+            )?;
             Ok(Q2Input::Q64Config {
                 is_n64: boolean(field(item, "isN64"))?,
                 deathmatch: boolean(field(item, "deathmatch"))?,
@@ -325,13 +338,21 @@ fn event(name: &str, pairs: Vec<(&str, Json)>) -> Json {
 pub fn think(input: &ThinkInput) -> Json {
     let classic = matches!(input.family, ThinkFamily::Classic);
     let now = if classic { fround(input.now) } else { input.now };
-    let mut nextthink = if classic { fround(input.nextthink) } else { input.nextthink };
+    let mut nextthink = if classic {
+        fround(input.nextthink)
+    } else {
+        input.nextthink
+    };
     let mut trace = Vec::new();
     let deadline = if classic { now + 0.001 } else { now };
     let may_continue_physics = nextthink <= 0.0 || nextthink > deadline;
     if !may_continue_physics {
         trace.push(event("think.enter", vec![("nextthink", Json::float(0.0))]));
-        nextthink = if classic { fround(input.reschedule) } else { input.reschedule };
+        nextthink = if classic {
+            fround(input.reschedule)
+        } else {
+            input.reschedule
+        };
         trace.push(event("think.return", vec![("nextthink", Json::float(nextthink))]));
     }
     Json::object(vec![
@@ -343,8 +364,10 @@ pub fn think(input: &ThinkInput) -> Json {
 }
 
 fn frame_order(delete_later_actor: bool, spawn_actor: bool) -> Json {
-    let mut trace: Vec<Json> =
-        ["level.framenum++", "level.time=frame*0.1", "AI_SetSightClient"].into_iter().map(Json::string).collect();
+    let mut trace: Vec<Json> = ["level.framenum++", "level.time=frame*0.1", "AI_SetSightClient"]
+        .into_iter()
+        .map(Json::string)
+        .collect();
     let mut actors = vec![0, 1, 2, 3];
     let mut active: HashSet<i64> = actors.iter().copied().collect();
     let mut index = 0;
@@ -396,7 +419,10 @@ fn pickup(inventory: f64, capacity: f64, quantity: f64, targets_used: bool) -> J
         ));
         true
     };
-    trace.push(event("Touch_Item.observes-return", vec![("taken", Json::boolean(taken))]));
+    trace.push(event(
+        "Touch_Item.observes-return",
+        vec![("taken", Json::boolean(taken))],
+    ));
     if taken {
         trace.push(Json::string("pickup.feedback"));
     }
@@ -404,7 +430,10 @@ fn pickup(inventory: f64, capacity: f64, quantity: f64, targets_used: bool) -> J
     if !used {
         trace.push(event(
             "G_UseTargets.enter",
-            vec![("inventory", Json::float(current)), ("targetsUsed", Json::boolean(targets_used))],
+            vec![
+                ("inventory", Json::float(current)),
+                ("targetsUsed", Json::boolean(targets_used)),
+            ],
         ));
         trace.push(Json::string("G_UseTargets.return"));
         used = true;
@@ -432,14 +461,22 @@ fn armor(damage: f64, inventory: f64, armor: ArmorKind, energy: bool, bypass: bo
         ArmorKind::Body => (0.8, 0.6),
     };
     let protection = fround(if energy { energy_protection } else { normal });
-    let absorbed = if bypass { 0.0 } else { js_min(fround(protection * damage).ceil(), inventory) };
+    let absorbed = if bypass {
+        0.0
+    } else {
+        js_min(fround(protection * damage).ceil(), inventory)
+    };
     Json::object(vec![
         ("absorbed".to_owned(), Json::float(absorbed)),
         ("remainingArmor".to_owned(), Json::float(inventory - absorbed)),
         ("remainingDamage".to_owned(), Json::float(damage - absorbed)),
         (
             "effect".to_owned(),
-            if absorbed == 0.0 { Json::Null } else { Json::string("SpawnDamage") },
+            if absorbed == 0.0 {
+                Json::Null
+            } else {
+                Json::string("SpawnDamage")
+            },
         ),
     ])
 }
@@ -448,7 +485,9 @@ fn armor(damage: f64, inventory: f64, armor: ArmorKind, energy: bool, bypass: bo
 /// `/FIELD_AUTO\(\s*([^()]+?)\s*\)/g` over the `DECLARE_SAVE_STRUCT` span).
 pub fn declared_save_fields(text: &str, save_struct: &str) -> Result<Vec<String>, ToolsError> {
     let marker = format!("#define DECLARE_SAVE_STRUCT {save_struct}\n");
-    let start = text.find(&marker).ok_or_else(|| ToolsError::invalid(format!("Q2 save structure missing: {save_struct}")))?;
+    let start = text
+        .find(&marker)
+        .ok_or_else(|| ToolsError::invalid(format!("Q2 save structure missing: {save_struct}")))?;
     let end = text[start..]
         .find("#undef DECLARE_SAVE_STRUCT")
         .map(|offset| start + offset)
@@ -479,7 +518,11 @@ pub fn declared_save_fields(text: &str, save_struct: &str) -> Result<Vec<String>
     Ok(names)
 }
 
-fn save_fields(save_struct: &str, fields: &[(String, Json)], sources: &HashMap<String, String>) -> Result<Json, ToolsError> {
+fn save_fields(
+    save_struct: &str,
+    fields: &[(String, Json)],
+    sources: &HashMap<String, String>,
+) -> Result<Json, ToolsError> {
     let text = source_text(sources, "rereleaseSave")?;
     let selected: HashSet<String> = declared_save_fields(text, save_struct)?.into_iter().collect();
     let mut retained = Vec::new();
@@ -505,11 +548,17 @@ fn word_char(byte: u8) -> bool {
 /// `/\bAMMO_[A-Z]+\b/g` over the enum body).
 fn ammo_names(shared: &str) -> Result<Vec<String>, ToolsError> {
     let marker = "enum ammo_t : uint8_t";
-    let start = shared.find(marker).ok_or_else(|| ToolsError::invalid("Q2 ammo_t definition missing"))?;
+    let start = shared
+        .find(marker)
+        .ok_or_else(|| ToolsError::invalid("Q2 ammo_t definition missing"))?;
     let after = &shared[start + marker.len()..];
-    let open = after.find('{').ok_or_else(|| ToolsError::invalid("Q2 ammo_t definition missing"))?;
+    let open = after
+        .find('{')
+        .ok_or_else(|| ToolsError::invalid("Q2 ammo_t definition missing"))?;
     let body_start = start + marker.len() + open + 1;
-    let close = shared[body_start..].find('}').ok_or_else(|| ToolsError::invalid("Q2 ammo_t definition missing"))?;
+    let close = shared[body_start..]
+        .find('}')
+        .ok_or_else(|| ToolsError::invalid("Q2 ammo_t definition missing"))?;
     let body = &shared[body_start..body_start + close];
     let bytes = body.as_bytes();
     let mut names = Vec::new();
@@ -542,20 +591,18 @@ fn flechette_default(sources: &HashMap<String, String>) -> Result<Json, ToolsErr
     let index = names.iter().position(|name| name == "AMMO_FLECHETTES");
     let count = names.iter().position(|name| name == "AMMO_MAX");
     let source = source_text(sources, "rereleaseClient")?;
-    let assignment = source
-        .find("max_ammo[AMMO_FLECHETTES] = ")
-        .and_then(|found| {
-            let digits: String = source[found + "max_ammo[AMMO_FLECHETTES] = ".len()..]
-                .chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .collect();
-            let after = &source[found + "max_ammo[AMMO_FLECHETTES] = ".len() + digits.len()..];
-            if !digits.is_empty() && after.starts_with(';') {
-                digits.parse::<f64>().ok()
-            } else {
-                None
-            }
-        });
+    let assignment = source.find("max_ammo[AMMO_FLECHETTES] = ").and_then(|found| {
+        let digits: String = source[found + "max_ammo[AMMO_FLECHETTES] = ".len()..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect();
+        let after = &source[found + "max_ammo[AMMO_FLECHETTES] = ".len() + digits.len()..];
+        if !digits.is_empty() && after.starts_with(';') {
+            digits.parse::<f64>().ok()
+        } else {
+            None
+        }
+    });
     match (index, count, assignment) {
         (Some(index), Some(count), Some(assignment)) => Ok(Json::object(vec![
             ("arrayIndex".to_owned(), Json::uint(index as u64)),
@@ -573,17 +620,29 @@ fn q64_config(is_n64: bool, deathmatch: bool, initial_n64_physics: bool, airacce
     if is_n64 && !deathmatch {
         trace.push(event(
             "configstring",
-            vec![("name", Json::string("CONFIG_N64_PHYSICS")), ("value", Json::string("1"))],
+            vec![
+                ("name", Json::string("CONFIG_N64_PHYSICS")),
+                ("value", Json::string("1")),
+            ],
         ));
         server_n64_physics = true;
-        trace.push(event("server.pm_config.n64_physics", vec![("value", Json::boolean(true))]));
+        trace.push(event(
+            "server.pm_config.n64_physics",
+            vec![("value", Json::boolean(true))],
+        ));
     }
     trace.push(Json::string("G_InitStatusbar"));
     trace.push(event(
         "configstring",
-        vec![("name", Json::string("CS_AIRACCEL")), ("value", Json::string(render_number(airacceleration)))]),
-    );
-    trace.push(event("server.pm_config.airaccel", vec![("value", Json::float(airacceleration))]));
+        vec![
+            ("name", Json::string("CS_AIRACCEL")),
+            ("value", Json::string(render_number(airacceleration))),
+        ],
+    ));
+    trace.push(event(
+        "server.pm_config.airaccel",
+        vec![("value", Json::float(airacceleration))],
+    ));
     Json::object(vec![
         ("serverN64Physics".to_owned(), Json::boolean(server_n64_physics)),
         ("serverAiracceleration".to_owned(), Json::float(airacceleration)),
@@ -597,7 +656,10 @@ pub fn command_predicates(input: &CommandPredicatesInput) -> Json {
     let buttons = to_int32(input.buttons);
     Json::object(vec![
         ("classicHoldingJump".to_owned(), Json::boolean(input.upmove >= 10.0)),
-        ("classicGroundedDuckBranch".to_owned(), Json::boolean(input.upmove < 0.0)),
+        (
+            "classicGroundedDuckBranch".to_owned(),
+            Json::boolean(input.upmove < 0.0),
+        ),
         ("rereleaseHoldingJump".to_owned(), Json::boolean(buttons & 8 != 0)),
         (
             "rereleaseGroundedDuckBranch".to_owned(),
@@ -609,7 +671,11 @@ pub fn command_predicates(input: &CommandPredicatesInput) -> Json {
 /// Evaluate an oracle input document against verified sources.
 pub fn evaluate(input: &Json, sources: &HashMap<String, String>) -> Result<Json, ToolsError> {
     match parse_q2_input(input)? {
-        Q2Input::Clock { classic_frames, rerelease_step_ms, rerelease_frames } => {
+        Q2Input::Clock {
+            classic_frames,
+            rerelease_step_ms,
+            rerelease_frames,
+        } => {
             let mut rerelease_times_ms = Vec::new();
             let mut now = 0.0;
             let mut frame = 0.0;
@@ -621,38 +687,68 @@ pub fn evaluate(input: &Json, sources: &HashMap<String, String>) -> Result<Json,
             Ok(Json::object(vec![
                 (
                     "classicTimesSeconds".to_owned(),
-                    Json::array(classic_frames.iter().map(|frame| Json::float(classic_time(*frame))).collect()),
+                    Json::array(
+                        classic_frames
+                            .iter()
+                            .map(|frame| Json::float(classic_time(*frame)))
+                            .collect(),
+                    ),
                 ),
                 ("rereleaseTimesMs".to_owned(), Json::array(rerelease_times_ms)),
             ]))
         }
         Q2Input::Think(input) => Ok(think(&input)),
-        Q2Input::FrameOrder { delete_later_actor, spawn_actor } => Ok(frame_order(delete_later_actor, spawn_actor)),
-        Q2Input::Pickup { inventory, capacity, quantity, targets_used } => {
-            Ok(pickup(inventory, capacity, quantity, targets_used))
-        }
-        Q2Input::Armor { damage, inventory, armor: kind, energy, bypass } => {
-            Ok(armor(damage, inventory, kind, energy, bypass))
-        }
-        Q2Input::CrossUnit { flags, trigger, required } => {
+        Q2Input::FrameOrder {
+            delete_later_actor,
+            spawn_actor,
+        } => Ok(frame_order(delete_later_actor, spawn_actor)),
+        Q2Input::Pickup {
+            inventory,
+            capacity,
+            quantity,
+            targets_used,
+        } => Ok(pickup(inventory, capacity, quantity, targets_used)),
+        Q2Input::Armor {
+            damage,
+            inventory,
+            armor: kind,
+            energy,
+            bypass,
+        } => Ok(armor(damage, inventory, kind, energy, bypass)),
+        Q2Input::CrossUnit {
+            flags,
+            trigger,
+            required,
+        } => {
             let combined = to_uint32(flags) | to_uint32(trigger);
             let satisfied = required == f64::from(combined & 0xffff00ff & to_uint32(required));
             let steps: &[&str] = if satisfied {
-                &["flags|=trigger", "G_FreeEdict(trigger)", "G_UseTargets(target,target)", "G_FreeEdict(target)"]
+                &[
+                    "flags|=trigger",
+                    "G_FreeEdict(trigger)",
+                    "G_UseTargets(target,target)",
+                    "G_FreeEdict(target)",
+                ]
             } else {
                 &["flags|=trigger", "G_FreeEdict(trigger)"]
             };
             Ok(Json::object(vec![
                 ("flags".to_owned(), Json::uint(u64::from(combined))),
                 ("satisfied".to_owned(), Json::boolean(satisfied)),
-                ("trace".to_owned(), Json::array(steps.iter().map(|step| Json::string(*step)).collect())),
+                (
+                    "trace".to_owned(),
+                    Json::array(steps.iter().map(|step| Json::string(*step)).collect()),
+                ),
             ]))
         }
         Q2Input::SaveFields { save_struct, fields } => save_fields(&save_struct, &fields, sources),
         Q2Input::FlechetteDefault => flechette_default(sources),
-        Q2Input::Q64Config { is_n64, deathmatch, initial_n64_physics, airacceleration } => {
-            Ok(q64_config(is_n64, deathmatch, initial_n64_physics, airacceleration))
-        }
+        Q2Input::Q64Config {
+            is_n64,
+            deathmatch,
+            initial_n64_physics,
+            airacceleration,
+        } => Ok(q64_config(is_n64, deathmatch, initial_n64_physics, airacceleration)),
         Q2Input::CommandPredicates(input) => Ok(command_predicates(&input)),
     }
 }
@@ -671,7 +767,9 @@ mod tests {
     use super::*;
 
     fn verified_text() -> HashMap<String, String> {
-        load_verified_sources(&quake_typescript_root()).expect("verified sources").text
+        load_verified_sources(&quake_typescript_root())
+            .expect("verified sources")
+            .text
     }
 
     #[test]
@@ -686,7 +784,10 @@ mod tests {
             for location in &reference.sources {
                 assert!(location.first_line >= 1, "{}", reference.id);
                 assert!(location.last_line >= location.first_line, "{}", reference.id);
-                let line_count = source_text(&sources, location.source.as_str()).expect("source").split('\n').count();
+                let line_count = source_text(&sources, location.source.as_str())
+                    .expect("source")
+                    .split('\n')
+                    .count();
                 assert!(u64::from(location.last_line) <= line_count as u64, "{}", reference.id);
             }
         }
@@ -711,16 +812,29 @@ mod tests {
         let below = f64::from(f32::from_bits((1.001_f32).to_bits() - 1));
         assert!(below < 1.0 + 0.001);
         assert!(above > 1.0 + 0.001);
-        let fired = think(&ThinkInput { family: ThinkFamily::Classic, now: 1.0, nextthink: below, reschedule: 2.0 });
+        let fired = think(&ThinkInput {
+            family: ThinkFamily::Classic,
+            now: 1.0,
+            nextthink: below,
+            reschedule: 2.0,
+        });
         let expected = parse_json(
             r#"{"now": 1, "nextthink": 2, "mayContinuePhysics": false, "trace": [{"event": "think.enter", "nextthink": 0}, {"event": "think.return", "nextthink": 2}]}"#,
         )
         .unwrap();
         assert!(deep_strict_equal(&fired, &expected), "{}", fired.render());
-        let pending = think(&ThinkInput { family: ThinkFamily::Classic, now: 1.0, nextthink: above, reschedule: 2.0 });
+        let pending = think(&ThinkInput {
+            family: ThinkFamily::Classic,
+            now: 1.0,
+            nextthink: above,
+            reschedule: 2.0,
+        });
         assert_eq!(pending.get("mayContinuePhysics").and_then(Json::as_bool), Some(true));
         assert_eq!(pending.get("nextthink").and_then(Json::as_f64), Some(above));
-        assert_eq!(pending.get("trace").and_then(Json::as_array).map(<[Json]>::len), Some(0));
+        assert_eq!(
+            pending.get("trace").and_then(Json::as_array).map(<[Json]>::len),
+            Some(0)
+        );
     }
 
     #[test]
@@ -741,7 +855,11 @@ mod tests {
                 if absorbed == 0.0 { "null" } else { "\"SpawnDamage\"" },
             ))
             .unwrap();
-            assert!(deep_strict_equal(&actual, &expected), "damage {damage}: {}", actual.render());
+            assert!(
+                deep_strict_equal(&actual, &expected),
+                "damage {damage}: {}",
+                actual.render()
+            );
         }
         assert_eq!((stored * 10.0).ceil(), 4.0);
     }
@@ -751,13 +869,21 @@ mod tests {
         for buttons in 0..256 {
             let jump_bit = buttons / 8 % 2 == 1;
             let crouch_bit = buttons / 16 % 2 == 1;
-            let up = command_predicates(&CommandPredicatesInput { upmove: 10.0, buttons: f64::from(buttons), n64_physics: false });
+            let up = command_predicates(&CommandPredicatesInput {
+                upmove: 10.0,
+                buttons: f64::from(buttons),
+                n64_physics: false,
+            });
             let expected = parse_json(&format!(
                 r#"{{"classicHoldingJump": true, "classicGroundedDuckBranch": false, "rereleaseHoldingJump": {jump_bit}, "rereleaseGroundedDuckBranch": {crouch_bit}}}"#,
             ))
             .unwrap();
             assert!(deep_strict_equal(&up, &expected), "buttons {buttons}");
-            let down = command_predicates(&CommandPredicatesInput { upmove: -1.0, buttons: f64::from(buttons), n64_physics: true });
+            let down = command_predicates(&CommandPredicatesInput {
+                upmove: -1.0,
+                buttons: f64::from(buttons),
+                n64_physics: true,
+            });
             let expected = parse_json(&format!(
                 r#"{{"classicHoldingJump": false, "classicGroundedDuckBranch": true, "rereleaseHoldingJump": {jump_bit}, "rereleaseGroundedDuckBranch": false}}"#,
             ))
@@ -770,11 +896,21 @@ mod tests {
     fn save_fields_come_from_the_original_declaration() {
         let sources = verified_text();
         let text = source_text(&sources, "rereleaseSave").unwrap();
-        assert!(declared_save_fields(text, "level_locals_t").unwrap().contains(&"current_poi_stage".to_owned()));
-        assert!(declared_save_fields(text, "edict_t").unwrap().contains(&"fog.density".to_owned()));
-        assert!(declared_save_fields(text, "edict_t").unwrap().contains(&"bmodel_anim.enabled".to_owned()));
-        assert!(declared_save_fields(text, "client_persistant_t").unwrap().contains(&"max_ammo".to_owned()));
-        assert!(!declared_save_fields(text, "client_persistant_t").unwrap().contains(&"max_flechettes".to_owned()));
+        assert!(declared_save_fields(text, "level_locals_t")
+            .unwrap()
+            .contains(&"current_poi_stage".to_owned()));
+        assert!(declared_save_fields(text, "edict_t")
+            .unwrap()
+            .contains(&"fog.density".to_owned()));
+        assert!(declared_save_fields(text, "edict_t")
+            .unwrap()
+            .contains(&"bmodel_anim.enabled".to_owned()));
+        assert!(declared_save_fields(text, "client_persistant_t")
+            .unwrap()
+            .contains(&"max_ammo".to_owned()));
+        assert!(!declared_save_fields(text, "client_persistant_t")
+            .unwrap()
+            .contains(&"max_flechettes".to_owned()));
         let error = declared_save_fields(text, "not_a_native_struct").expect_err("missing struct");
         assert!(error.to_string().contains("Q2 save structure missing"), "{error}");
     }
@@ -797,15 +933,30 @@ mod tests {
     #[test]
     fn rejects_unknown_inputs() {
         assert!(parse_q2_input(&parse_json(r#"{"kind": "nope"}"#).unwrap()).is_err());
-        assert!(parse_q2_input(&parse_json(r#"{"kind": "think", "family": "n64", "now": 0, "nextthink": 0, "reschedule": 0}"#).unwrap()).is_err());
-        assert!(parse_q2_input(&parse_json(r#"{"kind": "armor", "damage": 0, "inventory": 0, "armor": "plate", "energy": false, "bypass": false}"#).unwrap()).is_err());
-        assert!(parse_q2_input(&parse_json(r#"{"kind": "clock", "classicFrames": [], "rereleaseStepMs": 25}"#).unwrap()).is_err());
+        assert!(parse_q2_input(
+            &parse_json(r#"{"kind": "think", "family": "n64", "now": 0, "nextthink": 0, "reschedule": 0}"#).unwrap()
+        )
+        .is_err());
+        assert!(parse_q2_input(
+            &parse_json(
+                r#"{"kind": "armor", "damage": 0, "inventory": 0, "armor": "plate", "energy": false, "bypass": false}"#
+            )
+            .unwrap()
+        )
+        .is_err());
+        assert!(parse_q2_input(
+            &parse_json(r#"{"kind": "clock", "classicFrames": [], "rereleaseStepMs": 25}"#).unwrap()
+        )
+        .is_err());
     }
 
     #[test]
     fn save_field_scan_matches_pattern_edges() {
         let text = "#define DECLARE_SAVE_STRUCT demo\nFIELD_AUTO( alpha )\nFIELD_AUTO(beta)\nFIELD_AUTO()\nFIELD_AUTO(gamma(delta))\nFIELD_AUTO( epsilon )\n#undef DECLARE_SAVE_STRUCT\n";
-        assert_eq!(declared_save_fields(text, "demo").unwrap(), vec!["alpha".to_owned(), "beta".to_owned(), "epsilon".to_owned()]);
+        assert_eq!(
+            declared_save_fields(text, "demo").unwrap(),
+            vec!["alpha".to_owned(), "beta".to_owned(), "epsilon".to_owned()]
+        );
         assert!(declared_save_fields(text, "other").is_err());
         assert!(declared_save_fields("#define DECLARE_SAVE_STRUCT demo\n", "demo").is_err());
     }

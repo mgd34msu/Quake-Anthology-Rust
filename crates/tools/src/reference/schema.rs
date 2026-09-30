@@ -84,11 +84,19 @@ impl CommandObservation {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("command".to_owned(), Json::array(self.command.iter().map(Json::string).collect())),
+            (
+                "command".to_owned(),
+                Json::array(self.command.iter().map(Json::string).collect()),
+            ),
             ("cwd".to_owned(), Json::string(&self.cwd)),
             (
                 "environment".to_owned(),
-                Json::object(self.environment.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect()),
+                Json::object(
+                    self.environment
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Json::string(value)))
+                        .collect(),
+                ),
             ),
             ("startedAt".to_owned(), Json::string(&self.started_at)),
             ("durationMs".to_owned(), Json::float(self.duration_ms)),
@@ -127,7 +135,11 @@ impl ToolObservation {
                 ("kind".to_owned(), Json::string("unavailable")),
                 ("name".to_owned(), Json::string(name)),
             ]),
-            Self::Available { name, executable, observations } => Json::object(vec![
+            Self::Available {
+                name,
+                executable,
+                observations,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("available")),
                 ("name".to_owned(), Json::string(name)),
                 ("executable".to_owned(), executable.to_json()),
@@ -264,7 +276,10 @@ impl SourceIdentity {
             ("head".to_owned(), Json::string(&self.head)),
             ("tree".to_owned(), Json::string(&self.tree)),
             ("state".to_owned(), Json::string(self.state.as_str())),
-            ("changes".to_owned(), Json::array(self.changes.iter().map(PathObservation::to_json).collect())),
+            (
+                "changes".to_owned(),
+                Json::array(self.changes.iter().map(PathObservation::to_json).collect()),
+            ),
             (
                 "observations".to_owned(),
                 Json::array(self.observations.iter().map(CommandObservation::to_json).collect()),
@@ -383,7 +398,11 @@ impl BinaryProvenance {
         match self {
             Self::SourceTree => Json::object(vec![("kind".to_owned(), Json::string("source-tree"))]),
             Self::SuppliedCorpus => Json::object(vec![("kind".to_owned(), Json::string("supplied-corpus"))]),
-            Self::SteamInstallation { installation_path, family, edition } => Json::object(vec![
+            Self::SteamInstallation {
+                installation_path,
+                family,
+                edition,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("steam-installation")),
                 ("installationPath".to_owned(), Json::string(installation_path)),
                 ("family".to_owned(), Json::string(family.as_str())),
@@ -420,7 +439,10 @@ impl BinaryObservation {
             ("identity".to_owned(), self.identity.to_json()),
             ("format".to_owned(), Json::string(self.format.as_str())),
             ("purpose".to_owned(), Json::string(self.purpose.as_str())),
-            ("executablePermission".to_owned(), Json::boolean(self.executable_permission)),
+            (
+                "executablePermission".to_owned(),
+                Json::boolean(self.executable_permission),
+            ),
             ("provenance".to_owned(), self.provenance.to_json()),
             ("header".to_owned(), self.header.to_json()),
             (
@@ -483,9 +505,17 @@ impl ReadObservation {
         match std::fs::read_to_string(path) {
             Ok(text) => {
                 let sha256 = crate::verify::hash::hash_str(&text);
-                Self { path: path.to_owned(), value: ReadValue::Read { text, sha256 } }
+                Self {
+                    path: path.to_owned(),
+                    value: ReadValue::Read { text, sha256 },
+                }
             }
-            Err(error) => Self { path: path.to_owned(), value: ReadValue::Unavailable { reason: error.to_string() } },
+            Err(error) => Self {
+                path: path.to_owned(),
+                value: ReadValue::Unavailable {
+                    reason: error.to_string(),
+                },
+            },
         }
     }
 
@@ -586,23 +616,31 @@ impl CompatibilityRuntime {
                 ("path".to_owned(), Json::string(path)),
                 ("reason".to_owned(), Json::string(reason)),
             ]),
-            Self::Present { path, files, version, wine_version, steam_runtime_versions, launch_policy } => {
-                Json::object(vec![
-                    ("kind".to_owned(), Json::string("present")),
-                    ("path".to_owned(), Json::string(path)),
-                    ("files".to_owned(), Json::array(files.iter().map(FileIdentity::to_json).collect())),
-                    ("version".to_owned(), version.to_json()),
-                    ("wineVersion".to_owned(), wine_version.to_json()),
-                    (
-                        "steamRuntimeVersions".to_owned(),
-                        Json::array(steam_runtime_versions.iter().map(ReadObservation::to_json).collect()),
-                    ),
-                    (
-                        "launchPolicy".to_owned(),
-                        Json::array(launch_policy.iter().map(Json::string).collect()),
-                    ),
-                ])
-            }
+            Self::Present {
+                path,
+                files,
+                version,
+                wine_version,
+                steam_runtime_versions,
+                launch_policy,
+            } => Json::object(vec![
+                ("kind".to_owned(), Json::string("present")),
+                ("path".to_owned(), Json::string(path)),
+                (
+                    "files".to_owned(),
+                    Json::array(files.iter().map(FileIdentity::to_json).collect()),
+                ),
+                ("version".to_owned(), version.to_json()),
+                ("wineVersion".to_owned(), wine_version.to_json()),
+                (
+                    "steamRuntimeVersions".to_owned(),
+                    Json::array(steam_runtime_versions.iter().map(ReadObservation::to_json).collect()),
+                ),
+                (
+                    "launchPolicy".to_owned(),
+                    Json::array(launch_policy.iter().map(Json::string).collect()),
+                ),
+            ]),
         }
     }
 }
@@ -626,7 +664,10 @@ impl SteamObservation {
     pub fn to_json(&self) -> Json {
         Json::object(vec![
             ("commonPath".to_owned(), Json::string(&self.common_path)),
-            ("titles".to_owned(), Json::array(self.titles.iter().map(SteamTitleObservation::to_json).collect())),
+            (
+                "titles".to_owned(),
+                Json::array(self.titles.iter().map(SteamTitleObservation::to_json).collect()),
+            ),
             ("compatibilityRuntime".to_owned(), self.compatibility_runtime.to_json()),
             ("provenanceBasis".to_owned(), Json::string(&self.provenance_basis)),
         ])
@@ -648,7 +689,10 @@ impl CensusReference {
     pub fn to_json(&self) -> Json {
         Json::object(vec![
             ("definition".to_owned(), self.definition.to_json()),
-            ("manifest".to_owned(), self.manifest.as_ref().map_or(Json::Null, FileIdentity::to_json)),
+            (
+                "manifest".to_owned(),
+                self.manifest.as_ref().map_or(Json::Null, FileIdentity::to_json),
+            ),
         ])
     }
 }
@@ -669,9 +713,15 @@ impl Discovery {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("roots".to_owned(), Json::array(self.roots.iter().map(Json::string).collect())),
+            (
+                "roots".to_owned(),
+                Json::array(self.roots.iter().map(Json::string).collect()),
+            ),
             ("method".to_owned(), Json::string(&self.method)),
-            ("errors".to_owned(), Json::array(self.errors.iter().map(Json::string).collect())),
+            (
+                "errors".to_owned(),
+                Json::array(self.errors.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }
@@ -720,7 +770,10 @@ impl ReferenceEnvironment {
         Json::object(vec![
             ("schemaVersion".to_owned(), Json::int(1)),
             ("capturedAt".to_owned(), Json::string(&self.captured_at)),
-            ("command".to_owned(), Json::array(self.command.iter().map(Json::string).collect())),
+            (
+                "command".to_owned(),
+                Json::array(self.command.iter().map(Json::string).collect()),
+            ),
             ("runtime".to_owned(), self.runtime.to_json()),
             ("platform".to_owned(), Json::string(&self.platform)),
             ("architecture".to_owned(), Json::string(&self.architecture)),
@@ -732,17 +785,32 @@ impl ReferenceEnvironment {
                 Json::array(self.capture_program.iter().map(FileIdentity::to_json).collect()),
             ),
             ("sourceCensus".to_owned(), self.source_census.to_json()),
-            ("sources".to_owned(), Json::array(self.sources.iter().map(SourceIdentity::to_json).collect())),
-            ("tools".to_owned(), Json::array(self.tools.iter().map(ToolObservation::to_json).collect())),
+            (
+                "sources".to_owned(),
+                Json::array(self.sources.iter().map(SourceIdentity::to_json).collect()),
+            ),
+            (
+                "tools".to_owned(),
+                Json::array(self.tools.iter().map(ToolObservation::to_json).collect()),
+            ),
             (
                 "availableLibraryFiles".to_owned(),
                 Json::array(self.available_library_files.iter().map(FileIdentity::to_json).collect()),
             ),
-            ("system".to_owned(), Json::array(self.system.iter().map(ReadObservation::to_json).collect())),
-            ("binaries".to_owned(), Json::array(self.binaries.iter().map(BinaryObservation::to_json).collect())),
+            (
+                "system".to_owned(),
+                Json::array(self.system.iter().map(ReadObservation::to_json).collect()),
+            ),
+            (
+                "binaries".to_owned(),
+                Json::array(self.binaries.iter().map(BinaryObservation::to_json).collect()),
+            ),
             ("steam".to_owned(), self.steam.to_json()),
             ("discovery".to_owned(), self.discovery.to_json()),
-            ("limits".to_owned(), Json::array(self.limits.iter().map(Json::string).collect())),
+            (
+                "limits".to_owned(),
+                Json::array(self.limits.iter().map(Json::string).collect()),
+            ),
         ])
     }
 }

@@ -43,7 +43,12 @@ impl SnapshotEntry {
 
     fn to_json(&self) -> Json {
         match self {
-            Self::File { path, mode, data, sha256 } => Json::object(vec![
+            Self::File {
+                path,
+                mode,
+                data,
+                sha256,
+            } => Json::object(vec![
                 ("kind".to_owned(), Json::string("file")),
                 ("path".to_owned(), Json::string(path)),
                 ("mode".to_owned(), Json::int(i64::from(*mode))),
@@ -174,21 +179,27 @@ impl WorkspaceSnapshot {
 
     /// Materialize the snapshot into a fresh directory under `parent`.
     pub fn materialize(&self, parent: &Path, prefix: &str) -> Result<PathBuf, ToolsError> {
-        if prefix.is_empty() || !prefix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-') {
+        if prefix.is_empty()
+            || !prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
             return Err(ToolsError::invalid("Snapshot prefix must be a plain directory prefix"));
         }
         let root = make_temp_dir(parent, prefix)?;
         for entry in &self.entries {
             let path = root.join(entry.path());
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
+                fs::create_dir_all(parent)
+                    .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
             }
             match entry {
                 SnapshotEntry::Link { target, .. } => {
                     symlink(Path::new(target), &path)?;
                 }
                 SnapshotEntry::File { data, mode, .. } => {
-                    fs::write(&path, data).map_err(|error| ToolsError::io(format!("writing {}", path.display()), error))?;
+                    fs::write(&path, data)
+                        .map_err(|error| ToolsError::io(format!("writing {}", path.display()), error))?;
                     set_mode(&path, *mode)?;
                 }
             }
@@ -203,12 +214,16 @@ fn canonicalize(path: &Path) -> Result<PathBuf, ToolsError> {
 
 #[cfg(unix)]
 fn symlink(target: &Path, path: &Path) -> Result<(), ToolsError> {
-    std::os::unix::fs::symlink(target, path).map_err(|error| ToolsError::io(format!("linking {}", path.display()), error))
+    std::os::unix::fs::symlink(target, path)
+        .map_err(|error| ToolsError::io(format!("linking {}", path.display()), error))
 }
 
 #[cfg(not(unix))]
 fn symlink(_target: &Path, path: &Path) -> Result<(), ToolsError> {
-    Err(ToolsError::invalid(format!("Snapshots cannot materialize symlinks on this platform: {}", path.display())))
+    Err(ToolsError::invalid(format!(
+        "Snapshots cannot materialize symlinks on this platform: {}",
+        path.display()
+    )))
 }
 
 #[cfg(unix)]
@@ -249,32 +264,52 @@ fn visit(
     names.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
     for child in names {
         let name = child.file_name().to_string_lossy().into_owned();
-        let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
         let absolute = directory.join(child.file_name());
         if exclusions.iter().any(|exclusion| is_within(exclusion, &absolute)) {
             continue;
         }
         if is_credential_filename(&name) {
-            return Err(ToolsError::invalid(format!("Snapshot refuses a credential filename: {path}")));
+            return Err(ToolsError::invalid(format!(
+                "Snapshot refuses a credential filename: {path}"
+            )));
         }
-        let kind = child.file_type().map_err(|error| ToolsError::io(format!("stating {}", absolute.display()), error))?;
+        let kind = child
+            .file_type()
+            .map_err(|error| ToolsError::io(format!("stating {}", absolute.display()), error))?;
         if kind.is_dir() {
             visit(root, &absolute, path, exclusions, dependency_root, entries)?;
         } else if kind.is_symlink() {
-            let target = fs::read_link(&absolute).map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
+            let target = fs::read_link(&absolute)
+                .map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
             let target_text = target.to_string_lossy().into_owned();
             let resolved = normalize(&absolute.parent().unwrap_or(root).join(&target));
             let canonical = canonicalize(&absolute)?;
-            if !path.starts_with("node_modules/") || target.is_absolute() || !is_within(dependency_root, &resolved) || !is_within(dependency_root, &canonical) {
-                return Err(ToolsError::invalid(format!("Snapshot refuses a source or external dependency symlink: {path}")));
+            if !path.starts_with("node_modules/")
+                || target.is_absolute()
+                || !is_within(dependency_root, &resolved)
+                || !is_within(dependency_root, &canonical)
+            {
+                return Err(ToolsError::invalid(format!(
+                    "Snapshot refuses a source or external dependency symlink: {path}"
+                )));
             }
-            entries.push(SnapshotEntry::Link { path, target: target_text });
+            entries.push(SnapshotEntry::Link {
+                path,
+                target: target_text,
+            });
         } else if kind.is_file() {
-            let stat = fs::symlink_metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {}", absolute.display()), error))?;
+            let stat = fs::symlink_metadata(&absolute)
+                .map_err(|error| ToolsError::io(format!("stating {}", absolute.display()), error))?;
             if !stat.is_file() {
                 return Err(ToolsError::invalid(format!("Snapshot input changed file kind: {path}")));
             }
-            let data = fs::read(&absolute).map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
+            let data = fs::read(&absolute)
+                .map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
             let sha256 = hash_bytes(&data);
             entries.push(SnapshotEntry::File {
                 path,
@@ -283,7 +318,9 @@ fn visit(
                 sha256,
             });
         } else {
-            return Err(ToolsError::invalid(format!("Snapshot refuses a non-regular input: {path}")));
+            return Err(ToolsError::invalid(format!(
+                "Snapshot refuses a non-regular input: {path}"
+            )));
         }
     }
     Ok(())
@@ -293,4 +330,3 @@ fn visit(
 pub fn resolve(path: &Path) -> PathBuf {
     absolutize(path)
 }
-

@@ -22,8 +22,8 @@ use crate::verify::isolation::{copy_pinned_file, lease_ports, start_private_disp
 use crate::verify::product::{belongs_to_shard, Shard};
 use crate::verify::schema::{
     Artifact, AttemptLink, AttemptProvenance, CaseManifest, Checkpoint, CommandContract, DisplayMode, DriverOutput,
-    EvidenceKind, ExecutionRecord, ExpectedCase, Fingerprints, InputRequirement, Outcome, Reconciliation, RuntimeEnvironment,
-    VerificationProfile, VerificationStatus,
+    EvidenceKind, ExecutionRecord, ExpectedCase, Fingerprints, InputRequirement, Outcome, Reconciliation,
+    RuntimeEnvironment, VerificationProfile, VerificationStatus,
 };
 use crate::verify::snapshot::{is_within, resolve, WorkspaceSnapshot};
 
@@ -105,8 +105,14 @@ impl RunReport {
                 ]),
             ),
             ("manifest".to_owned(), self.manifest.to_json()),
-            ("selectedCaseIds".to_owned(), Json::array(self.selected_case_ids.iter().map(Json::string).collect())),
-            ("records".to_owned(), Json::array(self.records.iter().map(ExecutionRecord::to_json).collect())),
+            (
+                "selectedCaseIds".to_owned(),
+                Json::array(self.selected_case_ids.iter().map(Json::string).collect()),
+            ),
+            (
+                "records".to_owned(),
+                Json::array(self.records.iter().map(ExecutionRecord::to_json).collect()),
+            ),
             ("reconciliation".to_owned(), self.reconciliation.to_json()),
             ("selectedComplete".to_owned(), Json::boolean(self.selected_complete)),
         ])
@@ -114,18 +120,24 @@ impl RunReport {
 }
 
 fn artifact(output_root: &Path, path: &str) -> Result<Artifact, ToolsError> {
-    let root = std::fs::canonicalize(output_root).map_err(|error| ToolsError::io(format!("resolving {}", output_root.display()), error))?;
+    let root = std::fs::canonicalize(output_root)
+        .map_err(|error| ToolsError::io(format!("resolving {}", output_root.display()), error))?;
     let relative = Path::new(path);
     let absolute = root.join(relative);
-    let real = std::fs::canonicalize(&absolute).map_err(|error| ToolsError::io(format!("resolving {}", absolute.display()), error))?;
+    let real = std::fs::canonicalize(&absolute)
+        .map_err(|error| ToolsError::io(format!("resolving {}", absolute.display()), error))?;
     if relative.is_absolute() || !is_within(&root, &absolute) || absolute == root || !is_within(&root, &real) {
         return Err(ToolsError::invalid(format!("Artifact escapes owned output: {path}")));
     }
-    let stat = std::fs::symlink_metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {}", absolute.display()), error))?;
+    let stat = std::fs::symlink_metadata(&absolute)
+        .map_err(|error| ToolsError::io(format!("stating {}", absolute.display()), error))?;
     if !stat.is_file() || stat.is_symlink() {
-        return Err(ToolsError::invalid(format!("Artifact is not a regular owned file: {path}")));
+        return Err(ToolsError::invalid(format!(
+            "Artifact is not a regular owned file: {path}"
+        )));
     }
-    let bytes = std::fs::read(&absolute).map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
+    let bytes =
+        std::fs::read(&absolute).map_err(|error| ToolsError::io(format!("reading {}", absolute.display()), error))?;
     Ok(Artifact {
         path: path.to_owned(),
         sha256: hash_bytes(&bytes),
@@ -134,7 +146,8 @@ fn artifact(output_root: &Path, path: &str) -> Result<Artifact, ToolsError> {
 }
 
 fn read_driver(path: &Path) -> Result<DriverOutput, ToolsError> {
-    let text = std::fs::read_to_string(path).map_err(|error| ToolsError::io(format!("reading {}", path.display()), error))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|error| ToolsError::io(format!("reading {}", path.display()), error))?;
     crate::verify::schema::parse_driver_output(&crate::json::parse_json(&text)?)
 }
 
@@ -149,7 +162,10 @@ impl InputIdentity {
         Json::object(vec![
             ("id".to_owned(), Json::string(&self.id)),
             ("path".to_owned(), Json::string(&self.path)),
-            ("sha256".to_owned(), self.sha256.as_deref().map_or(Json::Null, Json::string)),
+            (
+                "sha256".to_owned(),
+                self.sha256.as_deref().map_or(Json::Null, Json::string),
+            ),
         ])
     }
 }
@@ -167,10 +183,14 @@ fn inspect_inputs(inputs: &[InputRequirement], workspace: &Path) -> Result<Check
     for input in inputs {
         let path = resolve(&workspace.join(&input.path));
         let check = (|| -> Result<String, ToolsError> {
-            let stat = std::fs::symlink_metadata(&path).map_err(|error| ToolsError::io(format!("stating {}", path.display()), error))?;
-            let real = std::fs::canonicalize(&path).map_err(|error| ToolsError::io(format!("resolving {}", path.display()), error))?;
+            let stat = std::fs::symlink_metadata(&path)
+                .map_err(|error| ToolsError::io(format!("stating {}", path.display()), error))?;
+            let real = std::fs::canonicalize(&path)
+                .map_err(|error| ToolsError::io(format!("resolving {}", path.display()), error))?;
             if !stat.is_file() || stat.is_symlink() || real != path {
-                return Err(ToolsError::invalid("Required input is not a regular file without symlink ancestors"));
+                return Err(ToolsError::invalid(
+                    "Required input is not a regular file without symlink ancestors",
+                ));
             }
             hash_file(&path)
         })();
@@ -205,12 +225,19 @@ fn inspect_inputs(inputs: &[InputRequirement], workspace: &Path) -> Result<Check
 }
 
 fn selected(item: &ExpectedCase, options: &RunOptions) -> Result<bool, ToolsError> {
-    let profile_selected = matches!(options.profile, VerificationProfile::Full | VerificationProfile::Release) || item.profiles.contains(&options.profile);
+    let profile_selected = matches!(
+        options.profile,
+        VerificationProfile::Full | VerificationProfile::Release
+    ) || item.profiles.contains(&options.profile);
     let changed_selected = match &options.changed_paths {
         None => true,
         Some(paths) => {
             item.source_paths.is_empty()
-                || item.source_paths.iter().any(|source| paths.iter().any(|path| path == source || path.starts_with(&format!("{source}/"))))
+                || item.source_paths.iter().any(|source| {
+                    paths
+                        .iter()
+                        .any(|path| path == source || path.starts_with(&format!("{source}/")))
+                })
         }
     };
     Ok(profile_selected && changed_selected && belongs_to_shard(&item.id, item.seed, options.shard)?)
@@ -264,7 +291,11 @@ struct ExecuteContext<'a> {
     display_provider: Option<InputRequirement>,
 }
 
-fn execute_case(item: &ExpectedCase, command: &CommandContract, context: &ExecuteContext) -> Result<ProcessResult, ToolsError> {
+fn execute_case(
+    item: &ExpectedCase,
+    command: &CommandContract,
+    context: &ExecuteContext,
+) -> Result<ProcessResult, ToolsError> {
     let root = context.output_root.clone();
     let home = root.join("home");
     let temporary = root.join("tmp");
@@ -293,12 +324,18 @@ fn execute_case_inner(
     let mut artifacts = Vec::new();
     let mut display: Option<PrivateDisplay> = None;
     let mut variables = HashMap::from([
-        ("snapshot".to_owned(), context.snapshot_root.to_string_lossy().into_owned()),
+        (
+            "snapshot".to_owned(),
+            context.snapshot_root.to_string_lossy().into_owned(),
+        ),
         ("output".to_owned(), root.to_string_lossy().into_owned()),
         ("home".to_owned(), home.to_string_lossy().into_owned()),
         ("data".to_owned(), data.to_string_lossy().into_owned()),
         ("case".to_owned(), item.id.clone()),
-        ("result".to_owned(), root.join("driver-result.json").to_string_lossy().into_owned()),
+        (
+            "result".to_owned(),
+            root.join("driver-result.json").to_string_lossy().into_owned(),
+        ),
         ("bun".to_owned(), context.runtime_path.to_string_lossy().into_owned()),
     ]);
     if let Some(candidate) = &context.candidate_path {
@@ -307,14 +344,30 @@ fn execute_case_inner(
     for (index, port) in ports.ports.iter().enumerate() {
         variables.insert(format!("port:{index}"), port.to_string());
     }
-    let result = (|resolved_command: &mut Vec<String>, artifacts: &mut Vec<Artifact>, display: &mut Option<PrivateDisplay>| -> Result<ProcessResult, ToolsError> {
+    let result = (|resolved_command: &mut Vec<String>,
+                   artifacts: &mut Vec<Artifact>,
+                   display: &mut Option<PrivateDisplay>|
+     -> Result<ProcessResult, ToolsError> {
         for input in &item.requirements {
             match &input.sha256 {
-                None => return Err(ToolsError::invalid(format!("Unpinned input {} reached execution", input.id))),
+                None => {
+                    return Err(ToolsError::invalid(format!(
+                        "Unpinned input {} reached execution",
+                        input.id
+                    )))
+                }
                 Some(pinned) => {
                     let destination = data.join(hash_bytes(input.id.as_bytes()));
-                    copy_pinned_file(&resolve(&context.workspace.join(&input.path)), &destination, pinned, input.kind == crate::verify::schema::InputKind::Executable)?;
-                    variables.insert(format!("input:{}", input.id), destination.to_string_lossy().into_owned());
+                    copy_pinned_file(
+                        &resolve(&context.workspace.join(&input.path)),
+                        &destination,
+                        pinned,
+                        input.kind == crate::verify::schema::InputKind::Executable,
+                    )?;
+                    variables.insert(
+                        format!("input:{}", input.id),
+                        destination.to_string_lossy().into_owned(),
+                    );
                 }
             }
         }
@@ -329,7 +382,10 @@ fn execute_case_inner(
         };
         let from_snapshot = is_within(&context.snapshot_root, &executable_path);
         let is_runtime = executable_path == context.runtime_path;
-        let is_candidate = context.candidate_path.as_ref().is_some_and(|candidate| *candidate == executable_path);
+        let is_candidate = context
+            .candidate_path
+            .as_ref()
+            .is_some_and(|candidate| *candidate == executable_path);
         let from_data = is_within(data, &executable_path);
         if !from_snapshot && !is_runtime && !is_candidate && !from_data {
             return Err(ToolsError::invalid(
@@ -344,18 +400,40 @@ fn execute_case_inner(
         for (key, value) in &command.environment {
             env.insert(key.clone(), substitute(value, &variables)?);
         }
-        let sdl_audio = command.environment.iter().find(|(key, _)| key == "SDL_AUDIODRIVER").map_or("dummy", |(_, value)| value.as_str());
+        let sdl_audio = command
+            .environment
+            .iter()
+            .find(|(key, _)| key == "SDL_AUDIODRIVER")
+            .map_or("dummy", |(_, value)| value.as_str());
         env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
         env.insert("TMPDIR".to_owned(), temporary.to_string_lossy().into_owned());
-        env.insert("XDG_CONFIG_HOME".to_owned(), home.join("config").to_string_lossy().into_owned());
-        env.insert("XDG_DATA_HOME".to_owned(), home.join("data").to_string_lossy().into_owned());
-        env.insert("XDG_CACHE_HOME".to_owned(), home.join("cache").to_string_lossy().into_owned());
-        env.insert("XDG_RUNTIME_DIR".to_owned(), home.join("runtime").to_string_lossy().into_owned());
+        env.insert(
+            "XDG_CONFIG_HOME".to_owned(),
+            home.join("config").to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "XDG_DATA_HOME".to_owned(),
+            home.join("data").to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "XDG_CACHE_HOME".to_owned(),
+            home.join("cache").to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "XDG_RUNTIME_DIR".to_owned(),
+            home.join("runtime").to_string_lossy().into_owned(),
+        );
         env.insert("VERIFY_OUTPUT_ROOT".to_owned(), root.to_string_lossy().into_owned());
         env.insert("VERIFY_DATA_ROOT".to_owned(), data.to_string_lossy().into_owned());
         env.insert("VERIFY_CASE_ID".to_owned(), item.id.clone());
-        env.insert("VERIFY_RESULT_PATH".to_owned(), root.join("driver-result.json").to_string_lossy().into_owned());
-        env.insert("VERIFY_PORTS".to_owned(), ports.ports.iter().map(u16::to_string).collect::<Vec<_>>().join(","));
+        env.insert(
+            "VERIFY_RESULT_PATH".to_owned(),
+            root.join("driver-result.json").to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "VERIFY_PORTS".to_owned(),
+            ports.ports.iter().map(u16::to_string).collect::<Vec<_>>().join(","),
+        );
         env.insert("VERIFY_SEED".to_owned(), item.seed.to_string());
         env.insert(
             "SDL_VIDEODRIVER".to_owned(),
@@ -396,29 +474,45 @@ fn execute_case_inner(
                 .map_err(|error| ToolsError::io(format!("setting mode on {runtime_dir}"), error))?;
         }
         let launch = Json::object(vec![
-            ("command".to_owned(), Json::array(resolved_command.iter().map(Json::string).collect())),
+            (
+                "command".to_owned(),
+                Json::array(resolved_command.iter().map(Json::string).collect()),
+            ),
             ("cwd".to_owned(), Json::string(context.snapshot_root.to_string_lossy())),
             (
                 "environment".to_owned(),
                 Json::object({
-                    let mut pairs: Vec<(String, Json)> = env.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect();
+                    let mut pairs: Vec<(String, Json)> = env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Json::string(value)))
+                        .collect();
                     pairs.sort_by(|left, right| left.0.cmp(&right.0));
                     pairs
                 }),
             ),
-            ("ports".to_owned(), Json::array(ports.ports.iter().map(|port| Json::int(i64::from(*port))).collect())),
+            (
+                "ports".to_owned(),
+                Json::array(ports.ports.iter().map(|port| Json::int(i64::from(*port))).collect()),
+            ),
         ]);
         {
             let mut file = create_exclusive(&root.join("launch.json"))?;
             use std::io::Write;
-            file.write_all(launch.render_pretty().as_bytes()).map_err(|error| ToolsError::io("writing launch.json", error))?;
+            file.write_all(launch.render_pretty().as_bytes())
+                .map_err(|error| ToolsError::io("writing launch.json", error))?;
         }
         ports.release_sockets();
         let stdout_path = root.join("stdout.txt");
         let stderr_path = root.join("stderr.txt");
-        let stdout = File::create(&stdout_path).map_err(|error| ToolsError::io(format!("creating {}", stdout_path.display()), error))?;
-        let stderr = File::create(&stderr_path).map_err(|error| ToolsError::io(format!("creating {}", stderr_path.display()), error))?;
-        let (program, args) = resolved_command.split_first().ok_or_else(|| ToolsError::invalid("Command executable must come from owned source, pinned runtime, candidate, or required inputs"))?;
+        let stdout = File::create(&stdout_path)
+            .map_err(|error| ToolsError::io(format!("creating {}", stdout_path.display()), error))?;
+        let stderr = File::create(&stderr_path)
+            .map_err(|error| ToolsError::io(format!("creating {}", stderr_path.display()), error))?;
+        let (program, args) = resolved_command.split_first().ok_or_else(|| {
+            ToolsError::invalid(
+                "Command executable must come from owned source, pinned runtime, candidate, or required inputs",
+            )
+        })?;
         let mut spawn = Command::new(program);
         spawn
             .args(args)
@@ -429,7 +523,9 @@ fn execute_case_inner(
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
         detach(&mut spawn);
-        let mut child = spawn.spawn().map_err(|error| ToolsError::io(format!("spawning {program}"), error))?;
+        let mut child = spawn
+            .spawn()
+            .map_err(|error| ToolsError::io(format!("spawning {program}"), error))?;
         let pid = child.id();
         let (timed_out, exit_code) = wait_child(&mut child, command.timeout_ms)?;
         kill_process_group(pid, SIGKILL);
@@ -448,7 +544,9 @@ fn execute_case_inner(
                 artifacts.push(artifact(root, "driver-result.json")?);
                 for path in &parsed.artifact_paths {
                     if artifacts.iter().any(|existing| &existing.path == path) {
-                        return Err(ToolsError::invalid(format!("Duplicate or reserved driver artifact {path}")));
+                        return Err(ToolsError::invalid(format!(
+                            "Duplicate or reserved driver artifact {path}"
+                        )));
                     }
                     artifacts.push(artifact(root, path)?);
                 }
@@ -457,7 +555,9 @@ fn execute_case_inner(
             Err(error) => reasons.push(format!("Missing or invalid driver output: {error}")),
         }
         if timed_out {
-            let checkpoints = output.as_ref().map_or_else(Vec::new, |parsed| parsed.checkpoints.clone());
+            let checkpoints = output
+                .as_ref()
+                .map_or_else(Vec::new, |parsed| parsed.checkpoints.clone());
             return Ok(ProcessResult {
                 outcome: Outcome::Timeout {
                     timeout_ms: command.timeout_ms,
@@ -469,24 +569,30 @@ fn execute_case_inner(
                 checkpoints,
             });
         }
-        let checkpoints = output.as_ref().map_or_else(Vec::new, |parsed| parsed.checkpoints.clone());
+        let checkpoints = output
+            .as_ref()
+            .map_or_else(Vec::new, |parsed| parsed.checkpoints.clone());
         if exit_code != Some(0) {
-            reasons.push(format!("Driver exited {}", exit_code.map_or("null".to_owned(), |code| code.to_string())));
+            reasons.push(format!(
+                "Driver exited {}",
+                exit_code.map_or("null".to_owned(), |code| code.to_string())
+            ));
         }
         if let Some(parsed) = &output {
             if parsed.case_id != item.id {
                 reasons.push("Driver output case ID differs from expected case".to_owned());
             }
-            reasons.extend(assertion_failures(item, &parsed.assertions, parsed.assertions.len() as i64)?);
+            reasons.extend(assertion_failures(
+                item,
+                &parsed.assertions,
+                parsed.assertions.len() as i64,
+            )?);
         }
         Ok(ProcessResult {
             outcome: if reasons.is_empty() {
                 Outcome::Pass
             } else {
-                Outcome::Fail {
-                    exit_code,
-                    reasons,
-                }
+                Outcome::Fail { exit_code, reasons }
             },
             resolved_command: std::mem::take(resolved_command),
             output,
@@ -532,7 +638,9 @@ fn wait_child(child: &mut std::process::Child, timeout_ms: i64) -> Result<(bool,
 }
 
 fn os_release() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|text| text.trim().to_owned()).unwrap_or_else(|_| "unknown".to_owned())
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .map(|text| text.trim().to_owned())
+        .unwrap_or_else(|_| "unknown".to_owned())
 }
 
 fn cpu_model() -> String {
@@ -540,7 +648,9 @@ fn cpu_model() -> String {
         .ok()
         .and_then(|text| {
             text.lines().find_map(|line| {
-                line.strip_prefix("model name")?.split_once(':').map(|(_, model)| model.trim().to_owned())
+                line.strip_prefix("model name")?
+                    .split_once(':')
+                    .map(|(_, model)| model.trim().to_owned())
             })
         })
         .unwrap_or_else(|| "unknown".to_owned())
@@ -553,28 +663,40 @@ fn runtime_info() -> Result<(PathBuf, String, String), ToolsError> {
         .output()
         .map_err(|error| ToolsError::io("querying bun version", error))?;
     let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let version = if version.is_empty() { "unknown".to_owned() } else { version };
-    let canonical = std::fs::canonicalize(&bun).map_err(|error| ToolsError::io(format!("resolving {}", bun.display()), error))?;
+    let version = if version.is_empty() {
+        "unknown".to_owned()
+    } else {
+        version
+    };
+    let canonical =
+        std::fs::canonicalize(&bun).map_err(|error| ToolsError::io(format!("resolving {}", bun.display()), error))?;
     let digest = hash_file(&canonical)?;
     Ok((canonical, version, digest))
 }
 
 /// Run every case in a manifest.
 pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<RunReport, ToolsError> {
-    let workspace = std::fs::canonicalize(&options.workspace).map_err(|error| ToolsError::io(format!("resolving {}", options.workspace.display()), error))?;
+    let workspace = std::fs::canonicalize(&options.workspace)
+        .map_err(|error| ToolsError::io(format!("resolving {}", options.workspace.display()), error))?;
     let output_parent = resolve(&options.output_parent);
     if is_within(&workspace, &output_parent) && !is_within(&workspace.join(".artifacts"), &output_parent) {
-        return Err(ToolsError::invalid("Output roots inside source must be under .artifacts"));
+        return Err(ToolsError::invalid(
+            "Output roots inside source must be under .artifacts",
+        ));
     }
     let mut previous: HashMap<&str, &ExecutionRecord> = HashMap::new();
     for record in &options.previous_records {
         if previous.contains_key(record.case_id.as_str()) {
-            return Err(ToolsError::invalid(format!("Resume input contains duplicate case ID {}", record.case_id)));
+            return Err(ToolsError::invalid(format!(
+                "Resume input contains duplicate case ID {}",
+                record.case_id
+            )));
         }
         previous.insert(record.case_id.as_str(), record);
     }
     let snapshot = WorkspaceSnapshot::capture(&workspace, &[])?;
-    fs::create_dir_all(&output_parent).map_err(|error| ToolsError::io(format!("creating {}", output_parent.display()), error))?;
+    fs::create_dir_all(&output_parent)
+        .map_err(|error| ToolsError::io(format!("creating {}", output_parent.display()), error))?;
     let output_root = make_temp_dir(&output_parent, "run-")?;
     let run_id = random_uuid()?;
     let snapshot_root = snapshot.materialize(&output_root.join("source"), "verify-")?;
@@ -594,7 +716,12 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
             candidate_failure = Some("Compiled executable was built from a different source snapshot".to_owned());
         } else {
             let staged = output_root.join("candidate");
-            match copy_pinned_file(&resolve(&workspace.join(&executable.path)), &staged, &executable.sha256, true) {
+            match copy_pinned_file(
+                &resolve(&workspace.join(&executable.path)),
+                &staged,
+                &executable.sha256,
+                true,
+            ) {
                 Ok(()) => candidate_path = Some(staged),
                 Err(error) => candidate_failure = Some(format!("Compiled executable is stale or absent: {error}")),
             }
@@ -607,8 +734,13 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
         let started_at = now_iso();
         let attempt_id = random_uuid()?;
         let attempt_root = output_root.join("attempts").join(&attempt_id);
-        fs::create_dir_all(&attempt_root).map_err(|error| ToolsError::io(format!("creating {}", attempt_root.display()), error))?;
-        let display_path = if item.command.as_ref().is_some_and(|command| command.display == DisplayMode::Xvfb) {
+        fs::create_dir_all(&attempt_root)
+            .map_err(|error| ToolsError::io(format!("creating {}", attempt_root.display()), error))?;
+        let display_path = if item
+            .command
+            .as_ref()
+            .is_some_and(|command| command.display == DisplayMode::Xvfb)
+        {
             which("Xvfb")
         } else {
             None
@@ -616,7 +748,8 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
         let display_provider = match display_path {
             None => None,
             Some(path) => {
-                let canonical = std::fs::canonicalize(&path).map_err(|error| ToolsError::io(format!("resolving {}", path.display()), error))?;
+                let canonical = std::fs::canonicalize(&path)
+                    .map_err(|error| ToolsError::io(format!("resolving {}", path.display()), error))?;
                 let digest = hash_file(&canonical)?;
                 Some(InputRequirement {
                     id: "runner:private-display".to_owned(),
@@ -631,9 +764,19 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
             ("LANG".to_owned(), "C.UTF-8".to_owned()),
             ("TZ".to_owned(), "UTC".to_owned()),
         ]);
-        variables.extend(options.environment.iter().map(|(key, value)| (key.clone(), value.clone())));
+        variables.extend(
+            options
+                .environment
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
         if let Some(command) = &item.command {
-            variables.extend(command.environment.iter().map(|(key, value)| (key.clone(), value.clone())));
+            variables.extend(
+                command
+                    .environment
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
         }
         let mut libraries = options.libraries.clone();
         if let Some(provider) = &display_provider {
@@ -660,9 +803,14 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
             expected_case: hash_json(&item.to_json())?,
             source: snapshot.manifest.sha256.clone(),
             snapshot: snapshot.manifest.sha256.clone(),
-            executable: options.executable.as_ref().map_or_else(|| runtime_hash.clone(), |executable| executable.sha256.clone()),
+            executable: options
+                .executable
+                .as_ref()
+                .map_or_else(|| runtime_hash.clone(), |executable| executable.sha256.clone()),
             runtime_executable: runtime_hash.clone(),
-            fixtures: hash_json(&Json::array(checked.identities.iter().map(InputIdentity::to_json).collect()))?,
+            fixtures: hash_json(&Json::array(
+                checked.identities.iter().map(InputIdentity::to_json).collect(),
+            ))?,
             environment: hash_json(&environment.to_json())?,
             clock_schedule: item.clock_schedule_sha256.clone(),
             network_schedule: item.network_schedule_sha256.clone(),
@@ -686,7 +834,12 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
         if item.network_schedule_sha256.is_none() {
             missing.push("Network schedule is not pinned".to_owned());
         }
-        if item.command.as_ref().is_some_and(|command| command.display == DisplayMode::Xvfb) && display_provider.is_none() {
+        if item
+            .command
+            .as_ref()
+            .is_some_and(|command| command.display == DisplayMode::Xvfb)
+            && display_provider.is_none()
+        {
             missing.push("Private Xvfb display executable is unavailable".to_owned());
         }
         let chosen = selected(item, options)?;
@@ -721,38 +874,54 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
             outcome,
         };
         let binds_executable = item.command.as_ref().is_some_and(|command| {
-            std::iter::once(command.executable.as_str()).chain(command.args.iter().map(String::as_str)).any(|value| value.contains("{executable}"))
+            std::iter::once(command.executable.as_str())
+                .chain(command.args.iter().map(String::as_str))
+                .any(|value| value.contains("{executable}"))
         });
         let record = if !chosen {
             base(Outcome::NotRun {
-                reason: "Case is outside this explicit profile, changed-path selection, or shard; it remains required".to_owned(),
+                reason: "Case is outside this explicit profile, changed-path selection, or shard; it remains required"
+                    .to_owned(),
             })
         } else if !missing.is_empty() {
-            base(Outcome::BlockedMissingInput { missing_inputs: missing })
+            base(Outcome::BlockedMissingInput {
+                missing_inputs: missing,
+            })
         } else if !checked.changed.is_empty() || candidate_failure.is_some() {
             let mut reasons = checked.changed.clone();
             if let Some(failure) = &candidate_failure {
                 reasons.push(failure.clone());
             }
-            base(Outcome::Fail { exit_code: None, reasons })
+            base(Outcome::Fail {
+                exit_code: None,
+                reasons,
+            })
         } else if item.command.is_none() {
             base(Outcome::NotRun {
                 reason: "Required behavior has no bound executable driver".to_owned(),
             })
         } else if options.profile == VerificationProfile::Release && candidate_path.is_none() {
             base(Outcome::BlockedMissingInput {
-                missing_inputs: vec!["Release profile requires an exact compiled executable and matching build provenance".to_owned()],
+                missing_inputs: vec![
+                    "Release profile requires an exact compiled executable and matching build provenance".to_owned(),
+                ],
             })
-        } else if options.profile == VerificationProfile::Release && item.evidence_kind != EvidenceKind::Tooling && !binds_executable {
+        } else if options.profile == VerificationProfile::Release
+            && item.evidence_kind != EvidenceKind::Tooling
+            && !binds_executable
+        {
             base(Outcome::NotRun {
                 reason: "Release behavior driver does not bind the exact candidate executable".to_owned(),
             })
-        } else if prior.is_some_and(|record| can_resume(item, &fingerprints, record).is_ok_and(|decision| decision.reusable)) {
+        } else if prior
+            .is_some_and(|record| can_resume(item, &fingerprints, record).is_ok_and(|decision| decision.reusable))
+        {
             let prior = prior.expect("resume prior");
             for prior_artifact in &prior.artifacts {
                 let destination = attempt_root.join(&prior_artifact.path);
                 if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent).map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
+                    fs::create_dir_all(parent)
+                        .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
                 }
                 copy_pinned_file(
                     &resolve(&Path::new(&prior.output_root).join(&prior_artifact.path)),
@@ -791,9 +960,11 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
             let source_after = WorkspaceSnapshot::capture(&workspace, &[])?;
             let snapshot_after = WorkspaceSnapshot::capture(&snapshot_root, &[])?;
             let mut drift = Vec::new();
-            if hash_json(&Json::array(after.identities.iter().map(InputIdentity::to_json).collect()))?
-                != hash_json(&Json::array(checked.identities.iter().map(InputIdentity::to_json).collect()))?
-            {
+            if hash_json(&Json::array(
+                after.identities.iter().map(InputIdentity::to_json).collect(),
+            ))? != hash_json(&Json::array(
+                checked.identities.iter().map(InputIdentity::to_json).collect(),
+            ))? {
                 drift.push("Required input changed during execution".to_owned());
             }
             if source_after.manifest.sha256 != snapshot.manifest.sha256 {
@@ -828,8 +999,14 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
                 resolved_command: result.resolved_command,
                 finished_at: now_iso(),
                 duration_ms: start.elapsed().as_secs_f64() * 1000.0,
-                assertion_count: result.output.as_ref().map_or(0, |output| output.assertions.len() as i64),
-                assertions: result.output.as_ref().map_or_else(Vec::new, |output| output.assertions.clone()),
+                assertion_count: result
+                    .output
+                    .as_ref()
+                    .map_or(0, |output| output.assertions.len() as i64),
+                assertions: result
+                    .output
+                    .as_ref()
+                    .map_or_else(Vec::new, |output| output.assertions.clone()),
                 checkpoints: result.checkpoints,
                 artifacts: result.artifacts,
                 outcome,
@@ -839,14 +1016,18 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
         {
             let mut file = create_exclusive(&attempt_root.join("record.json"))?;
             use std::io::Write;
-            file.write_all(record.to_json().render_pretty().as_bytes()).map_err(|error| ToolsError::io("writing record.json", error))?;
+            file.write_all(record.to_json().render_pretty().as_bytes())
+                .map_err(|error| ToolsError::io("writing record.json", error))?;
         }
         records.push(record);
     }
     let reconciliation = reconcile(manifest, &records)?;
     let selected_set: std::collections::HashSet<&str> = selected_case_ids.iter().map(String::as_str).collect();
     let selected_complete = !selected_case_ids.is_empty()
-        && records.iter().filter(|record| selected_set.contains(record.case_id.as_str())).all(|record| record.outcome.status() == VerificationStatus::Pass)
+        && records
+            .iter()
+            .filter(|record| selected_set.contains(record.case_id.as_str()))
+            .all(|record| record.outcome.status() == VerificationStatus::Pass)
         && reconciliation.invalid_records.is_empty();
     let report = RunReport {
         run_id,
@@ -864,13 +1045,17 @@ pub fn run_manifest(manifest: &CaseManifest, options: &RunOptions) -> Result<Run
     {
         let mut file = create_exclusive(&output_root.join("report.json"))?;
         use std::io::Write;
-        file.write_all(report.to_json().render_pretty().as_bytes()).map_err(|error| ToolsError::io("writing report.json", error))?;
+        file.write_all(report.to_json().render_pretty().as_bytes())
+            .map_err(|error| ToolsError::io("writing report.json", error))?;
     }
     Ok(report)
 }
 
 /// Reconcile an archived manifest and records, including artifact checks.
-pub fn verify_archived_report(manifest: &CaseManifest, records: &[ExecutionRecord]) -> Result<Reconciliation, ToolsError> {
+pub fn verify_archived_report(
+    manifest: &CaseManifest,
+    records: &[ExecutionRecord],
+) -> Result<Reconciliation, ToolsError> {
     let report = reconcile(manifest, records)?;
     let mut invalid_records = report.invalid_records;
     for record in records {

@@ -124,9 +124,10 @@ impl PartialOrd for CaseCount {
 
 impl Ord for CaseCount {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.len().cmp(&other.0.len()).then_with(|| {
-            self.0.iter().rev().cmp(other.0.iter().rev())
-        })
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.iter().rev().cmp(other.0.iter().rev()))
     }
 }
 
@@ -140,7 +141,9 @@ fn unique(values: &[String], description: &str) -> Result<(), ToolsError> {
     let mut seen = std::collections::HashSet::new();
     for value in values {
         if value.is_empty() || !seen.insert(value) {
-            return Err(ToolsError::invalid(format!("Empty or duplicate {description}: {value}")));
+            return Err(ToolsError::invalid(format!(
+                "Empty or duplicate {description}: {value}"
+            )));
         }
     }
     Ok(())
@@ -152,27 +155,57 @@ pub fn validate_domain(domain: &CompositionDomain) -> Result<(), ToolsError> {
         return Err(ToolsError::invalid("Invalid composition domain identity"));
     }
     if domain.axes.is_empty() || domain.suites.is_empty() {
-        return Err(ToolsError::invalid("A composition domain needs axes and required suites"));
+        return Err(ToolsError::invalid(
+            "A composition domain needs axes and required suites",
+        ));
     }
-    unique(&domain.axes.iter().map(|axis| axis.id.clone()).collect::<Vec<_>>(), "axis ID")?;
-    unique(&domain.suites.iter().map(|suite| suite.id.clone()).collect::<Vec<_>>(), "suite ID")?;
+    unique(
+        &domain.axes.iter().map(|axis| axis.id.clone()).collect::<Vec<_>>(),
+        "axis ID",
+    )?;
+    unique(
+        &domain.suites.iter().map(|suite| suite.id.clone()).collect::<Vec<_>>(),
+        "suite ID",
+    )?;
     for axis in &domain.axes {
         if axis.values.is_empty() {
-            return Err(ToolsError::invalid(format!("Empty domain axis {}: retain a named missing-input value", axis.id)));
+            return Err(ToolsError::invalid(format!(
+                "Empty domain axis {}: retain a named missing-input value",
+                axis.id
+            )));
         }
-        unique(&axis.values.iter().map(|value| value.id.clone()).collect::<Vec<_>>(), &format!("value ID in {}", axis.id))?;
+        unique(
+            &axis.values.iter().map(|value| value.id.clone()).collect::<Vec<_>>(),
+            &format!("value ID in {}", axis.id),
+        )?;
     }
     for suite in &domain.suites {
         if suite.contracts.is_empty() {
-            return Err(ToolsError::invalid(format!("Suite {} has no expected contract", suite.id)));
+            return Err(ToolsError::invalid(format!(
+                "Suite {} has no expected contract",
+                suite.id
+            )));
         }
         if suite.profiles.is_empty() {
-            return Err(ToolsError::invalid(format!("Suite {} has no verification profile", suite.id)));
+            return Err(ToolsError::invalid(format!(
+                "Suite {} has no verification profile",
+                suite.id
+            )));
         }
-        unique(&suite.contracts.iter().map(|contract| contract.id.clone()).collect::<Vec<_>>(), &format!("contract ID in {}", suite.id))?;
+        unique(
+            &suite
+                .contracts
+                .iter()
+                .map(|contract| contract.id.clone())
+                .collect::<Vec<_>>(),
+            &format!("contract ID in {}", suite.id),
+        )?;
         for contract in &suite.contracts {
             if contract.minimum_assertions <= 0 {
-                return Err(ToolsError::invalid(format!("Contract {} must require at least one assertion", contract.id)));
+                return Err(ToolsError::invalid(format!(
+                    "Contract {} must require at least one assertion",
+                    contract.id
+                )));
             }
         }
     }
@@ -194,7 +227,10 @@ fn combine_requirements(requirements: &[InputRequirement]) -> Result<Vec<InputRe
     for requirement in requirements {
         if let Some(previous) = combined.get(requirement.id.as_str()) {
             if hash_json(&previous.to_json())? != hash_json(&requirement.to_json())? {
-                return Err(ToolsError::invalid(format!("Conflicting input requirement {}", requirement.id)));
+                return Err(ToolsError::invalid(format!(
+                    "Conflicting input requirement {}",
+                    requirement.id
+                )));
             }
         }
         combined.insert(requirement.id.as_str(), requirement);
@@ -245,7 +281,10 @@ impl<'a> Composition<'a> {
             .map(|axis| {
                 let mut values: Vec<&crate::verify::schema::AxisValue> = axis.values.iter().collect();
                 values.sort_by(|left, right| left.id.cmp(&right.id));
-                AxisPlan { id: axis.id.as_str(), values }
+                AxisPlan {
+                    id: axis.id.as_str(),
+                    values,
+                }
             })
             .collect();
         axes.sort_by(|left, right| left.id.cmp(right.id));
@@ -271,7 +310,12 @@ impl<'a> Composition<'a> {
             configuration.push((axis.id.to_owned(), value.id.clone()));
             requirements.extend(value.requirements.iter().cloned());
         }
-        let config_json = Json::object(configuration.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect());
+        let config_json = Json::object(
+            configuration
+                .iter()
+                .map(|(key, value)| (key.clone(), Json::string(value)))
+                .collect(),
+        );
         let configuration_id = format!("{}/{}", self.domain.id, hash_json(&config_json)?);
         let suite = self.suites[self.suite_index];
         Ok(ExpectedCase {
@@ -290,7 +334,6 @@ impl<'a> Composition<'a> {
             command: suite.command.clone(),
         })
     }
-
 }
 
 fn carry_positions(positions: &mut [usize], axes: &[AxisPlan], finished: &mut bool) {
@@ -346,12 +389,22 @@ pub struct Shard {
 
 /// Parse `INDEX/COUNT`.
 pub fn parse_shard(value: &str) -> Result<Shard, ToolsError> {
-    let (index_text, count_text) = value.split_once('/').ok_or_else(|| ToolsError::invalid("Shard must be INDEX/COUNT"))?;
-    if index_text.is_empty() || count_text.is_empty() || !index_text.bytes().all(|byte| byte.is_ascii_digit()) || !count_text.bytes().all(|byte| byte.is_ascii_digit()) {
+    let (index_text, count_text) = value
+        .split_once('/')
+        .ok_or_else(|| ToolsError::invalid("Shard must be INDEX/COUNT"))?;
+    if index_text.is_empty()
+        || count_text.is_empty()
+        || !index_text.bytes().all(|byte| byte.is_ascii_digit())
+        || !count_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return Err(ToolsError::invalid("Shard must be INDEX/COUNT"));
     }
-    let index: i64 = index_text.parse().map_err(|_| ToolsError::invalid("Shard requires 0 <= INDEX < COUNT"))?;
-    let count: i64 = count_text.parse().map_err(|_| ToolsError::invalid("Shard requires 0 <= INDEX < COUNT"))?;
+    let index: i64 = index_text
+        .parse()
+        .map_err(|_| ToolsError::invalid("Shard requires 0 <= INDEX < COUNT"))?;
+    let count: i64 = count_text
+        .parse()
+        .map_err(|_| ToolsError::invalid("Shard requires 0 <= INDEX < COUNT"))?;
     if count < 1 || index < 0 || index >= count {
         return Err(ToolsError::invalid("Shard requires 0 <= INDEX < COUNT"));
     }
@@ -384,7 +437,12 @@ mod tests {
         let mut count = CaseCount::from_u64(123);
         count.mul_small(456);
         assert_eq!(count.to_decimal(), "56088");
-        assert_eq!(CaseCount::parse_decimal("100000000000000000000000000").unwrap().to_decimal(), "100000000000000000000000000");
+        assert_eq!(
+            CaseCount::parse_decimal("100000000000000000000000000")
+                .unwrap()
+                .to_decimal(),
+            "100000000000000000000000000"
+        );
         assert!(CaseCount::parse_decimal("12a").is_err());
         assert!(CaseCount::from_u64(3) < CaseCount::from_u64(10));
     }

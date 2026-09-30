@@ -92,16 +92,27 @@ impl SandboxObservation {
     #[must_use]
     pub fn to_json(&self) -> Json {
         Json::object(vec![
-            ("command".to_owned(), Json::array(self.command.iter().map(Json::string).collect())),
+            (
+                "command".to_owned(),
+                Json::array(self.command.iter().map(Json::string).collect()),
+            ),
             ("cwd".to_owned(), Json::string(&self.cwd)),
             (
                 "environment".to_owned(),
-                Json::object(self.environment.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect()),
+                Json::object(
+                    self.environment
+                        .iter()
+                        .map(|(key, value)| (key.clone(), Json::string(value)))
+                        .collect(),
+                ),
             ),
             ("startedAt".to_owned(), Json::string(&self.started_at)),
             ("durationMs".to_owned(), Json::float(self.duration_ms)),
             ("pid".to_owned(), Json::uint(u64::from(self.pid))),
-            ("exitCode".to_owned(), self.exit_code.map_or(Json::Null, |code| Json::int(i64::from(code)))),
+            (
+                "exitCode".to_owned(),
+                self.exit_code.map_or(Json::Null, |code| Json::int(i64::from(code))),
+            ),
             ("timeout".to_owned(), Json::boolean(self.timeout)),
             ("stdout".to_owned(), Json::string(&self.stdout)),
             ("stderr".to_owned(), Json::string(&self.stderr)),
@@ -154,7 +165,10 @@ impl ObservedSandbox {
         if let Some(observation) = &self.finished {
             return Ok(observation.clone());
         }
-        let status = self.child.wait().map_err(|error| ToolsError::io("waiting for a child process", error))?;
+        let status = self
+            .child
+            .wait()
+            .map_err(|error| ToolsError::io("waiting for a child process", error))?;
         self.done.store(true, Ordering::SeqCst);
         if let Some(watchdog) = self.watchdog.take() {
             let _ = watchdog.join();
@@ -186,10 +200,19 @@ pub fn spawn_observed(
     environment: &[(String, String)],
     timeout_ms: u64,
 ) -> Result<ObservedSandbox, ToolsError> {
-    let (program, args) = command.split_first().ok_or_else(|| ToolsError::invalid("Cannot observe an empty command"))?;
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| ToolsError::invalid("Cannot observe an empty command"))?;
     let mut child_command = std::process::Command::new(program);
-    child_command.args(args).current_dir(cwd).env_clear().envs(environment.iter().cloned());
-    child_command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    child_command
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(environment.iter().cloned());
+    child_command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = child_command
         .spawn()
         .map_err(|error| ToolsError::io(format!("spawning {}", command.join(" ")), error))?;
@@ -266,11 +289,18 @@ pub fn windows(path: &str) -> String {
 /// Whether a corpus file is a selected pak (`/^pak[0-9]+\.pk3$/`).
 #[must_use]
 pub fn selected_pak(name: &str) -> bool {
-    name.strip_prefix("pak").and_then(|rest| rest.strip_suffix(".pk3")).is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+    name.strip_prefix("pak")
+        .and_then(|rest| rest.strip_suffix(".pk3"))
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// Wait until the engine log contains `marker`, failing when the process exits first.
-fn wait_for_log(path: &str, marker: &str, process: &mut ObservedSandbox, timeout_ms: u64) -> Result<String, ToolsError> {
+fn wait_for_log(
+    path: &str,
+    marker: &str,
+    process: &mut ObservedSandbox,
+    timeout_ms: u64,
+) -> Result<String, ToolsError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
         let text = fsutil::read_text(Path::new(path)).unwrap_or_default();
@@ -278,13 +308,27 @@ fn wait_for_log(path: &str, marker: &str, process: &mut ObservedSandbox, timeout
             return Ok(text);
         }
         if !process.alive()? {
-            let tail: String = text.chars().rev().take(2500).collect::<Vec<char>>().into_iter().rev().collect();
+            let tail: String = text
+                .chars()
+                .rev()
+                .take(2500)
+                .collect::<Vec<char>>()
+                .into_iter()
+                .rev()
+                .collect();
             return Err(ToolsError::invalid(format!("Exited before {marker}: {tail}")));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     let text = fsutil::read_text(Path::new(path)).unwrap_or_default();
-    let tail: String = text.chars().rev().take(2500).collect::<Vec<char>>().into_iter().rev().collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(2500)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
     Err(ToolsError::invalid(format!("Missing {marker}: {tail}")))
 }
 
@@ -324,7 +368,9 @@ pub fn qualify_case(log: &str, map: &str, queries: &[UdpQuery], outputs: &[FileI
         map_initialized: log.contains("------ Server Initialization ------") && log.contains(&format!("map: {map}")),
         vm_executed: log.contains("Game Initialization") || log.contains("InitGame:"),
         protocol_replies: queries.iter().filter(|item| !item.response.is_empty()).count(),
-        demo_recorded: outputs.iter().any(|item| item.path.ends_with(".dm_68") && item.size > 16),
+        demo_recorded: outputs
+            .iter()
+            .any(|item| item.path.ends_with(".dm_68") && item.size > 16),
         render_frames: outputs.iter().filter(|item| item.path.ends_with(".tga")).count(),
     }
 }
@@ -363,15 +409,25 @@ fn case_config(mode: RetailMode, map: &str) -> String {
 }
 
 #[allow(clippy::too_many_lines)]
-fn capture_case(root: &str, display: &str, content: &str, edition: Edition, mode: RetailMode) -> Result<Json, ToolsError> {
+fn capture_case(
+    root: &str,
+    display: &str,
+    content: &str,
+    edition: Edition,
+    mode: RetailMode,
+) -> Result<Json, ToolsError> {
     let directory = format!("{root}/{}-{}", edition.as_str(), mode.as_str());
     let home = format!("{directory}/profile");
     let map = if edition == Edition::Baseq3 { "q3dm1" } else { "mpteam1" };
     std::fs::create_dir_all(format!("{home}/{}", edition.as_str()))
         .map_err(|error| ToolsError::io(format!("creating {home}"), error))?;
-    std::fs::create_dir_all(format!("{home}/baseq3")).map_err(|error| ToolsError::io(format!("creating {home}"), error))?;
+    std::fs::create_dir_all(format!("{home}/baseq3"))
+        .map_err(|error| ToolsError::io(format!("creating {home}"), error))?;
     let config = case_config(mode, map);
-    fsutil::write_text(Path::new(&format!("{home}/{}/reference.cfg", edition.as_str())), &config)?;
+    fsutil::write_text(
+        Path::new(&format!("{home}/{}/reference.cfg", edition.as_str())),
+        &config,
+    )?;
     fsutil::write_text(
         Path::new(&format!("{home}/{}/q3config.cfg", edition.as_str())),
         "// owned empty reference profile\n",
@@ -398,7 +454,11 @@ fn capture_case(root: &str, display: &str, content: &str, edition: Edition, mode
     let wine = format!("{STEAM_COMMON}/Proton - Experimental/files/bin/wine");
     let fs_basepath = windows(content);
     let fs_homepath = windows(&home);
-    let fs_game = if edition == Edition::Baseq3 { "" } else { edition.as_str() };
+    let fs_game = if edition == Edition::Baseq3 {
+        ""
+    } else {
+        edition.as_str()
+    };
     let dedicated = if mode == RetailMode::Dedicated { "1" } else { "0" };
     let hostname = format!("q3-retail-{}", edition.as_str());
     let gametype = if edition == Edition::Baseq3 { "0" } else { "4" };
@@ -465,7 +525,11 @@ fn capture_case(root: &str, display: &str, content: &str, edition: Edition, mode
     let run = (|| -> Result<(), ToolsError> {
         wait_for_log(
             &log_path,
-            if mode == RetailMode::Dedicated { "Q3_RETAIL_READY" } else { "Q3_RETAIL_CAPTURE_DONE" },
+            if mode == RetailMode::Dedicated {
+                "Q3_RETAIL_READY"
+            } else {
+                "Q3_RETAIL_CAPTURE_DONE"
+            },
             &mut process,
             80_000,
         )?;
@@ -499,7 +563,9 @@ fn capture_case(root: &str, display: &str, content: &str, edition: Edition, mode
         edition.as_str(),
         mode.as_str(),
         qualification.to_json().render(),
-        failure.as_ref().map_or(String::new(), |reason| format!(" failure {reason}"))
+        failure
+            .as_ref()
+            .map_or(String::new(), |reason| format!(" failure {reason}"))
     );
     Ok(Json::object(vec![
         ("edition".to_owned(), Json::string(edition.as_str())),
@@ -508,19 +574,35 @@ fn capture_case(root: &str, display: &str, content: &str, edition: Edition, mode
         ("directory".to_owned(), Json::string(&directory)),
         (
             "requestedSettings".to_owned(),
-            Json::object(values.iter().map(|(name, value)| ((*name).to_owned(), Json::string(*value))).collect()),
+            Json::object(
+                values
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), Json::string(*value)))
+                    .collect(),
+            ),
         ),
         ("input".to_owned(), Json::string(&config)),
         ("observation".to_owned(), observation.to_json()),
         ("qualification".to_owned(), qualification.to_json()),
         ("failure".to_owned(), failure.as_ref().map_or(Json::Null, Json::string)),
-        ("queries".to_owned(), Json::array(queries.iter().map(UdpQuery::to_json).collect())),
-        ("outputs".to_owned(), Json::array(outputs.iter().map(FileIdentity::to_json).collect())),
+        (
+            "queries".to_owned(),
+            Json::array(queries.iter().map(UdpQuery::to_json).collect()),
+        ),
+        (
+            "outputs".to_owned(),
+            Json::array(outputs.iter().map(FileIdentity::to_json).collect()),
+        ),
         ("log".to_owned(), Json::string(&log)),
         ("home".to_owned(), Json::string(&home)),
         (
             "environment".to_owned(),
-            Json::object(environment.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect()),
+            Json::object(
+                environment
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Json::string(value)))
+                    .collect(),
+            ),
         ),
     ]))
 }
@@ -528,7 +610,9 @@ fn capture_case(root: &str, display: &str, content: &str, edition: Edition, mode
 /// Run the retail capture (donor `main` takes no arguments).
 pub fn run(args: &[String]) -> Result<i32, ToolsError> {
     if !args.is_empty() {
-        return Err(ToolsError::invalid("Usage: qa-tools reference::q3-retail::capture::run"));
+        return Err(ToolsError::invalid(
+            "Usage: qa-tools reference::q3-retail::capture::run",
+        ));
     }
     let project = quake_typescript_root();
     let retail = format!("{STEAM_COMMON}/Quake 3 Arena/quake3.exe");
@@ -537,12 +621,17 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
     let corpus = format!("{}/q3a", corpus_root());
     let original_source = format!("{}/quake-iii-arena", source_root());
     let artifacts = project.join(".artifacts/q3-retail");
-    std::fs::create_dir_all(&artifacts).map_err(|error| ToolsError::io(format!("creating {}", artifacts.display()), error))?;
-    let root = fsutil::make_temp_dir(&artifacts, "capture-")?.to_string_lossy().into_owned();
+    std::fs::create_dir_all(&artifacts)
+        .map_err(|error| ToolsError::io(format!("creating {}", artifacts.display()), error))?;
+    let root = fsutil::make_temp_dir(&artifacts, "capture-")?
+        .to_string_lossy()
+        .into_owned();
     for path in ["tmp/.X11-unix", "bin", "content/baseq3", "content/missionpack"] {
-        std::fs::create_dir_all(format!("{root}/{path}")).map_err(|error| ToolsError::io(format!("creating {root}/{path}"), error))?;
+        std::fs::create_dir_all(format!("{root}/{path}"))
+            .map_err(|error| ToolsError::io(format!("creating {root}/{path}"), error))?;
     }
-    std::fs::copy(&retail, format!("{root}/bin/quake3.exe")).map_err(|error| ToolsError::io("staging quake3.exe", error))?;
+    std::fs::copy(&retail, format!("{root}/bin/quake3.exe"))
+        .map_err(|error| ToolsError::io("staging quake3.exe", error))?;
     let mut archives = Vec::new();
     for edition in ["baseq3", "missionpack"] {
         let mut names: Vec<String> = Vec::new();
@@ -559,7 +648,10 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         for name in names {
             let source = format!("{corpus}/{edition}/{name}");
             archives.push(identify_file(&source)?.to_json());
-            fsutil::create_symlink(Path::new(&source), Path::new(&format!("{root}/content/{edition}/{name}")))?;
+            fsutil::create_symlink(
+                Path::new(&source),
+                Path::new(&format!("{root}/content/{edition}/{name}")),
+            )?;
         }
     }
     let display = ":23173";
@@ -568,7 +660,10 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         ("LC_ALL".to_owned(), "C".to_owned()),
         ("HOME".to_owned(), root.clone()),
         ("LIBGL_ALWAYS_SOFTWARE".to_owned(), "1".to_owned()),
-        ("__EGL_VENDOR_LIBRARY_FILENAMES".to_owned(), "/usr/share/glvnd/egl_vendor.d/50_mesa.json".to_owned()),
+        (
+            "__EGL_VENDOR_LIBRARY_FILENAMES".to_owned(),
+            "/usr/share/glvnd/egl_vendor.d/50_mesa.json".to_owned(),
+        ),
     ];
     let xvfb_command = sandbox(
         &root,
@@ -596,7 +691,13 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         if !server.alive()? {
             return Err(ToolsError::invalid("Private Xvfb exited"));
         }
-        cases.push(capture_case(&root, display, &format!("{root}/content"), Edition::Baseq3, RetailMode::Dedicated)?);
+        cases.push(capture_case(
+            &root,
+            display,
+            &format!("{root}/content"),
+            Edition::Baseq3,
+            RetailMode::Dedicated,
+        )?);
         Ok(())
     })();
     if let Err(error) = run {
@@ -605,8 +706,10 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
     server.stop()?;
     let display_observation = server.finish()?;
     let exe = std::env::current_exe().map_err(|error| ToolsError::io("resolving current executable", error))?;
-    let capture_program =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference/q3_retail/capture.rs").to_string_lossy().into_owned();
+    let capture_program = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/reference/q3_retail/capture.rs")
+        .to_string_lossy()
+        .into_owned();
     let mut runtime_files = Vec::new();
     for path in [
         wine.as_str(),
@@ -699,7 +802,10 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
             .map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
     }
     fsutil::write_text(&output, &format!("{}\n", manifest.render_pretty()))?;
-    fsutil::write_text(Path::new(&format!("{root}/manifest.json")), &format!("{}\n", manifest.render_pretty()))?;
+    fsutil::write_text(
+        Path::new(&format!("{root}/manifest.json")),
+        &format!("{}\n", manifest.render_pretty()),
+    )?;
     fsutil::write_text(
         Path::new(&format!("{root}/live.json")),
         &Json::object(vec![
@@ -710,7 +816,11 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
                 Json::array(
                     cases
                         .iter()
-                        .filter_map(|case| case.get("observation").and_then(|observation| observation.get("pid")).cloned())
+                        .filter_map(|case| {
+                            case.get("observation")
+                                .and_then(|observation| observation.get("pid"))
+                                .cloned()
+                        })
                         .collect(),
                 ),
             ),
@@ -718,7 +828,10 @@ pub fn run(args: &[String]) -> Result<i32, ToolsError> {
         .render(),
     )?;
     println!("{}", output.display());
-    let failed = failure.is_some() || cases.iter().any(|case| case.get("failure").is_some_and(|value| !value.is_null()));
+    let failed = failure.is_some()
+        || cases
+            .iter()
+            .any(|case| case.get("failure").is_some_and(|value| !value.is_null()));
     Ok(i32::from(failed))
 }
 
@@ -775,15 +888,38 @@ mod tests {
     #[test]
     fn qualifies_case_evidence() {
         let log = "------ Server Initialization ------\nmap: q3dm1\nGame Initialization\n";
-        let packet =
-            UdpPacket { hex: String::new(), text: "reply".to_owned(), from: "127.0.0.1".to_owned(), port: 27960, elapsed_ms: 1.0 };
+        let packet = UdpPacket {
+            hex: String::new(),
+            text: "reply".to_owned(),
+            from: "127.0.0.1".to_owned(),
+            port: 27960,
+            elapsed_ms: 1.0,
+        };
         let queries = vec![
-            UdpQuery { destination: String::new(), request: "getstatus".to_owned(), sent_hex: String::new(), response: vec![packet] },
-            UdpQuery { destination: String::new(), request: "quit".to_owned(), sent_hex: String::new(), response: Vec::new() },
+            UdpQuery {
+                destination: String::new(),
+                request: "getstatus".to_owned(),
+                sent_hex: String::new(),
+                response: vec![packet],
+            },
+            UdpQuery {
+                destination: String::new(),
+                request: "quit".to_owned(),
+                sent_hex: String::new(),
+                response: Vec::new(),
+            },
         ];
         let outputs = vec![
-            FileIdentity { path: "/home/demo.dm_68".to_owned(), size: 100, sha256: String::new() },
-            FileIdentity { path: "/home/shot.tga".to_owned(), size: 100, sha256: String::new() },
+            FileIdentity {
+                path: "/home/demo.dm_68".to_owned(),
+                size: 100,
+                sha256: String::new(),
+            },
+            FileIdentity {
+                path: "/home/shot.tga".to_owned(),
+                size: 100,
+                sha256: String::new(),
+            },
         ];
         let qualification = qualify_case(log, "q3dm1", &queries, &outputs);
         assert!(qualification.map_initialized);

@@ -7,9 +7,8 @@
 
 use crate::json::{deep_strict_equal, parse_json, Json};
 use crate::reference::q3::semantics::{
-    client_connect, clip_velocity, drop_timers, nested_vm, single_clock, subdivide_move, weapon_sequence,
-    Ammo, ClipInput, ConnectInput, MoveInput, PriorVm, Subdivision, TimerInput, Weapon, WeaponInput, WeaponState,
-    WeaponStep,
+    client_connect, clip_velocity, drop_timers, nested_vm, single_clock, subdivide_move, weapon_sequence, Ammo,
+    ClipInput, ConnectInput, MoveInput, PriorVm, Subdivision, TimerInput, Weapon, WeaponInput, WeaponState, WeaponStep,
 };
 
 /// One checked expectation.
@@ -68,17 +67,29 @@ impl SourceScenario {
                 "sourceLocations".to_owned(),
                 Json::array(self.source_locations.iter().map(Json::string).collect()),
             ),
-            ("assumptions".to_owned(), Json::array(self.assumptions.iter().map(Json::string).collect())),
+            (
+                "assumptions".to_owned(),
+                Json::array(self.assumptions.iter().map(Json::string).collect()),
+            ),
             ("input".to_owned(), self.input.clone()),
             ("output".to_owned(), self.output.clone()),
-            ("assertions".to_owned(), Json::array(self.assertions.iter().map(SourceAssertion::to_json).collect())),
+            (
+                "assertions".to_owned(),
+                Json::array(self.assertions.iter().map(SourceAssertion::to_json).collect()),
+            ),
         ])
     }
 }
 
 fn check(id: &'static str, derivation: &'static str, expected: Json, actual: Json) -> SourceAssertion {
     let passed = deep_strict_equal(&expected, &actual);
-    SourceAssertion { id, derivation, expected, actual, passed }
+    SourceAssertion {
+        id,
+        derivation,
+        expected,
+        actual,
+        passed,
+    }
 }
 
 /// Parse a literal expectation (fixed scenario data).
@@ -87,9 +98,16 @@ fn literal(text: &str) -> Json {
 }
 
 fn numeric_scenario() -> SourceScenario {
-    let entering =
-        ClipInput { velocity: [-100.0, 2.0, 3.0], normal: [1.0, 0.0, 0.0], overbounce: 1.125 };
-    let leaving = ClipInput { velocity: [100.0, 2.0, 3.0], normal: [1.0, 0.0, 0.0], overbounce: 1.25 };
+    let entering = ClipInput {
+        velocity: [-100.0, 2.0, 3.0],
+        normal: [1.0, 0.0, 0.0],
+        overbounce: 1.125,
+    };
+    let leaving = ClipInput {
+        velocity: [100.0, 2.0, 3.0],
+        normal: [1.0, 0.0, 0.0],
+        overbounce: 1.25,
+    };
     let cancellation = ClipInput {
         velocity: [16777216.0, 1.0, -16777216.0],
         normal: [1.0, 1.0, 1.0],
@@ -99,7 +117,10 @@ fn numeric_scenario() -> SourceScenario {
     let entered = clip_velocity(&entering);
     let left = clip_velocity(&leaving);
     let cancelled = clip_velocity(&cancellation);
-    let clocks: Vec<Json> = clock_deltas.iter().map(|delta| single_clock(100.0, 100.0 + delta).to_json()).collect();
+    let clocks: Vec<Json> = clock_deltas
+        .iter()
+        .map(|delta| single_clock(100.0, 100.0 + delta).to_json())
+        .collect();
     SourceScenario {
         id: "q3-numeric-source",
         source_locations: ["code/game/bg_pmove.c:145-162", "code/game/bg_pmove.c:1894-1910", "code/game/q_shared.h:611"]
@@ -165,7 +186,14 @@ fn move_input(
     jump_held: bool,
     upmove: f64,
 ) -> MoveInput {
-    MoveInput { command_time, server_time, framecount, subdivision, jump_held, upmove }
+    MoveInput {
+        command_time,
+        server_time,
+        framecount,
+        subdivision,
+        jump_held,
+        upmove,
+    }
 }
 
 fn movement_scenario() -> SourceScenario {
@@ -187,7 +215,13 @@ fn movement_scenario() -> SourceScenario {
             Json::array(output.steps.iter().map(|step| Json::float(step.msec)).collect())
         })
         .collect();
-    let catchup_times = Json::array(catchup_out.steps.iter().map(|step| Json::float(step.command_time)).collect());
+    let catchup_times = Json::array(
+        catchup_out
+            .steps
+            .iter()
+            .map(|step| Json::float(step.command_time))
+            .collect(),
+    );
     SourceScenario {
         id: "q3-pmove-subdivision-source",
         source_locations: ["code/game/bg_pmove.c:2026-2081", "code/game/q_shared.h:1136"]
@@ -266,12 +300,16 @@ fn movement_scenario() -> SourceScenario {
 }
 
 fn timer_scenario() -> SourceScenario {
-    let input = TimerInput { msec: 0.0, pm_time: 66.0, flags: 355.0, legs_timer: 66.0, torso_timer: 67.0 };
+    let input = TimerInput {
+        msec: 0.0,
+        pm_time: 66.0,
+        flags: 355.0,
+        legs_timer: 66.0,
+        torso_timer: 67.0,
+    };
     let output: Vec<Json> = [65.0, 66.0, 67.0]
         .iter()
-        .map(|msec| {
-            drop_timers(&TimerInput { msec: *msec, ..input }).to_json()
-        })
+        .map(|msec| drop_timers(&TimerInput { msec: *msec, ..input }).to_json())
         .collect();
     SourceScenario {
         id: "q3-timer-expiry-source",
@@ -303,7 +341,12 @@ fn timer_scenario() -> SourceScenario {
 }
 
 fn weapon_step(msec: f64, weapon: Weapon, attack: bool, haste: bool) -> WeaponStep {
-    WeaponStep { msec, weapon, attack, haste }
+    WeaponStep {
+        msec,
+        weapon,
+        attack,
+        haste,
+    }
 }
 
 fn firing_scenario() -> SourceScenario {
@@ -312,7 +355,11 @@ fn firing_scenario() -> SourceScenario {
         weapon_state: WeaponState::Firing,
         weapon_time: 30.0,
         torso_anim: 0.0,
-        ammo: Ammo { machinegun: 2.0, rocket: 4.0, lightning: -1.0 },
+        ammo: Ammo {
+            machinegun: 2.0,
+            rocket: 4.0,
+            lightning: -1.0,
+        },
         event_sequence: 0.0,
         steps: vec![
             weapon_step(66.0, Weapon::Machinegun, true, false),
@@ -351,10 +398,16 @@ fn firing_scenario() -> SourceScenario {
             .collect(),
     );
     let ring_record = Json::object(vec![
-        ("ring".to_owned(), Json::array(output.ring.iter().map(|slot| Json::float(*slot)).collect())),
+        (
+            "ring".to_owned(),
+            Json::array(output.ring.iter().map(|slot| Json::float(*slot)).collect()),
+        ),
         (
             "sequence".to_owned(),
-            output.states.last().map_or(Json::Null, |state| Json::float(state.event_sequence)),
+            output
+                .states
+                .last()
+                .map_or(Json::Null, |state| Json::float(state.event_sequence)),
         ),
     ]);
     SourceScenario {
@@ -421,7 +474,11 @@ fn switch_scenario() -> SourceScenario {
         weapon_state: WeaponState::Ready,
         weapon_time: 0.0,
         torso_anim: 0.0,
-        ammo: Ammo { machinegun: 1.0, rocket: 4.0, lightning: -1.0 },
+        ammo: Ammo {
+            machinegun: 1.0,
+            rocket: 4.0,
+            lightning: -1.0,
+        },
         event_sequence: 0.0,
         steps: vec![
             weapon_step(1.0, Weapon::Rocket, true, false),
@@ -500,7 +557,11 @@ fn haste_scenario() -> SourceScenario {
         weapon_state: WeaponState::Ready,
         weapon_time: 0.0,
         torso_anim: 0.0,
-        ammo: Ammo { machinegun: 1.0, rocket: 1.0, lightning: -1.0 },
+        ammo: Ammo {
+            machinegun: 1.0,
+            rocket: 1.0,
+            lightning: -1.0,
+        },
         event_sequence: 1.0,
         steps: vec![weapon_step(1.0, Weapon::Lightning, true, true)],
     };
@@ -508,14 +569,26 @@ fn haste_scenario() -> SourceScenario {
     let actual = Json::object(vec![
         (
             "time".to_owned(),
-            output.states.last().map_or(Json::Null, |state| Json::float(state.weapon_time)),
+            output
+                .states
+                .last()
+                .map_or(Json::Null, |state| Json::float(state.weapon_time)),
         ),
         (
             "ammo".to_owned(),
-            output.states.last().map_or(Json::Null, |state| Json::float(state.ammo.lightning)),
+            output
+                .states
+                .last()
+                .map_or(Json::Null, |state| Json::float(state.ammo.lightning)),
         ),
-        ("ring".to_owned(), Json::array(output.ring.iter().map(|slot| Json::float(*slot)).collect())),
-        ("trace".to_owned(), Json::array(output.trace.iter().map(Json::string).collect())),
+        (
+            "ring".to_owned(),
+            Json::array(output.ring.iter().map(|slot| Json::float(*slot)).collect()),
+        ),
+        (
+            "trace".to_owned(),
+            Json::array(output.trace.iter().map(Json::string).collect()),
+        ),
     ]);
     SourceScenario {
         id: "q3-haste-infinite-ammo-source",
@@ -707,7 +780,12 @@ mod tests {
         for scenario in evaluate_scenarios() {
             for assertion in &scenario.assertions {
                 count += 1;
-                assert!(deep_strict_equal(&assertion.actual, &assertion.expected), "{}/{}", scenario.id, assertion.id);
+                assert!(
+                    deep_strict_equal(&assertion.actual, &assertion.expected),
+                    "{}/{}",
+                    scenario.id,
+                    assertion.id
+                );
                 assert!(assertion.passed, "{}/{}", scenario.id, assertion.id);
             }
         }

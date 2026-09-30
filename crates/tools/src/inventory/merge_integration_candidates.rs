@@ -96,7 +96,10 @@ fn field<'a>(entries: &'a [(String, Json)], key: &str) -> Result<&'a Json, Tools
 }
 
 fn text(value: &Json) -> Result<String, ToolsError> {
-    value.as_str().map(str::to_owned).ok_or_else(|| ToolsError::invalid("Expected string"))
+    value
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| ToolsError::invalid("Expected string"))
 }
 
 /// Merge per-game runs under `input` into `output/combined.json`.
@@ -116,16 +119,25 @@ pub fn merge_runs(input: &Path, output: &Path) -> Result<String, ToolsError> {
         revision = Some(current);
         let joined = read_json(&directory.join("feature-join.json"))?;
         let joined_entries = object(&joined, "Invalid feature join")?;
-        let inventories = array(field(joined_entries, "inventories").map_err(|_| ToolsError::invalid("Invalid feature join"))?, "Invalid feature join")?;
+        let inventories = array(
+            field(joined_entries, "inventories").map_err(|_| ToolsError::invalid("Invalid feature join"))?,
+            "Invalid feature join",
+        )?;
         let mut seen = HashSet::new();
         for inventory in inventories {
             let inventory_entries = object(inventory, "Invalid inventory")?;
-            let joins = array(field(inventory_entries, "joins").map_err(|_| ToolsError::invalid("Invalid inventory"))?, "Invalid inventory")?;
+            let joins = array(
+                field(inventory_entries, "joins").map_err(|_| ToolsError::invalid("Invalid inventory"))?,
+                "Invalid inventory",
+            )?;
             let inner = object(
                 field(inventory_entries, "inventory").map_err(|_| ToolsError::invalid("Invalid inventory"))?,
                 "Invalid inventory",
             )?;
-            let raw_list = array(field(inner, "features").map_err(|_| ToolsError::invalid("Invalid inventory"))?, "Invalid inventory")?;
+            let raw_list = array(
+                field(inner, "features").map_err(|_| ToolsError::invalid("Invalid inventory"))?,
+                "Invalid inventory",
+            )?;
             let mut raw_features = HashMap::new();
             for feature in raw_list {
                 let feature_entries = object(feature, "Invalid feature")?;
@@ -141,7 +153,9 @@ pub fn merge_runs(input: &Path, output: &Path) -> Result<String, ToolsError> {
                 if !seen.insert(id.clone()) {
                     return Err(ToolsError::invalid(format!("Duplicate feature {id} in {game}")));
                 }
-                let raw = raw_features.get(&id).ok_or_else(|| ToolsError::invalid(format!("Missing raw feature {id}")))?;
+                let raw = raw_features
+                    .get(&id)
+                    .ok_or_else(|| ToolsError::invalid(format!("Missing raw feature {id}")))?;
                 let index = *indexes.get(&id).unwrap_or(&features.len());
                 if index == features.len() {
                     indexes.insert(id.clone(), index);
@@ -157,22 +171,36 @@ pub fn merge_runs(input: &Path, output: &Path) -> Result<String, ToolsError> {
                 for declaration in declarations {
                     features[index].declaration_ids.insert(text(declaration)?);
                 }
-                let path_value =
-                    inventory_entries.iter().find(|(present, _)| present == "path").map(|(_, found)| found);
+                let path_value = inventory_entries
+                    .iter()
+                    .find(|(present, _)| present == "path")
+                    .map(|(_, found)| found);
                 features[index]
                     .inventories
                     .insert(text(path_value.unwrap_or(&Json::Null))?);
             }
         }
         if seen.len() != FEATURE_COUNT {
-            return Err(ToolsError::invalid(format!("{game} did not retain all {FEATURE_COUNT} existing feature IDs")));
+            return Err(ToolsError::invalid(format!(
+                "{game} did not retain all {FEATURE_COUNT} existing feature IDs"
+            )));
         }
         let mut artifacts = Vec::new();
-        for name in ["inventory.json", "candidates.json", "summary.json", "feature-join.json", "anchor-inventory.json", "historical-completion.json"] {
+        for name in [
+            "inventory.json",
+            "candidates.json",
+            "summary.json",
+            "feature-join.json",
+            "anchor-inventory.json",
+            "historical-completion.json",
+        ] {
             let path = directory.join(name);
             artifacts.push(Json::object(vec![
                 ("path".to_owned(), Json::string(path.to_string_lossy())),
-                ("sha256".to_owned(), Json::string(hash_bytes(&fsutil::read_bytes(&path)?))),
+                (
+                    "sha256".to_owned(),
+                    Json::string(hash_bytes(&fsutil::read_bytes(&path)?)),
+                ),
             ]));
         }
         runs.push(Json::object(vec![
@@ -219,7 +247,11 @@ pub fn merge_runs(input: &Path, output: &Path) -> Result<String, ToolsError> {
     ]);
     let destination = output.join("combined.json");
     fsutil::write_text(&destination, &format!("{}\n", result.render_pretty()))?;
-    Ok(format!("Merged 3 runs and {} feature IDs into {}/combined.json", features.len(), output.display()))
+    Ok(format!(
+        "Merged 3 runs and {} feature IDs into {}/combined.json",
+        features.len(),
+        output.display()
+    ))
 }
 
 /// Run the merger over `--input/--out` pairs (donor `main`).
@@ -229,7 +261,9 @@ pub fn run(args: &[String]) -> Result<(), ToolsError> {
     let mut index = 0;
     while index < args.len() {
         let key = &args[index];
-        let value = args.get(index + 1).ok_or_else(|| ToolsError::invalid(format!("Missing value for {key}")))?;
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| ToolsError::invalid(format!("Missing value for {key}")))?;
         if key == "--input" {
             input = fsutil::lexical_absolute(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")), value);
         } else if key == "--out" {
@@ -252,10 +286,14 @@ mod tests {
         for game in games {
             let run = directory.join(format!("quake-integration-{game}"));
             std::fs::create_dir_all(&run).expect("run dir");
-            fsutil::write_text(&run.join("summary.json"), &format!(r#"{{"unifiedRevision": "{revision}"}}"#))
-                .expect("summary");
-            let raws: Vec<String> =
-                (0..features_per_game).map(|index| format!(r#"{{"id": "f{index:04}", "n": {index}}}"#)).collect();
+            fsutil::write_text(
+                &run.join("summary.json"),
+                &format!(r#"{{"unifiedRevision": "{revision}"}}"#),
+            )
+            .expect("summary");
+            let raws: Vec<String> = (0..features_per_game)
+                .map(|index| format!(r#"{{"id": "f{index:04}", "n": {index}}}"#))
+                .collect();
             let joins: Vec<String> = (0..features_per_game)
                 .map(|index| format!(r#"{{"id": "f{index:04}", "declarationIds": ["{game}:d{index:04}"]}}"#))
                 .collect();
@@ -264,7 +302,12 @@ mod tests {
                 &format!(r#"{{"inventories": [{{"path": "inv-{game}", "joins": [{}], "inventory": {{"features": [{}]}}}}]}}"#, joins.join(","), raws.join(",")),
             )
             .expect("join");
-            for name in ["inventory.json", "candidates.json", "anchor-inventory.json", "historical-completion.json"] {
+            for name in [
+                "inventory.json",
+                "candidates.json",
+                "anchor-inventory.json",
+                "historical-completion.json",
+            ] {
                 fsutil::write_text(&run.join(name), "{}").expect("artifact");
             }
         }
@@ -289,12 +332,33 @@ mod tests {
         let message = merge_runs(&input, &output).expect("merge");
         assert!(message.starts_with("Merged 3 runs and 477 feature IDs"), "{message}");
         let combined = parse_json(&fsutil::read_text(&output.join("combined.json")).expect("read")).expect("parse");
-        assert_eq!(combined.get("unifiedRevision").and_then(Json::as_str), Some(revision.as_str()));
+        assert_eq!(
+            combined.get("unifiedRevision").and_then(Json::as_str),
+            Some(revision.as_str())
+        );
         let features = combined.get("features").and_then(Json::as_array).expect("features");
         assert_eq!(features.len(), FEATURE_COUNT);
-        assert_eq!(features[0].get("declarationIds").and_then(Json::as_array).map(<[Json]>::len), Some(3));
-        assert_eq!(features[0].get("inventories").and_then(Json::as_array).map(<[Json]>::len), Some(3));
-        assert_eq!(combined.get("comparisonDocs").and_then(Json::as_array).map(<[Json]>::len), Some(3));
+        assert_eq!(
+            features[0]
+                .get("declarationIds")
+                .and_then(Json::as_array)
+                .map(<[Json]>::len),
+            Some(3)
+        );
+        assert_eq!(
+            features[0]
+                .get("inventories")
+                .and_then(Json::as_array)
+                .map(<[Json]>::len),
+            Some(3)
+        );
+        assert_eq!(
+            combined
+                .get("comparisonDocs")
+                .and_then(Json::as_array)
+                .map(<[Json]>::len),
+            Some(3)
+        );
         fsutil::remove_forced(&input);
     }
 
@@ -303,11 +367,20 @@ mod tests {
         let revision = head_revision();
         let input = fixture_input(&revision, &["q1", "q2", "q3"], FEATURE_COUNT);
         let output = input.join("out");
-        fsutil::write_text(&input.join("quake-integration-q2/summary.json"), r#"{"unifiedRevision": "xxx"}"#)
-            .expect("write");
-        assert_eq!(merge_runs(&input, &output).expect_err("revision").to_string(), "Unified snapshots differ");
-        fsutil::write_text(&input.join("quake-integration-q2/summary.json"), &format!(r#"{{"unifiedRevision": "{revision}"}}"#))
-            .expect("write");
+        fsutil::write_text(
+            &input.join("quake-integration-q2/summary.json"),
+            r#"{"unifiedRevision": "xxx"}"#,
+        )
+        .expect("write");
+        assert_eq!(
+            merge_runs(&input, &output).expect_err("revision").to_string(),
+            "Unified snapshots differ"
+        );
+        fsutil::write_text(
+            &input.join("quake-integration-q2/summary.json"),
+            &format!(r#"{{"unifiedRevision": "{revision}"}}"#),
+        )
+        .expect("write");
         fsutil::write_text(
             &input.join("quake-integration-q3/feature-join.json"),
             r#"{"inventories": [{"path": "inv", "joins": [], "inventory": {"features": []}}]}"#,

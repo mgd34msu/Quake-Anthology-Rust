@@ -52,11 +52,20 @@ fn is_safe_size(value: &Json) -> Option<u64> {
 }
 
 fn is_sha256(value: &Json) -> bool {
-    value.as_str().is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+    value.as_str().is_some_and(|sha| {
+        sha.len() == 64
+            && sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
 }
 
 /// Collect artifact identities under `artifacts_prefix`, recursing into `provenance.json`.
-fn visit(value: &Json, identities: &mut HashMap<String, (u64, String)>, artifacts_prefix: &str) -> Result<(), ToolsError> {
+fn visit(
+    value: &Json,
+    identities: &mut HashMap<String, (u64, String)>,
+    artifacts_prefix: &str,
+) -> Result<(), ToolsError> {
     if let Some(items) = value.as_array() {
         for item in items {
             visit(item, identities, artifacts_prefix)?;
@@ -112,7 +121,10 @@ pub fn verify_documents(paths: &[PathBuf], artifacts_dir: &Path) -> Result<Verif
         let Some(entries) = value.as_object() else {
             return Err(ToolsError::invalid(format!("Invalid capture: {text}")));
         };
-        let version = entries.iter().find(|(key, _)| key == "schemaVersion").map(|(_, found)| found);
+        let version = entries
+            .iter()
+            .find(|(key, _)| key == "schemaVersion")
+            .map(|(_, found)| found);
         if version.and_then(Json::as_f64) != Some(1.0) {
             return Err(ToolsError::invalid(format!("Invalid capture: {text}")));
         }
@@ -123,7 +135,10 @@ pub fn verify_documents(paths: &[PathBuf], artifacts_dir: &Path) -> Result<Verif
             }
             for item in cases {
                 let id = item.get("id").and_then(Json::as_str);
-                if item.as_object().is_none() || id.is_none() || item.get("observed").and_then(Json::as_bool) != Some(true) {
+                if item.as_object().is_none()
+                    || id.is_none()
+                    || item.get("observed").and_then(Json::as_bool) != Some(true)
+                {
                     return Err(ToolsError::invalid("Native case did not pass its live checks"));
                 }
                 observed.push(id.expect("checked id").to_owned());
@@ -142,7 +157,11 @@ pub fn verify_documents(paths: &[PathBuf], artifacts_dir: &Path) -> Result<Verif
             return Err(ToolsError::invalid(format!("Captured artifact changed: {path}")));
         }
     }
-    Ok(VerifySummary { checked_artifact_identities: identities.len(), observed, unsupported })
+    Ok(VerifySummary {
+        checked_artifact_identities: identities.len(),
+        observed,
+        unsupported,
+    })
 }
 
 /// Verify the retained native captures and print the summary (donor `verifyCaptures`).
@@ -179,7 +198,12 @@ mod tests {
 
     fn latest_json(identity: &Json, observed: bool) -> String {
         let cases: Vec<String> = (0..4)
-            .map(|index| format!(r#"{{"id": "case-{index}", "observed": {observed}, "output": {identity}}}"#, identity = identity.render()))
+            .map(|index| {
+                format!(
+                    r#"{{"id": "case-{index}", "observed": {observed}, "output": {identity}}}"#,
+                    identity = identity.render()
+                )
+            })
             .collect();
         format!(r#"{{"schemaVersion": 1, "cases": [{}]}}"#, cases.join(", "))
     }
@@ -194,7 +218,10 @@ mod tests {
         fsutil::write_text(&latest, &latest_json(&identity, true)).expect("write latest");
         fsutil::write_text(
             &steam,
-            &format!(r#"{{"schemaVersion": 1, "observed": true, "output": {}}}"#, identity.render()),
+            &format!(
+                r#"{{"schemaVersion": 1, "observed": true, "output": {}}}"#,
+                identity.render()
+            ),
         )
         .expect("write steam");
         let summary = verify_documents(&[latest, steam], &artifacts).expect("verify");
@@ -237,7 +264,11 @@ mod tests {
         let retained = artifacts.join("output.bin");
         let identity = identify_file(&retained.to_string_lossy()).expect("identify").to_json();
         fsutil::write_text(&latest, &latest_json(&identity, true)).expect("write latest");
-        fsutil::write_text(&steam, r#"{"schemaVersion": 1, "observed": false, "failure": "no wine"}"#).expect("write steam");
+        fsutil::write_text(
+            &steam,
+            r#"{"schemaVersion": 1, "observed": false, "failure": "no wine"}"#,
+        )
+        .expect("write steam");
         let summary = verify_documents(&[latest, steam], &artifacts).expect("verify");
         assert_eq!(summary.unsupported, vec!["steam-classic-dedicated: no wine".to_owned()]);
         fsutil::remove_forced(&directory);

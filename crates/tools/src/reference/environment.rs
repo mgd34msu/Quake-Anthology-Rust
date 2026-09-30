@@ -26,9 +26,8 @@ use crate::inventory::source_census::{self, RepositoryRole, RepositorySpec};
 use crate::process::{self, EnvSpec};
 use crate::reference::schema::{
     BinaryFormat, BinaryObservation, BinaryProvenance, BinaryPurpose, CensusReference, CommandObservation,
-    CommandOutcome, Discovery, FileIdentity, PathObservation, ReadObservation,
-    ReferenceEnvironment, SourceIdentity, SourceRole, SourceState, SteamEdition, SteamObservation, TitleAvailability,
-    ToolObservation,
+    CommandOutcome, Discovery, FileIdentity, PathObservation, ReadObservation, ReferenceEnvironment, SourceIdentity,
+    SourceRole, SourceState, SteamEdition, SteamObservation, TitleAvailability, ToolObservation,
 };
 use crate::reference::steam::{self, SteamTitle};
 use crate::reference::{node_arch, node_platform};
@@ -58,7 +57,9 @@ pub fn quake_typescript_root() -> PathBuf {
 /// Parent directory holding the sibling checkouts (donor `projectsRoot`).
 #[must_use]
 pub fn projects_root() -> PathBuf {
-    quake_typescript_root().parent().map_or_else(|| PathBuf::from(".."), Path::to_path_buf)
+    quake_typescript_root()
+        .parent()
+        .map_or_else(|| PathBuf::from(".."), Path::to_path_buf)
 }
 
 /// Original-source tree root (donor `sourceRoot`).
@@ -96,8 +97,7 @@ pub fn identify_file(path: &str) -> Result<FileIdentity, ToolsError> {
     if !before.is_file() {
         return Err(ToolsError::invalid(format!("Expected a regular file: {absolute_text}")));
     }
-    let mut file =
-        File::open(&absolute).map_err(|error| ToolsError::io(format!("reading {absolute_text}"), error))?;
+    let mut file = File::open(&absolute).map_err(|error| ToolsError::io(format!("reading {absolute_text}"), error))?;
     let mut hasher = Hasher::new();
     let mut chunk = [0u8; 65536];
     loop {
@@ -111,10 +111,19 @@ pub fn identify_file(path: &str) -> Result<FileIdentity, ToolsError> {
     }
     let after =
         std::fs::metadata(&absolute).map_err(|error| ToolsError::io(format!("stating {absolute_text}"), error))?;
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() || file_id(&before) != file_id(&after) {
-        return Err(ToolsError::invalid(format!("Input changed during capture: {absolute_text}")));
+    if before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || file_id(&before) != file_id(&after)
+    {
+        return Err(ToolsError::invalid(format!(
+            "Input changed during capture: {absolute_text}"
+        )));
     }
-    Ok(FileIdentity { path: absolute_text, size: after.len(), sha256: crate::sha256::to_hex(&hasher.finish()) })
+    Ok(FileIdentity {
+        path: absolute_text,
+        size: after.len(),
+        sha256: crate::sha256::to_hex(&hasher.finish()),
+    })
 }
 
 /// Observe a command execution with captured streams and timing.
@@ -139,7 +148,12 @@ pub fn observe_command(
     } else {
         match completed.exit_code {
             Some(exit_code) => CommandOutcome::Exited { exit_code },
-            None => return Err(ToolsError::command(format!("Command terminated by signal: {}", command.join(" ")))),
+            None => {
+                return Err(ToolsError::command(format!(
+                    "Command terminated by signal: {}",
+                    command.join(" ")
+                )))
+            }
         }
     };
     Ok(CommandObservation {
@@ -176,13 +190,18 @@ fn observe_path(path: &str) -> Result<PathObservation, ToolsError> {
         Ok(details) => {
             let file_type = details.file_type();
             if file_type.is_symlink() {
-                let target = std::fs::read_link(path)
-                    .map_err(|error| ToolsError::io(format!("reading link {path}"), error))?;
-                Ok(PathObservation::Symlink { path: path.to_owned(), target: target.to_string_lossy().into_owned() })
+                let target =
+                    std::fs::read_link(path).map_err(|error| ToolsError::io(format!("reading link {path}"), error))?;
+                Ok(PathObservation::Symlink {
+                    path: path.to_owned(),
+                    target: target.to_string_lossy().into_owned(),
+                })
             } else if file_type.is_dir() {
                 Ok(PathObservation::Directory { path: path.to_owned() })
             } else {
-                Ok(PathObservation::File { identity: identify_file(path)? })
+                Ok(PathObservation::File {
+                    identity: identify_file(path)?,
+                })
             }
         }
     }
@@ -220,7 +239,9 @@ fn identify_source(project_root: &Path, spec: &RepositorySpec) -> Result<SourceI
     }
     let head_text = successful_output(&head)?.trim().to_owned();
     if head_text != spec.expected_revision {
-        return Err(ToolsError::invalid(format!("Source revision differs from census: {path_text}")));
+        return Err(ToolsError::invalid(format!(
+            "Source revision differs from census: {path_text}"
+        )));
     }
     Ok(SourceIdentity {
         source_id: spec.id.clone(),
@@ -232,7 +253,11 @@ fn identify_source(project_root: &Path, spec: &RepositorySpec) -> Result<SourceI
         expected_head: spec.expected_revision.clone(),
         head: head_text,
         tree: successful_output(&tree)?.trim().to_owned(),
-        state: if successful_output(&status)?.is_empty() { SourceState::Clean } else { SourceState::Modified },
+        state: if successful_output(&status)?.is_empty() {
+            SourceState::Clean
+        } else {
+            SourceState::Modified
+        },
         changes,
         observations: vec![head, tree, status, changed, untracked, final_status],
     })
@@ -251,7 +276,11 @@ fn observe_tool(name: &str, arguments: &[&[&str]], project_root: &str) -> Result
         command.extend(args.iter().map(|arg| (*arg).to_owned()));
         observations.push(observe_command(&command, project_root, None)?);
     }
-    Ok(ToolObservation::Available { name: name.to_owned(), executable: identify_file(&executable)?, observations })
+    Ok(ToolObservation::Available {
+        name: name.to_owned(),
+        executable: identify_file(&executable)?,
+        observations,
+    })
 }
 
 #[cfg(unix)]
@@ -300,7 +329,11 @@ fn mz_format(path: &str, header: &[u8]) -> BinaryFormat {
     })()
     .is_ok()
         && signature == [0x50, 0x45, 0, 0];
-    if is_pe { BinaryFormat::Pe } else { BinaryFormat::DosMz }
+    if is_pe {
+        BinaryFormat::Pe
+    } else {
+        BinaryFormat::DosMz
+    }
 }
 
 /// Provenance of an observed binary path.
@@ -399,8 +432,9 @@ fn visit_directory(
         std::fs::read_dir(directory).map_err(|error| ToolsError::io(format!("listing {directory}"), error))?;
     for entry in listing {
         let entry = entry.map_err(|error| ToolsError::io(format!("listing {directory}"), error))?;
-        let file_type =
-            entry.file_type().map_err(|error| ToolsError::io(format!("stating {}", entry.path().display()), error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| ToolsError::io(format!("stating {}", entry.path().display()), error))?;
         entries.push((entry.file_name().to_string_lossy().into_owned(), file_type));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -540,8 +574,10 @@ fn observe_tools(project_root: &str) -> Result<Vec<ToolObservation>, ToolsError>
         ("ldconfig", vec![&["-p"]]),
         (
             "nvidia-smi",
-            vec![&["--query-gpu=name,driver_version,memory.total,pstate,temperature.gpu,power.draw,power.limit",
-                "--format=csv,noheader"]],
+            vec![&[
+                "--query-gpu=name,driver_version,memory.total,pstate,temperature.gpu,power.draw,power.limit",
+                "--format=csv,noheader",
+            ]],
         ),
         ("Xvfb", vec![]),
         ("xvfb-run", vec![]),
@@ -605,7 +641,11 @@ pub fn capture_environment() -> Result<ReferenceEnvironment, ToolsError> {
         &project_root_text,
     );
     let mut roots = vec![source_root(), corpus_root()];
-    for title in steam.titles.iter().filter(|title| matches!(title.availability, TitleAvailability::Present)) {
+    for title in steam
+        .titles
+        .iter()
+        .filter(|title| matches!(title.availability, TitleAvailability::Present))
+    {
         roots.push(title.path.clone());
     }
     let mut sources = Vec::new();
@@ -628,8 +668,10 @@ pub fn capture_environment() -> Result<ReferenceEnvironment, ToolsError> {
     for path in capture_program_files() {
         capture_program.push(identify_file(&path.to_string_lossy())?);
     }
-    let definition_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/inventory/source_census.rs").to_string_lossy().into_owned();
+    let definition_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/inventory/source_census.rs")
+        .to_string_lossy()
+        .into_owned();
     Ok(ReferenceEnvironment {
         command: std::env::args().collect(),
         captured_at: now_iso(),
@@ -658,7 +700,9 @@ pub fn capture_environment() -> Result<ReferenceEnvironment, ToolsError> {
 /// `verification/reference-environment.json` and print the summary.
 pub fn run(args: &[String]) -> Result<(), ToolsError> {
     if !args.is_empty() {
-        return Err(ToolsError::invalid("Usage: reference environment capture takes no arguments"));
+        return Err(ToolsError::invalid(
+            "Usage: reference environment capture takes no arguments",
+        ));
     }
     let environment = capture_environment()?;
     let destination = quake_typescript_root().join("verification/reference-environment.json");
@@ -687,10 +731,25 @@ mod tests {
 
     #[test]
     fn corpus_discovery_excludes_account_and_profile_files() {
-        for name in ["q3key", "config.cfg", "q3config.cfg", "localconfig.vdf", "loginusers.vdf", "appmanifest_2200.acf", "pak0.pak"] {
+        for name in [
+            "q3key",
+            "config.cfg",
+            "q3config.cfg",
+            "localconfig.vdf",
+            "loginusers.vdf",
+            "appmanifest_2200.acf",
+            "pak0.pak",
+        ] {
             assert!(!steam::is_corpus_binary_candidate(name), "{name}");
         }
-        for name in ["Winquake.exe", "quake3.exe", "game_x64.dll", "gamei386.so.glibc", "game.so.1", "quake3-ts"] {
+        for name in [
+            "Winquake.exe",
+            "quake3.exe",
+            "game_x64.dll",
+            "gamei386.so.glibc",
+            "game.so.1",
+            "quake3-ts",
+        ] {
             assert!(steam::is_corpus_binary_candidate(name), "{name}");
         }
     }
@@ -698,7 +757,11 @@ mod tests {
     #[test]
     fn steam_title_classification_needs_exact_directories() {
         let common = steam::steam_common_path().to_string_lossy().into_owned();
-        for (title, family) in [("Quake", QuakeFamily::Q1), ("Quake 2", QuakeFamily::Q2), ("Quake 3 Arena", QuakeFamily::Q3)] {
+        for (title, family) in [
+            ("Quake", QuakeFamily::Q1),
+            ("Quake 2", QuakeFamily::Q2),
+            ("Quake 3 Arena", QuakeFamily::Q3),
+        ] {
             let found = steam::steam_title_for_path(&format!("{common}/{title}/game.exe"));
             assert!(found.is_some_and(|title| title.family == family));
         }
@@ -713,7 +776,10 @@ mod tests {
     #[test]
     fn file_identity_hashes_bytes_and_resolves_symlinks() {
         let directory = temp_dir("quake-reference-hash-");
-        let canonical = std::fs::canonicalize(&directory).expect("canonical temp dir").to_string_lossy().into_owned();
+        let canonical = std::fs::canonicalize(&directory)
+            .expect("canonical temp dir")
+            .to_string_lossy()
+            .into_owned();
         let path = format!("{canonical}/input.txt");
         let link = format!("{canonical}/alias.txt");
         fsutil::write_text(Path::new(&path), "abc").expect("write input");
@@ -721,7 +787,10 @@ mod tests {
         let identity = identify_file(&link).expect("identify");
         assert_eq!(identity.path, path);
         assert_eq!(identity.size, 3);
-        assert_eq!(identity.sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            identity.sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         fsutil::remove_forced(&directory);
     }
 
@@ -729,8 +798,11 @@ mod tests {
     fn command_capture_preserves_streams_identity_and_exit_status() {
         let directory = temp_dir("quake-reference-command-");
         let cwd = directory.to_string_lossy().into_owned();
-        let command =
-            vec!["sh".to_owned(), "-c".to_owned(), "printf 'output\\n'; printf 'diagnostic\\n' >&2; exit 7".to_owned()];
+        let command = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "printf 'output\\n'; printf 'diagnostic\\n' >&2; exit 7".to_owned(),
+        ];
         let result = observe_command(&command, &cwd, None).expect("observe");
         assert_eq!(result.command, command);
         assert!(matches!(result.outcome, CommandOutcome::Exited { exit_code: 7 }));
@@ -745,7 +817,11 @@ mod tests {
     fn command_timeout_terminates_and_preserves_partial_output() {
         let directory = temp_dir("quake-reference-timeout-");
         let cwd = directory.to_string_lossy().into_owned();
-        let command = vec!["sh".to_owned(), "-c".to_owned(), "printf 'started\\n'; sleep 30".to_owned()];
+        let command = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "printf 'started\\n'; sleep 30".to_owned(),
+        ];
         let result = observe_command(&command, &cwd, Some(250)).expect("observe");
         assert!(matches!(result.outcome, CommandOutcome::TimedOut { timeout_ms: 250 }));
         assert!(result.stdout.contains("started\n"), "stdout: {:?}", result.stdout);
@@ -755,10 +831,26 @@ mod tests {
 
     #[test]
     fn classifies_retail_engine_names() {
-        for name in ["winquake.exe", "GLQuake.EXE", "qwcl.exe", "glqwcl.exe", "quake2.exe", "quake.exe", "Quake3.exe"] {
+        for name in [
+            "winquake.exe",
+            "GLQuake.EXE",
+            "qwcl.exe",
+            "glqwcl.exe",
+            "quake2.exe",
+            "quake.exe",
+            "Quake3.exe",
+        ] {
             assert!(retail_engine_name(name), "{name}");
         }
-        for name in ["quake", "quake.txt", "xquake.exe", "winquake.com", "qwcl", "quake3-ts", "game.exe"] {
+        for name in [
+            "quake",
+            "quake.txt",
+            "xquake.exe",
+            "winquake.com",
+            "qwcl",
+            "quake3-ts",
+            "game.exe",
+        ] {
             assert!(!retail_engine_name(name), "{name}");
         }
     }
@@ -766,9 +858,15 @@ mod tests {
     #[test]
     fn parses_ldconfig_library_paths() {
         let line = "\tlibGL.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libGL.so.1";
-        assert_eq!(ldconfig_library_path(line).as_deref(), Some("/lib/x86_64-linux-gnu/libGL.so.1"));
+        assert_eq!(
+            ldconfig_library_path(line).as_deref(),
+            Some("/lib/x86_64-linux-gnu/libGL.so.1")
+        );
         let line = "\tlibc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6";
-        assert_eq!(ldconfig_library_path(line).as_deref(), Some("/lib/x86_64-linux-gnu/libc.so.6"));
+        assert_eq!(
+            ldconfig_library_path(line).as_deref(),
+            Some("/lib/x86_64-linux-gnu/libc.so.6")
+        );
         assert!(ldconfig_library_path("libGL.so.1 => /lib/libGL.so.1").is_none());
         assert!(ldconfig_library_path("\tlibz.so.1 (libc6,x86-64) => /lib/libz.so.1").is_none());
         assert!(ldconfig_library_path("\tlibGLU.so.1 (libc6,x86-64) => /lib/libGLU.so.1").is_none());

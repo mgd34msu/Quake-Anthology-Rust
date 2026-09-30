@@ -73,9 +73,12 @@ pub fn is_corpus_binary_candidate(name: &str) -> bool {
         }
         if let Some(stripped) = rest.strip_prefix('.') {
             return !stripped.is_empty()
-                && stripped
-                    .split('.')
-                    .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
+                && stripped.split('.').all(|segment| {
+                    !segment.is_empty()
+                        && segment
+                            .chars()
+                            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+                });
         }
     }
     false
@@ -84,7 +87,9 @@ pub fn is_corpus_binary_candidate(name: &str) -> bool {
 /// Title whose install directory contains `path`, if any.
 #[must_use]
 pub fn steam_title_for_path(path: &str) -> Option<SteamTitle> {
-    steam_titles().into_iter().find(|title| path.starts_with(&format!("{}/", title.path)))
+    steam_titles()
+        .into_iter()
+        .find(|title| path.starts_with(&format!("{}/", title.path)))
 }
 
 /// Availability of a Steam title directory.
@@ -97,7 +102,9 @@ pub fn steam_title_availability(title: &SteamTitle) -> SteamTitleObservation {
         Ok(_) => TitleAvailability::Unavailable {
             reason: "Expected an actual title directory; inventory does not follow directory symlinks.".to_owned(),
         },
-        Err(error) => TitleAvailability::Unavailable { reason: error.to_string() },
+        Err(error) => TitleAvailability::Unavailable {
+            reason: error.to_string(),
+        },
     };
     SteamTitleObservation {
         name: title.name.clone(),
@@ -120,10 +127,15 @@ pub fn observe_steam(
     cwd: &str,
 ) -> SteamObservation {
     let titles = steam_titles().iter().map(steam_title_availability).collect();
-    let path = steam_common_path().join("Proton - Experimental").to_string_lossy().into_owned();
-    let compatibility_runtime = observe_compatibility_runtime(identify_file, observe_command, cwd, &path).unwrap_or_else(|error| {
-        CompatibilityRuntime::Unavailable { path: path.clone(), reason: error.to_string() }
-    });
+    let path = steam_common_path()
+        .join("Proton - Experimental")
+        .to_string_lossy()
+        .into_owned();
+    let compatibility_runtime = observe_compatibility_runtime(identify_file, observe_command, cwd, &path)
+        .unwrap_or_else(|error| CompatibilityRuntime::Unavailable {
+            path: path.clone(),
+            reason: error.to_string(),
+        });
     SteamObservation {
         common_path: steam_common_path().to_string_lossy().into_owned(),
         titles,
@@ -155,11 +167,18 @@ fn observe_compatibility_runtime(
     }
     let version_path = PathBuf::from(path).join("version").to_string_lossy().into_owned();
     let version = read_version(&version_path);
-    let wine = PathBuf::from(path).join("files/bin/wine").to_string_lossy().into_owned();
+    let wine = PathBuf::from(path)
+        .join("files/bin/wine")
+        .to_string_lossy()
+        .into_owned();
     let wine_version = observe_command(&[wine, "--version".to_owned()], cwd, None)?;
     let mut steam_runtime_versions = Vec::new();
     for name in ["SteamLinuxRuntime", "SteamLinuxRuntime_soldier", "SteamLinuxRuntime_4"] {
-        let joined = steam_common_path().join(name).join("VERSIONS.txt").to_string_lossy().into_owned();
+        let joined = steam_common_path()
+            .join(name)
+            .join("VERSIONS.txt")
+            .to_string_lossy()
+            .into_owned();
         steam_runtime_versions.push(read_version(&joined));
     }
     Ok(CompatibilityRuntime::Present {
@@ -187,10 +206,27 @@ mod tests {
 
     #[test]
     fn matches_binary_candidates() {
-        for name in ["quake.exe", "GL.DLL", "libSDL.so", "libx.so.1.2", "libx.so.1_2-3", "q1rets", "quake3-ts", ".exe"] {
+        for name in [
+            "quake.exe",
+            "GL.DLL",
+            "libSDL.so",
+            "libx.so.1.2",
+            "libx.so.1_2-3",
+            "q1rets",
+            "quake3-ts",
+            ".exe",
+        ] {
             assert!(is_corpus_binary_candidate(name), "{name}");
         }
-        for name in ["quake", "mesozoic", "a.so.", "readme.txt", "quake3-tsx", "lib.so backup", "x.so1"] {
+        for name in [
+            "quake",
+            "mesozoic",
+            "a.so.",
+            "readme.txt",
+            "quake3-tsx",
+            "lib.so backup",
+            "x.so1",
+        ] {
             assert!(!is_corpus_binary_candidate(name), "{name}");
         }
     }

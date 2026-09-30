@@ -6,8 +6,8 @@ use std::path::Path;
 use super::source_census::{inventory_arguments, safe_relative_path, write_or_check};
 use crate::error::ToolsError;
 use crate::fsutil;
-use crate::json::{parse_json, Json};
 use crate::js::{compare_text, trim_js};
+use crate::json::{parse_json, Json};
 use crate::reference::environment::quake_typescript_root;
 use crate::sha256::hash_hex;
 
@@ -35,7 +35,10 @@ impl Evidence {
         Json::object(vec![
             ("repository".to_owned(), Json::string(&self.repository)),
             ("path".to_owned(), Json::string(&self.path)),
-            ("symbol".to_owned(), self.symbol.as_ref().map_or(Json::Null, Json::string)),
+            (
+                "symbol".to_owned(),
+                self.symbol.as_ref().map_or(Json::Null, Json::string),
+            ),
             ("line".to_owned(), Json::uint(self.line)),
             ("endLine".to_owned(), Json::uint(self.end_line)),
             ("role".to_owned(), Json::string(&self.role)),
@@ -62,7 +65,10 @@ impl Workflow {
         Json::object(vec![
             ("id".to_owned(), Json::string(&self.id)),
             ("trigger".to_owned(), Json::string(&self.trigger)),
-            ("steps".to_owned(), Json::array(self.steps.iter().map(Json::string).collect())),
+            (
+                "steps".to_owned(),
+                Json::array(self.steps.iter().map(Json::string).collect()),
+            ),
             ("observableOutcome".to_owned(), Json::string(&self.observable_outcome)),
         ])
     }
@@ -135,7 +141,9 @@ struct IndexedRepository {
 }
 
 fn object<'a>(value: &'a Json, location: &str) -> Result<&'a [(String, Json)], ToolsError> {
-    value.as_object().ok_or_else(|| ToolsError::invalid(format!("{location} must be an object")))
+    value
+        .as_object()
+        .ok_or_else(|| ToolsError::invalid(format!("{location} must be an object")))
 }
 
 fn field<'a>(entries: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
@@ -143,10 +151,16 @@ fn field<'a>(entries: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
 }
 
 fn unknown_array<'a>(value: &'a Json, location: &str) -> Result<&'a [Json], ToolsError> {
-    value.as_array().ok_or_else(|| ToolsError::invalid(format!("{location} must be an array")))
+    value
+        .as_array()
+        .ok_or_else(|| ToolsError::invalid(format!("{location} must be an array")))
 }
 
-fn parse_array<T>(value: &Json, location: &str, parse: impl Fn(&Json, &str) -> Result<T, ToolsError>) -> Result<Vec<T>, ToolsError> {
+fn parse_array<T>(
+    value: &Json,
+    location: &str,
+    parse: impl Fn(&Json, &str) -> Result<T, ToolsError>,
+) -> Result<Vec<T>, ToolsError> {
     unknown_array(value, location)?
         .iter()
         .enumerate()
@@ -170,7 +184,9 @@ fn unique(values: &[String], location: &str) -> Result<(), ToolsError> {
 }
 
 fn strings(value: &Json, location: &str) -> Result<Vec<String>, ToolsError> {
-    let result = parse_array(value, location, |entry, entry_location| nonempty_string(entry, entry_location))?;
+    let result = parse_array(value, location, |entry, entry_location| {
+        nonempty_string(entry, entry_location)
+    })?;
     unique(&result, location)?;
     Ok(result)
 }
@@ -201,7 +217,11 @@ fn positive_integer(value: &Json, location: &str) -> Result<u64, ToolsError> {
 
 fn hash(value: &Json, location: &str) -> Result<String, ToolsError> {
     let result = nonempty_string(value, location)?;
-    if result.len() != 64 || !result.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+    if result.len() != 64
+        || !result
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err(ToolsError::invalid(format!("{location} must be a SHA-256 digest")));
     }
     Ok(result)
@@ -209,7 +229,11 @@ fn hash(value: &Json, location: &str) -> Result<String, ToolsError> {
 
 fn revision(value: &Json, location: &str) -> Result<String, ToolsError> {
     let result = nonempty_string(value, location)?;
-    if result.len() != 40 || !result.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+    if result.len() != 40
+        || !result
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err(ToolsError::invalid(format!("{location} must be a Git revision")));
     }
     Ok(result)
@@ -224,7 +248,11 @@ fn parse_evidence(value: &Json, location: &str) -> Result<Evidence, ToolsError> 
     let symbol = match field(item, "symbol") {
         Some(Json::Null) => None,
         Some(value) => Some(nonempty_string(value, &format!("{location}.symbol"))?),
-        None => return Err(ToolsError::invalid(format!("{location}.symbol must be a nonempty string"))),
+        None => {
+            return Err(ToolsError::invalid(format!(
+                "{location}.symbol must be a nonempty string"
+            )))
+        }
     };
     let empty = Json::Null;
     let line = positive_integer(field(item, "line").unwrap_or(&empty), &format!("{location}.line"))?;
@@ -233,13 +261,22 @@ fn parse_evidence(value: &Json, location: &str) -> Result<Evidence, ToolsError> 
         return Err(ToolsError::invalid(format!("{location} has a reversed line range")));
     }
     Ok(Evidence {
-        repository: nonempty_string(field(item, "repository").unwrap_or(&empty), &format!("{location}.repository"))?,
-        path: safe_relative_path(&nonempty_string(field(item, "path").unwrap_or(&empty), &format!("{location}.path"))?)?,
+        repository: nonempty_string(
+            field(item, "repository").unwrap_or(&empty),
+            &format!("{location}.repository"),
+        )?,
+        path: safe_relative_path(&nonempty_string(
+            field(item, "path").unwrap_or(&empty),
+            &format!("{location}.path"),
+        )?)?,
         symbol,
         line,
         end_line,
         role: role.to_owned(),
-        observation: nonempty_string(field(item, "observation").unwrap_or(&empty), &format!("{location}.observation"))?,
+        observation: nonempty_string(
+            field(item, "observation").unwrap_or(&empty),
+            &format!("{location}.observation"),
+        )?,
     })
 }
 
@@ -265,12 +302,20 @@ fn parse_feature(value: &Json, location: &str) -> Result<Feature, ToolsError> {
         return Err(ToolsError::invalid(format!("{location}.sourceStatus is invalid")));
     }
     if field(item, "targetStatus").and_then(Json::as_str) != Some("required") {
-        return Err(ToolsError::invalid(format!("{location}.targetStatus must retain the required feature")));
+        return Err(ToolsError::invalid(format!(
+            "{location}.targetStatus must retain the required feature"
+        )));
     }
-    let evidence =
-        parse_array(field(item, "evidence").unwrap_or(&empty), &format!("{location}.evidence"), parse_evidence)?;
-    let workflows =
-        parse_array(field(item, "workflows").unwrap_or(&empty), &format!("{location}.workflows"), parse_workflow)?;
+    let evidence = parse_array(
+        field(item, "evidence").unwrap_or(&empty),
+        &format!("{location}.evidence"),
+        parse_evidence,
+    )?;
+    let workflows = parse_array(
+        field(item, "workflows").unwrap_or(&empty),
+        &format!("{location}.workflows"),
+        parse_workflow,
+    )?;
     let gaps = strings(field(item, "gaps").unwrap_or(&empty), &format!("{location}.gaps"))?;
     if source_status != "missing" && evidence.is_empty() {
         return Err(ToolsError::invalid(format!("{location} needs source evidence")));
@@ -281,7 +326,10 @@ fn parse_feature(value: &Json, location: &str) -> Result<Feature, ToolsError> {
     if workflows.is_empty() {
         return Err(ToolsError::invalid(format!("{location} needs an exposed workflow")));
     }
-    unique(&workflows.iter().map(|workflow| workflow.id.clone()).collect::<Vec<_>>(), &format!("{location}.workflows"))?;
+    unique(
+        &workflows.iter().map(|workflow| workflow.id.clone()).collect::<Vec<_>>(),
+        &format!("{location}.workflows"),
+    )?;
     Ok(Feature {
         id: nonempty_string(field(item, "id").unwrap_or(&empty), &format!("{location}.id"))?,
         source_family_ids: nonempty_strings(
@@ -293,10 +341,19 @@ fn parse_feature(value: &Json, location: &str) -> Result<Feature, ToolsError> {
             &format!("{location}.unifiedFeatureIds"),
         )?,
         title: nonempty_string(field(item, "title").unwrap_or(&empty), &format!("{location}.title"))?,
-        requirement: nonempty_string(field(item, "requirement").unwrap_or(&empty), &format!("{location}.requirement"))?,
+        requirement: nonempty_string(
+            field(item, "requirement").unwrap_or(&empty),
+            &format!("{location}.requirement"),
+        )?,
         source_status: source_status.to_owned(),
-        products: nonempty_strings(field(item, "products").unwrap_or(&empty), &format!("{location}.products"))?,
-        owner_task_ids: nonempty_strings(field(item, "ownerTaskIds").unwrap_or(&empty), &format!("{location}.ownerTaskIds"))?,
+        products: nonempty_strings(
+            field(item, "products").unwrap_or(&empty),
+            &format!("{location}.products"),
+        )?,
+        owner_task_ids: nonempty_strings(
+            field(item, "ownerTaskIds").unwrap_or(&empty),
+            &format!("{location}.ownerTaskIds"),
+        )?,
         acceptance_case_ids: nonempty_strings(
             field(item, "acceptanceCaseIds").unwrap_or(&empty),
             &format!("{location}.acceptanceCaseIds"),
@@ -318,18 +375,32 @@ pub fn parse_feature_shard(value: &Json, location: &str) -> Result<FeatureShard,
     if family != "q1" && family != "q2" && family != "q3" {
         return Err(ToolsError::invalid(format!("{location}.family is invalid")));
     }
-    let features =
-        parse_array(field(item, "features").unwrap_or(&empty), &format!("{location}.features"), parse_feature)?;
+    let features = parse_array(
+        field(item, "features").unwrap_or(&empty),
+        &format!("{location}.features"),
+        parse_feature,
+    )?;
     if features.is_empty() {
         return Err(ToolsError::invalid(format!("{location} cannot drop its features")));
     }
-    unique(&features.iter().map(|feature| feature.id.clone()).collect::<Vec<_>>(), &format!("{location}.features"))?;
-    if features.iter().any(|feature| !feature.id.starts_with(&format!("{family}."))) {
-        return Err(ToolsError::invalid(format!("{location} contains a feature outside {family}")));
+    unique(
+        &features.iter().map(|feature| feature.id.clone()).collect::<Vec<_>>(),
+        &format!("{location}.features"),
+    )?;
+    if features
+        .iter()
+        .any(|feature| !feature.id.starts_with(&format!("{family}.")))
+    {
+        return Err(ToolsError::invalid(format!(
+            "{location} contains a feature outside {family}"
+        )));
     }
     Ok(FeatureShard {
         family: family.to_owned(),
-        source_revision: revision(field(item, "sourceRevision").unwrap_or(&empty), &format!("{location}.sourceRevision"))?,
+        source_revision: revision(
+            field(item, "sourceRevision").unwrap_or(&empty),
+            &format!("{location}.sourceRevision"),
+        )?,
         features,
     })
 }
@@ -348,12 +419,19 @@ fn parse_indexed_function(value: &Json, location: &str) -> Result<IndexedFunctio
 fn parse_indexed_file(value: &Json, location: &str) -> Result<IndexedFile, ToolsError> {
     let item = object(value, location)?;
     let empty = Json::Null;
-    let line_count = match field(item, "lineCount").unwrap_or(&empty).as_f64().and_then(safe_integer) {
+    let line_count = match field(item, "lineCount")
+        .unwrap_or(&empty)
+        .as_f64()
+        .and_then(safe_integer)
+    {
         Some(count) => count,
         None => return Err(ToolsError::invalid(format!("{location}.lineCount is invalid"))),
     };
     Ok(IndexedFile {
-        path: safe_relative_path(&nonempty_string(field(item, "path").unwrap_or(&empty), &format!("{location}.path"))?)?,
+        path: safe_relative_path(&nonempty_string(
+            field(item, "path").unwrap_or(&empty),
+            &format!("{location}.path"),
+        )?)?,
         kind: nonempty_string(field(item, "kind").unwrap_or(&empty), &format!("{location}.kind"))?,
         sha256: hash(field(item, "sha256").unwrap_or(&empty), &format!("{location}.sha256"))?,
         line_count,
@@ -371,12 +449,19 @@ fn parse_repository(value: &Json, location: &str) -> Result<IndexedRepository, T
     Ok(IndexedRepository {
         id: nonempty_string(field(item, "id").unwrap_or(&empty), &format!("{location}.id"))?,
         path: nonempty_string(field(item, "path").unwrap_or(&empty), &format!("{location}.path"))?,
-        revision: revision(field(item, "revision").unwrap_or(&empty), &format!("{location}.revision"))?,
+        revision: revision(
+            field(item, "revision").unwrap_or(&empty),
+            &format!("{location}.revision"),
+        )?,
         source_set_sha256: hash(
             field(item, "sourceSetSha256").unwrap_or(&empty),
             &format!("{location}.sourceSetSha256"),
         )?,
-        files: parse_array(field(item, "files").unwrap_or(&empty), &format!("{location}.files"), parse_indexed_file)?,
+        files: parse_array(
+            field(item, "files").unwrap_or(&empty),
+            &format!("{location}.files"),
+            parse_indexed_file,
+        )?,
     })
 }
 
@@ -396,25 +481,49 @@ fn linked_evidence_json(evidence: &Evidence, revision: &str, sha256: &str, funct
     }
     pairs.push(("revision".to_owned(), Json::string(revision)));
     pairs.push(("sha256".to_owned(), Json::string(sha256)));
-    pairs.push(("functionIds".to_owned(), Json::array(function_ids.iter().map(Json::string).collect())));
+    pairs.push((
+        "functionIds".to_owned(),
+        Json::array(function_ids.iter().map(Json::string).collect()),
+    ));
     Json::object(pairs)
 }
 
 fn linked_feature_json(feature: &Feature, evidence: Vec<Json>) -> Json {
     Json::object(vec![
         ("id".to_owned(), Json::string(&feature.id)),
-        ("sourceFamilyIds".to_owned(), Json::array(feature.source_family_ids.iter().map(Json::string).collect())),
-        ("unifiedFeatureIds".to_owned(), Json::array(feature.unified_feature_ids.iter().map(Json::string).collect())),
+        (
+            "sourceFamilyIds".to_owned(),
+            Json::array(feature.source_family_ids.iter().map(Json::string).collect()),
+        ),
+        (
+            "unifiedFeatureIds".to_owned(),
+            Json::array(feature.unified_feature_ids.iter().map(Json::string).collect()),
+        ),
         ("title".to_owned(), Json::string(&feature.title)),
         ("requirement".to_owned(), Json::string(&feature.requirement)),
         ("sourceStatus".to_owned(), Json::string(&feature.source_status)),
         ("targetStatus".to_owned(), Json::string("required")),
-        ("products".to_owned(), Json::array(feature.products.iter().map(Json::string).collect())),
-        ("ownerTaskIds".to_owned(), Json::array(feature.owner_task_ids.iter().map(Json::string).collect())),
-        ("acceptanceCaseIds".to_owned(), Json::array(feature.acceptance_case_ids.iter().map(Json::string).collect())),
+        (
+            "products".to_owned(),
+            Json::array(feature.products.iter().map(Json::string).collect()),
+        ),
+        (
+            "ownerTaskIds".to_owned(),
+            Json::array(feature.owner_task_ids.iter().map(Json::string).collect()),
+        ),
+        (
+            "acceptanceCaseIds".to_owned(),
+            Json::array(feature.acceptance_case_ids.iter().map(Json::string).collect()),
+        ),
         ("evidence".to_owned(), Json::array(evidence)),
-        ("workflows".to_owned(), Json::array(feature.workflows.iter().map(Workflow::to_json).collect())),
-        ("gaps".to_owned(), Json::array(feature.gaps.iter().map(Json::string).collect())),
+        (
+            "workflows".to_owned(),
+            Json::array(feature.workflows.iter().map(Workflow::to_json).collect()),
+        ),
+        (
+            "gaps".to_owned(),
+            Json::array(feature.gaps.iter().map(Json::string).collect()),
+        ),
         ("acceptanceState".to_owned(), Json::string("not-run")),
     ])
 }
@@ -433,13 +542,25 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
         "source-manifest.repositories",
         parse_repository,
     )?;
-    unique(&repositories.iter().map(|repository| repository.id.clone()).collect::<Vec<_>>(), "source-manifest.repositories")?;
-    let repository_index: HashMap<&str, &IndexedRepository> =
-        repositories.iter().map(|repository| (repository.id.as_str(), repository)).collect();
+    unique(
+        &repositories
+            .iter()
+            .map(|repository| repository.id.clone())
+            .collect::<Vec<_>>(),
+        "source-manifest.repositories",
+    )?;
+    let repository_index: HashMap<&str, &IndexedRepository> = repositories
+        .iter()
+        .map(|repository| (repository.id.as_str(), repository))
+        .collect();
     let mut file_index: HashMap<String, &IndexedFile> = HashMap::new();
     for repository in &repositories {
         unique(
-            &repository.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
+            &repository
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect::<Vec<_>>(),
             &format!("{}.files", repository.id),
         )?;
         for file in &repository.files {
@@ -449,15 +570,24 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
     let graph_text = fsutil::read_text(&root.join("docs/work-packages.json"))?;
     let graph_value = parse_json(&graph_text)?;
     let graph = object(&graph_value, "work-packages")?;
-    let task_ids: HashSet<String> = parse_array(field(graph, "tasks").unwrap_or(&empty), "work-packages.tasks", |value, location| {
-        nonempty_string(field(object(value, location)?, "id").unwrap_or(&empty), &format!("{location}.id"))
-    })?
+    let task_ids: HashSet<String> = parse_array(
+        field(graph, "tasks").unwrap_or(&empty),
+        "work-packages.tasks",
+        |value, location| {
+            nonempty_string(
+                field(object(value, location)?, "id").unwrap_or(&empty),
+                &format!("{location}.id"),
+            )
+        },
+    )?
     .into_iter()
     .collect();
-    let source_family_ids: HashSet<String> =
-        strings(field(graph, "sourceFeatureIds").unwrap_or(&empty), "work-packages.sourceFeatureIds")?
-            .into_iter()
-            .collect();
+    let source_family_ids: HashSet<String> = strings(
+        field(graph, "sourceFeatureIds").unwrap_or(&empty),
+        "work-packages.sourceFeatureIds",
+    )?
+    .into_iter()
+    .collect();
     let feature_coverage = parse_array(
         field(graph, "featureCoverage").unwrap_or(&empty),
         "work-packages.featureCoverage",
@@ -466,7 +596,10 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
     let mut unified_feature_ids = HashSet::new();
     for row in &feature_coverage {
         let entries = object(row, "featureCoverage.id")?;
-        unified_feature_ids.insert(nonempty_string(field(entries, "id").unwrap_or(&empty), "featureCoverage.id")?);
+        unified_feature_ids.insert(nonempty_string(
+            field(entries, "id").unwrap_or(&empty),
+            "featureCoverage.id",
+        )?);
     }
     let product_text = fsutil::read_text(&root.join("verification/product-manifest.json"))?;
     let product_value = parse_json(&product_text)?;
@@ -474,7 +607,12 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
     let product_ids: HashSet<String> = parse_array(
         field(product_root, "products").unwrap_or(&empty),
         "product-manifest.products",
-        |value, location| nonempty_string(field(object(value, location)?, "id").unwrap_or(&empty), &format!("{location}.id")),
+        |value, location| {
+            nonempty_string(
+                field(object(value, location)?, "id").unwrap_or(&empty),
+                &format!("{location}.id"),
+            )
+        },
     )?
     .into_iter()
     .collect();
@@ -487,7 +625,9 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
         let repository = repository_index.get(format!("{family}-ts").as_str());
         let pinned = repository.is_some_and(|repository| shard.source_revision == repository.revision);
         if shard.family != family || !pinned {
-            return Err(ToolsError::invalid(format!("{path} does not match its pinned donor source")));
+            return Err(ToolsError::invalid(format!(
+                "{path} does not match its pinned donor source"
+            )));
         }
         shard_inputs.push(Json::object(vec![
             ("path".to_owned(), Json::string(&path)),
@@ -496,14 +636,29 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
         features.extend(shard.features);
     }
     features.sort_by(|left, right| compare_text(&left.id, &right.id));
-    unique(&features.iter().map(|feature| feature.id.clone()).collect::<Vec<_>>(), "features")?;
+    unique(
+        &features.iter().map(|feature| feature.id.clone()).collect::<Vec<_>>(),
+        "features",
+    )?;
     let mut linked: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut checked_files: HashSet<String> = HashSet::new();
     let mut enriched = Vec::new();
     for feature in &features {
-        require_members(&feature.source_family_ids, &source_family_ids, &format!("{}.sourceFamilyIds", feature.id))?;
-        require_members(&feature.unified_feature_ids, &unified_feature_ids, &format!("{}.unifiedFeatureIds", feature.id))?;
-        require_members(&feature.owner_task_ids, &task_ids, &format!("{}.ownerTaskIds", feature.id))?;
+        require_members(
+            &feature.source_family_ids,
+            &source_family_ids,
+            &format!("{}.sourceFamilyIds", feature.id),
+        )?;
+        require_members(
+            &feature.unified_feature_ids,
+            &unified_feature_ids,
+            &format!("{}.unifiedFeatureIds", feature.id),
+        )?;
+        require_members(
+            &feature.owner_task_ids,
+            &task_ids,
+            &format!("{}.ownerTaskIds", feature.id),
+        )?;
         require_members(&feature.products, &product_ids, &format!("{}.products", feature.id))?;
         let mut evidence_rows = Vec::new();
         for anchor in &feature.evidence {
@@ -538,7 +693,10 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
                         && (anchor.symbol.is_none() || anchor.symbol.as_deref() == Some(function.name.as_str()))
                 })
                 .collect();
-            if anchor.symbol.is_some() && (anchor.path.ends_with(".ts") || anchor.path.ends_with(".tsx")) && matches.is_empty() {
+            if anchor.symbol.is_some()
+                && (anchor.path.ends_with(".ts") || anchor.path.ends_with(".tsx"))
+                && matches.is_empty()
+            {
                 return Err(ToolsError::invalid(format!(
                     "{}: symbol {} does not match {key}:{}-{}",
                     feature.id,
@@ -548,7 +706,10 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
                 )));
             }
             for function in &matches {
-                linked.entry(function.id.as_str()).or_default().insert(feature.id.as_str());
+                linked
+                    .entry(function.id.as_str())
+                    .or_default()
+                    .insert(feature.id.as_str());
             }
             evidence_rows.push(linked_evidence_json(
                 anchor,
@@ -559,10 +720,14 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
         }
         enriched.push(linked_feature_json(feature, evidence_rows));
     }
-    let covered_source: HashSet<&str> =
-        features.iter().flat_map(|feature| feature.source_family_ids.iter().map(String::as_str)).collect();
-    let covered_unified: HashSet<&str> =
-        features.iter().flat_map(|feature| feature.unified_feature_ids.iter().map(String::as_str)).collect();
+    let covered_source: HashSet<&str> = features
+        .iter()
+        .flat_map(|feature| feature.source_family_ids.iter().map(String::as_str))
+        .collect();
+    let covered_unified: HashSet<&str> = features
+        .iter()
+        .flat_map(|feature| feature.unified_feature_ids.iter().map(String::as_str))
+        .collect();
     let source_family_list: Vec<String> = {
         let mut ids: Vec<String> = source_family_ids.iter().cloned().collect();
         ids.sort_by(|left, right| compare_text(left, right));
@@ -587,7 +752,9 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
         for file in repository.files.iter().filter(|file| !file.functions.is_empty()) {
             let mut functions = Vec::new();
             for function in &file.functions {
-                let mut feature_ids: Vec<&str> = linked.get(function.id.as_str()).map_or(Vec::new(), |owners| owners.iter().copied().collect());
+                let mut feature_ids: Vec<&str> = linked
+                    .get(function.id.as_str())
+                    .map_or(Vec::new(), |owners| owners.iter().copied().collect());
                 feature_ids.sort_by(|left, right| compare_text(left, right));
                 if file.kind == "runtime" {
                     runtime += 1;
@@ -600,7 +767,10 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
                 total += 1;
                 functions.push(Json::object(vec![
                     ("id".to_owned(), Json::string(&function.id)),
-                    ("featureIds".to_owned(), Json::array(feature_ids.iter().copied().map(Json::string).collect())),
+                    (
+                        "featureIds".to_owned(),
+                        Json::array(feature_ids.iter().copied().map(Json::string).collect()),
+                    ),
                 ]));
             }
             files.push(Json::object(vec![
@@ -611,17 +781,25 @@ pub fn build_feature_ledger(root: &Path) -> Result<Json, ToolsError> {
         }
         function_repositories.push(Json::object(vec![
             ("repository".to_owned(), Json::string(&repository.id)),
-            ("sourceSetSha256".to_owned(), Json::string(&repository.source_set_sha256)),
+            (
+                "sourceSetSha256".to_owned(),
+                Json::string(&repository.source_set_sha256),
+            ),
             ("totalFunctions".to_owned(), Json::uint(total)),
             ("runtimeFunctions".to_owned(), Json::uint(runtime)),
             ("linkedRuntimeFunctions".to_owned(), Json::uint(linked_runtime)),
-            ("unassignedRuntimeFunctions".to_owned(), Json::uint(runtime - linked_runtime)),
+            (
+                "unassignedRuntimeFunctions".to_owned(),
+                Json::uint(runtime - linked_runtime),
+            ),
             ("files".to_owned(), Json::array(files)),
         ]));
     }
     let workflows_total: u64 = features.iter().map(|feature| feature.workflows.len() as u64).sum();
-    let acceptance_total: HashSet<&str> =
-        features.iter().flat_map(|feature| feature.acceptance_case_ids.iter().map(String::as_str)).collect();
+    let acceptance_total: HashSet<&str> = features
+        .iter()
+        .flat_map(|feature| feature.acceptance_case_ids.iter().map(String::as_str))
+        .collect();
     Ok(Json::object(vec![
         ("schemaVersion".to_owned(), Json::int(1)),
         ("generator".to_owned(), Json::string("tools/inventory/aggregate-features.ts")),
@@ -808,21 +986,42 @@ mod tests {
         assert_eq!(number("acceptedTargetFeatures"), 0.0);
         let features = ledger.get("features").and_then(Json::as_array).expect("features");
         assert_eq!(features[0].get("id").and_then(Json::as_str), Some("q1.f1"));
-        assert_eq!(features[0].get("acceptanceState").and_then(Json::as_str), Some("not-run"));
+        assert_eq!(
+            features[0].get("acceptanceState").and_then(Json::as_str),
+            Some("not-run")
+        );
         let anchors = features[0].get("evidence").and_then(Json::as_array).expect("evidence");
         assert_eq!(anchors[0].get("revision").and_then(Json::as_str), Some(REVISION));
-        assert_eq!(anchors[0].get("functionIds").and_then(Json::as_array).map(<[Json]>::len), Some(1));
-        let accounting =
-            ledger.get("functionAccounting").and_then(|value| value.get("repositories")).and_then(Json::as_array).expect("accounting");
+        assert_eq!(
+            anchors[0]
+                .get("functionIds")
+                .and_then(Json::as_array)
+                .map(<[Json]>::len),
+            Some(1)
+        );
+        let accounting = ledger
+            .get("functionAccounting")
+            .and_then(|value| value.get("repositories"))
+            .and_then(Json::as_array)
+            .expect("accounting");
         assert_eq!(accounting[0].get("totalFunctions").and_then(Json::as_f64), Some(2.0));
-        assert_eq!(accounting[0].get("linkedRuntimeFunctions").and_then(Json::as_f64), Some(1.0));
-        assert_eq!(accounting[0].get("unassignedRuntimeFunctions").and_then(Json::as_f64), Some(1.0));
+        assert_eq!(
+            accounting[0].get("linkedRuntimeFunctions").and_then(Json::as_f64),
+            Some(1.0)
+        );
+        assert_eq!(
+            accounting[0].get("unassignedRuntimeFunctions").and_then(Json::as_f64),
+            Some(1.0)
+        );
     }
 
     #[test]
     fn rejects_changed_evidence() {
         let error = build_fixture(|directory| write(directory, "repo/src/a.ts", "tampered\n")).expect_err("changed");
-        assert!(error.to_string().contains("evidence changed since source capture"), "{error}");
+        assert!(
+            error.to_string().contains("evidence changed since source capture"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -831,7 +1030,17 @@ mod tests {
             let evidence =
                 "{\"repository\": \"q1-ts\", \"path\": \"src/a.ts\", \"symbol\": null, \"line\": 1, \"endLine\": 9, \
                  \"role\": \"implementation\", \"observation\": \"o\"}";
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "implemented", &format!("[{evidence}]"), "[]", "[\"A1\"]"))));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!(
+                        "[{}]",
+                        feature("q1.f1", "implemented", &format!("[{evidence}]"), "[]", "[\"A1\"]")
+                    ),
+                ),
+            );
         })
         .expect_err("range");
         assert!(error.to_string().contains("evidence exceeds"), "{error}");
@@ -843,7 +1052,17 @@ mod tests {
             let evidence =
                 "{\"repository\": \"nope\", \"path\": \"src/a.ts\", \"symbol\": null, \"line\": 1, \"endLine\": 1, \
                  \"role\": \"implementation\", \"observation\": \"o\"}";
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "implemented", &format!("[{evidence}]"), "[]", "[\"A1\"]"))));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!(
+                        "[{}]",
+                        feature("q1.f1", "implemented", &format!("[{evidence}]"), "[]", "[\"A1\"]")
+                    ),
+                ),
+            );
         })
         .expect_err("unpinned");
         assert!(error.to_string().contains("unpinned evidence"), "{error}");
@@ -855,7 +1074,17 @@ mod tests {
             let evidence =
                 "{\"repository\": \"q1-ts\", \"path\": \"src/a.ts\", \"symbol\": \"zzz\", \"line\": 1, \"endLine\": 1, \
                  \"role\": \"implementation\", \"observation\": \"o\"}";
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "implemented", &format!("[{evidence}]"), "[]", "[\"A1\"]"))));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!(
+                        "[{}]",
+                        feature("q1.f1", "implemented", &format!("[{evidence}]"), "[]", "[\"A1\"]")
+                    ),
+                ),
+            );
         })
         .expect_err("symbol");
         assert!(error.to_string().contains("symbol zzz does not match"), "{error}");
@@ -867,7 +1096,17 @@ mod tests {
             let free =
                 "{\"repository\": \"q1-ts\", \"path\": \"src/a.ts\", \"symbol\": null, \"line\": 3, \"endLine\": 3, \
                  \"role\": \"test\", \"observation\": \"o\"}";
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "implemented", &format!("[{free}]"), "[]", "[\"A1\"]"))));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!(
+                        "[{}]",
+                        feature("q1.f1", "implemented", &format!("[{free}]"), "[]", "[\"A1\"]")
+                    ),
+                ),
+            );
         })
         .expect("symbol-free");
     }
@@ -875,18 +1114,35 @@ mod tests {
     #[test]
     fn rejects_unpinned_shard() {
         let error = build_fixture(|directory| {
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")))
-                .replace(REVISION, &"0".repeat(40)));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+                )
+                .replace(REVISION, &"0".repeat(40)),
+            );
         })
         .expect_err("pin");
-        assert!(error.to_string().contains("does not match its pinned donor source"), "{error}");
+        assert!(
+            error.to_string().contains("does not match its pinned donor source"),
+            "{error}"
+        );
     }
 
     #[test]
     fn rejects_unknown_members_and_gaps() {
         let error = build_fixture(|directory| {
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")))
-                .replace("\"P1\"", "\"PX\""));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+                )
+                .replace("\"P1\"", "\"PX\""),
+            );
         })
         .expect_err("product");
         assert!(error.to_string().contains("refers to unknown PX"), "{error}");
@@ -894,12 +1150,27 @@ mod tests {
             write(directory, "docs/work-packages.json", "{\"tasks\": [{\"id\": \"T1\"}], \"sourceFeatureIds\": [\"S1\", \"S2\"], \"featureCoverage\": [{\"id\": \"U1\"}]}");
         })
         .expect_err("coverage");
-        assert!(error.to_string().contains("source-family coverage refers to unknown S2"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("source-family coverage refers to unknown S2"),
+            "{error}"
+        );
         let error = build_fixture(|directory| {
             let evidence =
                 "{\"repository\": \"q1-ts\", \"path\": \"src/a.ts\", \"symbol\": null, \"line\": 1, \"endLine\": 1, \
                  \"role\": \"implementation\", \"observation\": \"o\"}";
-            write(directory, "verification/features/q1.json", &shard("q1", &format!("[{}]", feature("q1.f1", "partial", &format!("[{evidence}]"), "[]", "[\"A1\"]"))));
+            write(
+                directory,
+                "verification/features/q1.json",
+                &shard(
+                    "q1",
+                    &format!(
+                        "[{}]",
+                        feature("q1.f1", "partial", &format!("[{evidence}]"), "[]", "[\"A1\"]")
+                    ),
+                ),
+            );
         })
         .expect_err("gap");
         assert!(error.to_string().contains("must describe the donor gap"), "{error}");
@@ -907,25 +1178,67 @@ mod tests {
 
     #[test]
     fn validates_documents() {
-        let shard_value = parse_json(&shard("q1", &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")))).expect("parse");
+        let shard_value = parse_json(&shard(
+            "q1",
+            &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+        ))
+        .expect("parse");
         assert!(parse_feature_shard(&shard_value, "shard").is_ok());
         for (text, message) in [
             (shard("q1", "[]"), "cannot drop its features"),
-            (shard("q1", &format!("[{}, {}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"), feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"))), "contains duplicates"),
-            (shard("q1", &format!("[{}]", feature("q2.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"))), "contains a feature outside q1"),
-            (shard("q9", &format!("[{}]", feature("q9.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"))), "family is invalid"),
+            (
+                shard(
+                    "q1",
+                    &format!(
+                        "[{}, {}]",
+                        feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"),
+                        feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")
+                    ),
+                ),
+                "contains duplicates",
+            ),
+            (
+                shard(
+                    "q1",
+                    &format!("[{}]", feature("q2.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+                ),
+                "contains a feature outside q1",
+            ),
+            (
+                shard(
+                    "q9",
+                    &format!("[{}]", feature("q9.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+                ),
+                "family is invalid",
+            ),
         ] {
             let error = parse_feature_shard(&parse_json(&text).expect("parse"), "shard").expect_err("shard");
             assert!(error.to_string().contains(message), "{error}");
         }
-        let bad_version = shard("q1", &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"))).replace("\"schemaVersion\": 1", "\"schemaVersion\": 2");
+        let bad_version = shard(
+            "q1",
+            &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+        )
+        .replace("\"schemaVersion\": 1", "\"schemaVersion\": 2");
         let error = parse_feature_shard(&parse_json(&bad_version).expect("parse"), "shard").expect_err("version");
         assert!(error.to_string().contains("schemaVersion must equal 1"), "{error}");
         for (from, to, message) in [
-            ("\"sourceStatus\": \"missing\"", "\"sourceStatus\": \"done\"", "sourceStatus is invalid"),
-            ("\"targetStatus\": \"required\"", "\"targetStatus\": \"optional\"", "targetStatus must retain the required feature"),
+            (
+                "\"sourceStatus\": \"missing\"",
+                "\"sourceStatus\": \"done\"",
+                "sourceStatus is invalid",
+            ),
+            (
+                "\"targetStatus\": \"required\"",
+                "\"targetStatus\": \"optional\"",
+                "targetStatus must retain the required feature",
+            ),
         ] {
-            let text = shard("q1", &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"))).replace(from, to);
+            let text = shard(
+                "q1",
+                &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+            )
+            .replace(from, to);
             let error = parse_feature_shard(&parse_json(&text).expect("parse"), "shard").expect_err("field");
             assert!(error.to_string().contains(message), "{error}");
         }
@@ -934,14 +1247,27 @@ mod tests {
         assert!(error.to_string().contains("role is invalid"), "{error}");
         let missing_symbol = shard("q1", &format!("[{}]", feature("q1.f1", "implemented", "[{\"repository\": \"q1-ts\", \"path\": \"src/a.ts\", \"line\": 1, \"endLine\": 1, \"role\": \"test\", \"observation\": \"o\"}]", "[]", "[\"A1\"]")));
         let error = parse_feature_shard(&parse_json(&missing_symbol).expect("parse"), "shard").expect_err("symbol");
-        assert!(error.to_string().contains("symbol must be a nonempty string"), "{error}");
+        assert!(
+            error.to_string().contains("symbol must be a nonempty string"),
+            "{error}"
+        );
         let reversed = shard("q1", &format!("[{}]", feature("q1.f1", "implemented", "[{\"repository\": \"q1-ts\", \"path\": \"src/a.ts\", \"symbol\": null, \"line\": 2, \"endLine\": 1, \"role\": \"test\", \"observation\": \"o\"}]", "[]", "[\"A1\"]")));
         let error = parse_feature_shard(&parse_json(&reversed).expect("parse"), "shard").expect_err("range");
         assert!(error.to_string().contains("has a reversed line range"), "{error}");
-        let no_workflows = shard("q1", &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]"))).replace(", \"workflows\": [{\"id\": \"w\", \"trigger\": \"t\", \"steps\": [\"s\"], \"observableOutcome\": \"o\"}]", ", \"workflows\": []");
+        let no_workflows = shard(
+            "q1",
+            &format!("[{}]", feature("q1.f1", "missing", "[]", "[\"g\"]", "[\"A1\"]")),
+        )
+        .replace(
+            ", \"workflows\": [{\"id\": \"w\", \"trigger\": \"t\", \"steps\": [\"s\"], \"observableOutcome\": \"o\"}]",
+            ", \"workflows\": []",
+        );
         let error = parse_feature_shard(&parse_json(&no_workflows).expect("parse"), "shard").expect_err("workflows");
         assert!(error.to_string().contains("needs an exposed workflow"), "{error}");
-        let no_evidence = shard("q1", &format!("[{}]", feature("q1.f1", "implemented", "[]", "[]", "[\"A1\"]")));
+        let no_evidence = shard(
+            "q1",
+            &format!("[{}]", feature("q1.f1", "implemented", "[]", "[]", "[\"A1\"]")),
+        );
         let error = parse_feature_shard(&parse_json(&no_evidence).expect("parse"), "shard").expect_err("evidence");
         assert!(error.to_string().contains("needs source evidence"), "{error}");
     }
@@ -956,9 +1282,15 @@ mod tests {
                 assert!(nonempty_string(&parse_json(text).expect("parse"), "here").is_err());
             }
         }
-        assert_eq!(positive_integer(&parse_json("3").expect("parse"), "here").expect("int"), 3);
+        assert_eq!(
+            positive_integer(&parse_json("3").expect("parse"), "here").expect("int"),
+            3
+        );
         for text in ["0", "-1", "1.5", "\"3\"", "9007199254740992"] {
-            assert!(positive_integer(&parse_json(text).expect("parse"), "here").is_err(), "{text}");
+            assert!(
+                positive_integer(&parse_json(text).expect("parse"), "here").is_err(),
+                "{text}"
+            );
         }
         assert!(hash(&parse_json(&format!("\"{}\"", "a".repeat(64))).expect("parse"), "here").is_ok());
         assert!(hash(&parse_json(&format!("\"{}\"", "A".repeat(64))).expect("parse"), "here").is_err());

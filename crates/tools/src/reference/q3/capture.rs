@@ -74,8 +74,10 @@ pub fn capture_q3_reference(command: &[String]) -> Result<Json, ToolsError> {
     for path in capture_program_paths() {
         capture_program.push(identify_file(&path)?.to_json());
     }
-    let scenarios_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reference/q3/scenarios.rs").to_string_lossy().into_owned();
+    let scenarios_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/reference/q3/scenarios.rs")
+        .to_string_lossy()
+        .into_owned();
     let fixture_files = vec![identify_file(&scenarios_path)?.to_json()];
     let scenarios = evaluate_scenarios();
     let mut rendered = Vec::with_capacity(scenarios.len());
@@ -169,26 +171,45 @@ pub fn capture_q3_reference(command: &[String]) -> Result<Json, ToolsError> {
 /// Run the Q3 capture (donor `main`): capture or `--check`, then summarize.
 pub fn run(args: &[String]) -> Result<i32, ToolsError> {
     if args.len() > 1 || args.len() == 1 && args[0] != "--check" {
-        return Err(ToolsError::invalid("Usage: qa-tools reference::q3::capture::run [--check]"));
+        return Err(ToolsError::invalid(
+            "Usage: qa-tools reference::q3::capture::run [--check]",
+        ));
     }
     let exe = std::env::current_exe().map_err(|error| ToolsError::io("resolving current executable", error))?;
-    let mut command = vec![exe.to_string_lossy().into_owned(), "reference::q3::capture::run".to_owned()];
+    let mut command = vec![
+        exe.to_string_lossy().into_owned(),
+        "reference::q3::capture::run".to_owned(),
+    ];
     command.extend(args.iter().cloned());
     let capture = capture_q3_reference(&command)?;
     if args.is_empty() {
         let directory = quake_typescript_root().join("verification/reference-cases/q3");
         std::fs::create_dir_all(&directory)
             .map_err(|error| ToolsError::io(format!("creating {}", directory.display()), error))?;
-        fsutil::write_text(&directory.join("capture.json"), &format!("{}\n", capture.render_pretty()))?;
+        fsutil::write_text(
+            &directory.join("capture.json"),
+            &format!("{}\n", capture.render_pretty()),
+        )?;
     }
     let summary = Json::object(vec![
         ("oracleKind".to_owned(), Json::string("source-derived")),
-        ("status".to_owned(), capture.get("status").unwrap_or(&Json::Null).clone()),
+        (
+            "status".to_owned(),
+            capture.get("status").unwrap_or(&Json::Null).clone(),
+        ),
         (
             "scenarios".to_owned(),
-            Json::uint(capture.get("scenarios").and_then(Json::as_array).map_or(0, <[Json]>::len) as u64),
+            Json::uint(
+                capture
+                    .get("scenarios")
+                    .and_then(Json::as_array)
+                    .map_or(0, <[Json]>::len) as u64,
+            ),
         ),
-        ("assertions".to_owned(), capture.get("assertionCount").unwrap_or(&Json::Null).clone()),
+        (
+            "assertions".to_owned(),
+            capture.get("assertionCount").unwrap_or(&Json::Null).clone(),
+        ),
     ]);
     println!("{}", summary.render());
     if capture.get("status").and_then(Json::as_str) != Some("PASS") {
@@ -220,8 +241,8 @@ mod tests {
 
     #[test]
     fn capture_passes_all_scenarios() {
-        let capture = capture_q3_reference(&["qa-tools".to_owned(), "reference::q3::capture::run".to_owned()])
-            .expect("capture");
+        let capture =
+            capture_q3_reference(&["qa-tools".to_owned(), "reference::q3::capture::run".to_owned()]).expect("capture");
         assert_eq!(capture.get("status").and_then(Json::as_str), Some("PASS"));
         assert_eq!(capture.get("assertionCount").and_then(Json::as_f64), Some(25.0));
         assert_eq!(capture.get("engineFamily").and_then(Json::as_str), Some("q3"));

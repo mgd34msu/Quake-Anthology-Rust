@@ -39,7 +39,9 @@ pub fn parse_args(args: &[String]) -> Result<GenerateOptions, ToolsError> {
             index += 1;
             continue;
         }
-        let value = args.get(index + 1).ok_or_else(|| ToolsError::invalid(format!("Missing value for {argument}")))?;
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| ToolsError::invalid(format!("Missing value for {argument}")))?;
         if argument == "--domain" {
             domain = Some(PathBuf::from(value));
         } else if argument == "--output" {
@@ -80,7 +82,9 @@ pub fn write_composition_manifest(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|error| ToolsError::io(format!("creating {}", parent.display()), error))?;
     }
-    let parent = destination.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let parent = destination
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let temporary = make_temp_dir(&parent, ".composition-")?;
     let result = (|| -> Result<(CaseCount, PathBuf), ToolsError> {
         let path = temporary.join("manifest.json");
@@ -100,14 +104,23 @@ pub fn write_composition_manifest(
             if first {
                 first = false;
             } else {
-                handle.write_all(b",\n").map_err(|error| ToolsError::io("writing manifest", error))?;
+                handle
+                    .write_all(b",\n")
+                    .map_err(|error| ToolsError::io("writing manifest", error))?;
             }
-            handle.write_all(case.to_json().render().as_bytes()).map_err(|error| ToolsError::io("writing manifest", error))?;
+            handle
+                .write_all(case.to_json().render().as_bytes())
+                .map_err(|error| ToolsError::io("writing manifest", error))?;
         }
-        handle.write_all(b"\n]}\n").map_err(|error| ToolsError::io("writing manifest", error))?;
-        handle.sync_all().map_err(|error| ToolsError::io("syncing manifest", error))?;
+        handle
+            .write_all(b"\n]}\n")
+            .map_err(|error| ToolsError::io("writing manifest", error))?;
+        handle
+            .sync_all()
+            .map_err(|error| ToolsError::io("syncing manifest", error))?;
         drop(handle);
-        fs::rename(&path, &destination).map_err(|error| ToolsError::io(format!("publishing {}", destination.display()), error))?;
+        fs::rename(&path, &destination)
+            .map_err(|error| ToolsError::io(format!("publishing {}", destination.display()), error))?;
         Ok((cases, destination))
     })();
     let _ = fs::remove_dir_all(&temporary);
@@ -123,7 +136,9 @@ pub fn run(args: &[String]) -> Result<String, ToolsError> {
         let cases = composition_size(&domain)?;
         let mut id = String::new();
         escape_string(&domain.id, &mut id);
-        return Ok(format!("{{\"domain\":{id},\"expectedCases\":\"{cases}\",\"generated\":false}}"));
+        return Ok(format!(
+            "{{\"domain\":{id},\"expectedCases\":\"{cases}\",\"generated\":false}}"
+        ));
     }
     if let Some(output) = options.output {
         let (cases, destination) = write_composition_manifest(&domain, &output, &options.maximum)?;
@@ -131,7 +146,9 @@ pub fn run(args: &[String]) -> Result<String, ToolsError> {
         escape_string(&domain.id, &mut id);
         let mut path = String::new();
         escape_string(&destination.to_string_lossy(), &mut path);
-        return Ok(format!("{{\"domain\":{id},\"expectedCases\":\"{cases}\",\"output\":{path},\"gameplayExecuted\":false}}"));
+        return Ok(format!(
+            "{{\"domain\":{id},\"expectedCases\":\"{cases}\",\"output\":{path},\"gameplayExecuted\":false}}"
+        ));
     }
     Err(ToolsError::invalid(
         "Usage: qa-tools-verify-generate --domain domain.json [--count | --output manifest.json] [--max-cases N]",
@@ -140,5 +157,9 @@ pub fn run(args: &[String]) -> Result<String, ToolsError> {
 
 /// Open a file for exclusive creation (shared with the runner).
 pub fn create_exclusive(path: &Path) -> Result<File, ToolsError> {
-    OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| ToolsError::io(format!("creating {}", path.display()), error))
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| ToolsError::io(format!("creating {}", path.display()), error))
 }
