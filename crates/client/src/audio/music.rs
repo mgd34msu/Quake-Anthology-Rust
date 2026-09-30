@@ -313,6 +313,17 @@ impl CdMusic {
         }
     }
 
+    /// Borrow the driven player (donor `CdMusic.player` is a public field).
+    #[must_use]
+    pub const fn player(&self) -> &MusicPlayer {
+        &self.player
+    }
+
+    /// Mutably borrow the driven player.
+    pub fn player_mut(&mut self) -> &mut MusicPlayer {
+        &mut self.player
+    }
+
     /// Whether music is enabled.
     #[must_use]
     pub const fn enabled(&self) -> bool {
