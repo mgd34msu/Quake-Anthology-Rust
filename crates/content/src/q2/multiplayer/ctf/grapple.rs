@@ -11,7 +11,7 @@ use crate::q2::equipment::grapple_weapon::{
 };
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
 use crate::q2::foundation::items::{Q2ItemDefinition, Q2ItemKindData};
-use crate::q2::foundation::weapons::generic_frame::Q2GenericFrameState;
+use crate::q2::foundation::weapons::generic_frame::{Q2GenericFrameState, project_weapon_animation};
 use crate::q2::foundation::weapons::player::{
     Q2WeaponContext, Q2WeaponExtension, Q2WeaponSelection, register_weapon_extension, request_weapon, weapon_generic_classic,
     weapon_generic_rerelease, weapon_kick,
@@ -77,20 +77,6 @@ pub fn ctf_grapple_equipment(shared: Option<&dyn SharedGrappleControl>) -> Optio
         can_damage: ctf_grapple_can_damage,
         settings: ctf_grapple_settings,
     })
-}
-
-/// Project weapon state onto a generic frame.
-fn weapon_animation(state: &Q2WeaponState) -> Q2GenericFrameState {
-    Q2GenericFrameState {
-        phase: state.phase,
-        frame: state.frame,
-        latched_attack: false,
-        source_firing: false,
-        think_time: 0.0,
-        fire_finished: 0.0,
-        fire_buffered: false,
-        last_firing_time: 0.0,
-    }
 }
 
 /// Grapple item pickup (`register` pickup).
@@ -179,7 +165,7 @@ impl Q2CtfGrapple {
             let change = weapon.pending.is_some()
                 || weapon.primary_handoff == PrimaryHandoff::Holstering
                 || game.options.edition == Q2Edition::Rerelease && holster;
-            if ctf_grapple_weapon_should_reset(&weapon_animation(&weapon), selected, change) {
+            if ctf_grapple_weapon_should_reset(&project_weapon_animation(&weapon), selected, change) {
                 if game.options.edition == Q2Edition::Rerelease && weapon.primary_handoff == PrimaryHandoff::Active {
                     if let Some(state) = game.weapons.states.get_mut(&player) {
                         state.pending = state.weapon.clone();
@@ -303,7 +289,7 @@ impl Q2WeaponExtension for Q2CtfGrappleExtension {
         let Some(equipment) = game.ctf.equipment else {
             return;
         };
-        let mut animation = weapon_animation(state);
+        let mut animation = project_weapon_animation(state);
         let owner = context.owner.actor.id().clone();
         let edition = game.options.edition;
         if let Some((origin, pitch)) = fire_ctf_grapple_weapon(owner, game, equipment, &mut animation, edition) {
@@ -328,7 +314,7 @@ impl Q2WeaponExtension for Q2CtfGrappleExtension {
             holster: context.input.holster,
             latched_holster: false,
         };
-        let mut animation = weapon_animation(state);
+        let mut animation = project_weapon_animation(state);
         let source = equipment.state_snapshot(game, owner.clone());
         let mut actions = CtfGrappleThinkDriver { owner, game, state: &mut *state, context: &context, edition, equipment };
         step_ctf_grapple_weapon(&mut animation, &source, &input, edition, &mut actions);

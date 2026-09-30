@@ -82,19 +82,19 @@ pub struct GrappleHooks {
     /// Whether an actor is dead.
     pub dead: fn(ActorId, &mut Q2GameServices) -> bool,
     /// Read the previous velocity.
-    pub previous_velocity: fn(ActorId) -> Vec3,
+    pub previous_velocity: fn(ActorId, &mut Q2GameServices) -> Vec3,
     /// Write the previous velocity.
-    pub set_previous_velocity: fn(ActorId, Vec3),
+    pub set_previous_velocity: fn(ActorId, Vec3, &mut Q2GameServices),
     /// Read the grapple volume.
-    pub volume: fn(ActorId) -> f64,
+    pub volume: fn(ActorId, &mut Q2GameServices) -> f64,
     /// Emit a grapple noise.
     pub noise: fn(ActorId, &mut Q2GameServices, Vec3, GrappleNoise),
     /// Suppress or restore grapple prediction.
-    pub set_grapple_prediction: fn(ActorId, bool),
+    pub set_grapple_prediction: fn(ActorId, bool, &mut Q2GameServices),
     /// Read gravity.
-    pub gravity: fn() -> f64,
+    pub gravity: fn(&mut Q2GameServices) -> f64,
     /// Emit a grapple cable.
-    pub emit: fn(GrappleCableEvent),
+    pub emit: fn(GrappleCableEvent, &mut Q2GameServices),
 }
 
 /// Read the grapple owner body (`grappleBody`).

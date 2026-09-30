@@ -1,6 +1,6 @@
 //! Generic weapon frames (`src/content/q2/foundation/weapons/generic-frame.ts`).
 
-use super::types::{Q2WeaponDefinition, Q2WeaponPhase};
+use super::types::{Q2WeaponDefinition, Q2WeaponPhase, Q2WeaponState};
 
 /// Generic frame phase.
 pub type Q2GenericPhase = Q2WeaponPhase;
@@ -396,5 +396,22 @@ pub fn step_q2_rerelease_frame(
                 + (if definition.repeating && input.weapon_thunk { input.frame_seconds } else { 0.0 }),
         );
         hooks.frame_state().set_think_time(think);
+    }
+}
+
+/// Project weapon state onto a generic frame.
+///
+/// Match-mode grapple weapons step the shared frame functions with the
+/// weapon phase and frame; the remaining generic fields start unset.
+pub fn project_weapon_animation(state: &Q2WeaponState) -> Q2GenericFrameState {
+    Q2GenericFrameState {
+        phase: state.phase,
+        frame: state.frame,
+        latched_attack: false,
+        source_firing: false,
+        think_time: 0.0,
+        fire_finished: 0.0,
+        fire_buffered: false,
+        last_firing_time: 0.0,
     }
 }

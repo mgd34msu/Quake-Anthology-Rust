@@ -78,13 +78,13 @@ pub struct Q2CtfGrappleEquipment {
     /// Grapple hooks.
     pub hooks: GrappleHooks,
     /// Damage eligibility.
-    pub can_damage: fn(ActorId, ActorId) -> bool,
+    pub can_damage: fn(ActorId, ActorId, &mut Q2GameServices) -> bool,
     /// Settings provider.
     pub settings: fn(ActorId, &mut Q2GameServices) -> CtfGrappleSettings,
 }
 
 /// Allow any damage (`canDamage` default).
-pub fn ctf_grapple_can_damage(_owner: ActorId, _target: ActorId) -> bool {
+pub fn ctf_grapple_can_damage(_owner: ActorId, _target: ActorId, _game: &mut Q2GameServices) -> bool {
     true
 }
 
@@ -123,7 +123,7 @@ impl Q2CtfGrappleEquipment {
         reliable: bool,
     ) {
         let origin = grapple_body(entity.clone(), game).origin;
-        let volume = (self.hooks.volume)(owner);
+        let volume = (self.hooks.volume)(owner, game);
         game.host.emit(Q2PresentationEvent::Sound(Q2SoundEvent {
             actor: Some(entity),
             origin,
@@ -164,7 +164,7 @@ impl Q2CtfGrappleEquipment {
             game.host.now() + if game.options.edition == Q2Edition::Rerelease { 1.0 } else { 0.0 };
         Self::restore_knockback(player.clone(), game);
         if game.options.edition == Q2Edition::Classic {
-            (self.hooks.set_grapple_prediction)(player, false);
+            (self.hooks.set_grapple_prediction)(player, false, game);
         }
     }
 
@@ -199,7 +199,7 @@ impl Q2CtfGrappleEquipment {
         Self::restore_knockback(owner.clone(), game);
         set_hook_loop(hook.clone(), game, "");
         if game.options.edition == Q2Edition::Classic {
-            (self.hooks.set_grapple_prediction)(owner, false);
+            (self.hooks.set_grapple_prediction)(owner, false, game);
         }
         let owned = game.owned_of(hook.clone());
         game.host.bodies().detach(&owned);
@@ -561,7 +561,7 @@ impl Q2CtfGrappleEquipment {
                     .combat()
                     .read(&enemy)
                     .is_some_and(|combat| combat.can_take_damage)
-                && (self.can_damage)(owner.clone(), enemy.clone())
+                && (self.can_damage)(owner.clone(), enemy.clone(), game)
             {
                 let velocity = game.body_of(hook.clone()).velocity;
                 let origin = game.body_of(hook.clone()).origin;
@@ -599,7 +599,7 @@ impl Q2CtfGrappleEquipment {
         if source.grapple_state == CtfGrapplePhase::Pull && length3(direction) < 64.0 {
             ctf_state_mut(game, owner.clone()).grapple_state = CtfGrapplePhase::Hang;
             if game.options.edition == Q2Edition::Classic {
-                (self.hooks.set_grapple_prediction)(owner.clone(), true);
+                (self.hooks.set_grapple_prediction)(owner.clone(), true, game);
                 self.sound(owner.clone(), owner.clone(), game, "grhang", true);
             } else {
                 set_hook_loop(hook.clone(), game, "weapons/grapple/grhang.wav");
@@ -631,7 +631,7 @@ impl Q2CtfGrappleEquipment {
             (self.settings)(owner.clone(), game).pull_speed
         };
         let pull = scale3(normalize3(direction), speed as f32);
-        let gravity = (pose.gravity * (self.hooks.gravity)() * game.host.frame_seconds()) as f32;
+        let gravity = (pose.gravity * (self.hooks.gravity)(game) * game.host.frame_seconds()) as f32;
         grapple_velocity(owner, game, add3(pull, scale3(pose.gravity_vector, gravity)));
     }
 
@@ -656,12 +656,15 @@ impl Q2CtfGrappleEquipment {
                 pose.angles,
                 vec3(7.0, 2.0, -9.0),
             );
-            (self.hooks.emit)(GrappleCableEvent {
-                actor: owner,
-                start,
-                end,
-                offset: Vec3::default(),
-            });
+            (self.hooks.emit)(
+                GrappleCableEvent {
+                    actor: owner,
+                    start,
+                    end,
+                    offset: Vec3::default(),
+                },
+                game,
+            );
             return;
         }
         let axes = angle_vectors(pose.angles);
@@ -680,12 +683,15 @@ impl Q2CtfGrappleEquipment {
         if length3(sub3(start, end)) < 64.0 {
             return;
         }
-        (self.hooks.emit)(GrappleCableEvent {
-            actor: owner,
-            start: origin,
-            end,
-            offset: sub3(start, origin),
-        });
+        (self.hooks.emit)(
+            GrappleCableEvent {
+                actor: owner,
+                start: origin,
+                end,
+                offset: sub3(start, origin),
+            },
+            game,
+        );
     }
 
     /// Run the player frame (`playerFrame`).
@@ -741,7 +747,7 @@ pub fn ctf_actor_released(game: &mut Q2GameServices, actor: &ActorId) {
         source.grapple_release_time = now + if rerelease { 1.0 } else { 0.0 };
         Q2CtfGrappleEquipment::restore_knockback(owner.clone(), game);
         if !rerelease && game.host.actors().is_live(&owner) {
-            (handle.hooks.set_grapple_prediction)(owner, false);
+            (handle.hooks.set_grapple_prediction)(owner, false, game);
         }
     }
 }
