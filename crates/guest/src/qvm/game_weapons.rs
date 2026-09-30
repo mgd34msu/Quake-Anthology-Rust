@@ -1245,7 +1245,7 @@ impl QvmPrimaryWeapons {
     }
 
     /// Evaluate weapon delay, projecting an equipment selection first.
-    pub fn equipment_delay(&self, actor: &ActorId, provider: &str, milliseconds: i32) -> Result<i32, GuestError> {
+    pub fn equipment_delay(&mut self, actor: &ActorId, provider: &str, milliseconds: i32) -> Result<i32, GuestError> {
         let item = self.equipment_context(provider)?;
         let Some(item) = item else {
             return self.weapon_delay(actor, milliseconds);
@@ -1275,7 +1275,7 @@ impl QvmPrimaryWeapons {
     }
 
     /// Evaluate weapon delay under a projected Pmove player.
-    pub fn weapon_delay(&self, actor: &ActorId, milliseconds: i32) -> Result<i32, GuestError> {
+    pub fn weapon_delay(&mut self, actor: &ActorId, milliseconds: i32) -> Result<i32, GuestError> {
         if milliseconds < 0 {
             return Err(GuestError::invalid(
                 "Original QVM weapon delay requires its int32 input",

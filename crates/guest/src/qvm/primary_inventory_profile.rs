@@ -502,7 +502,7 @@ pub fn read_qvm_primary_inventory_profile(
 
 #[cfg(test)]
 mod tests {
-    use super::super::mod_provider::{ModuleId, QvmInstruction, QvmRole};
+    use super::super::mod_provider::{ModuleId, ProfileValue, QvmInstruction, QvmRole};
     use super::*;
 
     fn fixture_artifact() -> QvmArtifact {

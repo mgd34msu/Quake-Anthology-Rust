@@ -407,29 +407,122 @@ pub struct QvmModItems {
 // Stage validation.
 // ---------------------------------------------------------------------------
 
-fn function_end(image: &QvmImage, entry: usize) -> Result<usize, GuestError> {
-    if image
-        .instruction(entry)
-        .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
-    {
+/// Opcode classes weapon-stage validation distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageOpcode {
+    /// Function entry.
+    Enter,
+    /// Function return.
+    Leave,
+    /// Operand push.
+    Push,
+    /// Constant load.
+    Const,
+    /// Unconditional jump.
+    Jump,
+    /// Function call.
+    Call,
+    /// Conditional branch.
+    Branch,
+    /// Any other opcode.
+    Other,
+}
+
+/// Image surface weapon-stage validation needs. Both QVM image mirrors
+/// implement it so game and component callers share one validator.
+pub trait QvmStageImage {
+    /// Opcode class of one instruction.
+    fn stage_opcode(&self, index: usize) -> Option<StageOpcode>;
+    /// Operand word of one instruction.
+    fn stage_operand(&self, index: usize) -> Option<i32>;
+    /// Operand width of one instruction.
+    fn stage_operand_width(&self, index: usize) -> Option<u8>;
+    /// Index one past the last instruction of the function entered at `entry`.
+    fn stage_function_end(&self, entry: usize) -> usize;
+}
+
+fn classify_game_opcode(opcode: QvmOpcode) -> StageOpcode {
+    match opcode {
+        QvmOpcode::OpEnter => StageOpcode::Enter,
+        QvmOpcode::OpLeave => StageOpcode::Leave,
+        QvmOpcode::OpPush => StageOpcode::Push,
+        QvmOpcode::OpConst => StageOpcode::Const,
+        QvmOpcode::OpJump => StageOpcode::Jump,
+        QvmOpcode::OpCall => StageOpcode::Call,
+        opcode if opcode.is_branch() => StageOpcode::Branch,
+        _ => StageOpcode::Other,
+    }
+}
+
+fn classify_provider_opcode(opcode: super::mod_provider::QvmOpcode) -> StageOpcode {
+    match opcode {
+        super::mod_provider::QvmOpcode::OpEnter => StageOpcode::Enter,
+        super::mod_provider::QvmOpcode::OpLeave => StageOpcode::Leave,
+        super::mod_provider::QvmOpcode::OpPush => StageOpcode::Push,
+        super::mod_provider::QvmOpcode::OpConst => StageOpcode::Const,
+        super::mod_provider::QvmOpcode::OpJump => StageOpcode::Jump,
+        super::mod_provider::QvmOpcode::OpCall => StageOpcode::Call,
+        opcode if opcode.is_branch() => StageOpcode::Branch,
+        _ => StageOpcode::Other,
+    }
+}
+
+impl QvmStageImage for QvmImage {
+    fn stage_opcode(&self, index: usize) -> Option<StageOpcode> {
+        self.instruction(index).map(|instruction| classify_game_opcode(instruction.opcode))
+    }
+
+    fn stage_operand(&self, index: usize) -> Option<i32> {
+        self.instruction(index).map(|instruction| instruction.operand)
+    }
+
+    fn stage_operand_width(&self, index: usize) -> Option<u8> {
+        self.instruction(index).map(|instruction| instruction.operand_width)
+    }
+
+    fn stage_function_end(&self, entry: usize) -> usize {
+        self.function_end(entry)
+    }
+}
+
+impl QvmStageImage for super::mod_provider::QvmImage {
+    fn stage_opcode(&self, index: usize) -> Option<StageOpcode> {
+        self.instruction(index)
+            .map(|instruction| classify_provider_opcode(instruction.opcode))
+    }
+
+    fn stage_operand(&self, index: usize) -> Option<i32> {
+        self.instruction(index).map(|instruction| instruction.operand)
+    }
+
+    fn stage_operand_width(&self, index: usize) -> Option<u8> {
+        self.instruction(index).map(|instruction| instruction.operand_width)
+    }
+
+    fn stage_function_end(&self, entry: usize) -> usize {
+        self.function_end(entry)
+    }
+}
+
+fn function_end(image: &impl QvmStageImage, entry: usize) -> Result<usize, GuestError> {
+    if image.stage_opcode(entry) != Some(StageOpcode::Enter) {
         return Err(GuestError::invalid("QVM weapon entry is not an original function"));
     }
-    Ok(image.function_end(entry))
+    Ok(image.stage_function_end(entry))
 }
 
 /// Validate a weapon dispatcher head.
 pub fn validate_qvm_weapon_dispatcher(
     stage: &QvmWeaponDispatcherDefinition,
-    image: &QvmImage,
+    image: &impl QvmStageImage,
 ) -> Result<(), GuestError> {
     let end = function_end(image, stage.dispatcher.entry)?;
     let mut seen = std::collections::HashSet::new();
     for predicate in &stage.predicates {
-        let instruction = image.instruction(predicate.instruction);
         if predicate.instruction <= stage.dispatcher.entry
             || predicate.instruction >= end
             || !seen.insert(predicate.instruction)
-            || instruction.is_none_or(|value| !value.opcode.is_branch())
+            || image.stage_opcode(predicate.instruction) != Some(StageOpcode::Branch)
         {
             return Err(GuestError::invalid(
                 "QVM weapon predicate is not a distinct conditional in its original dispatcher",
@@ -450,11 +543,10 @@ pub fn validate_qvm_weapon_dispatcher(
 }
 
 /// Validate a full weapon stage.
-pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Result<(), GuestError> {
+pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &impl QvmStageImage) -> Result<(), GuestError> {
     validate_qvm_weapon_dispatcher(&stage.dispatcher_definition(), image)?;
     let continuation = &stage.continuation;
     let limit = function_end(image, continuation.entry)?;
-    let branch = image.instruction(continuation.instruction);
     if continuation.when.is_empty() {
         return Err(GuestError::invalid(
             "QVM weapon continuation lacks its source mode conditions",
@@ -462,11 +554,10 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
     }
     let mut decisions = std::collections::HashSet::from([continuation.instruction]);
     for predicate in &continuation.predicates {
-        let instruction = image.instruction(predicate.instruction);
         if predicate.instruction <= continuation.entry
             || predicate.instruction >= limit
             || !decisions.insert(predicate.instruction)
-            || instruction.is_none_or(|value| !value.opcode.is_branch())
+            || image.stage_opcode(predicate.instruction) != Some(StageOpcode::Branch)
         {
             return Err(GuestError::invalid(
                 "QVM weapon continuation predicate is not a distinct original conditional",
@@ -475,16 +566,18 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
     }
     if continuation.instruction <= continuation.entry
         || continuation.instruction >= limit
-        || branch.is_none_or(|value| !value.opcode.is_branch() || value.operand_width != 4)
+        || image.stage_opcode(continuation.instruction) != Some(StageOpcode::Branch)
+        || image.stage_operand_width(continuation.instruction) != Some(4)
     {
         return Err(GuestError::invalid(
             "QVM weapon continuation lacks an original conditional boundary",
         ));
     }
+    let branch_operand = image.stage_operand(continuation.instruction).unwrap_or(0);
     let mut pc = if continuation.original_taken {
         continuation.instruction + 1
     } else {
-        branch.expect("checked branch").operand.max(0) as usize
+        branch_operand.max(0) as usize
     };
     let mut visited = std::collections::HashSet::new();
     loop {
@@ -493,20 +586,16 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
                 "QVM weapon continuation does not take an original return edge",
             ));
         }
-        let instruction = image.instruction(pc);
-        if instruction.is_some_and(|value| value.opcode == QvmOpcode::OpLeave) {
+        let opcode = image.stage_opcode(pc);
+        if opcode == Some(StageOpcode::Leave) {
             break;
         }
-        if instruction.is_some_and(|value| value.opcode == QvmOpcode::OpPush) {
+        if opcode == Some(StageOpcode::Push) {
             pc += 1;
             continue;
         }
-        if instruction.is_some_and(|value| value.opcode == QvmOpcode::OpConst)
-            && image
-                .instruction(pc + 1)
-                .is_some_and(|value| value.opcode == QvmOpcode::OpJump)
-        {
-            pc = instruction.expect("checked const").operand.max(0) as usize;
+        if opcode == Some(StageOpcode::Const) && image.stage_opcode(pc + 1) == Some(StageOpcode::Jump) {
+            pc = image.stage_operand(pc).unwrap_or(0).max(0) as usize;
             continue;
         }
         return Err(GuestError::invalid(
@@ -515,14 +604,16 @@ pub fn validate_qvm_weapon_stage(stage: &QvmWeaponStage, image: &QvmImage) -> Re
     }
     let mut previous = continuation.instruction;
     for value in &continuation.calls {
-        let target = value.instruction.checked_sub(1).and_then(|at| image.instruction(at));
+        let target = value.instruction.checked_sub(1).and_then(|at| image.stage_opcode(at));
+        let target_operand = value
+            .instruction
+            .checked_sub(1)
+            .and_then(|at| image.stage_operand(at));
         if value.instruction <= previous
             || value.instruction >= limit
-            || image
-                .instruction(value.instruction)
-                .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpCall)
-            || target
-                .is_none_or(|target| target.opcode != QvmOpcode::OpConst || target.operand != value.call.entry as i32)
+            || image.stage_opcode(value.instruction) != Some(StageOpcode::Call)
+            || target != Some(StageOpcode::Const)
+            || target_operand != Some(value.call.entry as i32)
             || !value.call.arguments.is_empty()
             || !value.call.globals.is_empty()
             || value.call.returns != ModReturns::Void
