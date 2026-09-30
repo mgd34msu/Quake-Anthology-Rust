@@ -2327,13 +2327,14 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
         let memory = fixture.memory();
+        let watched = memory.clone();
         let watch = memory.observe_writes(
             vec![QvmWriteRange {
                 byte_offset: ammo,
                 byte_length: 4,
             }],
             Rc::new(move |_| {
-                recorded.borrow_mut().push(memory.read_i32(ammo).unwrap_or(-1));
+                recorded.borrow_mut().push(watched.read_i32(ammo).unwrap_or(-1));
             }),
             None,
         );

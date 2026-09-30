@@ -633,7 +633,7 @@ mod tests {
             stored: Vec::new(),
             reactions: Vec::new(),
         }));
-        let observer: SharedDamageObserver = Rc::clone(&concrete);
+        let observer: SharedDamageObserver = concrete.clone();
         let mut call = QvmFunctionCall::entered(3, vec![64], memory.clone());
         let writer = memory.clone();
         let outcome = scopes
@@ -666,7 +666,7 @@ mod tests {
             stored: Vec::new(),
             reactions: Vec::new(),
         }));
-        let observer: SharedDamageObserver = Rc::clone(&concrete);
+        let observer: SharedDamageObserver = concrete.clone();
         let mut call = QvmFunctionCall::entered(3, vec![64], memory.clone());
         let probe = scopes.clone();
         let expected = actor.clone();
@@ -699,7 +699,7 @@ mod tests {
             stored: Vec::new(),
             reactions: Vec::new(),
         }));
-        let observer: SharedDamageObserver = Rc::clone(&concrete);
+        let observer: SharedDamageObserver = concrete.clone();
         let mut call = QvmFunctionCall::entered(3, vec![64], memory.clone());
         let module = scopes.options.module.clone();
         let frame_seen = Rc::new(RefCell::new(None));

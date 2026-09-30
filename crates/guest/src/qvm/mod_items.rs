@@ -1665,8 +1665,9 @@ mod tests {
         AbiProfile, ModuleIdentity, QvmArtifact, QvmImage, QvmInstruction, QvmOpcode, QvmRole,
     };
     use super::super::item_storage::{
-        QvmItemAdmission, QvmItemTestComparison, QvmProjection, QvmSelectionValue, QvmStageCall, QvmWeaponActor,
-        QvmWeaponContinuation, QvmWeaponDispatcher, QvmWeaponPredicate, QvmWeaponRequest, QvmWeaponSelection,
+        QvmItemAdmission, QvmItemTest, QvmItemTestComparison, QvmProjection, QvmSelectionValue, QvmStageCall,
+        QvmWeaponActor, QvmWeaponContinuation, QvmWeaponDispatcher, QvmWeaponPredicate, QvmWeaponRequest,
+        QvmWeaponSelection,
     };
     use super::super::mod_actors::{QvmModInputPointer, QvmModInputPointerBase, QvmModReturn};
     use super::super::mod_input::{
@@ -1714,8 +1715,8 @@ mod tests {
     struct FixtureServices {
         owned: RefCell<HashMap<ActorId, OwnedActor>>,
         lease_current: Rc<Cell<bool>>,
-        stored: RefCell<Vec<Vec<QvmSourceItemStore>>>,
-        store_result: RefCell<Option<QvmItemStoreError>>,
+        stored: Rc<RefCell<Vec<Vec<QvmSourceItemStore>>>>,
+        store_result: Rc<RefCell<Option<QvmItemStoreError>>>,
         admission: RefCell<Option<QvmItemsAdmission>>,
         leases_closed: Rc<Cell<usize>>,
         counts: RefCell<HashMap<(ActorId, String), i32>>,
@@ -1737,7 +1738,7 @@ mod tests {
         fn bind_items(&self, _owner: &OwnedActor, admission: QvmItemsAdmission) -> QvmSourceItemLease {
             *self.admission.borrow_mut() = Some(admission.clone());
             let current = Rc::clone(&self.lease_current);
-            let stored = Rc::clone(&self.stored) as Rc<RefCell<Vec<Vec<QvmSourceItemStore>>>>;
+            let stored = Rc::clone(&self.stored);
             let result = Rc::clone(&self.store_result);
             let closed = Rc::clone(&self.leases_closed);
             QvmSourceItemLease {
@@ -2018,8 +2019,8 @@ mod tests {
         let services = Rc::new(FixtureServices {
             owned: RefCell::new([(actor.clone(), owned)].into_iter().collect()),
             lease_current: Rc::new(Cell::new(true)),
-            stored: RefCell::new(Vec::new()),
-            store_result: RefCell::new(None),
+            stored: Rc::new(RefCell::new(Vec::new())),
+            store_result: Rc::new(RefCell::new(None)),
             admission: RefCell::new(None),
             leases_closed: Rc::new(Cell::new(0)),
             counts: RefCell::new([((actor.clone(), "q3:rocket".to_string()), 1)].into_iter().collect()),
