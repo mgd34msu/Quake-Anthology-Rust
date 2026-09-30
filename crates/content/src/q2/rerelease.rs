@@ -3,6 +3,8 @@
 //! Gameplay logic adapted from id Software's Quake II game and the
 //! rerelease game DLL (GPL-2.0-or-later).
 
+pub mod monsters;
+
 /// Arena runtime state for this module.
 #[derive(Debug, Default)]
 pub struct RereleaseRuntime;

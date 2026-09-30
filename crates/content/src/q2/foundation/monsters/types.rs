@@ -73,6 +73,13 @@ pub enum NextFrame {
     Next,
 }
 
+impl MonsterAction {
+    /// Named frame callback.
+    pub fn name(name: &str) -> Self {
+        MonsterAction::Name(name.to_string())
+    }
+}
+
 /// One animation frame (`MonsterFrame`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonsterFrame {
@@ -112,6 +119,41 @@ pub struct MonsterMove {
     pub sidestep_scale: f64,
     /// Frames.
     pub frames: Vec<MonsterFrame>,
+}
+
+/// Build one animation frame (species table shorthand).
+pub fn monster_frame(
+    ai: MonsterAi,
+    distance: f64,
+    actions: Vec<MonsterAction>,
+    lerp_frame: i32,
+) -> MonsterFrame {
+    MonsterFrame {
+        ai,
+        distance,
+        actions,
+        lerp_frame,
+    }
+}
+
+/// Build one named animation (species table shorthand).
+///
+/// All shipped source tables keep `sidestepScale` zero.
+pub fn monster_move(
+    name: &str,
+    first_frame: i32,
+    last_frame: i32,
+    end: Option<&str>,
+    frames: Vec<MonsterFrame>,
+) -> MonsterMove {
+    MonsterMove {
+        name: name.to_string(),
+        first_frame,
+        last_frame,
+        end: end.map(str::to_string),
+        sidestep_scale: 0.0,
+        frames,
+    }
 }
 
 /// Monster weapon kind (`MonsterState["weapon"]`).
