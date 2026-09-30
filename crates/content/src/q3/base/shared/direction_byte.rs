@@ -860,3 +860,32 @@ pub fn byte_to_direction(byte: i32) -> Vec3 {
     }
     BYTE_DIRECTIONS.get(byte as usize).copied().unwrap_or(ZERO_DIRECTION)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::math::vec3;
+
+    #[test]
+    fn direction_table_round_trips() {
+        assert_eq!(BYTE_DIRECTIONS.len(), NUM_VERTEX_NORMALS);
+        assert_eq!(BYTE_DIRECTIONS[5], vec3(0.0, 0.0, 1.0));
+        for (index, direction) in BYTE_DIRECTIONS.iter().enumerate() {
+            assert_eq!(
+                direction_to_byte(Some(*direction)),
+                index,
+                "entry {index} must win its own dot search"
+            );
+            assert_eq!(byte_to_direction(index as i32), *direction);
+        }
+    }
+
+    #[test]
+    fn direction_byte_edges_match_source() {
+        assert_eq!(direction_to_byte(None), 0);
+        assert_eq!(direction_to_byte(Some(vec3(0.0, 0.0, 0.0))), 0);
+        assert_eq!(byte_to_direction(-1), ZERO_DIRECTION);
+        assert_eq!(byte_to_direction(162), ZERO_DIRECTION);
+        assert_eq!(byte_to_direction(999), ZERO_DIRECTION);
+    }
+}

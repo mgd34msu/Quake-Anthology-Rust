@@ -1946,3 +1946,587 @@ pub trait Q3EntityPool {
 
 /// Shared entity pool handle.
 pub type EntityPoolRef = Rc<dyn Q3EntityPool>;
+
+/// Shared base-game test fakes (unified from base/mirrors.rs).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use qa_core::identity::IdentityOwner;
+    use std::cell::Cell;
+    use std::collections::HashMap;
+
+    use crate::q3::base::world::TraceContact;
+    use crate::q3::base::world_adapter::{ActorCollision, Q3TraceHit, Q3TraceQuery, Q3TraceResult, Q3WorldAdapterHost};
+
+    pub(crate) fn test_owner() -> IdentityOwner {
+        IdentityOwner::create("q3_base_test").expect("owner")
+    }
+
+    pub(crate) fn test_provider() -> ProviderId {
+        ProviderId::new("q3", "test")
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) struct FakeActors {
+        pub(crate) owner: IdentityOwner,
+        pub(crate) owned: RefCell<HashMap<ActorId, OwnedActor>>,
+        pub(crate) live: RefCell<Vec<ActorId>>,
+        pub(crate) watchers: RefCell<Vec<Box<dyn Fn(&OwnedActor)>>>,
+        pub(crate) next_generation: Cell<u32>,
+    }
+
+    impl FakeActors {
+        pub(crate) fn new() -> Self {
+            Self {
+                owner: test_owner(),
+                owned: RefCell::new(HashMap::new()),
+                live: RefCell::new(Vec::new()),
+                watchers: RefCell::new(Vec::new()),
+                next_generation: Cell::new(1),
+            }
+        }
+    }
+
+    impl Q3SessionActors for FakeActors {
+        fn assert_owned(&self, actor: &OwnedActor) -> Result<(), Q3BaseError> {
+            if self.owner.owns_owned(actor) {
+                Ok(())
+            } else {
+                Err(Q3BaseError::Invalid("foreign actor".to_string()))
+            }
+        }
+
+        fn allocate_at_source(&self, provider: &ProviderId, slot: usize, _definition: &str) -> OwnedActor {
+            let generation = self.next_generation.get();
+            self.next_generation.set(generation + 1);
+            let id = self.owner.actor(slot as u32, generation);
+            let owned = self.owner.owned_actor(&id, provider.clone()).expect("owned");
+            self.owned.borrow_mut().insert(id.clone(), owned.clone());
+            self.live.borrow_mut().push(id);
+            owned
+        }
+
+        fn is_live(&self, actor: &ActorId) -> bool {
+            self.live.borrow().contains(actor)
+        }
+
+        fn on_release(&self, callback: Box<dyn Fn(&OwnedActor)>) -> Box<dyn Fn()> {
+            self.watchers.borrow_mut().push(callback);
+            Box::new(|| {})
+        }
+
+        fn release(&self, actor: &OwnedActor) {
+            self.live.borrow_mut().retain(|id| id != actor.id());
+            for watcher in self.watchers.borrow().iter() {
+                watcher(actor);
+            }
+        }
+
+        fn resolve_owned(&self, actor: &ActorId) -> Option<OwnedActor> {
+            self.owned.borrow().get(actor).cloned()
+        }
+    }
+
+    pub(crate) struct FakeBodies {
+        pub(crate) states: RefCell<HashMap<ActorId, BodyState>>,
+        pub(crate) linked: RefCell<HashMap<ActorId, LinkedBody>>,
+    }
+
+    impl FakeBodies {
+        pub(crate) fn new() -> Self {
+            Self {
+                states: RefCell::new(HashMap::new()),
+                linked: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Q3SessionBodies for FakeBodies {
+        fn create(&self, actor: &OwnedActor, state: BodyState) {
+            self.states.borrow_mut().insert(actor.id().clone(), state);
+        }
+
+        fn read(&self, actor: &ActorId) -> Option<BodyState> {
+            self.states.borrow().get(actor).cloned()
+        }
+
+        fn write(&self, actor: &OwnedActor, state: BodyState) {
+            self.states.borrow_mut().insert(actor.id().clone(), state);
+        }
+
+        fn linked(&self, actor: &ActorId) -> Option<LinkedBody> {
+            self.linked.borrow().get(actor).cloned()
+        }
+
+        fn link(&self, actor: &OwnedActor, origin: Option<Vec3>) {
+            let mut state = self
+                .states
+                .borrow()
+                .get(actor.id())
+                .cloned()
+                .unwrap_or_else(|| ZERO_BODY.clone());
+            if let Some(origin) = origin {
+                state.origin = origin;
+            }
+            let count = self
+                .linked
+                .borrow()
+                .get(actor.id())
+                .map_or(1, |linked| linked.link_count + 1);
+            self.linked.borrow_mut().insert(
+                actor.id().clone(),
+                LinkedBody {
+                    actor: actor.id().clone(),
+                    state: state.clone(),
+                    absolute_bounds: state.bounds,
+                    link_count: count,
+                },
+            );
+            self.states.borrow_mut().insert(actor.id().clone(), state);
+        }
+
+        fn unlink(&self, actor: &OwnedActor) {
+            self.linked.borrow_mut().remove(actor.id());
+        }
+    }
+
+    pub(crate) struct FakeCombat {
+        pub(crate) states: RefCell<HashMap<ActorId, CombatState>>,
+    }
+
+    impl FakeCombat {
+        pub(crate) fn new() -> Self {
+            Self {
+                states: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Q3SessionCombat for FakeCombat {
+        fn read(&self, actor: &ActorId) -> Option<CombatState> {
+            self.states.borrow().get(actor).cloned()
+        }
+
+        fn create(&self, actor: &OwnedActor, initial: CombatState, _admit_damage: Option<DamageAdmissionFn>) {
+            self.states.borrow_mut().insert(actor.id().clone(), initial);
+        }
+
+        fn set_health(&self, actor: &OwnedActor, health: i32) {
+            if let Some(state) = self.states.borrow_mut().get_mut(actor.id()) {
+                state.health = health;
+            }
+        }
+
+        fn set_can_take_damage(&self, actor: &OwnedActor, can_take_damage: bool) {
+            if let Some(state) = self.states.borrow_mut().get_mut(actor.id()) {
+                state.can_take_damage = can_take_damage;
+            }
+        }
+
+        fn set_regular_points(&self, actor: &OwnedActor, points: i32, initial: RegularArmorState) {
+            let mut states = self.states.borrow_mut();
+            let state = states.get_mut(actor.id()).expect("combat state");
+            state.armor.regular = match &state.armor.regular {
+                RegularArmorState::None => initial,
+                RegularArmorState::Q1 { absorption, item, .. } => RegularArmorState::Q1 {
+                    points,
+                    absorption: *absorption,
+                    item: item.clone(),
+                },
+                RegularArmorState::Q2 {
+                    normal_protection,
+                    energy_protection,
+                    item,
+                    ..
+                } => RegularArmorState::Q2 {
+                    points,
+                    normal_protection: *normal_protection,
+                    energy_protection: *energy_protection,
+                    item: item.clone(),
+                },
+                RegularArmorState::Q3 { protection, .. } => RegularArmorState::Q3 {
+                    points,
+                    protection: *protection,
+                },
+                RegularArmorState::Source { item, .. } => RegularArmorState::Source {
+                    points,
+                    item: item.clone(),
+                },
+            };
+        }
+
+        fn bind_damage_admission(&self, _actor: &OwnedActor, _admit_damage: DamageAdmissionFn) {}
+
+        fn apply(&self, request: DamageRequest) -> DamageOutcome {
+            DamageOutcome::StaleTarget { request }
+        }
+    }
+
+    pub(crate) struct FakeInventory {
+        pub(crate) entries: RefCell<HashMap<(ActorId, ItemId), (i32, i32)>>,
+    }
+
+    impl FakeInventory {
+        pub(crate) fn new() -> Self {
+            Self {
+                entries: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Q3SessionInventory for FakeInventory {
+        fn has(&self, _actor: &ActorId) -> bool {
+            true
+        }
+
+        fn create(&self, _actor: &OwnedActor, entries: Vec<InventoryEntry>) {
+            for entry in entries {
+                self.entries
+                    .borrow_mut()
+                    .insert((_actor.id().clone(), entry.item), (entry.count, entry.capacity));
+            }
+        }
+
+        fn count(&self, actor: &ActorId, item: &ItemId) -> i32 {
+            self.entries
+                .borrow()
+                .get(&(actor.clone(), item.clone()))
+                .map_or(0, |(count, _)| *count)
+        }
+
+        fn configure(&self, actor: &OwnedActor, item: &ItemId, count: i32, capacity: i32) {
+            self.entries
+                .borrow_mut()
+                .insert((actor.id().clone(), item.clone()), (count, capacity));
+        }
+    }
+
+    pub(crate) struct FakeCallbacks {
+        pub(crate) bound: RefCell<HashMap<ActorId, ActorCallbacks>>,
+    }
+
+    impl FakeCallbacks {
+        pub(crate) fn new() -> Self {
+            Self {
+                bound: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Q3ActorCallbacks for FakeCallbacks {
+        fn bind(&self, actor: &OwnedActor, callbacks: ActorCallbacks) {
+            self.bound.borrow_mut().insert(actor.id().clone(), callbacks);
+        }
+    }
+
+    pub(crate) struct FakeRecordHost {
+        pub(crate) actors: Rc<FakeActors>,
+        pub(crate) bodies: Rc<FakeBodies>,
+        pub(crate) combat: Rc<FakeCombat>,
+        pub(crate) inventory: Rc<FakeInventory>,
+        pub(crate) callbacks: Rc<FakeCallbacks>,
+        pub(crate) scheduled: RefCell<Vec<(ActorId, Option<i32>)>>,
+        pub(crate) foreign: RefCell<HashMap<ActorId, EntityRef>>,
+        pub(crate) players: RefCell<Vec<ActorId>>,
+        pub(crate) call: RefCell<Option<Q3DamageCall>>,
+    }
+
+    impl FakeRecordHost {
+        pub(crate) fn new() -> Self {
+            Self {
+                actors: Rc::new(FakeActors::new()),
+                bodies: Rc::new(FakeBodies::new()),
+                combat: Rc::new(FakeCombat::new()),
+                inventory: Rc::new(FakeInventory::new()),
+                callbacks: Rc::new(FakeCallbacks::new()),
+                scheduled: RefCell::new(Vec::new()),
+                foreign: RefCell::new(HashMap::new()),
+                players: RefCell::new(Vec::new()),
+                call: RefCell::new(None),
+            }
+        }
+    }
+
+    impl Q3RecordHost for FakeRecordHost {
+        fn actors(&self) -> Rc<dyn Q3SessionActors> {
+            self.actors.clone()
+        }
+
+        fn bodies(&self) -> Rc<dyn Q3SessionBodies> {
+            self.bodies.clone()
+        }
+
+        fn combat(&self) -> Rc<dyn Q3SessionCombat> {
+            self.combat.clone()
+        }
+
+        fn inventory(&self) -> Rc<dyn Q3SessionInventory> {
+            self.inventory.clone()
+        }
+
+        fn callbacks(&self) -> Rc<dyn Q3ActorCallbacks> {
+            self.callbacks.clone()
+        }
+
+        fn schedule(&self, actor: &OwnedActor, due_milliseconds: Option<i32>) {
+            self.scheduled.borrow_mut().push((actor.id().clone(), due_milliseconds));
+        }
+
+        fn run_think(&self, _actor: &OwnedActor, _time_milliseconds: i32) {}
+
+        fn damage_call(&self) -> Option<Q3DamageCall> {
+            self.call.borrow().clone()
+        }
+
+        fn foreign(&self, actor: &ActorId) -> Option<EntityRef> {
+            self.foreign.borrow().get(actor).cloned()
+        }
+
+        fn is_player(&self, actor: &ActorId) -> bool {
+            self.players.borrow().contains(actor)
+        }
+    }
+
+    pub(crate) fn test_records() -> (Rc<FakeRecordHost>, Q3EntityRecords) {
+        let host = Rc::new(FakeRecordHost::new());
+        let records = Q3EntityRecords::new(host.clone(), test_provider(), Product::Baseq3);
+        (host, records)
+    }
+
+    pub(crate) struct FakeWorldHost {
+        pub(crate) bodies: FakeBodies,
+        pub(crate) trace_result: RefCell<Q3TraceResult>,
+        pub(crate) actors: RefCell<Vec<ActorId>>,
+        pub(crate) collisions: RefCell<HashMap<ActorId, ActorCollision>>,
+    }
+
+    impl FakeWorldHost {
+        pub(crate) fn new() -> Self {
+            Self {
+                bodies: FakeBodies::new(),
+                trace_result: RefCell::new(Q3TraceResult {
+                    fraction: 1.0,
+                    end: vec3(0.0, 0.0, 0.0),
+                    hit: Q3TraceHit::None,
+                    contact: TraceContact::None,
+                    start_solid: false,
+                    all_solid: false,
+                    contents: 0,
+                    surface_flags: 0,
+                }),
+                actors: RefCell::new(Vec::new()),
+                collisions: RefCell::new(HashMap::new()),
+            }
+        }
+    }
+
+    impl Q3WorldAdapterHost for FakeWorldHost {
+        fn trace_scene(&self, _query: &Q3TraceQuery) -> Q3TraceResult {
+            self.trace_result.borrow().clone()
+        }
+
+        fn point_contents_scene(&self, query: &Q3TraceQuery, _point: Vec3) -> i32 {
+            assert_eq!(query.mask, -1);
+            3
+        }
+
+        fn query_actors(&self, _bounds: Bounds) -> Vec<ActorId> {
+            self.actors.borrow().clone()
+        }
+
+        fn spatial_collision(&self, actor: &ActorId) -> Option<ActorCollision> {
+            self.collisions.borrow().get(actor).cloned()
+        }
+
+        fn body_state(&self, actor: &ActorId) -> Option<BodyState> {
+            self.bodies.read(actor)
+        }
+
+        fn linked_body(&self, actor: &ActorId) -> Option<LinkedBody> {
+            self.bodies.linked(actor)
+        }
+
+        fn set_collision(&self, actor: &OwnedActor, collision: ActorCollision) {
+            self.collisions.borrow_mut().insert(actor.id().clone(), collision);
+        }
+
+        fn link_body(&self, actor: &OwnedActor, origin: Option<Vec3>) {
+            self.bodies.link(actor, origin);
+        }
+
+        fn unlink_body(&self, actor: &OwnedActor) {
+            self.bodies.unlink(actor);
+        }
+
+        fn curves(&self) -> bool {
+            true
+        }
+
+        fn player_curve_clip(&self) -> bool {
+            false
+        }
+
+        fn geometry_trace_start_solid(&self, _query: &Q3TraceQuery, _model: i32, _origin: Vec3, _angles: Vec3) -> bool {
+            true
+        }
+
+        fn body_trace_start_solid(
+            &self,
+            _query: &Q3TraceQuery,
+            _body: &BodyState,
+            _collision: &ActorCollision,
+        ) -> bool {
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+
+    #[test]
+    fn records_activate_and_mirror_stats() {
+        let (host, records) = test_records();
+        let entity = records.activate(3);
+        assert!(entity.borrow().inuse());
+        assert_eq!(entity.borrow().slot, 3);
+        assert!(host.callbacks.bound.borrow().len() == 1);
+        let client = records.client(3);
+        client.borrow_mut().ps.stats.set(0, 120);
+        let actor = entity.borrow().actor();
+        assert_eq!(host.combat.read(actor.id()).unwrap().health, 120);
+        client.borrow_mut().ps.stats.set(3, 45);
+        assert!(matches!(
+            host.combat.read(actor.id()).unwrap().armor.regular,
+            RegularArmorState::Q3 { points: 45, .. }
+        ));
+        client
+            .borrow_mut()
+            .ps
+            .stats
+            .set(2, (1 << (Weapon::WpShotgun as i32)) | (1 << (Weapon::WpBfg as i32)));
+        let shotgun = q3_weapon_item(Weapon::WpShotgun as i32).unwrap();
+        let bfg = q3_weapon_item(Weapon::WpBfg as i32).unwrap();
+        let machinegun = q3_weapon_item(Weapon::WpMachinegun as i32).unwrap();
+        assert_eq!(host.inventory.count(actor.id(), &shotgun.item), 1);
+        assert_eq!(host.inventory.count(actor.id(), &bfg.item), 1);
+        assert_eq!(host.inventory.count(actor.id(), &machinegun.item), 0);
+        client.borrow_mut().ps.ammo.set(Weapon::WpShotgun as usize, 12);
+        assert_eq!(host.inventory.count(actor.id(), shotgun.ammo.as_ref().unwrap()), 12);
+    }
+
+    #[test]
+    fn records_attach_adopt_and_release() {
+        let (host, records) = test_records();
+        let owned = host.actors.allocate_at_source(&test_provider(), 500, "q3:entity");
+        records.host().bodies().create(&owned, ZERO_BODY.clone());
+        let adopted = records.adopt(500, owned.clone()).expect("adopt");
+        assert_eq!(adopted.borrow().s.number, 500);
+        assert!(adopted.borrow().inuse());
+        assert!(records.adopt(501, owned).is_err());
+
+        let foreign_owned = host
+            .actors
+            .allocate_at_source(&ProviderId::new("other", "game"), 501, "q3:entity");
+        let attached = records.attach(9, foreign_owned, true).expect("attach");
+        assert!(attached.borrow().client.is_some());
+        assert_eq!(attached.borrow().s.number, 9);
+
+        records.release(adopted.clone());
+        assert_eq!(adopted.borrow().s.number, 0);
+        assert!(!adopted.borrow().inuse());
+    }
+
+    #[test]
+    fn records_ownership_round_trips_into_fresh_records() {
+        let (_host, records) = test_records();
+        let _ = records.activate(1);
+        let _ = records.activate(70);
+        let ownership = records.capture_ownership();
+        assert_eq!(ownership.len(), MAX_GENTITIES);
+        assert!(ownership[1].active);
+        assert!(ownership[70].active);
+        assert!(!ownership[2].active);
+
+        let (host2, fresh) = test_records();
+        let _ = host2;
+        // Ownership words reference foreign actors, so hydration fails
+        // instead of aliasing another session's actors.
+        assert!(fresh.restore_ownership(&ownership).is_err());
+        assert!(fresh.restore_ownership(&ownership[..10]).is_err());
+
+        let backing = records.capture_client_backing(1);
+        assert_eq!(backing.source_stats, [0; 16]);
+        fresh.restore_client_backing(1, &backing).expect("backing");
+        assert!(fresh.restore_client_backing(99, &backing).is_err());
+    }
+
+    #[test]
+    fn records_resolve_natives_foreigners_and_inflictors() {
+        let (host, records) = test_records();
+        let entity = records.activate(4);
+        let actor = entity.borrow().actor().id().clone();
+        assert!(records.native_by_actor(None).is_none());
+        assert!(Rc::ptr_eq(&records.native_by_actor(Some(&actor)).unwrap(), &entity));
+        assert!(records.by_actor(Some(&actor)).is_some());
+        let owner = test_owner();
+        let ghost = owner.actor(900, 1);
+        assert!(records.by_actor(Some(&ghost)).is_none());
+        host.foreign.borrow_mut().insert(ghost.clone(), entity.clone());
+        assert!(records.by_actor(Some(&ghost)).is_some());
+        let world = records.damage_inflictor(None);
+        assert!(matches!(world, DamageParticipant::Native(_)));
+        let foreign = records.damage_inflictor(Some(&ghost));
+        assert!(matches!(foreign, DamageParticipant::SharedActor(_)));
+        assert!(records.use_participant(None).is_none());
+    }
+
+    #[test]
+    fn records_dispatch_bound_callbacks() {
+        let (host, records) = test_records();
+        let entity = records.activate(11);
+        let actor = entity.borrow().actor().id().clone();
+        let fired = Rc::new(RefCell::new(Vec::new()));
+        let think_fired = fired.clone();
+        entity.borrow_mut().think = Some(Rc::new(move |_| {
+            think_fired.borrow_mut().push("think");
+        }));
+        let pain_fired = fired.clone();
+        entity.borrow_mut().pain = Some(Rc::new(move |_, _, damage| {
+            pain_fired.borrow_mut().push(if damage == 7 { "pain" } else { "bad" });
+        }));
+        let die_fired = fired.clone();
+        entity.borrow_mut().die = Some(Rc::new(move |_, _, _, _, method| {
+            die_fired.borrow_mut().push(if method == 9 { "die" } else { "bad" });
+        }));
+        let bound = host.callbacks.bound.borrow().get(&actor).expect("bound").clone();
+        (bound.think)();
+        (bound.pain)(&PainReaction {
+            attack: None,
+            attacker: None,
+            damage: 7,
+        });
+        host.call.borrow_mut().replace(Q3DamageCall {
+            target: entity.clone(),
+            source: DamageParticipant::Native(entity.clone()),
+            owner: DamageParticipant::Native(entity.clone()),
+            direction: None,
+            point: None,
+            amount: 7.0,
+            flags: 0,
+            method_of_death: 9,
+        });
+        (bound.die)(&DeathReaction {
+            attack: None,
+            attacker: None,
+            damage: 7,
+            inflictor: None,
+            point: vec3(0.0, 0.0, 0.0),
+        });
+        assert_eq!(*fired.borrow(), vec!["think", "pain", "die"]);
+        assert_eq!(entity.borrow().nextthink(), 0);
+        records.close();
+    }
+}

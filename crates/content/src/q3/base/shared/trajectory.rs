@@ -148,3 +148,73 @@ pub fn evaluate_trajectory_delta(tr: &Trajectory, at_time: i32) -> Vec3 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::records::Q3BaseError;
+
+    fn linear_fixture() -> Trajectory {
+        Trajectory {
+            trajectory_type: TrajectoryType::TrLinear,
+            time: 1000,
+            duration: 0,
+            base: vec3(1.0, 2.0, 3.0),
+            delta: vec3(100.0, 0.0, -50.0),
+        }
+    }
+
+    #[test]
+    fn linear_trajectory_scales_by_seconds() {
+        let at = evaluate_trajectory(&linear_fixture(), 1500);
+        assert_eq!(at, vec3(51.0, 2.0, -22.0));
+        assert_eq!(
+            evaluate_trajectory_delta(&linear_fixture(), 9999),
+            vec3(100.0, 0.0, -50.0)
+        );
+    }
+
+    #[test]
+    fn gravity_trajectory_falls_quadratically() {
+        let tr = Trajectory {
+            trajectory_type: TrajectoryType::TrGravity,
+            ..linear_fixture()
+        };
+        let at = evaluate_trajectory(&tr, 2000);
+        assert_eq!(at.x, 101.0);
+        assert_eq!(at.z, 3.0 - 50.0 - 400.0);
+        let delta = evaluate_trajectory_delta(&tr, 2000);
+        assert_eq!(delta, vec3(100.0, 0.0, -850.0));
+    }
+
+    #[test]
+    fn sine_and_stop_trajectories_match_source() {
+        let sine = Trajectory {
+            trajectory_type: TrajectoryType::TrSine,
+            time: 0,
+            duration: 1000,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(0.0, 0.0, 10.0),
+        };
+        assert_eq!(evaluate_trajectory(&sine, 0), vec3(0.0, 0.0, 0.0));
+        let stop = Trajectory {
+            trajectory_type: TrajectoryType::TrLinearStop,
+            time: 0,
+            duration: 100,
+            base: vec3(0.0, 0.0, 0.0),
+            delta: vec3(10.0, 0.0, 0.0),
+        };
+        assert_eq!(evaluate_trajectory(&stop, 50), vec3(0.5, 0.0, 0.0));
+        assert_eq!(evaluate_trajectory(&stop, 5000), vec3(1.0, 0.0, 0.0));
+        assert_eq!(evaluate_trajectory_delta(&stop, 5000), vec3(0.0, 0.0, 0.0));
+        let stationary = Trajectory::zero(TrajectoryType::TrStationary);
+        assert_eq!(evaluate_trajectory(&stationary, 1234), vec3(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn unknown_trajectory_tag_is_a_drop_error() {
+        assert!(TrajectoryType::from_i32(5).is_ok());
+        let error = TrajectoryType::from_i32(99).unwrap_err();
+        assert!(matches!(error, Q3BaseError::Drop(_)));
+    }
+}

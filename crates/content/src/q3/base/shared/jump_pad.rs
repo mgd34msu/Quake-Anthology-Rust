@@ -26,3 +26,37 @@ pub fn touch_jump_pad(state: &mut SourcePlayerState, jump_pad: &EntityState) {
     state.jumppad_frame = state.pmove_framecount;
     state.set_velocity(vec3(jump_pad.origin2.x, jump_pad.origin2.y, jump_pad.origin2.z));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jump_pad_applies_velocity_and_event() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        ps.pmove_framecount = 9;
+        let mut pad = EntityState::new();
+        pad.number = 12;
+        pad.origin2 = vec3(0.0, 0.0, 700.0);
+        touch_jump_pad(&mut ps, &pad);
+        assert_eq!(ps.velocity(), vec3(0.0, 0.0, 700.0));
+        assert_eq!(ps.jumppad_ent, 12);
+        assert_eq!(ps.jumppad_frame, 9);
+        assert_eq!(ps.events.get(0), EntityEvent::EvJumpPad as i32);
+        assert_eq!(ps.event_parms.get(0), 1);
+    }
+
+    #[test]
+    fn jump_pad_ignores_flight_and_dead() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        ps.powerups.set(Powerup::PwFlight as usize, 9999);
+        let mut pad = EntityState::new();
+        pad.origin2 = vec3(0.0, 0.0, 700.0);
+        touch_jump_pad(&mut ps, &pad);
+        assert_eq!(ps.velocity(), vec3(0.0, 0.0, 0.0));
+        let mut dead = create_player_state(Product::Baseq3, None);
+        dead.pm_type = MoveType::PmDead as i32;
+        touch_jump_pad(&mut dead, &pad);
+        assert_eq!(dead.jumppad_ent, 0);
+    }
+}

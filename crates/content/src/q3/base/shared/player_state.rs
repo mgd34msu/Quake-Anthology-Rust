@@ -800,3 +800,97 @@ impl PlayerState {
 pub fn create_player_state(product: Product, authority: Option<Rc<dyn PlayerAuthorityBinding>>) -> PlayerState {
     PlayerState::new(product, authority)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn player_state_defaults_match_retail() {
+        let ps = create_player_state(Product::Baseq3, None);
+        assert_eq!(ps.pm_type, MoveType::PmNormal as i32);
+        assert_eq!(ps.weapon, Weapon::WpNone as i32);
+        assert_eq!(ps.weapon_state, WeaponState::WeaponReady as i32);
+        assert_eq!(ps.health(), 0);
+    }
+
+    #[test]
+    fn player_health_uses_product_schema() {
+        let mut base = create_player_state(Product::Baseq3, None);
+        base.set_health(125);
+        assert_eq!(base.stats.get(0), 125);
+        let mut pack = create_player_state(Product::Missionpack, None);
+        pack.set_health(200);
+        assert_eq!(pack.health(), 200);
+    }
+
+    #[test]
+    fn player_events_cycle_slots_and_sequence() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        let first = ps.add_event(13, 1);
+        assert_eq!(
+            first,
+            PredictableEvent {
+                sequence: 0,
+                event: 13,
+                parameter: 1
+            }
+        );
+        let second = ps.add_event(14, 0);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(ps.events.get(0), 13);
+        assert_eq!(ps.event_parms.get(0), 1);
+        assert_eq!(ps.events.get(1), 14);
+        assert_eq!(ps.event_sequence, 2);
+    }
+
+    struct DebugSink {
+        text: String,
+        lines: RefCell<Vec<String>>,
+    }
+
+    impl PredictableEventDebug for DebugSink {
+        fn module(&self) -> EventDebugModule {
+            EventDebugModule::Game
+        }
+
+        fn show_events(&self) -> String {
+            self.text.clone()
+        }
+
+        fn print(&self, message: &str) {
+            self.lines.borrow_mut().push(message.to_string());
+        }
+    }
+
+    #[test]
+    fn player_event_debug_prints_source_line() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        let sink = Rc::new(DebugSink {
+            text: "1".to_string(),
+            lines: RefCell::new(Vec::new()),
+        });
+        ps.set_event_debug(Some(sink.clone()));
+        ps.pmove_framecount = 41;
+        ps.add_event(EntityEvent::EvJumpPad as i32, 1);
+        let lines = sink.lines.borrow();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("EV_JUMP_PAD"), "{}", lines[0]);
+        assert!(lines[0].contains("parm 1"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn player_copy_preserves_authority_words() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        ps.set_origin(vec3(1.0, 2.0, 3.0));
+        ps.set_health(90);
+        let copy = ps.copy();
+        assert_eq!(copy.origin(), vec3(1.0, 2.0, 3.0));
+        assert_eq!(copy.health(), 90);
+        let mut other = create_player_state(Product::Missionpack, None);
+        other.copy_from(&ps, AuthorityStores::ReplaceAuthority);
+        assert_eq!(other.product(), Product::Baseq3);
+        assert_eq!(other.origin(), vec3(1.0, 2.0, 3.0));
+    }
+}

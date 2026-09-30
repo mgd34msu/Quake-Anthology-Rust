@@ -738,4 +738,33 @@ mod tests {
         assert_eq!(Product::from(Q3Product::BaseQ3), Product::Baseq3);
         assert_eq!(Product::from(QvmProduct::Missionpack), Product::Missionpack);
     }
+
+    #[test]
+    fn stat_schemas_match_source_slots() {
+        let StatSchema::Base(base) = stat_schema(Product::Baseq3) else {
+            panic!("base product must yield the base stat layout");
+        };
+        assert_eq!(base.product, Product::Baseq3);
+        assert_eq!((base.health, base.weapons, base.armor, base.max_health), (0, 2, 3, 6));
+        let StatSchema::Missionpack(pack) = stat_schema(Product::Missionpack) else {
+            panic!("missionpack product must yield the missionpack stat layout");
+        };
+        assert_eq!(pack.product, Product::Missionpack);
+        assert_eq!(pack.persistent_powerup, 2);
+        assert_eq!((pack.health, pack.weapons, pack.armor, pack.max_health), (0, 3, 4, 7));
+    }
+
+    #[test]
+    fn weapon_availability_follows_product() {
+        assert_eq!(weapon_count(Product::Baseq3), 11);
+        assert_eq!(weapon_count(Product::Missionpack), 14);
+        assert!(weapon_available(Product::Baseq3, Weapon::WpGrapplingHook));
+        assert!(!weapon_available(Product::Baseq3, Weapon::WpNailgun));
+        assert!(weapon_available(Product::Missionpack, Weapon::WpChaingun));
+        assert!(!weapon_available(Product::Missionpack, Weapon::WpNone));
+        assert_eq!(GameType::GtTeam as i32, 3);
+        assert_eq!(Team::TeamSpectator as i32, 3);
+        assert_eq!(EntityType::EtEvents as i32, 13);
+        assert_eq!(EV_EVENT_BITS, EV_EVENT_BIT1 | EV_EVENT_BIT2);
+    }
 }

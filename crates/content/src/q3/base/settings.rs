@@ -364,3 +364,84 @@ impl Q3GameSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::cmd::Dialect;
+    use std::cell::Cell;
+
+    struct FakeSettingsHost {
+        cvars: Rc<RefCell<CvarRegistry>>,
+        commands: RefCell<Vec<(i32, String)>>,
+        remapped: Cell<bool>,
+    }
+
+    impl FakeSettingsHost {
+        fn new() -> Self {
+            Self {
+                cvars: Rc::new(RefCell::new(CvarRegistry::new(Dialect::Q3))),
+                commands: RefCell::new(Vec::new()),
+                remapped: Cell::new(false),
+            }
+        }
+    }
+
+    impl Q3SettingsHost for FakeSettingsHost {
+        fn cvars(&self) -> Rc<RefCell<CvarRegistry>> {
+            self.cvars.clone()
+        }
+
+        fn send_server_command(&self, client: i32, command: String) {
+            self.commands.borrow_mut().push((client, command));
+        }
+
+        fn remap_teams(&self) {
+            self.remapped.set(true);
+        }
+
+        fn format_tracked_change(&self, name: &str, value: &str) -> String {
+            format!("print \"Server: {name} changed to {value}\n\"")
+        }
+    }
+
+    #[test]
+    fn settings_register_update_and_save_round_trip() {
+        let host = Rc::new(FakeSettingsHost::new());
+        let settings = Q3GameSettings::new(host.clone(), Product::Baseq3);
+        assert_eq!(settings.definitions().len(), 45);
+        let pack = Q3GameSettings::new(host.clone(), Product::Missionpack);
+        assert_eq!(pack.definitions().len(), 56);
+        settings.register("2026-09-30");
+        assert_eq!(settings.integer("fraglimit"), 20);
+        assert_eq!(settings.number("g_speed"), 320.0);
+        assert_eq!(settings.string("g_motd"), "");
+        host.cvars.borrow_mut().set("fraglimit", "30", true).expect("set");
+        settings.update();
+        assert_eq!(settings.integer("fraglimit"), 30);
+        let commands = host.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].0, -1);
+        assert!(commands[0].1.contains("fraglimit"), "{}", commands[0].1);
+        assert!(commands[0].1.contains("30"), "{}", commands[0].1);
+        drop(commands);
+
+        let saved = settings.capture_save_state();
+        let host2 = Rc::new(FakeSettingsHost::new());
+        let restored = Q3GameSettings::new(host2.clone(), Product::Baseq3);
+        restored.register("2026-09-30");
+        restored.restore_save_state(&saved).expect("restore");
+        assert_eq!(restored.integer("fraglimit"), 30);
+        assert!(restored.restore_save_state(&arr(Vec::new())).is_err());
+    }
+
+    #[test]
+    fn settings_remap_team_shaders_on_change() {
+        let host = Rc::new(FakeSettingsHost::new());
+        let settings = Q3GameSettings::new(host.clone(), Product::Missionpack);
+        settings.register("2026-09-30");
+        host.cvars.borrow_mut().set("g_redteam", "Rangers", true).expect("set");
+        settings.update();
+        assert!(host.remapped.get());
+    }
+}

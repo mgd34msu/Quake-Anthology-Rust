@@ -96,3 +96,56 @@ pub fn resolve_q3_mount_restriction(
     }
     Ok(forced)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_product_id() -> Vec<u8> {
+        let mut seed: i32 = 5000;
+        SCRAMBLED_PRODUCT_ID
+            .iter()
+            .map(|scrambled| {
+                let byte = scrambled ^ ((seed & 255) as u8);
+                seed = seed.wrapping_mul(69069).wrapping_add(1);
+                byte
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mount_restriction_matches_fs_setrestrictions() {
+        assert_eq!(
+            q3_mount_restriction(Q3ProductPolicy::Retail, false),
+            Q3MountRestriction::None
+        );
+        assert_eq!(
+            q3_mount_restriction(Q3ProductPolicy::Retail, true),
+            Q3MountRestriction::Demo {
+                directory: "demota",
+                pak_checksum: 437558517
+            }
+        );
+        assert!(matches!(
+            q3_mount_restriction(
+                Q3ProductPolicy::PrereleaseDemo {
+                    team_arena_ui: TeamArenaUi::Retail
+                },
+                false
+            ),
+            Q3MountRestriction::Demo { .. }
+        ));
+        let valid = valid_product_id();
+        assert_eq!(
+            resolve_q3_mount_restriction(Q3ProductPolicy::Retail, false, Some(&valid)).expect("valid"),
+            Q3MountRestriction::None
+        );
+        assert!(matches!(
+            resolve_q3_mount_restriction(Q3ProductPolicy::Retail, false, None).expect("missing"),
+            Q3MountRestriction::Demo { .. }
+        ));
+        let mut corrupt = valid;
+        corrupt[7] ^= 0xff;
+        assert!(resolve_q3_mount_restriction(Q3ProductPolicy::Retail, false, Some(&corrupt)).is_err());
+    }
+}

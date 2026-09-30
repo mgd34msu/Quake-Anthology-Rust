@@ -5,7 +5,6 @@ pub mod combat_bridge;
 pub mod game;
 pub mod index;
 pub mod map_spawns;
-pub mod mirrors;
 pub mod records;
 pub mod settings;
 pub mod shared;

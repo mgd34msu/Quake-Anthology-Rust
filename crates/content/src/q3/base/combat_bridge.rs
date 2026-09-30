@@ -1427,3 +1427,414 @@ pub struct CombatContext {
     /// Invulnerability effect hook (missionpack only).
     pub invulnerability_effect: Option<Rc<dyn Fn(EntityRef, Vec3, Vec3)>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::game::state::MAX_CLIENTS;
+    use crate::q3::base::records::test_support::*;
+    use crate::q3::base::world_adapter::Q3WorldAdapter;
+
+    struct FakePool {
+        records: Q3EntityRecords,
+        num: usize,
+    }
+
+    impl Q3EntityPool for FakePool {
+        fn num_entities(&self) -> usize {
+            self.num
+        }
+
+        fn entity_at(&self, index: usize) -> EntityRef {
+            self.records.get(index).expect("pool entity")
+        }
+    }
+
+    struct FakeBridgeHost {
+        records_host: Rc<FakeRecordHost>,
+        records: Q3EntityRecords,
+        pool: EntityPoolRef,
+        world: Rc<dyn Q3ServerWorld>,
+        time: Cell<i32>,
+        intermission: Cell<i32>,
+        game_type: Cell<i32>,
+        feedback: RefCell<Vec<String>>,
+    }
+
+    impl FakeBridgeHost {
+        fn new(records_host: Rc<FakeRecordHost>, records: Q3EntityRecords) -> Rc<Self> {
+            let world_host = Rc::new(FakeWorldHost::new());
+            let world: Rc<dyn Q3ServerWorld> = Rc::new(Q3WorldAdapter::new(world_host, records.clone()));
+            Rc::new(Self {
+                records_host,
+                pool: Rc::new(FakePool {
+                    records: records.clone(),
+                    num: MAX_CLIENTS,
+                }),
+                world,
+                records,
+                time: Cell::new(1000),
+                intermission: Cell::new(0),
+                game_type: Cell::new(0),
+                feedback: RefCell::new(Vec::new()),
+            })
+        }
+    }
+
+    impl Q3CombatBridgeHost for FakeBridgeHost {
+        fn authority(&self) -> Rc<dyn Q3SessionCombat> {
+            self.records_host.combat.clone()
+        }
+
+        fn entities(&self) -> EntityPoolRef {
+            self.pool.clone()
+        }
+
+        fn records(&self) -> Q3EntityRecords {
+            self.records.clone()
+        }
+
+        fn world(&self) -> Rc<dyn Q3ServerWorld> {
+            self.world.clone()
+        }
+
+        fn weapon_provider(&self) -> ProviderId {
+            ProviderId::new("q3", "weapon")
+        }
+
+        fn combat_provider(&self) -> ProviderId {
+            ProviderId::new("q3", "combat")
+        }
+
+        fn inventory_provider(&self) -> ProviderId {
+            ProviderId::new("q3", "inventory")
+        }
+
+        fn movement_provider(&self) -> ProviderId {
+            ProviderId::new("q3", "movement")
+        }
+
+        fn armor_context(&self, _request: &DamageRequest) -> VictimArmorContext {
+            VictimArmorContext {
+                screen_facing_dot: 0.0,
+                arithmetic: VictimArithmetic::Binary32,
+                q2: None,
+            }
+        }
+
+        fn time(&self) -> i32 {
+            self.time.get()
+        }
+
+        fn intermission_queued(&self) -> i32 {
+            self.intermission.get()
+        }
+
+        fn game_type(&self) -> i32 {
+            self.game_type.get()
+        }
+
+        fn friendly_fire(&self) -> bool {
+            false
+        }
+
+        fn knockback(&self) -> f32 {
+            1000.0
+        }
+
+        fn product(&self) -> Product {
+            Product::Baseq3
+        }
+
+        fn check_hurt_carrier(&self, _target: EntityRef, _attacker: EntityRef) {}
+
+        fn log_accuracy_hit(&self, _target: EntityRef, _attacker: EntityRef) -> bool {
+            false
+        }
+
+        fn damage_feedback(&self, _call: &Q3DamageCall, _decision: &DamageDecision) {
+            self.feedback.borrow_mut().push("damage".to_string());
+        }
+
+        fn foreign_damage_feedback(&self, _target: EntityRef, _owner: Option<EntityRef>, _decision: &DamageDecision) {
+            self.feedback.borrow_mut().push("foreign".to_string());
+        }
+    }
+
+    fn test_attack(target: &ActorId, attacker: Option<&ActorId>) -> AttackProvenance {
+        let _ = target;
+        AttackProvenance {
+            sequence: 0,
+            time: SourceTime::Milliseconds(1000),
+            attacker: attacker.cloned(),
+            inflictor: attacker.cloned(),
+            originating_projectile: None,
+            weapon: None,
+            weapon_provider: ProviderId::new("q3", "weapon"),
+            damage_powerup_owner: None,
+            combat_provider: ProviderId::new("q3", "combat"),
+            inventory_provider: ProviderId::new("q3", "inventory"),
+            movement_provider: ProviderId::new("q3", "movement"),
+            cause: AttackCause::Q3 {
+                means_of_death: 7,
+                damage_flags: 0,
+            },
+        }
+    }
+
+    fn test_request(target: ActorId, attacker: Option<ActorId>, amount: f32) -> DamageRequest {
+        DamageRequest {
+            attack: test_attack(&target, attacker.as_ref()),
+            target,
+            amount,
+            knockback: amount,
+            direction: vec3(1.0, 0.0, 0.0),
+            point: vec3(0.0, 0.0, 0.0),
+            normal: vec3(0.0, 0.0, 0.0),
+            delivery: Delivery::Direct,
+        }
+    }
+
+    fn test_combat_state(health: i32) -> CombatState {
+        CombatState {
+            health,
+            armor: ArmorState {
+                regular: RegularArmorState::Q3 {
+                    points: 0,
+                    protection: 0.66,
+                },
+                powered: PoweredProtectionState::None,
+            },
+            mass: 200,
+            can_take_damage: true,
+            invulnerable: false,
+            no_knockback: false,
+            team: None,
+        }
+    }
+
+    struct FixedCurrent {
+        target: Option<CombatState>,
+        attacker: Option<CombatState>,
+    }
+
+    impl CurrentCombatState for FixedCurrent {
+        fn target(&self) -> Option<CombatState> {
+            self.target.clone()
+        }
+
+        fn attacker(&self) -> Option<CombatState> {
+            self.attacker.clone()
+        }
+    }
+
+    fn drive_progress(
+        progress: CombatProgress,
+        target: &CombatState,
+        attacker: Option<&CombatState>,
+    ) -> (CombatResult, Vec<DamageMutation>) {
+        let mut progress = progress;
+        let mut armor = target.armor.clone();
+        let mut seen = Vec::new();
+        loop {
+            match progress {
+                CombatProgress::Complete {
+                    result, mut mutations, ..
+                } => {
+                    seen.append(&mut mutations);
+                    return (result, seen);
+                }
+                CombatProgress::SourceContinuation {
+                    mut mutations, resume, ..
+                } => {
+                    seen.append(&mut mutations);
+                    let current = FixedCurrent {
+                        target: Some(target.clone()),
+                        attacker: attacker.cloned(),
+                    };
+                    progress = resume(&current);
+                }
+                CombatProgress::ArmorStage {
+                    channel,
+                    mut mutations,
+                    resume,
+                    fallback,
+                    ..
+                } => {
+                    seen.append(&mut mutations);
+                    let result = fallback(&armor);
+                    armor = result.armor.clone();
+                    let saved = match channel {
+                        ProtectionChannel::Powered => result.power_saved,
+                        ProtectionChannel::Regular => result.regular_saved,
+                    };
+                    let current = FixedCurrent {
+                        target: Some(target.clone()),
+                        attacker: attacker.cloned(),
+                    };
+                    progress = resume(ArmorStageResult { saved }, &current);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_captures_provenance_and_routes_feedback() {
+        let (records_host, records) = test_records();
+        let target = records.activate(5);
+        target.borrow_mut().s.weapon = Weapon::WpShotgun as i32;
+        let attacker = records.activate(6);
+        let host = FakeBridgeHost::new(records_host, records.clone());
+        let bridge = Q3CombatBridge::new(host.clone());
+
+        let provenance = (bridge.context().attack)(
+            &DamageParticipant::Native(target.clone()),
+            &DamageParticipant::Native(attacker.clone()),
+            None,
+            7,
+            0,
+            None,
+        );
+        assert_eq!(provenance.sequence, 0);
+        assert_eq!(provenance.weapon, Some("q3:weapon/shotgun".to_string()));
+        let second = (bridge.context().attack)(
+            &DamageParticipant::Native(target.clone()),
+            &DamageParticipant::Native(attacker.clone()),
+            Some("q3:weapon/bfg".to_string()),
+            7,
+            0,
+            None,
+        );
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.weapon, Some("q3:weapon/bfg".to_string()));
+
+        let saved = bridge.capture_save_state();
+        let bridge2 = Q3CombatBridge::new(host.clone());
+        bridge2.restore_save_state(&saved).expect("restore");
+        let third = (bridge2.context().attack)(
+            &DamageParticipant::Native(target.clone()),
+            &DamageParticipant::Native(attacker.clone()),
+            None,
+            7,
+            0,
+            None,
+        );
+        assert_eq!(third.sequence, 2);
+
+        let target_id = target.borrow().actor().id().clone();
+        let attacker_id = attacker.borrow().actor().id().clone();
+        let decision = DamageDecision {
+            request: test_request(target_id.clone(), Some(attacker_id), 40.0),
+            mutations: Vec::new(),
+            applied_damage: 40,
+            reaction: Reaction::Pain,
+            feedback: None,
+        };
+        let outcome = (bridge.context().dispatch)(
+            Q3DamageCall {
+                target: target.clone(),
+                source: DamageParticipant::Native(attacker.clone()),
+                owner: DamageParticipant::Native(attacker.clone()),
+                direction: None,
+                point: None,
+                amount: 40.0,
+                flags: 0,
+                method_of_death: 7,
+            },
+            &|| DamageOutcome::StaleTarget {
+                request: test_request(target_id.clone(), None, 0.0),
+            },
+        );
+        assert!(matches!(outcome, DamageOutcome::StaleTarget { .. }));
+        assert!(bridge.current_call().is_none());
+        bridge.before_reaction(&DamageDecision {
+            request: test_request(target_id, None, 10.0),
+            ..decision.clone()
+        });
+        assert_eq!(*host.feedback.borrow(), vec!["foreign".to_string()]);
+    }
+
+    #[test]
+    fn bridge_policy_decides_q3_damage_flow() {
+        let (records_host, records) = test_records();
+        let target = records.activate(5);
+        target.borrow_mut().client = Some(records.client(5));
+        let attacker = records.activate(6);
+        attacker.borrow_mut().client = Some(records.client(6));
+        attacker
+            .borrow()
+            .client
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .ps
+            .stats
+            .set(BaseStatIndex::StatMaxHealth as usize, 100);
+        let host = FakeBridgeHost::new(records_host, records);
+        let bridge = Q3CombatBridge::new(host.clone());
+        let policy = bridge.policy();
+
+        let target_id = target.borrow().actor().id().clone();
+        let attacker_id = attacker.borrow().actor().id().clone();
+        let request = test_request(target_id, Some(attacker_id), 50.0);
+        let state = test_combat_state(100);
+        let progress = (policy.decide)(&request, &state, Some(&state));
+        let (result, mutations) = drive_progress(progress, &state, Some(&state));
+        assert_eq!(result.applied_damage, 50);
+        assert_eq!(result.reaction, Reaction::Pain);
+        assert!(mutations
+            .iter()
+            .any(|mutation| matches!(mutation, DamageMutation::Health { before: 100, after: 50 })));
+        assert!(mutations
+            .iter()
+            .any(|mutation| matches!(mutation, DamageMutation::Impulse { .. })));
+
+        host.intermission.set(1);
+        let held = (policy.decide)(&request, &state, Some(&state));
+        let (held_result, _) = drive_progress(held, &state, Some(&state));
+        assert_eq!(held_result.applied_damage, 0);
+        assert_eq!(held_result.reaction, Reaction::None);
+    }
+
+    #[test]
+    fn bridge_policy_blocks_godmode_targets() {
+        let (records_host, records) = test_records();
+        let target = records.activate(5);
+        target.borrow_mut().flags |= GameFlags::GODMODE;
+        let host = FakeBridgeHost::new(records_host, records);
+        let bridge = Q3CombatBridge::new(host);
+        let policy = bridge.policy();
+        let target_id = target.borrow().actor().id().clone();
+        let request = test_request(target_id, None, 50.0);
+        let state = test_combat_state(100);
+        let (result, _) = drive_progress((policy.decide)(&request, &state, None), &state, None);
+        assert_eq!(result.applied_damage, 0);
+    }
+
+    #[test]
+    fn native_armor_absorbs_q3_points() {
+        let armor = ArmorState {
+            regular: RegularArmorState::Q3 {
+                points: 50,
+                protection: 0.66,
+            },
+            powered: PoweredProtectionState::None,
+        };
+        let flags = ArmorDamageFlags {
+            stage: None,
+            no_armor: false,
+            no_power_armor: false,
+            no_regular_armor: false,
+            energy: false,
+            regular_protection_scale: Some(1.0),
+        };
+        let context = VictimArmorContext {
+            screen_facing_dot: 0.0,
+            arithmetic: VictimArithmetic::Binary32,
+            q2: None,
+        };
+        let result = absorb_native_armor(&armor, 100, &flags, &context);
+        assert_eq!(result.regular_saved, 50);
+        assert_eq!(result.power_saved, 0);
+    }
+}

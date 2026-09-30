@@ -171,3 +171,261 @@ pub fn find_q3_entity_teams(pool: &dyn Q3EntityPool) -> EntityTeamCounts {
     }
     EntityTeamCounts { teams, entities }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qa_core::identity::{IdentityOwner, OwnedActor, ProviderId};
+    use qa_world::body::{BodyState, LinkedBody};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use crate::q3::base::records::test_support::*;
+    use crate::q3::base::records::*;
+    use crate::q3::base::shared::entity_shared::EntityBodyBinding;
+
+    struct FakeSpawnHost {
+        product: Product,
+        obelisks: RefCell<Vec<String>>,
+    }
+
+    impl Q3SpawnHandlersHost for FakeSpawnHost {
+        fn product(&self) -> Product {
+            self.product
+        }
+
+        fn misc_handlers(&self) -> HashMap<String, SpawnHandler> {
+            let mut handlers: HashMap<String, SpawnHandler> = HashMap::new();
+            handlers.insert(
+                "info_null".to_string(),
+                Rc::new(|entity: EntityRef, _: &SpawnVariables| {
+                    entity.borrow_mut().flags |= 1;
+                }),
+            );
+            handlers
+        }
+
+        fn mover_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn trigger_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn target_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn spawn_player_start(&self) -> SpawnHandler {
+            Rc::new(|_, _| {})
+        }
+
+        fn spawn_deathmatch_point(&self) -> SpawnHandler {
+            Rc::new(|_, _| {})
+        }
+
+        fn spawn_team_point(&self) -> SpawnHandler {
+            Rc::new(|_, _| {})
+        }
+
+        fn spawn_team_obelisk(&self, _entity: EntityRef, team: Team) {
+            self.obelisks.borrow_mut().push(format!("team:{}", team as i32));
+        }
+
+        fn spawn_neutral_obelisk(&self, _entity: EntityRef) {
+            self.obelisks.borrow_mut().push("neutral".to_string());
+        }
+    }
+
+    #[test]
+    fn spawn_handlers_cover_routes_and_obelisks() {
+        let host = Rc::new(FakeSpawnHost {
+            product: Product::Missionpack,
+            obelisks: RefCell::new(Vec::new()),
+        });
+        let handlers = create_q3_spawn_handlers(host.clone()).expect("handlers");
+        assert!(handlers.contains_key("info_player_start"));
+        assert!(handlers.contains_key("info_player_intermission"));
+        assert!(handlers.contains_key("item_botroam"));
+        assert!(handlers.contains_key("func_group"));
+        assert!(handlers.contains_key("team_redobelisk"));
+        let (_records_host, records) = test_records();
+        let entity = records.activate(40);
+        handlers["func_group"](entity.clone(), &SpawnVariables::default());
+        assert_eq!(entity.borrow().flags, 1);
+        handlers["team_redobelisk"](entity.clone(), &SpawnVariables::default());
+        handlers["team_blueobelisk"](entity.clone(), &SpawnVariables::default());
+        handlers["team_neutralobelisk"](entity, &SpawnVariables::default());
+        assert_eq!(
+            *host.obelisks.borrow(),
+            vec![
+                format!("team:{}", Team::TeamRed as i32),
+                format!("team:{}", Team::TeamBlue as i32),
+                "neutral".to_string()
+            ]
+        );
+
+        let base = Rc::new(FakeSpawnHost {
+            product: Product::Baseq3,
+            obelisks: RefCell::new(Vec::new()),
+        });
+        let base_handlers = create_q3_spawn_handlers(base).expect("base");
+        assert!(!base_handlers.contains_key("team_redobelisk"));
+    }
+
+    struct EmptySpawnHost;
+
+    impl Q3SpawnHandlersHost for EmptySpawnHost {
+        fn product(&self) -> Product {
+            Product::Baseq3
+        }
+
+        fn misc_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn mover_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn trigger_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn target_handlers(&self) -> HashMap<String, SpawnHandler> {
+            HashMap::new()
+        }
+
+        fn spawn_player_start(&self) -> SpawnHandler {
+            Rc::new(|_, _| {})
+        }
+
+        fn spawn_deathmatch_point(&self) -> SpawnHandler {
+            Rc::new(|_, _| {})
+        }
+
+        fn spawn_team_point(&self) -> SpawnHandler {
+            Rc::new(|_, _| {})
+        }
+
+        fn spawn_team_obelisk(&self, _entity: EntityRef, _team: Team) {}
+
+        fn spawn_neutral_obelisk(&self, _entity: EntityRef) {}
+    }
+
+    #[test]
+    fn spawn_handlers_require_info_null() {
+        let host = Rc::new(EmptySpawnHost);
+        assert!(create_q3_spawn_handlers(host).is_err());
+    }
+
+    struct DirectBinding {
+        active: bool,
+        actor: OwnedActor,
+        body: Rc<FakeDirectBody>,
+    }
+
+    struct FakeDirectBody {
+        state: RefCell<BodyState>,
+    }
+
+    impl EntityBodyBinding for FakeDirectBody {
+        fn read(&self) -> BodyState {
+            self.state.borrow().clone()
+        }
+
+        fn write(&self, value: BodyState) {
+            *self.state.borrow_mut() = value;
+        }
+
+        fn linked(&self) -> Option<LinkedBody> {
+            None
+        }
+    }
+
+    impl GameEntityBinding for DirectBinding {
+        fn body(&self) -> Rc<dyn EntityBodyBinding> {
+            self.body.clone()
+        }
+
+        fn actor(&self) -> OwnedActor {
+            self.actor.clone()
+        }
+
+        fn active(&self) -> bool {
+            self.active
+        }
+
+        fn health(&self) -> i32 {
+            0
+        }
+
+        fn set_health(&self, _value: i32) {}
+
+        fn takes_damage(&self) -> bool {
+            false
+        }
+
+        fn set_takes_damage(&self, _value: bool) {}
+
+        fn schedule(&self, _nextthink: i32) {}
+
+        fn run_think(&self, _time_milliseconds: i32) {}
+    }
+
+    struct VecPool {
+        entities: Vec<EntityRef>,
+    }
+
+    impl Q3EntityPool for VecPool {
+        fn num_entities(&self) -> usize {
+            self.entities.len()
+        }
+
+        fn entity_at(&self, index: usize) -> EntityRef {
+            self.entities[index].clone()
+        }
+    }
+
+    fn team_entity(owner: &IdentityOwner, slot: usize, team: Option<&str>) -> EntityRef {
+        let actor = owner
+            .owned_actor(&owner.actor(slot as u32, 1), ProviderId::new("q3", "test"))
+            .expect("owned");
+        let binding = Rc::new(DirectBinding {
+            active: true,
+            actor,
+            body: Rc::new(FakeDirectBody {
+                state: RefCell::new(ZERO_BODY.clone()),
+            }),
+        });
+        let entity = Rc::new(RefCell::new(GameEntity::new(slot, binding)));
+        entity.borrow_mut().team = team.map(str::to_string);
+        entity
+    }
+
+    #[test]
+    fn entity_teams_chain_and_transfer_targetnames() {
+        let owner = test_owner();
+        let first = team_entity(&owner, 1, Some("alpha"));
+        let second = team_entity(&owner, 2, Some("alpha"));
+        second.borrow_mut().targetname = Some("slave-target".to_string());
+        let third = team_entity(&owner, 3, Some("beta"));
+        let pool = VecPool {
+            entities: vec![
+                team_entity(&owner, 0, None),
+                first.clone(),
+                second.clone(),
+                third.clone(),
+            ],
+        };
+        let counts = find_q3_entity_teams(&pool);
+        assert_eq!(counts, EntityTeamCounts { teams: 2, entities: 3 });
+        assert_eq!(first.borrow().targetname, Some("slave-target".to_string()));
+        assert_eq!(second.borrow().targetname, None);
+        assert_ne!(second.borrow().flags & GameFlags::TEAMSLAVE, 0);
+        assert!(Rc::ptr_eq(first.borrow().teamchain.as_ref().unwrap(), &second));
+        assert!(third.borrow().teamchain.is_none());
+    }
+}

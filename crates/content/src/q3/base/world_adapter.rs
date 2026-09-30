@@ -432,3 +432,97 @@ impl ActorSpatialQueries for Q3WorldAdapter {
         self.host.body_trace_start_solid(&query, &body, &spatial)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::records::test_support::*;
+
+    #[test]
+    fn adapter_maps_hits_and_encodes_solid() {
+        let (_records_host, records) = test_records();
+        let entity = records.activate(20);
+        let actor = entity.borrow().actor().id().clone();
+        let host = Rc::new(FakeWorldHost::new());
+        host.trace_result.borrow_mut().hit = Q3TraceHit::Actor { actor: actor.clone() };
+        host.trace_result.borrow_mut().fraction = 0.5;
+        let adapter = Q3WorldAdapter::new(host.clone(), records.clone());
+
+        let result = adapter.trace(&ServerTraceQuery {
+            start: vec3(0.0, 0.0, 0.0),
+            end: vec3(0.0, 0.0, 10.0),
+            shape: TraceShape::Point,
+            pass_entity_num: ENTITYNUM_NONE,
+            mask: 1,
+        });
+        assert_eq!(result.entity_num, 20);
+        assert_eq!(result.fraction, 0.5);
+
+        host.trace_result.borrow_mut().hit = Q3TraceHit::None;
+        let clear = adapter.trace(&ServerTraceQuery {
+            start: vec3(0.0, 0.0, 0.0),
+            end: vec3(0.0, 0.0, 10.0),
+            shape: TraceShape::Point,
+            pass_entity_num: ENTITYNUM_NONE,
+            mask: 1,
+        });
+        assert_eq!(clear.entity_num, ENTITYNUM_NONE);
+
+        host.actors.borrow_mut().push(actor.clone());
+        assert_eq!(
+            adapter.area_entities(
+                Bounds {
+                    min: vec3(0.0, 0.0, 0.0),
+                    max: vec3(1.0, 1.0, 1.0),
+                },
+                1024
+            ),
+            vec![20]
+        );
+        assert_eq!(adapter.point_contents(vec3(0.0, 0.0, 0.0), ENTITYNUM_NONE), 3);
+
+        entity.borrow_mut().r.contents = 1;
+        entity.borrow_mut().r.set_mins(vec3(-15.0, -15.0, -24.0));
+        entity.borrow_mut().r.set_maxs(vec3(15.0, 15.0, 32.0));
+        adapter.link(entity.clone());
+        assert_eq!(entity.borrow().s.solid, (64 << 16) | (24 << 8) | 15);
+        let stored = host.collisions.borrow().get(&actor).expect("collision").clone();
+        assert_eq!(stored.role, ActorCollisionRole::Solid);
+        assert!(adapter.link_state(20).is_some());
+        assert!(adapter.link_state(21).is_none());
+        let restore = adapter.unlink_actor(&actor).expect("restore");
+        assert!(adapter.link_state(20).is_none());
+        restore();
+        assert!(adapter.link_state(20).is_some());
+    }
+
+    #[test]
+    fn adapter_contact_uses_model_or_body_paths() {
+        let (_records_host, records) = test_records();
+        let entity = records.activate(30);
+        let actor = entity.borrow().actor().id().clone();
+        let host = Rc::new(FakeWorldHost::new());
+        let adapter = Q3WorldAdapter::new(host.clone(), records.clone());
+        let bounds = Bounds {
+            min: vec3(0.0, 0.0, 0.0),
+            max: vec3(1.0, 1.0, 1.0),
+        };
+        assert!(!adapter.contact_actor(bounds, &actor, false));
+        let owned = entity.borrow().actor();
+        host.bodies.create(&owned, ZERO_BODY.clone());
+        host.collisions.borrow_mut().insert(
+            actor.clone(),
+            ActorCollision {
+                shape: ActorCollisionShape::InlineModel { model: 2 },
+                contents: 1,
+                owner: None,
+                role: ActorCollisionRole::Solid,
+                monster: false,
+                dead_monster: false,
+            },
+        );
+        assert!(adapter.contact_actor(bounds, &actor, false));
+        assert!(adapter.entity_contact(bounds, 30, false));
+        assert!(!adapter.entity_contact(bounds, 31, false));
+    }
+}

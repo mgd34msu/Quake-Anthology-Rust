@@ -134,3 +134,32 @@ impl EntityState {
 pub fn copy_entity_state_fields(target: &mut EntityState, source: &EntityState) {
     *target = source.clone();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linear_fixture() -> Trajectory {
+        Trajectory {
+            trajectory_type: TrajectoryType::TrLinear,
+            time: 1000,
+            duration: 0,
+            base: vec3(1.0, 2.0, 3.0),
+            delta: vec3(100.0, 0.0, -50.0),
+        }
+    }
+
+    #[test]
+    fn entity_state_copies_every_field() {
+        let mut source = EntityState::new();
+        source.number = 7;
+        source.pos = linear_fixture();
+        source.origin2 = vec3(1.0, 2.0, 3.0);
+        let copy = source.copy();
+        assert_eq!(copy, source);
+        let mut target = EntityState::new();
+        target.copy_from_state(&source);
+        assert_eq!(target, source);
+        assert_eq!(EntityState::default(), EntityState::new());
+    }
+}

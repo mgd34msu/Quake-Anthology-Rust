@@ -126,3 +126,55 @@ pub fn player_state_to_entity_state_extra_polate(
 ) {
     convert_player_state(ps, destination, snap, Some(time));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q3::base::world::{MovementTrace, ServerTraceResult, TraceContact, TraceSolidity};
+
+    #[test]
+    fn snapshot_conversion_consumes_events_and_snaps() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        ps.client_num = 3;
+        ps.set_origin(vec3(10.7, -4.2, 0.5));
+        ps.set_health(100);
+        ps.add_event(EntityEvent::EvJump as i32, 0);
+        ps.powerups.set(Powerup::PwQuad as usize, 30);
+        let mut entity = EntityState::new();
+        player_state_to_entity_state(&mut ps, &mut entity, true);
+        assert_eq!(entity.e_type, EntityType::EtPlayer as i32);
+        assert_eq!(entity.number, 3);
+        assert_eq!(entity.pos.base, vec3(10.0, -4.0, 0.0));
+        assert_eq!(entity.event, EntityEvent::EvJump as i32);
+        assert_eq!(entity.powerups, 1 << (Powerup::PwQuad as i32));
+        assert_eq!(ps.entity_event_sequence, 1);
+        let mut gibbed = create_player_state(Product::Baseq3, None);
+        gibbed.set_health(GIB_HEALTH);
+        let mut hidden = EntityState::new();
+        player_state_to_entity_state(&mut gibbed, &mut hidden, false);
+        assert_eq!(hidden.e_type, EntityType::EtInvisible as i32);
+    }
+
+    #[test]
+    fn snapshot_extrapolation_uses_linear_stop() {
+        let mut ps = create_player_state(Product::Baseq3, None);
+        ps.set_origin(vec3(0.0, 0.0, 0.0));
+        ps.set_velocity(vec3(100.0, 0.0, 0.0));
+        ps.set_health(100);
+        let mut entity = EntityState::new();
+        player_state_to_entity_state_extra_polate(&mut ps, &mut entity, 500, false);
+        assert_eq!(entity.pos.trajectory_type, TrajectoryType::TrLinearStop);
+        assert_eq!(entity.pos.time, 500);
+        assert_eq!(entity.pos.duration, 50);
+        let moved: MovementTrace = ServerTraceResult {
+            fraction: 1.0,
+            end: vec3(0.0, 0.0, 0.0),
+            entity_num: ENTITYNUM_NONE,
+            solidity: TraceSolidity::Clear,
+            contact: TraceContact::None,
+            contents: 0,
+            surface_flags: 0,
+        };
+        assert_eq!(moved.entity_num, ENTITYNUM_NONE);
+    }
+}
