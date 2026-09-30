@@ -564,6 +564,7 @@ pub fn q3_spawn_animation() -> AnimationState {
 mod tests {
     use qa_core::identity::IdentityOwner;
     use qa_core::time::FramePhase;
+    use qa_world::movement::q3::constants::{entity_event, holdable};
 
     use super::*;
 
@@ -779,5 +780,238 @@ mod tests {
             step_q3_arsenal(&bad_clock, &runtime(), &controls(), None),
             Err(ArsenalError::BadClock)
         );
+    }
+
+    fn test_frame(elapsed: SourceTime) -> FrameContext {
+        FrameContext {
+            frame: 1,
+            time: SourceTime::Milliseconds(100),
+            elapsed,
+            phase: FramePhase::FrameEntry,
+        }
+    }
+
+    fn test_actor() -> (OwnedActor, ProviderId) {
+        let owner = IdentityOwner::create("test").unwrap();
+        let provider = ProviderId::new("q3", "test");
+        let owned = owner.owned_actor(&owner.actor(3, 1), provider.clone()).unwrap();
+        (owned, provider)
+    }
+
+    fn test_command() -> UserCommand {
+        UserCommand::Q3(qa_world::movement::types::Q3UserCommand {
+            server_time_milliseconds: 0,
+            angle_words: [0, 0, 0],
+            buttons: 0,
+            weapon: weapon::MACHINEGUN,
+            forward_move: 0,
+            right_move: 0,
+            up_move: 0,
+        })
+    }
+
+    fn test_environment(health: f64) -> MovementEnvironment {
+        MovementEnvironment {
+            client_outputs: None,
+            speed_multiplier: None,
+            pose: None,
+            health,
+            flight: false,
+            haste: false,
+            invulnerable: false,
+            gravity_multiplier: 1.0,
+        }
+    }
+
+    fn q3_weapon(state: &FamilyWeaponState) -> (i32, i32, i32) {
+        let FamilyWeaponState::Q3 {
+            source_weapon,
+            state,
+            time_milliseconds,
+        } = state
+        else {
+            panic!("q3 step keeps q3 weapon state");
+        };
+        (*source_weapon, *state, *time_milliseconds)
+    }
+
+    fn q3_torso(state: &AnimationState) -> i32 {
+        let AnimationState::Q3 { torso, .. } = state else {
+            panic!("q3 step keeps q3 animation");
+        };
+        *torso
+    }
+
+    fn arsenal_fixture() -> (WeaponStepInput, Q3ArsenalRuntimeState) {
+        let (actor, provider) = test_actor();
+        let arsenal = q3_spawn_loadout(provider.clone(), Product::Baseq3, false);
+        let input = WeaponStepInput {
+            actor,
+            command: test_command(),
+            frame: test_frame(SourceTime::Milliseconds(8)),
+            arsenal,
+            animation: ActorAnimationState {
+                provider: provider.clone(),
+                state: q3_spawn_animation(),
+            },
+            environment: test_environment(100.0),
+            gauntlet_hit: false,
+        };
+        let runtime = q3_spawn_arsenal_runtime(Product::Baseq3, 100.0, 0);
+        (input, runtime)
+    }
+
+    #[test]
+    fn spawn_loadout_and_weapon_requests() {
+        let (_, provider) = test_actor();
+        let base = q3_spawn_loadout(provider.clone(), Product::Baseq3, false);
+        assert_eq!(base.active_weapon.as_deref(), Some("q3:weapon/machinegun"));
+        assert_eq!(q3_weapon(&base.state).0, weapon::MACHINEGUN);
+        let mg_ammo = base
+            .ammo
+            .iter()
+            .find(|entry| entry.item == "q3:ammo/machinegun")
+            .unwrap();
+        assert_eq!(mg_ammo.count, 100.0);
+        assert!(base.ammo.iter().all(|entry| !entry.item.contains("nailgun")));
+        let tdm = q3_spawn_loadout(provider.clone(), Product::Baseq3, true);
+        assert_eq!(
+            tdm.ammo
+                .iter()
+                .find(|entry| entry.item == "q3:ammo/machinegun")
+                .unwrap()
+                .count,
+            50.0
+        );
+        let pack = q3_spawn_loadout(provider, Product::Missionpack, false);
+        assert!(pack.ammo.iter().any(|entry| entry.item == "q3:weapon/nailgun"));
+
+        let runtime = q3_spawn_arsenal_runtime(Product::Baseq3, 100.0, 0);
+        assert!(runtime.respawned);
+        assert!(q3_request_weapon(&runtime, weapon::SHOTGUN).is_ok());
+        assert!(q3_request_weapon(&runtime, weapon::NAILGUN).is_err());
+        let pack_runtime = q3_spawn_arsenal_runtime(Product::Missionpack, 100.0, 0);
+        assert!(q3_request_weapon(&pack_runtime, weapon::NAILGUN).is_ok());
+
+        let holstered = q3_request_weapon_holster(&runtime);
+        assert_eq!(holstered.external_slot, Q3ExternalWeaponSlot::HolsterRequested);
+        let mut dropping = holstered.clone();
+        dropping.external_slot = Q3ExternalWeaponSlot::Dropping;
+        assert!(q3_request_weapon_resume(&dropping).is_err());
+        let mut parked = runtime.clone();
+        parked.external_slot = Q3ExternalWeaponSlot::Holstered;
+        let resumed = q3_request_weapon_resume(&parked).unwrap();
+        assert_eq!(resumed.external_slot, Q3ExternalWeaponSlot::ResumeRequested);
+        let back = q3_request_weapon_holster(&resumed);
+        assert_eq!(back.external_slot, Q3ExternalWeaponSlot::Holstered);
+    }
+
+    #[test]
+    fn arsenal_step_fires_consumes_and_switches() {
+        let (input, runtime) = arsenal_fixture();
+        let ready = Q3ArsenalRuntimeState {
+            respawned: false,
+            ..runtime.clone()
+        };
+        let controls = Q3ArsenalControls {
+            attack: true,
+            use_holdable: false,
+            requested_weapon: weapon::MACHINEGUN,
+        };
+        let step = step_q3_arsenal(&input, &ready, &controls, None).unwrap();
+        assert_eq!(q3_weapon(&step.arsenal.state).1, weapon_state::FIRING);
+        assert_eq!(
+            step.arsenal
+                .ammo
+                .iter()
+                .find(|entry| entry.item == "q3:ammo/machinegun")
+                .unwrap()
+                .count,
+            99.0
+        );
+        assert!(step.effects.iter().any(|effect| matches!(
+            effect,
+            MovementEffect::Event(event) if event.event == entity_event::FIRE_WEAPON
+        )));
+        assert_eq!(step.torso_animations, vec![player_animation::TORSO_ATTACK]);
+        assert_ne!(q3_torso(&step.animation.state), q3_torso(&input.animation.state));
+
+        let mut dry = input.clone();
+        for entry in dry.arsenal.ammo.iter_mut() {
+            if entry.item == "q3:ammo/machinegun" {
+                entry.count = 0.0;
+            }
+        }
+        let step = step_q3_arsenal(&dry, &ready, &controls, None).unwrap();
+        assert!(step.effects.iter().any(|effect| matches!(
+            effect,
+            MovementEffect::Event(event) if event.event == entity_event::NOAMMO
+        )));
+        assert_eq!(q3_weapon(&step.arsenal.state).2, 500);
+
+        let mut stocked = input.clone();
+        for entry in stocked.arsenal.ammo.iter_mut() {
+            if entry.item == "q3:weapon/shotgun" {
+                entry.count = 1.0;
+            }
+        }
+        let switch = Q3ArsenalControls {
+            attack: false,
+            use_holdable: false,
+            requested_weapon: weapon::SHOTGUN,
+        };
+        let step = step_q3_arsenal(&stocked, &ready, &switch, None).unwrap();
+        assert_eq!(q3_weapon(&step.arsenal.state).1, weapon_state::DROPPING);
+        assert_eq!(step.torso_animations, vec![player_animation::TORSO_DROP]);
+
+        let mut dead = input.clone();
+        dead.environment.health = 0.0;
+        let step = step_q3_arsenal(&dead, &ready, &controls, None).unwrap();
+        assert_eq!(q3_weapon(&step.arsenal.state).0, weapon::NONE);
+        assert!(step.torso_animations.is_empty());
+
+        let idle = Q3ArsenalControls {
+            attack: false,
+            use_holdable: false,
+            requested_weapon: weapon::MACHINEGUN,
+        };
+        let step = step_q3_arsenal(&input, &runtime, &idle, None).unwrap();
+        assert!(!step.runtime.respawned);
+
+        let holdable = Q3ArsenalRuntimeState {
+            respawned: false,
+            holdable_item: 1,
+            holdable_tag: holdable::MEDKIT,
+            ..runtime.clone()
+        };
+        let use_controls = Q3ArsenalControls {
+            attack: true,
+            use_holdable: true,
+            requested_weapon: weapon::MACHINEGUN,
+        };
+        let step = step_q3_arsenal(&input, &holdable, &use_controls, None).unwrap();
+        assert_eq!(step.runtime.holdable_tag, 0);
+        assert!(step.effects.iter().any(|effect| matches!(
+            effect,
+            MovementEffect::Event(event) if event.event == entity_event::USE_ITEM0 + holdable::MEDKIT
+        )));
+    }
+
+    #[test]
+    fn arsenal_step_accepts_seconds_and_firing_delay() {
+        let (mut input, runtime) = arsenal_fixture();
+        input.frame = test_frame(SourceTime::Seconds(0.008));
+        let ready = Q3ArsenalRuntimeState {
+            respawned: false,
+            ..runtime
+        };
+        let controls = Q3ArsenalControls {
+            attack: true,
+            use_holdable: false,
+            requested_weapon: weapon::MACHINEGUN,
+        };
+        let delay = |milliseconds: i32| milliseconds * 2;
+        let step = step_q3_arsenal(&input, &ready, &controls, Some(&delay)).unwrap();
+        assert_eq!(q3_weapon(&step.arsenal.state).2, 200);
     }
 }
