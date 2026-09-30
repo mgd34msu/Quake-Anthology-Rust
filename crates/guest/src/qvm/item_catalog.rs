@@ -74,7 +74,7 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
     let stride = reader.field("stride")?.integer(4)? as usize;
     let offset = |name: &str| -> Result<usize, GuestError> {
         let value = fields.field(name)?.integer(0)? as usize;
-        if value % 4 != 0 || value + 4 > stride {
+        if !value.is_multiple_of(4) || value + 4 > stride {
             return fields
                 .field(name)?
                 .fail("item field exceeds its record or is unaligned");
@@ -126,7 +126,7 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
         QvmItemCount::Direct(_) => true,
         QvmItemCount::Global { global, .. } => global % 4 == 0,
     };
-    if address_word % 4 != 0 || !count_aligned || stride % 4 != 0 || layout.weapon_type == layout.ammo_type {
+    if !address_word.is_multiple_of(4) || !count_aligned || !stride.is_multiple_of(4) || layout.weapon_type == layout.ammo_type {
         return reader.fail("invalid item table layout");
     }
     if !live_source
@@ -183,7 +183,7 @@ pub fn read_qvm_item_records(
     data: &[u8],
     layout: &QvmItemLayout,
     types: Option<&HashSet<i32>>,
-    mut range: Option<&mut dyn FnMut(usize, usize)>,
+    range: Option<&mut dyn FnMut(usize, usize)>,
 ) -> Result<Vec<QvmCatalogRecord>, GuestError> {
     let touch = |range: &mut Option<&mut dyn FnMut(usize, usize)>, offset: usize, length: usize| {
         if let Some(range) = range {
@@ -192,7 +192,7 @@ pub fn read_qvm_item_records(
     };
     let mut range: Option<&mut dyn FnMut(usize, usize)> = range.map(|range| &mut *range);
     let read_global = |address: usize, range: &mut Option<&mut dyn FnMut(usize, usize)>| -> Result<i32, GuestError> {
-        if address % 4 != 0 || address + 4 > data.len() {
+        if !address.is_multiple_of(4) || address + 4 > data.len() {
             return Err(GuestError::invalid("QVM item table locator exceeds module data"));
         }
         touch(range, address, 4);

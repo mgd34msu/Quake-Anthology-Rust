@@ -252,8 +252,8 @@ pub fn read_qvm_grapple_profile(
     let client_stride = reader
         .field("clientStride")?
         .integer(qvm_player_state_bytes(abi_profile) as i64)? as usize;
-    if entity_stride % 4 != 0
-        || client_stride % 4 != 0
+    if !entity_stride.is_multiple_of(4)
+        || !client_stride.is_multiple_of(4)
         || entity_stride.max(client_stride) > artifact.image.allocated_data_length
     {
         return reader.fail("unaligned or oversized source records");
@@ -262,7 +262,7 @@ pub fn read_qvm_grapple_profile(
     let offset = |name: &str, minimum: usize, maximum: usize| -> Result<usize, GuestError> {
         let field = reader.field("fields")?.field(name)?;
         let result = field.integer(minimum as i64)? as usize;
-        if result % 4 != 0 || result > maximum - 4 {
+        if !result.is_multiple_of(4) || result > maximum - 4 {
             return field.fail("field is outside its source record");
         }
         Ok(result)
@@ -270,7 +270,7 @@ pub fn read_qvm_grapple_profile(
     let global = |name: &str, bytes: usize| -> Result<usize, GuestError> {
         let field = reader.field("globals")?.field(name)?;
         let result = field.integer(4)? as usize;
-        if result % 4 != 0 || result.checked_add(bytes).map_or(true, |end| end > data_end) {
+        if !result.is_multiple_of(4) || result.checked_add(bytes).is_none_or(|end| end > data_end) {
             return field.fail("global is outside declared source memory");
         }
         Ok(result)
@@ -282,7 +282,7 @@ pub fn read_qvm_grapple_profile(
             .image
             .instructions
             .get(entry)
-            .map_or(true, |instruction| instruction.opcode != QvmOpcode::OpEnter)
+            .is_none_or(|instruction| instruction.opcode != QvmOpcode::OpEnter)
         {
             return field.fail("callback is not a source function entry");
         }
@@ -373,7 +373,7 @@ pub fn read_qvm_grapple_profile(
             words: movement.field("words")?.list(|entry| {
                 let offset = entry.field("offset")?.integer(4)? as usize;
                 let value = entry.field("value")?.integer(i64::MIN)? as i32;
-                if offset % 4 != 0 || offset + 4 > byte_length {
+                if !offset.is_multiple_of(4) || offset + 4 > byte_length {
                     return entry.fail("Movement field is outside the declared source record");
                 }
                 Ok(QvmGrappleWord { offset, value })
@@ -648,12 +648,14 @@ mod tests {
     use super::*;
 
     fn artifact() -> QvmArtifact {
-        let mut image = QvmImage::default();
-        image.instructions = (0..32)
-            .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
-            .collect();
-        image.data_length = 4096;
-        image.allocated_data_length = 65536;
+        let image = QvmImage {
+            instructions: (0..32)
+                .map(|index| QvmInstruction::word(QvmOpcode::OpEnter, 0, index * 8))
+                .collect(),
+            data_length: 4096,
+            allocated_data_length: 65536,
+            ..Default::default()
+        };
         QvmArtifact {
             module: ModuleIdentity {
                 id: "test:qagame".to_string(),

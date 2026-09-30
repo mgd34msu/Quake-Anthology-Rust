@@ -67,7 +67,7 @@ pub fn qualify_qvm_region_evaluation(
     let frame = qualify_qvm_region(instructions, owner, region.entry, region.join)?;
     let frame_size =
         usize::try_from(frame).map_err(|_| GuestError::invalid("QVM region frame exceeds its address range"))?;
-    let valid = |offset: usize| offset >= 8 && offset % 4 == 0 && offset + 4 <= frame_size;
+    let valid = |offset: usize| offset >= 8 && offset.is_multiple_of(4) && offset + 4 <= frame_size;
     if region.inputs.iter().any(|offset| !valid(*offset))
         || BTreeSet::from_iter(region.inputs.iter().copied()).len() != region.inputs.len()
         || region.result.is_some_and(|offset| !valid(offset))
@@ -121,7 +121,7 @@ pub fn qualify_qvm_region_evaluation(
                 "Read-only QVM region cannot call, publish arguments, copy memory or break",
             ));
         }
-        let mut pop = |stack: &mut Vec<Operand>| -> Result<Operand, GuestError> {
+        let pop = |stack: &mut Vec<Operand>| -> Result<Operand, GuestError> {
             stack
                 .pop()
                 .ok_or_else(|| GuestError::invalid("Invalid QVM region operand proof"))
@@ -407,9 +407,7 @@ pub fn qualify_qvm_region(
             } else if matches!(
                 opcode,
                 QvmOpcode::OpStore1 | QvmOpcode::OpStore2 | QvmOpcode::OpStore4 | QvmOpcode::OpBlockCopy
-            ) {
-                (2, -2)
-            } else if opcode.is_branch() {
+            ) || opcode.is_branch() {
                 (2, -2)
             } else if matches!(opcode as u8, 38..=52) || matches!(opcode as u8, 54..=57) {
                 // OP_ADD..OP_RSHU and OP_ADDF..OP_MULF; BCOM keeps its operand.

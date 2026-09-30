@@ -85,7 +85,7 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
     let stride = reader.field("stride")?.integer(4)? as usize;
     let offset = |name: &str| -> Result<usize, GuestError> {
         let value = fields.field(name)?.integer(0)? as usize;
-        if value % 4 != 0 || value + 4 > stride {
+        if !value.is_multiple_of(4) || value + 4 > stride {
             return fields
                 .field(name)?
                 .fail("item field exceeds its record or is unaligned");
@@ -135,7 +135,7 @@ pub fn parse_qvm_item_layout(reader: &ProfileReader<'_>) -> Result<QvmItemLayout
     };
     if base % 4 != 0
         || count_global.is_some_and(|global| global % 4 != 0)
-        || stride % 4 != 0
+        || !stride.is_multiple_of(4)
         || layout.weapon_type == layout.ammo_type
     {
         return reader.fail("invalid item table layout");
@@ -401,7 +401,7 @@ pub fn read_qvm_primary_pickup_profile(
                 op.field("quantity")?.integer(8)? as usize,
             );
             let frame = qualify_qvm_region(instructions, source.entry, region.0, region.1)?;
-            if region.2 % 4 != 0 || region.2 + 4 > frame {
+            if !region.2.is_multiple_of(4) || region.2 + 4 > frame {
                 return op.fail("pickup quantity is outside the original local frame");
             }
             let weapon = op.field("weapon")?;
@@ -465,13 +465,13 @@ pub fn read_qvm_primary_pickup_profile(
     let client_stride = reader
         .field("clientStride")?
         .integer(qvm_player_state_bytes(abi_profile) as i64)? as usize;
-    if entity_stride % 4 != 0 || client_stride % 4 != 0 {
+    if !entity_stride.is_multiple_of(4) || !client_stride.is_multiple_of(4) {
         return reader.fail("source record strides must be aligned");
     }
     let fields = reader.field("fields")?;
     let read_field = |name: &str| -> Result<usize, GuestError> {
         let value = fields.field(name)?.integer(0)? as usize;
-        if value % 4 != 0 || value + 4 > entity_stride {
+        if !value.is_multiple_of(4) || value + 4 > entity_stride {
             return fields
                 .field(name)?
                 .fail("pickup field is outside its aligned entity record");
