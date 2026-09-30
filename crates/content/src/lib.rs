@@ -30,6 +30,7 @@ pub mod q3scene;
 pub mod quaternion;
 pub mod replacements;
 pub mod spr;
+pub mod value;
 pub mod wad;
 
 /// BSP codec family (`classifyBsp` in `src/formats/bsp-kind.ts`).
