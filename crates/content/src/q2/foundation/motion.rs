@@ -79,6 +79,43 @@ pub struct LinearMoveCheckpoint {
 /// Linear motion checkpoint (`Q2LinearMotionCheckpoint`).
 pub type Q2LinearMotionCheckpoint = Vec<LinearMoveCheckpoint>;
 
+/// Linear motion instance scope (`Q2LinearMotion` namespace).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinearMotionScope {
+    /// Foundation movers (`q2:foundation/linear`).
+    Foundation,
+    /// Base entities (`q2:base/linear`).
+    Base,
+}
+
+/// Read the scoped move map.
+fn linear_moves(game: &Q2GameServices, scope: LinearMotionScope) -> &HashMap<ActorId, LinearMoveState> {
+    match scope {
+        LinearMotionScope::Foundation => &game.movers.linear_moves,
+        LinearMotionScope::Base => &game.base_entities.linear_moves,
+    }
+}
+
+/// Mutably read the scoped move map.
+fn linear_moves_mut(
+    game: &mut Q2GameServices,
+    scope: LinearMotionScope,
+) -> &mut HashMap<ActorId, LinearMoveState> {
+    match scope {
+        LinearMotionScope::Foundation => &mut game.movers.linear_moves,
+        LinearMotionScope::Base => &mut game.base_entities.linear_moves,
+    }
+}
+
+/// Resolve the scope holding an actor's move (foundation wins ties).
+fn linear_scope_for(game: &Q2GameServices, actor: &ActorId) -> LinearMotionScope {
+    if game.movers.linear_moves.contains_key(actor) {
+        LinearMotionScope::Foundation
+    } else {
+        LinearMotionScope::Base
+    }
+}
+
 /// Linear motion callbacks (`Q2LinearMotion[callbacks]`).
 ///
 /// The donor parameterizes the callback prefix, but the only instantiation
@@ -93,17 +130,43 @@ pub fn linear_motion_callbacks() -> Q2CallbackDefinitions {
     callbacks
 }
 
+/// Base linear motion callbacks (`q2:base/linear`).
+pub fn base_linear_motion_callbacks() -> Q2CallbackDefinitions {
+    let mut callbacks = Q2CallbackDefinitions::default();
+    callbacks.think.insert("q2:base/linear/Move_Done", linear_move_done);
+    callbacks.think.insert("q2:base/linear/Move_Final", linear_move_final);
+    callbacks.think.insert("q2:base/linear/Move_Begin", linear_move_begin);
+    callbacks.think.insert("q2:base/linear/Think_AccelMove", linear_move_accelerate);
+    callbacks.think.insert("q2:base/linear/Move_Accel_Curve", linear_move_curve);
+    callbacks
+}
+
+/// Scoped linear motion callbacks.
+fn scoped_linear_motion_callbacks(scope: LinearMotionScope) -> Q2CallbackDefinitions {
+    match scope {
+        LinearMotionScope::Foundation => linear_motion_callbacks(),
+        LinearMotionScope::Base => base_linear_motion_callbacks(),
+    }
+}
+
 /// Linear move destination (`Q2LinearMotion[destination]`).
-pub fn linear_move_destination(game: &mut Q2GameServices, actor: &ActorId) -> Option<Vec3> {
-    game.movers.linear_moves.get(actor).map(|state| state.destination)
+pub fn linear_move_destination(
+    game: &mut Q2GameServices,
+    scope: LinearMotionScope,
+    actor: &ActorId,
+) -> Option<Vec3> {
+    linear_moves(game, scope).get(actor).map(|state| state.destination)
 }
 
 /// Capture linear motion (`Q2LinearMotion[capture]`).
-pub fn capture_linear_motion(game: &mut Q2GameServices) -> Q2LinearMotionCheckpoint {
+pub fn capture_linear_motion(
+    game: &mut Q2GameServices,
+    scope: LinearMotionScope,
+) -> Q2LinearMotionCheckpoint {
     let mut entries = Vec::new();
     let actors: Vec<ActorId> = game.entities.keys().cloned().collect();
     for actor in actors {
-        let Some(state) = game.movers.linear_moves.get(&actor) else {
+        let Some(state) = linear_moves(game, scope).get(&actor) else {
             continue;
         };
         let state = state.clone();
@@ -128,15 +191,19 @@ pub fn capture_linear_motion(game: &mut Q2GameServices) -> Q2LinearMotionCheckpo
 }
 
 /// Restore linear motion (`Q2LinearMotion[restore]`).
-pub fn restore_linear_motion(game: &mut Q2GameServices, checkpoint: &Q2LinearMotionCheckpoint) {
-    game.movers.linear_moves = HashMap::new();
+pub fn restore_linear_motion(
+    game: &mut Q2GameServices,
+    scope: LinearMotionScope,
+    checkpoint: &Q2LinearMotionCheckpoint,
+) {
+    *linear_moves_mut(game, scope) = HashMap::new();
     for saved in checkpoint {
         let owned = restore_q2_actor(game, saved.actor.clone());
         let done = game.source_callbacks.resolve_think(Some(&saved.done));
         let Some(done) = done.filter(|_| game.entity(owned.id()).is_some()) else {
             panic!("Q2 linear move checkpoint has no actor or end function");
         };
-        game.movers.linear_moves.insert(
+        linear_moves_mut(game, scope).insert(
             owned.id().clone(),
             LinearMoveState {
                 direction: saved.direction,
@@ -157,11 +224,12 @@ pub fn restore_linear_motion(game: &mut Q2GameServices, checkpoint: &Q2LinearMot
 /// Move to a destination (`Q2LinearMotion[moveTo]`).
 pub fn linear_move_to(
     game: &mut Q2GameServices,
+    scope: LinearMotionScope,
     actor: ActorId,
     destination: Vec3,
     done: Q2Think,
 ) {
-    let callbacks = linear_motion_callbacks();
+    let callbacks = scoped_linear_motion_callbacks(scope);
     game.source_callbacks.register(&callbacks);
     let origin = game.body_of(actor.clone()).origin;
     let delta = sub3(destination, origin);
@@ -182,7 +250,7 @@ pub fn linear_move_to(
         done,
         curve: None,
     };
-    game.movers.linear_moves.insert(actor.clone(), state.clone());
+    linear_moves_mut(game, scope).insert(actor.clone(), state.clone());
     linear_move_velocity(game, &actor, vec3(0.0, 0.0, 0.0));
     let entity = game.require_entity(&actor);
     let (speed, accel, decel) = (entity.speed, entity.accel, entity.decel);
@@ -218,7 +286,7 @@ pub fn linear_move_to(
             subframe: 0,
             subframes,
         });
-        game.movers.linear_moves.insert(actor.clone(), state);
+        linear_moves_mut(game, scope).insert(actor.clone(), state);
         return game.schedule(actor, frame_seconds, linear_move_curve);
     }
     game.schedule(actor, frame_seconds, linear_move_accelerate);
@@ -226,7 +294,8 @@ pub fn linear_move_to(
 
 /// Active linear move state (`Q2LinearMotion[state]`).
 fn linear_move_state(game: &mut Q2GameServices, actor: &ActorId) -> LinearMoveState {
-    game.movers.linear_moves.get(actor).cloned().unwrap_or_else(|| {
+    let scope = linear_scope_for(game, actor);
+    linear_moves(game, scope).get(actor).cloned().unwrap_or_else(|| {
         panic!("Q2 mover callback has no active move");
     })
 }
@@ -244,7 +313,8 @@ fn linear_move_velocity(game: &mut Q2GameServices, actor: &ActorId, velocity: Ve
 fn linear_move_done(actor: ActorId, game: &mut Q2GameServices) {
     linear_move_velocity(game, &actor, vec3(0.0, 0.0, 0.0));
     let state = linear_move_state(game, &actor);
-    game.movers.linear_moves.remove(&actor);
+    let scope = linear_scope_for(game, &actor);
+    linear_moves_mut(game, scope).remove(&actor);
     (state.done)(actor, game);
 }
 
@@ -275,7 +345,8 @@ fn linear_move_begin(actor: ActorId, game: &mut Q2GameServices) {
     linear_move_velocity(game, &actor, scale3(state.direction, speed as f32));
     let frames = (state.remaining / speed / frame).floor();
     state.remaining -= frames * speed * frame;
-    game.movers.linear_moves.insert(actor.clone(), state);
+    let scope = linear_scope_for(game, &actor);
+    linear_moves_mut(game, scope).insert(actor.clone(), state);
     game.schedule(actor, frames * frame, linear_move_final);
 }
 
@@ -295,7 +366,8 @@ fn linear_move_accelerate(actor: ActorId, game: &mut Q2GameServices) {
     }
     accelerate(&mut state, speed, accel, decel);
     if state.remaining <= state.current_speed {
-        game.movers.linear_moves.insert(actor.clone(), state);
+        let scope = linear_scope_for(game, &actor);
+        linear_moves_mut(game, scope).insert(actor.clone(), state);
         return linear_move_final(actor, game);
     }
     let frame_seconds = game.host.frame_seconds();
@@ -304,7 +376,8 @@ fn linear_move_accelerate(actor: ActorId, game: &mut Q2GameServices) {
         &actor,
         scale3(state.direction, (state.current_speed / frame_seconds) as f32),
     );
-    game.movers.linear_moves.insert(actor.clone(), state);
+    let scope = linear_scope_for(game, &actor);
+    linear_moves_mut(game, scope).insert(actor.clone(), state);
     game.schedule(actor, frame_seconds, linear_move_accelerate);
 }
 
@@ -321,7 +394,8 @@ fn linear_move_curve(actor: ActorId, game: &mut Q2GameServices) {
     }
     if curve.frame == curve.positions.len() {
         state.curve = Some(curve);
-        game.movers.linear_moves.insert(actor.clone(), state);
+        let scope = linear_scope_for(game, &actor);
+        linear_moves_mut(game, scope).insert(actor.clone(), state);
         return linear_move_final(actor, game);
     }
     let distance: f64;
@@ -347,7 +421,8 @@ fn linear_move_curve(actor: ActorId, game: &mut Q2GameServices) {
     let origin = game.body_of(actor.clone()).origin;
     linear_move_velocity(game, &actor, scale3(sub3(target, origin), (1.0 / frame_seconds) as f32));
     state.curve = Some(curve);
-    game.movers.linear_moves.insert(actor.clone(), state);
+    let scope = linear_scope_for(game, &actor);
+    linear_moves_mut(game, scope).insert(actor.clone(), state);
     game.schedule(actor, frame_seconds, linear_move_curve);
 }
 

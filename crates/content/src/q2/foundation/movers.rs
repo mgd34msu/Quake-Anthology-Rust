@@ -19,7 +19,7 @@ use super::host::{
     Q2PresentationEvent, Q2Solid, Q2SoundEvent, Q2SoundLoop, Q2SpawnFn, SpawnModule,
 };
 use super::motion::{
-    Q2LinearMotionCheckpoint, capture_linear_motion, linear_motion_callbacks,
+    LinearMotionScope, Q2LinearMotionCheckpoint, capture_linear_motion, linear_motion_callbacks,
     linear_move_destination, linear_move_to, restore_linear_motion,
 };
 use crate::q2::support::contracts::{CombatTraitChanges, DeathReaction, TouchContact};
@@ -368,7 +368,7 @@ impl Q2MoverModule {
             }
             _ => false,
         };
-        Q2MoverTraversal { locked, destination: linear_move_destination(game, &this) }
+        Q2MoverTraversal { locked, destination: linear_move_destination(game, LinearMotionScope::Foundation, &this) }
     }
 
     /// Capture mover state (`capture`).
@@ -410,7 +410,7 @@ impl Q2MoverModule {
         Q2MoversCheckpoint {
             doors,
             trains,
-            linear: capture_linear_motion(game),
+            linear: capture_linear_motion(game, LinearMotionScope::Foundation),
             angular: capture_angular_motion(game),
         }
     }
@@ -462,7 +462,7 @@ impl Q2MoverModule {
                 },
             );
         }
-        restore_linear_motion(game, &checkpoint.linear);
+        restore_linear_motion(game, LinearMotionScope::Foundation, &checkpoint.linear);
         restore_angular_motion(game, &checkpoint.angular);
     }
 
@@ -471,7 +471,7 @@ impl Q2MoverModule {
         train_state_mut(game, &this).destination = Some(corner.clone());
         game.require_entity_mut(&this).spawnflags |= 1;
         let destination = train_destination(this.clone(), corner, game);
-        linear_move_to(game, this, destination, train_wait);
+        linear_move_to(game, LinearMotionScope::Foundation, this, destination, train_wait);
     }
 
     /// Train travel direction (`getTrainDirection`).
@@ -679,7 +679,7 @@ fn door_go_down(this: ActorId, game: &mut Q2GameServices) {
     if state.angular {
         angular_move_to(game, this.clone(), state.start, door_hit_bottom);
     } else {
-        linear_move_to(game, this.clone(), state.start, door_hit_bottom);
+        linear_move_to(game, LinearMotionScope::Foundation, this.clone(), state.start, door_hit_bottom);
     }
     if game.options.edition == Q2Edition::Rerelease
         && !state.button
@@ -742,7 +742,7 @@ fn door_up(this: ActorId, game: &mut Q2GameServices, activator: Option<ActorId>)
     if state.angular {
         angular_move_to(game, this.clone(), destination, door_hit_top);
     } else {
-        linear_move_to(game, this.clone(), destination, door_hit_top);
+        linear_move_to(game, LinearMotionScope::Foundation, this.clone(), destination, door_hit_top);
     }
     if !state.button {
         let authored = game.require_entity(&this).authored_target();
@@ -1269,7 +1269,7 @@ fn train_next(this: ActorId, game: &mut Q2GameServices) {
         game.require_entity_mut(&this).spawnflags |= 1;
         let destination = train_destination(this.clone(), target, game);
         let delta = sub3(destination, game.body_of(this.clone()).origin);
-        linear_move_to(game, this.clone(), destination, train_wait);
+        linear_move_to(game, LinearMotionScope::Foundation, this.clone(), destination, train_wait);
         if game.options.edition == Q2Edition::Rerelease
             && game.require_entity(&this).spawnflags & 8 != 0
         {
@@ -1285,7 +1285,7 @@ fn train_next(this: ActorId, game: &mut Q2GameServices) {
                 member_entity.decel = entity.decel;
                 game.set_motion_kind(member.clone(), Q2MotionKind::Push);
                 let origin = add3(game.body_of(member.clone()).origin, delta);
-                linear_move_to(game, member, origin, train_piece_wait);
+                linear_move_to(game, LinearMotionScope::Foundation, member, origin, train_piece_wait);
             }
         }
         return;
@@ -1635,7 +1635,7 @@ fn train_use(
         Some(destination) => {
             game.require_entity_mut(&this).spawnflags |= 1;
             let origin = train_destination(this.clone(), destination, game);
-            linear_move_to(game, this, origin, train_wait);
+            linear_move_to(game, LinearMotionScope::Foundation, this, origin, train_wait);
         }
     }
 }

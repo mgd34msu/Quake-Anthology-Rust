@@ -525,6 +525,7 @@ impl Q2GameServices {
         self.weapons.on_actor_released(id);
         self.movers.on_actor_released(id);
         self.items.on_actor_released(id);
+        self.base_entities.on_actor_released(id);
     }
 
     /// Resolve a weapon target (`weaponTarget`).
