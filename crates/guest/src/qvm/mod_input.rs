@@ -3,7 +3,8 @@
 //! Ports `src/compat/qvm/mod-input.ts`. Input/output declarations come from
 //! [`super::mod_actors`]; user-command records reuse [`super::game_input`].
 //! This file also owns the mod-client application and input-output mirrors
-//! shared with [`super::mod_clients`].
+//! shared with [`super::mod_clients`], including the multi-kind client
+//! command shape lowered by `q3CommandForControls`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -50,19 +51,28 @@ pub struct QvmModClientFrame {
     pub elapsed: QvmModTime,
 }
 
-/// Client command input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Client command input (mirror of the `UserCommand` protocol variants).
+#[derive(Debug, Clone, PartialEq)]
 pub struct QvmModClientCommand {
-    /// Command kind (`q3` for original commands).
+    /// Command kind (`q3`, `q2-classic`, `q2-rerelease`, `q1-netquake`,
+    /// `q1-quakeworld`, or another angles-carrying kind).
     pub kind: String,
     /// Buttons.
     pub buttons: i32,
+    /// Q3 server time in milliseconds.
+    pub server_time_ms: i32,
+    /// Q3 source angle words.
+    pub angle_words: [i32; 3],
+    /// Q2-classic angle shorts.
+    pub angle_shorts: [i32; 3],
+    /// Q1/generic view angles in degrees.
+    pub angles: Vec3,
     /// Forward move.
-    pub forward_move: i32,
+    pub forward_move: f64,
     /// Side move.
-    pub side_move: i32,
+    pub side_move: f64,
     /// Up move.
-    pub up_move: i32,
+    pub up_move: f64,
 }
 
 /// Client identity.
@@ -77,6 +87,8 @@ pub struct QvmModClientIdentity {
 pub struct ModClientApplication {
     /// Identity.
     pub identity: QvmModClientIdentity,
+    /// Application scope (`client-command` or `movement-slice`).
+    pub scope: String,
     /// Command.
     pub command: QvmModClientCommand,
     /// Frame.
@@ -791,12 +803,17 @@ mod tests {
     fn application(actor: &ActorId) -> ModClientApplication {
         ModClientApplication {
             identity: QvmModClientIdentity { actor: actor.clone() },
+            scope: "movement-slice".to_string(),
             command: QvmModClientCommand {
                 kind: "q3".to_string(),
                 buttons: 0,
-                forward_move: 0,
-                side_move: 0,
-                up_move: 0,
+                server_time_ms: 0,
+                angle_words: [0, 0, 0],
+                angle_shorts: [0, 0, 0],
+                angles: vec3(0.0, 0.0, 0.0),
+                forward_move: 0.0,
+                side_move: 0.0,
+                up_move: 0.0,
             },
             frame: QvmModClientFrame {
                 time: QvmModTime::Milliseconds(1000),
