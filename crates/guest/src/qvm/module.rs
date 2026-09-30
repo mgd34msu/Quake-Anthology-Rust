@@ -730,7 +730,7 @@ mod tests {
         let mut module = QvmModule::new(options(
             image(vec![
                 (O::OpEnter, QvmOperand::Word(16)),
-                (O::OpLocal, QvmOperand::Word(8)),
+                (O::OpLocal, QvmOperand::Word(24)),
                 (O::OpLoad4, QvmOperand::None),
                 (O::OpLeave, QvmOperand::Word(16)),
             ]),

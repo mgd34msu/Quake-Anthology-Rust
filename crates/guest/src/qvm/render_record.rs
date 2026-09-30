@@ -343,7 +343,7 @@ mod tests {
         let axes = [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)];
         write_qvm_orientation(&mut orientation, &vec3(5.0, 6.0, 7.0), &axes).unwrap();
         assert_eq!(read_f32(&orientation, 0), 5.0);
-        assert_eq!(read_f32(&orientation, 24), 1.0);
+        assert_eq!(read_f32(&orientation, 28), 1.0);
         let mut short = vec![0u8; 8];
         assert!(write_qvm_orientation(&mut short, &vec3(0.0, 0.0, 0.0), &axes).is_err());
     }
