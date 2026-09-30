@@ -10,6 +10,8 @@
 //! in `qa-net`; pair mutation stays in `qa-core`.
 
 pub mod demo;
+pub mod q2;
+pub mod q3;
 pub mod userinfo;
 pub mod versions;
 
