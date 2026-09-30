@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn parses_entities_with_escapes() {
         let parsed = parse_q2_entities(
-            "{\n\"classname\" \"light\"\n\"message\" \"a\\\\nb\\\\tc\\\\\"\n}\n{\n\"classname\" \"worldspawn\"\n}",
+            "{\n\"classname\" \"light\"\n\"message\" \"a\\nb\\tc\\\"\n}\n{\n\"classname\" \"worldspawn\"\n}",
             Q2Edition::Classic,
         );
         assert_eq!(parsed.len(), 2);

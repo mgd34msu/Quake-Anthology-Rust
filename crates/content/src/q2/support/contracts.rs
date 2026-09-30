@@ -800,6 +800,25 @@ pub enum TransitionIntent {
     },
 }
 
+impl TransitionIntent {
+    /// Travel to a campaign level.
+    pub fn campaign_level(
+        campaign: ProviderId,
+        map: String,
+        spawn_point: String,
+        gates: Vec<MissionGate>,
+        cause: Option<ActorId>,
+    ) -> Self {
+        TransitionIntent::CampaignLevel {
+            campaign,
+            map,
+            spawn_point,
+            gates,
+            cause,
+        }
+    }
+}
+
 /// Live actor observation (`ActorObservation`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActorObservation {

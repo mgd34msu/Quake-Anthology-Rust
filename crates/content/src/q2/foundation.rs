@@ -19,5 +19,6 @@ pub mod runtime;
 pub mod scenery;
 pub mod shadow_lights;
 pub mod start_items;
+pub mod targets;
 pub mod weapon_attachments;
 pub mod weapons;
