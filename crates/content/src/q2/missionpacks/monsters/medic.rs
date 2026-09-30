@@ -27,7 +27,6 @@ use crate::q2::foundation::monsters::ai::{
     angles_vectors, finish_dodge, health, monster_solid_mask, project_flash,
     target_distance, visible,
 };
-use crate::q2::foundation::monsters::muzzle::muzzle_offset;
 use crate::q2::foundation::monsters::perception::{default_check_attack, found_target};
 use crate::q2::foundation::monsters::types::{
     MonsterAttackState, MonsterContext, MonsterHandler, MonsterSpawner,
@@ -195,6 +194,9 @@ fn medic_abort(context: &mut MonsterContext, change_frame: bool, gib: bool, mark
 }
 
 /// Find dead (`findDead`).
+///
+/// The donor compares callback identity the same way.
+#[allow(unpredictable_function_pointer_comparisons)]
 fn medic_find_dead(context: &mut MonsterContext) -> Option<ActorId> {
     let actor = context.actor().clone();
     let origin = context.game.body_of(actor.clone()).origin;

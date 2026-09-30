@@ -27,6 +27,7 @@ pub mod soldierh;
 pub mod spawn;
 pub mod stalker;
 pub mod turret;
+pub mod widow;
 pub mod xatrix_variants;
 pub mod state;
 pub mod tables;
