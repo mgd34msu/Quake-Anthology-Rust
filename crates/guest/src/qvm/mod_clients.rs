@@ -16,10 +16,8 @@ use std::rc::Rc;
 use qa_core::identity::{ActorId, ClientId};
 
 use super::game_input::Q3UserCommand;
-use super::mod_actors::{QvmModClientInputBinding, QvmModClients, QvmModSourceCall};
-use super::mod_input::{
-    ModClientApplication, QvmModClientCommand, QvmModClientInputOutput, QvmModInputOutput, QvmModTime,
-};
+use super::mod_actors::{QvmModClientInputBinding, QvmModClients, QvmModInputOutput, QvmModSourceCall};
+use super::mod_input::{ModClientApplication, QvmModClientCommand, QvmModClientInputOutput, QvmModTime};
 use super::player_record::QvmPlayerState;
 use crate::error::GuestError;
 

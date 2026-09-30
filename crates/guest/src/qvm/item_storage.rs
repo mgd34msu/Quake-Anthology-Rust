@@ -10,19 +10,67 @@
 //! [`parse_qvm_mod_items`]).
 //!
 //! [`QvmModSourceCall`] and [`QvmModInputPointer`] come from
-//! [`super::mod_actors`] (which absorbs `qvm-mod-callbacks.ts`), and
-//! [`HeldWeaponDeclaration`] from [`super::mod_presentation`].
+//! [`super::mod_actors`] (which absorbs `qvm-mod-callbacks.ts`).
+//! [`HeldWeaponDeclaration`] is a local mirror of
+//! `src/contracts/held-weapon.ts` (model path, reference frame, grip
+//! transform, optional fallback/part); no values cross into other modules.
 //! Entries reuse [`qa_world::inventory::InventoryEntry`].
 
 use std::collections::HashSet;
 
+use qa_core::math::Vec3;
 use qa_world::combat::ItemId;
 use qa_world::inventory::{CountArithmetic, CountPolicy, InventoryEntry};
 
 use super::game_data::{namespaced_id, ProfileReader, QvmImage, QvmOpcode};
 use super::mod_actors::{QvmModInputPointer, QvmModInputPointerBase, QvmModSourceCall};
-use super::mod_presentation::HeldWeaponDeclaration;
 use crate::error::GuestError;
+
+/// Model grip transform (mirror of `ModelTransform` in `scene.ts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldWeaponGrip {
+    /// Grip origin.
+    pub origin: Vec3,
+    /// Grip axis.
+    pub axis: [Vec3; 3],
+    /// Grip scale.
+    pub scale: Vec3,
+}
+
+/// Held-weapon model (mirror of `HeldWeaponModel` in `held-weapon.ts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldWeaponModel {
+    /// Content digest, if pinned.
+    pub digest: Option<String>,
+    /// Model path.
+    pub path: String,
+    /// Reference frame.
+    pub reference_frame: i32,
+    /// Grip transform.
+    pub grip: HeldWeaponGrip,
+    /// Fallback model path.
+    pub fallback: Option<String>,
+    /// Optional part restriction (digests plus vertices).
+    pub part: Option<HeldWeaponPart>,
+}
+
+/// Held-weapon part restriction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldWeaponPart {
+    /// Part digests.
+    pub digests: Vec<String>,
+    /// Part vertices.
+    pub vertices: Vec<f64>,
+}
+
+/// Held-weapon presentation declaration (mirror of `held-weapon.ts`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeldWeaponDeclaration {
+    /// No held weapon.
+    None,
+    /// Held model.
+    Model(HeldWeaponModel),
+}
 
 /// Declared record field: record id plus byte offset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,7 +355,7 @@ pub enum QvmItemAdmission {
 }
 
 /// Mod item kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QvmModItemKind {
     /// Counter item.
     Counter,

@@ -2,11 +2,12 @@
 //!
 //! Provenance: `src/compat/qvm/cgame-body.ts`.
 //!
-//! [`QvmBodyPart`] and [`QvmSceneBodyMesh`] come from
-//! [`super::mod_presentation`] (which absorbs
-//! `src/contracts/qvm-mod-presentation.ts`); reference entities reuse
-//! [`super::render_record`]. The donor requires bytecode artifacts; mirror
-//! artifacts are always bytecode, so that check is vacuous here.
+//! [`QvmBodyPart`] comes from [`super::mod_presentation`] (which absorbs
+//! `src/contracts/qvm-mod-presentation.ts`); [`QvmSceneBodyMesh`] is a local
+//! mirror of the donor mesh declaration (no like-named donor export exists).
+//! Reference entities reuse [`super::render_record`]. The donor requires
+//! bytecode artifacts; mirror artifacts are always bytecode, so that check
+//! is vacuous here.
 //!
 //! Hook closures cannot fail, so unresolvable guest words proceed with the
 //! original call instead of unwinding across an interpreter boundary. Scope
@@ -21,9 +22,33 @@ use super::game_data::{
     qualify_qvm_body_calls, CallKind, QvmArtifact, QvmCgameImport, QvmFunctionCall, QvmHookFn, QvmHostCall, QvmModule,
     QvmOpcode, QvmRole, QVM_MAX_PRIVATE_ARGUMENT_WORDS,
 };
-use super::mod_presentation::{QvmBodyPart, QvmSceneBodyMesh};
+use super::mod_presentation::QvmBodyPart;
 use super::render_record::{read_qvm_ref_entity, QvmRefEntity, QvmRefEntityKind, QVM_REF_ENTITY_BYTES};
 use crate::error::GuestError;
+
+/// One qualified mesh call row: call site plus its body part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QvmSceneBodyMeshCall {
+    /// Mesh call site.
+    pub call: usize,
+    /// Body part submitted at the site.
+    pub part: QvmBodyPart,
+}
+
+/// Scene body mesh declaration: mesh entry plus its argument layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QvmSceneBodyMesh {
+    /// Mesh function entry.
+    pub entry: usize,
+    /// Argument word holding the entity pointer.
+    pub entity_argument: i32,
+    /// Argument word holding the state word.
+    pub state_argument: i32,
+    /// Shader field offset within the entity.
+    pub shader_offset: i32,
+    /// Explicit call rows, if any.
+    pub parts: Option<Vec<QvmSceneBodyMeshCall>>,
+}
 
 /// Reference-entity storage addressed by a body submission.
 #[derive(Debug, Clone, PartialEq, Eq)]

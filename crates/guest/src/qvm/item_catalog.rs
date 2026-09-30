@@ -190,7 +190,7 @@ pub fn read_qvm_item_records(
             range(offset, length);
         }
     };
-    let mut range = range.as_deref_mut();
+    let mut range: Option<&mut dyn FnMut(usize, usize)> = range.map(|range| &mut *range);
     let read_global = |address: usize, range: &mut Option<&mut dyn FnMut(usize, usize)>| -> Result<i32, GuestError> {
         if address % 4 != 0 || address + 4 > data.len() {
             return Err(GuestError::invalid("QVM item table locator exceeds module data"));

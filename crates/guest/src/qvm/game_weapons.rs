@@ -618,7 +618,7 @@ fn drop_call(state: &Rc<RefCell<QvmWeaponState>>, call: &mut QvmFunctionCall) ->
                     return Ok(());
                 };
                 let values = &run_state.borrow().profile.stage.selection.values;
-                if projection.weapon != 0 && !values.iter().any(|value| value.value == projection.weapon as i64) {
+                if projection.weapon != 0 && !values.iter().any(|value| value.value == projection.weapon) {
                     return Err(GuestError::invalid(
                         "Selected death drop has no original weapon or int32 ammo counter",
                     ));
