@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::combat::DamageFlags;
 use crate::q3::base::game::state::GameFlags;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::ServerEntityFlags;
@@ -156,7 +157,7 @@ pub fn world_effects(context: &dyn EffectsHost, entity: &EntityRef) {
                 entity.borrow_mut().pain_debounce_time = time.wrapping_add(200);
                 context
                     .combat()
-                    .damage(entity, None, None, None, None, damage, damage_flags::NO_ARMOR, 14);
+                    .damage(entity, None, None, None, None, damage, DamageFlags::NO_ARMOR, 14);
             }
         }
     } else {

@@ -548,22 +548,22 @@ impl ArenaRuntime {
         let inner = self.inner.clone();
         pool.callbacks.intern_think(
             "q3.team-arena.arenas.celebrateStart.think",
-            Rc::new(move |entity: &EntityRef| {
-                Self { inner: inner.clone() }.celebrate_stop(entity);
+            Rc::new(move |entity: EntityRef| {
+                Self { inner: inner.clone() }.celebrate_stop(&entity);
             }),
         );
         let inner = self.inner.clone();
         pool.callbacks.intern_think(
             "q3.team-arena.arenas.spawnPodium.think",
-            Rc::new(move |entity: &EntityRef| {
-                Self { inner: inner.clone() }.podium_placement_think(entity);
+            Rc::new(move |entity: EntityRef| {
+                Self { inner: inner.clone() }.podium_placement_think(&entity);
             }),
         );
         let inner = self.inner.clone();
         pool.callbacks.intern_think(
             "q3.team-arena.arenas.spawnModelsOnVictoryPads.think",
-            Rc::new(move |entity: &EntityRef| {
-                Self { inner: inner.clone() }.celebrate_start(entity);
+            Rc::new(move |entity: EntityRef| {
+                Self { inner: inner.clone() }.celebrate_start(&entity);
             }),
         );
     }

@@ -8,6 +8,7 @@ use std::rc::Rc;
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::format::{game_format, GameFormatArgument};
 use crate::q3::base::game::numeric::game_atoi;
+use crate::q3::base::game::save_module_values::Q3CvarSnapshot;
 use crate::q3::base::game::state::ConnectionState;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::team_arena::commands::*;
@@ -62,7 +63,7 @@ impl ServerCommandCvar {
 /// Server-command services (`GameServerCommandHost`).
 pub trait GameServerCommandHost {
     /// Read a VM cvar.
-    fn read_vm_cvar(&self, name: ServerCommandCvar) -> CvarSnapshot;
+    fn read_vm_cvar(&self, name: ServerCommandCvar) -> Q3CvarSnapshot;
     /// Print a line.
     fn print(&self, text: &str);
     /// Send a server command.

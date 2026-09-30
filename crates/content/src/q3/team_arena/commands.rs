@@ -2,6 +2,8 @@
 //!
 //! Donor provenance: `src/content/q3/team-arena/commands.ts`.
 
+use qa_core::cmd::Dialect;
+use qa_core::cvar::{set_info_value, InfoOptions, InfoTarget};
 use qa_core::identity::ActorId;
 use qa_core::math::vec3;
 use std::rc::Rc;
@@ -541,8 +543,10 @@ impl GameCommandRuntime {
         };
         let temporary = self.host.pool().spawn();
         temporary.borrow_mut().s.origin = entity.borrow().r.current_origin();
-        temporary.borrow_mut().set_classname(Some(item.class_name.clone()));
-        let disabled = game_atoi(&self.host.imports().get_cvar(&format!("disable_{}", item.class_name))).unwrap() != 0;
+        temporary.borrow_mut().set_classname(item.class_name.clone());
+        // Donor `${item.className}` renders a null class as "null".
+        let class_name = item.class_name.as_deref().unwrap_or("null");
+        let disabled = game_atoi(&self.host.imports().get_cvar(&format!("disable_{class_name}"))).unwrap() != 0;
         self.host
             .items()
             .spawn_item(&temporary, &item, &SpawnVariables::new(vec![]).unwrap(), disabled);
@@ -625,9 +629,21 @@ impl GameCommandRuntime {
                 game_atoi(&args.at(1, MAX_STRING_CHARS)).unwrap(),
             )],
         );
-        let updated = set_info_value(&userinfo, "teamtask", &task, 1024, &|text| {
-            self.host.imports().print(text);
-        });
+        let updated = set_info_value(
+            &userinfo,
+            "teamtask",
+            &task,
+            InfoOptions {
+                dialect: Dialect::Q3,
+                maximum_length: 1024,
+                target: InfoTarget::ClientUserinfo,
+                server_high_characters: false,
+            },
+            &mut |text| {
+                self.host.imports().print(text);
+            },
+        )
+        .expect("teamtask userinfo update must fit");
         self.host.imports().set_userinfo(entity.borrow().slot, &updated);
         self.host.admission_userinfo_changed(entity.borrow().slot);
     }

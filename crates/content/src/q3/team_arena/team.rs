@@ -11,6 +11,7 @@ use crate::q3::base::game::format::{game_format, game_format_bounded, GameFormat
 use crate::q3::base::game::state::{ConnectionState, GameFlags, MAX_CLIENTS};
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::world::{ActorTraceQuery, TraceShape, TraceSolidity};
 use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
@@ -281,39 +282,38 @@ impl TeamRuntime {
             last_team_location_time: Cell::new(0),
         });
         let regen_inner = inner.clone();
-        let obelisk_regen: ThinkCallback = Rc::new(move |entity: &EntityRef| {
+        let obelisk_regen: ThinkCallback = Rc::new(move |entity: EntityRef| {
             let runtime = TeamRuntime::wrap(regen_inner.clone());
-            runtime.run_obelisk_regen(entity);
+            runtime.run_obelisk_regen(&entity);
         });
         let respawn_inner = inner.clone();
-        let obelisk_respawn: ThinkCallback = Rc::new(move |entity: &EntityRef| {
+        let obelisk_respawn: ThinkCallback = Rc::new(move |entity: EntityRef| {
             let runtime = TeamRuntime::wrap(respawn_inner.clone());
-            runtime.run_obelisk_respawn(entity);
+            runtime.run_obelisk_respawn(&entity);
         });
         let die_inner = inner.clone();
         let obelisk_die: DieCallback = Rc::new(
-            move |entity: &EntityRef,
-                  inflictor: &DamageParticipant,
-                  attacker: &DamageParticipant,
+            move |entity: EntityRef,
+                  inflictor: DamageParticipant,
+                  attacker: DamageParticipant,
                   damage: i32,
                   method: i32| {
                 let runtime = TeamRuntime::wrap(die_inner.clone());
-                runtime.run_obelisk_die(entity, inflictor, attacker, damage, method);
+                runtime.run_obelisk_die(&entity, &inflictor, &attacker, damage, method);
             },
         );
         let touch_inner = inner.clone();
         let obelisk_touch: TouchCallback = Rc::new(
-            move |entity: &EntityRef, other: &DamageParticipant, contact: &TouchContact| {
+            move |entity: EntityRef, other: DamageParticipant, contact: TouchContact| {
                 let runtime = TeamRuntime::wrap(touch_inner.clone());
-                runtime.run_obelisk_touch(entity, other, contact);
+                runtime.run_obelisk_touch(&entity, &other, &contact);
             },
         );
         let pain_inner = inner.clone();
-        let obelisk_pain: PainCallback =
-            Rc::new(move |entity: &EntityRef, attacker: &DamageParticipant, amount: f32| {
-                let runtime = TeamRuntime::wrap(pain_inner.clone());
-                runtime.run_obelisk_pain(entity, attacker, amount);
-            });
+        let obelisk_pain: PainCallback = Rc::new(move |entity: EntityRef, attacker: DamageParticipant, amount: i32| {
+            let runtime = TeamRuntime::wrap(pain_inner.clone());
+            runtime.run_obelisk_pain(&entity, &attacker, amount);
+        });
         let runtime = Self {
             inner,
             obelisk_regen,
@@ -1401,8 +1401,8 @@ impl TeamRuntime {
         self.capture_flag_sound(Some(entity), obelisk_team);
     }
 
-    fn run_obelisk_pain(&self, entity: &EntityRef, attacker: &DamageParticipant, amount: f32) {
-        let actual = 1.max((amount / 10.0).trunc() as i32);
+    fn run_obelisk_pain(&self, entity: &EntityRef, attacker: &DamageParticipant, amount: i32) {
+        let actual = 1.max(amount / 10);
         let model = self.obelisk_model(entity);
         model.borrow_mut().s.modelindex2 =
             obelisk_health_fraction(entity.borrow().health, self.obelisk_settings().health);

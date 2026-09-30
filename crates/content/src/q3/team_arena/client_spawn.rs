@@ -897,9 +897,9 @@ impl ClientSpawnRuntime {
         let inner = self.inner.clone();
         self.inner.host.pool().callbacks.intern_think(
             "q3.team-arena.client-spawn.copyToBodyQueue.think",
-            Rc::new(move |entity: &EntityRef| {
+            Rc::new(move |entity: EntityRef| {
                 let runtime = ClientSpawnRuntime { inner: inner.clone() };
-                runtime.body_sink(entity);
+                runtime.body_sink(&entity);
             }),
         );
         self.inner
