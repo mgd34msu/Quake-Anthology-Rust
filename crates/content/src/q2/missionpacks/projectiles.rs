@@ -9,6 +9,7 @@ pub mod trap;
 use qa_core::identity::ActorId;
 
 use super::types::{Q2MissionPackPlayerEffect, Q2MissionPackProjectileHooks};
+use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::Q2GameServices;
 use crate::q2::foundation::monsters::types::MonsterContext;
 
@@ -55,4 +56,21 @@ pub fn mission_projectiles(game: &Q2GameServices) -> Q2MissionPackProjectiles {
     Q2MissionPackProjectiles {
         hooks: mission_hooks(game),
     }
+}
+
+/// Merged projectile callbacks (`Q2MissionPackProjectiles::callbacks`).
+///
+/// The donor chains bolt, mine, nuke, and trap classes through
+/// inheritance; the trap table wins on name collisions.
+pub fn mission_projectile_callbacks() -> Q2CallbackDefinitions {
+    let mut callbacks = bolts::bolt_callbacks();
+    for extra in [mines::mine_callbacks(), nuke::nuke_callbacks(), trap::trap_callbacks()] {
+        callbacks.think.extend(extra.think);
+        callbacks.touch.extend(extra.touch);
+        callbacks.die.extend(extra.die);
+        callbacks.use_.extend(extra.use_);
+        callbacks.pain.extend(extra.pain);
+        callbacks.blocked.extend(extra.blocked);
+    }
+    callbacks
 }
