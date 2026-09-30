@@ -495,7 +495,7 @@ mod tests {
         }
     }
 
-    fn declaration() -> ProfileValue {
+    fn make_declaration() -> ProfileValue {
         ProfileValue::record(vec![
             ("hud", ProfileValue::Int(0)),
             (
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn equipment_presentation_reads_regions() {
-        let declaration = declaration();
+        let declaration = make_declaration();
         let artifact = fixture_artifact();
         let section = CompatibilityEquipment {
             profile: "q3-modern",
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(profile.hud, 0);
         assert_eq!(profile.held.gun, 8);
         assert!(matches!(profile.status, PresentationStatus::Regions { .. }));
-        let mut duplicated = declaration();
+        let mut duplicated = make_declaration();
         if let ProfileValue::Record(fields) = &mut duplicated {
             for (name, value) in fields.iter_mut() {
                 if name == "warning" {
@@ -599,7 +599,7 @@ mod tests {
             .is_none());
         let mut gameplay = fixture_artifact();
         gameplay.role = QvmRole::Qagame;
-        let declaration = declaration();
+        let declaration = make_declaration();
         let section = CompatibilityEquipment {
             profile: "q3-modern",
             reader: ProfileReader::new(&declaration),

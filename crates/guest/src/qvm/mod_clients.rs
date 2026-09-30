@@ -955,7 +955,7 @@ mod tests {
         }
     }
 
-    fn fixture(maximum: usize) -> Fixture {
+    fn make_fixture(maximum: usize) -> Fixture {
         let owner = IdentityOwner::create("mod-clients-test").unwrap();
         let first = owner.actor(0, 1);
         let second = owner.actor(1, 1);
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn start_admits_and_routes_events() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         assert!(fixture.bindings.admitted(&fixture.first));
         assert_eq!(fixture.bindings.slot(&fixture.first).unwrap(), Some(0));
@@ -1039,7 +1039,7 @@ mod tests {
 
     #[test]
     fn slot_capacity_and_reserved() {
-        let fixture = fixture(1);
+        let fixture = make_fixture(1);
         fixture.bindings.start().unwrap();
         let owner = IdentityOwner::create("mod-clients-extra").unwrap();
         let extra = owner.actor(2, 1);
@@ -1053,7 +1053,7 @@ mod tests {
         assert!(emit(&fixture, QvmModClientEventKind::Admitted, &extra).is_err());
         assert!(fixture.bindings.slot(&extra).is_err());
 
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.operations.reserved.borrow_mut().push(0);
         fixture.bindings.start().unwrap();
         assert_eq!(fixture.bindings.slot(&fixture.first).unwrap(), Some(1));
@@ -1061,7 +1061,7 @@ mod tests {
 
     #[test]
     fn live_tracks_identity() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         assert!(fixture.bindings.live(&fixture.first));
         let owner = IdentityOwner::create("mod-clients-rotate").unwrap();
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[test]
     fn frame_runs_in_slot_order_and_breaks() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         let seen = Rc::new(RefCell::new(Vec::new()));
         let seen_hook = Rc::clone(&seen);
@@ -1106,7 +1106,7 @@ mod tests {
 
     #[test]
     fn players_checkpoint_restore_forget() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         assert_eq!(
             fixture.bindings.players().unwrap(),
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn userinfo_and_commands() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         assert_eq!(fixture.bindings.get_userinfo(0).unwrap(), "name=a");
         assert_eq!(fixture.bindings.get_userinfo(99).unwrap(), "");
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn user_command_application_path() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         let handlers = fixture.services.handlers.borrow().clone().unwrap();
         let application = application(&fixture.first);
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn user_command_accepted_path() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         let client = fixture.services.for_actor(&fixture.first).unwrap();
         fixture.services.commands.borrow_mut().insert(
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn user_command_requires_accepted() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         assert!(fixture.bindings.get_user_command(0).is_err());
         assert!(fixture.bindings.get_user_command(99).is_err());
@@ -1261,7 +1261,7 @@ mod tests {
 
     #[test]
     fn close_unsubscribes() {
-        let fixture = fixture(2);
+        let fixture = make_fixture(2);
         fixture.bindings.start().unwrap();
         fixture.bindings.close();
         assert!(fixture.services.unsubscribed.get());

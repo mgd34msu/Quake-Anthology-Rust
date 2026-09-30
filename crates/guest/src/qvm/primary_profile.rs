@@ -511,7 +511,7 @@ mod tests {
     ) -> Result<(), GuestError> {
         let root = ProfileValue::record(Vec::new());
         let reader = ProfileReader::new(&root);
-        check_qvm_primary_consistency(reader, parts.0, parts.1, parts.2, parts.3, parts.4, parts.5)
+        check_qvm_primary_consistency(&reader, parts.0, parts.1, parts.2, parts.3, parts.4, parts.5)
     }
 
     #[test]

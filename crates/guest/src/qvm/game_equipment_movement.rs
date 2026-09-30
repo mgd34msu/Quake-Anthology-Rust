@@ -736,7 +736,7 @@ mod tests {
             },
             QvmEquipmentServices {
                 actor: Rc::new(move |slot| (slot == 0).then(|| found.clone())),
-                live: Rc::new(move |_| !gone.borrow()),
+                live: Rc::new(move |_| !*gone.borrow()),
                 equipment: Rc::new(move |_| moved.borrow().clone()),
             },
         )

@@ -629,10 +629,11 @@ mod tests {
         let (scopes, memory, actor) = fixture();
         memory.write_i32(64 + 520, 100).unwrap();
         memory.write_vec3(4096 + 32, &vec3(0.0, 0.0, 0.0)).unwrap();
-        let observer: SharedDamageObserver = Rc::new(RefCell::new(FixtureObserver {
+        let concrete = Rc::new(RefCell::new(FixtureObserver {
             stored: Vec::new(),
             reactions: Vec::new(),
         }));
+        let observer: SharedDamageObserver = Rc::clone(&concrete);
         let mut call = QvmFunctionCall::entered(3, vec![64], memory.clone());
         let writer = memory.clone();
         let outcome = scopes
@@ -650,7 +651,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome.applied_damage, 25);
-        let stored = &observer.borrow().stored;
+        let stored = concrete.borrow().stored.clone();
         assert_eq!(stored.len(), 2);
         assert!(matches!(stored[0], QvmStoredDamage::SourceVelocity { .. }));
         assert!(matches!(stored[1], QvmStoredDamage::Health { before: 100, after: 75 }));
@@ -661,10 +662,11 @@ mod tests {
     fn current_selects_innermost_matching_frame() {
         let (scopes, memory, actor) = fixture();
         assert!(scopes.current(64).is_none());
-        let observer: SharedDamageObserver = Rc::new(RefCell::new(FixtureObserver {
+        let concrete = Rc::new(RefCell::new(FixtureObserver {
             stored: Vec::new(),
             reactions: Vec::new(),
         }));
+        let observer: SharedDamageObserver = Rc::clone(&concrete);
         let mut call = QvmFunctionCall::entered(3, vec![64], memory.clone());
         let probe = scopes.clone();
         let expected = actor.clone();
@@ -693,10 +695,11 @@ mod tests {
     fn pain_reaction_reports_and_cancels_dead_actors() {
         let (scopes, memory, actor) = fixture();
         memory.write_i32(64 + 532, 11).unwrap();
-        let observer: SharedDamageObserver = Rc::new(RefCell::new(FixtureObserver {
+        let concrete = Rc::new(RefCell::new(FixtureObserver {
             stored: Vec::new(),
             reactions: Vec::new(),
         }));
+        let observer: SharedDamageObserver = Rc::clone(&concrete);
         let mut call = QvmFunctionCall::entered(3, vec![64], memory.clone());
         let module = scopes.options.module.clone();
         let frame_seen = Rc::new(RefCell::new(None));
@@ -718,7 +721,7 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.reaction, QvmDamageReaction::Pain);
         assert_eq!(outcome.applied_damage, 30);
-        assert_eq!(observer.borrow().reactions.len(), 1);
+        assert_eq!(concrete.borrow().reactions.len(), 1);
         assert!(!frame_hook.borrow().as_ref().unwrap().is_cancelled());
     }
 

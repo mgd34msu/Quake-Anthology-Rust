@@ -818,7 +818,7 @@ mod tests {
         }
     }
 
-    fn offer(fixture: &Fixture) -> (QvmOriginalPickupOffer, QvmOriginalPickupExecution) {
+    fn make_offer(fixture: &Fixture) -> (QvmOriginalPickupOffer, QvmOriginalPickupExecution) {
         (
             QvmOriginalPickupOffer {
                 recipient: fixture.recipient.clone(),
@@ -906,7 +906,7 @@ mod tests {
         assert!(fixture.pickups.is_active());
         assert_eq!(fixture.services.bound.borrow().len(), 1);
 
-        let (offer, execution) = offer(&fixture);
+        let (offer, execution) = make_offer(&fixture);
         let rules = fixture.services.bound.borrow()[0].rules.clone();
         assert_eq!(rules.len(), 1);
         let decision = (rules[0].take)(&offer, &execution).unwrap();
@@ -939,7 +939,7 @@ mod tests {
             .protection(&fixture.recipient, QvmProtectionChannel::Regular)
             .is_empty());
 
-        let (mut offer, execution) = offer(&fixture);
+        let (mut offer, execution) = make_offer(&fixture);
         offer.count = QvmPickupCount::Default;
         let decision = (rules[0].take)(&offer, &execution).unwrap();
         assert_eq!(decision, QvmPickupDecision::Accepted);
@@ -954,7 +954,7 @@ mod tests {
     fn gates_and_grants_decide() {
         let fixture = fixture();
         fixture.pickups.activate().unwrap();
-        let (offer, execution) = offer(&fixture);
+        let (offer, execution) = make_offer(&fixture);
         let rules = fixture.services.bound.borrow()[0].rules.clone();
 
         fixture.operations.gate.set(0);
@@ -969,19 +969,19 @@ mod tests {
     fn stale_takes_fail() {
         let fixture = fixture();
         fixture.pickups.activate().unwrap();
-        let (mut offer, execution) = offer(&fixture);
+        let (mut offer, execution) = make_offer(&fixture);
         let rules = fixture.services.bound.borrow()[0].rules.clone();
         offer.item = "nails".to_string();
         assert!((rules[0].take)(&offer, &execution).is_err());
 
-        let (offer, _) = offer(&fixture);
+        let (offer, _) = make_offer(&fixture);
         let dead = QvmOriginalPickupExecution {
             current: Rc::new(|| false),
         };
         assert!((rules[0].take)(&offer, &dead).is_err());
 
         fixture.services.live.set(false);
-        let (offer, execution) = offer(&fixture);
+        let (offer, execution) = make_offer(&fixture);
         assert!((rules[0].take)(&offer, &execution).is_err());
     }
 

@@ -471,7 +471,7 @@ mod tests {
         services: Rc<RefCell<FakeServices>>,
     }
 
-    fn harness(role: QvmRole, trap: i32, args: &[i32]) -> Harness {
+    fn make_harness(role: QvmRole, trap: i32, args: &[i32]) -> Harness {
         let vm = QvmInterpreter::new(
             &image(trap_program(trap, args)),
             QvmAllocationProfile::Unaccounted,
@@ -500,15 +500,15 @@ mod tests {
 
     #[test]
     fn print_milliseconds_and_argv() {
-        let mut harness = harness(QvmRole::Qagame, 0, &[64]);
+        let mut harness = make_harness(QvmRole::Qagame, 0, &[64]);
         harness.vm.memory().write_bytes(64, b"hello\0").unwrap();
         assert_eq!(run(&mut harness, QvmRole::Qagame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().printed, vec!["hello".to_string()]);
 
-        let mut harness = harness(QvmRole::Qagame, 2, &[]);
+        let mut harness = make_harness(QvmRole::Qagame, 2, &[]);
         assert_eq!(run(&mut harness, QvmRole::Qagame, None).unwrap(), 4242);
 
-        let mut harness = harness(QvmRole::Qagame, 8, &[]);
+        let mut harness = make_harness(QvmRole::Qagame, 8, &[]);
         assert_eq!(
             run(
                 &mut harness,
@@ -518,7 +518,7 @@ mod tests {
             .unwrap(),
             2
         );
-        let mut harness = harness(QvmRole::Qagame, 9, &[1, 96, 16]);
+        let mut harness = make_harness(QvmRole::Qagame, 9, &[1, 96, 16]);
         assert_eq!(
             run(
                 &mut harness,
@@ -533,12 +533,12 @@ mod tests {
 
     #[test]
     fn errors_drop_and_bad_exec_when_is_fatal() {
-        let mut harness = harness(QvmRole::Ui, 0, &[64]);
+        let mut harness = make_harness(QvmRole::Ui, 0, &[64]);
         harness.vm.memory().write_bytes(64, b"boom\0").unwrap();
         let error = run(&mut harness, QvmRole::Ui, None).unwrap_err();
         assert_eq!(error.to_string(), "drop: boom");
 
-        let mut harness = harness(QvmRole::Ui, 12, &[9, 64]);
+        let mut harness = make_harness(QvmRole::Ui, 12, &[9, 64]);
         let error = run(&mut harness, QvmRole::Ui, None).unwrap_err();
         assert_eq!(error.to_string(), "fatal: Cbuf_ExecuteText: bad exec_when");
     }
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn execute_text_routes_by_when() {
         for (when, expected) in [(0, "now"), (1, "front"), (2, "back")] {
-            let mut harness = harness(QvmRole::Qagame, 14, &[when, 64]);
+            let mut harness = make_harness(QvmRole::Qagame, 14, &[when, 64]);
             harness.vm.memory().write_bytes(64, b"say hi\0").unwrap();
             assert_eq!(run(&mut harness, QvmRole::Qagame, None).unwrap(), 0);
             let services = harness.services.borrow();
@@ -557,14 +557,14 @@ mod tests {
             }
         }
         // Null pointer with when=0 runs the current buffer.
-        let mut harness = harness(QvmRole::Qagame, 14, &[0, 0]);
+        let mut harness = make_harness(QvmRole::Qagame, 14, &[0, 0]);
         assert_eq!(run(&mut harness, QvmRole::Qagame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().executed, vec![None]);
     }
 
     #[test]
     fn cgame_commands_and_args() {
-        let mut harness = harness(QvmRole::Cgame, 9, &[96, 32]);
+        let mut harness = make_harness(QvmRole::Cgame, 9, &[96, 32]);
         assert_eq!(
             run(
                 &mut harness,
@@ -576,22 +576,22 @@ mod tests {
         );
         assert_eq!(harness.vm.memory().read_string(96).unwrap(), "a b");
 
-        let mut harness = harness(QvmRole::Cgame, 14, &[64]);
+        let mut harness = make_harness(QvmRole::Cgame, 14, &[64]);
         harness.vm.memory().write_bytes(64, b"kill\0").unwrap();
         assert_eq!(run(&mut harness, QvmRole::Cgame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().appended, vec!["kill".to_string()]);
 
-        let mut harness = harness(QvmRole::Cgame, 15, &[64]);
+        let mut harness = make_harness(QvmRole::Cgame, 15, &[64]);
         harness.vm.memory().write_bytes(64, b"+attack\0").unwrap();
         assert_eq!(run(&mut harness, QvmRole::Cgame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().registered, vec!["+attack".to_string()]);
 
-        let mut harness = harness(QvmRole::Cgame, 16, &[64]);
+        let mut harness = make_harness(QvmRole::Cgame, 16, &[64]);
         harness.vm.memory().write_bytes(64, b"say x\0").unwrap();
         assert_eq!(run(&mut harness, QvmRole::Cgame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().reliable, vec!["say x".to_string()]);
 
-        let mut harness = harness(QvmRole::Cgame, 72, &[64]);
+        let mut harness = make_harness(QvmRole::Cgame, 72, &[64]);
         harness.vm.memory().write_bytes(64, b"+attack\0").unwrap();
         assert_eq!(run(&mut harness, QvmRole::Cgame, None).unwrap(), 0);
         assert_eq!(harness.services.borrow().removed, vec!["+attack".to_string()]);
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn real_time_writes_the_calendar() {
-        let mut harness = harness(QvmRole::Qagame, 41, &[128]);
+        let mut harness = make_harness(QvmRole::Qagame, 41, &[128]);
         harness.services.borrow_mut().realtime = Some(QvmCalendar {
             second: 1,
             minute: 2,
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(memory.get_i32(128).unwrap(), 1);
         assert_eq!(memory.get_i32(128 + 20).unwrap(), 2026);
 
-        let mut harness = harness(QvmRole::Qagame, 41, &[0]);
+        let mut harness = make_harness(QvmRole::Qagame, 41, &[0]);
         assert_eq!(run(&mut harness, QvmRole::Qagame, None).unwrap(), 99);
     }
 }

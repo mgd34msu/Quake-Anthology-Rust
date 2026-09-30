@@ -823,7 +823,7 @@ mod tests {
         }
     }
 
-    fn fixture(outputs: Vec<QvmModInputOutput>) -> (Fixture, ActorId) {
+    fn make_fixture(outputs: Vec<QvmModInputOutput>) -> (Fixture, ActorId) {
         let owner = IdentityOwner::create("mod-input-test").unwrap();
         let actor = owner.actor(0, 1);
         let mut image = QvmImage::default();
@@ -875,14 +875,14 @@ mod tests {
 
     #[test]
     fn constructor_validates_outputs() {
-        assert!(fixture(Vec::new()).0.input.take_error().is_none());
+        assert!(make_fixture(Vec::new()).0.input.take_error().is_none());
 
         let field = QvmModInputOutput::Field {
             record: "missing".to_string(),
             offset: 0,
             value: QvmInputFieldValue::ViewAngles,
         };
-        let module = fixture(Vec::new()).0.module.clone();
+        let module = make_fixture(Vec::new()).0.module.clone();
         let operations: Rc<dyn QvmModInputOperations> = Rc::new(FixtureOperations {
             live: Rc::new(Cell::new(true)),
             state: read_qvm_player_state(
@@ -976,7 +976,7 @@ mod tests {
 
     #[test]
     fn output_captures_field_changes() {
-        let (fixture, actor) = fixture(Vec::new());
+        let (fixture, actor) = make_fixture(Vec::new());
         let _close = fixture.input.open(&fixture.application).unwrap();
         let changes = fixture
             .input
@@ -1016,7 +1016,7 @@ mod tests {
             inputs: vec![QvmModClientInput::Attack],
             returns: None,
         };
-        let (fixture, _) = fixture(vec![handler.clone()]);
+        let (fixture, _) = make_fixture(vec![handler.clone()]);
         let _close = fixture.input.open(&fixture.application).unwrap();
         let changes = fixture
             .input
@@ -1045,7 +1045,7 @@ mod tests {
                 value: 5.0,
             }),
         };
-        let (fixture, _) = fixture(vec![gated.clone()]);
+        let (fixture, _) = make_fixture(vec![gated.clone()]);
         let _close = fixture.input.open(&fixture.application).unwrap();
         let changes = fixture
             .input
@@ -1058,7 +1058,7 @@ mod tests {
 
     #[test]
     fn command_observes_user_command_edits() {
-        let (fixture, _) = fixture(vec![command_output()]);
+        let (fixture, _) = make_fixture(vec![command_output()]);
         let _close = fixture.input.open(&fixture.application).unwrap();
         let changes = fixture
             .input
@@ -1123,7 +1123,7 @@ mod tests {
             inputs: vec![QvmModClientInput::Attack],
             returns: None,
         };
-        let (fixture, _) = fixture(vec![handler.clone()]);
+        let (fixture, _) = make_fixture(vec![handler.clone()]);
         let _close = fixture.input.open(&fixture.application).unwrap();
         fixture
             .input
@@ -1136,7 +1136,7 @@ mod tests {
 
     #[test]
     fn applications_open_and_close() {
-        let (fixture, _) = fixture(Vec::new());
+        let (fixture, _) = make_fixture(Vec::new());
         let close = fixture.input.open(&fixture.application).unwrap();
         assert_eq!(fixture.input.applications.borrow().len(), 1);
         fixture.live.set(false);

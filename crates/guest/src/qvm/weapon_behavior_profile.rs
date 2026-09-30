@@ -501,7 +501,7 @@ mod tests {
     fn reads_a_valid_profile() {
         let profile = profile();
         let declaration = qvm_weapon_profile_declaration(&profile, QvmAbi::Modern).expect("declare");
-        let read = read_qvm_weapon_profile(&ProfileReader::new(&declaration), &artifact()).expect("read");
+        let read = read_qvm_weapon_profile(&declaration, &artifact()).expect("read");
         assert_eq!(read.definition.id, "qvm:rocket");
         assert_eq!(read.layout.entity_stride, 1024);
         assert_eq!(read.layout.fields.health, 612);
@@ -543,11 +543,11 @@ mod tests {
         let mut bad_id = profile();
         bad_id.definition.id = "qvm:Bad-Id!".to_string();
         let declaration = qvm_weapon_profile_declaration(&bad_id, QvmAbi::Modern).expect("declare");
-        assert!(read_qvm_weapon_profile(&ProfileReader::new(&declaration), &artifact()).is_err());
+        assert!(read_qvm_weapon_profile(&declaration, &artifact()).is_err());
         let mut bad_entry = artifact();
         bad_entry.image.instructions[2] = QvmInstruction::word(QvmOpcode::OpConst, 0);
         let declaration = qvm_weapon_profile_declaration(&profile(), QvmAbi::Modern).expect("declare");
-        assert!(read_qvm_weapon_profile(&ProfileReader::new(&declaration), &bad_entry).is_err());
+        assert!(read_qvm_weapon_profile(&declaration, &bad_entry).is_err());
     }
 
     #[test]

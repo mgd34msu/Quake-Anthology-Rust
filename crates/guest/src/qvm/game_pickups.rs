@@ -1705,7 +1705,7 @@ mod tests {
         artifact: QvmArtifact,
         profile: QvmPickupProfile,
         actors: HashSet<ActorId>,
-        owned: HashSet<OwnedActor>,
+        owned: Vec<OwnedActor>,
         dead: Rc<RefCell<HashSet<ActorId>>>,
         offers: Rc<RefCell<Vec<QvmOriginalPickupOffer>>>,
         selection: Rc<RefCell<QvmPickupSelection>>,
@@ -1777,11 +1777,11 @@ mod tests {
         let owner = IdentityOwner::create("pickup-test").unwrap();
         let provider = ProviderId::new("test", "provider");
         let mut actors = HashSet::new();
-        let mut owned = HashSet::new();
+        let mut owned = Vec::new();
         for slot in 0..4u32 {
             let id = owner.actor(slot, 1);
             actors.insert(id.clone());
-            owned.insert(owner.owned_actor(&id, provider.clone()).unwrap());
+            owned.push(owner.owned_actor(&id, provider.clone()).unwrap());
         }
         let mut image = QvmImage::default();
         image.instructions = instructions();
@@ -2008,7 +2008,10 @@ mod tests {
     }
 
     fn error_text(result: Result<QvmPrimaryPickups, GuestError>) -> String {
-        format!("{:?}", result.unwrap_err())
+        match result {
+            Ok(_) => String::from("<ok>"),
+            Err(error) => format!("{error:?}"),
+        }
     }
 
     #[test]
@@ -2242,13 +2245,14 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
         let memory = fixture.memory();
+        let watched = memory.clone();
         let watch = memory.observe_writes(
             vec![QvmWriteRange {
                 byte_offset: bits,
                 byte_length: 4,
             }],
             Rc::new(move |_| {
-                recorded.borrow_mut().push(memory.read_i32(bits).unwrap_or(-1));
+                recorded.borrow_mut().push(watched.read_i32(bits).unwrap_or(-1));
             }),
             None,
         );
