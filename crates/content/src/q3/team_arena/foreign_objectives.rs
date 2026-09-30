@@ -6,7 +6,7 @@ use crate::bsp::{parse_q1_entities, q1_entity_value, Q1Entity};
 use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::shared::definitions::*;
 use crate::q3::team_arena::objective_placement::*;
 
 // ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ pub fn adapt_foreign_q3_objectives(
     }
     let mut translated = 0usize;
     let mut entities: Vec<Q1Entity> = Vec::new();
-    let obelisks = game_type == game_type::OBELISK || game_type == game_type::HARVESTER;
+    let obelisks = game_type == GameType::GtObelisk as i32 || game_type == GameType::GtHarvester as i32;
     let red_objective = if obelisks {
         "team_redobelisk"
     } else {

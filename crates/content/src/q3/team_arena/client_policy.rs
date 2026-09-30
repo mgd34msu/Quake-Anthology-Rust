@@ -3,8 +3,11 @@
 //! Donor provenance: `src/content/q3/team-arena/client-policy.ts`.
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::game::state::{ConnectionState, SpectatorState};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::player_state::{CommandButtons, MoveFlags, UserCommand};
 use crate::q3::team_arena::movement_host::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // client-policy.ts
@@ -61,11 +64,11 @@ pub(crate) fn policy_client_number(host: &dyn ClientPolicyHost, client: &ClientR
 /// Move a spectator client (`spectatorThink`).
 pub fn spectator_think(host: &dyn ClientPolicyHost, entity: &EntityRef, command: &UserCommand) {
     let client = policy_client_of(entity);
-    let follows = client.borrow().sess.spectator_state == spectator_state::FOLLOW;
+    let follows = client.borrow().sess.spectator_state == SpectatorState::Follow as i32;
     if !follows {
         {
             let mut record = client.borrow_mut();
-            record.ps.pm_type = move_type::SPECTATOR;
+            record.ps.pm_type = MoveType::PmSpectator as i32;
             record.ps.speed = 400;
         }
         let movement_command = *command;
@@ -89,7 +92,7 @@ pub fn spectator_think(host: &dyn ClientPolicyHost, entity: &EntityRef, command:
     record.old_buttons = record.buttons;
     record.buttons = command.buttons;
     let pressed_attack =
-        record.buttons & command_buttons::ATTACK != 0 && record.old_buttons & command_buttons::ATTACK == 0;
+        record.buttons & CommandButtons::Attack as i32 != 0 && record.old_buttons & CommandButtons::Attack as i32 == 0;
     drop(record);
     if pressed_attack {
         host.follow_cycle(entity, 1);
@@ -103,7 +106,7 @@ pub fn spectator_client_end_frame(host: &dyn ClientPolicyHost, entity: &EntityRe
         let record = client.borrow();
         (record.sess.spectator_state, record.sess.spectator_client)
     };
-    if state == spectator_state::FOLLOW {
+    if state == SpectatorState::Follow as i32 {
         let mut number = spectate;
         if number == -1 {
             number = host.follow1();
@@ -113,31 +116,31 @@ pub fn spectator_client_end_frame(host: &dyn ClientPolicyHost, entity: &EntityRe
         if number >= 0 {
             let followed = host.pool().client_at(number as usize);
             let record = followed.borrow();
-            let eligible =
-                record.pers.connected == connection_state::CONNECTED && record.sess.session_team != team::SPECTATOR;
+            let eligible = record.pers.connected == ConnectionState::Connected as i32
+                && record.sess.session_team != Team::TeamSpectator as i32;
             if eligible {
                 let flags = (record.ps.e_flags & !POLICY_VOTE_FLAGS) | (client.borrow().ps.e_flags & POLICY_VOTE_FLAGS);
                 let source = record.ps.clone();
                 drop(record);
                 let mut target = client.borrow_mut();
                 target.ps.copy_from(&source, AuthorityCopy::PreserveAuthority);
-                target.ps.pm_flags |= move_flags::FOLLOW;
+                target.ps.pm_flags |= MoveFlags::Follow as i32;
                 target.ps.e_flags = flags;
                 return;
             }
             drop(record);
             if client.borrow().sess.spectator_client >= 0 {
-                client.borrow_mut().sess.spectator_state = spectator_state::FREE;
+                client.borrow_mut().sess.spectator_state = SpectatorState::Free as i32;
                 let number = policy_client_number(host, &client);
                 host.client_begin(number);
             }
         }
     }
     let mut record = client.borrow_mut();
-    if record.sess.spectator_state == spectator_state::SCOREBOARD {
-        record.ps.pm_flags |= move_flags::SCOREBOARD;
+    if record.sess.spectator_state == SpectatorState::Scoreboard as i32 {
+        record.ps.pm_flags |= MoveFlags::Scoreboard as i32;
     } else {
-        record.ps.pm_flags &= !move_flags::SCOREBOARD;
+        record.ps.pm_flags &= !(MoveFlags::Scoreboard as i32);
     }
 }
 
@@ -151,7 +154,7 @@ pub fn client_inactivity_timer(host: &dyn ClientPolicyHost, client: &ClientRef) 
     } else if command.forwardmove != 0
         || command.rightmove != 0
         || command.upmove != 0
-        || command.buttons & command_buttons::ATTACK != 0
+        || command.buttons & CommandButtons::Attack as i32 != 0
     {
         let mut record = client.borrow_mut();
         record.inactivity_time = host.time().wrapping_add(host.inactivity_seconds().wrapping_mul(1000));
@@ -184,7 +187,7 @@ pub fn client_intermission_think(client: &ClientRef) {
     record.old_buttons = record.buttons;
     record.buttons = record.pers.cmd.buttons;
     if record.buttons
-        & (command_buttons::ATTACK | command_buttons::USE_HOLDABLE)
+        & (CommandButtons::Attack as i32 | CommandButtons::UseHoldable as i32)
         & (record.old_buttons ^ record.buttons)
         != 0
     {

@@ -9,10 +9,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
+use crate::q3::base::game::numeric::game_atoi;
+use crate::q3::base::game::spawn::SpawnVariables;
+use crate::q3::base::game::state::{GameFlags, TeamState, MAX_GENTITIES};
+use crate::q3::base::shared::definitions::*;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::{MoveFlags, PlayerAnimation, UserCommand};
+use crate::q3::base::shared::trajectory::TrajectoryType;
 use crate::q3::team_arena::client_effects::*;
 use crate::q3::team_arena::client_events::*;
 use crate::q3::team_arena::client_think::*;
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::team_arena::support::*;
 
 // ---------------------------------------------------------------------------
 // client-spawn.ts
@@ -117,11 +124,11 @@ pub(crate) fn spawn_client_of(entity: &EntityRef) -> ClientRef {
 
 /// Deathmatch spawn-point keys (`spawnDeathmatchPoint`).
 pub fn spawn_deathmatch_point(entity: &EntityRef, variables: &SpawnVariables) {
-    if variables.int("nobots", "0").value != 0 {
-        entity.borrow_mut().flags |= game_flags::NO_BOTS;
+    if variables.int("nobots", "0").unwrap().value != 0 {
+        entity.borrow_mut().flags |= GameFlags::NO_BOTS;
     }
-    if variables.int("nohumans", "0").value != 0 {
-        entity.borrow_mut().flags |= game_flags::NO_HUMANS;
+    if variables.int("nohumans", "0").unwrap().value != 0 {
+        entity.borrow_mut().flags |= GameFlags::NO_HUMANS;
     }
 }
 
@@ -431,11 +438,19 @@ impl ClientSpawnRuntime {
 
     /// Team spawn point (`selectTeamSpawnPoint`).
     pub fn select_team_spawn_point(&self, team_code: i32, state: i32) -> SpawnPoint {
-        if team_code != team::RED && team_code != team::BLUE {
+        if team_code != Team::TeamRed as i32 && team_code != Team::TeamBlue as i32 {
             return self.select_spawn_point(vec3(0.0, 0.0, 0.0));
         }
-        let side = if team_code == team::RED { "red" } else { "blue" };
-        let role = if state == team_state::BEGIN { "player" } else { "spawn" };
+        let side = if team_code == Team::TeamRed as i32 {
+            "red"
+        } else {
+            "blue"
+        };
+        let role = if state == TeamState::Begin as i32 {
+            "player"
+        } else {
+            "spawn"
+        };
         let name = format!("team_CTF_{side}{role}");
         let mut points = Vec::new();
         let mut spot: Option<EntityRef> = None;
@@ -550,7 +565,7 @@ impl ClientSpawnRuntime {
         }
         write_ground(&body, entity.borrow().ground.clone(), &self.inner.host.pool());
         body.borrow_mut().s.e_flags = SPAWN_EF_DEAD;
-        if product == Product::MissionPack && kamikaze {
+        if product == Product::Missionpack && kamikaze {
             body.borrow_mut().s.e_flags |= SPAWN_EF_KAMIKAZE;
             for index in 0..MAX_GENTITIES {
                 let timer = self.inner.host.pool().at(index);
@@ -580,20 +595,23 @@ impl ClientSpawnRuntime {
             target.physics_bounce = 0;
             let grounded = target.ground.is_some();
             if grounded {
-                target.s.pos.traj_type = trajectory_type::STATIONARY;
+                target.s.pos.trajectory_type = TrajectoryType::TrStationary;
             } else {
-                target.s.pos.traj_type = trajectory_type::GRAVITY;
+                target.s.pos.trajectory_type = TrajectoryType::TrGravity;
                 target.s.pos.time = time;
                 target.s.pos.delta = velocity;
             }
             target.s.event = 0;
             let animation = target.s.legs_anim & !128;
-            let dead = if animation == player_animation::BOTH_DEATH1 || animation == player_animation::BOTH_DEAD1 {
-                player_animation::BOTH_DEAD1
-            } else if animation == player_animation::BOTH_DEATH2 || animation == player_animation::BOTH_DEAD2 {
-                player_animation::BOTH_DEAD2
+            let dead = if animation == PlayerAnimation::BothDeath1 as i32
+                || animation == PlayerAnimation::BothDead1 as i32
+            {
+                PlayerAnimation::BothDead1 as i32
+            } else if animation == PlayerAnimation::BothDeath2 as i32 || animation == PlayerAnimation::BothDead2 as i32
+            {
+                PlayerAnimation::BothDead2 as i32
             } else {
-                player_animation::BOTH_DEAD3
+                PlayerAnimation::BothDead3 as i32
             };
             target.s.torso_anim = dead;
             target.s.legs_anim = dead;
@@ -639,7 +657,7 @@ impl ClientSpawnRuntime {
         let client = self.owned_client(entity);
         let frame = self.inner.host.frame();
         let (spawn_origin, spawn_angles, spawn_entity) = self.pick_spawn(entity, &client, &frame);
-        client.borrow_mut().pers.team_state.state = team_state::ACTIVE;
+        client.borrow_mut().pers.team_state.state = TeamState::Active as i32;
         entity.borrow_mut().s.e_flags &= !SPAWN_EF_KAMIKAZE;
         let flags =
             (client.borrow().ps.e_flags & (EF_TELEPORT_BIT | SPAWN_EF_VOTED | SPAWN_EF_TEAMVOTED)) ^ EF_TELEPORT_BIT;
@@ -648,7 +666,7 @@ impl ClientSpawnRuntime {
         let persistant = client.borrow().ps.persistant.copy();
         let event_sequence = client.borrow().ps.event_sequence;
         let saved_pers = client.borrow().pers.clone();
-        let saved_sess = client.borrow().sess;
+        let saved_sess = client.borrow().sess.clone();
         let (accuracy_hits, accuracy_shots) = {
             let record = client.borrow();
             (record.accuracy_hits, record.accuracy_shots)
@@ -668,13 +686,13 @@ impl ClientSpawnRuntime {
                 record.ps.persistant.set(index, *value);
             }
             record.ps.event_sequence = event_sequence;
-            let spawns = record.ps.persistant.get(persistent_index::SPAWN_COUNT as usize);
+            let spawns = record.ps.persistant.get(PersistentIndex::PersSpawnCount as usize);
             record
                 .ps
                 .persistant
-                .set(persistent_index::SPAWN_COUNT as usize, spawns.wrapping_add(1));
+                .set(PersistentIndex::PersSpawnCount as usize, spawns.wrapping_add(1));
             let team_code = record.sess.session_team;
-            record.ps.persistant.set(persistent_index::TEAM as usize, team_code);
+            record.ps.persistant.set(PersistentIndex::PersTeam as usize, team_code);
         }
         self.finish_client_spawn(
             entity,
@@ -693,11 +711,11 @@ impl ClientSpawnRuntime {
         client: &ClientRef,
         frame: &ClientSpawnFrame,
     ) -> (Vec3, Vec3, Option<EntityRef>) {
-        if client.borrow().sess.session_team == team::SPECTATOR {
+        if client.borrow().sess.session_team == Team::TeamSpectator as i32 {
             let pose = self.inner.host.find_intermission_point();
             return (pose.origin, pose.angles, None);
         }
-        if frame.game_type >= game_type::CTF {
+        if frame.game_type >= GameType::GtCtf as i32 {
             let selected =
                 self.select_team_spawn_point(client.borrow().sess.session_team, client.borrow().pers.team_state.state);
             return (selected.origin, selected.angles, Some(selected.entity));
@@ -715,12 +733,8 @@ impl ClientSpawnRuntime {
             } else {
                 self.select_spawn_point(client.borrow().ps.origin)
             };
-            let bot = entity.borrow().r.sv_flags & server_entity_flags::BOT != 0;
-            let blocked = if bot {
-                game_flags::NO_BOTS
-            } else {
-                game_flags::NO_HUMANS
-            };
+            let bot = entity.borrow().r.sv_flags & ServerEntityFlags::Bot as i32 != 0;
+            let blocked = if bot { GameFlags::NO_BOTS } else { GameFlags::NO_HUMANS };
             if selected.entity.borrow().flags & blocked != 0 {
                 continue;
             }
@@ -742,15 +756,18 @@ impl ClientSpawnRuntime {
         client.borrow_mut().last_killed_client = -1;
         client.borrow_mut().air_out_time = frame.time.wrapping_add(12_000);
         let slot = entity.borrow().slot;
-        let mut max_health = game_atoi(&self.inner.host.handicap(slot));
+        let mut max_health = game_atoi(&self.inner.host.handicap(slot)).unwrap();
         if !(1..=100).contains(&max_health) {
             max_health = 100;
         }
         {
             let mut record = client.borrow_mut();
             record.pers.max_health = max_health;
-            let schema = stat_schema(record.ps.product);
-            record.ps.stats.set(schema.max_health, max_health);
+            let max_health_slot = match stat_schema(record.ps.product) {
+                StatSchema::Base(layout) => layout.max_health,
+                StatSchema::Missionpack(layout) => layout.max_health,
+            };
+            record.ps.stats.set(max_health_slot as usize, max_health);
             record.ps.e_flags = flags;
         }
         write_ground(entity, None, &self.inner.host.pool());
@@ -771,18 +788,24 @@ impl ClientSpawnRuntime {
         }
         let product = client.borrow().ps.product;
         client.borrow_mut().ps.client_num = slot as i32;
-        client.borrow_mut().ps.ammo.set(weapon::GAUNTLET as usize, -1);
-        client.borrow_mut().ps.ammo.set(weapon::GRAPPLING_HOOK as usize, -1);
+        client.borrow_mut().ps.ammo.set(Weapon::WpGauntlet as usize, -1);
+        client.borrow_mut().ps.ammo.set(Weapon::WpGrapplingHook as usize, -1);
         if !selected {
-            let schema = stat_schema(product);
-            client
-                .borrow_mut()
-                .ps
-                .stats
-                .set(schema.weapons, (1 << weapon::MACHINEGUN) | (1 << weapon::GAUNTLET));
+            let weapons_slot = match stat_schema(product) {
+                StatSchema::Base(layout) => layout.weapons,
+                StatSchema::Missionpack(layout) => layout.weapons,
+            };
+            client.borrow_mut().ps.stats.set(
+                weapons_slot as usize,
+                (1 << Weapon::WpMachinegun as i32) | (1 << Weapon::WpGauntlet as i32),
+            );
             client.borrow_mut().ps.ammo.set(
-                weapon::MACHINEGUN as usize,
-                if frame.game_type == game_type::TEAM { 50 } else { 100 },
+                Weapon::WpMachinegun as usize,
+                if frame.game_type == GameType::GtTeam as i32 {
+                    50
+                } else {
+                    100
+                },
             );
             let grown = max_health.wrapping_add(25);
             entity.borrow_mut().health = grown;
@@ -797,35 +820,38 @@ impl ClientSpawnRuntime {
         }
         set_origin(entity, spawn_origin);
         client.borrow_mut().ps.origin = spawn_origin;
-        client.borrow_mut().ps.pm_flags |= move_flags::RESPAWNED;
+        client.borrow_mut().ps.pm_flags |= MoveFlags::Respawned as i32;
         let command = self.inner.host.user_command(slot);
         client.borrow_mut().pers.cmd = command;
         set_client_view_angle(entity, spawn_angles);
-        if client.borrow().sess.session_team != team::SPECTATOR {
+        if client.borrow().sess.session_team != Team::TeamSpectator as i32 {
             self.inner.host.kill_box(entity);
             self.inner.host.world().link(entity);
             if !selected {
-                client.borrow_mut().ps.weapon = weapon::MACHINEGUN;
+                client.borrow_mut().ps.weapon = Weapon::WpMachinegun as i32;
             }
-            client.borrow_mut().ps.weapon_state = weapon_state::READY;
+            client.borrow_mut().ps.weapon_state = WeaponState::WeaponReady as i32;
         }
-        client.borrow_mut().ps.pm_flags |= move_flags::TIME_KNOCKBACK;
+        client.borrow_mut().ps.pm_flags |= MoveFlags::TimeKnockback as i32;
         client.borrow_mut().ps.pm_time = 100;
         client.borrow_mut().respawn_time = frame.time;
         client.borrow_mut().inactivity_time = frame.time.wrapping_add(frame.inactivity_seconds.wrapping_mul(1000));
         client.borrow_mut().latched_buttons = 0;
-        client.borrow_mut().ps.torso_anim = player_animation::TORSO_STAND;
-        client.borrow_mut().ps.legs_anim = player_animation::LEGS_IDLE;
+        client.borrow_mut().ps.torso_anim = PlayerAnimation::TorsoStand as i32;
+        client.borrow_mut().ps.legs_anim = PlayerAnimation::LegsIdle as i32;
         if frame.intermission_time != 0 {
             self.inner.host.move_to_intermission(entity);
         } else {
             let activator = DamageParticipant::Entity(entity.clone());
             self.inner.host.targets().use_targets(spawn_entity, Some(&activator));
             if !selected {
-                client.borrow_mut().ps.weapon = weapon::GAUNTLET;
-                let schema = stat_schema(product);
-                for weapon_tag in (1..weapon_count(product) as i32).rev() {
-                    if client.borrow().ps.stats.get(schema.weapons) & (1 << weapon_tag) != 0 {
+                client.borrow_mut().ps.weapon = Weapon::WpGauntlet as i32;
+                let weapons_slot = match stat_schema(product) {
+                    StatSchema::Base(layout) => layout.weapons,
+                    StatSchema::Missionpack(layout) => layout.weapons,
+                };
+                for weapon_tag in (1..weapon_count(product)).rev() {
+                    if client.borrow().ps.stats.get(weapons_slot as usize) & (1 << weapon_tag) != 0 {
                         client.borrow_mut().ps.weapon = weapon_tag;
                         break;
                     }
@@ -836,7 +862,7 @@ impl ClientSpawnRuntime {
         client.borrow_mut().pers.cmd.server_time = frame.time;
         let think_command = self.inner.host.user_command(slot);
         self.inner.host.think_runtime().client_think(slot, &think_command);
-        if client.borrow().sess.session_team != team::SPECTATOR {
+        if client.borrow().sess.session_team != Team::TeamSpectator as i32 {
             {
                 let mut record = client.borrow_mut();
                 let mut body = entity.borrow_mut();
@@ -862,7 +888,7 @@ impl ClientSpawnRuntime {
             .inner
             .host
             .pool()
-            .temp_entity(origin, entity_event::PLAYER_TELEPORT_IN);
+            .temp_entity(origin, EntityEvent::EvPlayerTeleportIn as i32);
         temporary.borrow_mut().s.client_num = entity.borrow().s.client_num;
     }
 

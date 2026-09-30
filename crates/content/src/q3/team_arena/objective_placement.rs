@@ -3,7 +3,7 @@
 //! Donor provenance: `src/content/q3/team-arena/objective-placement.ts`.
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::team_arena::mirrors::*;
+use crate::q3::base::shared::definitions::*;
 
 // ---------------------------------------------------------------------------
 // objective-placement.ts
@@ -67,6 +67,16 @@ pub enum ObjectivePlacementResult {
     },
 }
 
+// Pattern-position aliases for GameType discriminants (`as` casts are not patterns).
+const GT_FFA: i32 = GameType::GtFfa as i32;
+const GT_TOURNAMENT: i32 = GameType::GtTournament as i32;
+const GT_SINGLE_PLAYER: i32 = GameType::GtSinglePlayer as i32;
+const GT_TEAM: i32 = GameType::GtTeam as i32;
+const GT_CTF: i32 = GameType::GtCtf as i32;
+const GT_ONE_FLAG_CTF: i32 = GameType::Gt1fctf as i32;
+const GT_OBELISK: i32 = GameType::GtObelisk as i32;
+const GT_HARVESTER: i32 = GameType::GtHarvester as i32;
+
 /// Check required objective placements (`checkObjectivePlacements`).
 #[must_use]
 pub fn check_objective_placements(
@@ -75,10 +85,10 @@ pub fn check_objective_placements(
     placements: &[ObjectivePlacement],
 ) -> ObjectivePlacementResult {
     let required: &[ObjectiveClassname] = match game_type {
-        game_type::FFA | game_type::TOURNAMENT | game_type::SINGLE_PLAYER | game_type::TEAM => &[],
-        game_type::CTF => &[ObjectiveClassname::RedFlag, ObjectiveClassname::BlueFlag],
-        game_type::ONE_FLAG_CTF => {
-            if product != Product::MissionPack {
+        GT_FFA | GT_TOURNAMENT | GT_SINGLE_PLAYER | GT_TEAM => &[],
+        GT_CTF => &[ObjectiveClassname::RedFlag, ObjectiveClassname::BlueFlag],
+        GT_ONE_FLAG_CTF => {
+            if product != Product::Missionpack {
                 return ObjectivePlacementResult::UnsupportedMode { product, game_type };
             }
             &[
@@ -87,14 +97,14 @@ pub fn check_objective_placements(
                 ObjectiveClassname::NeutralFlag,
             ]
         }
-        game_type::OBELISK => {
-            if product != Product::MissionPack {
+        GT_OBELISK => {
+            if product != Product::Missionpack {
                 return ObjectivePlacementResult::UnsupportedMode { product, game_type };
             }
             &[ObjectiveClassname::RedObelisk, ObjectiveClassname::BlueObelisk]
         }
-        game_type::HARVESTER => {
-            if product != Product::MissionPack {
+        GT_HARVESTER => {
+            if product != Product::Missionpack {
                 return ObjectivePlacementResult::UnsupportedMode { product, game_type };
             }
             &[
