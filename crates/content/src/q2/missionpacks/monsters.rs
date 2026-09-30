@@ -7,6 +7,7 @@ pub mod boss5;
 pub mod chick_heat;
 pub mod combat;
 pub mod dabeam;
+pub mod fixbot;
 pub mod gladb;
 pub mod hints;
 pub mod power_armor;
@@ -52,6 +53,8 @@ pub struct MissionMonsterRuntime {
     pub widow_damage_multiplier: u8,
     /// Rogue hint-path state.
     pub hints: hints::RogueHintsState,
+    /// Fixbot pre-move origins (source AI/callback scratch within one frame).
+    pub fixbot_before_move: HashMap<ActorId, qa_core::math::Vec3>,
 }
 
 impl Default for MissionMonsterRuntime {
@@ -64,6 +67,7 @@ impl Default for MissionMonsterRuntime {
             widow_shots_fired: 0,
             widow_damage_multiplier: 1,
             hints: hints::RogueHintsState::default(),
+            fixbot_before_move: HashMap::new(),
         }
     }
 }
