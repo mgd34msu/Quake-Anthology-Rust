@@ -115,7 +115,9 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "qa-core",
+ "qa-guest",
  "qa-platform",
+ "qa-world",
  "thiserror",
 ]
 
@@ -163,7 +165,6 @@ dependencies = [
 name = "qa-world"
 version = "0.1.0"
 dependencies = [
- "qa-content",
  "qa-core",
  "thiserror",
 ]
