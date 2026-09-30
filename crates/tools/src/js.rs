@@ -15,6 +15,12 @@ pub fn compare_text(left: &str, right: &str) -> Ordering {
     left.encode_utf16().cmp(right.encode_utf16())
 }
 
+/// JavaScript `String.prototype.trim`: Rust whitespace plus U+FEFF, minus U+0085.
+#[must_use]
+pub fn trim_js(text: &str) -> &str {
+    text.trim_matches(|ch| ch == '\u{feff}' || (ch != '\u{85}' && char::is_whitespace(ch)))
+}
+
 /// Byte offsets where each TypeScript line starts.
 ///
 /// Lines break on `\n`, `\r\n`, `\r`, `\u{2028}`, and `\u{2029}`, matching
@@ -178,6 +184,13 @@ pub fn math_max(left: f64, right: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trims_like_javascript() {
+        assert_eq!(trim_js("\u{feff} x \u{feff}"), "x");
+        assert_eq!(trim_js("a\u{85}"), "a\u{85}");
+        assert_eq!(trim_js("  padded\n"), "padded");
+    }
 
     #[test]
     fn orders_non_bmp_by_code_unit() {

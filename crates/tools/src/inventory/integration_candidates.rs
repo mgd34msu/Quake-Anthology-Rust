@@ -18,7 +18,7 @@ use super::ts_scan::{self, DeclInfo};
 use crate::error::ToolsError;
 use crate::fsutil;
 use crate::json::{parse_json, Json};
-use crate::js::Utf16Map;
+use crate::js::{trim_js, Utf16Map};
 use crate::reference::environment::{projects_root, quake_typescript_root};
 use crate::sha256::hash_hex;
 
@@ -109,11 +109,6 @@ fn parse_ls_entry(entry: &str) -> (String, bool) {
 /// POSIX basename (donor `basename` on git-relative paths).
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
-}
-
-/// JavaScript `String.prototype.trim`: Rust whitespace plus U+FEFF, minus U+0085.
-fn trim_js(text: &str) -> &str {
-    text.trim_matches(|ch| ch == '\u{feff}' || (ch != '\u{85}' && char::is_whitespace(ch)))
 }
 
 /// A feature-evidence source anchor with numeric lines.
