@@ -1323,6 +1323,13 @@ mod tests {
         ) -> Result<Option<QvmClientApplication>, GuestError> {
             self.begun.borrow_mut().push(input.clone());
             let hook = self.on_begin.borrow_mut().take();
+            // Reserve the invocation before running the hook: nested begins
+            // must sort after their outer frame.
+            let invocation = {
+                let mut next = self.next.borrow_mut();
+                *next += 1;
+                *next
+            };
             if let Some(hook) = hook {
                 hook(input);
             }
@@ -1334,11 +1341,9 @@ mod tests {
             if !self.active.get() || self.dead.borrow().contains(&input.identity.actor) {
                 return Ok(None);
             }
-            let mut next = self.next.borrow_mut();
-            *next += 1;
             let application = QvmClientApplication {
                 identity: input.identity.clone(),
-                invocation: *next,
+                invocation,
                 parent_invocation: input.parent_invocation,
                 scope: input.scope,
                 command,
