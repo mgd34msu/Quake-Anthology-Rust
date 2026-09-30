@@ -258,7 +258,7 @@ impl Q2GameServices {
             },
         );
         let entity = self.require_entity_mut(&id);
-        entity.max_health = 100;
+        entity.max_health = 100.0;
         entity.view_height = 22;
         id
     }
@@ -332,7 +332,7 @@ impl Q2GameServices {
         entity.decel = number_field(&entity.spawn, "decel", 0.0);
         entity.damage = f64::from(integer_field(&entity.spawn, "dmg", 0));
         entity.count = integer_field(&entity.spawn, "count", 0);
-        entity.max_health = integer_field(&entity.spawn, "health", 0);
+        entity.max_health = integer_field(&entity.spawn, "health", 0) as f64;
         entity.noise = entity.spawn.values.get("noise").cloned().unwrap_or_default();
         entity.map = entity.spawn.values.get("map").cloned().unwrap_or_default();
         entity.volume = number_field(&entity.spawn, "volume", 0.0);
@@ -1018,7 +1018,7 @@ impl Q2GameServices {
 }
 
 /// JavaScript `Math.round` (ties round toward positive infinity).
-fn js_round(value: f64) -> f64 {
+pub fn js_round(value: f64) -> f64 {
     (value + 0.5).floor()
 }
 

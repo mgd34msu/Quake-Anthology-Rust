@@ -333,7 +333,7 @@ pub struct Q2ModelEvent {
     /// Skin.
     pub skin: i32,
     /// Effects.
-    pub effects: i32,
+    pub effects: i64,
     /// Render flags.
     pub render_flags: i32,
 }
@@ -708,7 +708,7 @@ pub struct Q2Entity {
     /// Count.
     pub count: i32,
     /// Maximum health.
-    pub max_health: i32,
+    pub max_health: f64,
     /// View height.
     pub view_height: i32,
     /// Frame.
@@ -722,11 +722,11 @@ pub struct Q2Entity {
     /// Skin.
     pub skin: i32,
     /// Effects.
-    pub effects: i32,
+    pub effects: i64,
     /// Render flags.
     pub render_flags: i32,
     /// Flags.
-    pub flags: i32,
+    pub flags: i64,
     /// Server flags.
     pub server_flags: i32,
     /// Light level.
@@ -849,7 +849,7 @@ impl Q2Entity {
             damage_radius: 0.0,
             radius_damage: 0.0,
             count: 0,
-            max_health: 0,
+            max_health: 0.0,
             view_height: 0,
             frame: 0,
             old_frame: -1,

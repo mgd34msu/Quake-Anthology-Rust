@@ -118,7 +118,7 @@ pub struct Q2EntityValues {
     /// Count.
     pub count: i32,
     /// Maximum health.
-    pub max_health: i32,
+    pub max_health: f64,
     /// View height.
     pub view_height: i32,
     /// Frame.
@@ -132,11 +132,11 @@ pub struct Q2EntityValues {
     /// Skin.
     pub skin: i32,
     /// Effects.
-    pub effects: i32,
+    pub effects: i64,
     /// Render flags.
     pub render_flags: i32,
     /// Flags.
-    pub flags: i32,
+    pub flags: i64,
     /// Server flags.
     pub server_flags: i32,
     /// Light level.

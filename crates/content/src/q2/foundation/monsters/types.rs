@@ -8,8 +8,10 @@ use std::collections::HashMap;
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3};
 
+use crate::monsters::MonsterMission;
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::host::{Q2Entity, Q2GameServices};
+use crate::q2::foundation::weapons::types::Q2GrenadeAdjustment;
 use crate::q2::support::contracts::{DeathReaction, PainReaction, TraceResult};
 
 /// Monster frame AI selector (`MonsterFrame["ai"]`).
@@ -700,6 +702,94 @@ impl Default for MonsterState {
     }
 }
 
+/// Monster ballistics bundle (`MonsterWeapons`).
+///
+/// Eight bound ballistics functions; `Copy` so every transient context
+/// carries the bundle without borrowing the runtime.
+#[derive(Clone, Copy)]
+pub struct MonsterWeapons {
+    /// Fire a bullet.
+    pub fire_bullet: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32),
+    /// Fire shotgun pellets.
+    pub fire_shotgun:
+        fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64, i32, i32),
+    /// Fire a blaster bolt.
+    pub fire_blaster:
+        fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, i64, bool, i32) -> ActorId,
+    /// Melee hit.
+    pub fire_hit: fn(ActorId, &mut Q2GameServices, Vec3, f64, f64) -> bool,
+    /// Fire a rocket.
+    pub fire_rocket:
+        fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64, f64) -> ActorId,
+    /// Fire a grenade.
+    pub fire_grenade: fn(
+        ActorId,
+        &mut Q2GameServices,
+        Vec3,
+        Vec3,
+        f64,
+        f64,
+        f64,
+        f64,
+        bool,
+        bool,
+        bool,
+        Option<Q2GrenadeAdjustment>,
+    ) -> ActorId,
+    /// Fire a rail slug.
+    pub fire_rail: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64),
+    /// Fire a BFG projectile.
+    pub fire_bfg: fn(ActorId, &mut Q2GameServices, Vec3, Vec3, f64, f64, f64) -> ActorId,
+}
+
+/// Rogue source-combat hooks (`Q2MonsterSourceCombatHooks`).
+pub trait Q2MonsterSourceCombatHooks {
+    /// Whether an entity counts as a good guy.
+    fn is_good_guy(&mut self, entity: &Q2Entity) -> bool;
+    /// Intercept a damage reaction, reporting whether handled.
+    fn before_react(&mut self, context: &mut MonsterContext, attacker: &ActorId) -> bool;
+    /// Observe a kill before death processing.
+    fn before_killed(&mut self, context: &mut MonsterContext);
+    /// Recover an enemy after the current one died.
+    fn recover_enemy(&mut self, context: &mut MonsterContext) -> Option<ActorId>;
+    /// Intercept a step displacement.
+    fn before_move(
+        &mut self,
+        context: &mut MonsterContext,
+        displacement: Vec3,
+    ) -> SourceMoveOutcome;
+    /// Whether a ground move destination is acceptable.
+    fn accepts_ground_move(&mut self, context: &mut MonsterContext, origin: Vec3) -> bool;
+    /// Consume a blocked move, reporting whether handled.
+    fn consume_blocked(&mut self, context: &mut MonsterContext) -> bool;
+}
+
+/// Hint-path hooks (`Q2MonsterHintHooks`).
+pub trait Q2MonsterHintHooks {
+    /// Run hint-path movement, reporting whether handled.
+    fn run(&mut self, context: &mut MonsterContext, distance: f64) -> bool;
+    /// Check for a lost hint path.
+    fn check_lost(&mut self, context: &mut MonsterContext) -> bool;
+    /// Stop hint-path movement.
+    fn stop(&mut self, context: &mut MonsterContext);
+}
+
+/// Constructor hooks (`Q2MonsterHooks`).
+pub struct Q2MonsterHooks {
+    /// Drop an authored item.
+    pub drop_item: Option<fn(qa_core::identity::OwnedActor, &mut Q2GameServices, &str)>,
+    /// Read platform state.
+    pub platform_state: Option<fn(&ActorId) -> Option<PlatformPhase>>,
+    /// Look up an authored mission.
+    pub mission: Option<Box<dyn Fn(&ActorId) -> Option<Box<dyn MonsterMission>>>>,
+}
+
+impl Default for Q2MonsterHooks {
+    fn default() -> Self {
+        Self { drop_item: None, platform_state: None, mission: None }
+    }
+}
+
 /// Monster context facade (`MonsterContext`).
 ///
 /// A transient borrow of the arena for one monster actor: entity and
@@ -709,12 +799,15 @@ pub struct MonsterContext<'a> {
     actor: ActorId,
     /// Game services.
     pub game: &'a mut Q2GameServices,
+    /// Ballistics bundle.
+    pub weapons: MonsterWeapons,
 }
 
 impl<'a> MonsterContext<'a> {
     /// Build a context over a monster actor.
     pub fn new(actor: ActorId, game: &'a mut Q2GameServices) -> Self {
-        Self { actor, game }
+        let weapons = game.monsters.weapons;
+        Self { actor, game, weapons }
     }
 
     /// Monster actor.
@@ -765,6 +858,188 @@ impl<'a> MonsterContext<'a> {
             state.current_move = movement;
             state.next_move = None;
         }
+    }
+
+    /// Source combat rules (`sourceCombatRules`).
+    pub fn source_combat_rules(&self) -> SourceCombatMode {
+        self.game.monsters.source_combat
+    }
+
+    /// Intercept a step displacement (`beforeSourceMove`).
+    ///
+    /// The hook object travels outside the arena for the call; hooks are
+    /// leaf predicates, so the temporary removal is unobservable.
+    pub fn before_source_move(&mut self, displacement: Vec3) -> SourceMoveOutcome {
+        let mut hooks = self.game.monsters.source_combat_hooks.take();
+        let outcome = hooks
+            .as_mut()
+            .map(|hooks| hooks.before_move(self, displacement))
+            .unwrap_or(SourceMoveOutcome::Move { displacement });
+        self.game.monsters.source_combat_hooks = hooks;
+        outcome
+    }
+
+    /// Whether a ground move destination is acceptable (`acceptsSourceGroundMove`).
+    pub fn accepts_source_ground_move(&mut self, origin: Vec3) -> bool {
+        let mut hooks = self.game.monsters.source_combat_hooks.take();
+        let accepts = hooks
+            .as_mut()
+            .map(|hooks| hooks.accepts_ground_move(self, origin))
+            .unwrap_or(true);
+        self.game.monsters.source_combat_hooks = hooks;
+        accepts
+    }
+
+    /// Consume a blocked move (`consumeSourceBlocked`).
+    pub fn consume_source_blocked(&mut self) -> bool {
+        let mut hooks = self.game.monsters.source_combat_hooks.take();
+        let consumed = hooks
+            .as_mut()
+            .map(|hooks| hooks.consume_blocked(self))
+            .unwrap_or(false);
+        self.game.monsters.source_combat_hooks = hooks;
+        consumed
+    }
+
+    /// Run hint-path movement (`runHintPath`).
+    pub fn run_hint_path(&mut self, distance: f64) -> bool {
+        let mut hooks = self.game.monsters.hint_hooks.take();
+        let handled =
+            hooks.as_mut().map(|hooks| hooks.run(self, distance)).unwrap_or(false);
+        self.game.monsters.hint_hooks = hooks;
+        handled
+    }
+
+    /// Check for a lost hint path (`checkLostHintPath`).
+    pub fn check_lost_hint_path(&mut self) -> bool {
+        let mut hooks = self.game.monsters.hint_hooks.take();
+        let lost = hooks.as_mut().map(|hooks| hooks.check_lost(self)).unwrap_or(false);
+        self.game.monsters.hint_hooks = hooks;
+        lost
+    }
+
+    /// Schedule a dead-think callback (`schedule`).
+    pub fn schedule(&mut self, delay_seconds: f64, callback: DeadThink) {
+        let name = match callback {
+            DeadThink::MonsterDeadThink => "monster_dead_think",
+            DeadThink::FliesOn => "M_FliesOn",
+            DeadThink::FliesOff => "M_FliesOff",
+        };
+        let think = self.game.source_callbacks.resolve_think(Some(name));
+        let think = think.unwrap_or_else(|| panic!("Missing monster thinker {name}"));
+        let actor = self.actor.clone();
+        self.game.schedule(actor, delay_seconds, think);
+    }
+
+    /// Run the stand handler (`stand`).
+    pub fn stand(&mut self) {
+        let handler = self.definition().stand.clone();
+        handler.dispatch(self);
+    }
+
+    /// Run the walk handler (`walk`).
+    pub fn walk(&mut self) {
+        let handler = self.definition().walk.clone();
+        handler.dispatch(self);
+    }
+
+    /// Run the run handler (`run`).
+    pub fn run(&mut self) {
+        let handler = self.definition().run.clone();
+        handler.dispatch(self);
+    }
+
+    /// Run the attack handler (`attack`).
+    pub fn attack(&mut self) {
+        let handler = self.definition().attack.clone();
+        handler.dispatch(self);
+    }
+
+    /// Run the melee handler (`melee`).
+    pub fn melee(&mut self) {
+        let handler = self.definition().melee.clone();
+        if let Some(handler) = handler {
+            handler.dispatch(self);
+        }
+    }
+
+    /// Run the idle handler (`idle`).
+    pub fn idle(&mut self) {
+        let handler = self.definition().idle.clone();
+        if let Some(handler) = handler {
+            handler.dispatch(self);
+        }
+    }
+
+    /// Run the search handler (`search`).
+    pub fn search(&mut self) {
+        let handler = self.definition().search.clone();
+        if let Some(handler) = handler {
+            handler.dispatch(self);
+        }
+    }
+
+    /// Dispatch a named callback (`dispatch`).
+    pub fn dispatch(&mut self, callback: &str) {
+        if callback == "$sight" {
+            let handler = self.definition().sight.clone();
+            if let Some(handler) = handler {
+                handler.dispatch(self);
+            }
+            return;
+        }
+        let classname = self.entity().classname.clone();
+        let handler = self
+            .definition()
+            .callbacks
+            .get(callback)
+            .cloned()
+            .or_else(|| super::shared_callback(callback));
+        let Some(handler) = handler else {
+            panic!("{classname}: unknown source callback {callback}");
+        };
+        handler.dispatch(self);
+    }
+
+    /// Find a target (`findTarget`).
+    pub fn find_target(&mut self) -> bool {
+        super::perception::find_target(self)
+    }
+
+    /// Check for an attack (`checkAttack`).
+    pub fn check_attack(&mut self, _distance: f64) -> bool {
+        let check = self.definition().check_attack;
+        super::perception::check_attack(self, check.unwrap_or(super::perception::default_check_attack))
+    }
+
+    /// Move toward the goal (`moveToGoal`).
+    pub fn move_to_goal(&mut self, distance: f64) -> bool {
+        super::perception::move_to_goal(self, distance)
+    }
+
+    /// Dodge an incoming attack (`dodge`).
+    pub fn dodge(&mut self, attacker: ActorId, eta_seconds: f64, trace: Option<TraceResult>, gravity: bool) {
+        super::monster_dodge(self, attacker, eta_seconds, trace.as_ref(), gravity);
+    }
+
+    /// Handle a blocked move (`blocked`).
+    pub fn blocked(&mut self, distance: f64) -> bool {
+        let blocked = self.definition().blocked;
+        if let Some(blocked) = blocked {
+            blocked(self, distance)
+        } else {
+            super::monster_blocked(self, distance)
+        }
+    }
+
+    /// Read platform state (`platformState`).
+    pub fn platform_state(&self, actor: &ActorId) -> Option<PlatformPhase> {
+        self.game.monsters.hooks.platform_state.map(|read| read(actor)).flatten()
+    }
+
+    /// Look up the authored mission (`hooks.mission`).
+    pub fn mission(&self, actor: &ActorId) -> Option<Box<dyn MonsterMission>> {
+        self.game.monsters.hooks.mission.as_ref().and_then(|hook| hook(actor))
     }
 }
 
