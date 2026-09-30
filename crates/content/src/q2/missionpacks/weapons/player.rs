@@ -909,6 +909,7 @@ impl Q2WeaponExtension for Q2MissionPackWeaponExtension {
 }
 
 /// Mission-pack weapons (`Q2MissionPackWeapons`).
+#[derive(Debug, Clone, Copy)]
 pub struct Q2MissionPackWeapons {
     /// Projectile driver.
     pub projectiles: Q2MissionPackProjectiles,
