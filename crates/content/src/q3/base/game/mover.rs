@@ -18,9 +18,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::spawn::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{
+    failure, lose_ground, rides, run_think, EntityPool, Q3BodyState, Q3Driver, Q3GameError,
+};
+use crate::q3::base::shared::definitions::{EntityEvent, EntityType, ItemType, Product};
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::ENTITYNUM_WORLD;
+use crate::q3::base::shared::trajectory::{evaluate_trajectory, Trajectory, TrajectoryType};
+use crate::q3::base::world::{ActorTraceHit, ActorTraceQuery, TraceShape, TraceSolidity};
 
 // ---------------------------------------------------------------------------
 // mover.ts: push transactions and binary movers (g_mover.c)
@@ -170,23 +177,23 @@ impl MoverRuntime {
                 .map(|client| client.ps.origin)
                 .unwrap_or(pos_base),
         };
-        let query = Q3TraceQuery {
+        let query = ActorTraceQuery {
             start,
             end: start,
-            shape: Q3TraceShape::Box { mins, maxs },
+            shape: TraceShape::Box { mins, maxs },
             pass_actor: Some(actor),
             mask: if clipmask == 0 { 1 } else { clipmask },
         };
         let result = driver.spatial().trace_actor(&query);
-        if result.solidity == Q3Solidity::Clear {
+        if result.solidity == TraceSolidity::Clear {
             return Ok(None);
         }
-        if let Q3TraceHit::Actor(actor) = &result.hit {
+        if let ActorTraceHit::Actor { actor } = &result.hit {
             let participant = driver.mover_actors().participant(actor);
             return Ok(Some(participant));
         }
-        self.owned(driver, ENTITYNUM_WORLD)?;
-        Ok(Some(Participant::Entity(ENTITYNUM_WORLD)))
+        self.owned(driver, ENTITYNUM_WORLD as usize)?;
+        Ok(Some(Participant::Entity(ENTITYNUM_WORLD as usize)))
     }
 
     fn try_pushing(
@@ -327,32 +334,32 @@ impl MoverRuntime {
         };
         let start = add3(pos_base, scale3(movedir, 0.125));
         let end = add3(pos_base, scale3(movedir, 2.0));
-        let query = Q3TraceQuery {
+        let query = ActorTraceQuery {
             start,
             end,
-            shape: Q3TraceShape::Point,
+            shape: TraceShape::Point,
             pass_actor: Some(actor),
             mask: 1,
         };
         let trace = driver.spatial().trace_actor(&query);
-        Ok(trace.solidity == Q3Solidity::Clear && trace.fraction == 1.0)
+        Ok(trace.solidity == TraceSolidity::Clear && trace.fraction == 1.0)
     }
 
     fn shared_position_blocked(&self, driver: &mut dyn Q3Driver, check: &SharedMoverBody) -> bool {
         let Some(body) = driver.mover_actors().observe(&check.actor) else {
             return false;
         };
-        let query = Q3TraceQuery {
+        let query = ActorTraceQuery {
             start: body.state.origin,
             end: body.state.origin,
-            shape: Q3TraceShape::Box {
+            shape: TraceShape::Box {
                 mins: body.state.bounds.min,
                 maxs: body.state.bounds.max,
             },
             pass_actor: Some(check.actor.clone()),
             mask: if check.clip_mask == 0 { 1 } else { check.clip_mask },
         };
-        driver.spatial().trace_actor(&query).solidity != Q3Solidity::Clear
+        driver.spatial().trace_actor(&query).solidity != TraceSolidity::Clear
     }
 
     fn try_pushing_shared(
@@ -561,7 +568,7 @@ impl MoverRuntime {
                     continue;
                 }
                 let participant = driver.mover_actors().participant(&actor);
-                if pusher.pos_type == TrajectoryType::Sine || pusher.apos_type == TrajectoryType::Sine {
+                if pusher.pos_type == TrajectoryType::TrSine || pusher.apos_type == TrajectoryType::TrSine {
                     let host = Participant::Entity(pusher_slot);
                     driver
                         .combat()
@@ -572,7 +579,7 @@ impl MoverRuntime {
                 return Ok(Some(participant));
             }
             let check = native.unwrap_or(usize::MAX);
-            let is_missionpack = driver.combat().product() == Q3Product::Missionpack;
+            let is_missionpack = driver.combat().product() == Product::Missionpack;
             if is_missionpack {
                 let (e_type, classname, enemy) = match driver.pool().entity(check) {
                     Some(entity) => (
@@ -582,7 +589,7 @@ impl MoverRuntime {
                     ),
                     None => continue,
                 };
-                if e_type == Q3EntityType::Missile as i32 && classname.as_deref() == Some("prox mine") {
+                if e_type == EntityType::EtMissile as i32 && classname.as_deref() == Some("prox mine") {
                     let clear = if enemy == Some(pusher_slot) {
                         self.push_proximity_mine(driver, check, &pusher, mv, amove)?
                     } else {
@@ -592,7 +599,7 @@ impl MoverRuntime {
                         if let Some(entity) = driver.pool().entity_mut(check) {
                             entity.s.loop_sound = 0;
                         }
-                        driver.pool().add_event(check, Q3EntityEvent::ProximityMineTrigger, 0);
+                        driver.pool().add_event(check, EntityEvent::EvProximityMineTrigger, 0);
                         driver.explode_missile(check);
                         let activator = driver.pool().entity(check).and_then(|entity| entity.activator);
                         if let Some(activator) = activator {
@@ -609,7 +616,7 @@ impl MoverRuntime {
                 Some(entity) => (entity.s.e_type, entity.physics_object),
                 None => continue,
             };
-            if e_type != Q3EntityType::Item as i32 && e_type != Q3EntityType::Player as i32 && !physics_object {
+            if e_type != EntityType::EtItem as i32 && e_type != EntityType::EtPlayer as i32 && !physics_object {
                 continue;
             }
             let rider = driver
@@ -642,7 +649,7 @@ impl MoverRuntime {
             if self.try_pushing(driver, check, &pusher, mv, amove, pushed)? {
                 continue;
             }
-            if pusher.pos_type == TrajectoryType::Sine || pusher.apos_type == TrajectoryType::Sine {
+            if pusher.pos_type == TrajectoryType::TrSine || pusher.apos_type == TrajectoryType::TrSine {
                 let target = Participant::Entity(check);
                 let host = Participant::Entity(pusher_slot);
                 driver
@@ -722,7 +729,7 @@ impl MoverRuntime {
                     entity.reached.clone(),
                 )
             };
-            if pos_type == TrajectoryType::LinearStop && time >= pos_time.wrapping_add(pos_duration) {
+            if pos_type == TrajectoryType::TrLinearStop && time >= pos_time.wrapping_add(pos_duration) {
                 if let Some(reached) = reached {
                     reached(driver, current);
                 }
@@ -743,8 +750,8 @@ impl MoverRuntime {
         if entity.flags & GameFlags::TEAMSLAVE != 0 {
             return Ok(());
         }
-        let moving = entity.s.pos.trajectory_type != TrajectoryType::Stationary
-            || entity.s.apos.trajectory_type != TrajectoryType::Stationary;
+        let moving = entity.s.pos.trajectory_type != TrajectoryType::TrStationary
+            || entity.s.apos.trajectory_type != TrajectoryType::TrStationary;
         if moving {
             self.run_team(driver, slot)?;
         }
@@ -771,27 +778,27 @@ impl MoverRuntime {
             entity.mover_state = state as i32;
             let previous = entity.s.pos;
             entity.s.pos = match state {
-                MoverState::Pos1 => Q3Trajectory {
-                    trajectory_type: TrajectoryType::Stationary,
+                MoverState::Pos1 => Trajectory {
+                    trajectory_type: TrajectoryType::TrStationary,
                     time,
                     base: entity.pos1,
                     ..previous
                 },
-                MoverState::Pos2 => Q3Trajectory {
-                    trajectory_type: TrajectoryType::Stationary,
+                MoverState::Pos2 => Trajectory {
+                    trajectory_type: TrajectoryType::TrStationary,
                     time,
                     base: entity.pos2,
                     ..previous
                 },
-                MoverState::OneToTwo => Q3Trajectory {
-                    trajectory_type: TrajectoryType::LinearStop,
+                MoverState::OneToTwo => Trajectory {
+                    trajectory_type: TrajectoryType::TrLinearStop,
                     time,
                     base: entity.pos1,
                     delta: scale3(sub3(entity.pos2, entity.pos1), 1000.0 / previous.duration as f32),
                     ..previous
                 },
-                MoverState::TwoToOne => Q3Trajectory {
-                    trajectory_type: TrajectoryType::LinearStop,
+                MoverState::TwoToOne => Trajectory {
+                    trajectory_type: TrajectoryType::TrLinearStop,
                     time,
                     base: entity.pos2,
                     delta: scale3(sub3(entity.pos1, entity.pos2), 1000.0 / previous.duration as f32),
@@ -837,7 +844,7 @@ impl MoverRuntime {
             entity.s.loop_sound = sound_loop;
         }
         if sound2to1 != 0 {
-            driver.pool().add_event(slot, Q3EntityEvent::GeneralSound, sound2to1);
+            driver.pool().add_event(slot, EntityEvent::EvGeneralSound, sound2to1);
         }
         Ok(())
     }
@@ -862,7 +869,7 @@ impl MoverRuntime {
                 (entity.sound_pos2, entity.wait)
             };
             if sound_pos2 != 0 {
-                driver.pool().add_event(slot, Q3EntityEvent::GeneralSound, sound_pos2);
+                driver.pool().add_event(slot, EntityEvent::EvGeneralSound, sound_pos2);
             }
             let think = driver
                 .pool()
@@ -895,7 +902,7 @@ impl MoverRuntime {
                 (entity.sound_pos1, entity.teammaster)
             };
             if sound_pos1 != 0 {
-                driver.pool().add_event(slot, Q3EntityEvent::GeneralSound, sound_pos1);
+                driver.pool().add_event(slot, EntityEvent::EvGeneralSound, sound_pos1);
             }
             if teammaster.is_none() || teammaster == Some(slot) {
                 driver.adjust_area_portal(slot, false);
@@ -940,7 +947,7 @@ impl MoverRuntime {
                 (entity.sound1to2, entity.sound_loop, entity.teammaster)
             };
             if sound1to2 != 0 {
-                driver.pool().add_event(slot, Q3EntityEvent::GeneralSound, sound1to2);
+                driver.pool().add_event(slot, EntityEvent::EvGeneralSound, sound1to2);
             }
             if let Some(entity) = driver.pool().entity_mut(slot) {
                 entity.s.loop_sound = sound_loop;
@@ -980,7 +987,7 @@ impl MoverRuntime {
                 }
             };
             if sound != 0 {
-                driver.pool().add_event(slot, Q3EntityEvent::GeneralSound, sound);
+                driver.pool().add_event(slot, EntityEvent::EvGeneralSound, sound);
             }
             Ok(())
         }
@@ -1040,8 +1047,8 @@ impl MoverRuntime {
             entity.use_callback = use_callback;
             entity.reached = reached;
             entity.mover_state = MoverState::Pos1 as i32;
-            entity.r.sv_flags = ServerEntityFlags::USE_CURRENT_ORIGIN;
-            entity.s.e_type = Q3EntityType::Mover as i32;
+            entity.r.sv_flags = ServerEntityFlags::UseCurrentOrigin as i32;
+            entity.s.e_type = EntityType::EtMover as i32;
             entity.r.current_origin = entity.pos1;
         }
         driver.world().link(slot);
@@ -1058,8 +1065,8 @@ impl MoverRuntime {
         if let Some(entity) = driver.pool().entity_mut(slot) {
             entity.speed = speed;
             let previous = entity.s.pos;
-            entity.s.pos = Q3Trajectory {
-                trajectory_type: TrajectoryType::Stationary,
+            entity.s.pos = Trajectory {
+                trajectory_type: TrajectoryType::TrStationary,
                 base: entity.pos1,
                 delta: scale3(sub3(entity.pos2, entity.pos1), speed),
                 duration,
@@ -1078,7 +1085,7 @@ impl MoverRuntime {
                 let body = driver.mover_actors().observe(actor);
                 let Some(body) = body else { return Ok(()) };
                 if body.kind != SharedBodyKind::Player {
-                    driver.pool().temp_entity(body.state.origin, Q3EntityEvent::ItemPop);
+                    driver.pool().temp_entity(body.state.origin, EntityEvent::EvItemPop);
                     driver.mover_actors().release(&body.actor);
                     return Ok(());
                 }
@@ -1111,7 +1118,7 @@ impl MoverRuntime {
                     (entity.client, entity.s.e_type, entity.s.origin, entity.item)
                 };
                 if client.is_none() {
-                    if e_type == Q3EntityType::Item as i32 {
+                    if e_type == EntityType::EtItem as i32 {
                         let Some(item) = item else {
                             return Err(failure("Blocked item has no item definition"));
                         };
@@ -1119,12 +1126,12 @@ impl MoverRuntime {
                         if def.is_none() {
                             return Err(failure("Blocked item has no item definition"));
                         }
-                        if def.is_some_and(|def| def.item_type == Q3ItemType::Team) {
+                        if def.is_some_and(|def| def.item_type == ItemType::ItTeam) {
                             driver.return_dropped_flag(other_slot);
                             return Ok(());
                         }
                     }
-                    driver.pool().temp_entity(origin, Q3EntityEvent::ItemPop);
+                    driver.pool().temp_entity(origin, EntityEvent::EvItemPop);
                     driver.pool().free_entity(other_slot);
                     return Ok(());
                 }
@@ -1181,5 +1188,97 @@ impl MoverRuntime {
             }),
         )?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Mover shared-actor body kind (`SharedMoverBody["kind"]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedBodyKind {
+    /// Player.
+    Player,
+    /// Movable.
+    Movable,
+    /// Fixed.
+    Fixed,
+    /// Attached.
+    Attached,
+}
+
+/// Shared mover body (`SharedMoverBody`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedMoverBody {
+    /// Actor.
+    pub actor: ActorId,
+    /// Kind.
+    pub kind: SharedBodyKind,
+    /// State.
+    pub state: Q3BodyState,
+    /// Absolute bounds.
+    pub absolute_bounds: Bounds,
+    /// Clip mask.
+    pub clip_mask: i32,
+}
+
+/// Mover actor access (`MoverActorAccess` from `mover.ts`).
+pub trait MoverActorAccess {
+    /// Native slot for an actor (`native`).
+    fn native_slot(&self, actor: &ActorId) -> Option<usize>;
+    /// Participant for an actor (`participant`).
+    fn participant(&self, actor: &ActorId) -> Participant;
+    /// Observe a shared body (`observe`).
+    fn observe(&self, actor: &ActorId) -> Option<SharedMoverBody>;
+    /// Write origin and ground (`write`).
+    fn write(&mut self, actor: &ActorId, origin: Vec3, ground: Option<ActorId>);
+    /// Link an actor (`link`).
+    fn link_actor(&mut self, actor: &ActorId);
+    /// Release an actor (`release`).
+    fn release(&mut self, actor: &ActorId);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use qa_core::math::vec3;
+
+    use std::cell::RefCell;
+
+    use crate::q3::base::shared::definitions::{EntityType, Product};
+    use std::rc::Rc;
+
+    #[test]
+    fn mover_binary_cycle() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        driver.combat.product = Product::Baseq3;
+        let runtime = MoverRuntime::new(900);
+        let slot = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[slot].pos1 = vec3(0.0, 0.0, 0.0);
+        driver.pool.entities[slot].pos2 = vec3(0.0, 0.0, 100.0);
+        let variables = SpawnVariables::new(Vec::new()).unwrap();
+        let rt = Rc::new(RefCell::new(runtime));
+        MoverRuntime::bind_save_callbacks(&rt, &mut driver).unwrap();
+        rt.borrow().initialize_binary(&mut driver, slot, &variables).unwrap();
+        assert_eq!(driver.pool.entities[slot].s.e_type, EntityType::EtMover as i32);
+        assert!(driver.pool.entities[slot].s.pos.duration >= 1);
+        rt.borrow().use_binary(&mut driver, slot, None, None).unwrap();
+        assert_eq!(driver.pool.entities[slot].mover_state, MoverState::OneToTwo as i32);
+        assert_eq!(driver.portals, vec![(slot, true)]);
+        rt.borrow()
+            .set_state(&mut driver, slot, MoverState::OneToTwo, 1000)
+            .unwrap();
+        rt.borrow().reached_binary(&mut driver, slot).unwrap();
+        assert_eq!(driver.pool.entities[slot].mover_state, MoverState::Pos2 as i32);
+        assert_eq!(driver.use_targets_calls.len(), 1);
+        rt.borrow().return_to_pos1(&mut driver, slot).unwrap();
+        assert_eq!(driver.pool.entities[slot].mover_state, MoverState::TwoToOne as i32);
+        driver.combat.product = Product::Missionpack;
+        assert!(rt.borrow().run(&mut driver, slot).is_err());
     }
 }

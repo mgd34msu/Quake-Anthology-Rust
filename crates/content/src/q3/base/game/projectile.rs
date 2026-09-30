@@ -8,10 +8,15 @@ use qa_core::math::length3;
 use qa_core::math::normalize3;
 use qa_core::math::scale3;
 use qa_core::math::vec3;
+use qa_core::math::Plane;
 use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::ballistics_math::{q3_bounce_velocity, q3_missile_hit_time};
+use crate::q3::base::game::missile::{snap_vector, snap_vector_towards};
+use crate::q3::base::shared::definitions::EVENT_VALID_MSEC;
+use crate::q3::base::shared::trajectory::{evaluate_trajectory, evaluate_trajectory_delta, Trajectory, TrajectoryType};
+use crate::q3::base::world::{ActorTraceHit, ActorTraceResult, TraceContact, TraceSolidity};
 
 // ---------------------------------------------------------------------------
 // projectile.ts: shared missile simulation
@@ -39,7 +44,7 @@ pub struct Q3Projectile {
     /// Damage point.
     pub damage_point: Vec3,
     /// Trajectory.
-    pub trajectory: Q3Trajectory,
+    pub trajectory: Trajectory,
     /// Flags.
     pub flags: i32,
     /// Pass actor.
@@ -128,7 +133,7 @@ pub trait Q3ProjectileHost {
     /// Release (`release`).
     fn release(&mut self);
     /// Trace (`trace`).
-    fn trace(&mut self, start: Vec3, end: Vec3, pass: Option<&ActorId>) -> Q3TraceResult;
+    fn trace(&mut self, start: Vec3, end: Vec3, pass: Option<&ActorId>) -> ActorTraceResult;
     /// Resolve a target (`target`).
     fn target(&mut self, actor: &ActorId) -> Option<Q3ProjectileTarget>;
     /// World actor (`worldActor`).
@@ -157,7 +162,7 @@ pub trait Q3ProjectileHost {
         false
     }
     /// Special impact (`special.impact`, default false for null).
-    fn special_impact(&mut self, trace: &Q3TraceResult, target: &ActorId) -> bool {
+    fn special_impact(&mut self, trace: &ActorTraceResult, target: &ActorId) -> bool {
         let _ = (trace, target);
         false
     }
@@ -177,7 +182,7 @@ pub struct ProjectileLaunch {
     /// Expiry time.
     pub expires: i32,
     /// Trajectory.
-    pub trajectory: Q3Trajectory,
+    pub trajectory: Trajectory,
 }
 
 /// Build a launch trajectory (`q3LaunchProjectile`).
@@ -192,11 +197,11 @@ pub fn q3_launch_projectile(
 ) -> ProjectileLaunch {
     ProjectileLaunch {
         expires: time.wrapping_add(duration),
-        trajectory: Q3Trajectory {
+        trajectory: Trajectory {
             trajectory_type: if gravity {
-                TrajectoryType::Gravity
+                TrajectoryType::TrGravity
             } else {
-                TrajectoryType::Linear
+                TrajectoryType::TrLinear
             },
             time: time.wrapping_sub(50),
             duration: 0,
@@ -206,15 +211,15 @@ pub fn q3_launch_projectile(
     }
 }
 
-pub(crate) fn trace_normal(trace: &Q3TraceResult) -> Vec3 {
+pub(crate) fn trace_normal(trace: &ActorTraceResult) -> Vec3 {
     match trace.contact {
-        Q3TraceContact::Plane { normal, .. } => normal,
-        Q3TraceContact::None => vec3(0.0, 0.0, 0.0),
+        TraceContact::Plane { plane } => plane.normal,
+        TraceContact::None => vec3(0.0, 0.0, 0.0),
     }
 }
 
 /// Bounce a projectile (`q3BounceProjectile`).
-pub fn q3_bounce_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3ProjectileHost, trace: &Q3TraceResult) {
+pub fn q3_bounce_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3ProjectileHost, trace: &ActorTraceResult) {
     let hit_time = q3_missile_hit_time(host.previous_time(), host.time(), trace.fraction);
     let plane = trace_normal(trace);
     let half = projectile.flags & 0x20 != 0;
@@ -253,9 +258,9 @@ pub fn q3_explode_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3Pro
 }
 
 /// Impact a projectile (`q3ImpactProjectile`).
-pub fn q3_impact_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3ProjectileHost, trace: &Q3TraceResult) {
+pub fn q3_impact_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3ProjectileHost, trace: &ActorTraceResult) {
     let actor = match &trace.hit {
-        Q3TraceHit::Actor(actor) => actor.clone(),
+        ActorTraceHit::Actor { actor } => actor.clone(),
         _ => host.world_actor(),
     };
     let plane = trace_normal(trace);
@@ -280,10 +285,12 @@ pub fn q3_impact_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3Proj
         if let ReflectionOutcome::Hit { bounce_direction } = effect {
             let half = projectile.flags & 0x20;
             projectile.flags &= !0x20;
-            let reflected = Q3TraceResult {
-                contact: Q3TraceContact::Plane {
-                    normal: bounce_direction,
-                    distance: 0.0,
+            let reflected = ActorTraceResult {
+                contact: TraceContact::Plane {
+                    plane: Plane {
+                        normal: bounce_direction,
+                        distance: 0.0,
+                    },
                 },
                 ..trace.clone()
             };
@@ -356,7 +363,7 @@ pub fn q3_step_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3Projec
     let destination = evaluate_trajectory(&projectile.trajectory, host.time());
     let pass = projectile.pass.clone();
     let mut trace = host.trace(origin, destination, pass.as_ref());
-    if trace.solidity != Q3Solidity::Clear {
+    if trace.solidity != TraceSolidity::Clear {
         let mut stuck = host.trace(origin, origin, pass.as_ref());
         stuck.fraction = 0.0;
         trace = stuck;
@@ -388,4 +395,122 @@ pub fn q3_step_projectile(projectile: &mut Q3Projectile, host: &mut dyn Q3Projec
     }
     host.moved();
     host.think();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use qa_core::identity::ActorId;
+
+    use qa_core::math::vec3;
+
+    use qa_core::math::Vec3;
+
+    use crate::q3::base::game::ballistics_math::{q3_bounce_velocity, q3_missile_hit_time};
+    use crate::q3::base::game::missile::{snap_vector, snap_vector_towards};
+    use crate::q3::base::world::ActorTraceResult;
+
+    #[test]
+    fn projectile_launch_bounce_and_step() {
+        let owner = test_owner();
+        let actor = owner.actor(1, 1);
+        let launch = q3_launch_projectile(vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), 100.0, false, 5000, 1000);
+        assert_eq!(launch.expires, 6000);
+        assert_eq!(launch.trajectory.delta, vec3(100.0, 0.0, 0.0));
+        assert_eq!(q3_missile_hit_time(0, 100, 0.5), 50);
+        assert_eq!(
+            q3_bounce_velocity(vec3(1.0, -1.0, 0.0), vec3(0.0, 1.0, 0.0), false),
+            vec3(1.0, 1.0, 0.0)
+        );
+        assert_eq!(snap_vector(vec3(1.6, -1.6, 0.0)), vec3(1.0, -1.0, 0.0));
+        assert_eq!(
+            snap_vector_towards(vec3(1.2, 1.2, 0.0), vec3(5.0, 0.0, 0.0)),
+            vec3(2.0, 1.0, 0.0)
+        );
+        struct Host {
+            origin: Vec3,
+            live: bool,
+            released: bool,
+            moved: usize,
+            world: ActorId,
+        }
+        impl Q3ProjectileHost for Host {
+            fn time(&self) -> i32 {
+                1100
+            }
+            fn previous_time(&self) -> i32 {
+                1000
+            }
+            fn is_live(&mut self) -> bool {
+                self.live
+            }
+            fn phase(&mut self) -> ProjectilePhase {
+                ProjectilePhase::Flight
+            }
+            fn event_time(&mut self) -> i32 {
+                0
+            }
+            fn origin(&mut self) -> Vec3 {
+                self.origin
+            }
+            fn move_to(&mut self, origin: Vec3, _velocity: Vec3) {
+                self.origin = origin;
+            }
+            fn set_origin(&mut self, origin: Vec3) {
+                self.origin = origin;
+            }
+            fn link(&mut self) {}
+            fn release(&mut self) {
+                self.released = true;
+                self.live = false;
+            }
+            fn trace(&mut self, _start: Vec3, end: Vec3, _pass: Option<&ActorId>) -> ActorTraceResult {
+                clear_trace(end)
+            }
+            fn target(&mut self, _actor: &ActorId) -> Option<Q3ProjectileTarget> {
+                None
+            }
+            fn world_actor(&mut self) -> ActorId {
+                self.world.clone()
+            }
+            fn emit(&mut self, _event: &Q3ProjectileImpact) {}
+            fn retain(&mut self) {}
+            fn damage(&mut self, _target: &ActorId, _direction: Vec3, _point: Vec3) {}
+            fn radius(&mut self, _origin: Vec3, _ignore: Option<&ActorId>) -> bool {
+                false
+            }
+            fn accuracy(&mut self) {}
+            fn think(&mut self) {}
+            fn moved(&mut self) {
+                self.moved += 1;
+            }
+        }
+        let mut host = Host {
+            origin: vec3(0.0, 0.0, 0.0),
+            live: true,
+            released: false,
+            moved: 0,
+            world: owner.actor(1022, 1),
+        };
+        let mut projectile = Q3Projectile {
+            actor: actor.clone(),
+            owner: actor,
+            weapon: 5,
+            direct: 100,
+            splash: 0,
+            radius: 0,
+            method: 6,
+            splash_method: 7,
+            damage_point: vec3(0.0, 0.0, 0.0),
+            trajectory: launch.trajectory,
+            flags: 0,
+            pass: None,
+        };
+        q3_step_projectile(&mut projectile, &mut host);
+        assert_eq!(host.moved, 1);
+        assert!(!host.released);
+    }
 }

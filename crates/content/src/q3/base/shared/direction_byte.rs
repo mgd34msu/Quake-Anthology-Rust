@@ -888,4 +888,14 @@ mod tests {
         assert_eq!(byte_to_direction(162), ZERO_DIRECTION);
         assert_eq!(byte_to_direction(999), ZERO_DIRECTION);
     }
+
+    #[test]
+    fn direction_byte_round_trip() {
+        assert_eq!(direction_to_byte(None), 0);
+        assert_eq!(direction_to_byte(Some(vec3(0.0, 0.0, 0.0))), 0);
+        assert_eq!(direction_to_byte(Some(vec3(0.0, 0.0, 1.0))), 5);
+        assert_eq!(byte_to_direction(5), vec3(0.0, 0.0, 1.0));
+        assert_eq!(byte_to_direction(999), vec3(0.0, 0.0, 0.0));
+        assert_eq!(byte_to_direction(-1), vec3(0.0, 0.0, 0.0));
+    }
 }

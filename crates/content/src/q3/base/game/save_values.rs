@@ -12,9 +12,10 @@ use crate::value::SaveReader;
 use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::save_level::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{Q3GameError, Q3PlayerState};
+use crate::q3::base::shared::entity_state::EntityState;
 
 // ---------------------------------------------------------------------------
 // save-values.ts: value structs with capture/restore/read
@@ -1164,7 +1165,7 @@ pub struct NetworkValues {
 
 /// Capture network values (`captureNetworkValues`).
 #[must_use]
-pub fn capture_network_values(source: &Q3EntityState) -> NetworkValues {
+pub fn capture_network_values(source: &EntityState) -> NetworkValues {
     NetworkValues {
         number: source.number,
         e_type: source.e_type,
@@ -1196,7 +1197,7 @@ pub fn capture_network_values(source: &Q3EntityState) -> NetworkValues {
 }
 
 /// Restore network values (`restoreNetworkValues`).
-pub fn restore_network_values(target: &mut Q3EntityState, state: &NetworkValues) {
+pub fn restore_network_values(target: &mut EntityState, state: &NetworkValues) {
     target.number = state.number;
     target.e_type = state.e_type;
     target.e_flags = state.e_flags;
@@ -1454,4 +1455,87 @@ pub fn read_level_values(reader: &SaveReader) -> Result<LevelValues, Q3GameError
 /// Read a vector (`readVector`).
 pub fn read_save_vector(reader: &SaveReader) -> Result<Vec3, Q3GameError> {
     vec_from_reader(reader)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::save_module_values::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use crate::value::SaveReader;
+
+    use qa_core::math::vec3;
+
+    use crate::q3::base::shared::definitions::Product;
+
+    #[test]
+    fn save_values_round_trip() {
+        let owner = test_owner();
+        let mut entity = GameEntity::new(5, owner.actor(5, 1)).unwrap();
+        entity.spawnflags = 3;
+        entity.model = Some("m".to_string());
+        entity.pos1 = vec3(1.0, 2.0, 3.0);
+        entity.wait = 1.5;
+        let values = capture_entity_values(&entity);
+        let read = read_entity_values(&SaveReader::at(&entity_values_to_json(&values), "test")).unwrap();
+        assert_eq!(values, read);
+        let mut restored = GameEntity::new(5, owner.actor(5, 1)).unwrap();
+        restore_entity_values(&mut restored, &read);
+        assert_eq!(restored.spawnflags, 3);
+        assert_eq!(restored.pos1, vec3(1.0, 2.0, 3.0));
+        let mut client = GameClient::new(Product::Baseq3);
+        client.buttons = 9;
+        client.ps.viewheight = 26.0;
+        client.pers.netname = "name".to_string();
+        let client_read = read_client_values(&SaveReader::at(
+            &client_values_to_json(&capture_client_values(&client)),
+            "test",
+        ))
+        .unwrap();
+        assert_eq!(client_read.buttons, 9);
+        let player_read = read_player_values(&SaveReader::at(
+            &player_values_to_json(&capture_player_values(&client.ps)),
+            "test",
+        ))
+        .unwrap();
+        assert_eq!(player_read.viewheight, 26.0);
+        let pers_read = read_persistant_values(&SaveReader::at(
+            &persistant_values_to_json(&capture_persistant_values(&client.pers)),
+            "test",
+        ))
+        .unwrap();
+        assert_eq!(pers_read.netname, "name");
+        let network_read = read_network_values(&SaveReader::at(
+            &network_values_to_json(&capture_network_values(&entity.s)),
+            "test",
+        ))
+        .unwrap();
+        assert_eq!(network_read.number, entity.s.number);
+        let mut level = Q3GameLevel {
+            time: 42,
+            ..Default::default()
+        };
+        level.vote.string = "map x".to_string();
+        let level_json = capture_q3_level(&level);
+        let mut restored_level = Q3GameLevel::default();
+        restore_q3_level(&mut restored_level, &level_json).unwrap();
+        assert_eq!(restored_level.time, 42);
+        assert_eq!(restored_level.vote.string, "map x");
+        let cvar = Q3CvarSnapshot {
+            name: "g_x".to_string(),
+            value: "1".to_string(),
+            reset_value: "0".to_string(),
+            latched_value: None,
+            flags: 1,
+            modified: true,
+            modification_count: 2,
+            numeric_value: 1.0,
+            integer_value: 1,
+        };
+        let cvar_read = read_module_cvar(&SaveReader::at(&capture_module_cvar(&cvar), "test")).unwrap();
+        assert_eq!(cvar_read, cvar);
+    }
 }

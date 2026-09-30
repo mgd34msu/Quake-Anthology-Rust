@@ -19,9 +19,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::combat::{q3_accuracy_hit, AccuracySubject, DamageFlags};
+use crate::q3::base::game::hitscan::{
+    BulletEmitEvent, Q3BulletAttack, Q3BulletTarget, Q3ContactEvent, RailShot, RailStatistics,
+};
+use crate::q3::base::game::missile::{snap_vector, MissileLauncher};
 use crate::q3::base::game::mover::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, set_origin, EntityPool, Q3Driver, Q3GameError};
+use crate::q3::base::shared::definitions::{
+    EntityEvent, EntityType, GameType, PersistentIndex, Powerup, Product, Weapon,
+};
+use crate::q3::base::shared::direction_byte::direction_to_byte;
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::world::{ActorTraceQuery, ActorTraceResult, TraceShape};
 
 // ---------------------------------------------------------------------------
 // weapon.ts: weapons (g_weapon.c, g_combat.c ray/invulnerability helpers)
@@ -80,14 +91,14 @@ pub fn q3_weapon_damage_factor(
     client: &GameClient,
     quad_factor: f32,
     persistant_powerup_tag: Option<i32>,
-    product: Q3Product,
+    product: Product,
 ) -> f32 {
-    let mut factor = if client.ps.powerups.get(Q3Powerup::Quad as usize) != 0 {
+    let mut factor = if client.ps.powerups.get(Powerup::PwQuad as usize) != 0 {
         quad_factor
     } else {
         1.0
     };
-    if product == Q3Product::Missionpack && persistant_powerup_tag == Some(Q3Powerup::Doubler as i32) {
+    if product == Product::Missionpack && persistant_powerup_tag == Some(Powerup::PwDoubler as i32) {
         factor *= 2.0;
     }
     factor
@@ -120,7 +131,7 @@ pub fn invulnerability_effect(
     direction: Vec3,
     point: Vec3,
 ) -> Result<InvulnerabilityImpact, Q3GameError> {
-    if driver.pool().product() != Q3Product::Missionpack {
+    if driver.pool().product() != Product::Missionpack {
         return Err(failure("Invulnerability effects require missionpack"));
     }
     let Some(client) = driver.pool().entity(target).and_then(|entity| entity.client) else {
@@ -138,7 +149,7 @@ pub fn invulnerability_effect(
         SphereIntersections::None => return Ok(InvulnerabilityImpact::Miss),
     };
     let _ = intersections;
-    let impact = driver.pool().temp_entity(origin, Q3EntityEvent::InvulImpact);
+    let impact = driver.pool().temp_entity(origin, EntityEvent::EvInvulImpact);
     let offset = sub3(impact_point, origin);
     let angles = vector_to_angles(offset);
     let mut pitch = angles.x + 90.0;
@@ -188,7 +199,7 @@ pub fn log_accuracy_hit(game_type: i32, driver: &mut dyn Q3Driver, target: usize
         return false;
     };
     q3_accuracy_hit(
-        game_type >= Q3GameType::Team as i32,
+        game_type >= GameType::GtTeam as i32,
         &accuracy_subject(driver.pool(), target, &target_actor),
         &accuracy_subject(driver.pool(), attacker, &attacker_actor),
     )
@@ -205,17 +216,17 @@ pub struct WeaponHitscanHost {
 }
 
 impl WeaponHitscanHost {
-    fn trace(&mut self, driver: &mut dyn Q3Driver, start: Vec3, end: Vec3, pass: Option<&ActorId>) -> Q3TraceResult {
-        driver.spatial().trace_actor(&Q3TraceQuery {
+    fn trace(&mut self, driver: &mut dyn Q3Driver, start: Vec3, end: Vec3, pass: Option<&ActorId>) -> ActorTraceResult {
+        driver.spatial().trace_actor(&ActorTraceQuery {
             start,
             end,
-            shape: Q3TraceShape::Point,
+            shape: TraceShape::Point,
             pass_actor: pass.cloned(),
             mask: MASK_SHOT,
         })
     }
 
-    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<BulletTarget> {
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget> {
         let state = driver.combat().actor_combat_state(actor)?;
         let target = driver.participant(actor);
         let native = match &target {
@@ -243,14 +254,14 @@ impl WeaponHitscanHost {
             },
             |slot| accuracy_subject(driver.pool(), slot, actor),
         );
-        let team_game = driver.combat().game_type() >= Q3GameType::Team as i32;
+        let team_game = driver.combat().game_type() >= GameType::GtTeam as i32;
         let time = driver.combat().time();
         let invulnerable = native
             .and_then(|slot| driver.pool().entity(slot))
             .and_then(|entity| entity.client)
             .and_then(|client| driver.pool().client(client))
             .is_some_and(|client| client.invulnerability_time > time);
-        Some(BulletTarget {
+        Some(Q3BulletTarget {
             damageable: observed.damageable,
             player: observed.player,
             accuracy_eligible: q3_accuracy_hit(team_game, &observed, &attacker_state),
@@ -296,21 +307,21 @@ impl BulletHost for WeaponHitscanHost {
         start: Vec3,
         end: Vec3,
         pass: Option<&ActorId>,
-    ) -> Q3TraceResult {
+    ) -> ActorTraceResult {
         self.trace(driver, start, end, pass)
     }
 
-    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<BulletTarget> {
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget> {
         WeaponHitscanHost::hit_target(self, driver, actor)
     }
 
-    fn emit_hit(&mut self, driver: &mut dyn Q3Driver, hit: &BulletHit) {
+    fn emit_hit(&mut self, driver: &mut dyn Q3Driver, hit: &BulletEmitEvent) {
         let event = driver.pool().temp_entity(
             hit.point,
             if hit.flesh {
-                Q3EntityEvent::BulletHitFlesh
+                EntityEvent::EvBulletHitFlesh
             } else {
-                Q3EntityEvent::BulletHitWall
+                EntityEvent::EvBulletHitWall
             },
         );
         let flesh_target = if hit.flesh { hit.target.clone() } else { None };
@@ -380,32 +391,32 @@ impl ContactHost for WeaponHitscanHost {
         start: Vec3,
         end: Vec3,
         pass: Option<&ActorId>,
-    ) -> Q3TraceResult {
+    ) -> ActorTraceResult {
         self.trace(driver, start, end, pass)
     }
 
-    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<BulletTarget> {
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget> {
         WeaponHitscanHost::hit_target(self, driver, actor)
     }
 
-    fn emit_contact(&mut self, driver: &mut dyn Q3Driver, event: &ContactEvent) {
+    fn emit_contact(&mut self, driver: &mut dyn Q3Driver, event: &Q3ContactEvent) {
         match event {
-            ContactEvent::GauntletQuad => {
-                driver.pool().add_event(self.entity, Q3EntityEvent::PowerupQuad, 0);
+            Q3ContactEvent::GauntletQuad => {
+                driver.pool().add_event(self.entity, EntityEvent::EvPowerupQuad, 0);
             }
-            ContactEvent::LightningReflection { start, end } => {
-                let event = driver.pool().temp_entity(*start, Q3EntityEvent::Lightningbolt);
+            Q3ContactEvent::LightningReflection { start, end } => {
+                let event = driver.pool().temp_entity(*start, EntityEvent::EvLightningbolt);
                 if let Some(event) = driver.pool().entity_mut(event) {
                     event.s.origin2 = *end;
                 }
             }
-            ContactEvent::Miss { point, normal } => {
-                let event = driver.pool().temp_entity(*point, Q3EntityEvent::MissileMiss);
+            Q3ContactEvent::Miss { point, normal } => {
+                let event = driver.pool().temp_entity(*point, EntityEvent::EvMissileMiss);
                 if let Some(event) = driver.pool().entity_mut(event) {
                     event.s.event_parm = direction_to_byte(Some(*normal)) as i32;
                 }
             }
-            ContactEvent::Hit { point, normal, target } => {
+            Q3ContactEvent::Hit { point, normal, target } => {
                 let participant = driver.participant(target);
                 let slot = match participant {
                     Participant::Entity(slot)
@@ -416,7 +427,7 @@ impl ContactHost for WeaponHitscanHost {
                     _ => panic!("Admitted Q3 map player has no native client behavior record"),
                 };
                 let number = driver.pool().entity(slot).map(|entity| entity.s.number).unwrap_or(0);
-                let event = driver.pool().temp_entity(*point, Q3EntityEvent::MissileHit);
+                let event = driver.pool().temp_entity(*point, EntityEvent::EvMissileHit);
                 if let Some(event) = driver.pool().entity_mut(event) {
                     event.s.other_entity_num = number;
                     event.s.event_parm = direction_to_byte(Some(*normal)) as i32;
@@ -455,7 +466,7 @@ impl ContactHost for WeaponHitscanHost {
 
 impl ShotgunHost for WeaponHitscanHost {
     fn begin_shotgun(&mut self, driver: &mut dyn Q3Driver, muzzle: Vec3, direction: Vec3) -> usize {
-        let event = driver.pool().temp_entity(muzzle, Q3EntityEvent::Shotgun);
+        let event = driver.pool().temp_entity(muzzle, EntityEvent::EvShotgun);
         if let Some(event) = driver.pool().entity_mut(event) {
             event.s.origin2 = direction;
         }
@@ -482,11 +493,11 @@ impl RailHost for WeaponHitscanHost {
         start: Vec3,
         end: Vec3,
         pass: Option<&ActorId>,
-    ) -> Q3TraceResult {
+    ) -> ActorTraceResult {
         self.trace(driver, start, end, pass)
     }
 
-    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<BulletTarget> {
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget> {
         WeaponHitscanHost::hit_target(self, driver, actor)
     }
 
@@ -508,7 +519,7 @@ impl RailHost for WeaponHitscanHost {
             .entity(self.entity)
             .map(|entity| entity.s.client_num)
             .unwrap_or(0);
-        let event = driver.pool().temp_entity(shot.end, Q3EntityEvent::Railtrail);
+        let event = driver.pool().temp_entity(shot.end, EntityEvent::EvRailtrail);
         if let Some(event) = driver.pool().entity_mut(event) {
             event.s.client_num = client_number;
             event.s.origin2 = shot.start;
@@ -586,7 +597,7 @@ impl WeaponRuntime {
         Ok(q3_weapon_damage_factor(&snapshot, self.quad_factor, tag, product))
     }
 
-    fn attack(&self, driver: &mut dyn Q3Driver, slot: usize, quad: f32) -> Result<BulletAttack, Q3GameError> {
+    fn attack(&self, driver: &mut dyn Q3Driver, slot: usize, quad: f32) -> Result<Q3BulletAttack, Q3GameError> {
         let client = client_of(driver.pool(), slot)?;
         let (viewangles, viewheight) = {
             let client_ref = driver
@@ -604,7 +615,7 @@ impl WeaponRuntime {
         };
         let vectors = angle_vectors(viewangles);
         let eye = vec3(pos_base.x, pos_base.y, pos_base.z + viewheight);
-        Ok(BulletAttack {
+        Ok(Q3BulletAttack {
             forward: vectors.forward,
             right: vectors.right,
             up: vectors.up,
@@ -652,7 +663,7 @@ impl WeaponRuntime {
         let has_quad = driver
             .pool()
             .client(client)
-            .is_some_and(|client| client.ps.powerups.get(Q3Powerup::Quad as usize) != 0);
+            .is_some_and(|client| client.ps.powerups.get(Powerup::PwQuad as usize) != 0);
         Ok(driver.gauntlet_attack(&mut host, &shooter, &mut attack, has_quad))
     }
 
@@ -660,7 +671,7 @@ impl WeaponRuntime {
         &self,
         driver: &mut dyn Q3Driver,
         slot: usize,
-        attack: &mut BulletAttack,
+        attack: &mut Q3BulletAttack,
         spread: i32,
         amount: i32,
     ) -> Result<(), Q3GameError> {
@@ -674,7 +685,7 @@ impl WeaponRuntime {
         Ok(())
     }
 
-    fn shotgun(&self, driver: &mut dyn Q3Driver, slot: usize, attack: &mut BulletAttack) -> Result<(), Q3GameError> {
+    fn shotgun(&self, driver: &mut dyn Q3Driver, slot: usize, attack: &mut Q3BulletAttack) -> Result<(), Q3GameError> {
         let mut host = self.contact_host(driver, slot, 1)?;
         let shooter = driver
             .pool()
@@ -685,7 +696,7 @@ impl WeaponRuntime {
         Ok(())
     }
 
-    fn railgun(&self, driver: &mut dyn Q3Driver, slot: usize, attack: &mut BulletAttack) -> Result<(), Q3GameError> {
+    fn railgun(&self, driver: &mut dyn Q3Driver, slot: usize, attack: &mut Q3BulletAttack) -> Result<(), Q3GameError> {
         let mut host = self.contact_host(driver, slot, 10)?;
         let shooter = driver
             .pool()
@@ -708,7 +719,7 @@ impl WeaponRuntime {
                 client_ref
                     .ps
                     .persistant
-                    .get(Q3PersistentIndex::ImpressiveCount as i32 as usize),
+                    .get(PersistentIndex::PersImpressiveCount as i32 as usize),
                 client_ref.reward_time,
             )
         };
@@ -728,7 +739,7 @@ impl WeaponRuntime {
             client_ref.accuracy_hits = state.hits;
             if state.awarded {
                 client_ref.ps.persistant.set(
-                    Q3PersistentIndex::ImpressiveCount as i32 as usize,
+                    PersistentIndex::PersImpressiveCount as i32 as usize,
                     state.impressive_count,
                 );
                 client_ref.ps.e_flags = (client_ref.ps.e_flags & !AWARD_FLAGS) | 0x8000;
@@ -741,7 +752,12 @@ impl WeaponRuntime {
         Ok(())
     }
 
-    fn lightning(&self, driver: &mut dyn Q3Driver, slot: usize, attack: &mut BulletAttack) -> Result<(), Q3GameError> {
+    fn lightning(
+        &self,
+        driver: &mut dyn Q3Driver,
+        slot: usize,
+        attack: &mut Q3BulletAttack,
+    ) -> Result<(), Q3GameError> {
         let mut host = self.contact_host(driver, slot, 11)?;
         let shooter = driver
             .pool()
@@ -759,10 +775,10 @@ impl WeaponRuntime {
         let quad = self.quad(driver, slot)?;
         let weapon = driver.pool().entity(slot).map(|entity| entity.s.weapon).unwrap_or(0);
         driver.pool().rankings().fire_weapon(slot as i32, weapon);
-        if weapon != Q3Weapon::GrapplingHook as i32 && weapon != Q3Weapon::Gauntlet as i32 {
+        if weapon != Weapon::WpGrapplingHook as i32 && weapon != Weapon::WpGauntlet as i32 {
             let product = driver.combat().product();
             if let Some(client_ref) = driver.pool().client_mut(client) {
-                let shots = if product == Q3Product::Missionpack && weapon == Q3Weapon::Nailgun as i32 {
+                let shots = if product == Product::Missionpack && weapon == Weapon::WpNailgun as i32 {
                     15
                 } else {
                     1
@@ -771,24 +787,24 @@ impl WeaponRuntime {
             }
         }
         let mut attack = self.attack(driver, slot, quad)?;
-        if weapon == Q3Weapon::Gauntlet as i32 {
+        if weapon == Weapon::WpGauntlet as i32 {
             return Ok(());
         }
-        if weapon == Q3Weapon::Lightning as i32 {
+        if weapon == Weapon::WpLightning as i32 {
             return self.lightning(driver, slot, &mut attack);
         }
-        if weapon == Q3Weapon::Shotgun as i32 {
+        if weapon == Weapon::WpShotgun as i32 {
             return self.shotgun(driver, slot, &mut attack);
         }
-        if weapon == Q3Weapon::Machinegun as i32 {
-            let amount = if driver.combat().game_type() == Q3GameType::Team as i32 {
+        if weapon == Weapon::WpMachinegun as i32 {
+            let amount = if driver.combat().game_type() == GameType::GtTeam as i32 {
                 5
             } else {
                 7
             };
             return self.bullet(driver, slot, &mut attack, 200, amount);
         }
-        if weapon == Q3Weapon::GrenadeLauncher as i32 {
+        if weapon == Weapon::WpGrenadeLauncher as i32 {
             attack.forward = normalize3(vec3(attack.forward.x, attack.forward.y, attack.forward.z + 0.2));
             let projectile = self.launcher.fire_grenade(driver, slot, attack.muzzle, attack.forward);
             let (damage, splash) = driver
@@ -802,7 +818,7 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::RocketLauncher as i32 {
+        if weapon == Weapon::WpRocketLauncher as i32 {
             let projectile = self.launcher.fire_rocket(driver, slot, attack.muzzle, attack.forward);
             let (damage, splash) = driver
                 .pool()
@@ -815,7 +831,7 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::Plasmagun as i32 {
+        if weapon == Weapon::WpPlasmagun as i32 {
             let projectile = self.launcher.fire_plasma(driver, slot, attack.muzzle, attack.forward);
             let (damage, splash) = driver
                 .pool()
@@ -828,10 +844,10 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::Railgun as i32 {
+        if weapon == Weapon::WpRailgun as i32 {
             return self.railgun(driver, slot, &mut attack);
         }
-        if weapon == Q3Weapon::Bfg as i32 {
+        if weapon == Weapon::WpBfg as i32 {
             let projectile = self.launcher.fire_bfg(driver, slot, attack.muzzle, attack.forward);
             let (damage, splash) = driver
                 .pool()
@@ -844,7 +860,7 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::GrapplingHook as i32 {
+        if weapon == Weapon::WpGrapplingHook as i32 {
             let (fire_held, hook) = {
                 let client_ref = driver
                     .pool()
@@ -860,8 +876,8 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::Nailgun as i32 {
-            if driver.combat().product() == Q3Product::Missionpack {
+        if weapon == Weapon::WpNailgun as i32 {
+            if driver.combat().product() == Product::Missionpack {
                 for _ in 0..15 {
                     let projectile =
                         self.launcher
@@ -879,8 +895,8 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::ProxLauncher as i32 {
-            if driver.combat().product() == Q3Product::Missionpack {
+        if weapon == Weapon::WpProxLauncher as i32 {
+            if driver.combat().product() == Product::Missionpack {
                 attack.forward = normalize3(vec3(attack.forward.x, attack.forward.y, attack.forward.z + 0.2));
                 let projectile = self.launcher.fire_prox(driver, slot, attack.muzzle, attack.forward);
                 let (damage, splash) = driver
@@ -895,8 +911,8 @@ impl WeaponRuntime {
             }
             return Ok(());
         }
-        if weapon == Q3Weapon::Chaingun as i32 {
-            if driver.combat().product() == Q3Product::Missionpack {
+        if weapon == Weapon::WpChaingun as i32 {
+            if driver.combat().product() == Product::Missionpack {
                 return self.bullet(driver, slot, &mut attack, 600, 7);
             }
             return Ok(());
@@ -907,13 +923,13 @@ impl WeaponRuntime {
     /// Start the kamikaze timer (`startKamikaze`), returning the timer slot.
     pub fn start_kamikaze(&self, driver: &mut dyn Q3Driver, slot: usize) -> Result<usize, Q3GameError> {
         self.owned(driver, slot)?;
-        if driver.combat().product() != Q3Product::Missionpack {
+        if driver.combat().product() != Product::Missionpack {
             return Err(failure("Kamikaze requires missionpack"));
         }
         let explosion = driver.pool().spawn_entity()?;
         let time = driver.combat().time();
         if let Some(entity) = driver.pool().entity_mut(explosion) {
-            entity.s.e_type = Q3EntityType::Events as i32 + Q3EntityEvent::Kamikaze as i32;
+            entity.s.e_type = EntityType::EtEvents as i32 + EntityEvent::EvKamikaze as i32;
             entity.event_time = time;
         }
         let (client, activator) = {
@@ -991,9 +1007,9 @@ impl WeaponRuntime {
                 entity.activator = Some(activator);
             }
         }
-        let event = driver.pool().temp_entity(position, Q3EntityEvent::GlobalTeamSound);
+        let event = driver.pool().temp_entity(position, EntityEvent::EvGlobalTeamSound);
         if let Some(event) = driver.pool().entity_mut(event) {
-            event.r.sv_flags |= ServerEntityFlags::BROADCAST;
+            event.r.sv_flags |= ServerEntityFlags::Broadcast as i32;
             event.s.event_parm = 13;
         }
         Ok(explosion)
@@ -1164,5 +1180,223 @@ impl WeaponRuntime {
             }),
         )?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Bullet host services (`Q3BulletHost` weapon side).
+pub trait BulletHost {
+    /// Trace.
+    fn trace_hit(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        start: Vec3,
+        end: Vec3,
+        pass: Option<&ActorId>,
+    ) -> ActorTraceResult;
+    /// Resolve a target.
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget>;
+    /// Impact hook (`impact?`, default no-op).
+    fn impact(&mut self, _driver: &mut dyn Q3Driver, _point: Vec3) {}
+    /// Emit a hit.
+    fn emit_hit(&mut self, driver: &mut dyn Q3Driver, hit: &BulletEmitEvent);
+    /// Apply damage.
+    fn apply_damage(&mut self, driver: &mut dyn Q3Driver, target: &ActorId, direction: Vec3, point: Vec3, amount: i32);
+    /// Credit an accuracy hit.
+    fn credit_accuracy(&mut self, driver: &mut dyn Q3Driver);
+    /// Invulnerability impact (missionpack; default miss).
+    fn invulnerability_impact(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        target: &ActorId,
+        direction: Vec3,
+        point: Vec3,
+    ) -> InvulnerabilityImpact {
+        let _ = (driver, target, direction, point);
+        InvulnerabilityImpact::Miss
+    }
+}
+
+/// Contact host services (`Q3ContactHost` weapon side).
+pub trait ContactHost {
+    /// Trace.
+    fn trace_hit(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        start: Vec3,
+        end: Vec3,
+        pass: Option<&ActorId>,
+    ) -> ActorTraceResult;
+    /// Resolve a target.
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget>;
+    /// Impact hook (`impact?`, default no-op).
+    fn impact(&mut self, _driver: &mut dyn Q3Driver, _point: Vec3) {}
+    /// Emit an event.
+    fn emit_contact(&mut self, driver: &mut dyn Q3Driver, event: &Q3ContactEvent);
+    /// Apply damage.
+    fn apply_damage(&mut self, driver: &mut dyn Q3Driver, target: &ActorId, direction: Vec3, point: Vec3, amount: i32);
+    /// Credit an accuracy hit.
+    fn credit_accuracy(&mut self, driver: &mut dyn Q3Driver);
+    /// Invulnerability impact (missionpack; default miss).
+    fn invulnerability_impact(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        target: &ActorId,
+        direction: Vec3,
+        point: Vec3,
+    ) -> InvulnerabilityImpact {
+        let _ = (driver, target, direction, point);
+        InvulnerabilityImpact::Miss
+    }
+}
+
+/// Shotgun host services (`Q3ShotgunHost` weapon side).
+pub trait ShotgunHost: ContactHost {
+    /// Begin a shotgun event, returning its temp-entity slot.
+    fn begin_shotgun(&mut self, driver: &mut dyn Q3Driver, muzzle: Vec3, direction: Vec3) -> usize;
+    /// Record a pellet seed on the event entity.
+    fn emit_shotgun_seed(&mut self, driver: &mut dyn Q3Driver, event_slot: usize, seed: i32);
+}
+
+/// Rail host services (`Q3RailHost` weapon side).
+pub trait RailHost {
+    /// Trace.
+    fn trace_hit(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        start: Vec3,
+        end: Vec3,
+        pass: Option<&ActorId>,
+    ) -> ActorTraceResult;
+    /// Resolve a target.
+    fn hit_target(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<Q3BulletTarget>;
+    /// Impact hook (`impact?`, default no-op).
+    fn impact(&mut self, _driver: &mut dyn Q3Driver, _point: Vec3) {}
+    /// Whether the shooter is still the same native entity (`alive`).
+    fn is_alive(&mut self, driver: &mut dyn Q3Driver) -> bool;
+    /// Unlink an actor, returning it when a restore is required (`unlink`).
+    fn unlink_actor(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId) -> Option<ActorId>;
+    /// Restore an unlinked actor.
+    fn restore_actor(&mut self, driver: &mut dyn Q3Driver, actor: &ActorId);
+    /// Emit a trail (`trail`).
+    fn emit_trail(&mut self, driver: &mut dyn Q3Driver, shot: &RailShot);
+    /// Invulnerability impact (missionpack; default miss).
+    fn invulnerability_impact(
+        &mut self,
+        driver: &mut dyn Q3Driver,
+        target: &ActorId,
+        direction: Vec3,
+        point: Vec3,
+    ) -> InvulnerabilityImpact {
+        let _ = (driver, target, direction, point);
+        InvulnerabilityImpact::Miss
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use qa_core::math::vec3;
+    use qa_core::math::Bounds;
+
+    use std::cell::RefCell;
+
+    use crate::q3::base::shared::definitions::{EntityEvent, EntityType, Powerup, Product, Weapon};
+    use crate::q3::base::world::LinkState;
+    use std::rc::Rc;
+
+    #[test]
+    fn weapons_fire_and_kamikaze() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        let shooter = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[shooter].client = Some(0);
+        driver.pool.entities[shooter].s.weapon = Weapon::WpMachinegun as i32;
+        driver.pool.entities[shooter].s.pos.base = vec3(0.0, 0.0, 0.0);
+        driver.pool.clients[0].ps.viewheight = 26.0;
+        let launcher = Box::new(StubLauncher {
+            fires: Vec::new(),
+            damage: 10,
+            splash: 5,
+        });
+        let mut runtime = WeaponRuntime::new(3.0, launcher, Rc::new(|_, _| None), Rc::new(|_, _| {}));
+        runtime.fire(&mut driver, shooter).unwrap();
+        assert_eq!(driver.bullet_calls, vec![(200, 7)]);
+        assert_eq!(driver.pool.clients[0].accuracy_shots, 1);
+        let mut intersections_dir = vec3(1.0, 0.0, 0.0);
+        let hits = ray_sphere_intersections(vec3(0.0, 0.0, 0.0), 1.0, vec3(-3.0, 0.0, 0.0), &mut intersections_dir);
+        assert!(matches!(hits, SphereIntersections::Two(_, _)));
+        let mut miss_dir = vec3(0.0, 1.0, 0.0);
+        assert_eq!(
+            ray_sphere_intersections(vec3(0.0, 0.0, 0.0), 1.0, vec3(0.0, 0.0, 5.0), &mut miss_dir),
+            SphereIntersections::None
+        );
+        let client = GameClient::new(Product::Missionpack);
+        assert_eq!(q3_weapon_damage_factor(&client, 3.0, None, Product::Missionpack), 1.0);
+        let mut quad_client = GameClient::new(Product::Missionpack);
+        quad_client.ps.powerups.set(Powerup::PwQuad as usize, 9999);
+        assert_eq!(
+            q3_weapon_damage_factor(&quad_client, 3.0, Some(Powerup::PwDoubler as i32), Product::Missionpack),
+            6.0
+        );
+        assert!(!log_accuracy_hit(0, &mut driver, shooter, shooter));
+        let victim = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[victim].client = Some(1);
+        driver.pool.entities[victim].takedamage = true;
+        driver.pool.clients[1].ps.stats.set(0, 100);
+        driver.pool.entities[shooter].takedamage = true;
+        driver.pool.clients[0].ps.stats.set(0, 100);
+        assert!(log_accuracy_hit(0, &mut driver, victim, shooter));
+        let mut mission = StubDriver::new(&owner, Product::Missionpack);
+        mission.combat.product = Product::Missionpack;
+        let holder = mission.pool.spawn_entity().unwrap();
+        mission.pool.entities[holder].client = Some(0);
+        let reports = mission.pool.rankings().clone();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let seen_clone = Rc::clone(&seen);
+        reports
+            .attach(
+                Rc::new(move |report| seen_clone.borrow_mut().push(report)),
+                Rc::new(|| false),
+            )
+            .unwrap();
+        let launcher = Box::new(StubLauncher {
+            fires: Vec::new(),
+            damage: 10,
+            splash: 5,
+        });
+        let runtime = WeaponRuntime::new(3.0, launcher, Rc::new(|_, _| None), Rc::new(|_, _| {}));
+        let rt = Rc::new(RefCell::new(runtime));
+        WeaponRuntime::bind_save_callbacks(&rt, &mut mission).unwrap();
+        let timer = rt.borrow().start_kamikaze(&mut mission, holder).unwrap();
+        assert_eq!(
+            mission.pool.entities[timer].s.e_type,
+            EntityType::EtEvents as i32 + EntityEvent::EvKamikaze as i32
+        );
+        assert_eq!(mission.pool.entities[timer].activator, Some(holder));
+        assert_eq!(mission.combat.calls.len(), 1);
+        mission.world.area = vec![holder];
+        mission.world.links.insert(
+            holder,
+            LinkState {
+                absbounds: Bounds {
+                    min: vec3(-16.0, -16.0, -24.0),
+                    max: vec3(16.0, 16.0, 32.0),
+                },
+                linked: true,
+                linkcount: 1,
+            },
+        );
+        rt.borrow().kamikaze_damage(&mut mission, timer).unwrap();
+        assert_eq!(mission.pool.entities[timer].count, 100);
+        mission.pool.entities[timer].count = 2000;
+        rt.borrow().kamikaze_damage(&mut mission, timer).unwrap();
+        assert!(mission.pool.freed.contains(&timer));
     }
 }

@@ -10,7 +10,9 @@ use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::ballistics_math::*;
-use crate::q3::base::game::mirrors_game_sim::*;
+use crate::q3::base::game::entities::GameRandomMirror;
+use crate::q3::base::game::missile::{snap_vector, snap_vector_towards};
+use crate::q3::base::world::{ActorTraceHit, ActorTraceResult, TraceContact};
 
 // ---------------------------------------------------------------------------
 // Hitscan (hitscan.ts).
@@ -156,13 +158,13 @@ pub fn q3_bullet_fire(host: &Q3BulletHost, shooter: &ActorId, attack: &mut Q3Bul
         if (trace.surface_flags & SURF_NODAMAGE) != 0 {
             return;
         }
-        if !matches!(trace.hit, TraceHit::None) {
+        if !matches!(trace.hit, ActorTraceHit::None) {
             if let Some(impact) = &host.impact {
                 impact(trace.end);
             }
         }
         let actor = match &trace.hit {
-            TraceHit::Actor(actor) => Some(actor.clone()),
+            ActorTraceHit::Actor { actor } => Some(actor.clone()),
             _ => None,
         };
         let target = actor.as_ref().and_then(|actor| (host.target)(actor));
@@ -171,7 +173,7 @@ pub fn q3_bullet_fire(host: &Q3BulletHost, shooter: &ActorId, attack: &mut Q3Bul
         (host.emit)(BulletEmitEvent {
             point,
             normal: match &trace.contact {
-                TraceContact::Plane(plane) => plane.normal,
+                TraceContact::Plane { plane } => plane.normal,
                 TraceContact::None => vec3(0.0, 0.0, 0.0),
             },
             target: actor.clone(),
@@ -273,7 +275,7 @@ pub struct Q3ContactHost {
 /// Trace contact normal (`traceNormal`).
 pub(crate) fn trace_normal(trace: &ActorTraceResult) -> Vec3 {
     match &trace.contact {
-        TraceContact::Plane(plane) => plane.normal,
+        TraceContact::Plane { plane } => plane.normal,
         TraceContact::None => vec3(0.0, 0.0, 0.0),
     }
 }
@@ -305,7 +307,7 @@ pub fn q3_gauntlet_attack(host: &Q3ContactHost, shooter: &ActorId, attack: &Q3Bu
     if (trace.surface_flags & SURF_NODAMAGE) != 0 {
         return false;
     }
-    let TraceHit::Actor(actor) = &trace.hit else {
+    let ActorTraceHit::Actor { actor } = &trace.hit else {
         return false;
     };
     let target = (host.target)(actor);
@@ -344,7 +346,7 @@ pub fn q3_lightning_fire(host: &Q3ContactHost, shooter: &ActorId, attack: &mut Q
                 end: snap_vector(trace.end),
             });
         }
-        if matches!(trace.hit, TraceHit::None) {
+        if matches!(trace.hit, ActorTraceHit::None) {
             return;
         }
         if (trace.surface_flags & SURF_NODAMAGE) == 0 {
@@ -353,7 +355,7 @@ pub fn q3_lightning_fire(host: &Q3ContactHost, shooter: &ActorId, attack: &mut Q
             }
         }
         let actor = match &trace.hit {
-            TraceHit::Actor(actor) => Some(actor.clone()),
+            ActorTraceHit::Actor { actor } => Some(actor.clone()),
             _ => None,
         };
         let target = actor.as_ref().and_then(|actor| (host.target)(actor));
@@ -464,12 +466,12 @@ pub(crate) fn shotgun_pellet(
         if (trace.surface_flags & SURF_NODAMAGE) != 0 {
             return false;
         }
-        if !matches!(trace.hit, TraceHit::None) {
+        if !matches!(trace.hit, ActorTraceHit::None) {
             if let Some(impact) = &host.impact {
                 impact(trace.end);
             }
         }
-        let TraceHit::Actor(actor) = &trace.hit else {
+        let ActorTraceHit::Actor { actor } = &trace.hit else {
             return false;
         };
         let target = (host.target)(actor);
@@ -597,12 +599,12 @@ pub fn q3_rail_fire(host: &Q3RailHost, shooter: &ActorId, attack: &mut Q3BulletA
             break;
         }
         let current = (host.trace)(attack.muzzle, end, pass.clone());
-        if !matches!(current.hit, TraceHit::None) && (current.surface_flags & SURF_NODAMAGE) == 0 {
+        if !matches!(current.hit, ActorTraceHit::None) && (current.surface_flags & SURF_NODAMAGE) == 0 {
             if let Some(impact) = &host.impact {
                 impact(current.end);
             }
         }
-        let TraceHit::Actor(actor) = &current.hit else {
+        let ActorTraceHit::Actor { actor } = &current.hit else {
             trace = Some(current);
             break;
         };
@@ -725,4 +727,47 @@ pub fn q3_rail_statistics(state: &Q3RailStatistics, hits: i32, time: i32) -> Q3R
         },
         awarded,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Rail shot trail (`Q3RailTrail`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RailShot {
+    /// Start.
+    pub start: Vec3,
+    /// End.
+    pub end: Vec3,
+    /// Impact normal, when the shot hit.
+    pub impact_normal: Option<Vec3>,
+}
+
+/// Rail statistics (`Q3RailStatistics`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailStatistics {
+    /// Streak.
+    pub streak: i32,
+    /// Hits.
+    pub hits: i32,
+    /// Impressive count.
+    pub impressive_count: i32,
+    /// Reward until.
+    pub reward_until: i32,
+}
+
+/// Rail statistics outcome (`q3RailStatistics` return).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RailStatisticsOutcome {
+    /// Streak.
+    pub streak: i32,
+    /// Hits.
+    pub hits: i32,
+    /// Impressive count.
+    pub impressive_count: i32,
+    /// Reward until.
+    pub reward_until: i32,
+    /// Awarded.
+    pub awarded: bool,
 }

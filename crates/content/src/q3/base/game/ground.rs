@@ -6,7 +6,8 @@ use qa_core::identity::ActorId;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::entities::*;
-use crate::q3::base::game::mirrors_game_sim::*;
+use crate::q3::base::shared::player_state::{ENTITYNUM_NONE, ENTITYNUM_WORLD};
+use crate::q3::base::world::ActorTraceHit;
 
 // ---------------------------------------------------------------------------
 // Ground support (ground.ts).
@@ -32,11 +33,11 @@ pub fn write_ground(entity: &EntityRef, ground: Option<ActorId>, pool: &EntityPo
 }
 
 /// Record trace-hit ground support (`traceGround`).
-pub fn trace_ground(entity: &EntityRef, hit: &TraceHit, pool: &EntityPool) {
+pub fn trace_ground(entity: &EntityRef, hit: &ActorTraceHit, pool: &EntityPool) {
     let ground = match hit {
-        TraceHit::Actor(actor) => Some(actor.clone()),
-        TraceHit::World => Some(pool.at(ENTITYNUM_WORLD).borrow().actor.id.clone()),
-        TraceHit::None => None,
+        ActorTraceHit::Actor { actor } => Some(actor.clone()),
+        ActorTraceHit::World => Some(pool.at(ENTITYNUM_WORLD).borrow().actor.id.clone()),
+        ActorTraceHit::None => None,
     };
     write_ground(entity, ground, pool);
 }

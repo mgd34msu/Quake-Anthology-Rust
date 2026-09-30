@@ -11,7 +11,13 @@ use std::rc::Rc;
 use crate::q3::base::game::combat::*;
 use crate::q3::base::game::entities::*;
 use crate::q3::base::game::format::*;
-use crate::q3::base::game::mirrors_game_sim::*;
+use crate::q3::base::game::state::{ConnectionState, GameFlags, MAX_CLIENTS, MAX_GENTITIES};
+use crate::q3::base::shared::definitions::{
+    stat_schema, EntityEvent, EntityType, GameType, MissionpackStatIndex, MoveType, PersistentIndex, Powerup, Product,
+    StatSchema, Team, Weapon, WeaponState, GIB_HEALTH,
+};
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
+use crate::q3::base::shared::player_state::{PlayerAnimation, ENTITYNUM_WORLD};
 
 // ---------------------------------------------------------------------------
 // Death and scoring (death.ts).
@@ -84,7 +90,7 @@ pub(crate) const MISSIONPACK_MOD_NAMES: [&str; 5] = [
 pub fn return_q3_persistent_powerup(powerup: &EntityRef, link: &dyn Fn(EntityRef)) {
     {
         let mut borrowed = powerup.borrow_mut();
-        borrowed.r.sv_flags &= !server_entity_flags::NOCLIENT;
+        borrowed.r.sv_flags &= !(ServerEntityFlags::Noclient as i32);
         borrowed.s.e_flags &= !EF_NODRAW;
         borrowed.r.contents = CONTENTS_TRIGGER;
     }
@@ -104,7 +110,10 @@ pub fn toss_q3_client_persistent_powerup(entity: &EntityRef, return_item: &dyn F
     return_item(carried);
     let mut borrowed = entity.borrow_mut();
     if let Some(client) = borrowed.client.as_mut() {
-        client.ps.stats.set(MissionpackStatIndex::PersistantPowerup as i32, 0);
+        client
+            .ps
+            .stats
+            .set(MissionpackStatIndex::StatPersistantPowerup as i32, 0);
     }
 }
 
@@ -193,7 +202,7 @@ pub struct DeathHost {
     /// Flag returner.
     pub return_flag: Rc<dyn Fn(i32)>,
     /// Product.
-    pub product: Q3Product,
+    pub product: Product,
     /// Mission-pack services.
     pub missionpack: Option<MissionpackDeath>,
     /// Item drop (`dropItem`, item-motion.ts).
@@ -228,7 +237,7 @@ impl DeathRuntime {
             panic!("Death product does not match its entity pool");
         }
         let mut mod_names: Vec<String> = COMMON_MOD_NAMES.iter().map(ToString::to_string).collect();
-        if host.product == Q3Product::Missionpack {
+        if host.product == Product::Missionpack {
             mod_names.extend(MISSIONPACK_MOD_NAMES.iter().map(ToString::to_string));
         }
         mod_names.push("MOD_GRAPPLE".to_string());
@@ -257,9 +266,9 @@ impl DeathRuntime {
             .host
             .pool
             .borrow_mut()
-            .temp_entity(origin, EntityEvent::Scoreplum as i32);
+            .temp_entity(origin, EntityEvent::EvScoreplum as i32);
         let mut borrowed = plum.borrow_mut();
-        borrowed.r.sv_flags |= server_entity_flags::SINGLECLIENT;
+        borrowed.r.sv_flags |= ServerEntityFlags::Singleclient as i32;
         borrowed.r.single_client = number;
         borrowed.s.other_entity_num = number;
         borrowed.s.time = score;
@@ -277,14 +286,14 @@ impl DeathRuntime {
             let client = borrowed.client.as_mut().unwrap_or_else(|| {
                 panic!("Death operation requires a client entity");
             });
-            let score_slot = client.ps.persistant.get(PersistentIndex::Score as i32);
+            let score_slot = client.ps.persistant.get(PersistentIndex::PersScore as i32);
             client
                 .ps
                 .persistant
-                .set(PersistentIndex::Score as i32, score_slot + score);
-            client.ps.persistant.get(PersistentIndex::Team as i32)
+                .set(PersistentIndex::PersScore as i32, score_slot + score);
+            client.ps.persistant.get(PersistentIndex::PersTeam as i32)
         };
-        if frame.game_type == GameType::Team as i32 {
+        if frame.game_type == GameType::GtTeam as i32 {
             let mut scores = self.host.team_scores.borrow_mut();
             scores[team as usize] += score;
         }
@@ -297,7 +306,7 @@ impl DeathRuntime {
         let context = self.drop_context();
         let frame = (self.host.frame)();
         let mut weapon = entity.borrow().s.weapon;
-        if weapon == Weapon::Machinegun as i32 || weapon == Weapon::GrapplingHook as i32 {
+        if weapon == Weapon::WpMachinegun as i32 || weapon == Weapon::WpGrapplingHook as i32 {
             let (weapon_state, cmd_weapon, owned) = {
                 let borrowed = entity.borrow();
                 let client = borrowed.client.as_ref().unwrap_or_else(|| {
@@ -306,18 +315,21 @@ impl DeathRuntime {
                 (
                     client.ps.weapon_state,
                     client.pers.cmd.weapon,
-                    client.ps.stats.get(stat_schema(self.host.product).weapons),
+                    client.ps.stats.get(match stat_schema(self.host.product) {
+                        StatSchema::Base(layout) => layout.weapons,
+                        StatSchema::Missionpack(layout) => layout.weapons,
+                    }),
                 )
             };
-            if weapon_state == WeaponState::Dropping {
+            if weapon_state == WeaponState::WeaponDropping {
                 weapon = cmd_weapon;
             }
             if (owned & 1i32.wrapping_shl(weapon as u32)) == 0 {
-                weapon = Weapon::None as i32;
+                weapon = Weapon::WpNone as i32;
             }
         }
-        if weapon > Weapon::Machinegun as i32
-            && weapon != Weapon::GrapplingHook as i32
+        if weapon > Weapon::WpMachinegun as i32
+            && weapon != Weapon::WpGrapplingHook as i32
             && entity
                 .borrow()
                 .client
@@ -328,11 +340,11 @@ impl DeathRuntime {
             let item = self.host.item_table.find_item_for_weapon(weapon).clone();
             (self.host.drop_item)(&context, entity.clone(), item, 0.0);
         }
-        if frame.game_type == GameType::Team as i32 {
+        if frame.game_type == GameType::GtTeam as i32 {
             return;
         }
         let mut angle = 45.0f32;
-        for powerup in 1..Powerup::NumPowerups as i32 {
+        for powerup in 1..Powerup::PwNumPowerups as i32 {
             let expires = entity
                 .borrow()
                 .client
@@ -371,11 +383,11 @@ impl DeathRuntime {
             .borrow()
             .client
             .as_ref()
-            .map_or(Team::Free, |client| client.sess.session_team);
+            .map_or(Team::TeamFree, |client| client.sess.session_team);
         let item = self
             .host
             .item_table
-            .find_item(if team == Team::Red { "Red Cube" } else { "Blue Cube" })
+            .find_item(if team == Team::TeamRed { "Red Cube" } else { "Blue Cube" })
             .unwrap_or_else(|| panic!("Missing source Harvester cube item"))
             .clone();
         let forward = scale3(angle_vectors(vec3(0.0, (time % 360) as f32, 0.0)).forward, 150.0);
@@ -404,7 +416,7 @@ impl DeathRuntime {
 
     /// Toss persistent powerups (`tossClientPersistantPowerups`).
     pub fn toss_client_persistant_powerups(&self, entity: &EntityRef) {
-        if self.host.product != Q3Product::Missionpack {
+        if self.host.product != Product::Missionpack {
             panic!("Persistent powerup tossing requires missionpack");
         }
         let world = self.host.world.clone();
@@ -454,7 +466,13 @@ impl DeathRuntime {
             .unwrap_or_else(|| panic!("Death operation requires a client entity"))
             .ps
             .stats
-            .set(stat_schema(self.host.product).dead_yaw, qvm_float_to_int(yaw));
+            .set(
+                match stat_schema(self.host.product) {
+                    StatSchema::Base(layout) => layout.dead_yaw,
+                    StatSchema::Missionpack(layout) => layout.dead_yaw,
+                },
+                qvm_float_to_int(yaw),
+            );
     }
 
     /// Gib an entity (`gibEntity`).
@@ -480,10 +498,10 @@ impl DeathRuntime {
         self.host
             .pool
             .borrow()
-            .add_event(this, EntityEvent::GibPlayer as i32, killer);
+            .add_event(this, EntityEvent::EvGibPlayer as i32, killer);
         let mut borrowed = this.borrow_mut();
         borrowed.takedamage = false;
-        borrowed.s.e_type = EntityType::Invisible as i32;
+        borrowed.s.e_type = EntityType::EtInvisible as i32;
         borrowed.r.contents = 0;
     }
 
@@ -501,7 +519,7 @@ impl DeathRuntime {
 
     /// Kamikaze death timer (`kamikazeDeathTimer`).
     fn kamikaze_death_timer(&self, this: &EntityRef) {
-        if self.host.product != Q3Product::Missionpack {
+        if self.host.product != Product::Missionpack {
             panic!("Kamikaze death timer requires missionpack");
         }
         let timer = self.host.pool.borrow_mut().spawn();
@@ -510,7 +528,7 @@ impl DeathRuntime {
             let mut borrowed = timer.borrow_mut();
             borrowed.classname = Some("kamikaze timer".to_string());
             borrowed.s.pos.base = base;
-            borrowed.r.sv_flags |= server_entity_flags::NOCLIENT;
+            borrowed.r.sv_flags |= ServerEntityFlags::Noclient as i32;
             borrowed.think = self
                 .host
                 .pool
@@ -534,9 +552,9 @@ impl DeathRuntime {
             .ps
             .persistant
             .set(
-                PersistentIndex::PlayerEvents as i32,
+                PersistentIndex::PersPlayerevents as i32,
                 this.borrow().client.as_ref().map_or(0, |client| {
-                    client.ps.persistant.get(PersistentIndex::PlayerEvents as i32)
+                    client.ps.persistant.get(PersistentIndex::PersPlayerevents as i32)
                 }) ^ 4,
             );
         let Some(attacker) = attacker else {
@@ -546,11 +564,11 @@ impl DeathRuntime {
             if entity.borrow().client.is_some() {
                 let mut borrowed = entity.borrow_mut();
                 if let Some(client) = borrowed.client.as_mut() {
-                    let events = client.ps.persistant.get(PersistentIndex::PlayerEvents as i32);
+                    let events = client.ps.persistant.get(PersistentIndex::PersPlayerevents as i32);
                     client
                         .ps
                         .persistant
-                        .set(PersistentIndex::PlayerEvents as i32, events ^ 4);
+                        .set(PersistentIndex::PersPlayerevents as i32, events ^ 4);
                 }
             }
         }
@@ -565,9 +583,9 @@ impl DeathRuntime {
                 panic!("Death operation requires a client entity");
             });
             (
-                client.ps.powerups.get(Powerup::Redflag as i32) != 0
-                    || client.ps.powerups.get(Powerup::Blueflag as i32) != 0
-                    || client.ps.powerups.get(Powerup::Neutralflag as i32) != 0,
+                client.ps.powerups.get(Powerup::PwRedflag as i32) != 0
+                    || client.ps.powerups.get(Powerup::PwBlueflag as i32) != 0
+                    || client.ps.powerups.get(Powerup::PwNeutralflag as i32) != 0,
                 client.sess.session_team,
                 client.ps.origin,
             )
@@ -575,8 +593,8 @@ impl DeathRuntime {
         if !has_flag {
             return;
         }
-        let blue = team == Team::Blue;
-        let ctf = (self.host.frame)().game_type == GameType::Ctf as i32;
+        let blue = team == Team::TeamBlue;
+        let ctf = (self.host.frame)().game_type == GameType::GtCtf as i32;
         let classname = if ctf == blue {
             "team_CTF_blueflag"
         } else {
@@ -592,12 +610,12 @@ impl DeathRuntime {
             );
             match goal.as_ref() {
                 None => return,
-                Some(found) if (found.borrow().flags & game_flags::DROPPED_ITEM) == 0 => break,
+                Some(found) if (found.borrow().flags & GameFlags::DROPPED_ITEM) == 0 => break,
                 Some(found) => goal = Some(found.clone()),
             }
         }
         let goal = goal.unwrap_or_else(|| self.host.pool.borrow().at(0));
-        let clear = (goal.borrow().r.sv_flags & server_entity_flags::NOCLIENT) == 0
+        let clear = (goal.borrow().r.sv_flags & (ServerEntityFlags::Noclient as i32)) == 0
             && length3(sub3(origin, goal.borrow().s.origin)) < 200.0;
         if clear {
             self.almost_reward(this, attacker);
@@ -617,7 +635,7 @@ impl DeathRuntime {
         if generic1 == 0 {
             return;
         }
-        let classname = if team == Team::Blue {
+        let classname = if team == Team::TeamBlue {
             "team_redobelisk"
         } else {
             "team_blueobelisk"
@@ -638,12 +656,12 @@ impl DeathRuntime {
         let client = borrowed.client.as_ref().unwrap_or_else(|| {
             panic!("Death operation requires a client entity");
         });
-        if client.ps.powerups.get(Powerup::Neutralflag as i32) != 0 {
-            Some((Team::Free as i32, Powerup::Neutralflag as i32))
-        } else if client.ps.powerups.get(Powerup::Redflag as i32) != 0 {
-            Some((Team::Red as i32, Powerup::Redflag as i32))
-        } else if client.ps.powerups.get(Powerup::Blueflag as i32) != 0 {
-            Some((Team::Blue as i32, Powerup::Blueflag as i32))
+        if client.ps.powerups.get(Powerup::PwNeutralflag as i32) != 0 {
+            Some((Team::TeamFree as i32, Powerup::PwNeutralflag as i32))
+        } else if client.ps.powerups.get(Powerup::PwRedflag as i32) != 0 {
+            Some((Team::TeamRed as i32, Powerup::PwRedflag as i32))
+        } else if client.ps.powerups.get(Powerup::PwBlueflag as i32) != 0 {
+            Some((Team::TeamBlue as i32, Powerup::PwBlueflag as i32))
         } else {
             None
         }
@@ -665,7 +683,7 @@ impl DeathRuntime {
             let client = borrowed.client.as_ref().unwrap_or_else(|| {
                 panic!("Death operation requires a client entity");
             });
-            if client.ps.pm_type == MoveType::Dead || frame.intermission_time != 0 {
+            if client.ps.pm_type == MoveType::PmDead || frame.intermission_time != 0 {
                 return;
             }
         }
@@ -675,7 +693,7 @@ impl DeathRuntime {
         if let Some(hook) = hook {
             (self.host.missiles_hook_free)(hook);
         }
-        if self.host.product == Q3Product::Missionpack {
+        if self.host.product == Product::Missionpack {
             let (ticking, activator) = {
                 let borrowed = this.borrow();
                 (
@@ -707,7 +725,7 @@ impl DeathRuntime {
             .as_mut()
             .unwrap_or_else(|| panic!("Death operation requires a client entity"))
             .ps
-            .pm_type = MoveType::Dead;
+            .pm_type = MoveType::PmDead;
         let victim_number = this.borrow().s.number;
         let victim_origin = this.borrow().r.current_origin;
         let victim_name = this
@@ -732,7 +750,7 @@ impl DeathRuntime {
             killer = ENTITYNUM_WORLD;
             killer_name = "<world>".to_string();
         }
-        self.host.pool.borrow().rankings.borrow_mut().player_die(
+        self.host.pool.borrow().rankings.borrow().player_die(
             this.borrow().slot as i32,
             killer,
             ranked_means_of_death(self.host.product, means_of_death),
@@ -757,13 +775,13 @@ impl DeathRuntime {
             .host
             .pool
             .borrow_mut()
-            .temp_entity(victim_origin, EntityEvent::Obituary as i32);
+            .temp_entity(victim_origin, EntityEvent::EvObituary as i32);
         {
             let mut borrowed = obituary_event.borrow_mut();
             borrowed.s.event_parm = means_of_death;
             borrowed.s.other_entity_num = victim_number;
             borrowed.s.other_entity_num2 = killer;
-            borrowed.r.sv_flags = server_entity_flags::BROADCAST;
+            borrowed.r.sv_flags = ServerEntityFlags::Broadcast as i32;
         }
         this.borrow_mut()
             .client
@@ -772,11 +790,11 @@ impl DeathRuntime {
             .ps
             .persistant
             .set(
-                PersistentIndex::Killed as i32,
+                PersistentIndex::PersKilled as i32,
                 this.borrow()
                     .client
                     .as_ref()
-                    .map_or(0, |client| client.ps.persistant.get(PersistentIndex::Killed as i32))
+                    .map_or(0, |client| client.ps.persistant.get(PersistentIndex::PersKilled as i32))
                     + 1,
             );
         let attacker_native = match attacker {
@@ -795,13 +813,13 @@ impl DeathRuntime {
                     .borrow()
                     .client
                     .as_ref()
-                    .map_or(Team::Free, |client| client.sess.session_team);
+                    .map_or(Team::TeamFree, |client| client.sess.session_team);
                 let killer_team = killer_entity
                     .borrow()
                     .client
                     .as_ref()
-                    .map_or(Team::Free, |client| client.sess.session_team);
-                frame.game_type >= GameType::Team as i32 && victim_team == killer_team
+                    .map_or(Team::TeamFree, |client| client.sess.session_team);
+                frame.game_type >= GameType::GtTeam as i32 && victim_team == killer_team
             };
             if Rc::ptr_eq(&killer_entity, this) || same_team {
                 self.add_score(&killer_entity, victim_origin, -1);
@@ -813,11 +831,11 @@ impl DeathRuntime {
                         let client = borrowed.client.as_mut().unwrap_or_else(|| {
                             panic!("Death operation requires a client entity");
                         });
-                        let count = client.ps.persistant.get(PersistentIndex::GauntletFragCount as i32);
+                        let count = client.ps.persistant.get(PersistentIndex::PersGauntletFragCount as i32);
                         client
                             .ps
                             .persistant
-                            .set(PersistentIndex::GauntletFragCount as i32, count + 1);
+                            .set(PersistentIndex::PersGauntletFragCount as i32, count + 1);
                         client.ps.e_flags = (client.ps.e_flags & !AWARD_MASK) | 0x40;
                         client.reward_time = frame.time.wrapping_add(2000);
                     }
@@ -826,11 +844,11 @@ impl DeathRuntime {
                         let client = borrowed.client.as_mut().unwrap_or_else(|| {
                             panic!("Death operation requires a client entity");
                         });
-                        let events = client.ps.persistant.get(PersistentIndex::PlayerEvents as i32);
+                        let events = client.ps.persistant.get(PersistentIndex::PersPlayerevents as i32);
                         client
                             .ps
                             .persistant
-                            .set(PersistentIndex::PlayerEvents as i32, events ^ 2);
+                            .set(PersistentIndex::PersPlayerevents as i32, events ^ 2);
                     }
                 }
                 let recent = frame.time.wrapping_sub(
@@ -851,11 +869,11 @@ impl DeathRuntime {
                     let client = borrowed.client.as_mut().unwrap_or_else(|| {
                         panic!("Death operation requires a client entity");
                     });
-                    let count = client.ps.persistant.get(PersistentIndex::ExcellentCount as i32);
+                    let count = client.ps.persistant.get(PersistentIndex::PersExcellentCount as i32);
                     client
                         .ps
                         .persistant
-                        .set(PersistentIndex::ExcellentCount as i32, count + 1);
+                        .set(PersistentIndex::PersExcellentCount as i32, count + 1);
                     client.ps.e_flags = (client.ps.e_flags & !AWARD_MASK) | 0x8;
                     client.reward_time = frame.time.wrapping_add(2000);
                 }
@@ -894,9 +912,9 @@ impl DeathRuntime {
         } else if let Some((team, _)) = self.carried_flag(this) {
             (self.host.return_flag)(team);
         }
-        if self.host.product == Q3Product::Missionpack {
+        if self.host.product == Product::Missionpack {
             self.toss_client_persistant_powerups(this);
-            if frame.game_type == GameType::Harvester as i32 {
+            if frame.game_type == GameType::GtHarvester as i32 {
                 self.toss_client_cubes(this);
             }
         }
@@ -905,7 +923,7 @@ impl DeathRuntime {
         for index in 0..max_clients {
             let follower = self.host.pool.borrow().client_at(index as i32);
             if follower.pers.connected == ConnectionState::Connected
-                && follower.sess.session_team == Team::Spectator
+                && follower.sess.session_team == Team::TeamSpectator
                 && follower.sess.spectator_client == victim_number
             {
                 (self.host.send_scoreboard)(self.host.pool.borrow().at(index as i32));
@@ -914,7 +932,7 @@ impl DeathRuntime {
         if self.host.character_death_selected {
             {
                 let mut borrowed = this.borrow_mut();
-                borrowed.s.weapon = Weapon::None as i32;
+                borrowed.s.weapon = Weapon::WpNone as i32;
                 borrowed.s.powerups = 0;
                 borrowed.s.loop_sound = 0;
                 let client = borrowed.client.as_mut().unwrap_or_else(|| {
@@ -930,7 +948,7 @@ impl DeathRuntime {
         {
             let mut borrowed = this.borrow_mut();
             borrowed.takedamage = true;
-            borrowed.s.weapon = Weapon::None as i32;
+            borrowed.s.weapon = Weapon::WpNone as i32;
             borrowed.s.powerups = 0;
             borrowed.r.contents = CONTENTS_CORPSE;
             let yaw = borrowed.s.angles.y;
@@ -980,7 +998,7 @@ impl DeathRuntime {
                 .borrow()
                 .die
                 .resolve(Some("q3.death.body"));
-            if self.host.product == Q3Product::Missionpack && (this.borrow().s.e_flags & EF_KAMIKAZE) != 0 {
+            if self.host.product == Product::Missionpack && (this.borrow().s.e_flags & EF_KAMIKAZE) != 0 {
                 self.kamikaze_death_timer(this);
             }
         }
@@ -1002,7 +1020,7 @@ impl DeathRuntime {
         host.pool.borrow().callbacks.borrow_mut().think.intern(
             "q3.base.game.death.kamikazeDeathTimer.think",
             Rc::new(move |entity: EntityRef| {
-                if captured.product != Q3Product::Missionpack {
+                if captured.product != Product::Missionpack {
                     panic!("Kamikaze callback requires missionpack");
                 }
                 let Some(missionpack) = captured.missionpack.clone() else {
@@ -1032,5 +1050,70 @@ impl DeathRuntime {
                 runtime.player_die(&entity, inflictor.as_ref(), attacker.as_ref(), damage, method);
             }),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Death-animation cycling (unified from `mirrors_game_sim.rs`).
+// ---------------------------------------------------------------------------
+
+/// Death-animation checkpoint (`Q3DeathAnimationCheckpoint`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Q3DeathAnimationCheckpoint {
+    /// Checkpoint version.
+    pub version: i32,
+    /// Sequence index.
+    pub index: i32,
+}
+
+/// Cycling death-animation selector (`Q3DeathAnimationSequence`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Q3DeathAnimationSequence {
+    /// Current index.
+    index: i32,
+}
+
+impl Q3DeathAnimationSequence {
+    /// Fresh sequence.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { index: 0 }
+    }
+
+    /// Capture the sequence position (`capture`).
+    #[must_use]
+    pub fn capture(&self) -> Q3DeathAnimationCheckpoint {
+        Q3DeathAnimationCheckpoint {
+            version: 1,
+            index: self.index,
+        }
+    }
+
+    /// Restore the sequence position (`restore`).
+    pub fn restore(&mut self, checkpoint: Q3DeathAnimationCheckpoint) {
+        if checkpoint.version != 1 || checkpoint.index < 0 || checkpoint.index > 2 {
+            panic!("Invalid Q3 death animation checkpoint");
+        }
+        self.index = checkpoint.index;
+    }
+
+    /// Next death animation and event (`next`).
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> (PlayerAnimation, EntityEvent) {
+        let result = if self.index == 0 {
+            (PlayerAnimation::BothDeath1, EntityEvent::EvDeath1)
+        } else if self.index == 1 {
+            (PlayerAnimation::BothDeath2, EntityEvent::EvDeath2)
+        } else {
+            (PlayerAnimation::BothDeath3, EntityEvent::EvDeath3)
+        };
+        self.index = (self.index + 1) % 3;
+        result
+    }
+}
+
+impl Default for Q3DeathAnimationSequence {
+    fn default() -> Self {
+        Self::new()
     }
 }

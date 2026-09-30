@@ -10,8 +10,8 @@ use crate::value::SaveJson;
 use crate::value::SaveReader;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::save_values::*;
+use crate::q3::base::game::state::{EntityPool, Q3GameError};
 
 // ---------------------------------------------------------------------------
 // save-module-values.ts: module entity and cvar reads

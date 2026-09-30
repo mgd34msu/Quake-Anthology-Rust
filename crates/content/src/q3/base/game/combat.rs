@@ -3,11 +3,20 @@
 //! Donor provenance: `src/content/q3/base/game/combat.ts`.
 
 use qa_core::identity::ActorId;
-use qa_core::math::{normalize3, vec3, Bounds, Vec3};
+use qa_core::math::{add3, length3, normalize3, scale3, sub3, vec3, Bounds, Vec3};
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_sim::*;
+use crate::q3::base::game::entities::{
+    use_actor, DamageParticipant, EntityRef, ItemId, PoolHandle, ProviderId, Q3ItemTable,
+};
+use crate::q3::base::game::radius_damage::Q3RadiusTarget;
+use crate::q3::base::game::state::{GameFlags, MoverState};
+use crate::q3::base::shared::definitions::{
+    stat_schema, EntityEvent, EntityType, GameType, PersistentIndex, Powerup, Product, StatSchema, ARMOR_PROTECTION,
+};
+use crate::q3::base::shared::player_state::{MoveFlags, ENTITYNUM_NONE, ENTITYNUM_WORLD};
+use crate::q3::base::world::{ActorTraceHit, ActorTraceQuery, ActorTraceResult, TraceShape};
 
 // ---------------------------------------------------------------------------
 // Combat (combat.ts).
@@ -15,6 +24,22 @@ use crate::q3::base::game::mirrors_game_sim::*;
 
 /// Juiced means of death (`MOD_JUICED`).
 pub const MOD_JUICED: i32 = 27;
+
+/// Damage flags (`DamageFlags`).
+pub struct DamageFlags;
+
+impl DamageFlags {
+    /// Radius damage.
+    pub const RADIUS: i32 = 0x1;
+    /// Bypass armor.
+    pub const NO_ARMOR: i32 = 0x2;
+    /// No knockback.
+    pub const NO_KNOCKBACK: i32 = 0x4;
+    /// No protection.
+    pub const NO_PROTECTION: i32 = 0x8;
+    /// Bypass team protection.
+    pub const NO_TEAM_PROTECTION: i32 = 0x10;
+}
 
 /// Damage diagnostic record (`DamageDiagnostic`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,14 +195,16 @@ pub(crate) fn on_same_team(context: &CombatContext, first: &EntityRef, second: &
     let first = first.borrow();
     let second = second.borrow();
     match (first.client.as_ref(), second.client.as_ref()) {
-        (Some(a), Some(b)) => context.game_type >= GameType::Team as i32 && a.sess.session_team == b.sess.session_team,
+        (Some(a), Some(b)) => {
+            context.game_type >= GameType::GtTeam as i32 && a.sess.session_team == b.sess.session_team
+        }
         _ => false,
     }
 }
 
 /// Ranked means of death shared by combat and death reports.
-pub(crate) fn ranked_means_of_death(product: Q3Product, method_of_death: i32) -> i32 {
-    if product == Q3Product::Missionpack && method_of_death >= 23 {
+pub(crate) fn ranked_means_of_death(product: Product, method_of_death: i32) -> i32 {
+    if product == Product::Missionpack && method_of_death >= 23 {
         if method_of_death == 28 {
             23
         } else {
@@ -189,10 +216,10 @@ pub(crate) fn ranked_means_of_death(product: Q3Product, method_of_death: i32) ->
 }
 
 /// Product of a combat context.
-pub(crate) fn combat_product(context: &CombatContext) -> Q3Product {
+pub(crate) fn combat_product(context: &CombatContext) -> Product {
     match context.product {
-        CombatProduct::Baseq3 => Q3Product::Baseq3,
-        CombatProduct::Missionpack { .. } => Q3Product::Missionpack,
+        CombatProduct::Baseq3 => Product::Baseq3,
+        CombatProduct::Missionpack { .. } => Product::Missionpack,
     }
 }
 
@@ -201,16 +228,19 @@ pub fn check_armor(target: &EntityRef, damage: f32, flags: i32) -> i32 {
     if damage == 0.0 {
         return 0;
     }
-    if target.borrow().client.is_none() || (flags & damage_flags::NO_ARMOR) != 0 {
+    if target.borrow().client.is_none() || (flags & DamageFlags::NO_ARMOR) != 0 {
         return 0;
     }
     let product = target
         .borrow()
         .client
         .as_ref()
-        .map_or(Q3Product::Baseq3, |client| client.ps.product);
-    let slot = stat_schema(product).armor;
-    let scaled = damage * ARMOR_PROTECTION;
+        .map_or(Product::Baseq3, |client| client.ps.product);
+    let slot = match stat_schema(product) {
+        StatSchema::Base(layout) => layout.armor,
+        StatSchema::Missionpack(layout) => layout.armor,
+    };
+    let scaled = damage * ARMOR_PROTECTION as f32;
     let rounded_save = scaled.ceil() as i32;
     let mut borrowed = target.borrow_mut();
     let Some(client) = borrowed.client.as_mut() else {
@@ -237,7 +267,7 @@ pub fn q3_admit_target_damage(
         if !borrowed.takedamage || context.intermission_queued != 0 {
             return AdmitDecision::Handled;
         }
-        if borrowed.s.e_type != EntityType::Mover as i32 {
+        if borrowed.s.e_type != EntityType::EtMover as i32 {
             return AdmitDecision::Continue;
         }
         if borrowed.use_callback.is_none() || borrowed.mover_state != MoverState::Pos1 {
@@ -285,7 +315,7 @@ pub fn damage(
         if let Some(direction) = direction.as_deref_mut() {
             *direction = normalize3(*direction);
         } else {
-            flags |= damage_flags::NO_KNOCKBACK;
+            flags |= DamageFlags::NO_KNOCKBACK;
         }
         let attack = (context.attack)(source, owner, None, method_of_death, flags, originating_projectile);
         let request = DamageRequest {
@@ -296,7 +326,7 @@ pub fn damage(
             direction: impulse,
             point: origin,
             normal: vec3(0.0, 0.0, 0.0),
-            delivery: if (flags & damage_flags::RADIUS) != 0 {
+            delivery: if (flags & DamageFlags::RADIUS) != 0 {
                 DamageDelivery::Radius
             } else {
                 DamageDelivery::Direct
@@ -323,7 +353,7 @@ pub fn damage(
     if q3_admit_target_damage(context, entity, &source, &owner) == AdmitDecision::Handled {
         return;
     }
-    if matches!(context.product, CombatProduct::Missionpack { .. }) && context.game_type == GameType::Obelisk as i32 {
+    if matches!(context.product, CombatProduct::Missionpack { .. }) && context.game_type == GameType::GtObelisk as i32 {
         let CombatProduct::Missionpack {
             check_obelisk_attack, ..
         } = &context.product
@@ -342,7 +372,7 @@ pub fn damage(
     if let Some(direction) = direction {
         *direction = normalize3(*direction);
     } else {
-        flags |= damage_flags::NO_KNOCKBACK;
+        flags |= DamageFlags::NO_KNOCKBACK;
     }
     let attack = (context.attack)(
         source.clone(),
@@ -377,7 +407,7 @@ pub fn damage(
                 direction: impulse,
                 point: origin,
                 normal: vec3(0.0, 0.0, 0.0),
-                delivery: if (flags & damage_flags::RADIUS) != 0 {
+                delivery: if (flags & DamageFlags::RADIUS) != 0 {
                     DamageDelivery::Radius
                 } else {
                     DamageDelivery::Direct
@@ -426,21 +456,24 @@ pub fn q3_damage_feedback(context: &CombatContext, call: &Q3DamageCall, decision
         let different = !same_native(owner, &call.target);
         let has_client = owner.borrow().client.is_some();
         if has_client && different {
-            let schema = stat_schema(product);
+            let (max_health_slot, persistent_powerup) = match stat_schema(product) {
+                StatSchema::Base(layout) => (layout.max_health, None),
+                StatSchema::Missionpack(layout) => (layout.max_health, Some(layout.persistent_powerup)),
+            };
             let maximum = owner
                 .borrow()
                 .client
                 .as_ref()
-                .map_or(0, |client| client.ps.stats.get(schema.max_health));
+                .map_or(0, |client| client.ps.stats.get(max_health_slot));
             let mut maximum = maximum;
-            if product == Q3Product::Missionpack {
-                if let Some(persistent) = schema.persistent_powerup {
+            if product == Product::Missionpack {
+                if let Some(persistent) = persistent_powerup {
                     let index = owner
                         .borrow()
                         .client
                         .as_ref()
                         .map_or(0, |client| client.ps.stats.get(persistent));
-                    if context.item_table.item_at(index).tag == Powerup::Guard as i32 {
+                    if context.item_table.item_at(index).tag == Powerup::PwGuard as i32 {
                         maximum /= 2;
                     }
                 }
@@ -449,8 +482,7 @@ pub fn q3_damage_feedback(context: &CombatContext, call: &Q3DamageCall, decision
         }
     }
     let target_flags = call.target.borrow().flags;
-    let knockback = if (call.flags & damage_flags::NO_KNOCKBACK) != 0 || (target_flags & game_flags::NO_KNOCKBACK) != 0
-    {
+    let knockback = if (call.flags & DamageFlags::NO_KNOCKBACK) != 0 || (target_flags & GameFlags::NO_KNOCKBACK) != 0 {
         0
     } else {
         incoming.min(200)
@@ -460,13 +492,13 @@ pub fn q3_damage_feedback(context: &CombatContext, call: &Q3DamageCall, decision
         if let Some(client) = borrowed.client.as_mut() {
             if client.ps.pm_time == 0 {
                 client.ps.pm_time = 200.min(50.max(knockback.wrapping_mul(2)));
-                client.ps.pm_flags |= move_flags::TIME_KNOCKBACK;
+                client.ps.pm_flags |= MoveFlags::TimeKnockback as i32;
             }
         }
     }
-    if (call.flags & damage_flags::NO_PROTECTION) == 0 {
-        let check_team = product == Q3Product::Baseq3
-            || (call.method_of_death != MOD_JUICED && (call.flags & damage_flags::NO_TEAM_PROTECTION) == 0);
+    if (call.flags & DamageFlags::NO_PROTECTION) == 0 {
+        let check_team = product == Product::Baseq3
+            || (call.method_of_death != MOD_JUICED && (call.flags & DamageFlags::NO_TEAM_PROTECTION) == 0);
         if check_team
             && !participant_is_entity(&call.owner, &call.target)
             && native_owner
@@ -475,13 +507,13 @@ pub fn q3_damage_feedback(context: &CombatContext, call: &Q3DamageCall, decision
         {
             return;
         }
-        let parent_entity = if product == Q3Product::Missionpack && call.method_of_death == 25 {
+        let parent_entity = if product == Product::Missionpack && call.method_of_death == 25 {
             (context.actors.parent)(&use_actor(&call.source))
                 .and_then(|parent| context.entities.borrow().native_by_actor(&parent))
         } else {
             None
         };
-        if product == Q3Product::Missionpack
+        if product == Product::Missionpack
             && call.method_of_death == 25
             && (participant_is_entity(&call.owner, &call.target)
                 || parent_entity
@@ -491,7 +523,7 @@ pub fn q3_damage_feedback(context: &CombatContext, call: &Q3DamageCall, decision
             return;
         }
         let target_actor = call.target.borrow().actor.id.clone();
-        if (call.target.borrow().flags & game_flags::GODMODE) != 0
+        if (call.target.borrow().flags & GameFlags::GODMODE) != 0
             || (context.authority.read)(&target_actor)
                 .as_ref()
                 .is_some_and(|state| state.invulnerable)
@@ -504,13 +536,13 @@ pub fn q3_damage_feedback(context: &CombatContext, call: &Q3DamageCall, decision
         .borrow()
         .client
         .as_ref()
-        .is_some_and(|client| client.ps.powerups.get(Powerup::Battlesuit as i32) != 0);
+        .is_some_and(|client| client.ps.powerups.get(Powerup::PwBattlesuit as i32) != 0);
     if battlesuit {
         context
             .entities
             .borrow()
-            .add_event(&call.target, EntityEvent::PowerupBattlesuit as i32, 0);
-        if (call.flags & damage_flags::RADIUS) != 0 || call.method_of_death == 19 {
+            .add_event(&call.target, EntityEvent::EvPowerupBattlesuit as i32, 0);
+        if (call.flags & DamageFlags::RADIUS) != 0 || call.method_of_death == 19 {
             return;
         }
     }
@@ -546,7 +578,7 @@ pub fn q3_foreign_damage_feedback(
         if let Some(client) = borrowed.client.as_mut() {
             if client.ps.pm_time == 0 {
                 client.ps.pm_time = 200.min(50.max(knockback.wrapping_mul(2)));
-                client.ps.pm_flags |= move_flags::TIME_KNOCKBACK;
+                client.ps.pm_flags |= MoveFlags::TimeKnockback as i32;
             }
         }
     }
@@ -554,7 +586,7 @@ pub fn q3_foreign_damage_feedback(
         context
             .entities
             .borrow()
-            .add_event(target, EntityEvent::PowerupBattlesuit as i32, 0);
+            .add_event(target, EntityEvent::EvPowerupBattlesuit as i32, 0);
     }
     let method_of_death = match &decision.request.attack.cause {
         AttackCause::Q3 { means_of_death, .. } => *means_of_death,
@@ -601,7 +633,7 @@ pub(crate) fn q3_committed_damage_feedback(
         let owner_is_client = native_owner
             .as_ref()
             .is_some_and(|owner| owner.borrow().client.is_some());
-        context.entities.borrow().rankings.borrow_mut().damage(
+        context.entities.borrow().rankings.borrow().damage(
             victim,
             attacker,
             decision.applied_damage + armor,
@@ -626,22 +658,23 @@ pub(crate) fn q3_committed_damage_feedback(
         if owner_has_client
             && different
             && previous_health > 0
-            && target_type != EntityType::Missile as i32
-            && target_type != EntityType::General as i32
+            && target_type != EntityType::EtMissile as i32
+            && target_type != EntityType::EtGeneral as i32
         {
             let delta = if on_same_team(context, target, owner) { -1 } else { 1 };
             let mut borrowed = owner.borrow_mut();
             if let Some(client) = borrowed.client.as_mut() {
-                let hits = client.ps.persistant.get(PersistentIndex::Hits as i32);
-                client.ps.persistant.set(PersistentIndex::Hits as i32, hits + delta);
-                let previous_armor = target
-                    .borrow()
-                    .client
-                    .as_ref()
-                    .map_or(0, |client| client.ps.stats.get(stat_schema(product).armor))
-                    + armor;
+                let hits = client.ps.persistant.get(PersistentIndex::PersHits as i32);
+                client.ps.persistant.set(PersistentIndex::PersHits as i32, hits + delta);
+                let previous_armor = target.borrow().client.as_ref().map_or(0, |client| {
+                    let armor_slot = match stat_schema(product) {
+                        StatSchema::Base(layout) => layout.armor,
+                        StatSchema::Missionpack(layout) => layout.armor,
+                    };
+                    client.ps.stats.get(armor_slot)
+                }) + armor;
                 client.ps.persistant.set(
-                    PersistentIndex::AttackeeArmor as i32,
+                    PersistentIndex::PersAttackeeArmor as i32,
                     (previous_health << 8) | previous_armor,
                 );
             }
@@ -661,7 +694,10 @@ pub(crate) fn q3_committed_damage_feedback(
         let mut borrowed = target.borrow_mut();
         let current_origin = borrowed.r.current_origin;
         if let Some(client) = borrowed.client.as_mut() {
-            client.ps.persistant.set(PersistentIndex::Attacker as i32, owner_number);
+            client
+                .ps
+                .persistant
+                .set(PersistentIndex::PersAttacker as i32, owner_number);
             client.damage_armor = client.damage_armor.wrapping_add(armor);
             client.damage_blood = client.damage_blood.wrapping_add(decision.applied_damage);
             client.damage_knockback = client.damage_knockback.wrapping_add(knockback);
@@ -672,14 +708,14 @@ pub(crate) fn q3_committed_damage_feedback(
         }
     }
     if let Some(owner) = native_owner {
-        if context.game_type == GameType::Ctf as i32
-            || (product == Q3Product::Missionpack && context.game_type == GameType::OneFctf as i32)
+        if context.game_type == GameType::GtCtf as i32
+            || (product == Product::Missionpack && context.game_type == GameType::Gt1fctf as i32)
         {
             (context.check_hurt_carrier)(target, owner);
         }
     }
     if decision.reaction == DamageReaction::Death && has_client {
-        target.borrow_mut().flags |= game_flags::NO_KNOCKBACK;
+        target.borrow_mut().flags |= GameFlags::NO_KNOCKBACK;
     }
 }
 
@@ -749,7 +785,7 @@ pub fn radius_damage(
                     Some(&mut impulse),
                     Some(point),
                     points as f32,
-                    damage_flags::RADIUS,
+                    DamageFlags::RADIUS,
                     method_of_death,
                     originating_projectile.clone(),
                 );
@@ -758,4 +794,532 @@ pub fn radius_damage(
     };
     let ignored = ignore.map(use_actor);
     q3_radius_damage(&host, origin, amount, radius, ignored.as_ref())
+}
+
+// ---------------------------------------------------------------------------
+// Combat records (unified from `mirrors_game_sim.rs`): attack provenance,
+// armor, damage decisions, and radius-damage hosts.
+// ---------------------------------------------------------------------------
+
+/// Actor spatial queries (`ActorSpatialQueries`).
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct SpatialQueries {
+    /// Actors overlapping bounds (`areaActors`).
+    pub area_actors: Rc<dyn Fn(&Bounds, i32) -> Vec<ActorId>>,
+    /// Trace against actors (`traceActor`).
+    pub trace_actor: Rc<dyn Fn(&ActorTraceQuery) -> ActorTraceResult>,
+}
+
+/// Quake II native cause (`Q2NativeCause`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Q2NativeCause {
+    /// Classic DLL cause.
+    Classic {
+        /// Game.
+        game: String,
+        /// Native value.
+        value: i32,
+    },
+    /// Rerelease cause.
+    Rerelease {
+        /// Cause id.
+        id: i32,
+        /// Friendly fire.
+        friendly_fire: bool,
+        /// No point loss.
+        no_point_loss: bool,
+    },
+}
+
+/// Quake I armor effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmorEffect {
+    /// Bypass armor.
+    Bypass,
+    /// Half effectiveness.
+    HalfEffectiveness,
+}
+
+/// Environment hazard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvHazard {
+    /// Fall.
+    Fall,
+    /// Drown.
+    Drown,
+    /// Lava.
+    Lava,
+    /// Slime.
+    Slime,
+    /// Crush.
+    Crush,
+    /// Trigger.
+    Trigger,
+}
+
+/// Attack cause (`AttackProvenance.cause`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttackCause {
+    /// Quake I cause.
+    Q1 {
+        /// Death type.
+        death_type: String,
+        /// Armor effect override.
+        armor_effect: Option<ArmorEffect>,
+    },
+    /// Quake II cause.
+    Q2 {
+        /// Means of death.
+        means_of_death: i32,
+        /// Damage flags.
+        damage_flags: i32,
+        /// Native cause.
+        native: Option<Q2NativeCause>,
+    },
+    /// Quake III cause.
+    Q3 {
+        /// Means of death.
+        means_of_death: i32,
+        /// Damage flags.
+        damage_flags: i32,
+    },
+    /// Environment cause.
+    Environment {
+        /// Hazard.
+        hazard: EnvHazard,
+    },
+}
+
+/// Source clock time (`SourceTime`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceTime {
+    /// Millisecond clock.
+    Milliseconds {
+        /// Millisecond value.
+        value: i32,
+    },
+}
+
+/// Captured attack provenance (`AttackProvenance`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttackProvenance {
+    /// Sequence number.
+    pub sequence: i32,
+    /// Source time.
+    pub time: SourceTime,
+    /// Attacker actor.
+    pub attacker: Option<ActorId>,
+    /// Inflictor actor.
+    pub inflictor: Option<ActorId>,
+    /// Originating projectile.
+    pub originating_projectile: Option<ActorId>,
+    /// Weapon item.
+    pub weapon: Option<ItemId>,
+    /// Weapon provider.
+    pub weapon_provider: ProviderId,
+    /// Provider that already applied its damage modifier.
+    pub damage_powerup_owner: Option<ProviderId>,
+    /// Combat provider.
+    pub combat_provider: ProviderId,
+    /// Inventory provider.
+    pub inventory_provider: ProviderId,
+    /// Movement provider.
+    pub movement_provider: ProviderId,
+    /// Cause.
+    pub cause: AttackCause,
+}
+
+/// Attacker damage policy (`SourceDamageModifier`).
+#[derive(Clone)]
+pub struct SourceDamageModifier {
+    /// Owning provider.
+    pub owner: ProviderId,
+    /// Amount transform over the live attacker.
+    pub transform: Rc<dyn Fn(Option<ActorId>, f32) -> f32>,
+}
+
+/// Damage delivery (`DamageRequest.delivery`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageDelivery {
+    /// Direct damage.
+    Direct,
+    /// Radius damage.
+    Radius,
+}
+
+/// Damage request (`DamageRequest`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageRequest {
+    /// Attack provenance.
+    pub attack: AttackProvenance,
+    /// Target actor.
+    pub target: ActorId,
+    /// Damage amount.
+    pub amount: f32,
+    /// Knockback amount.
+    pub knockback: f32,
+    /// Impulse direction.
+    pub direction: Vec3,
+    /// Impact point.
+    pub point: Vec3,
+    /// Impact normal.
+    pub normal: Vec3,
+    /// Delivery.
+    pub delivery: DamageDelivery,
+}
+
+/// Regular armor state (`RegularArmorState`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RegularArmor {
+    /// No armor.
+    None,
+    /// Quake I armor.
+    Q1 {
+        /// Points.
+        points: i32,
+        /// Absorption.
+        absorption: f32,
+        /// Item.
+        item: ItemId,
+    },
+    /// Quake II armor.
+    Q2 {
+        /// Points.
+        points: i32,
+        /// Normal protection.
+        normal_protection: f32,
+        /// Energy protection.
+        energy_protection: f32,
+        /// Item.
+        item: ItemId,
+    },
+    /// Quake III armor.
+    Q3 {
+        /// Points.
+        points: i32,
+        /// Protection fraction.
+        protection: f32,
+    },
+    /// Source armor.
+    Source {
+        /// Points.
+        points: i32,
+        /// Item.
+        item: Option<ItemId>,
+    },
+}
+
+/// Powered protection state (`PoweredProtectionState`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoweredProtection {
+    /// No powered protection.
+    None,
+    /// Screen with cells.
+    Screen {
+        /// Cells.
+        cells: i32,
+    },
+    /// Shield with cells.
+    Shield {
+        /// Cells.
+        cells: i32,
+    },
+}
+
+/// Armor state (`ArmorState`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmorState {
+    /// Regular armor.
+    pub regular: RegularArmor,
+    /// Powered protection.
+    pub powered: PoweredProtection,
+}
+
+/// Combat state (`CombatState`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombatState {
+    /// Health.
+    pub health: i32,
+    /// Armor.
+    pub armor: ArmorState,
+    /// Mass.
+    pub mass: f32,
+    /// Can take damage.
+    pub can_take_damage: bool,
+    /// Invulnerable.
+    pub invulnerable: bool,
+    /// Immune to knockback.
+    pub no_knockback: bool,
+    /// Team identity.
+    pub team: Option<String>,
+}
+
+/// Committed damage mutation (`DamageMutation`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DamageMutation {
+    /// Health change.
+    Health {
+        /// Health before.
+        before: i32,
+        /// Health after.
+        after: i32,
+    },
+    /// Armor change.
+    Armor {
+        /// Armor before.
+        before: ArmorState,
+        /// Armor after.
+        after: ArmorState,
+    },
+    /// Source velocity change.
+    SourceVelocity {
+        /// Velocity before.
+        before: Vec3,
+        /// Velocity after.
+        after: Vec3,
+        /// Movement provider.
+        movement_provider: ProviderId,
+    },
+    /// Impulse.
+    Impulse {
+        /// Impulse vector.
+        impulse: Vec3,
+        /// Movement provider.
+        movement_provider: ProviderId,
+    },
+}
+
+/// Damage reaction (`DamageDecision.reaction`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageReaction {
+    /// No reaction.
+    None,
+    /// Pain.
+    Pain,
+    /// Death.
+    Death,
+}
+
+/// Source damage feedback (`DamageDecision.feedback`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageFeedback {
+    /// Quake II feedback.
+    Q2 {
+        /// Power armor saved.
+        power_armor: i32,
+        /// Armor saved.
+        armor: i32,
+        /// Blood damage.
+        blood: i32,
+        /// Knockback.
+        knockback: i32,
+    },
+    /// Quake III feedback.
+    Q3 {
+        /// Knockback.
+        knockback: i32,
+        /// Battlesuit absorbed.
+        battlesuit: bool,
+    },
+}
+
+/// Committed damage decision (`DamageDecision`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageDecision {
+    /// Request.
+    pub request: DamageRequest,
+    /// Committed mutations.
+    pub mutations: Vec<DamageMutation>,
+    /// Applied health damage.
+    pub applied_damage: i32,
+    /// Reaction.
+    pub reaction: DamageReaction,
+    /// Source feedback.
+    pub feedback: Option<DamageFeedback>,
+}
+
+/// Damage outcome (`DamageOutcome`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DamageOutcome {
+    /// Target went stale.
+    StaleTarget {
+        /// Request.
+        request: DamageRequest,
+    },
+    /// Committed decision.
+    Committed {
+        /// Decision.
+        decision: DamageDecision,
+        /// Target survived.
+        survived: bool,
+    },
+}
+
+/// Gameplay authority operations (`GameplayAuthority`).
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct CombatAuthority {
+    /// Apply a damage request (`apply`).
+    pub apply: Rc<dyn Fn(DamageRequest) -> DamageOutcome>,
+    /// Read combat state (`read`).
+    pub read: Rc<dyn Fn(&ActorId) -> Option<CombatState>>,
+}
+
+/// Apply the source damage modifier (`applySourceDamageModifier`).
+#[must_use]
+pub fn apply_source_damage_modifier(
+    request: &DamageRequest,
+    modifier: Option<&SourceDamageModifier>,
+    is_live: &dyn Fn(&ActorId) -> bool,
+) -> DamageRequest {
+    let Some(modifier) = modifier else {
+        return request.clone();
+    };
+    let current =
+        |actor: &Option<ActorId>| -> Option<ActorId> { actor.as_ref().filter(|handle| is_live(handle)).cloned() };
+    let mut attack = request.attack.clone();
+    attack.attacker = current(&request.attack.attacker);
+    attack.inflictor = current(&request.attack.inflictor);
+    let amount = if attack.damage_powerup_owner.as_ref() == Some(&modifier.owner) {
+        request.amount
+    } else {
+        (modifier.transform)(attack.attacker.clone(), request.amount)
+    };
+    attack.damage_powerup_owner = Some(modifier.owner.clone());
+    DamageRequest {
+        attack,
+        amount,
+        ..request.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Radius damage (mirror of `game/radius-damage.ts`).
+// ---------------------------------------------------------------------------
+
+/// Radius-damage host (`Q3RadiusHost`).
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct Q3RadiusHost {
+    /// Spatial queries.
+    pub spatial: SpatialQueries,
+    /// Target record by actor.
+    pub target: Rc<dyn Fn(&ActorId) -> Option<Q3RadiusTarget>>,
+    /// Damage application.
+    pub damage: Rc<dyn Fn(&ActorId, Vec3, Vec3, i32)>,
+}
+
+/// Visibility check for radius damage (`q3CanDamage`).
+#[must_use]
+pub fn q3_can_damage(spatial: &SpatialQueries, actor: &ActorId, bounds: &Bounds, origin: Vec3) -> bool {
+    let midpoint = scale3(add3(bounds.min, bounds.max), 0.5);
+    let trace = |end: Vec3| -> ActorTraceResult {
+        (spatial.trace_actor)(&ActorTraceQuery {
+            start: origin,
+            end,
+            shape: TraceShape::Point,
+            pass_actor: None,
+            mask: 1,
+        })
+    };
+    let center = trace(midpoint);
+    if center.fraction == 1.0 {
+        return true;
+    }
+    if let ActorTraceHit::Actor { actor: hit } = &center.hit {
+        if hit == actor {
+            return true;
+        }
+    }
+    for (x, y) in [(15.0, 15.0), (15.0, -15.0), (-15.0, 15.0), (-15.0, -15.0)] {
+        let end = vec3(midpoint.x + x, midpoint.y + y, midpoint.z);
+        if trace(end).fraction == 1.0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Radius falloff damage over shared actors (`q3RadiusDamage`).
+pub fn q3_radius_damage(host: &Q3RadiusHost, origin: Vec3, amount: f32, radius: f32, ignore: Option<&ActorId>) -> bool {
+    let radius = radius.max(1.0);
+    let extent = vec3(radius, radius, radius);
+    let candidates = (host.spatial.area_actors)(
+        &Bounds {
+            min: sub3(origin, extent),
+            max: add3(origin, extent),
+        },
+        1024,
+    );
+    let mut hit_client = false;
+    for actor in &candidates {
+        if ignore.is_some_and(|ignored| ignored == actor) {
+            continue;
+        }
+        let Some(target) = (host.target)(actor) else {
+            continue;
+        };
+        let axis = |value: f32, min: f32, max: f32| -> f32 {
+            if value < min {
+                min - value
+            } else if value > max {
+                value - max
+            } else {
+                0.0
+            }
+        };
+        let distance = length3(vec3(
+            axis(origin.x, target.bounds.min.x, target.bounds.max.x),
+            axis(origin.y, target.bounds.min.y, target.bounds.max.y),
+            axis(origin.z, target.bounds.min.z, target.bounds.max.z),
+        ));
+        if distance >= radius {
+            continue;
+        }
+        let points = amount * (1.0 - distance / radius);
+        if !q3_can_damage(&host.spatial, actor, &target.bounds, origin) {
+            continue;
+        }
+        if target.accuracy_eligible {
+            hit_client = true;
+        }
+        (host.damage)(
+            actor,
+            add3(sub3(target.origin, origin), vec3(0.0, 0.0, 24.0)),
+            origin,
+            points.trunc() as i32,
+        );
+    }
+    hit_client
+}
+
+// ---------------------------------------------------------------------------
+// Unified from `mirrors_game_state.rs` (hoist: q3 state mirror).
+// ---------------------------------------------------------------------------
+
+/// Accuracy subject (`Q3AccuracySubject`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccuracySubject {
+    /// Actor.
+    pub actor: ActorId,
+    /// Damageable.
+    pub damageable: bool,
+    /// Player.
+    pub player: bool,
+    /// Health.
+    pub health: i32,
+    /// Team number, when teamed.
+    pub team: Option<i32>,
+}
+
+/// Accuracy-hit test (`q3AccuracyHit`).
+#[must_use]
+pub fn q3_accuracy_hit(team_game: bool, target: &AccuracySubject, attacker: &AccuracySubject) -> bool {
+    target.damageable
+        && target.actor != attacker.actor
+        && target.player
+        && attacker.player
+        && target.health > 0
+        && (!team_game || target.team != attacker.team)
 }

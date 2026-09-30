@@ -11,12 +11,16 @@ use qa_core::math::Vec3;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
+use crate::q3::base::game::combat::DamageFlags;
+use crate::q3::base::game::format::{game_format, GameFormatArgument};
 use crate::q3::base::game::mover::*;
 use crate::q3::base::game::spawn::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, range, touch_jump_pad, Q3Driver, Q3GameError};
 use crate::q3::base::game::use_participant::*;
 use crate::q3::base::game::utilities::*;
+use crate::q3::base::shared::definitions::{EntityEvent, EntityType, MoveType, Team};
+use crate::q3::base::shared::entity_shared::ServerEntityFlags;
 
 // ---------------------------------------------------------------------------
 // triggers.ts: trigger entities (g_trigger.c, BG_TouchJumpPad)
@@ -115,7 +119,7 @@ pub(crate) fn init_trigger(driver: &mut dyn Q3Driver, slot: usize) -> Result<(),
     driver.set_brush_model(slot, model.as_deref());
     if let Some(entity) = driver.pool().entity_mut(slot) {
         entity.r.contents = TRIGGER_CONTENTS;
-        entity.r.sv_flags = ServerEntityFlags::NOCLIENT;
+        entity.r.sv_flags = ServerEntityFlags::Noclient as i32;
     }
     Ok(())
 }
@@ -160,10 +164,10 @@ pub(crate) fn multi_trigger(
         (entity.spawnflags, entity.wait, entity.random)
     };
     if team.is_some() {
-        if spawnflags & 1 != 0 && team != Some(Q3Team::Red as i32) {
+        if spawnflags & 1 != 0 && team != Some(Team::TeamRed as i32) {
             return Ok(());
         }
-        if spawnflags & 2 != 0 && team != Some(Q3Team::Blue as i32) {
+        if spawnflags & 2 != 0 && team != Some(Team::TeamBlue as i32) {
             return Ok(());
         }
     }
@@ -266,8 +270,8 @@ pub fn spawn_trigger_push(driver: &mut dyn Q3Driver, slot: usize) -> Result<(), 
         .think
         .resolve(Some("q3.base.game.triggers.spawnTriggerPush.think"))?;
     if let Some(entity) = driver.pool().entity_mut(slot) {
-        entity.r.sv_flags &= !ServerEntityFlags::NOCLIENT;
-        entity.s.e_type = Q3EntityType::PushTrigger as i32;
+        entity.r.sv_flags &= !(ServerEntityFlags::Noclient as i32);
+        entity.s.e_type = EntityType::EtPushTrigger as i32;
         entity.touch = touch;
         entity.think = think;
     }
@@ -290,11 +294,11 @@ pub fn spawn_trigger_teleport(driver: &mut dyn Q3Driver, slot: usize) -> Result<
         .resolve(Some("q3.base.game.triggers.spawnTriggerTeleport.touch"))?;
     if let Some(entity) = driver.pool().entity_mut(slot) {
         if entity.spawnflags & 1 != 0 {
-            entity.r.sv_flags |= ServerEntityFlags::NOCLIENT;
+            entity.r.sv_flags |= ServerEntityFlags::Noclient as i32;
         } else {
-            entity.r.sv_flags &= !ServerEntityFlags::NOCLIENT;
+            entity.r.sv_flags &= !(ServerEntityFlags::Noclient as i32);
         }
-        entity.s.e_type = Q3EntityType::TeleportTrigger as i32;
+        entity.s.e_type = EntityType::EtTeleportTrigger as i32;
         entity.touch = touch;
     }
     driver.world().link(slot);
@@ -307,7 +311,7 @@ pub(crate) fn sound_at(driver: &mut dyn Q3Driver, participant: &Participant, sou
         Participant::SharedActor(actor) => driver.actor_origin(actor),
     };
     let Some(origin) = origin else { return };
-    let event = driver.pool().temp_entity(origin, Q3EntityEvent::GeneralSound);
+    let event = driver.pool().temp_entity(origin, EntityEvent::EvGeneralSound);
     if let Some(event) = driver.pool().entity_mut(event) {
         event.s.event_parm = sound;
     }
@@ -407,8 +411,8 @@ pub fn spawn_func_timer(driver: &mut dyn Q3Driver, slot: usize, variables: &Spaw
         let at = driver.scratch().vtos(origin)?.read_string();
         driver.warn(&game_format(
             "func_timer at %s has random >= wait\n",
-            &[GameFormatArg::Text(Some(at))],
-        )?);
+            &[GameFormatArgument::Text(at)],
+        ));
     }
     if driver
         .pool()
@@ -422,7 +426,7 @@ pub fn spawn_func_timer(driver: &mut dyn Q3Driver, slot: usize, variables: &Spaw
         }
     }
     if let Some(entity) = driver.pool().entity_mut(slot) {
-        entity.r.sv_flags = ServerEntityFlags::NOCLIENT;
+        entity.r.sv_flags = ServerEntityFlags::Noclient as i32;
     }
     Ok(())
 }
@@ -460,10 +464,10 @@ pub(crate) fn touch_teleport(driver: &mut dyn Q3Driver, slot: usize, other: usiz
             .ok_or_else(|| failure("Trigger entity does not belong to its entity pool or was replaced"))?;
         (entity.spawnflags, entity.target.clone())
     };
-    if pm_type == Q3MoveType::Dead as i32 {
+    if pm_type == MoveType::PmDead as i32 {
         return Ok(());
     }
-    if spawnflags & 1 != 0 && team != Q3Team::Spectator as i32 {
+    if spawnflags & 1 != 0 && team != Team::TeamSpectator as i32 {
         return Ok(());
     }
     let destination = pick_target(driver, target.as_deref())?;
@@ -700,5 +704,63 @@ pub(crate) fn use_func_timer(
         Ok(())
     } else {
         timer_think(driver, slot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use qa_core::math::vec3;
+
+    use crate::q3::base::shared::definitions::Product;
+
+    #[test]
+    fn triggers_aim_fire_and_schedule() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        bind_trigger_save_callbacks(&mut driver).unwrap();
+        let table = trigger_spawn_handlers();
+        assert!(table.get("trigger_multiple").is_some());
+        assert!(table.get("func_timer").is_some());
+        let pad = driver.pool.spawn_entity().unwrap();
+        let dest = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[pad].target = Some("dest".to_string());
+        driver.pool.entities[dest].targetname = Some("dest".to_string());
+        driver.pool.entities[dest].s.origin = vec3(100.0, 0.0, 200.0);
+        aim_at_target(&mut driver, pad, vec3(0.0, 0.0, 0.0)).unwrap();
+        let velocity = driver.pool.entities[pad].s.origin2;
+        assert!(velocity.x > 0.0);
+        assert!(velocity.z > 0.0);
+        let multi = driver.pool.spawn_entity().unwrap();
+        let variables = SpawnVariables::new(vec![SpawnPair {
+            key: "wait".to_string(),
+            value: "2".to_string(),
+        }])
+        .unwrap();
+        spawn_trigger_multiple(&mut driver, multi, &variables).unwrap();
+        assert_eq!(driver.pool.entities[multi].wait, 2.0);
+        assert!(driver.world.linked.contains(&multi));
+        let player = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[player].client = Some(0);
+        let activator = Participant::Entity(player);
+        multi_trigger(&mut driver, multi, Some(&activator)).unwrap();
+        assert_eq!(driver.use_targets_calls.len(), 1);
+        assert!(driver.pool.entities[multi].nextthink > 1000);
+        let hurt = driver.pool.spawn_entity().unwrap();
+        spawn_trigger_hurt(&mut driver, hurt).unwrap();
+        assert_eq!(driver.pool.entities[hurt].damage, 5);
+        driver.pool.entities[player].takedamage = true;
+        touch_hurt(&mut driver, hurt, &activator).unwrap();
+        assert_eq!(driver.combat.calls.len(), 1);
+        assert_eq!(driver.combat.calls[0].method, MOD_TRIGGER_HURT);
+        assert!(driver.pool.entities[hurt].timestamp > 1000);
+        let timer = driver.pool.spawn_entity().unwrap();
+        let timer_vars = SpawnVariables::new(Vec::new()).unwrap();
+        spawn_func_timer(&mut driver, timer, &timer_vars).unwrap();
+        use_func_timer(&mut driver, timer, Some(&activator)).unwrap();
+        assert_eq!(driver.use_targets_calls.len(), 2);
     }
 }

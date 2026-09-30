@@ -8,9 +8,10 @@ use qa_core::identity::SavedActorId;
 use qa_core::math::Bounds;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::save_state::*;
 use crate::q3::base::game::save_values::*;
+use crate::q3::base::game::state::{Q3GameError, Q3UserCommand};
+use crate::q3::base::shared::entity_shared::EntityCollisionModel;
 
 /// Read a saved actor (`readQ3Actor`).
 pub fn read_q3_actor(reader: &SaveReader) -> Result<SavedActorId, Q3GameError> {
@@ -44,17 +45,17 @@ pub(crate) fn read_trajectory(reader: &SaveReader) -> Result<SavedTrajectory, Q3
     })
 }
 
-pub(crate) fn read_collision_model(reader: &SaveReader) -> Result<Q3CollisionModel, Q3GameError> {
+pub(crate) fn read_collision_model(reader: &SaveReader) -> Result<EntityCollisionModel, Q3GameError> {
     let kind = reader.field("kind").choice_str(&["inline", "box", "capsule"])?;
     if kind == "inline" {
         #[allow(clippy::cast_possible_truncation)]
-        Ok(Q3CollisionModel::Inline {
+        Ok(EntityCollisionModel::Inline {
             index: reader.field("index").integer(0)? as i32,
         })
     } else if kind == "box" {
-        Ok(Q3CollisionModel::Box)
+        Ok(EntityCollisionModel::Box)
     } else {
-        Ok(Q3CollisionModel::Capsule)
+        Ok(EntityCollisionModel::Capsule)
     }
 }
 

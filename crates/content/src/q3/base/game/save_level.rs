@@ -11,11 +11,11 @@ use qa_core::math::vec3;
 use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::save_reader::*;
 use crate::q3::base::game::save_state::*;
 use crate::q3::base::game::save_values::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{Q3GameError, Q3PlayerSlots};
 
 // ---------------------------------------------------------------------------
 // save-level.ts: level capture and restore

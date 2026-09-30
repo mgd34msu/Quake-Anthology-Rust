@@ -5,8 +5,8 @@
 use qa_core::identity::ActorId;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::game::mirrors_game_state::*;
 use crate::q3::base::game::state::*;
+use crate::q3::base::game::state::{failure, EntityPool, Q3Driver, Q3GameError};
 
 // ---------------------------------------------------------------------------
 // use-participant.ts: participant helpers
@@ -66,5 +66,45 @@ pub fn use_client(driver: &mut dyn Q3Driver, participant: &Participant) -> Resul
                 _ => Err(failure("Admitted Q3 map player has no native client behavior record")),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::q3::base::game::state::test_support::*;
+
+    use crate::q3::base::shared::definitions::Product;
+
+    #[test]
+    fn use_participant_branches() {
+        let owner = test_owner();
+        let mut driver = StubDriver::new(&owner, Product::Baseq3);
+        assert!(require_use_participant(None).is_err());
+        let slot = driver.pool.spawn_entity().unwrap();
+        driver.pool.entities[slot].client = Some(0);
+        let native = Participant::Entity(slot);
+        assert_eq!(
+            use_actor(&driver.pool, &native).unwrap(),
+            driver.pool.entities[slot].actor.clone()
+        );
+        assert_eq!(use_client(&mut driver, &native).unwrap(), Some(slot));
+        driver.pool.entities[slot].client = None;
+        assert_eq!(use_client(&mut driver, &native).unwrap(), None);
+        let shared = owner.actor(9000, 1);
+        driver.live.insert(shared.clone(), true);
+        driver.players.insert(shared.clone(), true);
+        driver.native_map.insert(shared.clone(), slot);
+        driver.pool.entities[slot].client = Some(0);
+        assert_eq!(
+            use_client(&mut driver, &Participant::SharedActor(shared.clone())).unwrap(),
+            Some(slot)
+        );
+        driver.players.insert(shared.clone(), false);
+        assert_eq!(
+            use_client(&mut driver, &Participant::SharedActor(shared)).unwrap(),
+            None
+        );
     }
 }
