@@ -3631,6 +3631,8 @@ pub struct SavedProjection {
     pub slot: usize,
     /// Owned flag.
     pub owned: bool,
+    /// Event key (`None` when the projection carries no event).
+    pub event: Option<String>,
 }
 
 /// Saved client slot.
@@ -3711,8 +3713,13 @@ pub fn read_mod_host_image(
         if bad || !slots.borrow_mut().insert(slot) || !actors.borrow_mut().insert(key) {
             return entry.fail("Invalid saved QVM actor projection");
         }
-        entry.field("event")?.nullable(|event| event.string())?;
-        Ok(SavedProjection { actor, slot, owned })
+        let event = entry.field("event")?.nullable(|event| event.string())?;
+        Ok(SavedProjection {
+            actor,
+            slot,
+            owned,
+            event,
+        })
     })?;
     let client_slots = if reader.field("clientSlots")?.is_undefined() {
         Vec::new()
@@ -5510,6 +5517,12 @@ impl<H: ModProviderHost> QvmModProvider<H> {
                     ),
                     ("slot", ProfileValue::Int(*slot as i64)),
                     ("owned", ProfileValue::Bool(self.owned.contains(actor))),
+                    (
+                        "event",
+                        self.event_keys.get(actor).map_or(ProfileValue::Null, |event| {
+                            ProfileValue::Str(event.clone())
+                        }),
+                    ),
                 ])
             })
             .collect();
@@ -5589,6 +5602,9 @@ impl<H: ModProviderHost> QvmModProvider<H> {
             let actor = resolve(entry.actor)
                 .ok_or_else(|| GuestError::invalid("Saved QVM mod actor is unavailable or has the wrong owner"))?;
             self.projections.insert(actor.clone(), entry.slot);
+            if let Some(event) = entry.event.clone() {
+                self.event_keys.insert(actor.clone(), event);
+            }
             if entry.owned {
                 if !self.host.is_owned(&actor) {
                     return Err(GuestError::invalid(
@@ -6083,6 +6099,7 @@ mod tests {
         ];
         let mut host = FakeHost::new();
         host.live.insert(actor.clone());
+        host.owned.insert(actor.clone());
         host.canonical.insert(actor.clone(), 100.0);
         let mut provider = QvmModProvider::open(fixture_artifact(), declaration, host).unwrap();
         provider.initialize().unwrap();
