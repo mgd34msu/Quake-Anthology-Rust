@@ -6,5 +6,6 @@ pub mod arachnid;
 pub mod beam;
 pub mod boss;
 pub mod common;
+pub mod gladiator;
 pub mod spawn_placement;
 pub mod tables;
