@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use qa_core::identity::ActorId;
 use qa_core::math::{Bounds, Vec3, add3, dot3, length3, normalize3, scale3, sub3, vec3};
 
-use super::rogue_common::rogue_blocked_check_shot;
 use super::state::rogue_state;
 use super::tables::rogue_turret::{turret_frame, turret_moves};
 use super::types::mission_services;

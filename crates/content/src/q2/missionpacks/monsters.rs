@@ -4,6 +4,7 @@
 //! rerelease game DLL (GPL-2.0-or-later).
 
 pub mod boss5;
+pub mod carrier;
 pub mod chick_heat;
 pub mod combat;
 pub mod dabeam;
