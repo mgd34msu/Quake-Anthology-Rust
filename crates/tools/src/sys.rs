@@ -19,6 +19,16 @@ mod unix {
         fn setsid() -> c_int;
     }
 
+    /// Send `signal` to one process.
+    pub fn kill_process(pid: u32, signal: i32) -> bool {
+        if pid == 0 || pid > i32::MAX as u32 {
+            return false;
+        }
+        // SAFETY: `kill` with a positive pid and a valid signal number only
+        // signals that process; failures surface as a nonzero return.
+        unsafe { kill(pid as c_int, signal as c_int) == 0 }
+    }
+
     /// Send `signal` to a process group leader's whole group (`kill(-pid)`).
     pub fn kill_process_group(pid: u32, signal: i32) -> bool {
         if pid == 0 || pid > i32::MAX as u32 {
@@ -51,6 +61,11 @@ mod unix {
 
 #[cfg(not(unix))]
 mod unix {
+    /// Non-Unix fallback: signalling is unsupported.
+    pub fn kill_process(_pid: u32, _signal: i32) -> bool {
+        false
+    }
+
     /// Non-Unix fallback: group signalling is unsupported.
     pub fn kill_process_group(_pid: u32, _signal: i32) -> bool {
         false
@@ -65,7 +80,7 @@ mod unix {
     pub fn detach(_command: &mut std::process::Command) {}
 }
 
-pub use unix::{current_uid, detach, kill_process_group};
+pub use unix::{current_uid, detach, kill_process, kill_process_group};
 
 /// Owner label for port leases (`process.getuid() ?? "user"` donor shape).
 #[must_use]
