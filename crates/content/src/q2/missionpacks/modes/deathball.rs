@@ -48,15 +48,15 @@ pub fn q2_deathball_rules(deathmatch_flags: i32) -> Q2DeathBallRules {
 #[derive(Debug, Clone, Copy)]
 pub struct Q2DeathBallHooks {
     /// Read settings.
-    pub settings: fn() -> Q2DeathBallSettings,
+    pub settings: fn(&Q2GameServices) -> Q2DeathBallSettings,
     /// Read a player skin.
-    pub skin: fn(ActorId) -> String,
+    pub skin: fn(ActorId, &Q2GameServices) -> String,
     /// Set a player skin.
-    pub set_skin: fn(ActorId, String),
+    pub set_skin: fn(ActorId, &mut Q2GameServices, String),
     /// Add score.
-    pub add_score: fn(ActorId, f64),
+    pub add_score: fn(ActorId, &mut Q2GameServices, f64),
     /// End the level.
-    pub end_level: fn(),
+    pub end_level: fn(&mut Q2GameServices),
     /// Select a spawn placement.
     pub select_spawn: fn(ActorId, &mut Q2GameServices) -> (Vec3, Vec3),
     /// Spawn distance for a spot.
@@ -89,6 +89,8 @@ pub struct DeathballRuntime {
     pub team1_score: f64,
     /// Team 2 score.
     pub team2_score: f64,
+    /// Match settings.
+    pub settings: Option<Q2DeathBallSettings>,
 }
 
 impl Default for DeathballRuntime {
@@ -99,6 +101,7 @@ impl Default for DeathballRuntime {
             starts: 0,
             team1_score: 0.0,
             team2_score: 0.0,
+            settings: None,
         }
     }
 }
@@ -261,7 +264,7 @@ impl Q2DeathBall {
 
     /// Check the goal limit (`checkRules`).
     pub fn check_rules(&self, game: &mut Q2GameServices) -> bool {
-        let limit = (self.hooks.settings)().goal_limit;
+        let limit = (self.hooks.settings)(game).goal_limit;
         if limit == 0 {
             return false;
         }
@@ -280,13 +283,13 @@ impl Q2DeathBall {
             level: Q2PrintLevel::High,
             text: format!("Team {winner} Wins.\n"),
         });
-        (self.hooks.end_level)();
+        (self.hooks.end_level)(game);
         true
     }
 
     /// Assign a team on client begin (`clientBegin`).
     pub fn client_begin(&self, entity: &ActorId, game: &mut Q2GameServices) {
-        let settings = (self.hooks.settings)();
+        let settings = (self.hooks.settings)(game);
         let mut one = 0;
         let mut two = 0;
         let mut unassigned = 0;
@@ -294,7 +297,7 @@ impl Q2DeathBall {
             if &actor == entity {
                 continue;
             }
-            let skin = (self.hooks.skin)(actor);
+            let skin = (self.hooks.skin)(actor, game);
             if skin.contains('/') && skin == settings.team1_skin {
                 one += 1;
             } else if skin.contains('/') && skin == settings.team2_skin {
@@ -305,6 +308,7 @@ impl Q2DeathBall {
         }
         (self.hooks.set_skin)(
             entity.clone(),
+            game,
             if one > two {
                 settings.team2_skin
             } else {
@@ -318,8 +322,8 @@ impl Q2DeathBall {
 
     /// Select a team spawn (`selectSpawn`).
     pub fn select_spawn(&self, entity: &ActorId, game: &mut Q2GameServices) -> (Vec3, Vec3) {
-        let skin = (self.hooks.skin)(entity.clone());
-        let settings = (self.hooks.settings)();
+        let skin = (self.hooks.skin)(entity.clone(), game);
+        let settings = (self.hooks.settings)(game);
         let classname = if skin == settings.team1_skin {
             "dm_dball_team1_start"
         } else if skin == settings.team2_skin {
@@ -440,13 +444,13 @@ fn dball_goal_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchCo
     }
     let enemy = game.require_entity(&ball).enemy.clone();
     for actor in game.host.players() {
-        let skin = (deathball_hooks(game).skin)(actor.clone());
+        let skin = (deathball_hooks(game).skin)(actor.clone(), game);
         let wait = game.require_entity(&entity).wait;
         let score = (wait + if actor == enemy.clone().unwrap_or(actor.clone()) { 5.0 } else { 0.0 }).trunc();
         if !skin.contains('/') {
             continue;
         }
-        let settings = (deathball_hooks(game).settings)();
+        let settings = (deathball_hooks(game).settings)(game);
         let player_team = if skin == settings.team1_skin {
             Some(1)
         } else if skin == settings.team2_skin {
@@ -457,11 +461,11 @@ fn dball_goal_touch(entity: ActorId, game: &mut Q2GameServices, contact: TouchCo
         match player_team {
             None => game.host.diagnostic("unassigned player!!!!"),
             Some(player_team) if player_team == team => {
-                (deathball_hooks(game).add_score)(actor, score);
+                (deathball_hooks(game).add_score)(actor, game, score);
             }
             _ => {
                 if Some(&actor) == enemy.as_ref() {
-                    (deathball_hooks(game).add_score)(actor, -score);
+                    (deathball_hooks(game).add_score)(actor, game, -score);
                 }
             }
         }

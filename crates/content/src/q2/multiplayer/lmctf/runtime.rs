@@ -172,7 +172,7 @@ impl Q2Lmctf {
     }
 
     /// Session runes.
-    fn runes(&self) -> LmctfRunes {
+    pub fn runes(&self) -> LmctfRunes {
         LmctfRunes { hooks: self.hooks }
     }
 

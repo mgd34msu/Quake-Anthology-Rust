@@ -27,6 +27,7 @@ use crate::q2::foundation::shadow_lights::Q2ShadowLightState;
 use crate::q2::foundation::weapons::WeaponRuntime;
 use crate::q2::missionpacks::modes::{deathball::DeathballRuntime, tag::TagRuntime};
 use crate::q2::missionpacks::monsters::MissionMonsterRuntime;
+use crate::q2::composition::CompositionRuntime;
 use crate::q2::multiplayer::ctf::CtfRuntime;
 use crate::q2::multiplayer::lmctf::LmctfRuntime;
 use crate::q2::rerelease::RereleaseRuntime;
@@ -1033,6 +1034,8 @@ pub struct Q2GameServices {
     pub rerelease: RereleaseRuntime,
     /// Equipment runtime.
     pub equipment: EquipmentRuntime,
+    /// Composition runtime.
+    pub composition: CompositionRuntime,
 }
 
 impl Q2GameServices {
@@ -1079,6 +1082,7 @@ impl Q2GameServices {
             lmctf: LmctfRuntime::default(),
             rerelease: RereleaseRuntime::default(),
             equipment: EquipmentRuntime::default(),
+            composition: CompositionRuntime::default(),
         }
     }
 

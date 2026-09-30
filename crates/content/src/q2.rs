@@ -33,6 +33,7 @@
 //! [`BTreeMap`]: std::collections::BTreeMap
 
 pub mod base;
+pub mod composition;
 pub mod equipment;
 pub mod foundation;
 pub mod missionpacks;

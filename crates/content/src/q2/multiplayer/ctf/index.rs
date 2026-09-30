@@ -166,7 +166,7 @@ pub struct Q2Ctf {
 
 impl Q2Ctf {
     /// Session flags.
-    fn flags(&self) -> Q2CtfFlags {
+    pub fn flags(&self) -> Q2CtfFlags {
         Q2CtfFlags { hooks: self.hooks }
     }
 
@@ -186,7 +186,7 @@ impl Q2Ctf {
     }
 
     /// Session techs.
-    fn techs(&self) -> Q2CtfTechs {
+    pub fn techs(&self) -> Q2CtfTechs {
         Q2CtfTechs { hooks: self.hooks }
     }
 

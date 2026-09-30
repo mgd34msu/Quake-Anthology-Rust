@@ -25,7 +25,7 @@ pub struct Q2TagHooks {
     /// Farthest spawn point.
     pub farthest_spawn: fn(&mut Q2GameServices) -> Option<ActorId>,
     /// Add score.
-    pub add_score: fn(ActorId, f64),
+    pub add_score: fn(ActorId, &mut Q2GameServices, f64),
 }
 
 /// Tag checkpoint (`Q2TagCheckpoint`).
@@ -262,7 +262,7 @@ impl Q2Tag {
                 }
             }
         }
-        (self.hooks.add_score)(attacker.clone(), change);
+        (self.hooks.add_score)(attacker.clone(), game, change);
     }
 
     /// Grant a token bonus (`bonus`).
