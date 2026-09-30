@@ -919,8 +919,8 @@ pub fn create_q2_target_module() -> SpawnModule {
         .think
         .insert("target_explosion_explode", target_explosion_explode);
     callbacks.use_.insert("dynamic_light_use", dynamic_light_use);
-    callbacks.use_.insert("use_multi", use_multi);
-    callbacks.use_.insert("use_target_speaker", use_target_speaker);
+    callbacks.use_.insert("Use_Multi", use_multi);
+    callbacks.use_.insert("Use_Target_Speaker", use_target_speaker);
     callbacks.use_.insert("func_timer_use", func_timer_use);
     callbacks
         .use_
@@ -938,8 +938,8 @@ pub fn create_q2_target_module() -> SpawnModule {
         .insert("use_target_explosion", use_target_explosion);
     callbacks.use_.insert("use_target_splash", use_target_splash);
     callbacks.use_.insert("use_target_poi", use_target_poi);
-    callbacks.use_.insert("use_areaportal", use_areaportal);
-    callbacks.touch.insert("touch_multi", touch_multi);
+    callbacks.use_.insert("Use_Areaportal", use_areaportal);
+    callbacks.touch.insert("Touch_Multi", touch_multi);
     let spawn: Q2SpawnFn = spawn_target;
     let item_name: Q2ItemNameFn = target_item_name;
     SpawnModule {
