@@ -13,6 +13,7 @@ pub mod hover;
 pub mod insane;
 pub mod jorg;
 pub mod makron;
+pub mod medic;
 pub mod mutant;
 pub mod parasite;
 pub mod proboscis;
