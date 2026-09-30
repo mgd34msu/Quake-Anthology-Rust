@@ -8,10 +8,9 @@ use std::path::PathBuf;
 
 use crate::error::ToolsError;
 use crate::reference::schema::{
-    CommandObservation, CompatibilityRuntime, FileIdentity, QuakeFamily, ReadObservation, ReadValue, SteamObservation,
+    CommandObservation, CompatibilityRuntime, FileIdentity, QuakeFamily, ReadObservation, SteamObservation,
     SteamTitleObservation, TitleAvailability,
 };
-use crate::verify::hash::hash_str;
 
 /// An installed Steam title.
 #[derive(Debug, Clone)]
@@ -109,16 +108,7 @@ pub fn steam_title_availability(title: &SteamTitle) -> SteamTitleObservation {
 }
 
 fn read_version(path: &str) -> ReadObservation {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let sha256 = hash_str(&text);
-            ReadObservation { path: path.to_owned(), value: ReadValue::Read { text, sha256 } }
-        }
-        Err(error) => ReadObservation {
-            path: path.to_owned(),
-            value: ReadValue::Unavailable { reason: error.to_string() },
-        },
-    }
+    ReadObservation::read_file(path)
 }
 
 /// Observe installed titles and the Proton compatibility runtime.

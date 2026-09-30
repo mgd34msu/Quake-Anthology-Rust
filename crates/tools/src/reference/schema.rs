@@ -69,8 +69,8 @@ pub struct CommandObservation {
     pub environment: Vec<(String, String)>,
     /// ISO-8601 start time.
     pub started_at: String,
-    /// Elapsed milliseconds.
-    pub duration_ms: u64,
+    /// Elapsed milliseconds (fractional, like `performance.now`).
+    pub duration_ms: f64,
     /// How the command finished.
     pub outcome: CommandOutcome,
     /// Captured standard output.
@@ -91,7 +91,7 @@ impl CommandObservation {
                 Json::object(self.environment.iter().map(|(key, value)| (key.clone(), Json::string(value))).collect()),
             ),
             ("startedAt".to_owned(), Json::string(&self.started_at)),
-            ("durationMs".to_owned(), Json::uint(self.duration_ms)),
+            ("durationMs".to_owned(), Json::float(self.duration_ms)),
             ("outcome".to_owned(), self.outcome.to_json()),
             ("stdout".to_owned(), Json::string(&self.stdout)),
             ("stderr".to_owned(), Json::string(&self.stderr)),
@@ -477,6 +477,18 @@ pub struct ReadObservation {
 }
 
 impl ReadObservation {
+    /// Read a file, degrading to `unavailable` instead of failing.
+    #[must_use]
+    pub fn read_file(path: &str) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let sha256 = crate::verify::hash::hash_str(&text);
+                Self { path: path.to_owned(), value: ReadValue::Read { text, sha256 } }
+            }
+            Err(error) => Self { path: path.to_owned(), value: ReadValue::Unavailable { reason: error.to_string() } },
+        }
+    }
+
     /// Render with donor field order.
     #[must_use]
     pub fn to_json(&self) -> Json {

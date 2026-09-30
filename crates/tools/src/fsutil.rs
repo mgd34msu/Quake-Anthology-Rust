@@ -118,3 +118,85 @@ pub fn remove_forced(path: &Path) {
         let _ = fs::remove_file(path);
     }
 }
+
+/// Resolve `path` against `base` lexically, without touching the filesystem
+/// (donor `path.resolve` semantics: no symlink resolution).
+#[must_use]
+pub fn lexical_absolute(base: &Path, path: &str) -> PathBuf {
+    let joined = if Path::new(path).is_absolute() { PathBuf::from(path) } else { base.join(path) };
+    let mut parts: Vec<String> = Vec::new();
+    let mut rooted = false;
+    for component in joined.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => parts.push(prefix.as_os_str().to_string_lossy().into_owned()),
+            std::path::Component::RootDir => {
+                rooted = true;
+                parts.clear();
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+        }
+    }
+    let mut absolute = if rooted { PathBuf::from("/") } else { PathBuf::new() };
+    for part in parts {
+        absolute.push(part);
+    }
+    absolute
+}
+
+/// Relative path from `base` to `path` with `/` separators (donor
+/// `path.relative(...).replaceAll("\\", "/")`).
+#[must_use]
+pub fn posix_relative(base: &Path, path: &Path) -> String {
+    let absolute_base = if base.is_absolute() { base.to_path_buf() } else { lexical_absolute(&PathBuf::from("/"), &base.to_string_lossy()) };
+    let absolute_path = if path.is_absolute() { path.to_path_buf() } else { lexical_absolute(&PathBuf::from("/"), &path.to_string_lossy()) };
+    let base_parts: Vec<String> = absolute_base.components().filter_map(|component| match component {
+        std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+        _ => None,
+    }).collect();
+    let path_parts: Vec<String> = absolute_path.components().filter_map(|component| match component {
+        std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+        _ => None,
+    }).collect();
+    let common = base_parts.iter().zip(path_parts.iter()).take_while(|(left, right)| left == right).count();
+    let mut parts = vec![".."; base_parts.len() - common];
+    parts.extend(path_parts[common..].iter().map(String::as_str));
+    if parts.is_empty() { String::new() } else { parts.join("/") }
+}
+
+/// Create a symlink `link` pointing at `original`.
+#[cfg(unix)]
+pub fn create_symlink(original: &Path, link: &Path) -> Result<(), ToolsError> {
+    std::os::unix::fs::symlink(original, link)
+        .map_err(|error| ToolsError::io(format!("linking {} to {}", link.display(), original.display()), error))
+}
+
+/// Non-Unix fallback: symlinks are unsupported.
+#[cfg(not(unix))]
+pub fn create_symlink(original: &Path, link: &Path) -> Result<(), ToolsError> {
+    let _ = (original, link);
+    Err(ToolsError::invalid("Symbolic links are unsupported on this platform"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_lexically() {
+        assert_eq!(lexical_absolute(Path::new("/a/b"), "c"), PathBuf::from("/a/b/c"));
+        assert_eq!(lexical_absolute(Path::new("/a/b"), "../c"), PathBuf::from("/a/c"));
+        assert_eq!(lexical_absolute(Path::new("/a/b"), "/x/./y"), PathBuf::from("/x/y"));
+        assert_eq!(lexical_absolute(Path::new("/a/b"), "../../.."), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn relativizes_posix() {
+        assert_eq!(posix_relative(Path::new("/a/b"), Path::new("/a/b/c")), "c");
+        assert_eq!(posix_relative(Path::new("/a/b/c"), Path::new("/a/d")), "../../d");
+        assert_eq!(posix_relative(Path::new("/a"), Path::new("/a")), "");
+    }
+}

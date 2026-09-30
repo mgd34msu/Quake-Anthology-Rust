@@ -11,6 +11,7 @@ pub mod content;
 pub mod error;
 pub mod fsutil;
 pub mod inventory;
+pub mod js;
 pub mod json;
 pub mod process;
 pub mod reference;
