@@ -13,7 +13,8 @@ use crate::monsters::monster_target_eligible;
 use crate::q1::base::animation::{MonsterAi, MonsterOperation, SoundComparison};
 use crate::q1::base::monster_actions::monster_jump_touch;
 use crate::q1::base::monsters::{
-    register_monster_source, BaseMonster, BaseMonsterState, MonsterSource, MonsterSourceRegistration,
+    register_monster_source, BaseMonster, BaseMonsterState, MonsterSource,
+    MonsterSourceRegistration,
 };
 use crate::q1::base::species::{MonsterMovement, MonsterSpecies, BASE_SPECIES};
 use crate::q1::foundation::callbacks::{callback_name, Q1CallbackHandlers, Q1StateExtension};
@@ -24,9 +25,7 @@ use crate::q1::foundation::entity::{
 use crate::q1::foundation::entity_services::{Q1EntityServices, Q1SpawnHandler};
 use crate::q1::foundation::gameplay::TouchSurface;
 use crate::q1::foundation::host::Q1ReleaseHook;
-use crate::q1::foundation::types::{
-    length, vsub, yaw_for, Q1Basis, Q1Event, ZERO,
-};
+use crate::q1::foundation::types::{length, vsub, yaw_for, Q1Basis, Q1Event, ZERO};
 use crate::q1::missionpacks::types::Q1MissionPack;
 use crate::q1::{q1_error, Q1Error};
 use crate::value::{arr, int, obj, str as save_str, SaveJson, SaveReader};
@@ -151,7 +150,9 @@ impl<'m> MissionMonster<'m> {
         self.controller.next_frame = self.next_frame.clone();
         self.controller.counted_death = self.counted_death;
         let owned = self.entity.actor.clone();
-        self.runtime.controllers.insert(owned, self.controller.clone());
+        self.runtime
+            .controllers
+            .insert(owned, self.controller.clone());
         let Some(entity) = self.game.entity_ref(&id).cloned() else {
             return;
         };
@@ -200,7 +201,11 @@ impl<'m> MissionMonster<'m> {
             monster: self.state.clone(),
         };
         let result = run(&mut base);
-        let BaseMonster { controller, monster, .. } = base;
+        let BaseMonster {
+            controller,
+            monster,
+            ..
+        } = base;
         self.lefty = controller.lefty;
         self.next_frame = controller.next_frame.clone();
         self.counted_death = controller.counted_death;
@@ -244,8 +249,12 @@ impl<'m> MissionMonster<'m> {
     pub fn start_default(&mut self) {
         self.sync();
         let path = self.game.find(&self.state.path).first().cloned();
-        self.entity.references.insert("goalentity".to_string(), path.clone());
-        self.entity.references.insert("movetarget".to_string(), path);
+        self.entity
+            .references
+            .insert("goalentity".to_string(), path.clone());
+        self.entity
+            .references
+            .insert("movetarget".to_string(), path);
         self.flush_entity();
         self.with_base(|base| {
             let _ = base.start();
@@ -291,7 +300,11 @@ impl<'m> MissionMonster<'m> {
                         .is_some()
                         || !self.state.path.is_empty();
                     let fallback = if self.enemy.is_none() {
-                        if routed { self.spec.walk } else { self.spec.stand }
+                        if routed {
+                            self.spec.walk
+                        } else {
+                            self.spec.stand
+                        }
                     } else {
                         self.spec.run
                     };
@@ -363,7 +376,11 @@ impl<'m> MissionMonster<'m> {
                     comparison,
                     chance,
                 } => {
-                    let draw = if chance.is_some() { self.game.host.random() } else { 0.0 };
+                    let draw = if chance.is_some() {
+                        self.game.host.random()
+                    } else {
+                        0.0
+                    };
                     let play = match chance {
                         None => true,
                         Some(chance) => match comparison {
@@ -676,7 +693,9 @@ impl<'m> MissionMonster<'m> {
             if run_straight != 0.0 && self.game.time > self.entity.number("endtime") {
                 if let Some(world) = world {
                     let _ = self.game.update_entity(&world, |entity| {
-                        entity.fields.insert("RUN_STRAIGHT".to_string(), "0".to_string());
+                        entity
+                            .fields
+                            .insert("RUN_STRAIGHT".to_string(), "0".to_string());
                     });
                 }
                 let id = self.entity.actor.id.clone();
@@ -947,21 +966,28 @@ impl Q1MissionPackMonsters {
             .entity_ref(id)
             .cloned()
             .ok_or_else(|| q1_error(format!("Missing {prefix} monster entity")))?;
-        let definition = self.definitions.get(&entity.classname).copied().ok_or_else(|| {
-            q1_error(format!("Unknown {prefix} monster {}", entity.classname))
-        })?;
+        let definition = self
+            .definitions
+            .get(&entity.classname)
+            .copied()
+            .ok_or_else(|| q1_error(format!("Unknown {prefix} monster {}", entity.classname)))?;
         let owned = entity.actor.clone();
         let controller = self.controllers.get(&owned).cloned().unwrap_or_else(|| {
-            BaseMonsterState::new(definition.spec.species, prefix.to_string(), definition.spec.stand)
+            BaseMonsterState::new(
+                definition.spec.species,
+                prefix.to_string(),
+                definition.spec.stand,
+            )
         });
         let state = entity
             .monster
             .clone()
             .unwrap_or_else(|| default_monster_state(definition.spec.species, &entity.target));
         game.update_entity(id, |entity| {
-            entity
-                .fields
-                .insert("source.monsterCallbackPrefix".to_string(), prefix.to_string());
+            entity.fields.insert(
+                "source.monsterCallbackPrefix".to_string(),
+                prefix.to_string(),
+            );
             if entity.monster.is_none() {
                 entity.monster = Some(state.clone());
             }
@@ -1032,6 +1058,33 @@ impl Q1MissionPackMonsters {
         Ok(())
     }
 
+    /// Adopt a fresh entity with a new controller without running spawn.
+    pub(crate) fn adopt<'m>(
+        &'m mut self,
+        game: &'m mut Q1EntityServices,
+        id: &ActorId,
+    ) -> Result<MissionMonster<'m>, Q1Error> {
+        let prefix = pack_id(&self.pack);
+        let entity = game
+            .entity_ref(id)
+            .cloned()
+            .ok_or_else(|| q1_error(format!("Missing {prefix} monster entity")))?;
+        let definition = self
+            .definitions
+            .get(&entity.classname)
+            .copied()
+            .ok_or_else(|| q1_error(format!("Unknown {prefix} monster {}", entity.classname)))?;
+        self.controllers.insert(
+            entity.actor.clone(),
+            BaseMonsterState::new(
+                definition.spec.species,
+                prefix.to_string(),
+                definition.spec.stand,
+            ),
+        );
+        self.require(game, id)
+    }
+
     /// Spawn handler (`spawn`).
     pub fn spawn(&mut self, game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1Error> {
         if game.options().deathmatch != 0 {
@@ -1043,9 +1096,11 @@ impl Q1MissionPackMonsters {
             .entity_ref(&id)
             .cloned()
             .ok_or_else(|| q1_error(format!("Missing {prefix} monster entity")))?;
-        let definition = self.definitions.get(&entity.classname).copied().ok_or_else(|| {
-            q1_error(format!("Unknown {prefix} monster {}", entity.classname))
-        })?;
+        let definition = self
+            .definitions
+            .get(&entity.classname)
+            .copied()
+            .ok_or_else(|| q1_error(format!("Unknown {prefix} monster {}", entity.classname)))?;
         let controller = BaseMonsterState::new(
             definition.spec.species,
             prefix.to_string(),
@@ -1063,7 +1118,11 @@ impl Q1MissionPackMonsters {
     /// availability, Hipnotic first. Deviation: the Rust base game keeps no
     /// monster controller registry, so charm builds a fresh controller
     /// instead of migrating the base one.
-    pub fn charm(game: &mut Q1EntityServices, id: &ActorId, owner: &ActorId) -> Result<(), Q1Error> {
+    pub fn charm(
+        game: &mut Q1EntityServices,
+        id: &ActorId,
+        owner: &ActorId,
+    ) -> Result<(), Q1Error> {
         let classname = game
             .entity_ref(id)
             .map(|entity| entity.classname.clone())
@@ -1095,9 +1154,10 @@ impl Q1MissionPackMonsters {
                 ),
             );
             game.update_entity(&id, |entity| {
-                entity
-                    .fields
-                    .insert("source.monsterCallbackPrefix".to_string(), prefix.to_string());
+                entity.fields.insert(
+                    "source.monsterCallbackPrefix".to_string(),
+                    prefix.to_string(),
+                );
             })?;
             let current = game
                 .entity_ref(&id)
@@ -1111,13 +1171,21 @@ impl Q1MissionPackMonsters {
                     Some(name)
                 }
             };
-            let think = rename(&current.think).map(|name| game.named.action(&name)).transpose()?;
+            let think = rename(&current.think)
+                .map(|name| game.named.action(&name))
+                .transpose()?;
             let use_callback = rename(&current.use_callback)
                 .map(|name| game.named.use_callback(&name))
                 .transpose()?;
-            let touch = rename(&current.touch).map(|name| game.named.touch(&name)).transpose()?;
-            let pain = rename(&current.pain).map(|name| game.named.pain(&name)).transpose()?;
-            let die = rename(&current.die).map(|name| game.named.die(&name)).transpose()?;
+            let touch = rename(&current.touch)
+                .map(|name| game.named.touch(&name))
+                .transpose()?;
+            let pain = rename(&current.pain)
+                .map(|name| game.named.pain(&name))
+                .transpose()?;
+            let die = rename(&current.die)
+                .map(|name| game.named.die(&name))
+                .transpose()?;
             let path_end = rename(&current.path_end)
                 .map(|name| game.named.action(&name))
                 .transpose()?;
@@ -1159,12 +1227,11 @@ impl Q1MissionPackMonsters {
             load: mission_load_controller,
             store: mission_store_controller,
         });
-        let action = |handler: crate::q1::foundation::callbacks::Q1ActionHandler| {
-            Q1CallbackHandlers {
+        let action =
+            |handler: crate::q1::foundation::callbacks::Q1ActionHandler| Q1CallbackHandlers {
                 action: Some(handler),
                 ..Default::default()
-            }
-        };
+            };
         game.named.register(
             &format!("{prefix}:monster_jump_touch"),
             Q1CallbackHandlers {
@@ -1470,7 +1537,8 @@ fn mission_load_controller(
     id: &ActorId,
     classname: &str,
 ) -> Result<(BaseMonsterState, &'static MonsterSpecies), Q1Error> {
-    let pack = pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
+    let pack =
+        pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
     let guard = lock_pack(&pack);
     let definition = guard
         .definitions
@@ -1496,7 +1564,8 @@ fn mission_store_controller(
     id: &ActorId,
     controller: BaseMonsterState,
 ) -> Result<(), Q1Error> {
-    let pack = pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
+    let pack =
+        pack_for_entity(game, id).ok_or_else(|| q1_error("Unknown mission monster source"))?;
     let owned = game
         .entity_ref(id)
         .map(|entity| entity.actor.clone())
@@ -1577,19 +1646,18 @@ impl Q1StateExtension for MissionMonstersExtension {
                 slot: u32::try_from(slot).unwrap_or(u32::MAX),
                 generation: u32::try_from(generation).unwrap_or(u32::MAX),
             };
-            let owned = game
-                .host
-                .actors
-                .resolve_saved(&saved)
-                .ok_or_else(|| Q1Error::from(root.fail("missing saved monster actor")))?;
+            let owned =
+                game.host.actors.resolve_saved(&saved).ok_or_else(|| {
+                    Q1Error::from(root.clone().fail("missing saved monster actor"))
+                })?;
             if game.entity_ref(owned.id()).is_none() {
-                return Err(Q1Error::from(root.fail("missing saved monster source entity")));
+                return Err(Q1Error::from(
+                    root.clone().fail("missing saved monster source entity"),
+                ));
             }
-            let definition = guard
-                .definitions
-                .get(&definition)
-                .copied()
-                .ok_or_else(|| Q1Error::from(root.fail("unknown saved mission pack monster")))?;
+            let definition = guard.definitions.get(&definition).copied().ok_or_else(|| {
+                Q1Error::from(root.clone().fail("unknown saved mission pack monster"))
+            })?;
             guard.controllers.insert(
                 owned,
                 BaseMonsterState {
@@ -1650,7 +1718,6 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    use crate::q1::foundation::entity::Q1MonsterSpecies;
     use crate::q1::missionpacks::types::test_game;
 
     use super::super::helpers::HULL_BOUNDS;
@@ -1700,9 +1767,15 @@ mod tests {
     fn require_and_play_action() {
         let pinged = Rc::new(Cell::new(false));
         let mut game = test_game();
-        let mut runtime =
-            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, MissionMonsterHooks::default()).expect("new");
-        runtime.register(&mut game, test_definition(pinged.clone())).expect("register");
+        let mut runtime = Q1MissionPackMonsters::new(
+            &mut game,
+            Q1MissionPack::Hipnotic,
+            MissionMonsterHooks::default(),
+        )
+        .expect("new");
+        runtime
+            .register(&mut game, test_definition(pinged.clone()))
+            .expect("register");
         let id = game.create("monster_gremlin", None, None).expect("create");
         let mut monster = runtime.require(&mut game, &id).expect("require");
         assert_eq!(monster.spec.model, "grem");
@@ -1715,9 +1788,15 @@ mod tests {
     fn charm_is_noop_when_controlled() {
         let pinged = Rc::new(Cell::new(false));
         let mut game = test_game();
-        let mut runtime =
-            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, MissionMonsterHooks::default()).expect("new");
-        runtime.register(&mut game, test_definition(pinged)).expect("register");
+        let mut runtime = Q1MissionPackMonsters::new(
+            &mut game,
+            Q1MissionPack::Hipnotic,
+            MissionMonsterHooks::default(),
+        )
+        .expect("new");
+        runtime
+            .register(&mut game, test_definition(pinged))
+            .expect("register");
         let id = game.create("monster_gremlin", None, None).expect("create");
         runtime.spawn(&mut game, &id).expect("spawn");
         let owner = game.create("player", None, None).expect("owner");

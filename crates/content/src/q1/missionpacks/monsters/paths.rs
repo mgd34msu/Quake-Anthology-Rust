@@ -150,7 +150,9 @@ fn follow_base(monster: &mut BaseMonster, trigger_target: &str) -> Result<(), Q1
         monster.controller.next_frame = monster.spec.walk.to_string();
         let think = format!("{}:monster_frame", monster.prefix);
         if let Ok(think) = monster.game.named.action(&think) {
-            monster.game.update_entity(&id, |entity| entity.think = Some(think))?;
+            monster
+                .game
+                .update_entity(&id, |entity| entity.think = Some(think))?;
         }
     }
     let target = monster.game.find(trigger_target).first().cloned();
@@ -264,8 +266,16 @@ fn path_follow_spawn(game: &mut Q1EntityServices, id: &ActorId) -> Result<(), Q1
         game.set_bounds(
             id,
             Bounds {
-                min: Vec3 { x: -8.0, y: -8.0, z: -8.0 },
-                max: Vec3 { x: 8.0, y: 8.0, z: 8.0 },
+                min: Vec3 {
+                    x: -8.0,
+                    y: -8.0,
+                    z: -8.0,
+                },
+                max: Vec3 {
+                    x: 8.0,
+                    y: 8.0,
+                    z: 8.0,
+                },
             },
         )?;
         return Ok(());
@@ -286,7 +296,9 @@ fn movetarget_mission(monster: &mut MissionMonster, corner: &ActorId) -> bool {
     }
     if monster.entity.classname == "monster_ogre" {
         let id = monster.entity.actor.id.clone();
-        let _ = monster.game.sound(&id, "ogre/ogdrag.wav", Q1SoundChannel::Voice, 1.0, 2.0);
+        let _ = monster
+            .game
+            .sound(&id, "ogre/ogdrag.wav", Q1SoundChannel::Voice, 1.0, 2.0);
     }
     if !corner_entity.target.is_empty() {
         let target = monster.game.find(&corner_entity.target).first().cloned();
@@ -327,10 +339,7 @@ fn movetarget_mission(monster: &mut MissionMonster, corner: &ActorId) -> bool {
     true
 }
 
-fn movetarget_base(
-    monster: &mut BaseMonster,
-    corner: &ActorId,
-) -> Result<bool, Q1Error> {
+fn movetarget_base(monster: &mut BaseMonster, corner: &ActorId) -> Result<bool, Q1Error> {
     let Some(corner_entity) = monster.game.entity(corner).cloned() else {
         return Ok(false);
     };

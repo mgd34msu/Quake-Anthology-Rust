@@ -44,7 +44,10 @@ pub const HULL_BOUNDS: Bounds = Bounds {
 /// Write a binary32 numeric field (`number`). Flushes immediately so later
 /// game calls in the same callback observe the value.
 pub fn number(monster: &mut MissionMonster, key: &str, value: f64) {
-    monster.entity.fields.insert(key.to_string(), (value as f32).to_string());
+    monster
+        .entity
+        .fields
+        .insert(key.to_string(), (value as f32).to_string());
     monster.flush_entity();
 }
 
@@ -58,7 +61,14 @@ pub fn drop_to_floor(monster: &mut MissionMonster) -> bool {
     };
     let trace = monster.game.host.trace(&Q1TraceRequest {
         start: body.origin,
-        end: vadd(body.origin, Vec3 { x: 0.0, y: 0.0, z: -256.0 }),
+        end: vadd(
+            body.origin,
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -256.0,
+            },
+        ),
         bounds: body.bounds,
         ignore: Some(id.clone()),
         monsters: false,
@@ -93,7 +103,7 @@ pub fn gib(monster: &mut MissionMonster, head: &str, gibs: &[&str], sound: Optio
     }
     let health = monster.game.health(&id);
     let _ = throw_head(monster.game, &id, head, health);
-    for model in gibs {
+    for model in gibs.iter().copied() {
         let _ = throw_gib(monster.game, monster.origin, model, health);
     }
     monster.refresh();
@@ -161,7 +171,11 @@ pub fn eel_zap(monster: &mut MissionMonster) {
         if classname == "monster_eel" {
             continue;
         }
-        let flags = monster.game.entity(&target).map(|entity| entity.movement_flags).unwrap_or(0);
+        let flags = monster
+            .game
+            .entity(&target)
+            .map(|entity| entity.movement_flags)
+            .unwrap_or(0);
         if flags & 16 == 0 {
             continue;
         }
@@ -185,7 +199,13 @@ pub fn eel_zap(monster: &mut MissionMonster) {
             points *= 0.5;
         }
         if points > 0.0 && monster.game.can_damage(&target, &id) {
-            monster.game.damage(&target, Some(&id), Some(&id), points, &Q1DamageParams::default());
+            monster.game.damage(
+                &target,
+                Some(&id),
+                Some(&id),
+                points,
+                &Q1DamageParams::default(),
+            );
         }
     }
     monster.refresh();
@@ -250,9 +270,9 @@ mod tests {
     use crate::q1::base::species::{MonsterMovement, MonsterSpecies};
     use crate::q1::foundation::entity::Q1MonsterSpecies;
     use crate::q1::foundation::types::ZERO;
-    use crate::q1::missionpacks::types::test_game;
     use crate::q1::missionpacks::monsters::runtime::Q1MissionPackMonsters;
     use crate::q1::missionpacks::monsters::types::PackMonsterDefinition;
+    use crate::q1::missionpacks::types::test_game;
     use crate::q1::missionpacks::types::Q1MissionPack;
     use std::rc::Rc;
 
@@ -294,22 +314,64 @@ mod tests {
 
     #[test]
     fn bounds_match_donor() {
-        assert_eq!(HUMAN_BOUNDS.min, Vec3 { x: -16.0, y: -16.0, z: -24.0 });
-        assert_eq!(HUMAN_BOUNDS.max, Vec3 { x: 16.0, y: 16.0, z: 40.0 });
-        assert_eq!(HULL_BOUNDS.min, Vec3 { x: -16.0, y: -16.0, z: -24.0 });
-        assert_eq!(HULL_BOUNDS.max, Vec3 { x: 16.0, y: 16.0, z: 32.0 });
-        assert_eq!(ZERO, Vec3 { x: 0.0, y: 0.0, z: 0.0 });
+        assert_eq!(
+            HUMAN_BOUNDS.min,
+            Vec3 {
+                x: -16.0,
+                y: -16.0,
+                z: -24.0
+            }
+        );
+        assert_eq!(
+            HUMAN_BOUNDS.max,
+            Vec3 {
+                x: 16.0,
+                y: 16.0,
+                z: 40.0
+            }
+        );
+        assert_eq!(
+            HULL_BOUNDS.min,
+            Vec3 {
+                x: -16.0,
+                y: -16.0,
+                z: -24.0
+            }
+        );
+        assert_eq!(
+            HULL_BOUNDS.max,
+            Vec3 {
+                x: 16.0,
+                y: 16.0,
+                z: 32.0
+            }
+        );
+        assert_eq!(
+            ZERO,
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0
+            }
+        );
     }
 
     #[test]
     fn helpers_smoke() {
         let mut game = test_game();
-        let mut runtime = Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, Default::default()).expect("new");
-        runtime.register(&mut game, test_definition()).expect("register");
+        let mut runtime =
+            Q1MissionPackMonsters::new(&mut game, Q1MissionPack::Hipnotic, Default::default())
+                .expect("new");
+        runtime
+            .register(&mut game, test_definition())
+            .expect("register");
         let id = game.create("monster_gremlin", None, None).expect("create");
         let mut monster = runtime.require(&mut game, &id).expect("require");
         number(&mut monster, "stoleweapon", 1.0);
-        assert_eq!(monster.entity.fields.get("stoleweapon").map(String::as_str), Some("1"));
+        assert_eq!(
+            monster.entity.fields.get("stoleweapon").map(String::as_str),
+            Some("1")
+        );
         empty_pain(&mut monster, None, 0.0);
         let _ = drop_to_floor(&mut monster);
         gib(&mut monster, "h_grem", &["gib1"], None);
@@ -317,8 +379,23 @@ mod tests {
         set_point_bounds(&mut monster);
         let actors = radius_actors(monster.game, monster.origin, 85.0);
         assert!(actors.is_empty() || !actors.is_empty());
-        let shot = missile(monster.game, &id, "missile", "progs/missile.mdl", monster.origin, ZERO, "projectile_touch", 5.0);
-        assert_eq!(monster.game.entity(&shot).map(|entity| entity.classname.as_str()), Some("missile"));
+        let shot = missile(
+            monster.game,
+            &id,
+            "missile",
+            "progs/missile.mdl",
+            monster.origin,
+            ZERO,
+            "projectile_touch",
+            5.0,
+        );
+        assert_eq!(
+            monster
+                .game
+                .entity(&shot)
+                .map(|entity| entity.classname.as_str()),
+            Some("missile")
+        );
     }
 
     #[test]

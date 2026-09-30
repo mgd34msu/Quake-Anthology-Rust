@@ -5,13 +5,14 @@ use std::rc::Rc;
 use qa_core::identity::ActorId;
 use qa_core::math::Vec3;
 
-use crate::q1::base::monsters::BaseMonsterState;
 use crate::q1::base::species::{MonsterMovement, MonsterSpecies};
 use crate::q1::foundation::entity::Q1MonsterSpecies;
 use crate::q1::foundation::entity_services::Q1EntityServices;
-use crate::q1::foundation::types::{vsub, yaw_for, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, ZERO};
+use crate::q1::foundation::types::{
+    vsub, yaw_for, Q1Event, Q1MoveType, Q1Solid, Q1SoundChannel, ZERO,
+};
 use crate::q1::missionpacks::types::Q1MissionPack;
-use crate::q1::{q1_error, Q1Error};
+use crate::q1::Q1Error;
 
 use super::helpers::{number, HULL_BOUNDS};
 use super::runtime::{mission_pack_monsters, MissionMonster, Q1MissionPackMonsters};
@@ -94,7 +95,12 @@ pub fn decoy_definition() -> PackMonsterDefinition {
                         .get("goalentity")
                         .cloned()
                         .flatten()
-                        .and_then(|goal| monster.game.entity(&goal).map(|entity| entity.actor.id.clone()))
+                        .and_then(|goal| {
+                            monster
+                                .game
+                                .entity(&goal)
+                                .map(|entity| entity.actor.id.clone())
+                        })
                         .or_else(|| monster.game.find(&monster.state.path).first().cloned());
                     if let Some(goal) = goal {
                         let owned = monster.entity.actor.clone();
@@ -171,22 +177,13 @@ pub fn become_decoy(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     let id = game.create("monster_decoy", None, None)?;
-    let definition = local
-        .definition("monster_decoy")
-        .ok_or_else(|| q1_error("Unknown hipnotic monster monster_decoy"))?;
-    let owned = game
-        .entity_ref(&id)
-        .map(|entity| entity.actor.clone())
-        .ok_or_else(|| q1_error("Missing hipnotic monster entity"))?;
-    local.controllers.insert(
-        owned,
-        BaseMonsterState::new(definition.spec.species, "hipnotic".to_string(), definition.spec.stand),
-    );
-    let mut monster = local.require(game, &id)?;
+    let mut monster = local.adopt(game, &id)?;
     if let Some(world) = monster.game.world.clone() {
         let decoy = monster.entity.actor.id.clone();
         let _ = monster.game.update_entity(&world, |entity| {
-            entity.references.insert("hipdecoy".to_string(), Some(decoy));
+            entity
+                .references
+                .insert("hipdecoy".to_string(), Some(decoy));
         });
     }
     setup(&mut monster);
@@ -247,8 +244,7 @@ pub fn become_decoy(
         monster.state.pause_until = 99999999.0;
         monster.play("decoy_stand1");
     }
-    let think_in =
-        monster.entity.next_think - monster.game.time + monster.game.host.random() * 0.5;
+    let think_in = monster.entity.next_think - monster.game.time + monster.game.host.random() * 0.5;
     monster.delay(think_in);
     monster.finish();
     *mission_pack_monsters(&Q1MissionPack::Hipnotic)
@@ -262,7 +258,6 @@ mod tests {
     use super::*;
     use crate::q1::missionpacks::types::test_game;
 
-    use super::super::runtime::Q1MissionPackMonsters;
     use super::super::types::MissionMonsterHooks;
 
     #[test]
@@ -283,7 +278,9 @@ mod tests {
             MissionMonsterHooks::default(),
         )
         .expect("new");
-        runtime.register(&mut game, decoy_definition()).expect("register");
+        runtime
+            .register(&mut game, decoy_definition())
+            .expect("register");
         let id = become_decoy(&mut game, "", ZERO).expect("decoy");
         let entity = game.entity(&id).expect("entity").clone();
         assert_eq!(entity.classname, "monster_decoy");

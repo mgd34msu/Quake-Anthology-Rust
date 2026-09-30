@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use qa_core::identity::ActorId;
-use qa_core::math::Vec3;
+use qa_core::math::{Bounds, Vec3};
 
 use crate::q1::base::animation::MonsterAi;
 use crate::q1::base::projectiles::{drop_backpack, throw_gib, throw_head, BackpackDrop};
@@ -28,7 +28,9 @@ use super::types::{leaked_name, MissionAction, PackMonsterDefinition};
 fn army_fire(monster: &mut MissionMonster) {
     monster.face();
     let id = monster.entity.actor.id.clone();
-    let _ = monster.game.sound(&id, "soldier/sattck1.wav", Q1SoundChannel::Weapon, 1.0, 1.0);
+    let _ = monster
+        .game
+        .sound(&id, "soldier/sattck1.wav", Q1SoundChannel::Weapon, 1.0, 1.0);
     let Some(enemy) = monster.enemy.clone() else {
         monster.refresh();
         return;
@@ -43,7 +45,16 @@ fn army_fire(monster: &mut MissionMonster) {
     ));
     let view_angles = monster.entity.vector("v_angle");
     let owned = monster.entity.actor.clone();
-    fire_bullets(monster.game, &owned, direction, view_angles, 4, 0.1, 0.1, None);
+    fire_bullets(
+        monster.game,
+        &owned,
+        direction,
+        view_angles,
+        4,
+        0.1,
+        0.1,
+        None,
+    );
     monster.refresh();
 }
 
@@ -98,7 +109,11 @@ pub fn hipnotic_army_definition() -> PackMonsterDefinition {
             Rc::new(|monster: &mut MissionMonster| {
                 drop_shells(monster);
                 let id = monster.entity.actor.id.clone();
-                let yaw = monster.game.body(&id).map(|body| f64::from(body.angles.y)).unwrap_or(0.0);
+                let yaw = monster
+                    .game
+                    .body(&id)
+                    .map(|body| f64::from(body.angles.y))
+                    .unwrap_or(0.0);
                 let owned = monster.entity.actor.clone();
                 monster.game.host.walk_move(&owned, yaw + 180.0, 4.0);
                 monster.refresh();
@@ -110,7 +125,11 @@ pub fn hipnotic_army_definition() -> PackMonsterDefinition {
             leaked_name(format!("ai_back({distance})")),
             Rc::new(move |monster: &mut MissionMonster| {
                 let id = monster.entity.actor.id.clone();
-                let yaw = monster.game.body(&id).map(|body| f64::from(body.angles.y)).unwrap_or(0.0);
+                let yaw = monster
+                    .game
+                    .body(&id)
+                    .map(|body| f64::from(body.angles.y))
+                    .unwrap_or(0.0);
                 let owned = monster.entity.actor.clone();
                 monster.game.host.walk_move(&owned, yaw + 180.0, distance);
                 monster.refresh();
@@ -160,7 +179,11 @@ pub fn hipnotic_army_definition() -> PackMonsterDefinition {
             let id = monster.entity.actor.id.clone();
             let _ = monster.game.sound_simple(
                 &id,
-                if roll < 0.2 { "soldier/pain1.wav" } else { "soldier/pain2.wav" },
+                if roll < 0.2 {
+                    "soldier/pain1.wav"
+                } else {
+                    "soldier/pain2.wav"
+                },
             );
             monster.refresh();
         }),
@@ -187,7 +210,10 @@ pub fn hipnotic_army_definition() -> PackMonsterDefinition {
         melee: None,
         check_attack: Some(Rc::new(|monster: &mut MissionMonster| {
             let start = monster.eye(None);
-            let end = monster.enemy.clone().and_then(|enemy| monster.eye(Some(&enemy)));
+            let end = monster
+                .enemy
+                .clone()
+                .and_then(|enemy| monster.eye(Some(&enemy)));
             let (Some(start), Some(end)) = (start, end) else {
                 monster.refresh();
                 return false;
@@ -210,7 +236,13 @@ pub fn hipnotic_army_definition() -> PackMonsterDefinition {
                 monster.refresh();
                 return false;
             }
-            let chance = if range < 120.0 { 0.9 } else if range < 500.0 { 0.4 } else { 0.05 };
+            let chance = if range < 120.0 {
+                0.9
+            } else if range < 500.0 {
+                0.4
+            } else {
+                0.05
+            };
             if monster.game.host.random() >= chance {
                 monster.refresh();
                 return false;
@@ -248,8 +280,15 @@ fn dog_jump_touch(
     if game.health(&id) <= 0.0 {
         return Ok(());
     }
-    let damageable = game.host.combat.read(&other).is_some_and(|combat| combat.can_take_damage);
-    let speed = game.body(&id).map(|body| length(body.velocity)).unwrap_or(0.0);
+    let damageable = game
+        .host
+        .combat
+        .read(&other)
+        .is_some_and(|combat| combat.can_take_damage);
+    let speed = game
+        .body(&id)
+        .map(|body| length(body.velocity))
+        .unwrap_or(0.0);
     if damageable && speed > 300.0 {
         game.damage(
             &other,
@@ -299,9 +338,17 @@ pub fn hipnotic_dog_definition(runtime: &Q1MissionPackMonsters) -> PackMonsterDe
             health: 25.0,
             gib_health: -35.0,
             gibs: &["gib3", "gib3", "gib3"],
-            bounds: crate::q1::foundation::types::Bounds {
-                min: Vec3 { x: -32.0, y: -32.0, z: -24.0 },
-                max: Vec3 { x: 32.0, y: 32.0, z: 40.0 },
+            bounds: Bounds {
+                min: Vec3 {
+                    x: -32.0,
+                    y: -32.0,
+                    z: -24.0,
+                },
+                max: Vec3 {
+                    x: 32.0,
+                    y: 32.0,
+                    z: 40.0,
+                },
             },
             stand: "dog_stand1",
             walk: "dog_walk1",
@@ -349,14 +396,32 @@ pub fn hipnotic_dog_definition(runtime: &Q1MissionPackMonsters) -> PackMonsterDe
                         monster.entity.touch = Some(touch);
                         monster.flush_entity();
                     }
-                    let angles = monster.game.body(&id).map(|body| body.angles).unwrap_or(Vec3 {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    });
+                    let angles = monster
+                        .game
+                        .body(&id)
+                        .map(|body| body.angles)
+                        .unwrap_or(Vec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        });
                     let basis = monster.game.make_vectors(angles);
-                    let origin = vadd(monster.origin, Vec3 { x: 0.0, y: 0.0, z: 1.0 });
-                    let velocity = vadd(vscale(basis.forward, 300.0), Vec3 { x: 0.0, y: 0.0, z: 200.0 });
+                    let origin = vadd(
+                        monster.origin,
+                        Vec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 1.0,
+                        },
+                    );
+                    let velocity = vadd(
+                        vscale(basis.forward, 300.0),
+                        Vec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 200.0,
+                        },
+                    );
                     let _ = monster.game.set_body(
                         &id,
                         &crate::q1::foundation::gameplay::BodyPatch {
@@ -462,15 +527,20 @@ mod tests {
     use super::*;
     use crate::q1::missionpacks::types::test_game;
 
-    use super::super::runtime::Q1MissionPackMonsters;
     use super::super::types::MissionMonsterHooks;
 
     #[test]
     fn army_definition_shape() {
         let definition = hipnotic_army_definition();
         assert_eq!(definition.spec.classnames, ["monster_army"]);
-        assert!(definition.actions.iter().any(|(name, _)| *name == "army_fire"));
-        assert!(definition.actions.iter().any(|(name, _)| *name == "ai_back(3)"));
+        assert!(definition
+            .actions
+            .iter()
+            .any(|(name, _)| *name == "army_fire"));
+        assert!(definition
+            .actions
+            .iter()
+            .any(|(name, _)| *name == "ai_back(3)"));
         assert!(definition.check_attack.is_some());
     }
 
@@ -485,7 +555,10 @@ mod tests {
         .expect("new");
         let definition = hipnotic_dog_definition(&runtime);
         assert_eq!(definition.spec.classnames, ["monster_dog"]);
-        assert!(definition.callbacks.iter().any(|(name, _)| *name == "Dog_JumpTouch"));
+        assert!(definition
+            .callbacks
+            .iter()
+            .any(|(name, _)| *name == "Dog_JumpTouch"));
         assert!(definition.melee.is_some());
     }
 
@@ -498,8 +571,12 @@ mod tests {
             MissionMonsterHooks::default(),
         )
         .expect("new");
-        runtime.register(&mut game, hipnotic_army_definition()).expect("army");
-        runtime.register(&mut game, hipnotic_dog_definition(&runtime.clone())).expect("dog");
+        runtime
+            .register(&mut game, hipnotic_army_definition())
+            .expect("army");
+        runtime
+            .register(&mut game, hipnotic_dog_definition(&runtime.clone()))
+            .expect("dog");
         let army = game.create("monster_army", None, None).expect("army");
         let mut monster = runtime.require(&mut game, &army).expect("require");
         assert!(!monster.try_attack());

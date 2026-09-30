@@ -25,8 +25,16 @@ fn dormant_spikemine_spawn(game: &mut Q1EntityServices, id: &ActorId) -> Result<
     game.set_bounds(
         id,
         Bounds {
-            min: Vec3 { x: -32.0, y: -32.0, z: -24.0 },
-            max: Vec3 { x: 32.0, y: 32.0, z: 64.0 },
+            min: Vec3 {
+                x: -32.0,
+                y: -32.0,
+                z: -24.0,
+            },
+            max: Vec3 {
+                x: 32.0,
+                y: 32.0,
+                z: 64.0,
+            },
         },
     )?;
     game.link(id)
@@ -41,7 +49,9 @@ mod tests {
     fn dormant_spikemine_links() {
         let mut game = test_game();
         register_dormant_spikemine(&mut game).expect("register");
-        let id = game.create("monster_spikemine", None, None).expect("create");
+        let id = game
+            .create("monster_spikemine", None, None)
+            .expect("create");
         dormant_spikemine_spawn(&mut game, &id).expect("spawn");
         let entity = game.entity(&id).expect("entity").clone();
         assert_eq!(entity.model, "progs/demon.mdl");
