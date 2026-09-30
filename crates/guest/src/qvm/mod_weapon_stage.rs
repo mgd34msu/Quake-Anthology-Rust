@@ -139,6 +139,18 @@ impl QvmItemStorage {
             Self::Bits { items, .. } => items.iter().map(|entry| entry.item.as_str()).collect(),
         }
     }
+
+    /// Build counter storage.
+    #[must_use]
+    pub fn counter(field: QvmItemField, item: String, capacity: QvmItemCapacity) -> Self {
+        Self::Counter { field, item, capacity }
+    }
+
+    /// Build packed-bits storage.
+    #[must_use]
+    pub fn bits(field: QvmItemField, private_mask: u32, items: Vec<PackedItem>) -> Self {
+        Self::Bits { field, private_mask, items }
+    }
 }
 
 /// Source actor selector.
@@ -801,8 +813,10 @@ impl<H: WeaponStageHost> QvmModWeaponStage<H> {
     /// Cancellation scope for an actor: innermost input scope, else fresh.
     pub fn cancellation(&mut self, actor: &ActorId) -> u64 {
         for input in self.inputs.iter().rev() {
-            if input.actor == *actor && let Some(scope) = input.scope {
-                return scope;
+            if input.actor == *actor {
+                if let Some(scope) = input.scope {
+                    return scope;
+                }
             }
         }
         self.dispatcher.host.fresh_scope()

@@ -406,5 +406,254 @@ impl<M: PlayerEventMemory, O: PlayerEventOps> QvmPlayerEvents<M, O> {
             self.track(actor.clone(), *address, cursor)?;
         }
         Ok(())
+    }
+
+    /// Stop tracking one actor.
+    pub fn release(&mut self, actor: &ActorId) {
+        self.entries.remove(actor);
+    }
+
+    /// Stop tracking all actors.
+    pub fn close(&mut self) {
+        self.entries.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use qa_core::identity::IdentityOwner;
+
+    use super::super::mod_presentation_checkpoint::capture_saved_actor_id;
+    use super::super::mod_provider::{ProfileValue, QvmAbi};
+    use super::*;
+
+    struct FixtureMemory {
+        states: HashMap<usize, SourcePlayerState>,
+    }
+
+    impl FixtureMemory {
+        fn with_state(address: usize, state: SourcePlayerState) -> Self {
+            let mut states = HashMap::new();
+            states.insert(address, state);
+            Self { states }
+        }
+    }
+
+    impl PlayerEventMemory for FixtureMemory {
+        fn read_player_state(&self, address: usize) -> Result<SourcePlayerState, GuestError> {
+            self.states.get(&address).cloned().ok_or_else(|| GuestError::invalid("missing player record"))
+        }
+
+        fn read_i32(&self, address: usize) -> Result<i32, GuestError> {
+            for (base, state) in &self.states {
+                if address >= *base && address + 4 <= *base + state.bytes().len() {
+                    let offset = address - base;
+                    let word = &state.bytes()[offset..offset + 4];
+                    return Ok(i32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+                }
+            }
+            Err(GuestError::invalid("missing source word"))
+        }
+    }
+
+    struct FixtureOps {
+        live: HashSet<ActorId>,
+        emitted: Vec<SourcePlayerEvent>,
+    }
+
+    impl FixtureOps {
+        fn with_live(actor: &ActorId) -> Self {
+            let mut live = HashSet::new();
+            live.insert(actor.clone());
+            Self { live, emitted: Vec::new() }
+        }
+    }
+
+    impl PlayerEventOps for FixtureOps {
+        fn live(&self, actor: &ActorId) -> bool {
+            self.live.contains(actor)
+        }
+
+        fn origin(&self, _actor: &ActorId) -> Result<Vec3, GuestError> {
+            Ok(Vec3::default())
+        }
+
+        fn time_ms(&self) -> i32 {
+            500
+        }
+
+        fn emit(&mut self, event: SourcePlayerEvent) {
+            self.emitted.push(event);
+        }
+    }
+
+    fn module() -> ModuleId {
+        ModuleId { id: "test:game".to_string(), artifact_path: "vm/qagame.qvm".to_string(), digest: "sha256:game".to_string(), revision: "1".to_string() }
+    }
+
+    fn write_word(state: &mut SourcePlayerState, offset: usize, value: i32) {
+        state.bytes_mut()[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn player_state(sequence: i32, external: i32, external_time: i32) -> SourcePlayerState {
+        let mut state = SourcePlayerState::zeroed(QvmAbi::Modern);
+        write_word(&mut state, 108, sequence);
+        write_word(&mut state, 128, external);
+        write_word(&mut state, 136, external_time);
+        state
+    }
+
+    fn tracker(actor: &ActorId, address: usize, state: SourcePlayerState) -> QvmPlayerEvents<FixtureMemory, FixtureOps> {
+        let mut tracker = QvmPlayerEvents::new(FixtureMemory::with_state(address, state), FixtureOps::with_live(actor), module(), QvmAbi::Modern);
+        tracker.track(actor.clone(), address, None).expect("track");
+        tracker
+    }
+
+    #[test]
+    fn predictable_event_publishes_observed_order() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let mut tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
+        let mut advanced = player_state(11, 0, 0);
+        write_word(&mut advanced, 112, 7);
+        write_word(&mut advanced, 120, 9);
+        tracker.memory_mut().states.insert(0x1000, advanced);
+        tracker.notify_write(&actor, &[108]).expect("notify");
+        tracker.publish().expect("publish");
+        let emitted = &tracker.ops().emitted;
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].event, 7);
+        assert_eq!(emitted[0].parameter, 9);
+        assert_eq!(emitted[0].sequence, PlayerEventSequence::Predictable { sequence: 10 });
+        tracker.publish().expect("republish");
+        assert_eq!(tracker.ops().emitted.len(), 1);
+    }
+
+    #[test]
+    fn external_event_publishes_time_identity() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let mut tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
+        tracker.memory_mut().states.insert(0x1000, player_state(10, 5, 100));
+        tracker.notify_write(&actor, &[128]).expect("notify");
+        tracker.publish().expect("publish");
+        let emitted = &tracker.ops().emitted;
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].event, 5);
+        assert_eq!(emitted[0].sequence, PlayerEventSequence::External { time: 100 });
+    }
+
+    #[test]
+    fn discard_syncs_without_publishing() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let mut tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
+        tracker.memory_mut().states.insert(0x1000, player_state(12, 5, 100));
+        tracker.notify_write(&actor, &[108, 128]).expect("notify");
+        tracker.discard().expect("discard");
+        tracker.publish().expect("publish");
+        assert!(tracker.ops().emitted.is_empty());
+    }
+
+    #[test]
+    fn checkpoint_restore_round_trip_stays_quiet() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let mut tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
+        let mut advanced = player_state(11, 0, 0);
+        write_word(&mut advanced, 112, 7);
+        tracker.memory_mut().states.insert(0x1000, advanced.clone());
+        tracker.notify_write(&actor, &[108]).expect("notify");
+        tracker.publish().expect("publish");
+        assert_eq!(tracker.ops().emitted.len(), 1);
+        let saved = tracker.checkpoint();
+        assert_eq!(saved.next_order, 1);
+        assert_eq!(saved.clients.len(), 1);
+        let mut restored = QvmPlayerEvents::new(
+            FixtureMemory::with_state(0x1000, advanced),
+            FixtureOps::with_live(&actor),
+            module(),
+            QvmAbi::Modern,
+        );
+        let reference = |saved: SavedActorId| {
+            if saved.slot == actor.slot() && saved.generation == actor.generation() { Some(actor.clone()) } else { None }
+        };
+        restored.restore(Some(&saved), &[(actor.clone(), 0x1000)], &reference).expect("restore");
+        restored.publish().expect("publish");
+        assert!(restored.ops().emitted.is_empty());
+        assert_eq!(restored.checkpoint(), saved);
+    }
+
+    #[test]
+    fn restore_rejects_players_without_saved_cursors() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let other = owner.actor(4, 0);
+        let tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
+        let saved = tracker.checkpoint();
+        let mut restored = QvmPlayerEvents::new(FixtureMemory::with_state(0x2000, player_state(10, 0, 0)), FixtureOps::with_live(&other), module(), QvmAbi::Modern);
+        let reference = |saved: SavedActorId| {
+            if saved.slot == other.slot() && saved.generation == other.generation() { Some(other.clone()) } else { None }
+        };
+        assert!(restored.restore(Some(&saved), &[(other.clone(), 0x2000)], &reference).is_err());
+    }
+
+    #[test]
+    fn release_stops_tracking() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let other = owner.actor(4, 0);
+        let mut tracker = tracker(&actor, 0x1000, player_state(10, 0, 0));
+        tracker.memory_mut().states.insert(0x2000, player_state(10, 0, 0));
+        tracker.ops.live.insert(other.clone());
+        tracker.track(other.clone(), 0x2000, None).expect("track other");
+        tracker.release(&actor);
+        let mut advanced = player_state(11, 0, 0);
+        write_word(&mut advanced, 112, 7);
+        tracker.memory_mut().states.insert(0x2000, advanced);
+        tracker.notify_write(&other, &[108]).expect("notify");
+        tracker.publish().expect("publish");
+        let emitted = &tracker.ops().emitted;
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].actor, other);
+    }
+
+    fn checkpoint_value(next_order: i64, actor: &ActorId, sequence: i64, observed: i64, external_order: ProfileValue, predictable: ProfileValue) -> ProfileValue {
+        ProfileValue::record(vec![
+            ("nextOrder", ProfileValue::Int(next_order)),
+            (
+                "clients",
+                ProfileValue::Array(vec![ProfileValue::record(vec![
+                    ("actor", capture_saved_actor_id(actor)),
+                    ("external", ProfileValue::Int(0)),
+                    ("externalTime", ProfileValue::Int(0)),
+                    ("sequence", ProfileValue::Int(sequence)),
+                    ("observedSequence", ProfileValue::Int(observed)),
+                    ("externalOrder", external_order),
+                    ("predictable", predictable),
+                ])]),
+            ),
+        ])
+    }
+
+    #[test]
+    fn read_checkpoint_validates_publication_orders() {
+        let owner = IdentityOwner::create("test").expect("owner");
+        let actor = owner.actor(3, 0);
+        let entry = ProfileValue::record(vec![("sequence", ProfileValue::Int(11)), ("order", ProfileValue::Int(0))]);
+        let value = checkpoint_value(2, &actor, 10, 12, ProfileValue::Int(1), ProfileValue::Array(vec![entry]));
+        let read = read_qvm_player_events(&ProfileReader::new(&value)).expect("read").expect("present");
+        assert_eq!(read.next_order, 2);
+        assert_eq!(read.clients.len(), 1);
+        assert_eq!(read.clients[0].external_order, Some(1));
+        let duplicate = ProfileValue::Array(vec![
+            ProfileValue::record(vec![("sequence", ProfileValue::Int(11)), ("order", ProfileValue::Int(0))]),
+            ProfileValue::record(vec![("sequence", ProfileValue::Int(10)), ("order", ProfileValue::Int(0))]),
+        ]);
+        let bad = checkpoint_value(2, &actor, 10, 12, ProfileValue::Null, duplicate);
+        assert!(read_qvm_player_events(&ProfileReader::new(&bad)).is_err());
+        assert!(read_qvm_player_events(&ProfileReader::new(&ProfileValue::Undefined)).expect("absent").is_none());
+    }
+}
    
 ...[truncated 6964 chars]

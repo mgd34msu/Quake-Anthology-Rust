@@ -823,10 +823,15 @@ pub fn qualify_qvm_region_evaluation(
         {
             let right = pop(&mut stack)?;
             let left = pop(&mut stack)?;
-            if (opcode == QvmOpcode::OpAdd || opcode == QvmOpcode::OpSub)
-                && let RegionOperand::Local(base) = left
-                && let RegionOperand::Constant(delta) = right
-            {
+            let fold = if opcode == QvmOpcode::OpAdd || opcode == QvmOpcode::OpSub {
+                match (left, right) {
+                    (RegionOperand::Local(base), RegionOperand::Constant(delta)) => Some((base, delta)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some((base, delta)) = fold {
                 let offset = if opcode == QvmOpcode::OpAdd { base as i64 + delta as i64 } else { base as i64 - delta as i64 };
                 stack.push(RegionOperand::Local(offset.max(0) as usize));
             } else {
@@ -2687,15 +2692,14 @@ pub fn validate_qvm_mod_pickups_mirror(declaration: &QvmModCallbackDeclaration) 
                 }
             }
             if let Some(source) = declaration.source_actors.as_ref() {
-                if Some(record.id.as_str()) == declaration.entity_record.as_deref()
-                    && let Some(callbacks) = source.callbacks.as_ref()
-                {
-                    if field.offset == source.inuse
-                        || [callbacks.touch, callbacks.use_, callbacks.pain, callbacks.die].into_iter().flatten().any(|offset| offset == field.offset)
-                    {
-                        return Err(GuestError::invalid("QVM pickup context overlaps source actor lifetime"));
+                if Some(record.id.as_str()) == declaration.entity_record.as_deref() {
+                    if let Some(callbacks) = source.callbacks.as_ref() {
+                        if field.offset == source.inuse
+                            || [callbacks.touch, callbacks.use_, callbacks.pain, callbacks.die].into_iter().flatten().any(|offset| offset == field.offset)
+                        {
+                            return Err(GuestError::invalid("QVM pickup context overlaps source actor lifetime"));
+                        }
                     }
-                }
             }
         }
     }
