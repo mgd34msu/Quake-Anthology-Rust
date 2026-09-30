@@ -5,19 +5,61 @@
 use crate::contract::{ArmorState, InventoryEntry, PoweredProtectionState, RegularArmorState};
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{vec3, Bounds, Vec3};
-use qa_core::time::SourceTime;
-use qa_world::movement::types::AnimationState;
+use qa_core::time::FrameContext;
+use qa_world::movement::q3::animation::{run_q3_animation_operation, Q3AnimationContext};
+use qa_world::movement::q3::constants::{entity_event, player_animation};
+use qa_world::movement::q3::types::{Q3AnimationRequest, Q3AnimationStepResult, Q3Product};
+use qa_world::movement::types::{ActorAnimationState, AnimationState, LocomotionAnimation};
 use std::cell::RefCell;
 use std::rc::Rc;
+use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::foundation::animation::*;
+use crate::q3::foundation::animation_config::{game_atoi, AnimationConfigError};
 use crate::q3::foundation::arsenal::*;
-use crate::q3::foundation::mirrors::*;
 
 // ---------------------------------------------------------------------------
 // character.ts: ClientSpawn, player_die, character animation admission.
 // ---------------------------------------------------------------------------
+
+/// Character failure (donor `TypeError` and `Error` throws plus wrapped
+/// animation-config failures).
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CharacterError {
+    /// Wrong provider or state kind (donor `TypeError`).
+    #[error("{0}")]
+    Type(String),
+    /// Operation failure (donor `Error`).
+    #[error("{0}")]
+    Failed(String),
+    /// Wrapped animation config failure.
+    #[error(transparent)]
+    AnimationConfig(#[from] AnimationConfigError),
+}
+
+fn failed(message: impl Into<String>) -> CharacterError {
+    CharacterError::Failed(message.into())
+}
+
+fn type_error(message: impl Into<String>) -> CharacterError {
+    CharacterError::Type(message.into())
+}
+
+/// Animation step input (`AnimationStepInput`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationStepInput {
+    /// Frame clock.
+    pub frame: FrameContext,
+    /// Animation.
+    pub animation: ActorAnimationState,
+    /// Locomotion.
+    pub locomotion: LocomotionAnimation,
+    /// Moving backwards.
+    pub backwards: bool,
+    /// Force selection.
+    pub force: bool,
+}
 
 /// Character collision bounds (`Q3_CHARACTER_BOUNDS`).
 pub const Q3_CHARACTER_BOUNDS: Bounds = Bounds {
@@ -146,7 +188,7 @@ pub struct Q3CharacterCheckpoint {
     /// Product.
     pub product: Q3Product,
     /// Animation.
-    pub animation: Q3AnimationState,
+    pub animation: AnimationState,
     /// Source flags.
     pub flags: i32,
     /// Event sequence.
@@ -257,7 +299,7 @@ impl Q3DeathAnimationSequence {
     }
 
     /// Restore the index.
-    pub fn restore(&mut self, checkpoint: &Q3DeathAnimationCheckpoint) -> Result<(), Q3FoundationError> {
+    pub fn restore(&mut self, checkpoint: &Q3DeathAnimationCheckpoint) -> Result<(), CharacterError> {
         if checkpoint.version != 1 || checkpoint.index > 2 {
             return Err(type_error("Invalid Q3 death animation checkpoint"));
         }
@@ -269,11 +311,11 @@ impl Q3DeathAnimationSequence {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> (i32, i32) {
         let result = if self.index == 0 {
-            (Q3PlayerAnimation::BOTH_DEATH1, Q3EntityEvent::DEATH1)
+            (player_animation::BOTH_DEATH1, entity_event::DEATH1)
         } else if self.index == 1 {
-            (Q3PlayerAnimation::BOTH_DEATH2, Q3EntityEvent::DEATH2)
+            (player_animation::BOTH_DEATH2, entity_event::DEATH2)
         } else {
-            (Q3PlayerAnimation::BOTH_DEATH3, Q3EntityEvent::DEATH3)
+            (player_animation::BOTH_DEATH3, entity_event::DEATH3)
         };
         self.index = (self.index + 1) % 3;
         result
@@ -281,13 +323,13 @@ impl Q3DeathAnimationSequence {
 }
 
 /// Maximum health from a handicap (`q3MaximumHealth`).
-pub fn q3_maximum_health(handicap: &str) -> Result<i32, Q3FoundationError> {
+pub fn q3_maximum_health(handicap: &str) -> Result<i32, CharacterError> {
     let maximum = game_atoi(handicap)?;
     Ok(if !(1..=100).contains(&maximum) { 100 } else { maximum })
 }
 
 /// Initial combat state (`q3InitialCombat`).
-pub fn q3_initial_combat(handicap: &str, team: Option<String>) -> Result<CombatState, Q3FoundationError> {
+pub fn q3_initial_combat(handicap: &str, team: Option<String>) -> Result<CombatState, CharacterError> {
     Ok(CombatState {
         health: q3_maximum_health(handicap)?.wrapping_add(25),
         armor: ArmorState {
@@ -307,7 +349,7 @@ pub fn q3_initial_combat(handicap: &str, team: Option<String>) -> Result<CombatS
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Q3CharacterInner {
-    animation: Q3AnimationState,
+    animation: AnimationState,
     flags: i32,
     sequence: i32,
     respawn_time: i32,
@@ -329,26 +371,6 @@ pub struct Q3CharacterActor<S> {
     inner: Rc<RefCell<Q3CharacterInner>>,
 }
 
-/// Spawn animation in the hook-owned shape. The merged timers are integers,
-/// so the widening is exact.
-fn spawn_animation_state() -> Q3AnimationState {
-    let AnimationState::Q3 {
-        legs,
-        torso,
-        legs_timer_milliseconds,
-        torso_timer_milliseconds,
-    } = q3_spawn_animation()
-    else {
-        panic!("Q3 spawn animation is always Q3");
-    };
-    Q3AnimationState {
-        legs,
-        torso,
-        legs_timer_ms: f64::from(legs_timer_milliseconds),
-        torso_timer_ms: f64::from(torso_timer_milliseconds),
-    }
-}
-
 impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     /// Bind a character to its services.
     pub fn new(
@@ -365,7 +387,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
             services,
             death_animations,
             inner: Rc::new(RefCell::new(Q3CharacterInner {
-                animation: spawn_animation_state(),
+                animation: q3_spawn_animation(),
                 flags: 0,
                 sequence: 0,
                 respawn_time: 0,
@@ -382,7 +404,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     pub fn animation(&self) -> ActorAnimationState {
         ActorAnimationState {
             provider: self.provider.clone(),
-            state: self.inner.borrow().animation.clone(),
+            state: self.inner.borrow().animation,
         }
     }
 
@@ -412,7 +434,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
 
     /// Jump event.
     pub fn jump(&self) {
-        Self::emit_inner(&self.inner, &self.services, &self.actor, Q3EntityEvent::JUMP, 0);
+        Self::emit_inner(&self.inner, &self.services, &self.actor, entity_event::JUMP, 0);
     }
 
     fn emit_inner(
@@ -448,7 +470,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
         Q3CharacterCheckpoint {
             version: 1,
             product: self.product,
-            animation: inner.animation.clone(),
+            animation: inner.animation,
             flags: inner.flags,
             event_sequence: inner.sequence,
             respawn_time: inner.respawn_time,
@@ -460,7 +482,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     }
 
     /// Restore a checkpoint.
-    pub fn restore(&self, checkpoint: &Q3CharacterCheckpoint) -> Result<(), Q3FoundationError> {
+    pub fn restore(&self, checkpoint: &Q3CharacterCheckpoint) -> Result<(), CharacterError> {
         if checkpoint.version != 1 || checkpoint.product != self.product {
             return Err(type_error("Q3 character checkpoint belongs to another source product"));
         }
@@ -479,7 +501,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
             self.bind_callbacks();
         }
         let mut inner = self.inner.borrow_mut();
-        inner.animation = checkpoint.animation.clone();
+        inner.animation = checkpoint.animation;
         inner.flags = checkpoint.flags;
         inner.sequence = checkpoint.event_sequence;
         inner.respawn_time = checkpoint.respawn_time;
@@ -507,7 +529,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
                     let health = pain_services
                         .read_combat(pain_actor.id())
                         .map_or(0, |combat| combat.health);
-                    Self::emit_inner(&pain_inner, &pain_services, &pain_actor, Q3EntityEvent::PAIN, health);
+                    Self::emit_inner(&pain_inner, &pain_services, &pain_actor, entity_event::PAIN, health);
                 }),
                 die: Box::new(move || {
                     Self::die_inner(&die_inner, &die_services, &die_actor, &die_animations)
@@ -519,7 +541,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     }
 
     /// Spawn the character.
-    pub fn spawn(&self, input: &Q3CharacterSpawn) -> Result<(), Q3FoundationError> {
+    pub fn spawn(&self, input: &Q3CharacterSpawn) -> Result<(), CharacterError> {
         if self.services.read_combat(self.actor.id()).is_none() {
             self.services.create_combat(&self.actor, input.combat.clone());
         } else {
@@ -542,7 +564,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
         }
         {
             let mut inner = self.inner.borrow_mut();
-            inner.animation = spawn_animation_state();
+            inner.animation = q3_spawn_animation();
             inner.flags = (inner.flags & (4 | 0x4000 | 0x80000)) ^ 4;
             inner.dead = false;
             inner.gibbed = false;
@@ -556,7 +578,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
             self.services.link_body(&self.actor);
             self.services.spawn_targets(&self.actor);
             if self.inner.borrow().spawn_count > 1 {
-                self.emit(Q3EntityEvent::PLAYER_TELEPORT_IN, 0);
+                self.emit(entity_event::PLAYER_TELEPORT_IN, 0);
             }
         }
         Ok(())
@@ -576,7 +598,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
             },
         );
         services.unlink_body(actor);
-        Self::emit_inner(inner, services, actor, Q3EntityEvent::GIB_PLAYER, killer_source_slot);
+        Self::emit_inner(inner, services, actor, entity_event::GIB_PLAYER, killer_source_slot);
     }
 
     fn die_inner(
@@ -584,7 +606,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
         services: &Rc<S>,
         actor: &OwnedActor,
         death_animations: &Rc<RefCell<Q3DeathAnimationSequence>>,
-    ) -> Result<(), Q3FoundationError> {
+    ) -> Result<(), CharacterError> {
         if inner.borrow().gibbed {
             return Ok(());
         }
@@ -630,9 +652,11 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
             let (animation, event) = death_animations.borrow_mut().next();
             {
                 let mut guard = inner.borrow_mut();
-                guard.animation.legs = (guard.animation.legs & ANIMATION_TOGGLE_BIT ^ ANIMATION_TOGGLE_BIT) | animation;
-                guard.animation.torso =
-                    (guard.animation.torso & ANIMATION_TOGGLE_BIT ^ ANIMATION_TOGGLE_BIT) | animation;
+                let AnimationState::Q3 { legs, torso, .. } = &mut guard.animation else {
+                    return Err(type_error("Q3 character animation requires Q3 animation"));
+                };
+                *legs = (*legs & ANIMATION_TOGGLE_BIT ^ ANIMATION_TOGGLE_BIT) | animation;
+                *torso = (*torso & ANIMATION_TOGGLE_BIT ^ ANIMATION_TOGGLE_BIT) | animation;
             }
             Self::emit_inner(inner, services, actor, event, context.killer_source_slot);
         }
@@ -640,7 +664,7 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     }
 
     /// Run death after lethal damage committed.
-    pub fn die(&self) -> Result<(), Q3FoundationError> {
+    pub fn die(&self) -> Result<(), CharacterError> {
         Self::die_inner(&self.inner, &self.services, &self.actor, &self.death_animations)
     }
 
@@ -658,78 +682,79 @@ impl<S: Q3CharacterServices + 'static> Q3CharacterActor<S> {
     }
 
     /// Commit an animation from the animation owner.
-    pub fn commit_animation(&self, animation: &ActorAnimationState) -> Result<(), Q3FoundationError> {
+    pub fn commit_animation(&self, animation: &ActorAnimationState) -> Result<(), CharacterError> {
         if animation.provider != self.provider {
             return Err(type_error("Q3 character animation belongs to another provider"));
         }
-        self.inner.borrow_mut().animation = animation.state.clone();
+        if !matches!(animation.state, AnimationState::Q3 { .. }) {
+            return Err(type_error("Q3 character animation requires Q3 animation"));
+        }
+        self.inner.borrow_mut().animation = animation.state;
         Ok(())
     }
 }
 
 /// Step semantic locomotion into Q3 clips (`stepQ3CharacterAnimation`).
-#[must_use]
+/// The donor throws a `TypeError` for non-Q3 animation; the merged
+/// operation reports it as [`CharacterError::Type`].
 pub fn step_q3_character_animation(
     input: &AnimationStepInput,
     product: Q3Product,
     dead: bool,
     event_sequence: i32,
-) -> AnimationStepResult {
-    let elapsed_ms = match input.frame.elapsed {
-        SourceTime::Milliseconds(value) => f64::from(value),
-        SourceTime::Seconds(value) => (f64::from(value) * 1000.0).trunc(),
-    };
+) -> Result<Q3AnimationStepResult, CharacterError> {
     let context = Q3AnimationContext {
         animation: input.animation.clone(),
         dead,
-        elapsed_ms,
+        elapsed_milliseconds: input.frame.elapsed.as_milliseconds_truncated(),
         buttons: 0,
         product,
         event_sequence,
     };
-    let dropped = run_q3_animation_operation(&Q3AnimationRequest::DropTimers, &context);
+    let dropped = run_q3_animation_operation(Q3AnimationRequest::DropTimers, &context)
+        .map_err(|error| type_error(error.to_string()))?;
     let animation = match input.locomotion {
-        LocomotionAnimation::Idle => Q3PlayerAnimation::LEGS_IDLE,
+        LocomotionAnimation::Idle => player_animation::LEGS_IDLE,
         LocomotionAnimation::Walk => {
             if input.backwards {
-                Q3PlayerAnimation::LEGS_BACKWALK
+                player_animation::LEGS_BACKWALK
             } else {
-                Q3PlayerAnimation::LEGS_WALK
+                player_animation::LEGS_WALK
             }
         }
         LocomotionAnimation::Run => {
             if input.backwards {
-                Q3PlayerAnimation::LEGS_BACK
+                player_animation::LEGS_BACK
             } else {
-                Q3PlayerAnimation::LEGS_RUN
+                player_animation::LEGS_RUN
             }
         }
-        LocomotionAnimation::Backward => Q3PlayerAnimation::LEGS_BACK,
+        LocomotionAnimation::Backward => player_animation::LEGS_BACK,
         LocomotionAnimation::Crouch => {
             if input.backwards {
-                Q3PlayerAnimation::LEGS_BACKCR
+                player_animation::LEGS_BACKCR
             } else {
-                Q3PlayerAnimation::LEGS_WALKCR
+                player_animation::LEGS_WALKCR
             }
         }
         LocomotionAnimation::Jump => {
             if input.backwards {
-                Q3PlayerAnimation::LEGS_JUMPB
+                player_animation::LEGS_JUMPB
             } else {
-                Q3PlayerAnimation::LEGS_JUMP
+                player_animation::LEGS_JUMP
             }
         }
         LocomotionAnimation::Land => {
             if input.backwards {
-                Q3PlayerAnimation::LEGS_LANDB
+                player_animation::LEGS_LANDB
             } else {
-                Q3PlayerAnimation::LEGS_LAND
+                player_animation::LEGS_LAND
             }
         }
-        LocomotionAnimation::Swim => Q3PlayerAnimation::LEGS_SWIM,
+        LocomotionAnimation::Swim => player_animation::LEGS_SWIM,
     };
     let selected = run_q3_animation_operation(
-        &Q3AnimationRequest::Legs {
+        Q3AnimationRequest::Legs {
             animation,
             force: input.force,
         },
@@ -737,27 +762,432 @@ pub fn step_q3_character_animation(
             animation: dropped.animation.clone(),
             ..context.clone()
         },
-    );
+    )
+    .map_err(|error| type_error(error.to_string()))?;
     if input.locomotion != LocomotionAnimation::Land {
         let mut effects = dropped.effects;
         effects.extend(selected.effects);
-        return AnimationStepResult {
+        return Ok(Q3AnimationStepResult {
             animation: selected.animation,
             effects,
-        };
+        });
     }
     let landed = run_q3_animation_operation(
-        &Q3AnimationRequest::LegsTimer { milliseconds: 130 },
+        Q3AnimationRequest::LegsTimer { milliseconds: 130 },
         &Q3AnimationContext {
             animation: selected.animation.clone(),
             ..context
         },
-    );
+    )
+    .map_err(|error| type_error(error.to_string()))?;
     let mut effects = dropped.effects;
     effects.extend(selected.effects);
     effects.extend(landed.effects);
-    AnimationStepResult {
+    Ok(Q3AnimationStepResult {
         animation: landed.animation,
         effects,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use qa_core::identity::{IdentityOwner, SavedActorId};
+    use qa_core::time::{FramePhase, SourceTime};
+    use qa_world::movement::q3::types::q3_animation_state;
+
+    use super::*;
+
+    fn test_frame(elapsed: SourceTime) -> FrameContext {
+        FrameContext {
+            frame: 1,
+            time: SourceTime::Milliseconds(100),
+            elapsed,
+            phase: FramePhase::FrameEntry,
+        }
+    }
+
+    fn test_actor() -> (OwnedActor, ProviderId) {
+        let owner = IdentityOwner::create("test").unwrap();
+        let provider = ProviderId::new("q3", "test");
+        let owned = owner.owned_actor(&owner.actor(3, 1), provider.clone()).unwrap();
+        (owned, provider)
+    }
+
+    fn actor_key(actor: &ActorId) -> SavedActorId {
+        SavedActorId::from(actor)
+    }
+
+    struct FakeServices {
+        bodies: RefCell<HashMap<SavedActorId, BodyState>>,
+        linked: RefCell<HashMap<SavedActorId, bool>>,
+        combat: RefCell<HashMap<SavedActorId, CombatState>>,
+        inventory: RefCell<HashMap<SavedActorId, Vec<InventoryEntry>>>,
+        events: RefCell<Vec<Q3CharacterEvent>>,
+        time: Cell<i32>,
+        placement: Q3Placement,
+        death_ctx: Q3CharacterDeathContext,
+        callbacks: RefCell<HashMap<SavedActorId, Q3CharacterCallbackSet>>,
+        spawn_targets_calls: Cell<u32>,
+        kill_box_calls: Cell<u32>,
+    }
+
+    impl FakeServices {
+        fn new(placement: Q3Placement) -> Self {
+            Self {
+                bodies: RefCell::new(HashMap::new()),
+                linked: RefCell::new(HashMap::new()),
+                combat: RefCell::new(HashMap::new()),
+                inventory: RefCell::new(HashMap::new()),
+                events: RefCell::new(Vec::new()),
+                time: Cell::new(1000),
+                placement,
+                death_ctx: Q3CharacterDeathContext {
+                    blood: true,
+                    no_drop: false,
+                    suicide: false,
+                    killer_source_slot: 2,
+                },
+                callbacks: RefCell::new(HashMap::new()),
+                spawn_targets_calls: Cell::new(0),
+                kill_box_calls: Cell::new(0),
+            }
+        }
+
+        fn fire_pain(&self, actor: &ActorId) {
+            let guard = self.callbacks.borrow();
+            (guard.get(&actor_key(actor)).unwrap().pain)();
+        }
+
+        fn fire_die(&self, actor: &ActorId) {
+            let guard = self.callbacks.borrow();
+            (guard.get(&actor_key(actor)).unwrap().die)();
+        }
+    }
+
+    impl Q3CharacterServices for FakeServices {
+        fn read_body(&self, actor: &ActorId) -> Option<BodyState> {
+            self.bodies.borrow().get(&actor_key(actor)).cloned()
+        }
+
+        fn write_body(&self, actor: &OwnedActor, body: BodyState) {
+            self.bodies.borrow_mut().insert(actor_key(actor.id()), body);
+        }
+
+        fn link_body(&self, actor: &OwnedActor) {
+            self.linked.borrow_mut().insert(actor_key(actor.id()), true);
+        }
+
+        fn unlink_body(&self, actor: &OwnedActor) {
+            self.linked.borrow_mut().insert(actor_key(actor.id()), false);
+        }
+
+        fn bind_callbacks(&self, actor: &OwnedActor, callbacks: Q3CharacterCallbackSet) {
+            self.callbacks.borrow_mut().insert(actor_key(actor.id()), callbacks);
+        }
+
+        fn read_combat(&self, actor: &ActorId) -> Option<CombatState> {
+            self.combat.borrow().get(&actor_key(actor)).cloned()
+        }
+
+        fn create_combat(&self, actor: &OwnedActor, combat: CombatState) {
+            self.combat.borrow_mut().insert(actor_key(actor.id()), combat);
+        }
+
+        fn set_health(&self, actor: &OwnedActor, health: i32) {
+            if let Some(combat) = self.combat.borrow_mut().get_mut(&actor_key(actor.id())) {
+                combat.health = health;
+            }
+        }
+
+        fn set_armor(&self, actor: &OwnedActor, armor: ArmorState) {
+            if let Some(combat) = self.combat.borrow_mut().get_mut(&actor_key(actor.id())) {
+                combat.armor = armor;
+            }
+        }
+
+        fn set_traits(&self, actor: &OwnedActor, traits: CombatTraitChanges) {
+            if let Some(combat) = self.combat.borrow_mut().get_mut(&actor_key(actor.id())) {
+                if let Some(value) = traits.can_take_damage {
+                    combat.can_take_damage = value;
+                }
+                if let Some(value) = traits.mass {
+                    combat.mass = value;
+                }
+                if let Some(value) = traits.invulnerable {
+                    combat.invulnerable = value;
+                }
+                if let Some(value) = traits.team {
+                    combat.team = value;
+                }
+                if let Some(value) = traits.no_knockback {
+                    combat.no_knockback = value;
+                }
+            }
+        }
+
+        fn has_inventory(&self, actor: &ActorId) -> bool {
+            self.inventory.borrow().contains_key(&actor_key(actor))
+        }
+
+        fn create_inventory(&self, actor: &OwnedActor, entries: Vec<InventoryEntry>) {
+            self.inventory.borrow_mut().insert(actor_key(actor.id()), entries);
+        }
+
+        fn inventory_entries(&self, actor: &ActorId) -> Vec<InventoryEntry> {
+            self.inventory
+                .borrow()
+                .get(&actor_key(actor))
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        fn configure_inventory(&self, actor: &OwnedActor, entry: InventoryEntry) {
+            let mut guard = self.inventory.borrow_mut();
+            let entries = guard.entry(actor_key(actor.id())).or_default();
+            if let Some(existing) = entries.iter_mut().find(|item| item.item == entry.item) {
+                *existing = entry;
+            } else {
+                entries.push(entry);
+            }
+        }
+
+        fn time_ms(&self) -> i32 {
+            self.time.get()
+        }
+
+        fn emit(&self, event: Q3CharacterEvent) {
+            self.events.borrow_mut().push(event);
+        }
+
+        fn death_context(&self, _actor: &OwnedActor) -> Q3CharacterDeathContext {
+            self.death_ctx
+        }
+
+        fn placement(&self) -> Q3Placement {
+            self.placement
+        }
+
+        fn spawn_targets(&self, _actor: &OwnedActor) {
+            self.spawn_targets_calls.set(self.spawn_targets_calls.get() + 1);
+        }
+
+        fn kill_box(&self, _actor: &OwnedActor) {
+            self.kill_box_calls.set(self.kill_box_calls.get() + 1);
+        }
+    }
+
+    fn spawn_input() -> Q3CharacterSpawn {
+        Q3CharacterSpawn {
+            body: BodyState {
+                origin: vec3(0.0, 0.0, 0.0),
+                angles: vec3(0.0, 90.0, 0.0),
+                velocity: vec3(0.0, 0.0, 0.0),
+                bounds: Q3_CHARACTER_BOUNDS,
+                ground: None,
+            },
+            combat: q3_initial_combat("100", None).unwrap(),
+            inventory: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn character_spawns_dies_and_gibs() {
+        let (actor, provider) = test_actor();
+        let services = Rc::new(FakeServices::new(Q3Placement::Character));
+        let deaths = Rc::new(RefCell::new(Q3DeathAnimationSequence::new()));
+        let character = Q3CharacterActor::new(
+            actor.clone(),
+            provider.clone(),
+            Q3Product::BaseQ3,
+            Rc::clone(&services),
+            Rc::clone(&deaths),
+        );
+        character.spawn(&spawn_input()).unwrap();
+        assert_eq!(character.spawns(), 1);
+        assert_eq!(character.source_flags(), 4);
+        assert_eq!(services.kill_box_calls.get(), 1);
+        assert!(services.events.borrow().is_empty());
+        character.spawn(&spawn_input()).unwrap();
+        assert_eq!(services.events.borrow().len(), 1);
+        assert_eq!(services.events.borrow()[0].event, entity_event::PLAYER_TELEPORT_IN);
+        character.jump();
+        assert_eq!(services.events.borrow().len(), 2);
+
+        services.fire_pain(actor.id());
+        let pain = services.events.borrow_mut().pop().unwrap();
+        assert_eq!(pain.event, entity_event::PAIN);
+        assert_eq!(pain.parameter, 125);
+
+        character.die().unwrap();
+        let death = services.events.borrow_mut().pop().unwrap();
+        assert_eq!(death.event, entity_event::DEATH1);
+        assert_eq!(death.parameter, 2);
+        assert_eq!(
+            q3_animation_state(&character.animation()).unwrap().0 & !ANIMATION_TOGGLE_BIT,
+            player_animation::BOTH_DEATH1
+        );
+        assert_eq!(character.respawn_eligible_after_ms(), 2700);
+        assert!(!character.wants_respawn(2000, true, false, 0));
+        assert!(character.wants_respawn(3000, true, false, 0));
+
+        services.set_health(&actor, -50);
+        character.die().unwrap();
+        let gib = services.events.borrow_mut().pop().unwrap();
+        assert_eq!(gib.event, entity_event::GIB_PLAYER);
+        assert_eq!(character.source_flags() & 0x80, 0x80);
+        assert_eq!(services.linked.borrow().get(&actor_key(actor.id())), Some(&false));
+        character.die().unwrap();
+
+        let checkpoint = character.capture();
+        assert_eq!(checkpoint.version, 1);
+        assert!(checkpoint.dead && checkpoint.gibbed && checkpoint.initialized);
+        let owner2 = IdentityOwner::create("test2").unwrap();
+        let actor2 = owner2.owned_actor(&owner2.actor(9, 1), provider.clone()).unwrap();
+        let other = Q3CharacterActor::new(
+            actor2,
+            provider,
+            Q3Product::BaseQ3,
+            Rc::clone(&services),
+            Rc::clone(&deaths),
+        );
+        assert!(other.restore(&checkpoint).is_err());
+        other.spawn(&spawn_input()).unwrap();
+        let foreign = Q3CharacterCheckpoint {
+            product: Q3Product::MissionPack,
+            ..checkpoint.clone()
+        };
+        assert!(other.restore(&foreign).is_err());
+        let unadmitted = Q3CharacterCheckpoint {
+            initialized: false,
+            ..checkpoint.clone()
+        };
+        assert!(other.restore(&unadmitted).is_err());
+    }
+
+    #[test]
+    fn character_suicide_gibs_and_death_cycles() {
+        let (actor, provider) = test_actor();
+        let services = Rc::new(FakeServices {
+            death_ctx: Q3CharacterDeathContext {
+                blood: false,
+                no_drop: false,
+                suicide: true,
+                killer_source_slot: 0,
+            },
+            ..FakeServices::new(Q3Placement::SourceGame)
+        });
+        let character = Q3CharacterActor::new(
+            actor.clone(),
+            provider.clone(),
+            Q3Product::BaseQ3,
+            Rc::clone(&services),
+            Rc::new(RefCell::new(Q3DeathAnimationSequence::new())),
+        );
+        character.spawn(&spawn_input()).unwrap();
+        assert_eq!(services.kill_box_calls.get(), 0);
+        character.die().unwrap();
+        assert_eq!(
+            services.events.borrow_mut().pop().unwrap().event,
+            entity_event::GIB_PLAYER
+        );
+
+        let mut sequence = Q3DeathAnimationSequence::new();
+        assert_eq!(sequence.next(), (0, entity_event::DEATH1));
+        assert_eq!(sequence.next(), (2, entity_event::DEATH2));
+        assert_eq!(sequence.next(), (4, entity_event::DEATH3));
+        assert_eq!(sequence.next(), (0, entity_event::DEATH1));
+        let checkpoint = sequence.capture();
+        sequence.next();
+        sequence.restore(&checkpoint).unwrap();
+        assert_eq!(sequence.next(), (2, entity_event::DEATH2));
+        assert!(sequence
+            .restore(&Q3DeathAnimationCheckpoint { version: 2, index: 0 })
+            .is_err());
+
+        assert_eq!(q3_maximum_health("80").unwrap(), 80);
+        assert_eq!(q3_maximum_health("500").unwrap(), 100);
+        assert_eq!(
+            q3_initial_combat("90", Some("red".to_string())).unwrap(),
+            CombatState {
+                health: 115,
+                armor: ArmorState {
+                    regular: RegularArmorState::Q3 {
+                        points: 0.0,
+                        protection: f64::from(0.66f32),
+                    },
+                    powered: PoweredProtectionState::None,
+                },
+                mass: 200.0,
+                can_take_damage: true,
+                invulnerable: false,
+                no_knockback: false,
+                team: Some("red".to_string()),
+            }
+        );
+
+        let wrong = ActorAnimationState {
+            provider: ProviderId::new("q3", "other"),
+            state: q3_spawn_animation(),
+        };
+        assert!(character.commit_animation(&wrong).is_err());
+        let own = ActorAnimationState {
+            provider,
+            state: AnimationState::Q3 {
+                legs: 5,
+                torso: player_animation::TORSO_STAND,
+                legs_timer_milliseconds: 0,
+                torso_timer_milliseconds: 0,
+            },
+        };
+        character.commit_animation(&own).unwrap();
+        assert_eq!(q3_animation_state(&character.animation()).unwrap().0, 5);
+        assert!(character.wants_respawn(5000, false, false, 1));
+        services.fire_die(actor.id());
+    }
+
+    #[test]
+    fn character_animation_steps_map_locomotion() {
+        let (_, provider) = test_actor();
+        let input = AnimationStepInput {
+            frame: test_frame(SourceTime::Milliseconds(16)),
+            animation: ActorAnimationState {
+                provider,
+                state: AnimationState::Q3 {
+                    legs: player_animation::LEGS_IDLE,
+                    torso: player_animation::TORSO_STAND,
+                    legs_timer_milliseconds: 100,
+                    torso_timer_milliseconds: 0,
+                },
+            },
+            locomotion: LocomotionAnimation::Run,
+            backwards: true,
+            force: true,
+        };
+        let result = step_q3_character_animation(&input, Q3Product::BaseQ3, false, 3).unwrap();
+        assert_eq!(
+            q3_animation_state(&result.animation).unwrap().0 & !ANIMATION_TOGGLE_BIT,
+            player_animation::LEGS_BACK
+        );
+        assert_eq!(q3_animation_state(&result.animation).unwrap().2, 0);
+        assert!(!result.effects.is_empty());
+
+        let land = AnimationStepInput {
+            locomotion: LocomotionAnimation::Land,
+            backwards: false,
+            force: true,
+            ..input.clone()
+        };
+        let result = step_q3_character_animation(&land, Q3Product::BaseQ3, false, 3).unwrap();
+        assert_eq!(q3_animation_state(&result.animation).unwrap().2, 130);
+
+        let dead = step_q3_character_animation(&input, Q3Product::BaseQ3, true, 3).unwrap();
+        assert_eq!(
+            q3_animation_state(&dead.animation).unwrap().0 & !ANIMATION_TOGGLE_BIT,
+            player_animation::LEGS_IDLE
+        );
     }
 }
