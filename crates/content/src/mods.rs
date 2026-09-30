@@ -2791,7 +2791,7 @@ mod tests {
         assert!(error.to_string().contains("both resource and writes"));
     }
 
-    fn qvm_call_stub(reader: SaveReader) -> Result<crate::contract::QvmModSourceCall, ModsError> {
+    fn qvm_call_fixture(reader: SaveReader) -> Result<crate::contract::QvmModSourceCall, ModsError> {
         Ok(crate::contract::QvmModSourceCall {
             entry: u32_field(&reader, "entry", 0)?,
             arguments: Vec::new(),
@@ -2854,7 +2854,7 @@ mod tests {
                 ]),
             ),
         ]);
-        let items = read_qvm_mod_items(reader(&value), qvm_call_stub).unwrap();
+        let items = read_qvm_mod_items(reader(&value), qvm_call_fixture).unwrap();
         assert_eq!(items.definitions.len(), 2);
         assert!(matches!(items.definitions[1].kind, QvmItemKind::Weapon(_)));
         assert!(items.definitions[1].actions.as_ref().unwrap().use_call.is_some());
