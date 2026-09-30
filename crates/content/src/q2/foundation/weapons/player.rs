@@ -275,6 +275,17 @@ pub fn weapon_consume_count(
     use_ammo_count(context, game, state, count);
 }
 
+/// Consume counted ammo with an explicit infinite flag (`consume(context, count, infinite)`, shared with weapon extensions).
+pub fn weapon_consume_infinite(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    count: f64,
+    infinite: bool,
+) {
+    consume_ammo(context, game, state, count, infinite);
+}
+
 /// Whether the attack continues (`continuesAttack`, shared with weapon extensions).
 pub fn weapon_continues_attack(context: &Q2WeaponContext, state: &Q2WeaponState) -> bool {
     continues_attack(context, state)
@@ -464,7 +475,18 @@ fn use_ammo_count(
     state: &mut Q2WeaponState,
     count: f64,
 ) {
-    if context.input.infinite_ammo {
+    consume_ammo(context, game, state, count, true);
+}
+
+/// Consume counted ammo with an explicit infinite flag (`consume(context, count, infinite)`).
+fn consume_ammo(
+    context: &Q2WeaponContext,
+    game: &mut Q2GameServices,
+    state: &mut Q2WeaponState,
+    count: f64,
+    infinite: bool,
+) {
+    if infinite && context.input.infinite_ammo {
         return;
     }
     let Some(ammo) = context.definition.ammo.clone() else { return };
