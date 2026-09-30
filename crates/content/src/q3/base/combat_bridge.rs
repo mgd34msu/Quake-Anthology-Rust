@@ -4,17 +4,17 @@
 
 use crate::value::{int, obj, SaveJson, SaveReader, ValueError};
 use qa_core::identity::{ActorId, ProviderId};
-use qa_core::math::{Bounds, Vec3};
+use qa_core::math::{vec3, Bounds, Vec3};
 use qa_core::time::SourceTime;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::contract::ItemId;
+use crate::contract::{ItemId, ProtectionChannel};
+use qa_world::combat::{Delivery, Reaction};
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::game::combat::DamageDiagnostic;
 use crate::q3::base::game::state::GameFlags;
-use crate::q3::base::mirrors::*;
 use crate::q3::base::records::*;
 use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::items::*;
@@ -576,4 +576,854 @@ impl Q3CombatBridge {
                     .is_some_and(|other| client.borrow().sess.session_team == other.borrow().sess.session_team)
             })
     }
+}
+
+// ---------------------------------------------------------------------------
+// world/gameplay victim armor + Q3 policy (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Armor stage word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmorStage {
+    /// Power stage.
+    Power,
+    /// Regular stage.
+    Regular,
+}
+
+/// Armor damage flags (`ArmorDamageFlags`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmorDamageFlags {
+    /// Active stage.
+    pub stage: Option<ArmorStage>,
+    /// Skip all armor.
+    pub no_armor: bool,
+    /// Skip power armor.
+    pub no_power_armor: bool,
+    /// Skip regular armor.
+    pub no_regular_armor: bool,
+    /// Energy damage.
+    pub energy: bool,
+    /// Regular protection scale.
+    pub regular_protection_scale: Option<f32>,
+}
+
+/// Armor computation result (`ArmorResult`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmorResult {
+    /// Resulting armor.
+    pub armor: ArmorState,
+    /// Power damage saved.
+    pub power_saved: i32,
+    /// Regular damage saved.
+    pub regular_saved: i32,
+}
+
+/// Armor stage input (`ArmorStageInput`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArmorStageInput {
+    /// Damage request.
+    pub request: DamageRequest,
+    /// Direction.
+    pub direction: Vec3,
+    /// Point.
+    pub point: Vec3,
+    /// Normal.
+    pub normal: Vec3,
+    /// Amount.
+    pub amount: i32,
+    /// Flags.
+    pub flags: ArmorDamageFlags,
+}
+
+/// Armor stage result (`ArmorStageResult`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArmorStageResult {
+    /// Damage saved.
+    pub saved: i32,
+}
+
+/// Victim armor context (`VictimArmorContext`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VictimArmorContext {
+    /// Screen facing dot.
+    pub screen_facing_dot: f32,
+    /// Damage arithmetic.
+    pub arithmetic: VictimArithmetic,
+    /// Quake II source profile.
+    pub q2: Option<VictimQ2Profile>,
+}
+
+/// Victim armor arithmetic word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VictimArithmetic {
+    /// Binary32.
+    Binary32,
+    /// Binary64.
+    Binary64,
+}
+
+/// Quake II victim armor profile word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VictimQ2Profile {
+    /// Classic or rerelease product.
+    pub rerelease: bool,
+    /// Capture-the-flag rules.
+    pub ctf: bool,
+    /// Victim alive.
+    pub alive: bool,
+}
+
+/// Victim armor policy (`VictimArmorPolicy`).
+pub type VictimArmorPolicy = Rc<dyn Fn(&DamageRequest, &ArmorState, i32, &ArmorDamageFlags) -> ArmorResult>;
+
+/// Native victim armor over a per-request context (`nativeVictimArmor`).
+#[must_use]
+pub fn native_victim_armor(context: Rc<dyn Fn(&DamageRequest) -> VictimArmorContext>) -> VictimArmorPolicy {
+    Rc::new(move |request, armor, damage, flags| absorb_native_armor(armor, damage, flags, &context(request)))
+}
+
+/// Native armor absorption (`absorbNativeArmor`).
+///
+/// # Panics
+///
+/// Panics when Q2 armor runs without a Q2 source profile, or when
+/// source armor runs without its absorption binding.
+#[must_use]
+pub fn absorb_native_armor(
+    armor: &ArmorState,
+    damage: i32,
+    flags: &ArmorDamageFlags,
+    context: &VictimArmorContext,
+) -> ArmorResult {
+    let q2_regular = flags.stage != Some(ArmorStage::Power) && matches!(armor.regular, RegularArmorState::Q2 { .. });
+    let q2_powered = flags.stage != Some(ArmorStage::Regular) && !matches!(armor.powered, PoweredProtectionState::None);
+    if (q2_regular || q2_powered) && context.q2.is_none() {
+        panic!("Q2 victim armor requires an explicit classic or rerelease source profile");
+    }
+    if damage == 0
+        || flags.no_armor
+        || (matches!(armor.regular, RegularArmorState::None) && matches!(armor.powered, PoweredProtectionState::None))
+    {
+        return ArmorResult {
+            armor: armor.clone(),
+            power_saved: 0,
+            regular_saved: 0,
+        };
+    }
+    let multiply = |left: f32, right: f32| -> f32 {
+        if context.arithmetic == VictimArithmetic::Binary32 {
+            left * right
+        } else {
+            (f64::from(left) * f64::from(right)) as f32
+        }
+    };
+    let protection_scale = flags.regular_protection_scale.unwrap_or(1.0);
+    let rerelease = context.q2.is_some_and(|profile| profile.rerelease);
+    let facing_limit = 0.3f32;
+    let mut power_saved = 0;
+    let mut powered = armor.powered.clone();
+    let powered_cells = match &powered {
+        PoweredProtectionState::None => 0,
+        PoweredProtectionState::Screen { cells } | PoweredProtectionState::Shield { cells } => *cells,
+    };
+    let powered_kind = match &powered {
+        PoweredProtectionState::None => None,
+        PoweredProtectionState::Screen { .. } => Some(0),
+        PoweredProtectionState::Shield { .. } => Some(1),
+    };
+    if flags.stage != Some(ArmorStage::Regular)
+        && !flags.no_power_armor
+        && (!rerelease || context.q2.is_some_and(|profile| profile.alive))
+        && powered_kind.is_some()
+        && powered_cells > 0
+        && (powered_kind != Some(0) || context.screen_facing_dot > facing_limit)
+    {
+        let is_screen = powered_kind == Some(0);
+        let damage_per_cell = if is_screen || context.q2.is_some_and(|profile| profile.ctf) {
+            1
+        } else {
+            2
+        };
+        // `i64` intermediates match the donor's exact float division of
+        // integer words.
+        let divided_damage = if is_screen {
+            damage / 3
+        } else {
+            ((2 * i64::from(damage)) / 3) as i32
+        };
+        let protected_damage = if rerelease {
+            divided_damage.max(1)
+        } else {
+            divided_damage
+        };
+        let doubled_cost = if rerelease {
+            flags.energy
+        } else {
+            flags.no_regular_armor
+        };
+        let base_available = powered_cells * damage_per_cell;
+        let divided_available = if doubled_cost {
+            base_available / 2
+        } else {
+            base_available
+        };
+        let available = if rerelease {
+            divided_available.max(1)
+        } else {
+            divided_available
+        };
+        power_saved = available.min(protected_damage);
+        let used = (power_saved / damage_per_cell) * if doubled_cost { 2 } else { 1 };
+        let remaining = if rerelease {
+            0.max(powered_cells - damage_per_cell.max(used))
+        } else {
+            powered_cells - used
+        };
+        powered = match powered {
+            PoweredProtectionState::Screen { .. } => PoweredProtectionState::Screen { cells: remaining },
+            PoweredProtectionState::Shield { .. } => PoweredProtectionState::Shield { cells: remaining },
+            PoweredProtectionState::None => PoweredProtectionState::None,
+        };
+    }
+    let mut regular = armor.regular.clone();
+    let mut regular_saved = 0;
+    if !flags.no_regular_armor && flags.stage != Some(ArmorStage::Power) {
+        match &regular {
+            RegularArmorState::None => {}
+            RegularArmorState::Source { .. } => {
+                panic!("Source regular armor requires its original absorption binding");
+            }
+            RegularArmorState::Q1 { points, absorption, .. } => {
+                let points = *points;
+                let absorption = *absorption;
+                regular_saved = points
+                    .min(multiply(multiply(absorption, protection_scale), (damage - power_saved) as f32).ceil() as i32);
+                regular = RegularArmorState::Q1 {
+                    points: points - regular_saved,
+                    absorption: if regular_saved >= points { 0.0 } else { absorption },
+                    item: match &armor.regular {
+                        RegularArmorState::Q1 { item, .. } => item.clone(),
+                        _ => unreachable!("Q1 armor shape changed during absorption"),
+                    },
+                };
+            }
+            RegularArmorState::Q2 {
+                points,
+                normal_protection,
+                energy_protection,
+                ..
+            } => {
+                let points = *points;
+                let protection = if flags.energy {
+                    *energy_protection
+                } else {
+                    *normal_protection
+                };
+                regular_saved = points
+                    .min(multiply(multiply(protection, protection_scale), (damage - power_saved) as f32).ceil() as i32);
+                regular = match &armor.regular {
+                    RegularArmorState::Q2 {
+                        normal_protection,
+                        energy_protection,
+                        item,
+                        ..
+                    } => RegularArmorState::Q2 {
+                        points: points - regular_saved,
+                        normal_protection: *normal_protection,
+                        energy_protection: *energy_protection,
+                        item: item.clone(),
+                    },
+                    _ => unreachable!("Q2 armor shape changed during absorption"),
+                };
+            }
+            RegularArmorState::Q3 { points, protection, .. } => {
+                let points = *points;
+                let protection = *protection;
+                regular_saved =
+                    points.min((((damage - power_saved) as f32) * (protection * protection_scale)).ceil() as i32);
+                regular = RegularArmorState::Q3 {
+                    points: points - regular_saved,
+                    protection,
+                };
+            }
+        }
+    }
+    ArmorResult {
+        armor: if regular == armor.regular && powered == armor.powered {
+            armor.clone()
+        } else {
+            ArmorState { regular, powered }
+        },
+        power_saved,
+        regular_saved,
+    }
+}
+
+/// Decoded damage flags (`attackDamageFlags`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttackDamageFlags {
+    /// Armor flags.
+    pub armor: ArmorDamageFlags,
+    /// Skip knockback.
+    pub no_knockback: bool,
+    /// Skip protection.
+    pub no_protection: bool,
+    /// Skip team protection.
+    pub no_team_protection: bool,
+    /// Destroy armor.
+    pub destroy_armor: bool,
+}
+
+/// Decode native damage flags by origin (`attackDamageFlags`).
+#[must_use]
+pub fn attack_damage_flags(request: &DamageRequest) -> AttackDamageFlags {
+    let cause = &request.attack.cause;
+    let q2 = match cause {
+        AttackCause::Q2 { damage_flags, .. } => *damage_flags,
+        _ => 0,
+    };
+    let q3 = match cause {
+        AttackCause::Q3 { damage_flags, .. } => *damage_flags,
+        _ => 0,
+    };
+    AttackDamageFlags {
+        armor: ArmorDamageFlags {
+            stage: None,
+            no_armor: ((q2 | q3) & 2) != 0
+                || matches!(
+                    cause,
+                    AttackCause::Q1 {
+                        armor_effect: Some(Q1ArmorEffect::Bypass),
+                        ..
+                    }
+                ),
+            no_power_armor: (q2 & 0x100) != 0,
+            no_regular_armor: (q2 & 0x80) != 0,
+            energy: (q2 & 4) != 0,
+            regular_protection_scale: Some(
+                if matches!(
+                    cause,
+                    AttackCause::Q1 {
+                        armor_effect: Some(Q1ArmorEffect::HalfEffectiveness),
+                        ..
+                    }
+                ) {
+                    0.5
+                } else {
+                    1.0
+                },
+            ),
+        },
+        no_knockback: (q2 & 8) != 0 || (q3 & 4) != 0,
+        no_protection: (q2 & 0x20) != 0 || (q3 & 8) != 0,
+        no_team_protection: (q3 & 0x10) != 0,
+        destroy_armor: (q2 & 0x40) != 0,
+    }
+}
+
+/// Completed combat result (`CombatResult`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatResult {
+    /// Applied damage.
+    pub applied_damage: i32,
+    /// Reaction.
+    pub reaction: Reaction,
+    /// Feedback.
+    pub feedback: Option<DamageFeedback>,
+}
+
+/// Current combat state accessors (`CurrentCombatState`).
+pub trait CurrentCombatState {
+    /// Current target state.
+    fn target(&self) -> Option<CombatState>;
+    /// Current attacker state.
+    fn attacker(&self) -> Option<CombatState>;
+}
+
+/// Combat progress (`CombatProgress`).
+#[derive(Clone)]
+#[allow(clippy::type_complexity, clippy::large_enum_variant)]
+pub enum CombatProgress {
+    /// Completed decision.
+    Complete {
+        /// Damage request.
+        request: DamageRequest,
+        /// Mutations.
+        mutations: Vec<DamageMutation>,
+        /// Result.
+        result: CombatResult,
+    },
+    /// Armor stage awaiting its store.
+    ArmorStage {
+        /// Channel.
+        channel: ProtectionChannel,
+        /// Damage request.
+        request: DamageRequest,
+        /// Mutations so far.
+        mutations: Vec<DamageMutation>,
+        /// Stage input.
+        input: ArmorStageInput,
+        /// Fallback computation.
+        fallback: Rc<dyn Fn(&ArmorState) -> ArmorResult>,
+        /// Resume with a stage result.
+        resume: Rc<dyn Fn(ArmorStageResult, &dyn CurrentCombatState) -> CombatProgress>,
+    },
+    /// Source continuation awaiting fresh state.
+    SourceContinuation {
+        /// Damage request.
+        request: DamageRequest,
+        /// Mutations so far.
+        mutations: Vec<DamageMutation>,
+        /// Resume with fresh state.
+        resume: Rc<dyn Fn(&dyn CurrentCombatState) -> CombatProgress>,
+    },
+}
+
+impl std::fmt::Debug for CombatProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Complete {
+                request,
+                mutations,
+                result,
+            } => f
+                .debug_struct("Complete")
+                .field("request", request)
+                .field("mutations", mutations)
+                .field("result", result)
+                .finish(),
+            Self::ArmorStage {
+                channel,
+                request,
+                mutations,
+                input,
+                ..
+            } => f
+                .debug_struct("ArmorStage")
+                .field("channel", channel)
+                .field("request", request)
+                .field("mutations", mutations)
+                .field("input", input)
+                .finish(),
+            Self::SourceContinuation { request, mutations, .. } => f
+                .debug_struct("SourceContinuation")
+                .field("request", request)
+                .field("mutations", mutations)
+                .finish(),
+        }
+    }
+}
+
+/// Combat policy (`CombatPolicy`, decision layer).
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct CombatPolicy {
+    /// Provider.
+    pub id: ProviderId,
+    /// Decide a request over target and attacker snapshots.
+    pub decide: Rc<dyn Fn(&DamageRequest, &CombatState, Option<&CombatState>) -> CombatProgress>,
+}
+
+impl std::fmt::Debug for CombatPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CombatPolicy").field("id", &self.id).finish()
+    }
+}
+
+/// Source damage modifier (`SourceDamageModifier`).
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct SourceDamageModifier {
+    /// Owning provider.
+    pub owner: ProviderId,
+    /// Transform an attacker amount.
+    pub transform: Rc<dyn Fn(Option<&ActorId>, f32) -> f32>,
+}
+
+impl std::fmt::Debug for SourceDamageModifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceDamageModifier")
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+/// Quake III combat context (`Q3CombatContext`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q3CombatContext {
+    /// Target is a player.
+    pub player: bool,
+    /// Attacker is a player.
+    pub attacker_player: bool,
+    /// Attacker maximum health.
+    pub attacker_max_health: i32,
+    /// Attacker guard reduction applies.
+    pub attacker_guard: bool,
+    /// Intermission is queued.
+    pub intermission: bool,
+    /// Target noclips.
+    pub noclip: bool,
+    /// Missionpack invulnerability blocks.
+    pub missionpack_invulnerability: bool,
+    /// Target takes no knockback.
+    pub no_knockback: bool,
+    /// Knockback scale.
+    pub knockback_scale: f32,
+    /// Friendly fire.
+    pub friendly_fire: bool,
+    /// Battlesuit absorption.
+    pub battlesuit: bool,
+    /// Falling damage.
+    pub falling: bool,
+    /// Juiced damage.
+    pub juiced: bool,
+    /// Proximity protection.
+    pub proximity_protected: bool,
+    /// Product.
+    pub product: Product,
+}
+
+pub(crate) fn combat_self_damage(request: &DamageRequest) -> bool {
+    request
+        .attack
+        .attacker
+        .as_ref()
+        .is_some_and(|attacker| *attacker == request.target)
+}
+
+pub(crate) fn combat_same_team(target: &CombatState, attacker: Option<&CombatState>) -> bool {
+    target
+        .team
+        .as_ref()
+        .is_some_and(|team| !team.is_empty() && attacker.and_then(|state| state.team.as_ref()) == Some(team))
+}
+
+pub(crate) fn combat_decision(
+    request: &DamageRequest,
+    mutations: Vec<DamageMutation>,
+    applied_damage: i32,
+    reaction: Reaction,
+    feedback: Option<DamageFeedback>,
+) -> CombatProgress {
+    CombatProgress::Complete {
+        request: request.clone(),
+        mutations,
+        result: CombatResult {
+            applied_damage,
+            reaction,
+            feedback,
+        },
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn combat_continuation(
+    request: &DamageRequest,
+    mutations: Vec<DamageMutation>,
+    resume: Rc<dyn Fn(&dyn CurrentCombatState) -> CombatProgress>,
+) -> CombatProgress {
+    CombatProgress::SourceContinuation {
+        request: request.clone(),
+        mutations,
+        resume,
+    }
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn combat_armor_stage(
+    channel: ProtectionChannel,
+    request: &DamageRequest,
+    amount: i32,
+    flags: &ArmorDamageFlags,
+    armor: &VictimArmorPolicy,
+    resume: Rc<dyn Fn(i32, &dyn CurrentCombatState) -> CombatProgress>,
+) -> CombatProgress {
+    let stage = match channel {
+        ProtectionChannel::Powered => ArmorStage::Power,
+        ProtectionChannel::Regular => ArmorStage::Regular,
+    };
+    let mut staged = flags.clone();
+    staged.stage = Some(stage);
+    let input = ArmorStageInput {
+        request: request.clone(),
+        direction: request.direction,
+        point: request.point,
+        normal: request.normal,
+        amount,
+        flags: staged.clone(),
+    };
+    let fallback_armor = armor.clone();
+    let fallback_request = request.clone();
+    let fallback_amount = amount;
+    CombatProgress::ArmorStage {
+        channel,
+        request: request.clone(),
+        mutations: Vec::new(),
+        input,
+        fallback: Rc::new(move |current| fallback_armor(&fallback_request, current, fallback_amount, &staged)),
+        resume: Rc::new(move |result, current| resume(result.saved, current)),
+    }
+}
+
+pub(crate) fn combat_add_impulse(
+    request: &DamageRequest,
+    mutations: &mut Vec<DamageMutation>,
+    direction: Vec3,
+    amount: f32,
+) {
+    if amount != 0.0 {
+        mutations.push(DamageMutation::Impulse {
+            impulse: combat_scale(direction, amount),
+            movement_provider: request.attack.movement_provider.clone(),
+        });
+    }
+}
+
+pub(crate) fn combat_scale(direction: Vec3, amount: f32) -> Vec3 {
+    let x = direction.x;
+    let y = direction.y;
+    let z = direction.z;
+    let length = (x * x + y * y + z * z).sqrt();
+    if length == 0.0 {
+        return vec3(0.0, 0.0, 0.0);
+    }
+    let inverse = 1.0 / length;
+    vec3((x * inverse) * amount, (y * inverse) * amount, (z * inverse) * amount)
+}
+
+/// Quake III combat policy (`createQ3CombatPolicy`).
+///
+/// Request amounts truncate to `i32` damage words, matching the source's
+/// integer pipeline for in-range amounts.
+#[must_use]
+#[allow(clippy::type_complexity)]
+pub fn create_q3_combat_policy(
+    id: ProviderId,
+    armor: VictimArmorPolicy,
+    context: Rc<dyn Fn(&DamageRequest, &CombatState, Option<&CombatState>) -> Q3CombatContext>,
+) -> CombatPolicy {
+    CombatPolicy {
+        id,
+        decide: Rc::new(move |request, target, attacker| {
+            if !target.can_take_damage {
+                return combat_decision(request, Vec::new(), 0, Reaction::None, None);
+            }
+            let context = context(request, target, attacker);
+            if context.intermission || context.noclip || (context.missionpack_invulnerability && !context.juiced) {
+                return combat_decision(request, Vec::new(), 0, Reaction::None, None);
+            }
+            let flags = attack_damage_flags(request);
+            let mut damage = request.amount as i32;
+            if context.attacker_player && !combat_self_damage(request) {
+                let maximum = if context.attacker_guard {
+                    context.attacker_max_health / 2
+                } else {
+                    context.attacker_max_health
+                };
+                damage = damage.wrapping_mul(maximum) / 100;
+            }
+            let mut mutations = Vec::new();
+            let knockback = if context.no_knockback || target.no_knockback || flags.no_knockback {
+                0
+            } else {
+                damage.min(200)
+            };
+            let battlesuit = Rc::new(RefCell::new(false));
+            let finishing = |mutations: Vec<DamageMutation>,
+                             applied: i32,
+                             reaction: Reaction,
+                             battlesuit: bool|
+             -> CombatProgress {
+                combat_decision(
+                    request,
+                    mutations,
+                    applied,
+                    reaction,
+                    Some(DamageFeedback::Q3 { knockback, battlesuit }),
+                )
+            };
+            if context.player && !context.no_knockback && !target.no_knockback && !flags.no_knockback {
+                combat_add_impulse(
+                    request,
+                    &mut mutations,
+                    request.direction,
+                    (context.knockback_scale * (knockback as f32)) / 200.0,
+                );
+            }
+            if !flags.no_protection {
+                let check_team = context.product == Product::Baseq3 || (!context.juiced && !flags.no_team_protection);
+                if (check_team
+                    && !combat_self_damage(request)
+                    && combat_same_team(target, attacker)
+                    && !context.friendly_fire)
+                    || context.proximity_protected
+                    || target.invulnerable
+                {
+                    return finishing(mutations, 0, Reaction::None, false);
+                }
+            }
+            if context.battlesuit {
+                *battlesuit.borrow_mut() = true;
+                if request.delivery == Delivery::Radius || context.falling {
+                    return finishing(mutations, 0, Reaction::None, true);
+                }
+                damage /= 2;
+            }
+            if combat_self_damage(request) {
+                damage /= 2;
+            }
+            damage = damage.max(1);
+            let amount = damage;
+            let armor_power = armor.clone();
+            let armor_regular = armor.clone();
+            let flags_power = flags.clone();
+            let battlesuit_inner = battlesuit.clone();
+            let owned = (*request).clone();
+            combat_continuation(
+                request,
+                mutations,
+                Rc::new({
+                    let owned = owned.clone();
+                    move |_| {
+                        let flags_regular = flags_power.clone();
+                        let armor_inner = armor_regular.clone();
+                        let battlesuit = battlesuit_inner.clone();
+                        let owned = owned.clone();
+                        combat_armor_stage(
+                            ProtectionChannel::Powered,
+                            &owned,
+                            amount,
+                            &flags_power.armor,
+                            &armor_power,
+                            Rc::new({
+                                let owned = owned.clone();
+                                move |power_saved, current| {
+                                    if current.target().is_none() {
+                                        return combat_decision(&owned, Vec::new(), 0, Reaction::None, None);
+                                    }
+                                    let owned = owned.clone();
+                                    let battlesuit = battlesuit.clone();
+                                    combat_armor_stage(
+                                        ProtectionChannel::Regular,
+                                        &owned,
+                                        amount.wrapping_sub(power_saved),
+                                        &flags_regular.armor,
+                                        &armor_inner,
+                                        Rc::new({
+                                            let owned = owned.clone();
+                                            let battlesuit = battlesuit.clone();
+                                            move |saved, state| {
+                                                let Some(latest) = state.target() else {
+                                                    return combat_decision(
+                                                        &owned,
+                                                        Vec::new(),
+                                                        0,
+                                                        Reaction::None,
+                                                        None,
+                                                    );
+                                                };
+                                                let take = amount.wrapping_sub(power_saved.wrapping_add(saved));
+                                                let feedback = DamageFeedback::Q3 {
+                                                    knockback,
+                                                    battlesuit: *battlesuit.borrow(),
+                                                };
+                                                if take == 0 {
+                                                    return combat_decision(
+                                                        &owned,
+                                                        Vec::new(),
+                                                        0,
+                                                        Reaction::None,
+                                                        Some(feedback),
+                                                    );
+                                                }
+                                                let health = (latest.health.wrapping_sub(take)).max(-999);
+                                                combat_decision(
+                                                    &owned,
+                                                    vec![DamageMutation::Health {
+                                                        before: latest.health,
+                                                        after: health,
+                                                    }],
+                                                    take,
+                                                    if health <= 0 { Reaction::Death } else { Reaction::Pain },
+                                                    Some(feedback),
+                                                )
+                                            }
+                                        }),
+                                    )
+                                }
+                            }),
+                        )
+                    }
+                }),
+            )
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// game/combat.ts combat context (unified from base/mirrors.rs)
+// ---------------------------------------------------------------------------
+
+/// Combat actor services (`CombatContext` actors word, game/combat.ts).
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct CombatActors {
+    /// Whether an actor is live.
+    pub is_live: Rc<dyn Fn(&ActorId) -> bool>,
+    /// Participant for an actor.
+    pub participant: Rc<dyn Fn(&ActorId) -> DamageParticipant>,
+    /// Projectile parent.
+    pub parent: Rc<dyn Fn(&ActorId) -> Option<ActorId>>,
+    /// Linked bounds.
+    pub linked_bounds: Rc<dyn Fn(&ActorId) -> Option<Bounds>>,
+    /// Whether an actor is a player.
+    pub is_player: Rc<dyn Fn(&ActorId) -> bool>,
+}
+
+/// Combat context (`CombatContext`, game/combat.ts).
+///
+/// Product-specific words are `None` on baseq3, matching the donor's
+/// discriminated union.
+#[derive(Clone)]
+#[allow(clippy::type_complexity)]
+pub struct CombatContext {
+    /// Product.
+    pub product: Product,
+    /// Gameplay authority.
+    pub authority: Rc<dyn Q3SessionCombat>,
+    /// Entity pool.
+    pub entities: EntityPoolRef,
+    /// Spatial queries.
+    pub spatial: Rc<dyn Q3ServerWorld>,
+    /// Source damage modifier.
+    pub source_damage_modifier: Option<SourceDamageModifier>,
+    /// Actor services.
+    pub actors: CombatActors,
+    /// Current time.
+    pub time: Rc<dyn Fn() -> i32>,
+    /// Queued intermission.
+    pub intermission_queued: Rc<dyn Fn() -> i32>,
+    /// Game type tag.
+    pub game_type: Rc<dyn Fn() -> i32>,
+    /// Friendly fire.
+    pub friendly_fire: Rc<dyn Fn() -> bool>,
+    /// Knockback scale.
+    pub knockback: Rc<dyn Fn() -> f32>,
+    /// Damage debug sink.
+    pub debug_damage: Option<Rc<dyn Fn(DamageDiagnostic)>>,
+    /// Capture attack provenance.
+    pub attack: Rc<
+        dyn Fn(&DamageParticipant, &DamageParticipant, Option<ItemId>, i32, i32, Option<ActorId>) -> AttackProvenance,
+    >,
+    /// Run an apply while retaining a source call.
+    pub dispatch: Rc<dyn Fn(Q3DamageCall, &dyn Fn() -> DamageOutcome) -> DamageOutcome>,
+    /// Carrier hurt hook.
+    pub check_hurt_carrier: Rc<dyn Fn(EntityRef, EntityRef)>,
+    /// Accuracy hit hook.
+    pub log_accuracy_hit: Rc<dyn Fn(EntityRef, EntityRef) -> bool>,
+    /// Obelisk attack hook (missionpack only).
+    pub check_obelisk_attack: Option<Rc<dyn Fn(EntityRef, &DamageParticipant) -> bool>>,
+    /// Invulnerability effect hook (missionpack only).
+    pub invulnerability_effect: Option<Rc<dyn Fn(EntityRef, Vec3, Vec3)>>,
 }
