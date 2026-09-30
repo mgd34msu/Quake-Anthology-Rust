@@ -6,7 +6,7 @@ use qa_core::math::{add3, scale3, vec3, Vec3};
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::mirrors::*;
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 
 // ---------------------------------------------------------------------------
 // shared/trajectory.ts

@@ -13,7 +13,7 @@ use std::rc::{Rc, Weak};
 use thiserror::Error;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::*;
 use crate::q3::base::shared::entity_state::*;
 use crate::q3::base::shared::player_state::*;
@@ -1119,7 +1119,7 @@ pub fn create_q3_combat_policy(
                 );
             }
             if !flags.no_protection {
-                let check_team = context.product == Product::BaseQ3 || (!context.juiced && !flags.no_team_protection);
+                let check_team = context.product == Product::Baseq3 || (!context.juiced && !flags.no_team_protection);
                 if (check_team
                     && !combat_self_damage(request)
                     && combat_same_team(target, attacker)
@@ -1311,7 +1311,22 @@ pub fn q3_weapon_items() -> Vec<Q3WeaponItem> {
     Q3_WEAPON_ITEM_DATA
         .iter()
         .map(|(weapon, item, ammo)| Q3WeaponItem {
-            weapon: Weapon::from_i32(*weapon).unwrap_or(Weapon::WpNone),
+            weapon: match *weapon {
+                1 => Weapon::WpGauntlet,
+                2 => Weapon::WpMachinegun,
+                3 => Weapon::WpShotgun,
+                4 => Weapon::WpGrenadeLauncher,
+                5 => Weapon::WpRocketLauncher,
+                6 => Weapon::WpLightning,
+                7 => Weapon::WpRailgun,
+                8 => Weapon::WpPlasmagun,
+                9 => Weapon::WpBfg,
+                10 => Weapon::WpGrapplingHook,
+                11 => Weapon::WpNailgun,
+                12 => Weapon::WpProxLauncher,
+                13 => Weapon::WpChaingun,
+                _ => Weapon::WpNone,
+            },
             item: ItemId::new(item),
             ammo: ammo.map(ItemId::new),
         })
@@ -1940,30 +1955,25 @@ mod tests {
 
     #[test]
     fn stat_schemas_match_source_slots() {
-        let base = stat_schema(Product::BaseQ3);
-        assert_eq!(base.product(), Product::BaseQ3);
-        assert_eq!(base.persistent_powerup(), None);
-        let indices = base.indices();
-        assert_eq!(
-            (indices.health, indices.weapons, indices.armor, indices.max_health),
-            (0, 2, 3, 6)
-        );
-        let pack = stat_schema(Product::Missionpack);
-        assert_eq!(pack.product(), Product::Missionpack);
-        assert_eq!(pack.persistent_powerup(), Some(2));
-        let indices = pack.indices();
-        assert_eq!(
-            (indices.health, indices.weapons, indices.armor, indices.max_health),
-            (0, 3, 4, 7)
-        );
+        let StatSchema::Base(base) = stat_schema(Product::Baseq3) else {
+            panic!("base product must yield the base stat layout");
+        };
+        assert_eq!(base.product, Product::Baseq3);
+        assert_eq!((base.health, base.weapons, base.armor, base.max_health), (0, 2, 3, 6));
+        let StatSchema::Missionpack(pack) = stat_schema(Product::Missionpack) else {
+            panic!("missionpack product must yield the missionpack stat layout");
+        };
+        assert_eq!(pack.product, Product::Missionpack);
+        assert_eq!(pack.persistent_powerup, 2);
+        assert_eq!((pack.health, pack.weapons, pack.armor, pack.max_health), (0, 3, 4, 7));
     }
 
     #[test]
     fn weapon_availability_follows_product() {
-        assert_eq!(weapon_count(Product::BaseQ3), 11);
+        assert_eq!(weapon_count(Product::Baseq3), 11);
         assert_eq!(weapon_count(Product::Missionpack), 14);
-        assert!(weapon_available(Product::BaseQ3, Weapon::WpGrapplingHook));
-        assert!(!weapon_available(Product::BaseQ3, Weapon::WpNailgun));
+        assert!(weapon_available(Product::Baseq3, Weapon::WpGrapplingHook));
+        assert!(!weapon_available(Product::Baseq3, Weapon::WpNailgun));
         assert!(weapon_available(Product::Missionpack, Weapon::WpChaingun));
         assert!(!weapon_available(Product::Missionpack, Weapon::WpNone));
         assert_eq!(GameType::GtTeam as i32, 3);
@@ -2083,7 +2093,7 @@ mod tests {
 
     #[test]
     fn player_state_defaults_match_retail() {
-        let ps = create_player_state(Product::BaseQ3, None);
+        let ps = create_player_state(Product::Baseq3, None);
         assert_eq!(ps.pm_type, MoveType::PmNormal as i32);
         assert_eq!(ps.weapon, Weapon::WpNone as i32);
         assert_eq!(ps.weapon_state, WeaponState::WeaponReady as i32);
@@ -2092,7 +2102,7 @@ mod tests {
 
     #[test]
     fn player_health_uses_product_schema() {
-        let mut base = create_player_state(Product::BaseQ3, None);
+        let mut base = create_player_state(Product::Baseq3, None);
         base.set_health(125);
         assert_eq!(base.stats.get(0), 125);
         let mut pack = create_player_state(Product::Missionpack, None);
@@ -2102,7 +2112,7 @@ mod tests {
 
     #[test]
     fn player_events_cycle_slots_and_sequence() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         let first = ps.add_event(13, 1);
         assert_eq!(
             first,
@@ -2141,7 +2151,7 @@ mod tests {
 
     #[test]
     fn player_event_debug_prints_source_line() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         let sink = Rc::new(DebugSink {
             text: "1".to_string(),
             lines: RefCell::new(Vec::new()),
@@ -2157,7 +2167,7 @@ mod tests {
 
     #[test]
     fn player_copy_preserves_authority_words() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         ps.set_origin(vec3(1.0, 2.0, 3.0));
         ps.set_health(90);
         let copy = ps.copy();
@@ -2165,7 +2175,7 @@ mod tests {
         assert_eq!(copy.health(), 90);
         let mut other = create_player_state(Product::Missionpack, None);
         other.copy_from(&ps, AuthorityStores::ReplaceAuthority);
-        assert_eq!(other.product(), Product::BaseQ3);
+        assert_eq!(other.product(), Product::Baseq3);
         assert_eq!(other.origin(), vec3(1.0, 2.0, 3.0));
     }
 
@@ -2223,7 +2233,7 @@ mod tests {
 
     fn base_inventory() -> FixedInventory {
         FixedInventory {
-            product: Product::BaseQ3,
+            product: Product::Baseq3,
             health: 100,
             armor: 0,
             max_health: 100,
@@ -2237,41 +2247,41 @@ mod tests {
 
     #[test]
     fn item_lists_split_at_the_missionpack_tail() {
-        assert_eq!(item_list(Product::BaseQ3).len(), BASE_ITEM_COUNT);
+        assert_eq!(item_list(Product::Baseq3).len(), BASE_ITEM_COUNT);
         assert_eq!(item_list(Product::Missionpack).len(), 52);
-        assert_eq!(item_at(Product::BaseQ3, 0).unwrap().item_type(), ItemType::ItBad);
-        assert_eq!(item_at(Product::BaseQ3, 8).unwrap().pickup_name, Some("Gauntlet"));
-        assert!(item_at(Product::BaseQ3, 36).is_err());
+        assert_eq!(item_at(Product::Baseq3, 0).unwrap().item_type(), ItemType::ItBad);
+        assert_eq!(item_at(Product::Baseq3, 8).unwrap().pickup_name, Some("Gauntlet"));
+        assert!(item_at(Product::Baseq3, 36).is_err());
         assert_eq!(item_at(Product::Missionpack, 51).unwrap().pickup_name, Some("Chaingun"));
     }
 
     #[test]
     fn item_finds_cover_names_tags_and_errors() {
         assert_eq!(
-            find_item(Product::BaseQ3, "quad damage").unwrap().class_name,
+            find_item(Product::Baseq3, "quad damage").unwrap().class_name,
             Some("item_quad")
         );
-        assert!(find_item(Product::BaseQ3, "missing").is_none());
+        assert!(find_item(Product::Baseq3, "missing").is_none());
         assert_eq!(
-            find_item_for_powerup(Product::BaseQ3, Powerup::PwFlight)
+            find_item_for_powerup(Product::Baseq3, Powerup::PwFlight)
                 .unwrap()
                 .class_name,
             Some("item_flight")
         );
         assert_eq!(
-            find_item_for_holdable(Product::BaseQ3, Holdable::HiMedkit)
+            find_item_for_holdable(Product::Baseq3, Holdable::HiMedkit)
                 .unwrap()
                 .class_name,
             Some("holdable_medkit")
         );
-        assert!(find_item_for_holdable(Product::BaseQ3, Holdable::HiNumHoldable).is_err());
+        assert!(find_item_for_holdable(Product::Baseq3, Holdable::HiNumHoldable).is_err());
         assert_eq!(
-            find_item_for_weapon(Product::BaseQ3, Weapon::WpShotgun)
+            find_item_for_weapon(Product::Baseq3, Weapon::WpShotgun)
                 .unwrap()
                 .class_name,
             Some("weapon_shotgun")
         );
-        assert!(find_item_for_weapon(Product::BaseQ3, Weapon::WpNone).is_err());
+        assert!(find_item_for_weapon(Product::Baseq3, Weapon::WpNone).is_err());
     }
 
     #[test]
@@ -2368,7 +2378,7 @@ mod tests {
 
     #[test]
     fn jump_pad_applies_velocity_and_event() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         ps.pmove_framecount = 9;
         let mut pad = EntityState::new();
         pad.number = 12;
@@ -2383,13 +2393,13 @@ mod tests {
 
     #[test]
     fn jump_pad_ignores_flight_and_dead() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         ps.powerups.set(Powerup::PwFlight as usize, 9999);
         let mut pad = EntityState::new();
         pad.origin2 = vec3(0.0, 0.0, 700.0);
         touch_jump_pad(&mut ps, &pad);
         assert_eq!(ps.velocity(), vec3(0.0, 0.0, 0.0));
-        let mut dead = create_player_state(Product::BaseQ3, None);
+        let mut dead = create_player_state(Product::Baseq3, None);
         dead.pm_type = MoveType::PmDead as i32;
         touch_jump_pad(&mut dead, &pad);
         assert_eq!(dead.jumppad_ent, 0);
@@ -2397,7 +2407,7 @@ mod tests {
 
     #[test]
     fn snapshot_conversion_consumes_events_and_snaps() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         ps.client_num = 3;
         ps.set_origin(vec3(10.7, -4.2, 0.5));
         ps.set_health(100);
@@ -2411,7 +2421,7 @@ mod tests {
         assert_eq!(entity.event, EntityEvent::EvJump as i32);
         assert_eq!(entity.powerups, 1 << (Powerup::PwQuad as i32));
         assert_eq!(ps.entity_event_sequence, 1);
-        let mut gibbed = create_player_state(Product::BaseQ3, None);
+        let mut gibbed = create_player_state(Product::Baseq3, None);
         gibbed.set_health(GIB_HEALTH);
         let mut hidden = EntityState::new();
         player_state_to_entity_state(&mut gibbed, &mut hidden, false);
@@ -2420,7 +2430,7 @@ mod tests {
 
     #[test]
     fn snapshot_extrapolation_uses_linear_stop() {
-        let mut ps = create_player_state(Product::BaseQ3, None);
+        let mut ps = create_player_state(Product::Baseq3, None);
         ps.set_origin(vec3(0.0, 0.0, 0.0));
         ps.set_velocity(vec3(100.0, 0.0, 0.0));
         ps.set_health(100);
@@ -2766,7 +2776,7 @@ mod tests {
 
     fn test_records() -> (Rc<FakeRecordHost>, Q3EntityRecords) {
         let host = Rc::new(FakeRecordHost::new());
-        let records = Q3EntityRecords::new(host.clone(), test_provider(), Product::BaseQ3);
+        let records = Q3EntityRecords::new(host.clone(), test_provider(), Product::Baseq3);
         (host, records)
     }
 
@@ -3026,7 +3036,7 @@ mod tests {
         }
 
         fn product(&self) -> Product {
-            Product::BaseQ3
+            Product::Baseq3
         }
 
         fn check_hurt_carrier(&self, _target: EntityRef, _attacker: EntityRef) {}
@@ -3583,7 +3593,7 @@ mod tests {
         );
 
         let base = Rc::new(FakeSpawnHost {
-            product: Product::BaseQ3,
+            product: Product::Baseq3,
             obelisks: RefCell::new(Vec::new()),
         });
         let base_handlers = create_q3_spawn_handlers(base).expect("base");
@@ -3594,7 +3604,7 @@ mod tests {
 
     impl Q3SpawnHandlersHost for EmptySpawnHost {
         fn product(&self) -> Product {
-            Product::BaseQ3
+            Product::Baseq3
         }
 
         fn misc_handlers(&self) -> HashMap<String, SpawnHandler> {
@@ -3783,7 +3793,7 @@ mod tests {
     #[test]
     fn settings_register_update_and_save_round_trip() {
         let host = Rc::new(FakeSettingsHost::new());
-        let settings = Q3GameSettings::new(host.clone(), Product::BaseQ3);
+        let settings = Q3GameSettings::new(host.clone(), Product::Baseq3);
         assert_eq!(settings.definitions().len(), 45);
         let pack = Q3GameSettings::new(host.clone(), Product::Missionpack);
         assert_eq!(pack.definitions().len(), 56);
@@ -3803,7 +3813,7 @@ mod tests {
 
         let saved = settings.capture_save_state();
         let host2 = Rc::new(FakeSettingsHost::new());
-        let restored = Q3GameSettings::new(host2.clone(), Product::BaseQ3);
+        let restored = Q3GameSettings::new(host2.clone(), Product::Baseq3);
         restored.register("2026-09-30");
         restored.restore_save_state(&saved).expect("restore");
         assert_eq!(restored.integer("fraglimit"), 30);

@@ -9,7 +9,7 @@ use std::rc::{Rc, Weak};
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::mirrors::*;
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::entity_shared::*;
 use crate::q3::base::shared::player_state::*;
 
@@ -572,12 +572,15 @@ impl RecordsCore {
     }
 
     fn stat_read(self: &Rc<Self>, slot: usize, index: usize) -> i32 {
-        let schema = stat_schema(self.product);
-        let indices = *schema.indices();
-        if index == indices.health {
+        let (health, armor, weapons) = match stat_schema(self.product) {
+            StatSchema::Base(layout) => (layout.health, layout.armor, layout.weapons),
+            StatSchema::Missionpack(layout) => (layout.health, layout.armor, layout.weapons),
+        };
+        let (health, armor, weapons) = (health as usize, armor as usize, weapons as usize);
+        if index == health {
             return self.record_entity(slot).borrow().health();
         }
-        if index == indices.armor {
+        if index == armor {
             let actor = self.record_actor(slot);
             return actor.map_or(0, |owned| {
                 match self.host.combat().read(owned.id()).map(|state| state.armor.regular) {
@@ -589,7 +592,7 @@ impl RecordsCore {
                 }
             });
         }
-        if index == indices.weapons {
+        if index == weapons {
             let Some(actor) = self.record_actor(slot) else {
                 return 0;
             };
@@ -609,14 +612,17 @@ impl RecordsCore {
     }
 
     fn stat_write(self: &Rc<Self>, slot: usize, index: usize, value: i32) {
-        let schema = stat_schema(self.product);
-        let indices = *schema.indices();
-        if index == indices.health {
+        let (health, armor, weapons) = match stat_schema(self.product) {
+            StatSchema::Base(layout) => (layout.health, layout.armor, layout.weapons),
+            StatSchema::Missionpack(layout) => (layout.health, layout.armor, layout.weapons),
+        };
+        let (health, armor, weapons) = (health as usize, armor as usize, weapons as usize);
+        if index == health {
             let actor = self.ensure_actor(slot);
             self.host.combat().set_health(&actor, value);
             return;
         }
-        if index == indices.armor {
+        if index == armor {
             let actor = self.ensure_actor(slot);
             self.host.combat().set_regular_points(
                 &actor,
@@ -628,7 +634,7 @@ impl RecordsCore {
             );
             return;
         }
-        if index == indices.weapons {
+        if index == weapons {
             let actor = self.ensure_actor(slot);
             for weapon in q3_weapon_items() {
                 self.host.inventory().configure(

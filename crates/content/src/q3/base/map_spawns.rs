@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::mirrors::*;
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 
 // ---------------------------------------------------------------------------
 // map-spawns.ts

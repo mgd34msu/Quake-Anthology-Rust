@@ -7,7 +7,7 @@ use qa_core::numeric::native_atof;
 use std::rc::Rc;
 
 // Intra-group imports: sibling modules split from the same flat port.
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 
 // ---------------------------------------------------------------------------
 // shared/player-state.ts (+ movement/q3/constants.ts re-exports)
@@ -302,6 +302,15 @@ pub(crate) fn copy_slots(target: &mut PlayerStateSlots, source: &PlayerStateSlot
     for index in 0..target.len() {
         target.set(index, source.get(index));
     }
+}
+
+/// Health stat slot for a product.
+fn health_slot(product: Product) -> usize {
+    let slot = match stat_schema(product) {
+        StatSchema::Base(layout) => layout.health,
+        StatSchema::Missionpack(layout) => layout.health,
+    };
+    slot as usize
 }
 
 /// Predictable event record (`PredictableEvent`).
@@ -662,12 +671,12 @@ impl PlayerState {
     /// Health from the product's health stat slot.
     #[must_use]
     pub fn health(&self) -> i32 {
-        self.stats.get(stat_schema(self.product).indices().health)
+        self.stats.get(health_slot(self.product))
     }
 
     /// Write health to the product's health stat slot.
     pub fn set_health(&mut self, value: i32) {
-        let slot = stat_schema(self.product).indices().health;
+        let slot = health_slot(self.product);
         self.stats.set(slot, value);
     }
 
@@ -724,10 +733,13 @@ impl PlayerState {
         self.damage_yaw = source.damage_yaw;
         self.damage_pitch = source.damage_pitch;
         self.damage_count = source.damage_count;
-        let schema = stat_schema(self.product);
-        let indices = *schema.indices();
+        let (health, armor, weapons) = match stat_schema(self.product) {
+            StatSchema::Base(layout) => (layout.health, layout.armor, layout.weapons),
+            StatSchema::Missionpack(layout) => (layout.health, layout.armor, layout.weapons),
+        };
+        let (health, armor, weapons) = (health as usize, armor as usize, weapons as usize);
         for index in 0..self.stats.len() {
-            if preserve && (index == indices.health || index == indices.armor || index == indices.weapons) {
+            if preserve && (index == health || index == armor || index == weapons) {
                 continue;
             }
             self.stats.set(index, source.stats.get(index));

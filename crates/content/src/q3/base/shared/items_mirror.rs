@@ -9,7 +9,7 @@ use qa_core::math::Vec3;
 
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::mirrors::*;
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::trajectory::*;
 
 // ---------------------------------------------------------------------------
@@ -646,7 +646,7 @@ pub(crate) static ITEM_DEFINITIONS: [ItemDefinition; 52] = [
         icon: Some("icons/iconf_red1"),
         pickup_name: Some("Red Flag"),
         quantity: 0,
-        kind: ItemKindTag::Team(Powerup::PwRedFlag),
+        kind: ItemKindTag::Team(Powerup::PwRedflag),
         precaches: "",
         sounds: "",
     },
@@ -657,7 +657,7 @@ pub(crate) static ITEM_DEFINITIONS: [ItemDefinition; 52] = [
         icon: Some("icons/iconf_blu1"),
         pickup_name: Some("Blue Flag"),
         quantity: 0,
-        kind: ItemKindTag::Team(Powerup::PwBlueFlag),
+        kind: ItemKindTag::Team(Powerup::PwBlueflag),
         precaches: "",
         sounds: "",
     },
@@ -803,7 +803,7 @@ pub(crate) static ITEM_DEFINITIONS: [ItemDefinition; 52] = [
         icon: Some("icons/iconf_neutral1"),
         pickup_name: Some("Neutral Flag"),
         quantity: 0,
-        kind: ItemKindTag::Team(Powerup::PwNeutralFlag),
+        kind: ItemKindTag::Team(Powerup::PwNeutralflag),
         precaches: "",
         sounds: "",
     },
@@ -886,7 +886,7 @@ pub const BASE_ITEM_COUNT: usize = 36;
 #[must_use]
 pub fn item_list(product: Product) -> &'static [ItemDefinition] {
     match product {
-        Product::BaseQ3 => &ITEM_DEFINITIONS[..BASE_ITEM_COUNT],
+        Product::Baseq3 => &ITEM_DEFINITIONS[..BASE_ITEM_COUNT],
         Product::Missionpack => &ITEM_DEFINITIONS[..],
     }
 }
@@ -1011,7 +1011,7 @@ pub fn can_item_be_grabbed(gametype: i32, ent: &PickupEntity, ps: &dyn PlayerInv
         }
         ItemType::ItPowerup => Ok(true),
         ItemType::ItPersistantPowerup => {
-            if ps.product() == Product::BaseQ3 || ps.persistent_powerup_index() != 0 {
+            if ps.product() == Product::Baseq3 || ps.persistent_powerup_index() != 0 {
                 return Ok(false);
             }
             if (ent.generic1 & 2) != 0 && ps.team() != Team::TeamRed as i32 {
@@ -1024,33 +1024,33 @@ pub fn can_item_be_grabbed(gametype: i32, ent: &PickupEntity, ps: &dyn PlayerInv
         }
         ItemType::ItTeam => {
             let tag = item.powerup_tag().unwrap_or(Powerup::PwNone);
-            if ps.product() == Product::Missionpack && gametype == GameType::Gt1Fctf as i32 {
-                if tag == Powerup::PwNeutralFlag {
+            if ps.product() == Product::Missionpack && gametype == GameType::Gt1fctf as i32 {
+                if tag == Powerup::PwNeutralflag {
                     return Ok(true);
                 }
                 if ps.team() == Team::TeamRed as i32
-                    && tag == Powerup::PwBlueFlag
-                    && ps.powerup(Powerup::PwNeutralFlag) != 0
+                    && tag == Powerup::PwBlueflag
+                    && ps.powerup(Powerup::PwNeutralflag) != 0
                 {
                     return Ok(true);
                 }
                 if ps.team() == Team::TeamBlue as i32
-                    && tag == Powerup::PwRedFlag
-                    && ps.powerup(Powerup::PwNeutralFlag) != 0
+                    && tag == Powerup::PwRedflag
+                    && ps.powerup(Powerup::PwNeutralflag) != 0
                 {
                     return Ok(true);
                 }
             }
             if gametype == GameType::GtCtf as i32 {
                 if ps.team() == Team::TeamRed as i32 {
-                    return Ok(tag == Powerup::PwBlueFlag
-                        || (tag == Powerup::PwRedFlag
-                            && (ent.model_index2 != 0 || ps.powerup(Powerup::PwBlueFlag) != 0)));
+                    return Ok(tag == Powerup::PwBlueflag
+                        || (tag == Powerup::PwRedflag
+                            && (ent.model_index2 != 0 || ps.powerup(Powerup::PwBlueflag) != 0)));
                 }
                 if ps.team() == Team::TeamBlue as i32 {
-                    return Ok(tag == Powerup::PwRedFlag
-                        || (tag == Powerup::PwBlueFlag
-                            && (ent.model_index2 != 0 || ps.powerup(Powerup::PwRedFlag) != 0)));
+                    return Ok(tag == Powerup::PwRedflag
+                        || (tag == Powerup::PwBlueflag
+                            && (ent.model_index2 != 0 || ps.powerup(Powerup::PwRedflag) != 0)));
                 }
             }
             Ok(ps.product() == Product::Missionpack && gametype == GameType::GtHarvester as i32)

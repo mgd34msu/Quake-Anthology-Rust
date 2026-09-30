@@ -12,7 +12,7 @@ use std::rc::Rc;
 // Intra-group imports: sibling modules split from the same flat port.
 use crate::q3::base::mirrors::*;
 use crate::q3::base::records::*;
-use crate::q3::base::shared::definitions_mirror::*;
+use crate::q3::base::shared::definitions::*;
 use crate::q3::base::shared::items_mirror::*;
 use crate::q3::base::world::*;
 
@@ -423,13 +423,20 @@ impl Q3CombatBridge {
             };
         let parent = records.native_by_actor(parent_actor.as_ref());
         let schema = stat_schema(host.product());
+        let powerup_slot = match schema {
+            StatSchema::Missionpack(layout) => Some(layout.persistent_powerup as usize),
+            StatSchema::Base(_) => None,
+        };
+        let max_health = match schema {
+            StatSchema::Base(layout) => layout.max_health,
+            StatSchema::Missionpack(layout) => layout.max_health,
+        } as usize;
         let guard = owner_client.as_ref().is_some_and(|client| {
-            schema.product() == Product::Missionpack
-                && schema.persistent_powerup().is_some_and(|slot| {
-                    item_at(Product::Missionpack, client.borrow().ps.stats.get(slot))
-                        .map(|item| item.powerup_tag() == Some(Powerup::PwGuard))
-                        .unwrap_or(false)
-                })
+            powerup_slot.is_some_and(|slot| {
+                item_at(Product::Missionpack, client.borrow().ps.stats.get(slot))
+                    .map(|item| item.powerup_tag() == Some(Powerup::PwGuard))
+                    .unwrap_or(false)
+            })
         });
         let target_borrow = target_client.as_ref().map(|client| client.borrow());
         let owner_borrow = owner_client.as_ref().map(|client| client.borrow());
@@ -438,7 +445,7 @@ impl Q3CombatBridge {
             attacker_player: owner_client.is_some(),
             attacker_max_health: owner_borrow
                 .as_ref()
-                .map_or(100, |client| client.ps.stats.get(schema.indices().max_health)),
+                .map_or(100, |client| client.ps.stats.get(max_health)),
             attacker_guard: guard,
             intermission: host.intermission_queued() != 0,
             noclip: target_borrow.as_ref().is_some_and(|client| client.noclip),

@@ -1,7 +1,6 @@
 //! Q3 shared base-game records (`src/content/q3/base/shared/*`).
 
 pub mod definitions;
-pub mod definitions_mirror;
 pub mod direction_byte;
 pub mod entity_shared;
 pub mod entity_state;
