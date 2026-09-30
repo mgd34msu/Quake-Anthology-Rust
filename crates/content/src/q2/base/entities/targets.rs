@@ -29,7 +29,7 @@ fn hooks(game: &Q2GameServices) -> Q2BaseEntityHooks {
 }
 
 /// Target laser think (`q2TargetLaserThink`).
-fn target_laser_think(actor: ActorId, game: &mut Q2GameServices) {
+pub fn target_laser_think(actor: ActorId, game: &mut Q2GameServices) {
     let zero = vec3(0.0, 0.0, 0.0);
     let count = if game.require_entity(&actor).spawnflags & LASER_DIRTY != 0 {
         8

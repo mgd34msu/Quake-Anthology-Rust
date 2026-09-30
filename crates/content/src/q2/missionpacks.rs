@@ -2,6 +2,7 @@
 
 pub mod damage;
 pub mod doppleganger;
+pub mod entities;
 pub mod items;
 pub mod modes;
 pub mod monsters;
@@ -18,6 +19,7 @@ use qa_core::identity::ActorId;
 
 use types::{Q2MissionPack, Q2MissionPackProjectileHooks};
 
+use self::entities::types::Q2MissionPackEntityHooks;
 use self::items::{disconnected_item_hooks, Q2MissionPackItemHooks, Q2MissionPackPowerups};
 use self::projectiles::disconnected_projectile_hooks;
 use self::spheres::{disconnected_sphere_hooks, Q2SphereHooks};
@@ -38,6 +40,10 @@ pub struct MissionPackRuntime {
     pub shared_items: Option<Q2ItemModule>,
     /// Powerup timers by owner.
     pub item_powers: HashMap<ActorId, Q2MissionPackPowerups>,
+    /// Session entity hooks.
+    pub entity_hooks: Option<Q2MissionPackEntityHooks>,
+    /// Rogue steam id.
+    pub steam_id: i32,
 }
 
 impl Default for MissionPackRuntime {
@@ -49,6 +55,8 @@ impl Default for MissionPackRuntime {
             items_pack: None,
             shared_items: None,
             item_powers: HashMap::new(),
+            entity_hooks: None,
+            steam_id: 0,
         }
     }
 }
