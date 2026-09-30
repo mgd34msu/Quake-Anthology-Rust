@@ -19,6 +19,7 @@ pub mod rogue_infantry;
 pub mod rogue_jumpers;
 pub mod rogue_soldier;
 pub mod rogue_variants;
+pub mod soldierh;
 pub mod spawn;
 pub mod xatrix_variants;
 pub mod state;
