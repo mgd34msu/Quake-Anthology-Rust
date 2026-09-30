@@ -26,6 +26,71 @@ pub struct Q2GenericFrameState {
     pub last_firing_time: f64,
 }
 
+/// Live weapon frame state (`Q2GenericFrameState` projection).
+///
+/// The steppers run against live `Q2WeaponState` through this trait so
+/// hook callbacks observe and mutate the same state the donor steps.
+pub trait GenericFrameState {
+    /// Phase.
+    fn phase(&self) -> Q2WeaponPhase;
+    /// Set the phase.
+    fn set_phase(&mut self, phase: Q2WeaponPhase);
+    /// Frame.
+    fn frame(&self) -> i32;
+    /// Set the frame.
+    fn set_frame(&mut self, frame: i32);
+    /// Latched attack.
+    fn latched_attack(&self) -> bool;
+    /// Set latched attack.
+    fn set_latched_attack(&mut self, value: bool);
+    /// Source firing.
+    fn source_firing(&self) -> bool;
+    /// Set source firing.
+    fn set_source_firing(&mut self, value: bool);
+    /// Think time.
+    fn think_time(&self) -> f64;
+    /// Set think time.
+    fn set_think_time(&mut self, value: f64);
+    /// Fire finished.
+    fn fire_finished(&self) -> f64;
+    /// Set fire finished.
+    fn set_fire_finished(&mut self, value: f64);
+    /// Fire buffered.
+    fn fire_buffered(&self) -> bool;
+    /// Set fire buffered.
+    fn set_fire_buffered(&mut self, value: bool);
+    /// Last firing time.
+    fn last_firing_time(&self) -> f64;
+    /// Set last firing time.
+    fn set_last_firing_time(&mut self, value: f64);
+}
+
+macro_rules! generic_frame_state {
+    ($type:ty) => {
+        impl GenericFrameState for $type {
+            fn phase(&self) -> Q2WeaponPhase { self.phase }
+            fn set_phase(&mut self, phase: Q2WeaponPhase) { self.phase = phase; }
+            fn frame(&self) -> i32 { self.frame }
+            fn set_frame(&mut self, frame: i32) { self.frame = frame; }
+            fn latched_attack(&self) -> bool { self.latched_attack }
+            fn set_latched_attack(&mut self, value: bool) { self.latched_attack = value; }
+            fn source_firing(&self) -> bool { self.source_firing }
+            fn set_source_firing(&mut self, value: bool) { self.source_firing = value; }
+            fn think_time(&self) -> f64 { self.think_time }
+            fn set_think_time(&mut self, value: f64) { self.think_time = value; }
+            fn fire_finished(&self) -> f64 { self.fire_finished }
+            fn set_fire_finished(&mut self, value: f64) { self.fire_finished = value; }
+            fn fire_buffered(&self) -> bool { self.fire_buffered }
+            fn set_fire_buffered(&mut self, value: bool) { self.fire_buffered = value; }
+            fn last_firing_time(&self) -> f64 { self.last_firing_time }
+            fn set_last_firing_time(&mut self, value: f64) { self.last_firing_time = value; }
+        }
+    };
+}
+
+generic_frame_state!(Q2GenericFrameState);
+generic_frame_state!(super::types::Q2WeaponState);
+
 /// Generic frame definition (`Q2GenericDefinition`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Q2GenericDefinition {
@@ -128,79 +193,79 @@ pub fn millisecond_sum(time: f64, seconds: f64) -> f64 {
 
 /// Step a classic weapon frame (`stepQ2ClassicFrame`).
 pub fn step_q2_classic_frame(
-    state: &mut Q2GenericFrameState,
+    state: &mut dyn GenericFrameState,
     definition: &Q2GenericDefinition,
     input: &Q2ClassicFrameInput,
     hooks: &mut dyn ClassicFrameHooks,
 ) {
     let idle_first = definition.fire_last + 1;
-    if state.phase == Q2WeaponPhase::Dropping {
-        if state.frame == definition.deactivate_last {
+    if state.phase() == Q2WeaponPhase::Dropping {
+        if state.frame() == definition.deactivate_last {
             hooks.change_weapon();
             return;
         }
-        if definition.deactivate_last - state.frame == 4 {
+        if definition.deactivate_last - state.frame() == 4 {
             hooks.reverse_animation();
         }
-        state.frame += 1;
+        state.set_frame(state.frame() + 1);
         return;
     }
-    if state.phase == Q2WeaponPhase::Activating {
-        if state.frame == definition.activate_last {
-            state.phase = Q2WeaponPhase::Ready;
-            state.frame = idle_first;
+    if state.phase() == Q2WeaponPhase::Activating {
+        if state.frame() == definition.activate_last {
+            state.set_phase(Q2WeaponPhase::Ready);
+            state.set_frame(idle_first);
         } else {
-            state.frame += 1;
+            state.set_frame(state.frame() + 1);
         }
         return;
     }
-    if input.change_requested && state.phase != Q2WeaponPhase::Firing {
-        state.phase = Q2WeaponPhase::Dropping;
-        state.frame = definition.idle_last + 1;
-        if definition.deactivate_last - state.frame < 4 {
+    if input.change_requested && state.phase() != Q2WeaponPhase::Firing {
+        state.set_phase(Q2WeaponPhase::Dropping);
+        state.set_frame(definition.idle_last + 1);
+        if definition.deactivate_last - state.frame() < 4 {
             hooks.reverse_animation();
         }
         return;
     }
-    if state.phase == Q2WeaponPhase::Ready {
-        if input.attack || state.latched_attack {
-            state.latched_attack = false;
+    if state.phase() == Q2WeaponPhase::Ready {
+        if input.attack || state.latched_attack() {
+            state.set_latched_attack(false);
             if hooks.ammo() < f64::from(definition.quantity) {
                 hooks.no_ammo();
                 return;
             }
-            state.frame = definition.activate_last + 1;
-            state.phase = Q2WeaponPhase::Firing;
+            state.set_frame(definition.activate_last + 1);
+            state.set_phase(Q2WeaponPhase::Firing);
             hooks.attack_animation();
         } else {
-            if state.frame == definition.idle_last {
-                state.frame = idle_first;
+            if state.frame() == definition.idle_last {
+                state.set_frame(idle_first);
                 return;
             }
-            if definition.pauses.contains(&state.frame) && (hooks.random() * 16.0).floor() as i32 != 0 {
+            if definition.pauses.contains(&state.frame()) && (hooks.random() * 16.0).floor() as i32 != 0 {
                 return;
             }
-            state.frame += 1;
+            state.set_frame(state.frame() + 1);
             return;
         }
     }
-    if state.phase == Q2WeaponPhase::Firing {
-        if definition.fires.contains(&state.frame) {
-            state.source_firing = true;
+    if state.phase() == Q2WeaponPhase::Firing {
+        if definition.fires.contains(&state.frame()) {
+            state.set_source_firing(true);
             hooks.powerup_sound();
             hooks.fire(false);
         } else {
-            state.frame += 1;
+            state.set_frame(state.frame() + 1);
         }
-        if state.frame == idle_first + 1 {
-            state.phase = Q2WeaponPhase::Ready;
+        if state.frame() == idle_first + 1 {
+            state.set_phase(Q2WeaponPhase::Ready);
         }
     }
 }
 
 /// Step a rerelease weapon frame (`stepQ2RereleaseFrame`).
 pub fn step_q2_rerelease_frame(
-    state: &mut Q2GenericFrameState,
+    state: &mut dyn GenericFrameState,
     definition: &Q2GenericDefinition,
     input: &Q2RereleaseFrameInput,
     hooks: &mut dyn RereleaseFrameHooks,
@@ -208,108 +273,112 @@ pub fn step_q2_rerelease_frame(
     let now = input.now;
     let idle_first = definition.fire_last + 1;
     let idle_last = if definition.name == "bfg" { 54 } else { definition.idle_last };
-    if state.phase == Q2WeaponPhase::Dropping {
-        if state.think_time <= now {
-            if state.frame == definition.deactivate_last {
+    if state.phase() == Q2WeaponPhase::Dropping {
+        if state.think_time() <= now {
+            if state.frame() == definition.deactivate_last {
                 hooks.change_weapon();
                 return;
             }
-            if definition.deactivate_last - state.frame == 4 {
+            if definition.deactivate_last - state.frame() == 4 {
                 hooks.reverse_animation();
             }
-            state.frame += 1;
-            state.think_time = millisecond_sum(now, hooks.animation_time());
+            state.set_frame(state.frame() + 1);
+            state.set_think_time(millisecond_sum(now, hooks.animation_time()));
         }
         return;
     }
-    if state.phase == Q2WeaponPhase::Activating {
-        if state.think_time <= now || input.instant_switch {
-            state.think_time = millisecond_sum(now, hooks.animation_time());
-            if state.frame == definition.activate_last || input.instant_switch {
-                state.phase = Q2WeaponPhase::Ready;
-                state.frame = idle_first;
-                state.fire_buffered = false;
-                state.fire_finished = if input.instant_switch { 0.0 } else { millisecond_sum(now, hooks.animation_time()) };
+    if state.phase() == Q2WeaponPhase::Activating {
+        if state.think_time() <= now || input.instant_switch {
+            state.set_think_time(millisecond_sum(now, hooks.animation_time()));
+            if state.frame() == definition.activate_last || input.instant_switch {
+                state.set_phase(Q2WeaponPhase::Ready);
+                state.set_frame(idle_first);
+                state.set_fire_buffered(false);
+                state.set_fire_finished(if input.instant_switch { 0.0 } else { millisecond_sum(now, hooks.animation_time()) });
             } else {
-                state.frame += 1;
+                state.set_frame(state.frame() + 1);
             }
             return;
         }
     }
-    if (input.change_requested || !input.instant_switch && input.holster) && state.phase != Q2WeaponPhase::Firing {
-        if input.instant_switch || state.think_time <= now {
+    if (input.change_requested || !input.instant_switch && input.holster) && state.phase() != Q2WeaponPhase::Firing {
+        if input.instant_switch || state.think_time() <= now {
             hooks.prepare_drop();
-            state.phase = Q2WeaponPhase::Dropping;
+            state.set_phase(Q2WeaponPhase::Dropping);
             if input.instant_switch {
                 hooks.change_weapon();
                 return;
             }
-            state.frame = idle_last + 1;
-            if definition.deactivate_last - state.frame < 4 {
+            state.set_frame(idle_last + 1);
+            if definition.deactivate_last - state.frame() < 4 {
                 hooks.reverse_animation();
             }
-            state.think_time = millisecond_sum(now, hooks.animation_time());
+            state.set_think_time(millisecond_sum(now, hooks.animation_time()));
         }
         return;
     }
-    if state.phase == Q2WeaponPhase::Ready {
-        if (state.fire_buffered || state.latched_attack || input.attack) && state.fire_finished <= now {
-            state.latched_attack = false;
-            state.think_time = now;
+    if state.phase() == Q2WeaponPhase::Ready {
+        if (state.fire_buffered() || state.latched_attack() || input.attack) && state.fire_finished() <= now {
+            state.set_latched_attack(false);
+            state.set_think_time(now);
             if hooks.ammo() < f64::from(definition.quantity) {
                 hooks.no_ammo();
                 return;
             }
-            state.phase = Q2WeaponPhase::Firing;
-            state.last_firing_time = millisecond_sum(now, 2.5);
+            state.set_phase(Q2WeaponPhase::Firing);
+            state.set_last_firing_time(millisecond_sum(now, 2.5));
             if !definition.repeating {
-                state.frame = definition.activate_last + 1;
-                state.fire_buffered = false;
-                state.think_time = millisecond_sum(
-                    state.think_time,
-                    (if input.weapon_thunk { input.frame_seconds } else { 0.0 }) + hooks.animation_time(),
+                state.set_frame(definition.activate_last + 1);
+                state.set_fire_buffered(false);
+                let think = millisecond_sum(
+                    state.think_time(),
+                    (if input.weapon_thunk { input.frame_seconds } else { 0.0 })
+                        + hooks.animation_time(),
                 );
-                state.fire_finished = millisecond_sum(now, hooks.animation_time());
-                if definition.fires.contains(&state.frame) {
+                state.set_think_time(think);
+                state.set_fire_finished(millisecond_sum(now, hooks.animation_time()));
+                if definition.fires.contains(&state.frame()) {
                     hooks.powerup_sound();
                     hooks.fire(false);
                 }
                 hooks.attack_animation();
                 return;
             }
-        } else if state.think_time <= now {
-            state.think_time = millisecond_sum(now, hooks.animation_time());
-            if state.frame == idle_last {
-                state.frame = idle_first;
+        } else if state.think_time() <= now {
+            state.set_think_time(millisecond_sum(now, hooks.animation_time()));
+            if state.frame() == idle_last {
+                state.set_frame(idle_first);
                 return;
             }
-            if !definition.pauses.contains(&state.frame) || (hooks.random() * 16.0).floor() as i32 == 0 {
-                state.frame += 1;
+            if !definition.pauses.contains(&state.frame()) || (hooks.random() * 16.0).floor() as i32 == 0 {
+                state.set_frame(state.frame() + 1);
             }
             return;
         }
     }
-    if state.phase == Q2WeaponPhase::Firing && state.think_time <= now {
-        state.last_firing_time = millisecond_sum(now, 2.5);
+    if state.phase() == Q2WeaponPhase::Firing && state.think_time() <= now {
+        state.set_last_firing_time(millisecond_sum(now, 2.5));
         if !definition.repeating {
-            state.frame += 1;
+            state.set_frame(state.frame() + 1);
         }
-        state.fire_finished = millisecond_sum(now, hooks.animation_time());
-        let buffered = state.fire_buffered;
-        state.fire_buffered = false;
+        state.set_fire_finished(millisecond_sum(now, hooks.animation_time()));
+        let buffered = state.fire_buffered();
+        state.set_fire_buffered(false);
         if definition.repeating {
             hooks.fire(buffered);
-        } else if definition.fires.contains(&state.frame) && !(definition.name == "shotgun" && state.frame == 9) {
+        } else if definition.fires.contains(&state.frame()) && !(definition.name == "shotgun" && state.frame() == 9) {
             hooks.powerup_sound();
             hooks.fire(buffered);
         }
-        if state.frame == idle_first {
-            state.phase = Q2WeaponPhase::Ready;
-            state.fire_buffered = false;
+        if state.frame() == idle_first {
+            state.set_phase(Q2WeaponPhase::Ready);
+            state.set_fire_buffered(false);
         }
-        state.think_time = millisecond_sum(
+        let think = millisecond_sum(
             now,
-            hooks.animation_time() + (if definition.repeating && input.weapon_thunk { input.frame_seconds } else { 0.0 }),
+            hooks.animation_time()
+                + (if definition.repeating && input.weapon_thunk { input.frame_seconds } else { 0.0 }),
         );
+        state.set_think_time(think);
     }
 }

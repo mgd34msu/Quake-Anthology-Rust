@@ -223,7 +223,7 @@ fn shot_mask(game: &mut Q2GameServices, owner: &ActorId) -> i32 {
 
 /// Player noise kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NoiseKind {
+pub(crate) enum NoiseKind {
     /// Self noise.
     Myself,
     /// Weapon noise.
@@ -233,12 +233,12 @@ enum NoiseKind {
 }
 
 /// Report player noise (`playerNoise`).
-fn player_noise(game: &mut Q2GameServices, owner: &ActorId, origin: Vec3, kind: NoiseKind) {
+pub(crate) fn player_noise(game: &mut Q2GameServices, owner: &ActorId, origin: Vec3, kind: NoiseKind) {
     player_noise_for_actor(game, owner.clone(), origin, kind);
 }
 
 /// Report player noise for an owner (`playerNoiseForActor`).
-fn player_noise_for_actor(
+pub(crate) fn player_noise_for_actor(
     game: &mut Q2GameServices,
     owner: ActorId,
     origin: Vec3,

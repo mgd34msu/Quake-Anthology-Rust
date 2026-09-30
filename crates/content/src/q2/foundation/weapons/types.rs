@@ -302,6 +302,8 @@ pub struct Q2WeaponInput {
     pub gravity: f64,
     /// Weapon thunk.
     pub weapon_thunk: bool,
+    /// View height.
+    pub view_height: f64,
 }
 
 /// Weapon hand.
@@ -384,7 +386,7 @@ pub struct Q2WeaponState {
     /// Source firing.
     pub source_firing: bool,
     /// Gun rate.
-    pub gun_rate: i32,
+    pub gun_rate: f64,
 }
 
 impl Q2WeaponState {
@@ -417,7 +419,7 @@ impl Q2WeaponState {
             view_skin: 0,
             last_firing_time: 0.0,
             source_firing: false,
-            gun_rate: 10,
+            gun_rate: 10.0,
         }
     }
 }

@@ -12,12 +12,14 @@ use qa_core::identity::ActorId;
 
 use self::types::{Q2NoiseRecord, Q2WeaponDefinition, Q2WeaponInput, Q2WeaponState, WeaponEngine};
 
+pub mod ballistics;
 pub mod checkpoint;
 pub mod damage;
 pub mod definitions;
 pub mod generic_frame;
 pub mod hand_action;
 pub mod hand_grenade;
+pub mod player;
 pub mod presentation;
 pub mod projection;
 pub mod turn;
@@ -72,6 +74,10 @@ pub struct WeaponRuntime {
     pub definitions: HashMap<String, Q2WeaponDefinition>,
     /// Fallback weapon order.
     pub fallback_order: Option<Vec<String>>,
+    /// Weapon extensions by name.
+    pub extensions: HashMap<String, Box<dyn player::Q2WeaponExtension>>,
+    /// Match hooks.
+    pub match_hooks: player::WeaponMatchHooks,
 }
 
 impl Default for WeaponRuntime {
@@ -92,6 +98,8 @@ impl Default for WeaponRuntime {
             source_rules: None,
             definitions,
             fallback_order: None,
+            extensions: HashMap::new(),
+            match_hooks: player::WeaponMatchHooks::default(),
         }
     }
 }
