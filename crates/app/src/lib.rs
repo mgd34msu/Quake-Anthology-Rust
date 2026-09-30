@@ -12,6 +12,7 @@
 //! land. Native backends live in `qa-platform`.
 
 pub mod application;
+pub mod bootstrap;
 pub mod cli;
 pub mod console;
 pub mod debug;

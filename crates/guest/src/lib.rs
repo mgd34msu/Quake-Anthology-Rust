@@ -19,6 +19,8 @@ pub mod error;
 pub mod fields;
 pub mod floating_point;
 pub mod pe;
+pub mod qc;
+pub mod qvm;
 pub mod registry;
 pub mod runtime;
 pub mod save;

@@ -67,12 +67,14 @@ dependencies = [
 name = "qa-app"
 version = "0.1.0"
 dependencies = [
+ "qa-bots",
  "qa-client",
  "qa-compat",
  "qa-content",
  "qa-core",
  "qa-guest",
  "qa-net",
+ "qa-platform",
  "qa-world",
  "thiserror",
 ]
@@ -113,7 +115,9 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "qa-core",
+ "qa-guest",
  "qa-platform",
+ "qa-world",
  "thiserror",
 ]
 
@@ -158,10 +162,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "qa-tools"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "qa-bots",
+ "qa-client",
+ "qa-content",
+ "qa-core",
+ "thiserror",
+]
+
+[[package]]
 name = "qa-world"
 version = "0.1.0"
 dependencies = [
- "qa-content",
  "qa-core",
  "thiserror",
 ]

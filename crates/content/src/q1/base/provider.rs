@@ -825,6 +825,11 @@ pub fn base_registered_flag(game: &Q1EntityServices) -> Result<bool, Q1Error> {
     update_base(game, |state| state.registered)
 }
 
+/// Official-campaign flag, if any.
+pub fn official_campaign_flag(game: &Q1EntityServices) -> Result<bool, Q1Error> {
+    update_base(game, |state| state.level_rules.official_campaign())
+}
+
 /// Same-level probe, if any.
 pub fn same_level_probe(game: &Q1EntityServices) -> Result<Option<fn() -> bool>, Q1Error> {
     update_base(game, |state| state.same_level)

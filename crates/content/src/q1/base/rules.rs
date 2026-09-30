@@ -808,6 +808,12 @@ impl Q1LevelRules {
         }
     }
 
+    /// Whether this is an official campaign.
+    #[must_use]
+    pub fn official_campaign(&self) -> bool {
+        self.official_campaign
+    }
+
     /// Capture rules state.
     #[must_use]
     pub fn capture(&self) -> SaveJson {
