@@ -9,6 +9,7 @@ pub mod allocation;
 pub mod checksum;
 pub mod clip_models;
 pub mod counters;
+pub mod map_loader;
 pub mod map_resource;
 pub mod model;
 pub mod patch;
@@ -23,6 +24,9 @@ pub use allocation::{
 pub use checksum::{block_checksum, collision_checksum, collision_lump_checksum, CollisionChecksumLump};
 pub use clip_models::{SourceClipModels, TemporaryStorage, SOURCE_BOX_MODEL_HANDLE, SOURCE_CAPSULE_MODEL_HANDLE};
 pub use counters::CollisionCounters;
+pub use map_loader::{
+    CollisionMapLoader, CollisionMapLoaderOptions, LoadedCollisionMap, RetainedCollisionFile, RetainedFileReader,
+};
 pub use map_resource::{
     decoded_collision_map, BoxSideView, CollisionArea, CollisionBoxHull, CollisionBoxModel, CollisionBrush,
     CollisionBrushSide, CollisionLeaf, CollisionMapData, CollisionMapResource, CollisionModel, CollisionNode,

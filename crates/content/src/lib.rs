@@ -24,6 +24,7 @@ pub mod held_weapon;
 pub mod images;
 pub mod item_icon;
 pub mod lod;
+pub mod materials;
 pub mod md2;
 pub mod md3;
 pub mod md4;
