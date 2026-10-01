@@ -7,15 +7,13 @@ use qa_core::identity::ActorId;
 use crate::contract::{InventoryCountPolicy, InventoryEntry, SourceCounterArithmetic};
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices, Q2Mode};
 use crate::q2::foundation::items::Q2ConsoleGive;
-use crate::q2::foundation::weapons::player::{
-    can_drop_weapon, registered_weapon_definitions, request_weapon,
-};
 use crate::q2::foundation::weapons::player::Q2WeaponSelection;
+use crate::q2::foundation::weapons::player::{can_drop_weapon, registered_weapon_definitions, request_weapon};
 use crate::q2::support::contracts::CombatTraitChanges;
 
 use super::index::{
-    Q2Intermission, can_drop_coop_stay_items, chase_player, environment_damage, player_hooks,
-    player_items, send_scoreboard,
+    can_drop_coop_stay_items, chase_player, environment_damage, player_hooks, player_items, send_scoreboard,
+    Q2Intermission,
 };
 use super::types::{Q2PlayerContext, Q2PlayerEvent, Q2PrintLevel, Q2ScoreRow};
 
@@ -62,14 +60,16 @@ fn parse_command_prefix(value: &str) -> Option<i64> {
         match ch.to_digit(10) {
             Some(digit) => {
                 any = true;
-                parsed = parsed
-                    .saturating_mul(10)
-                    .saturating_add(i64::from(digit));
+                parsed = parsed.saturating_mul(10).saturating_add(i64::from(digit));
             }
             None => break,
         }
     }
-    if any { Some(sign * parsed) } else { None }
+    if any {
+        Some(sign * parsed)
+    } else {
+        None
+    }
 }
 
 /// Parse a command integer (JS `parseInt || 0` semantics).
@@ -228,12 +228,7 @@ fn use_item(context: &mut Q2PlayerContext, value: &str) {
         }
     } else {
         let owned = context.game.owned_of(actor.clone());
-        player_items(context.game).use_inventory_item(
-            &owned,
-            &item.id,
-            context.game,
-            30.0,
-        );
+        player_items(context.game).use_inventory_item(&owned, &item.id, context.game, 30.0);
     }
     context
         .game
@@ -252,11 +247,13 @@ fn drop_item(context: &mut Q2PlayerContext, value: &str) {
         print(context, format!("unknown item: {value}\n"));
         return;
     };
-    if !item.droppable
-        || context.game.options.mode == Q2Mode::Coop
-            && item.stay_coop
-            && !can_drop_coop_stay_items()
-    {
+    let can_drop = context
+        .game
+        .players
+        .overrides
+        .can_drop_coop_stay_items
+        .map_or_else(can_drop_coop_stay_items, |can_drop| can_drop(context.game));
+    if !item.droppable || context.game.options.mode == Q2Mode::Coop && item.stay_coop && !can_drop {
         print(context, "Item is not dropable.\n".to_string());
         return;
     }
@@ -331,9 +328,7 @@ fn weapon_cycle(context: &mut Q2PlayerContext, direction: i32) {
     let owned = context.game.owned_of(actor);
     for step in 1..=len {
         let weapon = &definitions[((index + direction * step + len * 2) % len) as usize];
-        if request_weapon(context.game, &owned, &weapon.name, false)
-            == Q2WeaponSelection::Selected
-        {
+        if request_weapon(context.game, &owned, &weapon.name, false) == Q2WeaponSelection::Selected {
             break;
         }
     }
@@ -360,10 +355,7 @@ pub fn q2_chat_allowed(context: &mut Q2PlayerContext) -> bool {
         let previous = if back <= 0 {
             None
         } else if state.flood_times.len() >= back as usize {
-            state
-                .flood_times
-                .get(state.flood_times.len() - back as usize)
-                .copied()
+            state.flood_times.get(state.flood_times.len() - back as usize).copied()
         } else {
             state.flood_times.first().copied()
         };
@@ -406,8 +398,7 @@ fn say(context: &mut Q2PlayerContext, args: &[String], team_only: bool) {
         return;
     }
     let actor = context.actor.clone();
-    let is_team =
-        team_only && context.game.options.deathmatch_flags & (64 | 128) != 0;
+    let is_team = team_only && context.game.options.deathmatch_flags & (64 | 128) != 0;
     let mut words = args.join(" ");
     if words.starts_with('"') {
         words = if words.ends_with('"') && words.len() > 1 {
@@ -418,13 +409,10 @@ fn say(context: &mut Q2PlayerContext, args: &[String], team_only: bool) {
     }
     let from = context.game.players.states[&actor].name.clone();
     let skin = context.game.players.states[&actor].skin.clone();
-    let message: String = format!(
-        "{}: {words}",
-        if is_team { format!("({from})") } else { from }
-    )
-    .chars()
-    .take(150)
-    .collect::<String>()
+    let message: String = format!("{}: {words}", if is_team { format!("({from})") } else { from })
+        .chars()
+        .take(150)
+        .collect::<String>()
         + "\n";
     let recipients: Vec<ActorId> = context
         .game
@@ -518,9 +506,7 @@ fn score_command(context: &mut Q2PlayerContext, _args: &[String], _command: &str
         entry.show_scores = !entry.show_scores;
     }
     publish_inventory(context);
-    if context.game.players.states[&actor].show_scores
-        && context.game.options.mode != Q2Mode::Singleplayer
-    {
+    if context.game.players.states[&actor].show_scores && context.game.options.mode != Q2Mode::Singleplayer {
         send_scoreboard(&actor, context.game, true);
     }
 }
@@ -617,9 +603,9 @@ fn select_command(context: &mut Q2PlayerContext, _args: &[String], command: &str
 fn selected_item_command(context: &mut Q2PlayerContext, _args: &[String], command: &str) {
     let actor = context.actor.clone();
     let selected = context.game.players.states[&actor].selected_item.clone();
-    let empty = selected.as_ref().is_none_or(|item| {
-        context.game.host.inventory().count(&actor, item) == 0.0
-    });
+    let empty = selected
+        .as_ref()
+        .is_none_or(|item| context.game.host.inventory().count(&actor, item) == 0.0);
     if empty {
         select(context, 1, Q2SelectFilter::All);
     }
@@ -763,7 +749,10 @@ pub fn q2_cheats_allowed(context: &mut Q2PlayerContext) -> bool {
         context.game.options.mode == Q2Mode::Deathmatch
     };
     if multiplayer && !context.game.players.rules.cheats {
-        print(context, "You must run the server with '+set cheats 1' to enable this command.\n".to_string());
+        print(
+            context,
+            "You must run the server with '+set cheats 1' to enable this command.\n".to_string(),
+        );
         return false;
     }
     true
@@ -887,9 +876,7 @@ fn give_command(context: &mut Q2PlayerContext, args: &[String]) {
             let ids: Vec<String> = player_items(context.game)
                 .list(context.game)
                 .into_iter()
-                .filter(|item| {
-                    item.kind == crate::q2::foundation::items::Q2ItemKind::Ammo
-                })
+                .filter(|item| item.kind == crate::q2::foundation::items::Q2ItemKind::Ammo)
                 .map(|item| item.id.clone())
                 .collect();
             for id in ids {
@@ -987,9 +974,9 @@ fn give_command(context: &mut Q2PlayerContext, args: &[String]) {
         .or_else(|| catalog.iter().find(|item| item.name.to_lowercase() == first))
         .or_else(|| {
             if rerelease {
-                catalog.iter().find(|item| {
-                    item.classname.to_lowercase() == first || item.id.to_lowercase() == first
-                })
+                catalog
+                    .iter()
+                    .find(|item| item.classname.to_lowercase() == first || item.id.to_lowercase() == first)
             } else {
                 None
             }
@@ -1034,12 +1021,7 @@ fn give_command(context: &mut Q2PlayerContext, args: &[String]) {
         } else {
             None
         };
-        player_items(context.game).give_ammo_count(
-            &owned,
-            context.game,
-            &item.id.clone(),
-            amount,
-        );
+        player_items(context.game).give_ammo_count(&owned, context.game, &item.id.clone(), amount);
     } else {
         let classname = item.classname.clone();
         pickup_command(context, &classname);
@@ -1071,9 +1053,7 @@ fn write_inventory(context: &mut Q2PlayerContext, item: &str, count: f64) {
             item: item.to_string(),
             count,
             capacity,
-            count_policy: Some(InventoryCountPolicy::SourceCounter(
-                SourceCounterArithmetic::Int32,
-            )),
+            count_policy: Some(InventoryCountPolicy::SourceCounter(SourceCounterArithmetic::Int32)),
         },
     );
 }
@@ -1119,12 +1099,7 @@ fn check_power_armor_after_give(context: &mut Q2PlayerContext) {
         .host
         .combat()
         .read(&actor)
-        .is_some_and(|combat| {
-            !matches!(
-                combat.armor.powered,
-                crate::contract::PoweredProtectionState::None
-            )
-        });
+        .is_some_and(|combat| !matches!(combat.armor.powered, crate::contract::PoweredProtectionState::None));
     let shield = if context
         .game
         .host
@@ -1460,11 +1435,7 @@ pub const Q2_CLIENT_COMMANDS: &[Q2ClientCommandDefinition] = &[
 ];
 
 /// Run a client command (`runQ2ClientCommand`).
-pub fn run_q2_client_command(
-    context: &mut Q2PlayerContext,
-    source_command: &str,
-    args: &[String],
-) -> bool {
+pub fn run_q2_client_command(context: &mut Q2PlayerContext, source_command: &str, args: &[String]) -> bool {
     let command = source_command.to_lowercase();
     let actor = context.actor.clone();
     if player_hooks(context.game)
@@ -1473,9 +1444,7 @@ pub fn run_q2_client_command(
     {
         return true;
     }
-    let definition = Q2_CLIENT_COMMANDS
-        .iter()
-        .find(|definition| definition.name == command);
+    let definition = Q2_CLIENT_COMMANDS.iter().find(|definition| definition.name == command);
     if !matches!(context.game.players.intermission, Q2Intermission::Playing)
         && !definition.is_some_and(|definition| definition.intermission)
     {

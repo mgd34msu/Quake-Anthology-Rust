@@ -1,58 +1,48 @@
 //! Q2 players (`src/content/q2/base/player/index.ts`).
 
 use qa_core::identity::{ActorId, OwnedActor, SavedActorId};
-use qa_core::math::{Vec3, add3, dot3, scale3, vec3};
+use qa_core::math::{add3, dot3, scale3, vec3, Vec3};
 
 use crate::contract::{ArmorState, InventoryEntry, ItemId, PoweredProtectionState};
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
 use crate::q2::foundation::checkpoint::{restore_q2_actor, save_q2_actor};
 use crate::q2::foundation::entity_services::js_round;
 use crate::q2::foundation::host::{
-    Q2Die, Q2Edition, Q2EffectEvent, Q2Entity, Q2GameServices, Q2ItemNameFn, Q2LandmarkCarry,
-    Q2Mode, Q2MotionKind, Q2Pain, Q2PresentationEvent, Q2Solid, Q2SpawnFn, Q2TraceRequest,
-    SpawnModule,
+    Q2Die, Q2Edition, Q2EffectEvent, Q2Entity, Q2GameServices, Q2ItemNameFn, Q2LandmarkCarry, Q2Mode, Q2MotionKind,
+    Q2Pain, Q2PresentationEvent, Q2Solid, Q2SpawnFn, Q2TraceRequest, SpawnModule,
 };
 use crate::q2::foundation::items::{Q2DropOptions, Q2ItemModule, Q2PlayerPowerups};
-use crate::q2::foundation::monsters::gibs::{Q2GibOptions, throw_gib};
-use crate::q2::foundation::weapons::player::{
-    bind_player_weapon, tick_player_weapon, weapon_definition,
-};
+use crate::q2::foundation::monsters::gibs::{throw_gib, Q2GibOptions};
+use crate::q2::foundation::weapons::player::{bind_player_weapon, tick_player_weapon, weapon_definition};
 use crate::q2::foundation::weapons::presentation::q2_weapon_recoil;
 use crate::q2::foundation::weapons::turn::{
-    Q2WeaponTurnState, begin_q2_weapon_turn, early_q2_weapon_turn, latch_q2_weapon_buttons,
+    begin_q2_weapon_turn, early_q2_weapon_turn, latch_q2_weapon_buttons, Q2WeaponTurnState,
 };
-use crate::q2::foundation::weapons::types::{
-    PlayerAnimationPriority, Q2WeaponEvent, Q2WeaponInput, Q2WeaponState,
-};
+use crate::q2::foundation::weapons::types::{PlayerAnimationPriority, Q2WeaponEvent, Q2WeaponInput, Q2WeaponState};
 use crate::q2::foundation::weapons::vectors::angle_vectors;
 use crate::q2::support::contracts::{
-    AttackCause, BodyState, CombatState, CombatTraitChanges, DamageDecision, DamageDelivery,
-    DamageFeedback, DamageReactionKind, DamageRequest, DeathReaction, TransitionIntent,
+    AttackCause, BodyState, CombatState, CombatTraitChanges, DamageDecision, DamageDelivery, DamageFeedback,
+    DamageReactionKind, DamageRequest, DeathReaction, TransitionIntent,
 };
 
 use super::checkpoint::{
-    Q2LandmarkCarryCheckpoint, Q2PlayerCheckpointEntry, Q2PlayerIntermissionCheckpoint,
-    Q2PlayerStateCheckpoint, Q2PlayersCheckpoint,
+    Q2LandmarkCarryCheckpoint, Q2PlayerCheckpointEntry, Q2PlayerIntermissionCheckpoint, Q2PlayerStateCheckpoint,
+    Q2PlayersCheckpoint,
 };
-use super::commands::{
-    parse_command_int, q2_chat_allowed, run_q2_client_command, score_rows, userinfo_value,
-};
+use super::commands::{parse_command_int, q2_chat_allowed, run_q2_client_command, score_rows, userinfo_value};
 use super::environment::{q2_falling_damage, q2_world_effects};
 use super::landmarks::place_q2_landmark;
-use super::obituary::{Q2ObituaryRecipient, q2_obituary};
+use super::obituary::{q2_obituary, Q2ObituaryRecipient};
 use super::spawns::{
-    q2_entities_named, q2_kill_box, q2_spawn_origin, select_q2_spawn, spawn_callbacks,
-    spawn_player_spawn,
+    q2_entities_named, q2_kill_box, q2_spawn_origin, select_q2_spawn, spawn_callbacks, spawn_player_spawn,
 };
 use super::types::{
-    Q2BodyChanges, Q2CharacterContext, Q2CharacterWeapon, Q2PlayerCarry, Q2PlayerContext,
-    Q2PlayerEvent, Q2PlayerGender, Q2PlayerHand, Q2PlayerHooks, Q2PlayerMovement,
-    Q2PlayerMovementChange, Q2PlayerRules, Q2PlayerSpawnChange, Q2PlayerState, Q2PlayerView,
-    Q2PrintLevel,
+    Q2BodyChanges, Q2CharacterContext, Q2CharacterWeapon, Q2PlayerCarry, Q2PlayerContext, Q2PlayerEvent,
+    Q2PlayerGender, Q2PlayerHand, Q2PlayerHooks, Q2PlayerMovement, Q2PlayerMovementChange, Q2PlayerRules,
+    Q2PlayerSpawnChange, Q2PlayerState, Q2PlayerView, Q2PrintLevel,
 };
 use super::view::{
-    q2_build_view, q2_client_animation, q2_client_effects, q2_damage_feedback,
-    q2_death_animation_frames,
+    q2_build_view, q2_client_animation, q2_client_effects, q2_damage_feedback, q2_death_animation_frames,
 };
 
 /// Player intermission (`Q2Players[intermission]`).
@@ -122,16 +112,12 @@ pub struct Q2ConnectionResult {
 
 /// Read registered player hooks.
 pub fn player_hooks(game: &Q2GameServices) -> Q2PlayerHooks {
-    game.players
-        .hooks
-        .expect("Q2 player hooks are not registered")
+    game.players.hooks.expect("Q2 player hooks are not registered")
 }
 
 /// Read the registered item module.
 pub fn player_items(game: &Q2GameServices) -> Q2ItemModule {
-    game.players
-        .items
-        .expect("Q2 player items are not registered")
+    game.players.items.expect("Q2 player items are not registered")
 }
 
 /// Read an admitted player state.
@@ -293,13 +279,7 @@ pub fn weapon_state_for(actor: ActorId, game: &mut Q2GameServices) -> Option<Q2C
 }
 
 /// Apply environment damage (`environmentDamage`).
-pub fn environment_damage(
-    actor: ActorId,
-    game: &mut Q2GameServices,
-    amount: f64,
-    means: i32,
-    flags: i32,
-) {
+pub fn environment_damage(actor: ActorId, game: &mut Q2GameServices, amount: f64, means: i32, flags: i32) {
     let world = game.host.world_actor();
     let mut attack = game.attack(actor.clone(), Some(world.clone()), means, flags, None);
     attack.inflictor = Some(world);
@@ -310,11 +290,7 @@ pub fn environment_damage(
         target: actor,
         amount,
         knockback: 0.0,
-        direction: if means == 22 {
-            vec3(0.0, 0.0, 1.0)
-        } else {
-            zero
-        },
+        direction: if means == 22 { vec3(0.0, 0.0, 1.0) } else { zero },
         point: body.origin,
         normal: zero,
         delivery: DamageDelivery::Direct,
@@ -322,12 +298,7 @@ pub fn environment_damage(
 }
 
 /// Player pain (no-op).
-fn player_pain(
-    _actor: ActorId,
-    _game: &mut Q2GameServices,
-    _reaction: crate::q2::support::contracts::PainReaction,
-) {
-}
+fn player_pain(_actor: ActorId, _game: &mut Q2GameServices, _reaction: crate::q2::support::contracts::PainReaction) {}
 
 /// Player die.
 fn player_die(actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction) {
@@ -336,13 +307,7 @@ fn player_die(actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction
 
 /// Body die.
 fn body_die(actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction) {
-    if game
-        .host
-        .combat()
-        .read(&actor)
-        .map_or(0.0, |combat| combat.health)
-        < -40.0
-    {
+    if game.host.combat().read(&actor).map_or(0.0, |combat| combat.health) < -40.0 {
         game.sound(&actor, "misc/udeath.wav", 4, 1.0, 1.0);
         for _ in 0..4 {
             throw_gib(
@@ -401,9 +366,264 @@ pub struct Q2Players {
     hooks: Q2PlayerHooks,
 }
 
+/// Player behavior overrides (`Q2Players` subclass hooks).
+///
+/// The donor `Q2Players` dispatches these methods virtually, so edition
+/// subclasses observe every internal call. Base methods keep direct
+/// behavior; every internal call site routes through the matching
+/// `dispatched_*` twin, which consults this table first. Override
+/// functions call the direct base method for `super` behavior, so the
+/// dispatch never recurses.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Q2PlayerOverrides {
+    /// Connect override.
+    pub connect: Option<fn(&mut Q2GameServices, String) -> Q2ConnectionResult>,
+    /// Userinfo override.
+    pub userinfo_changed: Option<fn(ActorId, &mut Q2GameServices, String)>,
+    /// Restore-carry override.
+    pub restore_carry: Option<fn(ActorId, &mut Q2GameServices, Q2PlayerCarry)>,
+    /// Obituary override; `None` skips the base plain-text print.
+    pub obituary: Option<fn(ActorId, &mut Q2GameServices, Option<ActorId>) -> Option<String>>,
+    /// Clear-death-inventory override.
+    pub clear_death_inventory: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// Record-death override.
+    pub record_death: Option<fn(ActorId, &mut Q2GameServices, DeathReaction) -> bool>,
+    /// Dead-frame override.
+    pub dead_frame: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// World-effects override.
+    pub world_effects: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// Falling-damage override.
+    pub falling_damage: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// Build-view override.
+    pub build_view: Option<fn(ActorId, &mut Q2GameServices, i32, bool) -> Q2PlayerView>,
+    /// Damage-feedback override.
+    pub damage_feedback: Option<fn(ActorId, &mut Q2GameServices, i32) -> (i32, i32)>,
+    /// Client-animation override.
+    pub client_animation: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// Update-bob override.
+    pub update_bob: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// Spawn-placement override.
+    pub spawn_placement: Option<fn(ActorId, &mut Q2GameServices, Option<Q2LandmarkCarry>) -> Q2SpawnSolution>,
+    /// Kill-box override.
+    pub kill_box: Option<fn(ActorId, &mut Q2GameServices) -> bool>,
+    /// Put-in-server override.
+    pub put_in_server: Option<fn(ActorId, &mut Q2GameServices, bool, Option<Q2LandmarkCarry>)>,
+    /// Begin-intermission override.
+    pub begin_intermission: Option<fn(&mut Q2GameServices, String, Option<Q2LandmarkCarry>)>,
+    /// Before-exit-level override.
+    pub before_exit_level: Option<fn(&mut Q2GameServices, String)>,
+    /// End-frame override.
+    pub end_frame: Option<fn(ActorId, &mut Q2GameServices)>,
+    /// Coop-stay drop override.
+    pub can_drop_coop_stay_items: Option<fn(&Q2GameServices) -> bool>,
+    /// Death override.
+    pub death: Option<fn(ActorId, &mut Q2GameServices, DeathReaction, bool)>,
+    /// Save-carry override.
+    pub save_carry: Option<fn(ActorId, &mut Q2GameServices) -> Q2PlayerCarry>,
+    /// Respawn override.
+    pub respawn: Option<fn(ActorId, &mut Q2GameServices)>,
+}
+
 /// Create the Q2 players module (`createQ2Players`).
 pub fn create_q2_players(items: Q2ItemModule, hooks: Q2PlayerHooks) -> Q2Players {
     Q2Players { items, hooks }
+}
+
+impl Q2Players {
+    /// Dispatched connect for internal call sites.
+    pub fn dispatched_connect(&self, game: &mut Q2GameServices, userinfo: &str) -> Q2ConnectionResult {
+        if let Some(connect) = game.players.overrides.connect {
+            return connect(game, userinfo.to_string());
+        }
+        self.connect(game, userinfo)
+    }
+
+    /// Dispatched userinfo for internal call sites.
+    pub fn dispatched_userinfo_changed(&self, actor: ActorId, game: &mut Q2GameServices, userinfo: &str) {
+        if let Some(userinfo_changed) = game.players.overrides.userinfo_changed {
+            return userinfo_changed(actor, game, userinfo.to_string());
+        }
+        self.userinfo_changed(actor, game, userinfo)
+    }
+
+    /// Dispatched restore-carry for internal call sites.
+    pub fn dispatched_restore_carry(&self, actor: ActorId, game: &mut Q2GameServices, carry: Q2PlayerCarry) {
+        if let Some(restore_carry) = game.players.overrides.restore_carry {
+            return restore_carry(actor, game, carry);
+        }
+        self.restore_carry(actor, game, carry)
+    }
+
+    /// Dispatched obituary for internal call sites.
+    pub fn dispatched_obituary(
+        &self,
+        actor: ActorId,
+        game: &mut Q2GameServices,
+        attacker: Option<ActorId>,
+    ) -> Option<String> {
+        if let Some(obituary) = game.players.overrides.obituary {
+            return obituary(actor, game, attacker);
+        }
+        Some(self.obituary(actor, game, attacker))
+    }
+
+    /// Dispatched clear-death-inventory for internal call sites.
+    pub fn dispatched_clear_death_inventory(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(clear) = game.players.overrides.clear_death_inventory {
+            return clear(actor, game);
+        }
+        self.clear_death_inventory(actor, game)
+    }
+
+    /// Dispatched record-death for internal call sites.
+    pub fn dispatched_record_death(&self, actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction) -> bool {
+        if let Some(record_death) = game.players.overrides.record_death {
+            return record_death(actor, game, reaction);
+        }
+        self.record_death(actor, game, reaction)
+    }
+
+    /// Dispatched dead-frame for internal call sites.
+    pub fn dispatched_dead_frame(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(dead_frame) = game.players.overrides.dead_frame {
+            return dead_frame(actor, game);
+        }
+        self.dead_frame(actor, game)
+    }
+
+    /// Dispatched world-effects for internal call sites.
+    pub fn dispatched_world_effects(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(world_effects) = game.players.overrides.world_effects {
+            return world_effects(actor, game);
+        }
+        self.world_effects(actor, game)
+    }
+
+    /// Dispatched falling-damage for internal call sites.
+    pub fn dispatched_falling_damage(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(falling_damage) = game.players.overrides.falling_damage {
+            return falling_damage(actor, game);
+        }
+        self.falling_damage(actor, game)
+    }
+
+    /// Dispatched build-view for internal call sites.
+    pub fn dispatched_build_view(
+        &self,
+        actor: ActorId,
+        game: &mut Q2GameServices,
+        flashes: i32,
+        intermission: bool,
+    ) -> Q2PlayerView {
+        if let Some(build_view) = game.players.overrides.build_view {
+            return build_view(actor, game, flashes, intermission);
+        }
+        self.build_view(actor, game, flashes, intermission)
+    }
+
+    /// Dispatched damage-feedback for internal call sites.
+    pub fn dispatched_damage_feedback(&self, actor: ActorId, game: &mut Q2GameServices, pain_index: i32) -> (i32, i32) {
+        if let Some(damage_feedback) = game.players.overrides.damage_feedback {
+            return damage_feedback(actor, game, pain_index);
+        }
+        self.damage_feedback(actor, game, pain_index)
+    }
+
+    /// Dispatched client-animation for internal call sites.
+    pub fn dispatched_client_animation(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(client_animation) = game.players.overrides.client_animation {
+            return client_animation(actor, game);
+        }
+        self.client_animation(actor, game)
+    }
+
+    /// Dispatched update-bob for internal call sites.
+    pub fn dispatched_update_bob(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(update_bob) = game.players.overrides.update_bob {
+            return update_bob(actor, game);
+        }
+        self.update_bob(actor, game)
+    }
+
+    /// Dispatched spawn-placement for internal call sites.
+    pub fn dispatched_spawn_placement(
+        &self,
+        actor: ActorId,
+        game: &mut Q2GameServices,
+        landmark: Option<&Q2LandmarkCarry>,
+    ) -> Q2SpawnSolution {
+        if let Some(spawn_placement) = game.players.overrides.spawn_placement {
+            return spawn_placement(actor, game, landmark.cloned());
+        }
+        self.spawn_placement(actor, game, landmark)
+    }
+
+    /// Dispatched kill-box for internal call sites.
+    pub fn dispatched_kill_box(&self, actor: ActorId, game: &mut Q2GameServices) -> bool {
+        if let Some(kill_box) = game.players.overrides.kill_box {
+            return kill_box(actor, game);
+        }
+        self.kill_box(actor, game)
+    }
+
+    /// Dispatched put-in-server for internal call sites.
+    pub fn dispatched_put_in_server(
+        &self,
+        actor: ActorId,
+        game: &mut Q2GameServices,
+        restore_loadout: bool,
+        landmark: Option<&Q2LandmarkCarry>,
+    ) {
+        if let Some(put_in_server) = game.players.overrides.put_in_server {
+            return put_in_server(actor, game, restore_loadout, landmark.cloned());
+        }
+        self.put_in_server(actor, game, restore_loadout, landmark)
+    }
+
+    /// Dispatched begin-intermission for internal call sites.
+    pub fn dispatched_begin_intermission(
+        &self,
+        game: &mut Q2GameServices,
+        map: String,
+        landmark: Option<Q2LandmarkCarry>,
+    ) {
+        if let Some(begin_intermission) = game.players.overrides.begin_intermission {
+            return begin_intermission(game, map, landmark);
+        }
+        self.begin_intermission(game, map, landmark)
+    }
+
+    /// Dispatched before-exit-level for internal call sites.
+    pub fn dispatched_before_exit_level(&self, game: &mut Q2GameServices, map: &str) {
+        if let Some(before_exit_level) = game.players.overrides.before_exit_level {
+            return before_exit_level(game, map.to_string());
+        }
+        self.before_exit_level(game, map)
+    }
+
+    /// Dispatched end-frame for internal call sites.
+    pub fn dispatched_end_frame(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(end_frame) = game.players.overrides.end_frame {
+            return end_frame(actor, game);
+        }
+        self.end_frame(actor, game)
+    }
+
+    /// Dispatched save-carry for internal call sites.
+    pub fn dispatched_save_carry(&self, actor: ActorId, game: &mut Q2GameServices) -> Q2PlayerCarry {
+        if let Some(save_carry) = game.players.overrides.save_carry {
+            return save_carry(actor, game);
+        }
+        self.save_carry(actor, game)
+    }
+
+    /// Dispatched respawn for internal call sites.
+    pub fn dispatched_respawn(&self, actor: ActorId, game: &mut Q2GameServices) {
+        if let Some(respawn) = game.players.overrides.respawn {
+            return respawn(actor, game);
+        }
+        self.respawn(actor, game)
+    }
 }
 
 impl Q2Players {
@@ -521,8 +741,7 @@ impl Q2Players {
     /// Connect a player.
     pub fn connect(&self, game: &mut Q2GameServices, userinfo: &str) -> Q2ConnectionResult {
         let spectator = game.options.mode == Q2Mode::Deathmatch
-            && userinfo_value(userinfo, "spectator")
-                .is_some_and(|value| !value.is_empty() && value != "0");
+            && userinfo_value(userinfo, "spectator").is_some_and(|value| !value.is_empty() && value != "0");
         let pass = if spectator {
             game.players.rules.spectator_password.clone()
         } else {
@@ -533,9 +752,7 @@ impl Q2Players {
             reason = "Banned.".to_string();
         } else if !pass.is_empty()
             && pass != "none"
-            && pass
-                != userinfo_value(userinfo, if spectator { "spectator" } else { "password" })
-                    .unwrap_or_default()
+            && pass != userinfo_value(userinfo, if spectator { "spectator" } else { "password" }).unwrap_or_default()
         {
             reason = if spectator {
                 "Spectator password required or incorrect.".to_string()
@@ -543,7 +760,12 @@ impl Q2Players {
                 "Password required or incorrect.".to_string()
             };
         } else if spectator
-            && game.players.states.values().filter(|state| state.connected && state.requested_spectator).count() as i32
+            && game
+                .players
+                .states
+                .values()
+                .filter(|state| state.connected && state.requested_spectator)
+                .count() as i32
                 >= game.players.rules.max_spectators
         {
             reason = "Server spectator limit is full.".to_string();
@@ -562,12 +784,7 @@ impl Q2Players {
         }
     }
     /// Attach a player.
-    pub fn attach(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        admission: Q2PlayerAdmission,
-    ) -> Q2PlayerState {
+    pub fn attach(&self, actor: ActorId, game: &mut Q2GameServices, admission: Q2PlayerAdmission) -> Q2PlayerState {
         let owned = game.owned_of(actor.clone());
         game.host.actors().assert_owned(&owned);
         if game.players.states.contains_key(&actor) {
@@ -586,7 +803,7 @@ impl Q2Players {
         game.players.states.insert(actor.clone(), state);
         // Release cleanup runs through `on_actor_released`, which drops the
         // player state alongside the arena record.
-        self.userinfo_changed(actor.clone(), game, &admission.userinfo.clone());
+        self.dispatched_userinfo_changed(actor.clone(), game, &admission.userinfo.clone());
         let owned = game.owned_of(actor.clone());
         if !game.host.inventory().has(&actor) {
             game.host.inventory().create(&owned, &[]);
@@ -598,11 +815,7 @@ impl Q2Players {
             player_items(game).configure_player(&owned, game, true);
         }
         if player_state(game, &actor).use_q2_weapons && !game.weapons.states.contains_key(&actor) {
-            bind_player_weapon(
-                game,
-                &owned,
-                Q2WeaponState::new(Some("blaster".to_string())),
-            );
+            bind_player_weapon(game, &owned, Q2WeaponState::new(Some("blaster".to_string())));
         }
         {
             let entity = game.require_entity_mut(&actor);
@@ -616,10 +829,10 @@ impl Q2Players {
             }
         }
         if let Some(carry) = admission.carry {
-            self.restore_carry(actor.clone(), game, carry);
+            self.dispatched_restore_carry(actor.clone(), game, carry);
         }
         let spawn_inventory = game.host.inventory().entries(&actor);
-        let coop_respawn = self.save_carry(actor.clone(), game);
+        let coop_respawn = self.dispatched_save_carry(actor.clone(), game);
         let entry = game
             .players
             .states
@@ -670,12 +883,9 @@ impl Q2Players {
             _ => Q2PlayerGender::Neutral,
         };
         let spectator = game.options.mode == Q2Mode::Deathmatch
-            && userinfo_value(&clipped, "spectator")
-                .is_some_and(|value| !value.is_empty() && value != "0");
+            && userinfo_value(&clipped, "spectator").is_some_and(|value| !value.is_empty() && value != "0");
         let fov_value = parse_command_int(userinfo_value(&clipped, "fov").as_deref());
-        let fov = if game.options.mode == Q2Mode::Deathmatch
-            && game.options.deathmatch_flags & 32768 != 0
-        {
+        let fov = if game.options.mode == Q2Mode::Deathmatch && game.options.deathmatch_flags & 32768 != 0 {
             90
         } else if fov_value < 1 {
             90
@@ -732,11 +942,7 @@ impl Q2Players {
             maximum_health: entity.max_health,
             armor: combat.armor.clone(),
             inventory: game.host.inventory().entries(&actor),
-            weapon: game
-                .weapons
-                .states
-                .get(&actor)
-                .and_then(|state| state.weapon.clone()),
+            weapon: game.weapons.states.get(&actor).and_then(|state| state.weapon.clone()),
             selected_item: player_state(game, &actor).selected_item.clone(),
             score: player_state(game, &actor).score,
             flags: entity.flags & (16 | 32 | 4096),
@@ -791,12 +997,7 @@ impl Q2Players {
     }
 
     /// Replace the inventory.
-    pub fn set_inventory(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        entries: Vec<InventoryEntry>,
-    ) {
+    pub fn set_inventory(&self, actor: ActorId, game: &mut Q2GameServices, entries: Vec<InventoryEntry>) {
         let owned = game.owned_of(actor.clone());
         for mut entry in game.host.inventory().entries(&actor) {
             entry.count = 0.0;
@@ -844,6 +1045,9 @@ fn bound_module(game: &Q2GameServices) -> Q2Players {
 
 /// Run death (shared by the die callback and direct kills).
 fn death(actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction, callback: bool) {
+    if let Some(death) = game.players.overrides.death {
+        return death(actor, game, reaction, callback);
+    }
     bound_module(game).death(actor, game, reaction, callback);
 }
 
@@ -872,13 +1076,7 @@ impl Q2Players {
         let spot = select_q2_spawn(game, &state, &spawn_point);
         let placement = match landmark {
             None => None,
-            Some(carry) => place_q2_landmark(
-                actor.clone(),
-                game,
-                carry,
-                spot.clone(),
-                movement.standing_bounds,
-            ),
+            Some(carry) => place_q2_landmark(actor.clone(), game, carry, spot.clone(), movement.standing_bounds),
         };
         match placement {
             None => {
@@ -905,12 +1103,8 @@ impl Q2Players {
     }
 
     /// Select a teleport spawn (`selectTeleportSpawn`).
-    pub fn select_teleport_spawn(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-    ) -> Q2SpawnSolution {
-        self.spawn_placement(actor, game, None)
+    pub fn select_teleport_spawn(&self, actor: ActorId, game: &mut Q2GameServices) -> Q2SpawnSolution {
+        self.dispatched_spawn_placement(actor, game, None)
     }
 
     /// Put a player in the server (`putInServer`).
@@ -922,29 +1116,20 @@ impl Q2Players {
         landmark: Option<&Q2LandmarkCarry>,
     ) {
         let old_movement = (player_hooks(game).movement)(actor.clone());
-        let placement = self.spawn_placement(actor.clone(), game, landmark);
+        let placement = self.dispatched_spawn_placement(actor.clone(), game, landmark);
         if restore_loadout {
             let state = player_state(game, &actor);
             let mut coop_restored = false;
             if game.options.mode == Q2Mode::Coop {
                 if let Some(respawn) = state.coop_respawn.clone() {
                     let score = state.score.max(respawn.score);
-                    self.restore_carry(
-                        actor.clone(),
-                        game,
-                        Q2PlayerCarry { score, ..respawn },
-                    );
+                    self.dispatched_restore_carry(actor.clone(), game, Q2PlayerCarry { score, ..respawn });
                     coop_restored = true;
                 }
             }
             if !coop_restored
                 && (game.options.mode == Q2Mode::Deathmatch
-                    || game
-                        .host
-                        .combat()
-                        .read(&actor)
-                        .map_or(0.0, |combat| combat.health)
-                        <= 0.0)
+                    || game.host.combat().read(&actor).map_or(0.0, |combat| combat.health) <= 0.0)
             {
                 if state.use_q2_inventory {
                     self.set_inventory(actor.clone(), game, Vec::new());
@@ -969,8 +1154,7 @@ impl Q2Players {
                     .expect("Q2 player has not been admitted")
                     .selected_item = Some("q2:weapon_blaster".to_string());
                 if player_state(game, &actor).use_q2_inventory {
-                    if let Some(initialized) = player_hooks(game).persistent_inventory_initialized
-                    {
+                    if let Some(initialized) = player_hooks(game).persistent_inventory_initialized {
                         initialized(actor.clone(), game);
                     }
                 }
@@ -1020,18 +1204,10 @@ impl Q2Players {
             entity.frame = 0;
             entity.old_frame = -1;
             entity.effects = 0;
-            entity.render_flags = if edition == Q2Edition::Rerelease {
-                32768
-            } else {
-                0
-            };
+            entity.render_flags = if edition == Q2Edition::Rerelease { 32768 } else { 0 };
             entity.visible = !spectator;
             if animate {
-                let model = skin
-                    .split('/')
-                    .next()
-                    .filter(|part| !part.is_empty())
-                    .unwrap_or("male");
+                let model = skin.split('/').next().filter(|part| !part.is_empty()).unwrap_or("male");
                 entity.model = format!("players/{model}/tris.md2");
             }
         }
@@ -1053,14 +1229,7 @@ impl Q2Players {
         moved.bounds = old_movement.standing_bounds;
         moved.ground = None;
         game.write_body(actor.clone(), &moved, false);
-        game.set_solid(
-            actor.clone(),
-            if spectator {
-                Q2Solid::None
-            } else {
-                Q2Solid::Box
-            },
-        );
+        game.set_solid(actor.clone(), if spectator { Q2Solid::None } else { Q2Solid::Box });
         game.set_motion_kind(actor.clone(), Q2MotionKind::Stationary);
         (player_hooks(game).set_movement)(
             actor.clone(),
@@ -1074,7 +1243,7 @@ impl Q2Players {
             }),
         );
         if !spectator {
-            self.kill_box(actor.clone(), game);
+            self.dispatched_kill_box(actor.clone(), game);
         }
         if player_state(game, &actor).use_q2_weapons && game.weapons.states.contains_key(&actor) {
             let state = player_state(game, &actor);
@@ -1085,12 +1254,7 @@ impl Q2Players {
                     .coop_respawn
                     .as_ref()
                     .and_then(|respawn| respawn.weapon.clone())
-                    .or_else(|| {
-                        game.weapons
-                            .states
-                            .get(&actor)
-                            .and_then(|weapon| weapon.weapon.clone())
-                    })
+                    .or_else(|| game.weapons.states.get(&actor).and_then(|weapon| weapon.weapon.clone()))
                     .unwrap_or_else(|| "blaster".to_string())
             };
             crate::q2::foundation::weapons::ballistics::reset_silencer(game, &actor);
@@ -1110,15 +1274,13 @@ impl Q2Players {
     /// Respawn a player (`respawn`).
     pub fn respawn(&self, actor: ActorId, game: &mut Q2GameServices) {
         if game.options.mode == Q2Mode::Singleplayer {
-            (player_hooks(game).emit)(Q2PlayerEvent::LoadMenu {
-                actor: actor.clone(),
-            });
+            (player_hooks(game).emit)(Q2PlayerEvent::LoadMenu { actor: actor.clone() });
             return;
         }
         if !player_state(game, &actor).noclip {
             self.copy_to_body_queue(actor.clone(), game);
         }
-        self.put_in_server(actor.clone(), game, true, None);
+        self.dispatched_put_in_server(actor.clone(), game, true, None);
         let body = game.body_of(actor.clone());
         let movement = (player_hooks(game).movement)(actor.clone());
         let spectator = player_state(game, &actor).spectator;
@@ -1231,17 +1393,11 @@ impl Q2Players {
     }
 
     /// Run death (`death`).
-    pub fn death(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        reaction: DeathReaction,
-        callback: bool,
-    ) {
+    pub fn death(&self, actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction, callback: bool) {
         let _ = callback;
         let movement = (player_hooks(game).movement)(actor.clone());
         if !movement.animate_q2 {
-            self.record_death(actor, game, reaction);
+            self.dispatched_record_death(actor, game, reaction);
             return;
         }
         {
@@ -1266,12 +1422,8 @@ impl Q2Players {
                 no_knockback: None,
             },
         );
-        let first = self.record_death(actor.clone(), game, reaction.clone());
-        let health = game
-            .host
-            .combat()
-            .read(&actor)
-            .map_or(0.0, |combat| combat.health);
+        let first = self.dispatched_record_death(actor.clone(), game, reaction.clone());
+        let health = game.host.combat().read(&actor).map_or(0.0, |combat| combat.health);
         if health < -40.0 && !player_state(game, &actor).gibbed {
             if game.require_entity(&actor).flags & 0x10000 == 0 {
                 game.sound(&actor, "misc/udeath.wav", 4, 1.0, 1.0);
@@ -1326,12 +1478,7 @@ impl Q2Players {
     }
 
     /// Format an obituary (`obituary`).
-    pub fn obituary(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        attacker: Option<ActorId>,
-    ) -> String {
+    pub fn obituary(&self, actor: ActorId, game: &mut Q2GameServices, attacker: Option<ActorId>) -> String {
         let victim = player_state(game, &actor);
         let attacker_state = attacker
             .as_ref()
@@ -1353,9 +1500,7 @@ impl Q2Players {
         let mut apply = |recipient: Q2ObituaryRecipient, change: i32| {
             let recipient = match recipient {
                 Q2ObituaryRecipient::Victim => victim_actor.clone(),
-                Q2ObituaryRecipient::Attacker => {
-                    attacker_actor.clone().unwrap_or(victim_actor.clone())
-                }
+                Q2ObituaryRecipient::Attacker => attacker_actor.clone().unwrap_or(victim_actor.clone()),
             };
             self.apply_score(
                 victim_actor.clone(),
@@ -1410,12 +1555,7 @@ impl Q2Players {
     }
 
     /// Record a death (`recordDeath`).
-    pub fn record_death(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        reaction: DeathReaction,
-    ) -> bool {
+    pub fn record_death(&self, actor: ActorId, game: &mut Q2GameServices, reaction: DeathReaction) -> bool {
         let first = !player_state(game, &actor).dead;
         if first {
             let now = game.host.now();
@@ -1426,23 +1566,17 @@ impl Q2Players {
                 .respawn_time = now + 1.0;
             let attacker = reaction.pain.attacker.clone();
             let killer = if attacker.as_ref().is_some_and(|attacker| *attacker != actor) {
-                attacker
-                    .as_ref()
-                    .and_then(|attacker| game.host.bodies().read(attacker))
+                attacker.as_ref().and_then(|attacker| game.host.bodies().read(attacker))
             } else {
                 match reaction.inflictor.clone() {
-                    Some(inflictor) if inflictor != actor => {
-                        game.host.bodies().read(&inflictor)
-                    }
+                    Some(inflictor) if inflictor != actor => game.host.bodies().read(&inflictor),
                     _ => None,
                 }
             };
             let origin = game.body_of(actor.clone()).origin;
             let yaw = match killer {
                 Some(killer) => {
-                    (f64::from(killer.origin.y - origin.y)
-                        .atan2(f64::from(killer.origin.x - origin.x))
-                        * 180.0
+                    (f64::from(killer.origin.y - origin.y).atan2(f64::from(killer.origin.x - origin.x)) * 180.0
                         / std::f64::consts::PI
                         + 360.0)
                         % 360.0
@@ -1454,12 +1588,13 @@ impl Q2Players {
                 .get_mut(&actor)
                 .expect("Q2 player has not been admitted")
                 .killer_yaw = yaw;
-            let message = self.obituary(actor.clone(), game, attacker);
-            (player_hooks(game).emit)(Q2PlayerEvent::Print {
-                target: None,
-                level: Q2PrintLevel::Medium,
-                text: message,
-            });
+            if let Some(message) = self.dispatched_obituary(actor.clone(), game, attacker) {
+                (player_hooks(game).emit)(Q2PlayerEvent::Print {
+                    target: None,
+                    level: Q2PrintLevel::Medium,
+                    text: message,
+                });
+            }
             self.toss_weapon(actor.clone(), game);
             let state = player_state(game, &actor);
             let last_attack = game.require_entity(&actor).last_attack.clone();
@@ -1471,9 +1606,7 @@ impl Q2Players {
             if let Some(before) = player_hooks(game).before_death_inventory {
                 before(actor.clone(), game, last_attack);
             }
-            if game.options.mode == Q2Mode::Coop
-                && player_state(game, &actor).coop_respawn.is_some()
-            {
+            if game.options.mode == Q2Mode::Coop && player_state(game, &actor).coop_respawn.is_some() {
                 let current = game.host.inventory().entries(&actor);
                 let entry = game
                     .players
@@ -1483,16 +1616,14 @@ impl Q2Players {
                 if let Some(respawn) = entry.coop_respawn.as_mut() {
                     for slot in respawn.inventory.iter_mut() {
                         if slot.item.starts_with("q2:key_") {
-                            if let Some(found) =
-                                current.iter().find(|item| item.item == slot.item)
-                            {
+                            if let Some(found) = current.iter().find(|item| item.item == slot.item) {
                                 *slot = found.clone();
                             }
                         }
                     }
                 }
             }
-            self.clear_death_inventory(actor.clone(), game);
+            self.dispatched_clear_death_inventory(actor.clone(), game);
             let deathmatch = game.options.mode == Q2Mode::Deathmatch;
             game.players
                 .states
@@ -1513,11 +1644,7 @@ impl Q2Players {
             }
         }
         if let Some(died) = player_hooks(game).death {
-            died(
-                actor.clone(),
-                game,
-                game.require_entity(&actor).last_attack.clone(),
-            );
+            died(actor.clone(), game, game.require_entity(&actor).last_attack.clone());
         }
         first
     }
@@ -1530,19 +1657,17 @@ impl Q2Players {
         if !player_state(game, &actor).use_q2_weapons {
             return;
         }
-        let weapon = game
-            .weapons
-            .states
-            .get(&actor)
-            .and_then(|state| state.weapon.clone());
+        let weapon = game.weapons.states.get(&actor).and_then(|state| state.weapon.clone());
         let item = match weapon {
             None => None,
             Some(name) => {
                 let definition = weapon_definition(game, &name);
                 if definition.name != "blaster"
-                    && definition.ammo.as_ref().is_none_or(|ammo| {
-                        game.host.inventory().count(&actor, ammo) != 0.0
-                    }) {
+                    && definition
+                        .ammo
+                        .as_ref()
+                        .is_none_or(|ammo| game.host.inventory().count(&actor, ammo) != 0.0)
+                {
                     Some(definition.item.clone())
                 } else {
                     None
@@ -1550,9 +1675,7 @@ impl Q2Players {
             }
         };
         let now = game.host.now();
-        let quad = player_items(game)
-            .player_powerups(game, &actor)
-            .quad_until;
+        let quad = player_items(game).player_powerups(game, &actor).quad_until;
         let quad_fire = player_hooks(game)
             .quad_fire_drop_until
             .map(|until| until(actor.clone()))
@@ -1637,8 +1760,7 @@ impl Q2Players {
         self.latch_buttons(actor.clone(), game, movement.buttons);
         if let Q2Intermission::Intermission { started, .. } = game.players.intermission.clone() {
             if game.host.now() > started + 5.0 && player_state(game, &actor).buttons != 0 {
-                if let Q2Intermission::Intermission { ref mut exit, .. } = game.players.intermission
-                {
+                if let Q2Intermission::Intermission { ref mut exit, .. } = game.players.intermission {
                     *exit = true;
                 }
             }
@@ -1763,7 +1885,7 @@ impl Q2Players {
             entry.weapon_thunk = turn.weapon_thunk;
         }
         if player_state(game, &actor).dead {
-            self.dead_frame(actor, game);
+            self.dispatched_dead_frame(actor, game);
             return;
         }
         if game.options.mode != Q2Mode::Deathmatch {
@@ -1787,10 +1909,9 @@ impl Q2Players {
         let deathmatch = game.options.mode == Q2Mode::Deathmatch;
         let mask = if deathmatch { 1 } else { -1 };
         if game.host.now() > state.respawn_time
-            && (state.latched_buttons & mask != 0
-                || deathmatch && game.options.deathmatch_flags & 1024 != 0)
+            && (state.latched_buttons & mask != 0 || deathmatch && game.options.deathmatch_flags & 1024 != 0)
         {
-            self.respawn(actor.clone(), game);
+            self.dispatched_respawn(actor.clone(), game);
             game.players
                 .states
                 .get_mut(&actor)
@@ -1821,12 +1942,7 @@ impl Q2Players {
     }
 
     /// Run damage feedback (`damageFeedback`).
-    pub fn damage_feedback(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        pain_index: i32,
-    ) -> (i32, i32) {
+    pub fn damage_feedback(&self, actor: ActorId, game: &mut Q2GameServices, pain_index: i32) -> (i32, i32) {
         q2_damage_feedback(&mut self.context(actor, game), pain_index)
     }
 
@@ -1864,7 +1980,7 @@ impl Q2Players {
     pub fn end_frame(&self, actor: ActorId, game: &mut Q2GameServices) {
         let now = game.host.now();
         if !matches!(game.players.intermission, Q2Intermission::Playing) {
-            let view = self.build_view(actor.clone(), game, 0, true);
+            let view = self.dispatched_build_view(actor.clone(), game, 0, true);
             (player_hooks(game).emit)(Q2PlayerEvent::View { actor, view });
             return;
         }
@@ -1881,7 +1997,7 @@ impl Q2Players {
                 no_knockback: None,
             },
         );
-        self.world_effects(actor.clone(), game);
+        self.dispatched_world_effects(actor.clone(), game);
         let movement = (player_hooks(game).movement)(actor.clone());
         let body = game.body_of(actor.clone());
         let vectors = angle_vectors(movement.view_angles);
@@ -1900,12 +2016,12 @@ impl Q2Players {
             game.write_body(actor.clone(), &moved, false);
         }
         let speed = f64::from(body.velocity.x).hypot(f64::from(body.velocity.y));
-        self.update_bob(actor.clone(), game);
-        self.falling_damage(actor.clone(), game);
+        self.dispatched_update_bob(actor.clone(), game);
+        self.dispatched_falling_damage(actor.clone(), game);
         let pain_index = game.players.pain_animation;
-        let feedback = self.damage_feedback(actor.clone(), game, pain_index);
+        let feedback = self.dispatched_damage_feedback(actor.clone(), game, pain_index);
         game.players.pain_animation = feedback.1;
-        let view = self.build_view(actor.clone(), game, feedback.0, false);
+        let view = self.dispatched_build_view(actor.clone(), game, feedback.0, false);
         let view_angles = view.angles;
         (player_hooks(game).emit)(Q2PlayerEvent::View {
             actor: actor.clone(),
@@ -1959,7 +2075,7 @@ impl Q2Players {
                 .event = String::new();
         }
         q2_client_effects(&mut self.context(actor.clone(), game));
-        self.client_animation(actor.clone(), game);
+        self.dispatched_client_animation(actor.clone(), game);
         if movement.animate_q2 {
             game.show(actor.clone());
         }
@@ -1978,12 +2094,7 @@ impl Q2Players {
     }
 
     /// Record damage (`recordDamage`).
-    pub fn record_damage(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        decision: &DamageDecision,
-    ) {
+    pub fn record_damage(&self, actor: ActorId, game: &mut Q2GameServices, decision: &DamageDecision) {
         if !game.players.states.contains_key(&actor) {
             return;
         }
@@ -1998,12 +2109,7 @@ impl Q2Players {
                 power_armor,
                 knockback,
             }) => (blood, armor, power_armor, knockback),
-            _ => (
-                decision.applied_damage,
-                0.0,
-                0.0,
-                decision.request.knockback,
-            ),
+            _ => (decision.applied_damage, 0.0, 0.0, decision.request.knockback),
         };
         let now = game.host.now();
         let entry = game
@@ -2054,13 +2160,7 @@ impl Q2Players {
     }
 
     /// Teleport a player (`teleportPlayer`).
-    pub fn teleport_player(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        origin: Vec3,
-        angles: Vec3,
-    ) {
+    pub fn teleport_player(&self, actor: ActorId, game: &mut Q2GameServices, origin: Vec3, angles: Vec3) {
         let movement = (player_hooks(game).movement)(actor.clone());
         let spectator = player_state(game, &actor).spectator;
         game.players
@@ -2084,7 +2184,7 @@ impl Q2Players {
     /// Respawn a spectator (`spectatorRespawn`).
     fn spectator_respawn(&self, actor: ActorId, game: &mut Q2GameServices) {
         let userinfo = player_state(game, &actor).userinfo.clone();
-        let result = self.connect(game, &userinfo);
+        let result = self.dispatched_connect(game, &userinfo);
         if !result.allowed {
             let spectator = player_state(game, &actor).spectator;
             game.players
@@ -2109,7 +2209,7 @@ impl Q2Players {
             .get_mut(&actor)
             .expect("Q2 player has not been admitted")
             .score = 0;
-        self.put_in_server(actor.clone(), game, true, None);
+        self.dispatched_put_in_server(actor.clone(), game, true, None);
         let now = game.host.now();
         game.players
             .states
@@ -2236,10 +2336,7 @@ impl Q2Players {
         if target.is_some() {
             self.update_chase(actor, game);
         } else {
-            (player_hooks(game).set_movement)(
-                actor,
-                Q2PlayerMovementChange::Noclip { enabled: true },
-            );
+            (player_hooks(game).set_movement)(actor, Q2PlayerMovementChange::Noclip { enabled: true });
         }
     }
 
@@ -2280,8 +2377,7 @@ impl Q2Players {
         let forward = angle_vectors(pitched).forward;
         let behind = add3(eye, scale3(forward, -30.0));
         let mut desired = behind;
-        desired.z =
-            behind.z.max(target_body.origin.z + 20.0) + if movement.grounded { 0.0 } else { 16.0 };
+        desired.z = behind.z.max(target_body.origin.z + 20.0) + if movement.grounded { 0.0 } else { 16.0 };
         let trace = |game: &mut Q2GameServices, start: Vec3, end: Vec3| {
             game.host.trace(&Q2TraceRequest {
                 start,
@@ -2312,36 +2408,19 @@ impl Q2Players {
         moved.origin = goal;
         moved.velocity = Vec3::default();
         game.write_body(actor.clone(), &moved, true);
-        (player_hooks(game).set_movement)(
-            actor,
-            Q2PlayerMovementChange::Freeze {
-                origin: goal,
-                angles,
-            },
-        );
+        (player_hooks(game).set_movement)(actor, Q2PlayerMovementChange::Freeze { origin: goal, angles });
     }
 
     /// Begin intermission (`beginIntermission`).
-    pub fn begin_intermission(
-        &self,
-        game: &mut Q2GameServices,
-        map: String,
-        landmark: Option<Q2LandmarkCarry>,
-    ) {
+    pub fn begin_intermission(&self, game: &mut Q2GameServices, map: String, landmark: Option<Q2LandmarkCarry>) {
         if !matches!(game.players.intermission, Q2Intermission::Playing) {
             return;
         }
         let actors: Vec<ActorId> = game.players.states.keys().cloned().collect();
         for actor in &actors {
-            if game.entity(actor).is_some()
-                && game
-                    .host
-                    .combat()
-                    .read(actor)
-                    .map_or(0.0, |combat| combat.health)
-                    <= 0.0
+            if game.entity(actor).is_some() && game.host.combat().read(actor).map_or(0.0, |combat| combat.health) <= 0.0
             {
-                self.put_in_server(actor.clone(), game, true, None);
+                self.dispatched_put_in_server(actor.clone(), game, true, None);
             }
         }
         let end_unit = map.contains('*');
@@ -2427,10 +2506,7 @@ impl Q2Players {
     /// Check rules (`checkRules`).
     pub fn check_rules(&self, game: &mut Q2GameServices) {
         if let Q2Intermission::Intermission {
-            map,
-            landmark,
-            exit,
-            ..
+            map, landmark, exit, ..
         } = game.players.intermission.clone()
         {
             if !exit {
@@ -2440,7 +2516,7 @@ impl Q2Players {
                 let actors: Vec<ActorId> = game.players.states.keys().cloned().collect();
                 for actor in actors {
                     if game.entity(&actor).is_some() {
-                        self.end_frame(actor, game);
+                        self.dispatched_end_frame(actor, game);
                     }
                 }
             }
@@ -2449,21 +2525,17 @@ impl Q2Players {
                 let actors: Vec<ActorId> = game.players.states.keys().cloned().collect();
                 for actor in actors {
                     if game.entity(&actor).is_some() {
-                        self.end_frame(actor, game);
+                        self.dispatched_end_frame(actor, game);
                     }
                 }
             }
-            self.before_exit_level(game, &map);
+            self.dispatched_before_exit_level(game, &map);
             let actors: Vec<ActorId> = game.players.states.keys().cloned().collect();
             for actor in &actors {
                 if game.entity(actor).is_none() {
                     continue;
                 }
-                let health = game
-                    .host
-                    .combat()
-                    .read(actor)
-                    .map_or(0.0, |combat| combat.health);
+                let health = game.host.combat().read(actor).map_or(0.0, |combat| combat.health);
                 let max_health = game.require_entity(actor).max_health;
                 if health > max_health {
                     let owned = game.owned_of(actor.clone());
@@ -2471,8 +2543,7 @@ impl Q2Players {
                 }
             }
             let server_flags = game.counters.server_flags;
-            game.host
-                .prepare_level_change(&map, landmark.as_ref(), server_flags);
+            game.host.prepare_level_change(&map, landmark.as_ref(), server_flags);
             let unit_map = map.strip_prefix('*').unwrap_or(&map);
             let parts: Vec<&str> = unit_map.split('$').collect();
             let destination = parts.first().copied().unwrap_or("");
@@ -2545,10 +2616,7 @@ impl Q2Players {
                             }
                             shuffled.swap(i, j as usize);
                         }
-                        if shuffled
-                            .first()
-                            .is_some_and(|first| *first == game.options.map_name)
-                        {
+                        if shuffled.first().is_some_and(|first| *first == game.options.map_name) {
                             let last = shuffled.len() - 1;
                             shuffled.swap(0, last);
                         }
@@ -2561,12 +2629,8 @@ impl Q2Players {
                 None => {
                     if !game.players.rules.next_map.is_empty() {
                         next = game.players.rules.next_map.clone();
-                    } else if let Some(change) =
-                        q2_entities_named(game, "target_changelevel").first().cloned()
-                    {
-                        if let Some(map) =
-                            game.require_entity(&change).spawn.values.get("map").cloned()
-                        {
+                    } else if let Some(change) = q2_entities_named(game, "target_changelevel").first().cloned() {
+                        if let Some(map) = game.require_entity(&change).spawn.values.get("map").cloned() {
                             if !map.is_empty() {
                                 next = map;
                             }
@@ -2575,17 +2639,15 @@ impl Q2Players {
                 }
             }
         }
-        self.begin_intermission(game, next, None);
+        self.dispatched_begin_intermission(game, next, None);
     }
 
     /// Whether a password is needed (`needPassword`).
     pub fn need_password(&self, game: &Q2GameServices) -> i32 {
         let rules = &game.players.rules;
         let password = i32::from(!rules.password.is_empty() && rules.password.to_lowercase() != "none");
-        let spectator = i32::from(
-            !rules.spectator_password.is_empty()
-                && rules.spectator_password.to_lowercase() != "none",
-        );
+        let spectator =
+            i32::from(!rules.spectator_password.is_empty() && rules.spectator_password.to_lowercase() != "none");
         password | spectator << 1
     }
 
@@ -2597,13 +2659,7 @@ impl Q2Players {
     }
 
     /// Run a client command (`clientCommand`).
-    pub fn client_command(
-        &self,
-        actor: ActorId,
-        game: &mut Q2GameServices,
-        command: &str,
-        args: &[String],
-    ) -> bool {
+    pub fn client_command(&self, actor: ActorId, game: &mut Q2GameServices, command: &str, args: &[String]) -> bool {
         run_q2_client_command(&mut self.context(actor, game), command, args)
     }
 }

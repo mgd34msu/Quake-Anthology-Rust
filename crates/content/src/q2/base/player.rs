@@ -22,13 +22,13 @@ use qa_core::identity::ActorId;
 use crate::q2::foundation::items::Q2ItemModule;
 
 pub use index::{
-    Q2ConnectionResult, Q2Intermission, Q2PlayerAdmission, Q2Players, create_q2_players,
-    player_callbacks, player_hooks, player_items, spawn_player,
+    create_q2_players, player_callbacks, player_hooks, player_items, spawn_player, Q2ConnectionResult, Q2Intermission,
+    Q2PlayerAdmission, Q2PlayerOverrides, Q2Players,
 };
 pub use types::{
-    Q2BodyChanges, Q2CharacterContext, Q2CharacterWeapon, Q2PlayerCarry, Q2PlayerContext,
-    Q2PlayerEvent, Q2PlayerHooks, Q2PlayerMovement, Q2PlayerMovementChange, Q2PlayerRules,
-    Q2PlayerSpawnChange, Q2PlayerState, Q2PlayerView, Q2ScoreRow, create_q2_player_rules,
+    create_q2_player_rules, Q2BodyChanges, Q2CharacterContext, Q2CharacterWeapon, Q2PlayerCarry, Q2PlayerContext,
+    Q2PlayerEvent, Q2PlayerHooks, Q2PlayerMovement, Q2PlayerMovementChange, Q2PlayerRules, Q2PlayerSpawnChange,
+    Q2PlayerState, Q2PlayerView, Q2ScoreRow,
 };
 
 /// Arena runtime state for this module.
@@ -50,4 +50,6 @@ pub struct PlayerRuntime {
     pub death_animation: i32,
     /// Pain animation cycle.
     pub pain_animation: i32,
+    /// Edition behavior overrides.
+    pub overrides: index::Q2PlayerOverrides,
 }

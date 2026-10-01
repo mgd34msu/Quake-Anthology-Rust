@@ -10,13 +10,13 @@ use qa_core::math::{add3, scale3, sub3, Vec3};
 use qa_core::time::SourceTime;
 
 use super::checkpoint::{
-    restore_q2_actor, restore_q2_attack, save_q2_attack, Q2EntityCallbackNames, Q2EntityCheckpoint,
-    Q2EntityLinks, Q2EntityValues, Q2FoundationCheckpoint,
+    restore_q2_actor, restore_q2_attack, save_q2_attack, Q2EntityCallbackNames, Q2EntityCheckpoint, Q2EntityLinks,
+    Q2EntityValues, Q2FoundationCheckpoint,
 };
 use super::fields::{integer_field, number_field, vector_field, ZERO};
 use super::host::{
-    Q2Edition, Q2Entity, Q2GameServices, Q2Motion, Q2MotionKind, Q2PresentationEvent, Q2Solid,
-    Q2SpawnFields, Q2Think, Q2WeaponTarget,
+    Q2Edition, Q2Entity, Q2GameServices, Q2Motion, Q2MotionKind, Q2PresentationEvent, Q2Solid, Q2SpawnFields, Q2Think,
+    Q2WeaponTarget,
 };
 use crate::contract::{ArmorState, ItemId, PoweredProtectionState, RegularArmorState};
 use crate::monsters::{AuthoredTarget, MonsterTargetObservation};
@@ -101,8 +101,7 @@ impl Q2GameServices {
                 },
             });
         }
-        let mut freed_slots: Vec<(u32, f64)> =
-            self.freed_slots.iter().map(|(slot, time)| (*slot, *time)).collect();
+        let mut freed_slots: Vec<(u32, f64)> = self.freed_slots.iter().map(|(slot, time)| (*slot, *time)).collect();
         freed_slots.sort_by_key(|(slot, _)| *slot);
         Q2FoundationCheckpoint {
             version: 1,
@@ -136,9 +135,9 @@ impl Q2GameServices {
             let actor = restore_q2_actor(self, saved.actor);
             if let Some(source_slot) = saved.source_slot {
                 let source = self.host.actors().source_of(actor.id());
-                let matches = source.as_ref().is_some_and(|(provider, slot)| {
-                    provider == &self.options.provider && *slot == source_slot
-                });
+                let matches = source
+                    .as_ref()
+                    .is_some_and(|(provider, slot)| provider == &self.options.provider && *slot == source_slot);
                 if !matches {
                     panic!("Q2 checkpoint source slot disagrees with the shared registry");
                 }
@@ -178,9 +177,10 @@ impl Q2GameServices {
             entity.beam = beam;
             entity.beam2 = beam2;
             entity.proboscus = proboscus;
-            entity.last_attack = saved.last_attack.as_ref().map(|saved| {
-                restore_q2_attack(saved, &mut |saved| self.host.actors().reference_saved(saved))
-            });
+            entity.last_attack = saved
+                .last_attack
+                .as_ref()
+                .map(|saved| restore_q2_attack(saved, &mut |saved| self.host.actors().reference_saved(saved)));
             let callbacks = &saved.callbacks;
             entity.think = self.source_callbacks.resolve_think(callbacks.think.as_deref());
             entity.prethink = self.source_callbacks.resolve_think(callbacks.prethink.as_deref());
@@ -219,8 +219,9 @@ impl Q2GameServices {
         let ordinal = self.require_entity(&actor).spawn.ordinal;
         let classname = self.require_entity(&actor).classname.clone();
         self.unsupported.insert(actor);
-        self.host
-            .diagnostic(&format!("Q2 spawn handler not yet imported: {classname} at authored entity {ordinal}"));
+        self.host.diagnostic(&format!(
+            "Q2 spawn handler not yet imported: {classname} at authored entity {ordinal}"
+        ));
     }
 
     /// Allocate an entity continuation without spawning (`create`).
@@ -292,7 +293,10 @@ impl Q2GameServices {
         };
         self.freed_slots.remove(&slot);
         let definition = definition.map_or_else(|| format!("q2:{}", fields.classname), str::to_string);
-        let actor = self.host.actors().allocate_at_source(&self.options.provider, slot, &definition);
+        let actor = self
+            .host
+            .actors()
+            .allocate_at_source(&self.options.provider, slot, &definition);
         self.source_slots.insert(actor.id().clone(), slot);
         let angles = if fields.values.contains_key("angles") {
             vector_field(fields, "angles")
@@ -433,7 +437,11 @@ impl Q2GameServices {
         }
         let owned = self.owned_of(actor.clone());
         let body = self.body_of(actor.clone());
-        let update = self.host.weapon_behavior().as_mut().and_then(|port| port.step(&owned, &body, seconds));
+        let update = self
+            .host
+            .weapon_behavior()
+            .as_mut()
+            .and_then(|port| port.step(&owned, &body, seconds));
         if let Some(update) = update {
             self.project_trajectory(actor, &update);
         }
@@ -442,7 +450,9 @@ impl Q2GameServices {
     /// Project a trajectory (`projectTrajectory`).
     pub fn project_trajectory(&mut self, actor: ActorId, update: &WeaponTrajectoryUpdate) {
         let motion = self.require_entity(&actor).motion;
-        self.source_callbacks.clone().project_trajectory(actor.clone(), self, update);
+        self.source_callbacks
+            .clone()
+            .project_trajectory(actor.clone(), self, update);
         let mut body = self.body_of(actor.clone());
         body.origin = update.origin;
         body.velocity = update.velocity;
@@ -528,6 +538,7 @@ impl Q2GameServices {
         self.movers.on_actor_released(id);
         self.items.on_actor_released(id);
         self.base_entities.on_actor_released(id);
+        crate::q2::rerelease::rerelease_actor_released(self, id);
     }
 
     /// Resolve a weapon target (`weaponTarget`).
@@ -553,7 +564,11 @@ impl Q2GameServices {
             return overridden;
         }
         self.entity(actor).map(|entity| {
-            let extra = if self.options.edition == Q2Edition::Rerelease { 0x1008000 } else { 0 };
+            let extra = if self.options.edition == Q2Edition::Rerelease {
+                0x1008000
+            } else {
+                0
+            };
             MonsterTargetObservation {
                 view_height: f64::from(entity.view_height),
                 notarget: entity.flags & (32 | extra) != 0,
@@ -715,17 +730,18 @@ impl Q2GameServices {
                         duration_seconds: None,
                     });
                     if let Some(body) = self.host.bodies().read(activator) {
-                        self.host.emit(Q2PresentationEvent::Sound(crate::q2::foundation::host::Q2SoundEvent {
-                            actor: Some(activator.clone()),
-                            origin: body.origin,
-                            path: "misc/talk1.wav".to_string(),
-                            channel: 0,
-                            volume: 1.0,
-                            attenuation: 1.0,
-                            reliable: false,
-                            loop_: crate::q2::foundation::host::Q2SoundLoop::Once,
-                            loop_owner: None,
-                        }));
+                        self.host
+                            .emit(Q2PresentationEvent::Sound(crate::q2::foundation::host::Q2SoundEvent {
+                                actor: Some(activator.clone()),
+                                origin: body.origin,
+                                path: "misc/talk1.wav".to_string(),
+                                channel: 0,
+                                volume: 1.0,
+                                attenuation: 1.0,
+                                reliable: false,
+                                loop_: crate::q2::foundation::host::Q2SoundLoop::Once,
+                                loop_owner: None,
+                            }));
                     }
                 }
             }
@@ -786,7 +802,9 @@ impl Q2GameServices {
                 if self.entities.contains_key(&id) {
                     self.dispatch_use(id, Some(entity.actor.id().clone()), activator.cloned());
                 } else if let Some(owned) = self.host.actors().resolve_owned(&id) {
-                    self.host.callbacks().forward_use(&owned, Some(entity.actor.id()), activator);
+                    self.host
+                        .callbacks()
+                        .forward_use(&owned, Some(entity.actor.id()), activator);
                 }
             }
             if !self.host.actors().is_live(entity.actor.id()) {
@@ -798,18 +816,19 @@ impl Q2GameServices {
     /// Present an entity (`show`).
     pub fn show(&mut self, actor: ActorId) {
         let entity = self.require_entity(&actor).clone();
-        self.host.emit(Q2PresentationEvent::Model(crate::q2::foundation::host::Q2ModelEvent {
-            actor: actor.clone(),
-            path: entity.model.clone(),
-            attached_models: vec![entity.model2.clone(), entity.model3.clone(), entity.model4.clone()],
-            frame: entity.frame,
-            old_frame: entity.old_frame,
-            scale: entity.scale,
-            alpha: entity.alpha,
-            skin: entity.skin,
-            effects: entity.effects,
-            render_flags: entity.render_flags,
-        }));
+        self.host
+            .emit(Q2PresentationEvent::Model(crate::q2::foundation::host::Q2ModelEvent {
+                actor: actor.clone(),
+                path: entity.model.clone(),
+                attached_models: vec![entity.model2.clone(), entity.model3.clone(), entity.model4.clone()],
+                frame: entity.frame,
+                old_frame: entity.old_frame,
+                scale: entity.scale,
+                alpha: entity.alpha,
+                skin: entity.skin,
+                effects: entity.effects,
+                render_flags: entity.render_flags,
+            }));
         self.host.emit(Q2PresentationEvent::Visibility {
             actor,
             visible: entity.visible,
@@ -819,17 +838,18 @@ impl Q2GameServices {
     /// Emit a sound from an entity (`sound`).
     pub fn sound(&mut self, actor: &ActorId, path: &str, channel: i32, volume: f64, attenuation: f64) {
         let origin = self.body_of(actor.clone()).origin;
-        self.host.emit(Q2PresentationEvent::Sound(crate::q2::foundation::host::Q2SoundEvent {
-            actor: Some(actor.clone()),
-            origin,
-            path: path.to_string(),
-            channel,
-            volume,
-            attenuation,
-            reliable: false,
-            loop_: crate::q2::foundation::host::Q2SoundLoop::Once,
-            loop_owner: None,
-        }));
+        self.host
+            .emit(Q2PresentationEvent::Sound(crate::q2::foundation::host::Q2SoundEvent {
+                actor: Some(actor.clone()),
+                origin,
+                path: path.to_string(),
+                channel,
+                volume,
+                attenuation,
+                reliable: false,
+                loop_: crate::q2::foundation::host::Q2SoundLoop::Once,
+                loop_owner: None,
+            }));
     }
 
     /// Build attack provenance (`attack`).
@@ -906,7 +926,10 @@ impl Q2GameServices {
         };
         let source = self.body_of(inflictor.clone()).origin;
         let entity = self.entity(target).cloned();
-        let destination = if entity.as_ref().is_some_and(|entity| entity.motion == Q2MotionKind::Push) {
+        let destination = if entity
+            .as_ref()
+            .is_some_and(|entity| entity.motion == Q2MotionKind::Push)
+        {
             add3(body.origin, scale3(add3(body.bounds.min, body.bounds.max), 0.5))
         } else {
             body.origin
@@ -922,14 +945,33 @@ impl Q2GameServices {
         if trace.fraction == 1.0 || matches!(&trace.hit, TraceHit::Actor { actor } if actor == target) {
             return true;
         }
-        if entity.as_ref().is_some_and(|entity| entity.motion == Q2MotionKind::Push) {
+        if entity
+            .as_ref()
+            .is_some_and(|entity| entity.motion == Q2MotionKind::Push)
+        {
             return false;
         }
         for offset in [
-            Vec3 { x: 15.0, y: 15.0, z: 0.0 },
-            Vec3 { x: 15.0, y: -15.0, z: 0.0 },
-            Vec3 { x: -15.0, y: 15.0, z: 0.0 },
-            Vec3 { x: -15.0, y: -15.0, z: 0.0 },
+            Vec3 {
+                x: 15.0,
+                y: 15.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 15.0,
+                y: -15.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: -15.0,
+                y: 15.0,
+                z: 0.0,
+            },
+            Vec3 {
+                x: -15.0,
+                y: -15.0,
+                z: 0.0,
+            },
         ] {
             let probe = self.host.trace(&crate::q2::foundation::host::Q2TraceRequest {
                 start: source,
@@ -981,7 +1023,13 @@ impl Q2GameServices {
             if points <= 0.0 || !self.can_damage(&target, &inflictor) {
                 continue;
             }
-            let attack = self.attack(inflictor.clone(), attacker.clone(), means_of_death, damage_flags | 1, weapon.clone());
+            let attack = self.attack(
+                inflictor.clone(),
+                attacker.clone(),
+                means_of_death,
+                damage_flags | 1,
+                weapon.clone(),
+            );
             let modifier = self.options.source_damage_modifier.clone();
             let request = DamageRequest {
                 attack,
