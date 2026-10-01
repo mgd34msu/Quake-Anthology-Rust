@@ -45,6 +45,7 @@ pub mod q2_match_ui;
 pub mod q2_native_hud;
 pub mod q2_travel;
 pub mod q3_client;
+pub mod q3_client_app;
 pub mod q3_common_cvars;
 pub mod q3_map_command;
 pub mod q3_product;
