@@ -124,6 +124,15 @@ impl QwPlayerSkins {
         self.cache.clear();
     }
 
+    /// Read the skin policy cvars (`noskins`, `baseskin`, `allskins`).
+    pub fn policy(&self) -> (i32, String, String) {
+        (
+            (self.options.noskins)(),
+            (self.options.baseskin)(),
+            (self.options.allskins)(),
+        )
+    }
+
     /// Load, pad, and crop a skin (donor `load`).
     fn load(&mut self, selected: &str, base: &str) -> Option<IndexedModelSkin> {
         let mut path = format!("skins/{selected}.pcx");

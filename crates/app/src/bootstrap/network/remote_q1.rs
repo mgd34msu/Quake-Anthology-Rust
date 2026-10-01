@@ -469,6 +469,17 @@ impl<H: Q1RemoteHost + 'static> Q1RemotePresentation<H> {
         self.world.scene()
     }
 
+    /// Mutably borrow the scene queries (QuakeWorld brush linking).
+    pub fn scene_mut(&mut self) -> Result<&mut H::Scene, RemoteWorldError> {
+        self.world.scene_mut()
+    }
+
+    /// Borrow the identity authority.
+    #[must_use]
+    pub fn identity(&self) -> &IdentityOwner {
+        &self.options.identity
+    }
+
     /// Borrow the published output, if any.
     #[must_use]
     pub fn output(&self) -> Option<&SimulationOutput> {
@@ -506,7 +517,8 @@ impl<H: Q1RemoteHost + 'static> Q1RemotePresentation<H> {
         })
     }
 
-    fn content(&self) -> &H::Content {
+    /// Borrow the loaded content.
+    pub fn content(&self) -> &H::Content {
         self.world.content().expect("remote content is loaded")
     }
 
@@ -524,9 +536,15 @@ impl<H: Q1RemoteHost + 'static> Q1RemotePresentation<H> {
         ContentId(quakec.unwrap_or_else(|| recipe.map.entities.content.clone()))
     }
 
+    /// Borrow a registered actor without creating it.
+    #[must_use]
+    pub fn actor_at(&self, number: u32) -> Option<ActorId> {
+        self.actors.borrow().get(&number).cloned()
+    }
+
     fn actor(&self, number: u32) -> ActorId {
-        if let Some(found) = self.actors.borrow().get(&number) {
-            return found.clone();
+        if let Some(found) = self.actor_at(number) {
+            return found;
         }
         if self.ordinal.get() >= 65536 {
             panic!("Remote actor registry is full");
