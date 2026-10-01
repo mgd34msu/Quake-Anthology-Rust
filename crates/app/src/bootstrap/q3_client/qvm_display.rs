@@ -1,6 +1,6 @@
 //! Shared QVM display traps for primary and component clients.
 //!
-//! Port of `src/app/bootstrap/q3-client/qvm-display.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/qvm-display.ts`
 //! (`qvmDisplaySyscall`). The actual renderer record and source font
 //! registry answer `GETGLCONFIG` and `R_REGISTERFONT` for both ui and
 //! cgame roles. Font registration is synchronous here; the seam fills

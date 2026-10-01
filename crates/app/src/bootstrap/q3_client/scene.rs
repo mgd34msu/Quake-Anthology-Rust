@@ -1,6 +1,6 @@
 //! Quake III captured-source scene rendering inside the admitted view.
 //!
-//! Port of `src/app/bootstrap/q3-client/scene.ts` (`ApplicationQ3SceneRenderer`). The port owns
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/scene.ts` (`ApplicationQ3SceneRenderer`). The port owns
 //! admission iteration, render-flag filtering, weapon offsets, draw-sort orders, remap selection,
 //! and generated-primitive geometry; provider model preparation and brush-model surfaces dispatch
 //! through [`Q3SceneModelPreparation`] and [`Q3SceneWorld`] because the renderer port cannot emit

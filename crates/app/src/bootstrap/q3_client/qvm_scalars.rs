@@ -1,6 +1,6 @@
 //! Shared QVM scalar traps: input, time, memory, and lighting.
 //!
-//! Port of `src/app/bootstrap/q3-client/qvm-scalars.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/qvm-scalars.ts`
 //! (`QvmApplicationScalars`, `qvmClientInputSyscall`). Display traps
 //! dispatch first through [`qvm_display_syscall`](super::qvm_display);
 //! the remaining ui/cgame scalar traps read through injected input,

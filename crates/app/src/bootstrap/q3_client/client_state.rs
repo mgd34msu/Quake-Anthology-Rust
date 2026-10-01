@@ -1,6 +1,6 @@
 //! Local Quake III client state for a seat without a network channel.
 //!
-//! Port of `src/app/bootstrap/q3-client/client-state.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/client-state.ts`
 //! (`LocalQ3ClientState`). A local seat receives authoritative server
 //! records directly: reliable commands advance without gaps, snapshots
 //! advance message numbers, and server commands execute through

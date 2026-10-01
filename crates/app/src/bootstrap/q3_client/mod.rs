@@ -1,4 +1,4 @@
-//! Bootstrap Quake III client helpers (donor `src/app/bootstrap/q3-client/*`).
+//! Bootstrap Quake III client helpers (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/*`).
 
 pub mod assets;
 pub mod cinematics;

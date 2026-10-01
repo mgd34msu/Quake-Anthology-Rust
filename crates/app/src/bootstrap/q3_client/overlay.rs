@@ -1,6 +1,6 @@
 //! Quake III HUD overlay submission order.
 //!
-//! Port of `src/app/bootstrap/q3-client/overlay.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/overlay.ts`
 //! (`drawQ3Overlay`, `clippedCamera`). Original pictures, glyphs, and
 //! model icons retain their interleaved source order between white
 //! set-color brackets. The port owns submission order, stretch-pic

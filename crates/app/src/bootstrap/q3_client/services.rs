@@ -1,6 +1,6 @@
 //! Quake III application services: scene, resources, sound, draw, collision, cinematics.
 //!
-//! Port of `src/app/bootstrap/q3-client/services.ts` (`createApplicationQ3Services`). The donor is
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/services.ts` (`createApplicationQ3Services`). The donor is
 //! async over the asset owner; here the media owner moves into the services value and every
 //! engine callback arrives through injected sync seams. Callbacks shared by the scene, audio, and
 //! draw targets live behind `Rc<RefCell<..>>` because the donor's closures borrow the service

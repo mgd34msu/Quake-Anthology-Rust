@@ -1,6 +1,6 @@
 //! Cgame status visibility masking for `cg_drawstatus`.
 //!
-//! Port of `src/app/bootstrap/q3-client/status.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/status.ts`
 //! (`effectiveStatusCvar`, `cgameStatusCvars`, `CgameStatusView`).
 //! The Rust [`CvarHost`] surface carries no cvar names on reads, so the
 //! wrapper records `cg_drawstatus` handles at bind time and keys its

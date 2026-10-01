@@ -1,6 +1,6 @@
 //! Quake III client view adjustments.
 //!
-//! Port of `src/app/bootstrap/q3-client/view.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/view.ts`
 //! (`q3WeaponCamera`, `offsetQ3ViewEntity`, `offsetQ3ViewReference`).
 //! [`SceneEntity`](qa_client::render::SceneEntity) carries no attachment
 //! list, so the entity offset has no recursion target; optional lighting

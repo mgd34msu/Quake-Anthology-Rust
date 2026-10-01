@@ -1,6 +1,6 @@
 //! Local-server snapshot transport for one Quake III seat.
 //!
-//! Port of `src/app/bootstrap/q3-client/source.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/source.ts`
 //! (`ApplicationQ3Source`). One seat's local server transport retains
 //! the same snapshot and command rings as cgame. Selection, actor
 //! resolution, prediction adaptation, and level shots are injected

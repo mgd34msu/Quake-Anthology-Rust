@@ -1,6 +1,6 @@
 //! Cgame collision-model traps over shared scene geometry.
 //!
-//! Port of `src/app/bootstrap/q3-client/guest-collision.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/guest-collision.ts`
 //! (`SharedQvmClientClipModels`). Cgame traces geometry only; its entity
 //! clipping remains in the guest module. Handle validation, temporary
 //! hull retention, checkpointing, and the `cm_noCurves` /

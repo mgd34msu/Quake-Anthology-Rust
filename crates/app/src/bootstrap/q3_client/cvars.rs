@@ -1,6 +1,6 @@
 //! Quake III client cvar services across seat registries.
 //!
-//! Port of `src/app/bootstrap/q3-client/cvars.ts` (`Q3ClientCvars`).
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/cvars.ts` (`Q3ClientCvars`).
 //! The owner set is injected through [`Q3ClientCvarOwners`]; handles,
 //! revision tracking, and info-string projection follow the donor. The
 //! Rust [`CvarRegistry`](qa_core::cvar::CvarRegistry) has no alias table,

@@ -1,6 +1,6 @@
 //! Quake III UI cinematics over retained movie sources.
 //!
-//! Port of `src/app/bootstrap/q3-client/cinematics.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/cinematics.ts`
 //! (`ApplicationQ3Cinematics`). The owner prepares retained movie
 //! sources, plays them into sixteen slots shared with system
 //! cinematics, and checkpoints both. Source I/O, image allocation, and

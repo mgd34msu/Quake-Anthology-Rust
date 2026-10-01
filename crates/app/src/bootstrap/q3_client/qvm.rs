@@ -1,6 +1,6 @@
 //! QVM presentation client: guest modules over shared host services.
 //!
-//! Port of `src/app/bootstrap/q3-client/qvm.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/qvm.ts`
 //! (`ApplicationQvmClient`, `qvmClientCommands`). The port owns the
 //! trap dispatch order, cgame status masking, held-weapon pass
 //! interception, equipment/body policy state, command fan-out, and the

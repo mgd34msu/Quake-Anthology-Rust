@@ -1,6 +1,6 @@
 //! Quake III application assets: retained mounts, sounds, fonts, and the renderer resource host.
 //!
-//! Port of `src/app/bootstrap/q3-client/assets.ts` (`registerQ3ModelRequest`,
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/assets.ts` (`registerQ3ModelRequest`,
 //! `registerQ3ShaderRequest`, `ApplicationQ3Assets`). The donor is async over
 //! `ApplicationAssets`/`ProviderSceneAssets` (`../assets.ts`, outside this wave); here content,
 //! mounts, models, and the world arrive through injected sync seams while this module keeps the

@@ -1,6 +1,6 @@
 //! Quake III client presentation collision world.
 //!
-//! Port of `src/app/bootstrap/q3-client/collision.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/q3-client/collision.ts`
 //! (`q3ClientCollision`). Cgame clips its own snapshot entities after
 //! the geometry trace, so this adapter only forwards geometry queries
 //! to the shared map under the `q3:cgame` binary32 numeric profile with
