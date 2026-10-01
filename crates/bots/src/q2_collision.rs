@@ -18,8 +18,9 @@ use qa_world::WorldError;
 
 use crate::collision_support::{geometry_mask, select_numeric};
 use crate::scene::{
-    BspPlane, LeafQueryResult, PointContentsQuery, PointContentsResult, Q2SurfaceInfo, QueryTarget, SceneQueries,
-    TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, TraceShape, VisibilityKind,
+    BspPlane, LeafQueryResult, PointContentsQuery, PointContentsResult, Q2SecondaryImpact, Q2SurfaceInfo, QueryTarget,
+    SceneQueries, TraceContact, TraceDetail, TraceHit, TracePolicy, TraceQuery, TraceResult, TraceShape,
+    VisibilityKind,
 };
 
 /// BSP child reference.
@@ -288,6 +289,7 @@ struct Work {
     contents: i32,
     plane: BspPlane,
     surface: Option<Q2SurfaceInfo>,
+    secondary: Option<Q2SecondaryImpact>,
 }
 
 fn no_plane() -> BspPlane {
@@ -579,6 +581,7 @@ impl Q2Collision {
             contents: 0,
             plane: no_plane(),
             surface: None,
+            secondary: None,
         };
         let mut checked = HashSet::new();
         if stationary {
@@ -673,6 +676,7 @@ impl Q2Collision {
                 contents: work.contents,
                 surface: work.surface,
                 source_plane: plane,
+                secondary: work.secondary,
             },
         })
     }
@@ -728,10 +732,12 @@ impl Q2Collision {
             return Ok(());
         }
         let mut enter = -1.0;
+        let mut enter2 = -1.0;
         let mut leave = 1.0;
         let mut start_out = false;
         let mut get_out = false;
         let mut lead: Option<(BspPlane, Option<Q2SurfaceInfo>)> = None;
+        let mut second: Option<BspPlane> = None;
         for offset in 0..brush.sides.count {
             let side = at(&self.geometry.brush_sides, (brush.sides.first + offset) as i32)?;
             let plane = at(&self.geometry.planes, side.plane as i32)?;
@@ -766,6 +772,9 @@ impl Q2Collision {
                         Some(at(&self.geometry.texture_info, side.texture_info)?.clone())
                     };
                     lead = Some((*plane, surface));
+                } else if crossed > enter2 {
+                    enter2 = crossed;
+                    second = Some(*plane);
                 }
             } else {
                 leave = js_min(leave, js_min(1.0, n.div(n.add(d1, EPSILON), n.sub(d1, d2))));
@@ -786,8 +795,14 @@ impl Q2Collision {
             if let Some((plane, surface)) = lead {
                 work.fraction = enter;
                 work.plane = plane;
-                work.surface = surface;
+                work.surface = surface.clone();
                 work.contents = brush.contents;
+                if let Some(runner_up) = second {
+                    work.secondary = Some(Q2SecondaryImpact {
+                        plane: runner_up,
+                        surface,
+                    });
+                }
             }
         }
         Ok(())
@@ -1221,12 +1236,14 @@ mod tests {
                 contents,
                 surface,
                 source_plane,
+                secondary,
             } => {
                 assert_eq!(*contents, 1);
                 assert_eq!(surface.as_ref().expect("surface").flags, 3);
                 assert_eq!(source_plane.normal, vec3(-1.0, 0.0, 0.0));
                 assert_eq!(source_plane.plane_type, 3);
                 assert_eq!(source_plane.signbits, 1);
+                assert_eq!(secondary, &None);
             }
             _ => panic!("q2 detail"),
         }
@@ -1251,6 +1268,21 @@ mod tests {
             .trace(&query(vec3(-50.0, 0.0, 0.0), vec3(50.0, 0.0, 0.0), capsule))
             .expect("trace");
         assert_eq!(hit.fraction, 0.4596875011920929);
+        let corner = collision
+            .trace(&query(
+                vec3(-50.0, -50.0, 0.0),
+                vec3(50.0, 50.0, 0.0),
+                SceneShape::Point,
+            ))
+            .expect("trace");
+        match &corner.detail {
+            TraceDetail::Q2 { secondary, .. } => {
+                let runner = secondary.as_ref().expect("runner-up");
+                assert_eq!(runner.plane.normal, vec3(0.0, -1.0, 0.0));
+                assert_eq!(runner.surface.as_ref().expect("surface").flags, 3);
+            }
+            _ => panic!("q2 detail"),
+        }
         let stuck = collision
             .trace(&query(vec3(16.0, 0.0, 0.0), vec3(16.0, 0.0, 0.0), SceneShape::Point))
             .expect("trace");
