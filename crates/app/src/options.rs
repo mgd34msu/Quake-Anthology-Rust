@@ -129,22 +129,8 @@ pub enum GameMode {
     Deathmatch,
 }
 
-/// Match rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MatchRules {
-    /// Standard.
-    Standard,
-    /// Capture the flag.
-    Ctf,
-    /// Lithium CTF.
-    Lmctf,
-    /// Tag.
-    Tag,
-    /// Deathball.
-    Deathball,
-    /// Horde.
-    Horde,
-}
+/// Match rules (canonical donor `src/app/bootstrap/match-modes.ts`).
+pub use crate::bootstrap::match_modes::MatchRules;
 
 /// Network role selected on the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]

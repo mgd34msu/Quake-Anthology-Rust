@@ -3,6 +3,7 @@
 //!
 //! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/core/random/q2-rerelease.ts`
 //! (`Q2RereleaseRandom`, `Mt19937Checkpoint`, full STL-distribution API).
+//! Donor: `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/simulation/random.ts`.
 
 use thiserror::Error;
 
