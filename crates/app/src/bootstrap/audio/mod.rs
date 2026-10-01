@@ -1,5 +1,6 @@
 //! Bootstrap audio helpers (donor `src/app/bootstrap/audio/*`).
 
+pub mod application;
 pub mod commands;
 pub mod menu;
 pub mod music;

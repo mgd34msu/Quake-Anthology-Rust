@@ -5,11 +5,36 @@
 //! selections. Later lanes extend this tree; each module documents its donor
 //! provenance.
 
+pub mod addon_library;
+pub mod application_tools;
 pub mod audio;
 pub mod audio_settings;
+pub mod authored_start;
+pub mod base_arena_catalog;
+pub mod base_arena_menu;
+pub mod base_arena_postgame;
+pub mod base_arena_progression;
+pub mod base_arena_select_menu;
+pub mod base_arena_selection;
+pub mod campaign_cinematic;
+pub mod campaign_unit;
+pub mod capture;
+pub mod client_bootstrap;
+pub mod component_bodies;
 pub mod component_client_save;
+pub mod component_commands;
+pub mod component_drawings;
+pub mod component_media;
+pub mod component_scene;
+pub mod config_scripts;
+pub mod configuration;
+pub mod console;
+pub mod content;
 pub mod controller_settings;
+pub mod cvar_archives;
+pub mod demo_commands;
 pub mod demo_library;
+pub mod demo_local_recording;
 pub mod demo_playback;
 pub mod demo_recording;
 pub mod demo_recording_commands;
