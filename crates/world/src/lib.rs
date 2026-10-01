@@ -19,6 +19,7 @@ pub mod save;
 pub mod scheduler;
 pub mod server;
 pub mod session;
+pub mod source_slots;
 pub mod spatial;
 pub mod spawn;
 pub mod timers;

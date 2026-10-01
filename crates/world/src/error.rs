@@ -221,4 +221,7 @@ pub enum WorldError {
     /// Invalid weapon behavior attachment or checkpoint.
     #[error("{0}")]
     BadWeaponBehavior(String),
+    /// Invalid source actor slot range, table, or lifetime.
+    #[error("{0}")]
+    BadSourceSlots(String),
 }
