@@ -247,6 +247,19 @@ pub struct CollisionBrush {
     pub check_count: Cell<i32>,
 }
 
+/// Collision patch surface: generated records plus the visiting stamp.
+#[derive(Debug)]
+pub struct CollisionPatch {
+    /// Generated collision records.
+    pub collide: PatchCollide,
+    /// Contents flags.
+    pub contents: i32,
+    /// Surface flags.
+    pub surface_flags: i32,
+    /// Last visiting check count.
+    pub check_count: Cell<i32>,
+}
+
 /// Collision brush side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollisionBrushSide {
@@ -418,7 +431,7 @@ pub struct CollisionMapData {
     /// Models.
     pub models: Vec<CollisionModel>,
     /// Patch records by surface index (`None` for non-patch surfaces).
-    pub patches: Vec<Option<PatchCollide>>,
+    pub patches: Vec<Option<CollisionPatch>>,
     /// Areas.
     pub areas: Vec<CollisionArea>,
     /// Portal reference counts.
@@ -513,7 +526,7 @@ impl CollisionMapData {
     }
 
     /// Read a patch record by surface index (`None` for non-patches).
-    pub fn patch(&self, index: usize) -> Result<Option<&PatchCollide>, WorldError> {
+    pub fn patch(&self, index: usize) -> Result<Option<&CollisionPatch>, WorldError> {
         map_at(&self.patches, index, "CM source record")?;
         Ok(self.patches[index].as_ref())
     }
@@ -1076,7 +1089,7 @@ impl CollisionMapResource {
             surface_count as i64 * sizes.pointer as i64,
             None,
         )?;
-        let mut patches: Vec<Option<PatchCollide>> = Vec::with_capacity(surface_count);
+        let mut patches: Vec<Option<CollisionPatch>> = Vec::with_capacity(surface_count);
         for index in 0..surface_count {
             let input = surface_lump.offset + index * 104;
             if int(input + 8)? != 2 {
@@ -1098,7 +1111,7 @@ impl CollisionMapResource {
                 points.push(vec3(float(offset)?, float(offset + 4)?, float(offset + 8)?));
             }
             let shader = positive_index(int(input)?)?;
-            self.data.shader(shader)?;
+            let shader_record = self.data.shader(shader)?.clone();
             let resource = format!("{}#{index}", self.source);
             self.allocate("CMod_LoadPatches:patch", sizes.collision_patch as i64, Some(&resource))?;
             let recorder = RecordingPatchAllocator::new();
@@ -1111,7 +1124,12 @@ impl CollisionMapResource {
             for (site, bytes) in recorder.sites() {
                 self.allocate(site.name(), bytes as i64, Some(&resource))?;
             }
-            patches.push(Some(collide));
+            patches.push(Some(CollisionPatch {
+                collide,
+                contents: shader_record.content_flags,
+                surface_flags: shader_record.surface_flags,
+                check_count: Cell::new(0),
+            }));
         }
         self.data.patches = patches;
         self.loaded = true;
@@ -1240,13 +1258,13 @@ pub fn decoded_collision_map(
             signbits: plane_signbits(plane.normal),
         })
         .collect();
-    let mut patches: Vec<Option<PatchCollide>> = Vec::with_capacity(map.surfaces.len());
+    let mut patches: Vec<Option<CollisionPatch>> = Vec::with_capacity(map.surfaces.len());
     for surface in &map.surfaces {
         let Q3SurfaceKind::Patch { width, height } = surface.kind else {
             patches.push(None);
             continue;
         };
-        map_at(&map.shaders, surface.shader, "CM source record")?;
+        let shader_record = map_at(&map.shaders, surface.shader, "CM source record")?.clone();
         let start = surface.vertices.first.min(map.vertices.len());
         let end = surface
             .vertices
@@ -1254,7 +1272,12 @@ pub fn decoded_collision_map(
             .saturating_add(surface.vertices.count)
             .min(map.vertices.len());
         let collide = generate_patch_collide(width, height, &map.vertices[start..end], debug, None)?;
-        patches.push(Some(collide));
+        patches.push(Some(CollisionPatch {
+            collide,
+            contents: shader_record.content_flags,
+            surface_flags: shader_record.surface_flags,
+            check_count: Cell::new(0),
+        }));
     }
     let mut area_count = 0i32;
     let mut cluster_count = 0i32;
@@ -1571,10 +1594,12 @@ mod tests {
         assert_eq!(map.models[0].bounds.min, vec3(-65.0, -65.0, -65.0));
         assert_eq!(map.models[0].bounds.max, vec3(65.0, 65.0, 65.0));
         let patch = map.patch(0).expect("patch").expect("patch surface");
-        assert_eq!(patch.planes.len(), 5);
-        assert_eq!(patch.facets.len(), 1);
-        assert_eq!(patch.bounds.min, vec3(-65.0, -65.0, -1.0));
-        assert_eq!(patch.bounds.max, vec3(65.0, 65.0, 1.0));
+        assert_eq!(patch.contents, 0);
+        assert_eq!(patch.surface_flags, 2);
+        assert_eq!(patch.collide.planes.len(), 5);
+        assert_eq!(patch.collide.facets.len(), 1);
+        assert_eq!(patch.collide.bounds.min, vec3(-65.0, -65.0, -1.0));
+        assert_eq!(patch.collide.bounds.max, vec3(65.0, 65.0, 1.0));
         assert_eq!(map.cluster_count, 2);
         assert_eq!(map.visibility_row_bytes, Some(1));
         assert_eq!(map.visibility, [3, 3, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -1773,7 +1798,9 @@ mod tests {
         );
         assert_eq!(map.models[0].bounds.max, vec3(65.0, 65.0, 65.0));
         let patch = map.patch(0).expect("patch").expect("patch surface");
-        assert_eq!(patch.facets.len(), 1);
+        assert_eq!(patch.contents, 0);
+        assert_eq!(patch.surface_flags, 2);
+        assert_eq!(patch.collide.facets.len(), 1);
         assert_eq!(map.cluster_count, 1);
         assert!(map.visibility_row_bytes.is_none());
         assert!(map.visibility.iter().all(|byte| *byte == 255));

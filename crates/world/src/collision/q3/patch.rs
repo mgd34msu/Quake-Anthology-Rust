@@ -1140,10 +1140,10 @@ fn expanded(source: &PatchPlane, shape: &PatchShape, border: Option<&PatchBorder
     match shape {
         PatchShape::Point { .. } => Ok(plane),
         PatchShape::Capsule { radius, offset, .. } => {
-            let grown = radius + dot3(plane.normal, *offset).abs();
+            let grown = f64::from(*radius) + f64::from(dot3(plane.normal, *offset).abs());
             Ok(Plane {
                 normal: plane.normal,
-                distance: plane.distance + grown,
+                distance: (f64::from(plane.distance) + grown) as f32,
             })
         }
         PatchShape::Box { mins, extents } => {
@@ -1266,7 +1266,7 @@ pub fn trace_patch(
                 return true;
             }
             if d1 > d2 {
-                let crossed = 0.0f32.max(((f64::from(d1) - 0.125) / (f64::from(d1) - f64::from(d2))) as f32);
+                let crossed = 0.0f32.max((d1 - 0.125) / (d1 - d2));
                 if crossed > enter {
                     enter = crossed;
                     hit_index = index;
@@ -1279,7 +1279,7 @@ pub fn trace_patch(
                     });
                 }
             } else {
-                leave = leave.min(1.0f32.min(((f64::from(d1) + 0.125) / (f64::from(d1) - f64::from(d2))) as f32));
+                leave = leave.min(1.0f32.min((d1 + 0.125) / (d1 - d2)));
             }
             true
         };
@@ -1526,5 +1526,33 @@ mod tests {
             error.to_string(),
             "Collision debug cvar r_debugSurfaceUpdate is not registered"
         );
+    }
+
+    #[test]
+    fn flat_sheet_point_trace_matches_donor() {
+        let mut points = Vec::new();
+        for y in 0..3 {
+            for x in 0..3 {
+                points.push(vec3(100.0 + x as f32 * 64.0, (y - 1) as f32 * 64.0, 0.0));
+            }
+        }
+        let collide = generate_patch_collide(3, 3, &points, None, None).expect("collide");
+        assert_eq!(collide.facets.len(), 1);
+        let hit = trace_patch(
+            &collide,
+            vec3(164.0, 0.0, 100.0),
+            vec3(164.0, 0.0, -100.0),
+            &PatchShape::Point {
+                mins: vec3(0.0, 0.0, 0.0),
+                extents: vec3(0.0, 0.0, 0.0),
+            },
+            1.0,
+            None,
+        )
+        .expect("trace")
+        .expect("hit");
+        assert_eq!(hit.fraction, 0.49937498569488525f64 as f32);
+        assert_eq!(hit.plane.normal, vec3(0.0, 0.0, 1.0));
+        assert_eq!(hit.plane.distance, 0.0);
     }
 }
