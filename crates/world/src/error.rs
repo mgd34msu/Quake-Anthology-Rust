@@ -188,4 +188,28 @@ pub enum WorldError {
     /// Client slot generation is exhausted.
     #[error("Client slot generation is exhausted")]
     ClientGenerationExhausted,
+    /// Cycle in Quake clip-space BSP.
+    #[error("Cycle in Quake clip-space BSP")]
+    ClipCycle,
+    /// Invalid Quake clip-space node.
+    #[error("Invalid Quake clip-space node")]
+    BadClipNode,
+    /// Unknown Quake model.
+    #[error("Unknown Quake model {0}")]
+    UnknownQ1Model(i32),
+    /// Quake model has no drawing hull.
+    #[error("Quake model has no drawing hull")]
+    MissingDrawingHull,
+    /// Unknown Quake solid-space leaf.
+    #[error("Unknown Quake solid-space leaf")]
+    UnknownSolidLeaf,
+    /// Cycle in Quake solid-space BSP.
+    #[error("Cycle in Quake solid-space BSP")]
+    SolidCycle,
+    /// Unknown Quake solid-space node/plane.
+    #[error("Unknown Quake solid-space node/plane")]
+    BadSolidNode,
+    /// Quake solid-cell capsule sweep did not converge.
+    #[error("Quake solid-cell capsule sweep did not converge")]
+    SweepDiverged,
 }
