@@ -1,4 +1,7 @@
-//! Q2 mission packs (`src/content/q2/missionpacks`).
+//! Q2 mission packs barrel (`src/content/q2/missionpacks/index.ts`).
+//!
+//! Installs the selected mission-pack arsenal into the session weapon
+//! and item authorities and aggregates the pack modules.
 
 pub mod damage;
 pub mod doppleganger;
@@ -17,18 +20,31 @@ use std::collections::HashMap;
 
 use qa_core::identity::ActorId;
 
-use types::{Q2MissionPack, Q2MissionPackProjectileHooks};
-
-use self::doppleganger::{mission_doppleganger, Q2MissionPackDoppleganger};
-use self::entities::types::Q2MissionPackEntityHooks;
-use self::items::{disconnected_item_hooks, Q2MissionPackItemHooks, Q2MissionPackItems, Q2MissionPackPowerups};
-use self::projectiles::{disconnected_projectile_hooks, mission_projectiles, Q2MissionPackProjectiles};
-use self::spheres::{disconnected_sphere_hooks, mission_spheres, Q2MissionPackSpheres, Q2SphereHooks};
-use self::weapons::player::Q2MissionPackWeapons;
+pub use self::damage::{canonical_cause_from_native, native_cause_from_canonical, Q2_CANONICAL_CAUSE};
+use self::doppleganger::mission_doppleganger;
+pub use self::doppleganger::Q2MissionPackDoppleganger;
+pub use self::entities::{
+    Q2MissionPackEntities, Q2MissionPackEntityEvent, Q2MissionPackEntityHooks, Q2RogueEntitiesCheckpoint,
+};
+use self::items::{disconnected_item_hooks, Q2MissionPackItemHooks};
+pub use self::items::{Q2MissionPackItems, Q2MissionPackItemsCheckpoint, Q2MissionPackPowerups};
+pub use self::modes::{
+    q2_deathball_rules, Q2DeathBall, Q2DeathBallCheckpoint, Q2DeathBallHooks, Q2Tag, Q2TagCheckpoint, Q2TagHooks,
+};
+pub use self::players::Q2RoguePlayerSpawns;
+pub use self::projectiles::Q2MissionPackProjectiles;
+use self::projectiles::{disconnected_projectile_hooks, mission_projectiles};
+pub use self::random_items::{q2_random_item, Q2RandomItemSettings};
+use self::spheres::{disconnected_sphere_hooks, mission_spheres};
+pub use self::spheres::{Q2MissionPackSpheres, Q2SphereHooks, Q2SphereKind};
+pub use self::weapons::player::Q2MissionPackWeapons;
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
 use crate::q2::foundation::items::Q2ItemModule;
 use crate::q2::foundation::weapons::player::set_fallback_order;
 use crate::q2::foundation::weapons::types::Q2WeaponName;
+pub use types::{
+    Q2MissionPack, Q2MissionPackDamage, Q2MissionPackPlayerEffect, Q2MissionPackProjectileHooks, Q2_MISSION_PACK_DAMAGE,
+};
 
 /// Arena runtime state for the mission packs.
 #[derive(Debug, Clone)]
@@ -158,5 +174,57 @@ pub fn register_q2_mission_pack_armory(
         spheres,
         items,
         doppleganger,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::q2::support::contracts::{Q2NativeCause, Q2NativeGame};
+
+    #[test]
+    fn canonical_causes_match_source_ids() {
+        assert_eq!(Q2_CANONICAL_CAUSE.grapple, 56);
+        assert_eq!(Q2_CANONICAL_CAUSE.telefrag_spawn, 57);
+        assert_eq!(Q2_CANONICAL_CAUSE.blue_blaster, 58);
+        let ctf_grapple = canonical_cause_from_native(&Q2NativeCause::Classic {
+            game: Q2NativeGame::Ctf,
+            value: 34,
+        });
+        assert_eq!(ctf_grapple, Some(56));
+        let rerelease_telefrag = canonical_cause_from_native(&Q2NativeCause::Rerelease {
+            id: 22,
+            friendly_fire: false,
+            no_point_loss: false,
+        });
+        assert_eq!(rerelease_telefrag, Some(57));
+        assert_eq!(
+            canonical_cause_from_native(&Q2NativeCause::Classic {
+                game: Q2NativeGame::Base,
+                value: 99,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn mission_pack_damage_runs_ripper_to_hunter() {
+        assert_eq!(Q2_MISSION_PACK_DAMAGE.ripper, 34);
+        assert_eq!(Q2_MISSION_PACK_DAMAGE.chainfist, 40);
+        assert_eq!(Q2_MISSION_PACK_DAMAGE.tracker, 51);
+        assert_eq!(Q2_MISSION_PACK_DAMAGE.dopple_hunter, 55);
+    }
+
+    #[test]
+    fn barrel_reachable_modes_and_settings() {
+        let rules = q2_deathball_rules(0);
+        assert_eq!(rules.stop_speed, 0.0);
+        let settings = Q2RandomItemSettings {
+            enabled: true,
+            no_mines: false,
+            no_nukes: true,
+            no_spheres: false,
+        };
+        assert!(settings.enabled && settings.no_nukes);
     }
 }
