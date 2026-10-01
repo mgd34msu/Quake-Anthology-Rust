@@ -12,6 +12,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use qa_core::cmd::{command_text_tail, tokenize_command, Dialect, TextMode};
@@ -21,9 +22,13 @@ use qa_core::identity::{ActorId, OwnedActor, ProviderId, SessionId};
 use qa_core::math::{Axis, Bounds, Vec3};
 use qa_core::numeric::NumericProfile;
 use qa_core::time::{ClockProfile, SourceTime};
+use qa_platform::files::writable::UserFileStore;
 use qa_world::session::{MissionGate, ResourceScope, SessionResource};
 use qa_world::WorldError;
 use thiserror::Error;
+
+use crate::hash::sha256_hex;
+use crate::mounts::{open_mount_plan, MountedContent, OpenMountOptions};
 
 /// Largest exactly representable integer (`Number.MAX_SAFE_INTEGER`).
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -8560,6 +8565,78 @@ pub fn read_mod_command(raw: &str) -> Result<(ModSelection, String), ContractErr
     }
 }
 
+// Component file mounts (donor `src/world/session/mod-files.ts`).
+// Component storage follows its selection across destination worlds and
+// executable updates.
+
+/// User file stores keyed by component selection.
+pub struct ModUserFiles {
+    root: String,
+    stores: HashMap<String, UserFileStore>,
+}
+
+impl ModUserFiles {
+    /// Create a store scope rooted at `root`.
+    #[must_use]
+    pub fn new(root: &str) -> Self {
+        Self {
+            root: root.to_string(),
+            stores: HashMap::new(),
+        }
+    }
+
+    /// Scope root.
+    #[must_use]
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// Borrow the store for one selection, creating it on first use (donor `for`).
+    pub fn store(&mut self, selection: &ModSelection) -> Result<&UserFileStore, ContractError> {
+        let key = mod_selection_key(selection)?;
+        let path = PathBuf::from(&self.root)
+            .join(".mods")
+            .join(encode_uri_component(&selection.product))
+            .join(encode_uri_component(&selection.id));
+        Ok(self.stores.entry(key).or_insert_with(|| UserFileStore::new(path)))
+    }
+}
+
+/// Borrow installed mounts with one component's user files overlaid.
+pub fn borrow_mod_file_mounts(
+    selection: &ModSelection,
+    content: ContentId,
+    installed: Option<&MountedContent>,
+    writable: &UserFileStore,
+) -> Result<MountedContent, ContractError> {
+    let key = mod_selection_key(selection)?;
+    let identity = sha256_hex(key.as_bytes());
+    let mount = LooseMount {
+        identity: create_mount_identity(create_mount_id("mod-user", &identity)?, content, 0)?,
+        root_path: writable.root().to_string_lossy().into_owned(),
+    };
+    let installed_plan = installed
+        .map(|installed| installed.plan.id.as_str())
+        .unwrap_or_default();
+    let revision = sha256_hex(format!("{key}\0{installed_plan}").as_bytes());
+    let plan = create_mount_plan_id("mod-files", &revision)?;
+    match installed {
+        None => {
+            let mount_id = mount.identity.id.clone();
+            let plan = ResolvedMountPlan {
+                id: plan,
+                mounts: vec![ContentMount::Loose(mount)],
+                default_order: vec![mount_id],
+                prefix_orders: Vec::new(),
+            };
+            open_mount_plan(&plan, OpenMountOptions::default()).map_err(|error| invalid(error.to_string()))
+        }
+        Some(installed) => installed
+            .borrow_with_loose_mount(mount, plan)
+            .map_err(|error| invalid(error.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9487,5 +9564,54 @@ mod tests {
         );
         resources.borrow_mut().close().unwrap();
         assert_eq!(logs.borrow().discarded.len(), 1);
+    }
+
+    #[test]
+    fn mod_user_files_follow_selections() {
+        let mut files = ModUserFiles::new("/test-root");
+        assert_eq!(files.root(), "/test-root");
+        let selection = ModSelection {
+            product: "source".to_string(),
+            id: "a/b:c".to_string(),
+        };
+        let path = files.store(&selection).unwrap().root().to_path_buf();
+        assert_eq!(path.to_string_lossy(), "/test-root/.mods/source/a%2Fb%3Ac");
+        let again = files.store(&selection).unwrap().root().to_path_buf();
+        assert_eq!(again, path);
+        let bad = ModSelection {
+            product: "".to_string(),
+            id: "a".to_string(),
+        };
+        assert!(files.store(&bad).is_err());
+    }
+
+    #[test]
+    fn mod_file_mounts_overlay_user_files() {
+        let mut files = ModUserFiles::new("/test-root");
+        let first = ModSelection {
+            product: "source".to_string(),
+            id: "a".to_string(),
+        };
+        let second = ModSelection {
+            product: "source".to_string(),
+            id: "b".to_string(),
+        };
+        let first_root = files.store(&first).unwrap().root().to_path_buf();
+        let solo = borrow_mod_file_mounts(&first, content_id(), None, files.store(&first).unwrap()).unwrap();
+        assert!(solo.plan.id.as_str().starts_with("mount-plan:mod-files:"));
+        assert_eq!(solo.plan.mounts.len(), 1);
+        assert_eq!(solo.plan.default_order.len(), 1);
+        let solo_again = borrow_mod_file_mounts(&first, content_id(), None, files.store(&first).unwrap()).unwrap();
+        assert_eq!(solo.plan.id, solo_again.plan.id);
+        let over = borrow_mod_file_mounts(&second, content_id(), Some(&solo), files.store(&second).unwrap()).unwrap();
+        assert_eq!(over.plan.mounts.len(), 2);
+        assert_eq!(over.plan.default_order.len(), 2);
+        assert_ne!(over.plan.id, solo.plan.id);
+        let root = match &over.plan.mounts[0] {
+            ContentMount::Loose(mount) => mount.root_path.clone(),
+            ContentMount::Archive(_) => panic!("expected a loose user mount"),
+        };
+        assert!(root.ends_with(".mods/source/b"), "{root}");
+        assert!(first_root.ends_with(".mods/source/a"));
     }
 }
