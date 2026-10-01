@@ -114,7 +114,7 @@ fn prefixed_value(digits: &str, radix: f64, valid: fn(u8) -> bool, digit: fn(u8)
 }
 
 /// JavaScript `Number(text)` conversion.
-fn js_number(text: &str) -> f64 {
+pub(crate) fn js_number(text: &str) -> f64 {
     let trimmed = text.trim_matches(is_js_trim);
     if trimmed.is_empty() {
         return 0.0;
