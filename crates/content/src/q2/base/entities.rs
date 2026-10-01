@@ -1,4 +1,7 @@
-//! Q2 base entities (`src/content/q2/base/entities`).
+//! Q2 base entities barrel (`src/content/q2/base/entities/index.ts`).
+//!
+//! Aggregates the sibling entity modules behind `Q2BaseEntityModule`
+//! with its checkpoint, classname table, and spawn dispatch.
 //!
 //! Gameplay logic adapted from id Software's Quake II game and the
 //! rerelease game DLL (GPL-2.0-or-later).
@@ -14,12 +17,10 @@ pub mod triggers;
 pub mod turrets;
 pub mod types;
 
-pub use movers::{
-    Q2BaseMoversCheckpoint, Q2PlatformPhase, Q2PlatformState, Q2PlatformTraversal,
-};
-pub use scenery::{Q2AnimationState, Q2BaseSceneryCheckpoint, Q2ClockState, q2_clock_text};
+pub use movers::{Q2BaseMoversCheckpoint, Q2PlatformPhase, Q2PlatformState, Q2PlatformTraversal};
+pub use scenery::{q2_clock_text, Q2AnimationState, Q2BaseSceneryCheckpoint, Q2ClockState};
 pub use triggers::Q2WindTimeEntry;
-pub use turrets::{Q2BreachState, Q2DriverState, Q2TurretsCheckpoint, snap_q2_turret_eighth};
+pub use turrets::{snap_q2_turret_eighth, Q2BreachState, Q2DriverState, Q2TurretsCheckpoint};
 pub use types::Q2BaseEntityHooks;
 
 use crate::q2::foundation::callbacks::Q2CallbackDefinitions;
@@ -176,20 +177,12 @@ impl Q2BaseEntityModule {
     }
 
     /// Read mover traversal (`moverTraversal`).
-    pub fn mover_traversal(
-        &self,
-        actor: &ActorId,
-        game: &mut Q2GameServices,
-    ) -> Option<Q2PlatformTraversal> {
+    pub fn mover_traversal(&self, actor: &ActorId, game: &mut Q2GameServices) -> Option<Q2PlatformTraversal> {
         movers::mover_traversal(game, actor)
     }
 
     /// Read platform state (`platformState`).
-    pub fn platform_state(
-        &self,
-        actor: &ActorId,
-        game: &Q2GameServices,
-    ) -> Option<Q2PlatformState> {
+    pub fn platform_state(&self, actor: &ActorId, game: &Q2GameServices) -> Option<Q2PlatformState> {
         movers::mover_platform_state(game, actor)
     }
 
@@ -213,5 +206,35 @@ impl Q2BaseEntityModule {
         scenery::restore_scenery(game, &checkpoint.scenery);
         triggers::restore_triggers(game, &checkpoint.wind_times);
         turrets::restore_turrets(game, &checkpoint.turrets);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn classnames_cover_source_spawn_table() {
+        assert_eq!(Q2_BASE_ENTITY_CLASSNAMES.len(), 38);
+        assert_eq!(Q2_BASE_ENTITY_CLASSNAMES[0], "func_plat");
+        assert!(Q2_BASE_ENTITY_CLASSNAMES.contains(&"turret_driver"));
+        let unique: HashSet<&&str> = Q2_BASE_ENTITY_CLASSNAMES.iter().collect();
+        assert_eq!(unique.len(), Q2_BASE_ENTITY_CLASSNAMES.len());
+    }
+
+    #[test]
+    fn clock_text_matches_source_styles() {
+        assert_eq!(q2_clock_text(7, 0), " 7");
+        assert_eq!(q2_clock_text(90, 1), " 1:30");
+        assert_eq!(q2_clock_text(3661, 2), " 1:01:01");
+    }
+
+    #[test]
+    fn turret_snap_rounds_to_eighths() {
+        assert_eq!(snap_q2_turret_eighth(0.0), 0.0);
+        assert_eq!(snap_q2_turret_eighth(0.1), 0.125);
+        assert_eq!(snap_q2_turret_eighth(-0.1), -0.125);
     }
 }
