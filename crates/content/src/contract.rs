@@ -8,8 +8,10 @@
 //! out-of-scope contracts are defined here structurally with their donor
 //! noted, since `qa-content` depends only on `qa-core`.
 
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
+use std::rc::Rc;
 
 use qa_core::identity::{ActorId, OwnedActor, ProviderId};
 use qa_core::math::{Axis, Bounds, Vec3};
@@ -7111,6 +7113,523 @@ pub fn same_presentation_owner(left: Option<&PresentationOwner>, right: &Present
     matches!(left, Some(left) if left.provider == right.provider && left.generation == right.generation)
 }
 
+// Component client outputs (donor `src/world/session/mod-client-outputs.ts`).
+// Original component checkpoints own the fields; leases retain only their
+// live publication.
+
+fn provider_name(provider: &ProviderId) -> String {
+    format!("{}:{}", provider.namespace, provider.name)
+}
+
+fn output_channel_name(channel: ModClientOutputChannel) -> &'static str {
+    match channel {
+        ModClientOutputChannel::ViewOffset => "view-offset",
+        ModClientOutputChannel::MovementMode => "movement-mode",
+        ModClientOutputChannel::Stance => "stance",
+        ModClientOutputChannel::BodyShape => "body-shape",
+    }
+}
+
+fn output_kind(output: &ModClientOutput) -> ModClientOutputChannel {
+    match output {
+        ModClientOutput::ViewOffset(_) => ModClientOutputChannel::ViewOffset,
+        ModClientOutput::MovementMode(_) => ModClientOutputChannel::MovementMode,
+        ModClientOutput::Stance(_) => ModClientOutputChannel::Stance,
+        ModClientOutput::BodyShape(_) => ModClientOutputChannel::BodyShape,
+    }
+}
+
+fn declaration_kind<Scalar, Vector>(
+    declaration: &ModClientOutputDeclaration<Scalar, Vector>,
+) -> ModClientOutputChannel {
+    match declaration {
+        ModClientOutputDeclaration::BodyShape { .. } => ModClientOutputChannel::BodyShape,
+        ModClientOutputDeclaration::ViewOffsetField { .. } | ModClientOutputDeclaration::ViewHeight { .. } => {
+            ModClientOutputChannel::ViewOffset
+        }
+        ModClientOutputDeclaration::MovementMode { .. } => ModClientOutputChannel::MovementMode,
+        ModClientOutputDeclaration::Stance { .. } => ModClientOutputChannel::Stance,
+    }
+}
+
+struct OutputEntry {
+    owner: ProviderId,
+    lease: u64,
+    values: HashMap<ActorId, ModClientOutput>,
+}
+
+/// Lease publishing one owner's declared channels.
+pub struct ModClientOutputLease {
+    live: Rc<dyn Fn(&ActorId) -> bool>,
+    owners: Rc<RefCell<HashMap<ModClientOutputChannel, OutputEntry>>>,
+    owner: ProviderId,
+    channels: Vec<ModClientOutputChannel>,
+    id: u64,
+    active: Cell<bool>,
+}
+
+impl std::fmt::Debug for ModClientOutputLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModClientOutputLease")
+            .field("owner", &self.owner)
+            .field("channels", &self.channels)
+            .field("active", &self.active.get())
+            .finish()
+    }
+}
+
+impl ModClientOutputLease {
+    fn current(&self) -> Result<(), ContractError> {
+        if !self.active.get() {
+            return Err(invalid("Component client output owner is retired".to_string()));
+        }
+        let owners = self.owners.borrow();
+        let retired = self
+            .channels
+            .iter()
+            .any(|channel| owners.get(channel).is_none_or(|entry| entry.lease != self.id));
+        if retired {
+            return Err(invalid("Component client output owner is retired".to_string()));
+        }
+        Ok(())
+    }
+
+    /// Publish detached values after an original invocation commits its source fields.
+    pub fn publish(&self, actor: &ActorId, outputs: &[ModClientOutput]) -> Result<(), ContractError> {
+        self.current()?;
+        if !(self.live)(actor) {
+            return Err(invalid(
+                "Component client output requires the current client actor".to_string(),
+            ));
+        }
+        let kinds: HashSet<ModClientOutputChannel> = outputs.iter().map(output_kind).collect();
+        if outputs.len() != self.channels.len() || kinds.len() != outputs.len() {
+            return Err(invalid(
+                "Client output publication differs from its declared channels".to_string(),
+            ));
+        }
+        let mut validated = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            if !self.channels.contains(&output_kind(output)) {
+                return Err(invalid("Undeclared component client output".to_string()));
+            }
+            validated.push(detached_output(*output)?);
+        }
+        let mut owners = self.owners.borrow_mut();
+        for value in validated {
+            if let Some(entry) = owners.get_mut(&output_kind(&value)) {
+                entry.values.insert(actor.clone(), value);
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop one actor's publication.
+    pub fn release(&self, actor: &ActorId) {
+        let mut owners = self.owners.borrow_mut();
+        for channel in &self.channels {
+            if let Some(entry) = owners.get_mut(channel) {
+                entry.values.remove(actor);
+            }
+        }
+    }
+
+    /// Retire the lease, clearing its channels when still owned.
+    pub fn close(&self) {
+        if !self.active.get() {
+            return;
+        }
+        self.active.set(false);
+        let mut owners = self.owners.borrow_mut();
+        for channel in &self.channels {
+            let owned = owners.get(channel).is_some_and(|entry| entry.lease == self.id);
+            if owned {
+                owners.remove(channel);
+            }
+        }
+    }
+}
+
+/// Live publication of declared component client outputs.
+pub struct ModClientOutputs {
+    live: Rc<dyn Fn(&ActorId) -> bool>,
+    owners: Rc<RefCell<HashMap<ModClientOutputChannel, OutputEntry>>>,
+    next_lease: Cell<u64>,
+}
+
+impl ModClientOutputs {
+    /// Create an output table; `live` reports the current client actor.
+    pub fn new(live: impl Fn(&ActorId) -> bool + 'static) -> Self {
+        Self {
+            live: Rc::new(live),
+            owners: Rc::new(RefCell::new(HashMap::new())),
+            next_lease: Cell::new(0),
+        }
+    }
+
+    /// Claim channels for one owner.
+    pub fn claim(
+        &self,
+        owner: ProviderId,
+        channels: &[ModClientOutputChannel],
+    ) -> Result<ModClientOutputLease, ContractError> {
+        let unique: HashSet<ModClientOutputChannel> = channels.iter().copied().collect();
+        if unique.len() != channels.len() {
+            return Err(invalid("Duplicate component client output channel".to_string()));
+        }
+        let mut owners = self.owners.borrow_mut();
+        for channel in channels {
+            if let Some(previous) = owners.get(channel) {
+                return Err(invalid(format!(
+                    "Client {} is already owned by {}; {} cannot also claim it",
+                    output_channel_name(*channel),
+                    provider_name(&previous.owner),
+                    provider_name(&owner),
+                )));
+            }
+        }
+        let id = self.next_lease.get();
+        self.next_lease.set(id + 1);
+        for channel in channels {
+            owners.insert(
+                *channel,
+                OutputEntry {
+                    owner: owner.clone(),
+                    lease: id,
+                    values: HashMap::new(),
+                },
+            );
+        }
+        Ok(ModClientOutputLease {
+            live: self.live.clone(),
+            owners: self.owners.clone(),
+            owner,
+            channels: channels.to_vec(),
+            id,
+            active: Cell::new(true),
+        })
+    }
+
+    /// Read one actor's merged movement outputs.
+    #[must_use]
+    pub fn read(&self, actor: &ActorId) -> Option<ModClientMovementOutputs> {
+        let owners = self.owners.borrow();
+        if owners.is_empty() {
+            return None;
+        }
+        let view = owners
+            .get(&ModClientOutputChannel::ViewOffset)
+            .and_then(|entry| entry.values.get(actor));
+        let mode = owners
+            .get(&ModClientOutputChannel::MovementMode)
+            .and_then(|entry| entry.values.get(actor));
+        let stance = owners
+            .get(&ModClientOutputChannel::Stance)
+            .and_then(|entry| entry.values.get(actor));
+        let body = owners
+            .get(&ModClientOutputChannel::BodyShape)
+            .and_then(|entry| entry.values.get(actor));
+        if view.is_none() && mode.is_none() && stance.is_none() && body.is_none() || !(self.live)(actor) {
+            return None;
+        }
+        Some(ModClientMovementOutputs {
+            view_offset: view.and_then(|output| match output {
+                ModClientOutput::ViewOffset(value) => Some(*value),
+                _ => None,
+            }),
+            mode: mode.and_then(|output| match output {
+                ModClientOutput::MovementMode(value) => Some(*value),
+                _ => None,
+            }),
+            stance: stance.and_then(|output| match output {
+                ModClientOutput::Stance(value) => Some(*value),
+                _ => None,
+            }),
+            body_bounds: body.and_then(|output| match output {
+                ModClientOutput::BodyShape(value) => Some(*value),
+                _ => None,
+            }),
+        })
+    }
+
+    /// Drop one actor's publication across all owners.
+    pub fn release(&self, actor: &ActorId) {
+        for entry in self.owners.borrow_mut().values_mut() {
+            entry.values.remove(actor);
+        }
+    }
+
+    /// Clear every publication.
+    pub fn close(&self) {
+        let mut owners = self.owners.borrow_mut();
+        for entry in owners.values_mut() {
+            entry.values.clear();
+        }
+        owners.clear();
+    }
+}
+
+fn checked_vector(value: Vec3) -> Result<Vec3, ContractError> {
+    if ![value.x, value.y, value.z]
+        .iter()
+        .all(|component| component.is_finite())
+    {
+        return Err(invalid("Client output vector must be finite".to_string()));
+    }
+    Ok(value)
+}
+
+fn detached_output(output: ModClientOutput) -> Result<ModClientOutput, ContractError> {
+    match output {
+        ModClientOutput::BodyShape(bounds) => {
+            let min = checked_vector(bounds.min)?;
+            let max = checked_vector(bounds.max)?;
+            if min.x > max.x || min.y > max.y || min.z > max.z {
+                return Err(invalid("Client body output has backwards bounds".to_string()));
+            }
+            Ok(ModClientOutput::BodyShape(Bounds { min, max }))
+        }
+        ModClientOutput::ViewOffset(value) => Ok(ModClientOutput::ViewOffset(checked_vector(value)?)),
+        ModClientOutput::MovementMode(_) | ModClientOutput::Stance(_) => Ok(output),
+    }
+}
+
+/// JavaScript `ToInt32` for an integral float in `i32`/`u32` range.
+fn to_int_32(value: f64) -> i32 {
+    (value as i64) as i32
+}
+
+/// Read declared outputs from source fields.
+pub fn read_mod_client_outputs<Scalar, Vector>(
+    declarations: &[ModClientOutputDeclaration<Scalar, Vector>],
+    scalar: impl Fn(&Scalar) -> f64,
+    vector: impl Fn(&Vector) -> Vec3,
+) -> Result<Vec<ModClientOutput>, ContractError> {
+    declarations
+        .iter()
+        .map(|declaration| match declaration {
+            ModClientOutputDeclaration::BodyShape { min, max } => Ok(ModClientOutput::BodyShape(Bounds {
+                min: vector(min),
+                max: vector(max),
+            })),
+            ModClientOutputDeclaration::ViewOffsetField { field } => Ok(ModClientOutput::ViewOffset(vector(field))),
+            ModClientOutputDeclaration::ViewHeight { height } => Ok(ModClientOutput::ViewOffset(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: scalar(height) as f32,
+            })),
+            ModClientOutputDeclaration::MovementMode { field, mask, values } => {
+                let raw = scalar(field);
+                if !raw.is_finite()
+                    || mask.is_some() && (raw.fract() != 0.0 || raw < f64::from(i32::MIN) || raw > 4_294_967_295.0)
+                {
+                    return Err(invalid(
+                        "Client output requires a finite source value, integral when masked".to_string(),
+                    ));
+                }
+                let value = mask.map_or(raw, |mask| f64::from((to_int_32(raw) & to_int_32(mask)) as u32));
+                let selected = values
+                    .iter()
+                    .find(|entry| entry.value == value)
+                    .ok_or_else(|| invalid(format!("Undeclared source movement mode {value}")))?;
+                Ok(ModClientOutput::MovementMode(selected.mode))
+            }
+            ModClientOutputDeclaration::Stance { field, mask, values } => {
+                let raw = scalar(field);
+                if !raw.is_finite()
+                    || mask.is_some() && (raw.fract() != 0.0 || raw < f64::from(i32::MIN) || raw > 4_294_967_295.0)
+                {
+                    return Err(invalid(
+                        "Client output requires a finite source value, integral when masked".to_string(),
+                    ));
+                }
+                let value = mask.map_or(raw, |mask| f64::from((to_int_32(raw) & to_int_32(mask)) as u32));
+                let selected = values
+                    .iter()
+                    .find(|entry| entry.value == value)
+                    .ok_or_else(|| invalid(format!("Undeclared source client stance {value}")))?;
+                Ok(ModClientOutput::Stance(selected.crouched))
+            }
+        })
+        .collect()
+}
+
+/// Validate declared outputs against source field checks.
+pub fn validate_mod_client_outputs<Scalar, Vector>(
+    declarations: &[ModClientOutputDeclaration<Scalar, Vector>],
+    scalar: impl Fn(&Scalar) -> Result<(), ContractError>,
+    vector: impl Fn(&Vector) -> Result<(), ContractError>,
+) -> Result<(), ContractError> {
+    let kinds: HashSet<ModClientOutputChannel> = declarations.iter().map(declaration_kind).collect();
+    if kinds.len() != declarations.len() {
+        return Err(invalid("Duplicate source client output channel".to_string()));
+    }
+    for declaration in declarations {
+        match declaration {
+            ModClientOutputDeclaration::BodyShape { min, max } => {
+                vector(min)?;
+                vector(max)?;
+            }
+            ModClientOutputDeclaration::ViewOffsetField { field } => {
+                vector(field)?;
+            }
+            ModClientOutputDeclaration::ViewHeight { height } => {
+                scalar(height)?;
+            }
+            ModClientOutputDeclaration::MovementMode { field, mask, values } => {
+                scalar(field)?;
+                validate_output_values(*mask, &values.iter().map(|entry| entry.value).collect::<Vec<_>>())?;
+            }
+            ModClientOutputDeclaration::Stance { field, mask, values } => {
+                scalar(field)?;
+                validate_output_values(*mask, &values.iter().map(|entry| entry.value).collect::<Vec<_>>())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_output_values(mask: Option<f64>, values: &[f64]) -> Result<(), ContractError> {
+    if let Some(mask) = mask {
+        if mask.fract() != 0.0 || mask <= 0.0 || mask > 4_294_967_295.0 {
+            return Err(invalid("Invalid source client output mask".to_string()));
+        }
+        let masked = to_int_32(mask);
+        if values.iter().any(|value| {
+            value.fract() != 0.0
+                || *value < 0.0
+                || *value > 4_294_967_295.0
+                || f64::from((to_int_32(*value) & masked) as u32) != *value
+        }) {
+            return Err(invalid("Source output values escape their declared mask".to_string()));
+        }
+    }
+    let unique: HashSet<u64> = values.iter().map(|value| value.to_bits()).collect();
+    if values.is_empty() || values.iter().any(|value| !value.is_finite()) || unique.len() != values.len() {
+        return Err(invalid("Ambiguous source client output values".to_string()));
+    }
+    Ok(())
+}
+
+/// Destination claim for source-declared outputs.
+pub type OutputClaimFn =
+    Box<dyn Fn(ProviderId, Vec<ModClientOutputChannel>) -> Result<ModClientOutputLease, ContractError>>;
+/// Source scalar field reader.
+pub type OutputScalarFn<Scalar> = Box<dyn Fn(&ActorId, &Scalar) -> f64>;
+/// Source vector field reader.
+pub type OutputVectorFn<Vector> = Box<dyn Fn(&ActorId, &Vector) -> Vec3>;
+
+/// Source-declared outputs admitted through one lease.
+pub struct SourceModClientOutputs<Scalar, Vector> {
+    owner: ProviderId,
+    declarations: Vec<ModClientOutputDeclaration<Scalar, Vector>>,
+    claim: Option<OutputClaimFn>,
+    scalar: OutputScalarFn<Scalar>,
+    vector: OutputVectorFn<Vector>,
+    lease: Option<ModClientOutputLease>,
+    actors: HashSet<ActorId>,
+}
+
+impl<Scalar, Vector> SourceModClientOutputs<Scalar, Vector> {
+    /// Declare source outputs; a destination owner is required when declared.
+    pub fn new(
+        owner: ProviderId,
+        declarations: Vec<ModClientOutputDeclaration<Scalar, Vector>>,
+        claim: Option<
+            impl Fn(ProviderId, Vec<ModClientOutputChannel>) -> Result<ModClientOutputLease, ContractError> + 'static,
+        >,
+        scalar: impl Fn(&ActorId, &Scalar) -> f64 + 'static,
+        vector: impl Fn(&ActorId, &Vector) -> Vec3 + 'static,
+    ) -> Result<Self, ContractError> {
+        if !declarations.is_empty() && claim.is_none() {
+            return Err(invalid(
+                "Declared client outputs require a destination output owner".to_string(),
+            ));
+        }
+        Ok(Self {
+            owner,
+            declarations,
+            claim: claim.map(|claim| {
+                Box::new(claim)
+                    as Box<
+                        dyn Fn(ProviderId, Vec<ModClientOutputChannel>) -> Result<ModClientOutputLease, ContractError>,
+                    >
+            }),
+            scalar: Box::new(scalar),
+            vector: Box::new(vector),
+            lease: None,
+            actors: HashSet::new(),
+        })
+    }
+
+    /// Whether any outputs are declared.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        !self.declarations.is_empty()
+    }
+
+    /// Whether an actor has published outputs.
+    #[must_use]
+    pub fn has(&self, actor: &ActorId) -> bool {
+        self.actors.contains(actor)
+    }
+
+    /// Publish one actor's outputs, claiming the lease on first use.
+    pub fn publish(&mut self, actor: &ActorId) -> Result<(), ContractError> {
+        if self.declarations.is_empty() {
+            return Ok(());
+        }
+        let values = read_mod_client_outputs(
+            &self.declarations,
+            |field| (self.scalar)(actor, field),
+            |field| (self.vector)(actor, field),
+        )?;
+        if self.lease.is_none() {
+            let claim = self
+                .claim
+                .as_ref()
+                .ok_or_else(|| invalid("Client output admission is unavailable".to_string()))?;
+            let channels = self.declarations.iter().map(declaration_kind).collect::<Vec<_>>();
+            self.lease = Some(claim(self.owner.clone(), channels)?);
+        }
+        let lease = self
+            .lease
+            .as_ref()
+            .ok_or_else(|| invalid("Client output admission is unavailable".to_string()))?;
+        lease.publish(actor, &values)?;
+        self.actors.insert(actor.clone());
+        Ok(())
+    }
+
+    /// Release one actor's publication.
+    pub fn release(&mut self, actor: &ActorId) {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.release(actor);
+        }
+        self.actors.remove(actor);
+    }
+
+    /// Release every publication, keeping the lease.
+    pub fn clear(&mut self) {
+        if let Some(lease) = self.lease.as_ref() {
+            for actor in std::mem::take(&mut self.actors) {
+                lease.release(&actor);
+            }
+        } else {
+            self.actors.clear();
+        }
+    }
+
+    /// Retire the lease and forget every actor.
+    pub fn close(&mut self) {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.close();
+        }
+        self.lease = None;
+        self.actors.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7255,5 +7774,274 @@ mod tests {
             ComponentPresentationMediaRequest::MusicStop,
             ComponentPresentationMediaRequest::MusicStop
         ));
+    }
+
+    #[test]
+    fn claims_publishes_and_reads_client_outputs() {
+        use qa_core::identity::IdentityOwner;
+
+        let ids = IdentityOwner::create("outputs").unwrap();
+        let actor = ids.actor(0, 0);
+        let guest = ids.actor(1, 0);
+        let live = {
+            let actor = actor.clone();
+            move |candidate: &ActorId| candidate == &actor
+        };
+        let table = ModClientOutputs::new(live);
+        assert!(table.read(&actor).is_none());
+        let owner = ProviderId::new("q3", "game");
+        let lease = table
+            .claim(
+                owner.clone(),
+                &[ModClientOutputChannel::ViewOffset, ModClientOutputChannel::Stance],
+            )
+            .unwrap();
+        assert_eq!(
+            table
+                .claim(owner.clone(), &[ModClientOutputChannel::ViewOffset])
+                .unwrap_err()
+                .to_string(),
+            "Client view-offset is already owned by q3:game; q3:game cannot also claim it"
+        );
+        assert_eq!(
+            table
+                .claim(
+                    owner.clone(),
+                    &[ModClientOutputChannel::Stance, ModClientOutputChannel::Stance]
+                )
+                .unwrap_err()
+                .to_string(),
+            "Duplicate component client output channel"
+        );
+        let view = Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 22.0,
+        };
+        lease
+            .publish(
+                &actor,
+                &[ModClientOutput::ViewOffset(view), ModClientOutput::Stance(true)],
+            )
+            .unwrap();
+        let read = table.read(&actor).unwrap();
+        assert_eq!(read.view_offset, Some(view));
+        assert_eq!(read.stance, Some(true));
+        assert_eq!(read.mode, None);
+        assert!(table.read(&guest).is_none());
+        assert_eq!(
+            lease
+                .publish(
+                    &guest,
+                    &[ModClientOutput::ViewOffset(view), ModClientOutput::Stance(false)]
+                )
+                .unwrap_err()
+                .to_string(),
+            "Component client output requires the current client actor"
+        );
+        assert_eq!(
+            lease
+                .publish(&actor, &[ModClientOutput::Stance(false)])
+                .unwrap_err()
+                .to_string(),
+            "Client output publication differs from its declared channels"
+        );
+        assert_eq!(
+            lease
+                .publish(
+                    &actor,
+                    &[
+                        ModClientOutput::ViewOffset(view),
+                        ModClientOutput::MovementMode(ModClientMovementMode::Freeze)
+                    ]
+                )
+                .unwrap_err()
+                .to_string(),
+            "Undeclared component client output"
+        );
+        lease.release(&actor);
+        assert!(table.read(&actor).is_none());
+        lease
+            .publish(
+                &actor,
+                &[ModClientOutput::ViewOffset(view), ModClientOutput::Stance(false)],
+            )
+            .unwrap();
+        lease.close();
+        assert_eq!(
+            lease
+                .publish(
+                    &actor,
+                    &[ModClientOutput::ViewOffset(view), ModClientOutput::Stance(false)]
+                )
+                .unwrap_err()
+                .to_string(),
+            "Component client output owner is retired"
+        );
+        let next = table.claim(owner, &[ModClientOutputChannel::ViewOffset]).unwrap();
+        next.publish(&actor, &[ModClientOutput::ViewOffset(view)]).unwrap();
+        assert!(table.read(&actor).is_some());
+        table.release(&actor);
+        assert!(table.read(&actor).is_none());
+        next.close();
+    }
+
+    #[test]
+    fn rejects_bad_client_vectors_and_bounds() {
+        use qa_core::identity::IdentityOwner;
+
+        let ids = IdentityOwner::create("vectors").unwrap();
+        let actor = ids.actor(0, 0);
+        let table = ModClientOutputs::new(move |_| true);
+        let owner = ProviderId::new("q1", "game");
+        let lease = table.claim(owner, &[ModClientOutputChannel::BodyShape]).unwrap();
+        let bad = Bounds {
+            min: Vec3 {
+                x: f32::NAN,
+                y: 0.0,
+                z: 0.0,
+            },
+            max: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+        };
+        assert_eq!(
+            lease
+                .publish(&actor, &[ModClientOutput::BodyShape(bad)])
+                .unwrap_err()
+                .to_string(),
+            "Client output vector must be finite"
+        );
+        let backwards = Bounds {
+            min: Vec3 { x: 2.0, y: 0.0, z: 0.0 },
+            max: Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+        };
+        assert_eq!(
+            lease
+                .publish(&actor, &[ModClientOutput::BodyShape(backwards)])
+                .unwrap_err()
+                .to_string(),
+            "Client body output has backwards bounds"
+        );
+        lease.close();
+    }
+
+    #[test]
+    fn reads_and_validates_declared_client_outputs() {
+        let declarations = vec![
+            ModClientOutputDeclaration::ViewHeight::<String, String> {
+                height: "viewheight".to_string(),
+            },
+            ModClientOutputDeclaration::MovementMode {
+                field: "move".to_string(),
+                mask: Some(3.0),
+                values: vec![
+                    ModClientMovementModeValue {
+                        value: 0.0,
+                        mode: ModClientMovementMode::Normal,
+                    },
+                    ModClientMovementModeValue {
+                        value: 3.0,
+                        mode: ModClientMovementMode::Noclip,
+                    },
+                ],
+            },
+        ];
+        validate_mod_client_outputs(&declarations, |_| Ok(()), |_| Ok(())).unwrap();
+        let outputs = read_mod_client_outputs(
+            &declarations,
+            |field| if field == "viewheight" { 22.0 } else { 7.0 },
+            |_| Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        )
+        .unwrap();
+        assert_eq!(outputs.len(), 2);
+        assert!(matches!(outputs[0], ModClientOutput::ViewOffset(offset) if offset.z == 22.0));
+        assert_eq!(outputs[1], ModClientOutput::MovementMode(ModClientMovementMode::Noclip));
+        let bad = vec![ModClientOutputDeclaration::Stance::<String, String> {
+            field: "stance".to_string(),
+            mask: Some(0.0),
+            values: vec![ModClientStanceValue {
+                value: 0.0,
+                crouched: false,
+            }],
+        }];
+        assert_eq!(
+            validate_mod_client_outputs(&bad, |_| Ok(()), |_| Ok(()))
+                .unwrap_err()
+                .to_string(),
+            "Invalid source client output mask"
+        );
+        let dup = vec![
+            ModClientOutputDeclaration::ViewHeight::<String, String> {
+                height: "a".to_string(),
+            },
+            ModClientOutputDeclaration::ViewOffsetField::<String, String> { field: "b".to_string() },
+        ];
+        assert_eq!(
+            validate_mod_client_outputs(&dup, |_| Ok(()), |_| Ok(()))
+                .unwrap_err()
+                .to_string(),
+            "Duplicate source client output channel"
+        );
+    }
+
+    #[test]
+    fn source_outputs_publish_through_one_lease() {
+        use qa_core::identity::IdentityOwner;
+        use std::rc::Rc;
+
+        let ids = IdentityOwner::create("source-outputs").unwrap();
+        let actor = ids.actor(0, 0);
+        let table = Rc::new(ModClientOutputs::new(move |_| true));
+        let owner = ProviderId::new("q2", "game");
+        let claimed = Rc::new(Cell::new(0));
+        let seen = claimed.clone();
+        let tables = table.clone();
+        let mut source = SourceModClientOutputs::new(
+            owner.clone(),
+            vec![ModClientOutputDeclaration::Stance::<String, String> {
+                field: "crouched".to_string(),
+                mask: None,
+                values: vec![
+                    ModClientStanceValue {
+                        value: 0.0,
+                        crouched: false,
+                    },
+                    ModClientStanceValue {
+                        value: 1.0,
+                        crouched: true,
+                    },
+                ],
+            }],
+            Some(move |owner: ProviderId, channels: Vec<ModClientOutputChannel>| {
+                seen.set(seen.get() + 1);
+                tables.claim(owner, &channels)
+            }),
+            |_, _| 1.0,
+            |_, _| Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        )
+        .unwrap();
+        assert!(source.enabled());
+        assert!(!source.has(&actor));
+        source.publish(&actor).unwrap();
+        assert!(source.has(&actor));
+        assert_eq!(claimed.get(), 1);
+        source.publish(&actor).unwrap();
+        assert_eq!(claimed.get(), 1);
+        assert_eq!(table.read(&actor).unwrap().stance, Some(true));
+        source.release(&actor);
+        assert!(!source.has(&actor));
+        assert!(table.read(&actor).is_none());
+        source.publish(&actor).unwrap();
+        source.clear();
+        assert!(!source.has(&actor));
+        source.close();
+        let idle = SourceModClientOutputs::new(
+            owner,
+            Vec::<ModClientOutputDeclaration<String, String>>::new(),
+            None::<fn(ProviderId, Vec<ModClientOutputChannel>) -> Result<ModClientOutputLease, ContractError>>,
+            |_: &ActorId, _: &String| 0.0,
+            |_: &ActorId, _: &String| Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        )
+        .unwrap();
+        assert!(!idle.enabled());
     }
 }
