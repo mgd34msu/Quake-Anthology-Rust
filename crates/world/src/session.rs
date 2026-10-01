@@ -50,6 +50,21 @@ pub enum SimEventPayload {
     },
     /// Operator message.
     Message(String),
+    /// Positional sound sample.
+    Sound {
+        /// Resource identity.
+        resource: String,
+        /// Sound actor, when the sound names one.
+        actor: Option<SavedActorId>,
+        /// Sound origin.
+        origin: Vec3,
+        /// NetQuake channel byte.
+        channel: u8,
+        /// Volume fraction.
+        volume: f64,
+        /// Attenuation.
+        attenuation: f64,
+    },
 }
 
 /// One simulation event.
