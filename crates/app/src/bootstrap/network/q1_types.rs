@@ -1,6 +1,6 @@
 //! Quake application host types.
 //!
-//! Port of `src/app/bootstrap/network/q1-types.ts` (`Q1ApplicationPlayer`,
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q1-types.ts` (`Q1ApplicationPlayer`,
 //! `Q1ApplicationGameState`, `Q1ApplicationServerHost`,
 //! `Q1ServerNetworkOptions`). Wire messages reuse
 //! [`NetQuakeMessage`](qa_net::q1_net::NetQuakeMessage), entities reuse

@@ -1,6 +1,6 @@
 //! NetQuake client network endpoint.
 //!
-//! Port of `src/app/bootstrap/network/q1-client.ts` (`Q1ClientNetwork`),
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q1-client.ts` (`Q1ClientNetwork`),
 //! following NetQuake `net_dgrm.c`/`cl_main.c` client progression. The
 //! donor is asynchronous; this port resolves every step inline over the
 //! synchronous [`DatagramTransport`](qa_net::common::transport::DatagramTransport).

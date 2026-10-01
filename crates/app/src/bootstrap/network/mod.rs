@@ -1,4 +1,4 @@
-//! Bootstrap network helpers (donor `src/app/bootstrap/network/*`).
+//! Bootstrap network helpers (donor `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/*`).
 
 pub mod client_download_policy;
 pub mod q1;

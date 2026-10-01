@@ -1,6 +1,6 @@
 //! QuakeWorld application server host types.
 //!
-//! Port of `src/app/bootstrap/network/qw-server-types.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/qw-server-types.ts`
 //! (`QwApplicationPlayer`, `QwApplicationServerHost`,
 //! `QwServerNetworkOptions`). Wire messages reuse
 //! [`QuakeWorldMessage`](qa_net::q1_net::QuakeWorldMessage), entities reuse

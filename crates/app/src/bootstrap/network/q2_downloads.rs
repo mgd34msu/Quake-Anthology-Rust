@@ -1,6 +1,6 @@
 //! Quake II application downloads.
 //!
-//! Port of `src/app/bootstrap/network/q2-downloads.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q2-downloads.ts`
 //! (`createQ2ApplicationDownloads`, `Q2PeerDownload`, `Q2DownloadReceiver`).
 //! The donor is asynchronous (promises, `AbortController`, an async HTTP
 //! queue, an async resource generator); this port resolves every step

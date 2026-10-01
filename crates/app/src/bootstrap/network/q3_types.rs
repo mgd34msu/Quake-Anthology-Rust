@@ -1,6 +1,6 @@
 //! Quake III application host types.
 //!
-//! Port of `src/app/bootstrap/network/q3-types.ts` (`Q3ApplicationPlayer`,
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q3-types.ts` (`Q3ApplicationPlayer`,
 //! `Q3SourceRoundBinding`, `Q3NetworkRoundRestart`, `Q3ApplicationServerHost`,
 //! `q3GameCallback`). The donor's synchronous-or-`Promise` host calls become
 //! synchronous. Admission, downloads, rates, snapshots, and wire commands
@@ -8,7 +8,7 @@
 //! `Q3DownloadReadFile`, `Q3ServerRate`, `Gamestate`, `WireUserCommand`,
 //! `Q3PureServer`); product identity reuses
 //! [`Q3Product`](qa_net::q3_net::Q3Product) (donor
-//! `src/network/q3/state/product.ts`); entity/player snapshots reuse
+//! `/home/buzzkill/Projects/quake-typescript/src/network/q3/state/product.ts`); entity/player snapshots reuse
 //! [`Q3EntityState`](qa_net::q3_net::Q3EntityState) and
 //! [`Q3PlayerState`](qa_net::q3_net::Q3PlayerState).
 

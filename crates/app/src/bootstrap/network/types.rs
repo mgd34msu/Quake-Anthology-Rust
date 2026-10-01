@@ -1,6 +1,6 @@
 //! Quake II application network vocabulary.
 //!
-//! Port of `src/app/bootstrap/network/types.ts` (`RemotePresentationAccess`,
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/types.ts` (`RemotePresentationAccess`,
 //! `ApplicationNetwork`, Q2 application players, game state, server/client
 //! hosts, network options, `q2GameCallback`). The donor's asynchronous host
 //! calls become synchronous; every state transition keeps the donor's order.

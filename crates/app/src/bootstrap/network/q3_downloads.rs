@@ -1,6 +1,6 @@
 //! Quake III application packages and downloads.
 //!
-//! Port of `src/app/bootstrap/network/q3-downloads.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q3-downloads.ts`
 //! (`Q3ApplicationPackages`). Native checksums and download paths refer
 //! only to the application's selected mounts. The donor is asynchronous
 //! over `node:fs` promises; this port uses synchronous file reads. Pak

@@ -1,6 +1,6 @@
 //! Quake II effect wire translation.
 //!
-//! Port of `src/app/bootstrap/network/q2-effects.ts` (`q2BeamFromWire`,
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q2-effects.ts` (`q2BeamFromWire`,
 //! `q2EffectToWire`, `q2EffectFromWire`). Q2 `CL_ParseTEnt`/`g_utils`
 //! message shapes; names match the source game presentation imports. Wire
 //! state reuses [`Q2TempEntity`](qa_net::q2_net::Q2TempEntity),

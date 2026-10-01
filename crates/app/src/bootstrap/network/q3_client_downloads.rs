@@ -1,6 +1,6 @@
 //! Quake III client download queue.
 //!
-//! Port of `src/app/bootstrap/network/q3-client-downloads.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q3-client-downloads.ts`
 //! (`q3DownloadPath`, `Q3ApplicationClientDownloads`): `CL_InitDownloads` /
 //! `CL_DownloadsComplete` over the shared staged filesystem. Package
 //! comparison, checksums, name validation, and sink staging reuse `qa-net`

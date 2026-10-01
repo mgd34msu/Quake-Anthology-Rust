@@ -1,6 +1,6 @@
 //! Client-side automatic download policy.
 //!
-//! Port of `src/app/bootstrap/network/client-download-policy.ts`. The donor
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/client-download-policy.ts`. The donor
 //! registers Q2/Q3 latched cvars and returns a permission closure; this port
 //! keeps that shape over [`CvarRegistry`](qa_core::cvar::CvarRegistry). The
 //! local policy never changes the server's download rules.

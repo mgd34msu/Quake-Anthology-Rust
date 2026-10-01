@@ -1,6 +1,6 @@
 //! NetQuake server network endpoint.
 //!
-//! Port of `src/app/bootstrap/network/q1.ts` (`Q1ServerNetwork`). The donor
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/q1.ts` (`Q1ServerNetwork`). The donor
 //! is asynchronous; this port resolves every step inline over the
 //! synchronous [`DatagramTransport`](qa_net::common::transport::DatagramTransport).
 //! Connectionless control, channels, client decoding, message/entity

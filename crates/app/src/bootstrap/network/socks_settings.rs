@@ -1,6 +1,6 @@
 //! Client SOCKS proxy settings.
 //!
-//! Port of `src/app/bootstrap/network/socks-settings.ts`
+//! Port of `/home/buzzkill/Projects/quake-typescript/src/app/bootstrap/network/socks-settings.ts`
 //! (`ClientSocksSettings`). Imported Q3 network settings retain Q3
 //! archive/latch semantics for every remote family. The donor's registry
 //! constructor takes a command context and print sink; the Rust registry
