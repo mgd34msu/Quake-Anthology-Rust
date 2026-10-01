@@ -149,6 +149,7 @@ name = "qa-net"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "qa-content",
  "qa-core",
  "thiserror",
 ]

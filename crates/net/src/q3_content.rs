@@ -5,18 +5,17 @@
 //! reuse [`q3_archive_checksums`](crate::q3_net::q3_archive_checksums) and
 //! pak tracking reuses [`PakReferences`](crate::q3_pak_references::PakReferences).
 //!
-//! The content-crate types (`ArchiveMount`, `ArchiveHandle`,
-//! `PureMountPolicy`) are not ported yet: this module defines minimal
-//! local mirrors ([`Q3ArchiveMount`], [`Q3ResolvedReference`],
-//! [`Q3PureMountPolicy`]) capturing exactly what the donor needs. SEAM:
-//! replace these mirrors with the content crate's types when they land;
-//! only this module's constructors and accessors should change.
+//! Mounts, references, and the pure policy are the content crate's
+//! [`ArchiveMount`](qa_content::contract::ArchiveMount),
+//! [`ResolvedResourceReference`](qa_content::contract::ResolvedResourceReference),
+//! and [`PureMountPolicy`](qa_content::mounts::PureMountPolicy).
 
 use std::collections::HashMap;
 
+use qa_content::contract::{ArchiveMount, MountId, ResolvedResourceReference, ResourceProvenance};
+use qa_content::mounts::PureMountPolicy;
 use thiserror::Error;
 
-use crate::common::session::ContentDigest;
 use crate::q3_net::{q3_archive_checksums, Q3ArchiveHandle, Q3NetError};
 use crate::q3_pak_references::{reorder_pure_paks, PakCatalogEntry, PakReferences, PureSearchPath, Q3PakError};
 
@@ -40,66 +39,18 @@ pub enum Q3ContentError {
     NoMatchingArchives,
 }
 
-/// Minimal mount identity mirror (donor `MountIdentity`: id + generation).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Q3MountIdentity {
-    /// Mount id (`mount:namespace:name`).
-    pub id: String,
-    /// Mount generation.
-    pub generation: u64,
-}
-
-/// Minimal archive mount mirror (donor `ArchiveMount`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q3ArchiveMount {
-    /// Mount identity.
-    pub identity: Q3MountIdentity,
-    /// Archive path.
-    pub archive_path: String,
-    /// Archive content digest.
-    pub archive_digest: ContentDigest,
-}
-
-/// Minimal resource provenance mirror (donor `ResourceProvenance`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Q3ResourceProvenance {
-    /// Loose file.
-    Loose,
-    /// Archive member with its mount at open time.
-    Archive {
-        /// Mount the resource was opened from.
-        mount: Q3ArchiveMount,
-    },
-}
-
-/// Minimal resolved reference mirror (donor `ResolvedResourceReference`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q3ResolvedReference {
-    /// Requested path.
-    pub requested_path: String,
-    /// Resource provenance.
-    pub provenance: Q3ResourceProvenance,
-}
-
-/// Minimal pure mount policy mirror (donor `PureMountPolicy`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Q3PureMountPolicy {
-    /// Accepted archive digests.
-    pub archives: Vec<ContentDigest>,
-}
-
 /// Mounted pak (`Q3MountedPak`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Q3MountedPak {
     /// Mount.
-    pub mount: Q3ArchiveMount,
+    pub mount: ArchiveMount,
     /// Catalog entry.
     pub pack: PakCatalogEntry,
 }
 
 /// Register a pak (`registerQ3Pak`).
 pub fn register_q3_pak(
-    mount: Q3ArchiveMount,
+    mount: ArchiveMount,
     archive: &Q3ArchiveHandle,
     game: &str,
     basename: &str,
@@ -119,7 +70,7 @@ pub fn register_q3_pak(
 /// Content reference tracker (`Q3ContentReferences`).
 pub struct Q3ContentReferences {
     references: PakReferences,
-    by_mount: HashMap<String, Q3MountedPak>,
+    by_mount: HashMap<MountId, Q3MountedPak>,
     packs: Vec<Q3MountedPak>,
 }
 
@@ -160,13 +111,13 @@ impl Q3ContentReferences {
     }
 
     /// Record a resolved open (`opened`).
-    pub fn opened(&mut self, reference: &Q3ResolvedReference) -> Result<(), Q3ContentError> {
+    pub fn opened(&mut self, reference: &ResolvedResourceReference) -> Result<(), Q3ContentError> {
         match &reference.provenance {
-            Q3ResourceProvenance::Loose => {
+            ResourceProvenance::Loose { .. } => {
                 self.references.record_loose_open(&reference.requested_path)?;
                 Ok(())
             }
-            Q3ResourceProvenance::Archive { mount } => {
+            ResourceProvenance::Archive { mount, .. } => {
                 let Some(pak) = self.by_mount.get(&mount.identity.id) else {
                     return Err(Q3ContentError::ForeignProvenance);
                 };
@@ -183,9 +134,9 @@ impl Q3ContentReferences {
     }
 
     /// Map server checksums to mounted archive digests (`pureMountPolicy`).
-    pub fn pure_mount_policy(&self, server_checksums: &[i32]) -> Result<Q3PureMountPolicy, Q3ContentError> {
+    pub fn pure_mount_policy(&self, server_checksums: &[i32]) -> Result<PureMountPolicy, Q3ContentError> {
         if server_checksums.is_empty() {
-            return Ok(Q3PureMountPolicy { archives: Vec::new() });
+            return Ok(PureMountPolicy { archives: Vec::new() });
         }
         let paths: Vec<PureSearchPath<&Q3MountedPak>> = self
             .packs
@@ -207,7 +158,7 @@ impl Q3ContentReferences {
         if archives.is_empty() {
             return Err(Q3ContentError::NoMatchingArchives);
         }
-        Ok(Q3PureMountPolicy { archives })
+        Ok(PureMountPolicy { archives })
     }
 
     /// Build the referenced pure command (`referencedPureCommand`).
@@ -220,19 +171,66 @@ impl Q3ContentReferences {
 mod tests {
     use super::*;
     use crate::q3_net::{Q3ArchiveEntry, Q3ArchiveHandle};
+    use qa_content::contract::{
+        ArchiveFormat, ContentDigest, ContentId, LooseMount, MountIdentity, MountPlanId, ResourceId, ResourceResolution,
+    };
 
     fn digest(byte: u8) -> ContentDigest {
-        ContentDigest::new(&format!("{byte:02x}").repeat(32)).unwrap()
+        ContentDigest(format!("sha256:{}", format!("{byte:02x}").repeat(32)))
     }
 
-    fn mount(id: &str, generation: u64, digest: ContentDigest) -> Q3ArchiveMount {
-        Q3ArchiveMount {
-            identity: Q3MountIdentity {
-                id: id.to_owned(),
+    fn mount(id: &str, generation: u64, digest: ContentDigest) -> ArchiveMount {
+        ArchiveMount {
+            identity: MountIdentity {
+                id: MountId(format!("mount:{id}")),
+                content: ContentId(format!("q3:base:{id}:1")),
                 generation,
             },
+            format: ArchiveFormat::Pk3,
             archive_path: format!("baseq3/{id}.pk3"),
             archive_digest: digest,
+        }
+    }
+
+    fn loose_reference(path: &str) -> ResolvedResourceReference {
+        ResolvedResourceReference {
+            id: ResourceId(format!("resource:{path}")),
+            requested_path: path.to_owned(),
+            provenance: ResourceProvenance::Loose {
+                mount: LooseMount {
+                    identity: MountIdentity {
+                        id: MountId("mount:loose".to_string()),
+                        content: ContentId("q3:base:loose:1".to_string()),
+                        generation: 0,
+                    },
+                    root_path: "baseq3".to_string(),
+                },
+                member_path: path.to_owned(),
+            },
+            digest: digest(0),
+            byte_length: 8,
+            resolution: ResourceResolution::DefaultOrder {
+                plan: MountPlanId("mount-plan:catalog:0".to_string()),
+                rank: 0,
+            },
+        }
+    }
+
+    fn archive_reference(path: &str, mount: ArchiveMount) -> ResolvedResourceReference {
+        ResolvedResourceReference {
+            id: ResourceId(format!("resource:{path}")),
+            requested_path: path.to_owned(),
+            provenance: ResourceProvenance::Archive {
+                mount,
+                member_path: path.to_owned(),
+                member_index: 0,
+            },
+            digest: digest(0),
+            byte_length: 8,
+            resolution: ResourceResolution::DefaultOrder {
+                plan: MountPlanId("mount-plan:catalog:0".to_string()),
+                rank: 0,
+            },
         }
     }
 
@@ -285,39 +283,19 @@ mod tests {
     #[test]
     fn opens_route_by_provenance() {
         let mut content = Q3ContentReferences::new(vec![pak("pak0", 0, 1)], 0, || 1.0).unwrap();
-        content
-            .opened(&Q3ResolvedReference {
-                requested_path: "autoexec.cfg".to_owned(),
-                provenance: Q3ResourceProvenance::Loose,
-            })
-            .unwrap();
+        content.opened(&loose_reference("autoexec.cfg")).unwrap();
         // Allowed loose paths leave the fake checksum at zero.
         assert_eq!(content.referenced_pure_command(7).split(' ').count(), 4);
         content
-            .opened(&Q3ResolvedReference {
-                requested_path: "vm/qagame.qvm".to_owned(),
-                provenance: Q3ResourceProvenance::Archive {
-                    mount: mount("pak0", 0, digest(1)),
-                },
-            })
+            .opened(&archive_reference("vm/qagame.qvm", mount("pak0", 0, digest(1))))
             .unwrap();
         assert!(!content.references().game_pure_checksum().is_empty());
         assert_eq!(
-            content.opened(&Q3ResolvedReference {
-                requested_path: "vm/cgame.qvm".to_owned(),
-                provenance: Q3ResourceProvenance::Archive {
-                    mount: mount("pak9", 0, digest(9)),
-                },
-            }),
+            content.opened(&archive_reference("vm/cgame.qvm", mount("pak9", 0, digest(9)))),
             Err(Q3ContentError::ForeignProvenance)
         );
         assert_eq!(
-            content.opened(&Q3ResolvedReference {
-                requested_path: "vm/cgame.qvm".to_owned(),
-                provenance: Q3ResourceProvenance::Archive {
-                    mount: mount("pak0", 1, digest(1)),
-                },
-            }),
+            content.opened(&archive_reference("vm/cgame.qvm", mount("pak0", 1, digest(1)))),
             Err(Q3ContentError::ForeignProvenance)
         );
     }

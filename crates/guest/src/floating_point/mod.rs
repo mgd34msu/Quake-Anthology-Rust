@@ -1,4 +1,6 @@
 //! Exact floating-point execution for x87 and SSE instructions.
+//!
+//! Donor provenance: `/home/buzzkill/Projects/quake-typescript/src/guest/floating-point/index.ts`.
 #[allow(dead_code)]
 pub mod binary;
 #[allow(dead_code)]

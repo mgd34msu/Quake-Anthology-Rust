@@ -5,6 +5,9 @@
 //! header bits, removal framing, spawn baselines, and serverdata from
 //! `createVanillaContext` in `src/network/q2/codecs/vanilla.ts`.
 //! `EntityStateT` / `UsercmdT` shapes come from `src/network/q2/state.ts`.
+//! Envelope encode/decode implements
+//! `/home/buzzkill/Projects/quake-typescript/src/network/q2/codecs/codec.ts`
+//! (`Q2PacketCodec`, reliable/unreliable framing).
 //!
 //! Classic (protocol 34) framing plus the shared state shapes every
 //! variant codec builds on; R1Q2, Q2Pro, rerelease, KEX, zpacket, and MVD
