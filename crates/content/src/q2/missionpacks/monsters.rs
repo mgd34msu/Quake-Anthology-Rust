@@ -1,4 +1,10 @@
-//! Q2 mission-pack monsters (`src/content/q2/missionpacks/monsters`).
+//! Q2 mission-pack monsters barrel (`src/content/q2/missionpacks/monsters/index.ts`).
+//!
+//! Builds the Xatrix/Rogue monster definition lists, registers them with
+//! the monster authority, and re-exports the per-monster definition
+//! constructors. `Q2MissionPackMonsterState` is the [`RogueMonsterState`]
+//! arena plus the state capture/restore functions; the donor checkpoint
+//! `Q2MissionPackMonstersCheckpoint` is [`MissionPackMonstersCheckpoint`].
 //!
 //! Gameplay logic adapted from id Software's Quake II game and the
 //! rerelease game DLL (GPL-2.0-or-later).
@@ -26,33 +32,44 @@ pub mod rogue_variants;
 pub mod soldierh;
 pub mod spawn;
 pub mod stalker;
+pub mod state;
+pub mod tables;
 pub mod turret;
+pub mod types;
 pub mod widow;
 pub mod widow2;
 pub mod widow_common;
 pub mod widow_death;
 pub mod xatrix_variants;
-pub mod state;
-pub mod tables;
-pub mod types;
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use qa_core::identity::ActorId;
 
+pub use self::boss5::boss5_definition;
+pub use self::carrier::create_carrier_definition;
+pub use self::chick_heat::create_chick_heat_definition;
 use self::combat::{create_rogue_combat_hooks, rogue_target_anger};
-use self::state::{MissionPackMonstersCheckpoint, RogueFlyerNext, RogueMonsterState};
-use self::types::{
-    Q2MissionPackMonsterServices, Q2MissionPackMonsterWeapons, Q2MonsterMissionPack,
-    mission_services,
+pub use self::fixbot::create_fixbot_definition;
+pub use self::gekk::create_gekk_definition;
+pub use self::gladb::create_gladb_definition;
+pub use self::medic::create_rogue_medic_definitions;
+pub use self::rogue_flyer::create_rogue_flyer_definitions;
+pub use self::rogue_hover::create_rogue_hover_definitions;
+pub use self::soldierh::create_soldier_heavy_definitions;
+pub use self::stalker::create_stalker_definition;
+use self::state::RogueFlyerNext;
+pub use self::state::{
+    capture_mission_monsters, restore_mission_monsters, rogue_state, MissionPackMonstersCheckpoint, RogueMonsterState,
 };
+pub use self::turret::create_rogue_turret_definition;
+use self::types::mission_services;
+pub use self::types::{Q2MissionPackMonsterServices, Q2MissionPackMonsterWeapons, Q2MonsterMissionPack};
 use crate::q2::base::monsters::boss_common::with_boss_explosion_callbacks;
 use crate::q2::foundation::host::{Q2Edition, Q2GameServices};
 use crate::q2::foundation::monsters::types::{Q2MonsterDefinition, SourceCombatMode};
-use crate::q2::foundation::monsters::{
-    register_monster, set_hint_paths, set_source_combat_rules,
-};
+use crate::q2::foundation::monsters::{register_monster, set_hint_paths, set_source_combat_rules};
 
 /// Arena runtime state for this module.
 pub struct MissionMonsterRuntime {
@@ -98,10 +115,7 @@ pub fn register_q2_rogue_hint_paths(game: &mut Q2GameServices) {
 }
 
 /// Capture mission-pack monsters (`Q2MissionPackMonsters.capture`).
-pub fn capture_mission_pack_monsters(
-    game: &mut Q2GameServices,
-    rogue: bool,
-) -> MissionPackMonstersCheckpoint {
+pub fn capture_mission_pack_monsters(game: &mut Q2GameServices, rogue: bool) -> MissionPackMonstersCheckpoint {
     let mut checkpoint = state::capture_mission_monsters(game);
     checkpoint.hints = if rogue {
         Some(hints::capture_rogue_hints(game))
@@ -201,9 +215,7 @@ pub fn register_q2_mission_pack_monsters(
     };
     let fallbacks: Vec<String> = definitions
         .iter()
-        .filter(|definition| {
-            Q2_ORIGINAL_MISSION_PACK_FALLBACKS.contains(&definition.classname.as_str())
-        })
+        .filter(|definition| Q2_ORIGINAL_MISSION_PACK_FALLBACKS.contains(&definition.classname.as_str()))
         .map(|definition| definition.classname.clone())
         .collect();
     for definition in definitions {
@@ -225,10 +237,64 @@ pub fn register_q2_mission_pack_monsters(
 }
 
 /// Mission-pack target anger (`Q2MissionPackMonsters.targetAnger`).
-pub fn mission_pack_target_anger(
-    game: &mut Q2GameServices,
-    entity: &ActorId,
-    target: &ActorId,
-) {
+pub fn mission_pack_target_anger(game: &mut Q2GameServices, entity: &ActorId, target: &ActorId) {
     rogue_target_anger(game, entity, target);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn classnames(definitions: &[Q2MonsterDefinition]) -> Vec<&str> {
+        definitions
+            .iter()
+            .map(|definition| definition.classname.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn xatrix_definitions_carry_source_classnames() {
+        let definitions = q2_xatrix_monster_definitions();
+        let names = classnames(&definitions);
+        for expected in [
+            "monster_gekk",
+            "monster_fixbot",
+            "monster_gladb",
+            "monster_boss5",
+            "monster_chick_heat",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}");
+        }
+        assert_eq!(boss5_definition().classname, "monster_boss5");
+        assert_eq!(create_gekk_definition().classname, "monster_gekk");
+    }
+
+    #[test]
+    fn rogue_definitions_carry_source_classnames() {
+        let definitions = q2_rogue_monster_definitions();
+        let names = classnames(&definitions);
+        for expected in [
+            "monster_stalker",
+            "monster_turret",
+            "monster_carrier",
+            "monster_widow",
+            "monster_widow2",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}");
+        }
+        assert_eq!(create_stalker_definition().classname, "monster_stalker");
+        assert_eq!(create_carrier_definition().classname, "monster_carrier");
+    }
+
+    #[test]
+    fn fallbacks_match_source_set() {
+        assert_eq!(Q2_ORIGINAL_MISSION_PACK_FALLBACKS.len(), 16);
+        let xatrix = q2_xatrix_monster_definitions();
+        let rogue = q2_rogue_monster_definitions();
+        let mut names = classnames(&xatrix);
+        names.extend(classnames(&rogue));
+        for fallback in Q2_ORIGINAL_MISSION_PACK_FALLBACKS {
+            assert!(names.contains(&fallback), "missing {fallback}");
+        }
+    }
 }
