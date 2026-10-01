@@ -7,11 +7,16 @@
 
 pub mod audio;
 pub mod audio_settings;
+pub mod authored_start;
 pub mod base_arena_catalog;
 pub mod base_arena_postgame;
 pub mod base_arena_progression;
+pub mod campaign_unit;
 pub mod component_client_save;
+pub mod config_scripts;
+pub mod console;
 pub mod controller_settings;
+pub mod cvar_archives;
 pub mod demo_library;
 pub mod demo_playback;
 pub mod demo_recording;
